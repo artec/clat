@@ -129,9 +129,9 @@ fn refresh(app: &tauri::AppHandle, host: &HostClient) {
 fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification) {
     static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
     let title = match notice.kind.as_str() {
-        "completed" => "CLAT 任务已结束",
-        "approval" => "CLAT 有操作等待审批",
-        "question" => "CLAT 有问题等待回答",
+        "completed" => crate::localization::text(app, "desktop.notification_completed"),
+        "approval" => crate::localization::text(app, "desktop.notification_approval"),
+        "question" => crate::localization::text(app, "desktop.notification_question"),
         _ => return,
     };
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -147,6 +147,6 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
         .builder()
         .id(id)
         .title(title)
-        .body("打开 CLAT 查看详情")
+        .body(crate::localization::text(app, "desktop.notification_body"))
         .show();
 }

@@ -38,26 +38,28 @@ impl ModelEditor {
 
     pub(super) fn editor_title(&self) -> String {
         match self.preset.filter(|_| self.remote) {
-            Some(preset) => format!("/model · {} · API key", preset.name),
+            Some(preset) => self.locale.render(
+                &UiMessage::new("tui.remote_preset_title").arg("value1", (preset.name).to_string()),
+            ),
             None => "/model".into(),
         }
     }
 
     pub(super) fn editor_footer(&self) -> &'static str {
         if self.is_remote_preset() {
-            "Enter edit/confirm · Ctrl+S save and activate · Esc back"
+            self.locale.text("tui.remote_preset_footer")
         } else if self.remote {
-            "↑↓ select · Enter edit/confirm · ←/→ cycle · Ctrl+D clear · Ctrl+S save · Esc back"
+            self.locale.text("tui.remote_editor_footer")
         } else {
-            "↑↓ select · Enter edit · ←/→ cycle · Ctrl+D clear · Ctrl+S save · Esc cancel"
+            self.locale.text("tui.local_editor_footer")
         }
     }
 
     pub(super) fn key_summary(&self) -> String {
         if self.remote && !self.remote_key_edited {
-            "host key hidden · unchanged".into()
+            self.locale.text("tui.host_key_hidden").into()
         } else if self.remote && self.credentials.value(0).is_none_or(str::is_empty) {
-            "clear on save".into()
+            self.locale.text("tui.clear_on_save").into()
         } else {
             self.credentials.masked_value(0)
         }
@@ -135,7 +137,7 @@ impl ModelEditor {
         }
         if route.is_null() || route["tuning"].is_object() {
             editor.remote_tuning = Some(serde_json::json!({
-                "values":editor.remote_tuning_values()?, "route":editor.remote_route_identity()
+                "values":editor.remote_tuning_values().map_err(|e| e.to_string())?, "route":editor.remote_route_identity()
             }));
         }
         Ok(editor)
@@ -182,28 +184,28 @@ impl ModelEditor {
         EditorAction::SaveRemoteProfile(params)
     }
 
-    fn remote_limit_values(&self) -> Result<Value, String> {
+    fn remote_limit_values(&self) -> Result<Value, PresentedText> {
         let output = if self.override_is_clear(RowKind::OutputLimit) {
             None
         } else if self.output_choice == CHOICE_CUSTOM {
-            parse_optional_u32(&self.output_limit, "Max Output Tokens")?
+            parse_optional_u32(&self.output_limit, "tui.max_output_tokens")?
         } else {
             Some(OUTPUT_CHOICES[self.output_choice])
         };
         let context = if self.override_is_clear(RowKind::ContextWindow) {
             None
         } else if self.context_choice == CHOICE_CUSTOM {
-            parse_optional_u32(&self.context_window, "Context Window")?
+            parse_optional_u32(&self.context_window, "tui.context_window")?
         } else {
             Some(CONTEXT_CHOICES[self.context_choice])
         };
         let budget = if self.budget_choice == CHOICE_CUSTOM {
-            parse_optional_u64(&self.spend_budget, "Spend Budget")?
+            parse_optional_u64(&self.spend_budget, "tui.spend_budget")?
         } else {
             BUDGET_CHOICES[self.budget_choice]
         };
         if output == Some(0) || context.is_some_and(|value| value < 4096) {
-            return Err("Output must be positive; context must be at least 4096".into());
+            return Err(UiMessage::new("tui.remote_limits_invalid").into());
         }
         Ok(serde_json::json!({
             "output_limit":output, "max_context_tokens":context, "run_token_budget":budget

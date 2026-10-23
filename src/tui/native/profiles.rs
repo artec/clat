@@ -8,17 +8,14 @@ impl App {
             return;
         };
         if !native.online || native.editor_pending || native.models_pending {
-            self.flash_status("host offline or model operation pending; reopen editor later");
+            self.flash_message(UiMessage::new("tui.host_model_pending"));
             return;
         }
         native.editor_request += 1;
         native.models_request += 1;
         self.picker = None;
         self.editor = Some(ModelEditor::remote_preset_key(preset));
-        self.flash_status(format!(
-            "{} · key write-only · save activates preset · blank clears current key only",
-            preset.name
-        ));
+        self.flash_message(UiMessage::new("tui.preset_key_hint").arg("name", preset.name));
     }
 
     pub(super) fn open_native_profile(&mut self, name: Option<String>) {
@@ -26,7 +23,7 @@ impl App {
             return;
         };
         if !native.online || native.editor_pending || native.models_pending {
-            self.flash_status("host offline or model operation pending; reopen editor later");
+            self.flash_message(UiMessage::new("tui.host_model_pending"));
             return;
         }
         native.editor_request += 1;
@@ -39,7 +36,7 @@ impl App {
                 return;
             };
             let client = native.client.clone();
-            self.flash_status("loading host profile…");
+            self.flash_message(UiMessage::new("tui.host_profile_loading"));
             thread::spawn(move || {
                 let result = client.call("model.profile.get", &json!({"name":name}));
                 let _ = ui.send(UiEvent::Native(NativeEvent::ProfileLoaded(
@@ -55,12 +52,11 @@ impl App {
         match ModelEditor::remote_profile(name, route) {
             Ok(editor) => {
                 self.editor = Some(editor);
-                let key = if route["credential_set"] == true {
-                    "set"
+                self.flash_message(UiMessage::new(if route["credential_set"] == true {
+                    "tui.profile_key_set"
                 } else {
-                    "not set"
-                };
-                self.flash_status(format!("Basic profile · key {key}, write-only · blank edit clears · route change resets extras · save then Use"));
+                    "tui.profile_key_unset"
+                }));
             }
             Err(error) => self.flash_status(error),
         }
@@ -78,7 +74,7 @@ impl App {
         }
         match result {
             Ok(route) if !route.is_null() => self.show_native_profile(name, &route),
-            Ok(_) => self.flash_status("profile no longer exists; reopen /model"),
+            Ok(_) => self.flash_message(UiMessage::new("tui.host_profile_gone")),
             Err(error) => self.flash_status(error),
         }
     }
@@ -103,7 +99,7 @@ impl App {
                 self.save_native_model_edit("model.preset.select", params)
             }
             EditorAction::Continue => {}
-            _ => self.flash_status("unsupported remote editor action; nothing saved"),
+            _ => self.flash_message(UiMessage::new("tui.host_editor_unsupported")),
         }
     }
 
@@ -112,7 +108,7 @@ impl App {
             return;
         };
         if !native.online || native.editor_pending {
-            self.flash_status("host offline or profile save pending; no request sent");
+            self.flash_message(UiMessage::new("tui.host_save_pending"));
             return;
         }
         native.editor_pending = true;
@@ -157,23 +153,26 @@ impl App {
                     editor.remote_revision() != self.native.as_ref().unwrap().editor_saved_revision
                 }) {
                     self.flash_status(if preset {
-                        "preset activated; newer editor input retained"
+                        self.locale.text("tui.preset_activated_keep")
                     } else {
-                        "profile saved; newer editor input retained; choose Use separately"
+                        self.locale.text("tui.profile_saved_keep")
                     });
                     return;
                 }
                 self.editor = None;
                 self.open_native_models();
                 self.flash_status(if preset {
-                    "preset activated; applies to the next run"
+                    self.locale.text("tui.preset_next")
                 } else {
-                    "profile saved; choose Use to activate"
+                    self.locale.text("tui.profile_use")
                 });
             }
-            Err(error) => self.flash_status(format!(
-                "{error} · check host before retrying; re-enter key if needed"
-            )),
+            Err(error) => self.flash_message(
+                UiMessage::new(
+                    "tui.message_value_check_host_before_retrying_re_enter_key_if_needed",
+                )
+                .arg("error", (error).to_string()),
+            ),
         }
     }
 }

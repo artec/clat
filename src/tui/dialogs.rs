@@ -1,4 +1,6 @@
 use super::*;
+use clat_core::client_ports::host::HostClient;
+use serde_json::Value;
 
 pub(super) struct PendingPermission {
     pub(super) request: PermissionRequest,
@@ -42,7 +44,14 @@ pub(super) enum InfoDialogKind {
 }
 
 pub(super) enum ContentView {
-    Remote { title: &'static str, text: String },
+    Remote {
+        title: &'static str,
+        text: clat_core::client_ports::presentation::PresentedText,
+    },
+    Host {
+        title: &'static str,
+        value: Box<Value>,
+    },
     Memory(crate::application::MemoryOverviewDto),
     Goal(Box<crate::application::GoalViewDto>),
     SubagentStatus(crate::application::SubagentStatusDto),
@@ -51,19 +60,22 @@ pub(super) enum ContentView {
 impl ContentView {
     pub(super) fn title(&self) -> &'static str {
         match self {
-            Self::Remote { title, .. } => title,
+            Self::Remote { title, .. } | Self::Host { title, .. } => title,
             Self::Memory(_) => "/mem",
             Self::Goal(_) => "/goal",
             Self::SubagentStatus(_) => "/sub",
         }
     }
 
-    pub(super) fn lines(&self, width: usize) -> Vec<Line<'static>> {
+    pub(super) fn lines(&self, width: usize, locale: LocaleContext) -> Vec<Line<'static>> {
         let text = match self {
-            Self::Remote { text, .. } => text.clone(),
-            Self::Memory(view) => view.to_text(),
-            Self::Goal(view) => view.to_text(),
-            Self::SubagentStatus(view) => view.to_text(),
+            Self::Remote { text, .. } => text.render(locale),
+            Self::Host { value, .. } => {
+                HostClient::info_dialog_text_localized(value, locale).unwrap_or_else(|e| e)
+            }
+            Self::Memory(view) => view.localized_text(locale),
+            Self::Goal(view) => view.localized_text(locale),
+            Self::SubagentStatus(view) => view.localized_text(locale),
         };
         text.lines()
             .enumerate()
@@ -112,15 +124,15 @@ impl RenameDialog {
 
 /// 空会话欢迎页：LOGO + 版本行 + 起步提示，双向居中于会话区内框。
 /// 窄到放不下 LOGO 的终端退化为单行提示（ASCII 字形无法有意义地缩放）。
-pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect, version: &str) {
+pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect, version: &str, locale: LocaleContext) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let welcome = crate::tui::logo::welcome_lines(version);
+    let welcome = crate::tui::logo::welcome_lines_localized(version, locale);
     let content_width = welcome.iter().map(Line::width).max().unwrap_or(0) as u16;
     if inner.width < content_width {
         let hint = Line::from(Span::styled(
-            format!("clat v{version} · type a message to begin"),
+            locale.render(&UiMessage::new("tui.welcome").arg("version", version)),
             theme::style(theme::Role::Dim),
         ));
         let x = inner.x + inner.width.saturating_sub(hint.width() as u16) / 2;
@@ -155,65 +167,65 @@ pub(super) fn draw_welcome(frame: &mut Frame, inner: Rect, version: &str) {
 /// 运行控制 / 浏览与显示 / 选择与复制，组序即行序——与命令节七组
 /// 的"组序即序"设计语言统一），Ctrl+V 归位 Keys 节；Think 披露新增
 /// Ctrl+R 后为十二行；2026-09-16 增加 Alt+S 手动建议入口。
-pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<Line<'static>> {
+pub(super) fn help_dialog_lines(
+    width: usize,
+    commands: &[CommandInfo],
+    locale: LocaleContext,
+    dsh: bool,
+) -> Vec<Line<'static>> {
     let composer: &[(&str, &str)] = &[
-        (
-            "/attach PATH…",
-            "add project-relative or absolute image paths (`@ ` is the alias)",
-        ),
-        (
-            "/pi, /paste-image",
-            "read one image from the system clipboard into the draft",
-        ),
-        (
-            "/ac, /attach-clear",
-            "clear the current structured image draft",
-        ),
-        (
-            "/plan",
-            "Plan Mode policy and approved plan; separate from Goal and todos",
-        ),
-        (
-            "/goal",
-            "inspect objective, acceptance, phase, budgets and stop reason; /goal run explicitly continues",
-        ),
-        (
-            "/resume",
-            "P pin; A twice archives without deleting chat; F2 archived list; A restores",
-        ),
+        ("/attach PATH…", locale.text("tui.attach_help")),
+        ("/pi, /paste-image", locale.text("tui.paste_help")),
+        ("/ac, /attach-clear", locale.text("tui.clear_help")),
+        ("/plan", locale.text("tui.plan_help")),
+        ("/goal", locale.text("tui.goal_help")),
+        ("/resume", locale.text("tui.resume_help")),
     ];
     // CP-2 A4（2026-09-02 负责人拍板的权威顺序表）：行 1-4 输入与提交，
     // 5-6 运行控制，7-9 浏览与显示，10-12 选择与复制。
     let keys: &[(&str, &str)] = &[
-        ("Enter", "submit; while a run is active, submit steering"),
-        ("Shift+Enter, Alt+Enter, Ctrl+J", "insert a line break"),
-        ("Ctrl+V", "paste clipboard image or text"),
-        ("Ctrl+G", "request a prompt suggestion while idle"),
+        ("Enter", locale.text("tui.key_submit")),
         (
-            "Up / Down",
-            "recall input history (or scroll the conversation)",
+            "Shift+Enter, Alt+Enter, Ctrl+J",
+            locale.text("tui.key_newline"),
         ),
-        ("Esc", "cancel the running request; otherwise clear input"),
-        ("Shift+Tab", "cycle the thinking level"),
-        ("PgUp / PgDn, mouse wheel", "scroll the conversation"),
-        ("Ctrl+O", "cycle tool cards (collapsed / expanded / hidden)"),
-        ("Ctrl+R", "expand or collapse Think details"),
-        ("drag", "select text and copy it on release"),
-        ("Ctrl+C", "re-copy the selection; otherwise quit"),
-        ("Shift+drag", "the terminal's own selection, then Cmd+C"),
+        ("Ctrl+V", locale.text("tui.key_paste")),
+        ("Ctrl+G", locale.text("tui.key_suggest")),
+        ("Ctrl+Shift+L", locale.text("tui.language_keys")),
+        ("Up / Down", locale.text("tui.key_history")),
+        ("Esc", locale.text("tui.key_cancel")),
+        ("Shift+Tab", locale.text("tui.key_think")),
+        (
+            locale.text("tui.scroll_shortcut"),
+            locale.text("tui.key_scroll"),
+        ),
+        ("Ctrl+O", locale.text("tui.key_cards")),
+        ("Ctrl+R", locale.text("tui.key_details")),
+        (
+            locale.text("tui.drag_shortcut"),
+            locale.text("tui.key_drag"),
+        ),
+        ("Ctrl+C", locale.text("tui.key_quit")),
+        (
+            locale.text("tui.shift_drag_shortcut"),
+            locale.text("tui.key_terminal"),
+        ),
     ];
     let mut lines = Vec::new();
     for (title, entry_lines) in [
-        ("Commands", command_help_entries(commands)),
         (
-            "Composer",
+            locale.text("tui.commands"),
+            command_help_entries(commands, locale, dsh),
+        ),
+        (
+            locale.text("tui.composer"),
             composer
                 .iter()
                 .map(|(name, description)| format!("  {name} — {description}"))
                 .collect::<Vec<_>>(),
         ),
         (
-            "Keys",
+            locale.text("tui.keys"),
             keys.iter()
                 .map(|(name, description)| format!("  {name} — {description}"))
                 .collect::<Vec<_>>(),
@@ -237,15 +249,28 @@ pub(super) fn help_dialog_lines(width: usize, commands: &[CommandInfo]) -> Vec<L
 
 /// 命令节的折行前条目：`  /name, /alias — description`（主名+别名全部
 /// 展示——目录派生后别名不再藏在分发器里）。
-fn command_help_entries(commands: &[CommandInfo]) -> Vec<String> {
+fn command_help_entries(commands: &[CommandInfo], locale: LocaleContext, dsh: bool) -> Vec<String> {
     commands
         .iter()
+        .chain(clat_core::client_ports::presentation::client_commands().iter())
         .map(|info| {
             let mut names = format!("/{}", info.name);
             for alias in &info.aliases {
                 names.push_str(&format!(", /{alias}"));
             }
-            format!("  {names} — {}", info.description)
+            format!(
+                "  {names} — {}",
+                if dsh && info.name != "language" {
+                    Some(UiMessage::new(&format!("tui.dsh_command_{}", info.name)))
+                } else {
+                    clat_core::client_ports::presentation::command_presentation(
+                        &info.name,
+                        &info.description,
+                    )
+                }
+                .map(|m| locale.render(&m))
+                .unwrap_or_else(|| info.description.clone())
+            )
         })
         .collect()
 }
@@ -255,18 +280,25 @@ fn command_help_entries(commands: &[CommandInfo]) -> Vec<String> {
 ///（名称默认色，其余 dim；这些字段短，保持单行不折）→ 空行 →
 /// `Failures` 节（失败消息按内宽折行，dim——含挂载失败时的 stderr
 /// 尾部，是排查的主要正文）。
-pub(super) fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'static>> {
+pub(super) fn mcp_dialog_lines(
+    view: &McpStatusDto,
+    width: usize,
+    locale: LocaleContext,
+) -> Vec<Line<'static>> {
     // connecting（后台启动中的 server）非零时追加以 "· N connecting"
     // 段——启动落定前 /mcp 是三态视图（INV-M4）。
     let overview = if view.connecting > 0 {
-        format!(
-            "MCP servers: {}/{} connected · {} connecting",
-            view.connected, view.configured, view.connecting
+        locale.render(
+            &UiMessage::new("tui.message_mcp_servers_value_value_connected_value_connecting")
+                .arg("value1", (view.connected).to_string())
+                .arg("value2", (view.configured).to_string())
+                .arg("value3", (view.connecting).to_string()),
         )
     } else {
-        format!(
-            "MCP servers: {}/{} connected",
-            view.connected, view.configured
+        locale.render(
+            &UiMessage::new("tui.message_mcp_servers_value_value_connected")
+                .arg("value1", (view.connected).to_string())
+                .arg("value2", (view.configured).to_string()),
         )
     };
     let mut lines = vec![Line::from(vec![Span::styled(
@@ -278,7 +310,9 @@ pub(super) fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'s
         for server in &view.servers {
             let tools = match server.tools {
                 1 => "1 tool".to_owned(),
-                count => format!("{count} tools"),
+                count => locale.render(
+                    &UiMessage::new("tui.message_value_tools").arg("count", (count).to_string()),
+                ),
             };
             lines.push(Line::from(vec![
                 Span::raw("● "),
@@ -296,7 +330,7 @@ pub(super) fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'s
     if !view.failures.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Failures",
+            locale.text("tui.failures"),
             theme::style(theme::Role::Bold),
         )));
         for failure in &view.failures {
@@ -314,29 +348,16 @@ pub(super) fn mcp_dialog_lines(view: &McpStatusDto, width: usize) -> Vec<Line<'s
 pub(super) fn context_dialog_lines(
     view: &ContextEstimateSnapshot,
     width: usize,
+    locale: LocaleContext,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
-        format!("Context estimate · {}", view.unit),
+        locale.render(
+            &UiMessage::new("tui.message_context_estimate_value")
+                .arg("value1", (view.unit).to_string()),
+        ),
         theme::style(theme::Role::Bold),
     ))];
-    let rows = [
-        ("Base prompt", view.base_prompt_estimate),
-        ("Project instructions", view.project_instructions_estimate),
-        ("Plan policy", view.plan_policy_estimate),
-        ("Skill catalog", view.skill_catalog_estimate),
-        ("Invoked skill", view.invoked_skill_estimate),
-        ("Goal policy", view.goal_policy_estimate),
-        ("Tool schemas", view.tool_schemas_estimate),
-        ("History / compaction view", view.history_estimate),
-        ("Images", view.image_count),
-        ("Images before projection", view.image_original_count),
-        ("Older images omitted", view.image_offloaded_count),
-        ("Image bytes", view.image_bytes),
-        ("Visual token estimate", view.image_token_estimate),
-        ("Output reserve", view.output_reserve_estimate),
-        ("Input estimate", view.input_estimate),
-        ("Total estimate", view.total_estimate),
-    ];
+    let rows = context_rows(view, locale);
     lines.push(Line::from(""));
     for (label, value) in rows {
         lines.push(Line::from(vec![
@@ -345,30 +366,34 @@ pub(super) fn context_dialog_lines(
         ]));
     }
     lines.push(Line::from(vec![
-        Span::raw("Visual safety factor: "),
+        Span::raw(locale.text("tui.visual_safety_label")),
         Span::styled(
             format!("{}.0x", view.image_token_safety_factor),
             theme::style(theme::Role::Dim),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::raw("Memory injection: "),
+        Span::raw(locale.text("tui.memory_injection_label")),
         Span::styled(
-            format!(
-                "{} / {} bytes",
-                view.memory_estimate, view.memory_budget_bytes
+            locale.render(
+                &UiMessage::new("tui.bytes_ratio")
+                    .arg("value", view.memory_estimate)
+                    .arg("budget", view.memory_budget_bytes),
             ),
             theme::style(theme::Role::Dim),
         ),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("Estimator: {}", view.estimator),
+        locale.render(
+            &UiMessage::new("tui.message_estimator_value")
+                .arg("value1", (view.estimator).to_string()),
+        ),
         theme::style(theme::Role::Faint),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Tools",
+        locale.text("tui.tools"),
         theme::style(theme::Role::Bold),
     )));
     for wrapped in wrap_text(&format!("  {}", view.tool_names.join(", ")), width) {
@@ -376,7 +401,7 @@ pub(super) fn context_dialog_lines(
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Skills",
+        locale.text("tui.skills"),
         theme::style(theme::Role::Bold),
     )));
     for wrapped in wrap_text(&format!("  {}", view.skill_names.join(", ")), width) {
@@ -384,7 +409,7 @@ pub(super) fn context_dialog_lines(
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Skill diagnostics",
+        locale.text("tui.skill_diagnostics"),
         theme::style(theme::Role::Bold),
     )));
     if view.skill_diagnostics.is_empty() {
@@ -413,18 +438,26 @@ pub(super) fn context_dialog_lines(
 /// /skill 弹窗内容行（SC-2）：概览行 → 每技能一行
 /// `● name  source · [requires-execution] — description`（描述按内宽折
 /// 行）→ `Diagnostics` 节（发现诊断，dim——同 /context 的呈现纪律）。
-pub(super) fn skills_dialog_lines(view: &SkillsOverviewDto, width: usize) -> Vec<Line<'static>> {
+pub(super) fn skills_dialog_lines(
+    view: &SkillsOverviewDto,
+    width: usize,
+    locale: LocaleContext,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
-        format!("Skills: {}", view.entries.len()),
+        locale.render(
+            &UiMessage::new("tui.message_skills_value")
+                .arg("value1", (view.entries.len()).to_string()),
+        ),
         theme::style(theme::Role::Bold),
     ))];
     if !view.entries.is_empty() {
         lines.push(Line::from(""));
     }
     for entry in &view.entries {
-        let mut meta = format!("{} layer", entry.source);
+        let mut meta =
+            locale.render(&UiMessage::new("tui.skill_layer").arg("source", entry.source.clone()));
         if entry.requires_execution {
-            meta.push_str(" · requires-execution (sandboxed exec only)");
+            meta.push_str(locale.text("tui.skill_execution"));
         }
         lines.push(Line::from(vec![
             Span::raw("● "),
@@ -441,7 +474,7 @@ pub(super) fn skills_dialog_lines(view: &SkillsOverviewDto, width: usize) -> Vec
     if !view.diagnostics.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Diagnostics",
+            locale.text("tui.diagnostics"),
             theme::style(theme::Role::Bold),
         )));
         for diagnostic in &view.diagnostics {
@@ -461,37 +494,93 @@ pub(super) fn skills_dialog_lines(view: &SkillsOverviewDto, width: usize) -> Vec
     lines
 }
 
-pub(super) fn render_trust_dialog(frame: &mut Frame, area: Rect, root: &Path) {
+pub(super) fn render_trust_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    root: &Path,
+    locale: LocaleContext,
+) {
     // 文本按对话框 84% 宽的“最小合理终端”（约 80 列内宽）换行；
     // 更宽的终端留白更多，更窄的终端由 Paragraph 截断右侧。
     // 边框 2 列与弹窗内边距 2×POPUP_TEXT_PADDING 列先扣掉。
     let inner_width = 84usize.saturating_sub(2 + 2 * POPUP_TEXT_PADDING as usize);
     let mut lines = vec![
         Line::from(Span::styled(
-            "Trust this project?",
+            locale.text("tui.trust_this_project"),
             theme::style(theme::Role::Bold),
         )),
         Line::from(""),
-        Line::from("CLAT reads and modifies files, and runs tools inside:"),
+        Line::from(locale.text("tui.clat_reads_and_modifies_files_and_runs_tools_inside")),
     ];
     for wrapped in wrap_text(&root.display().to_string(), inner_width.saturating_sub(2)) {
         lines.push(Line::from(format!("  {wrapped}")));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(
-        "Trusting is remembered per directory. Review the project (e.g. its",
-    ));
-    lines.push(Line::from(
-        "README and configs) before granting an agent access to it.",
-    ));
+    lines.push(Line::from(locale.text(
+        "tui.trusting_is_remembered_per_directory_review_the_project_e_g_its",
+    )));
+    lines.push(Line::from(locale.text(
+        "tui.readme_and_configs_before_granting_an_agent_access_to_it",
+    )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Enter / y — trust this project      ·      Esc / n — exit CLAT",
+        locale.text("tui.enter_y_trust_this_project_esc_n_exit_clat"),
         theme::style(theme::Role::Bold),
     )));
 
     let height = (lines.len() as u16 + 2).min(popup_height_cap(area));
     let dialog = centered_rect(84, height.max(10), area);
     clear_popup_with_guards(frame, dialog);
-    frame.render_widget(Paragraph::new(lines).block(popup_block("Trust")), dialog);
+    frame.render_widget(
+        Paragraph::new(lines).block(popup_block(locale.text("tui.trust_title"))),
+        dialog,
+    );
+}
+
+fn context_rows(
+    view: &ContextEstimateSnapshot,
+    locale: LocaleContext,
+) -> [(&'static str, u64); 16] {
+    [
+        (locale.text("web.base_prompt"), view.base_prompt_estimate),
+        (
+            locale.text("web.project_instructions"),
+            view.project_instructions_estimate,
+        ),
+        (locale.text("web.plan_policy"), view.plan_policy_estimate),
+        (
+            locale.text("web.skill_catalog"),
+            view.skill_catalog_estimate,
+        ),
+        (
+            locale.text("tui.invoked_skill"),
+            view.invoked_skill_estimate,
+        ),
+        (locale.text("web.goal_policy"), view.goal_policy_estimate),
+        (locale.text("web.tool_schemas"), view.tool_schemas_estimate),
+        (
+            locale.text("web.history_compaction_view"),
+            view.history_estimate,
+        ),
+        (locale.text("tui.images"), view.image_count),
+        (
+            locale.text("tui.images_before_projection"),
+            view.image_original_count,
+        ),
+        (
+            locale.text("tui.older_images_omitted"),
+            view.image_offloaded_count,
+        ),
+        (locale.text("tui.image_bytes"), view.image_bytes),
+        (
+            locale.text("web.visual_token_estimate"),
+            view.image_token_estimate,
+        ),
+        (
+            locale.text("web.output_reserve"),
+            view.output_reserve_estimate,
+        ),
+        (locale.text("web.input_estimate"), view.input_estimate),
+        (locale.text("web.total_estimate"), view.total_estimate),
+    ]
 }

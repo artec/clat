@@ -15,7 +15,7 @@ impl TrustedProjectApplication {
             "approved_plan":plan.approved.map(|p|json!({"text":p.text,"digest":p.digest,"event_seq":p.event_seq})),
             "goal":goal,"todos":todos.iter().take(100).map(|t|json!({"content":t.content,"status":t.status.as_str()})).collect::<Vec<_>>(),
             "todos_truncated":todos.len()>100,"busy":busy,
-            "note":"Plan Mode is policy; approved plan is durable text; todo is model-maintained; Goal is bounded durable execution state. These are distinct."}),
+            "presentation":crate::i18n::UiMessage::new("web.workflow_facts_note"),"note":"Plan Mode is policy; approved plan is durable text; todo is model-maintained; Goal is bounded durable execution state. These are distinct."}),
         )
     }
 }

@@ -15,6 +15,7 @@ default = ["runtime-tests"]
 runtime-tests = []
 
 [dependencies]
+sys-locale = "=0.3.2"
 # Semantic network WASM backend; no core/frontend dependency in the backend.
 clat-wasm-net = { path = "../../sdk/wit-proposals/net-runtime" }
 # Official iLink media is AES-128-ECB encrypted. Decryption stays inside the

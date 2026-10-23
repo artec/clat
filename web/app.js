@@ -24,7 +24,7 @@ const workspacePrefix = requestedWorkspace === null ? '' : '/workspace/' + (
 function el(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
-  if (text !== undefined) node.textContent = text;
+  if (text !== undefined) CLATI18n.bind(node, "textContent", typeof text === "function" ? text : () => text);
   return node;
 }
 
@@ -38,15 +38,15 @@ function appendInlineMarkdown(parent, text) {
     parent.append(document.createTextNode(text.slice(offset, match.index)));
     const token = match[0];
     let node;
-    if (token.startsWith('`')) node = el('code', null, token.slice(1, -1));
-    else if (token.startsWith('**') || token.startsWith('__')) node = el('strong', null, token.slice(2, -2));
-    else if (token.startsWith('~~')) node = el('del', null, token.slice(2, -2));
-    else if (token.startsWith('*') || token.startsWith('_')) node = el('em', null, token.slice(1, -1));
+    if (token.startsWith('`')) node = el('code', null, () => (token.slice(1, -1)));
+    else if (token.startsWith('**') || token.startsWith('__')) node = el('strong', null, () => (token.slice(2, -2)));
+    else if (token.startsWith('~~')) node = el('del', null, () => (token.slice(2, -2)));
+    else if (token.startsWith('*') || token.startsWith('_')) node = el('em', null, () => (token.slice(1, -1)));
     else {
       const parts = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       const url = parts && parts[2];
       if (url && /^https?:\/\//i.test(url)) {
-        node = el('a', null, parts[1]);
+        node = el('a', null, () => (parts[1]));
         node.href = url;
         node.target = '_blank';
         node.rel = 'noopener noreferrer';
@@ -151,8 +151,8 @@ function renderFencedCode(lines, index, fence) {
     index += 1;
   }
   const pre = el('pre');
-  pre.append(el('code', null, codeLines.join('\n')));
-  pre.appendChild(copyTextButton('Copy code', () => codeLines.join('\n')));
+  pre.append(el('code', null, () => (codeLines.join('\n'))));
+  pre.appendChild(copyTextButton(CLATI18n.msg("web.copy_code", {}, "Copy code"), () => codeLines.join('\n')));
   return { node: pre, nextIndex: index };
 }
 
@@ -264,40 +264,40 @@ function svgIcon(name) {
 }
 
 function renderModelIdentity(target, name, imageInput) {
-  target.replaceChildren(el('span', 'model-name', name));
+  target.replaceChildren(el('span', 'model-name', () => (name)));
   if (!imageInput) return;
   const badge = el('span', 'vision-capability');
-  badge.title = 'Accepts images';
-  badge.setAttribute('aria-label', 'Accepts images');
+  CLATI18n.bind(badge, "title", () => CLATI18n.msg("web.accepts_images", {}, "Accepts images"));
+  CLATI18n.attribute(badge,'aria-label',()=>CLATI18n.msg("web.accepts_images", {}, "Accepts images"));
   badge.appendChild(svgIcon('vision'));
   target.appendChild(badge);
 }
 
 const EVENT_LABELS = {
-  run_started: 'Run started',
-  model_requested: 'Model request started',
-  model_stream: 'Model response streaming',
-  model_responded: 'Model response ready',
-  text_delta: 'Answer text',
-  refusal_delta: 'Model refusal',
-  reasoning_delta: 'Reasoning trace',
-  reasoning_summary_delta: 'Reasoning summary',
-  tool_requested: 'Tool requested',
-  permission_checked: 'Permission checked',
-  permission_denied: 'Permission denied',
-  tool_started: 'Tool running',
-  tool_finished: 'Tool finished',
-  steering_applied: 'Steering applied',
-  retry_scheduled: 'Retry scheduled',
-  turn_ended: 'Turn ended',
-  compaction: 'History compacted',
-  run_completed: 'Run completed',
-  run_cancelled: 'Run cancelled',
-  run_failed: 'Run failed',
+  run_started: CLATI18n.msg("web.run_started", {}, "Run started"),
+  model_requested: CLATI18n.msg("web.model_request_started", {}, "Model request started"),
+  model_stream: CLATI18n.msg("web.model_response_streaming", {}, "Model response streaming"),
+  model_responded: CLATI18n.msg("web.model_response_ready", {}, "Model response ready"),
+  text_delta: CLATI18n.msg("web.answer_text", {}, "Answer text"),
+  refusal_delta: CLATI18n.msg("web.model_refusal", {}, "Model refusal"),
+  reasoning_delta: CLATI18n.msg("web.reasoning_trace", {}, "Reasoning trace"),
+  reasoning_summary_delta: CLATI18n.msg("web.reasoning_summary", {}, "Reasoning summary"),
+  tool_requested: CLATI18n.msg("web.tool_requested", {}, "Tool requested"),
+  permission_checked: CLATI18n.msg("web.permission_checked", {}, "Permission checked"),
+  permission_denied: CLATI18n.msg("web.permission_denied", {}, "Permission denied"),
+  tool_started: CLATI18n.msg("web.tool_running", {}, "Tool running"),
+  tool_finished: CLATI18n.msg("web.tool_finished", {}, "Tool finished"),
+  steering_applied: CLATI18n.msg("web.steering_applied", {}, "Steering applied"),
+  retry_scheduled: CLATI18n.msg("web.retry_scheduled", {}, "Retry scheduled"),
+  turn_ended: CLATI18n.msg("web.turn_ended", {}, "Turn ended"),
+  compaction: CLATI18n.msg("web.history_compacted", {}, "History compacted"),
+  run_completed: CLATI18n.msg("web.run_completed", {}, "Run completed"),
+  run_cancelled: CLATI18n.msg("web.run_cancelled", {}, "Run cancelled"),
+  run_failed: CLATI18n.msg("web.run_failed", {}, "Run failed"),
 };
 
 function humanEventName(id) {
-  if (!id) return 'Runtime event';
+  if (!id) return CLATI18n.msg("web.runtime_event", {}, "Runtime event");
   return EVENT_LABELS[id] || String(id)
     .replace(/[._-]+/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -327,6 +327,7 @@ function readPresentationPreference() {
 
 function savePresentationPreference() {
   localStorage.setItem(PRESENTATION_KEY, JSON.stringify({
+    language: CLATI18n.preference,
     theme: state.theme,
     sidebar: state.sidebar,
     inspector: state.inspector,
@@ -451,9 +452,7 @@ function applyPresentation() {
   dom.app.dataset.inspector = state.inspector;
   dom.app.dataset.messageLayout = state.messageLayout;
   dom['sidebar-toggle'].setAttribute('aria-expanded', String(state.sidebar === 'expanded'));
-  dom['sidebar-toggle'].setAttribute(
-    'aria-label', state.sidebar === 'expanded' ? 'Collapse sidebar' : 'Expand sidebar',
-  );
+  CLATI18n.attribute(dom['sidebar-toggle'],'aria-label',()=>state.sidebar === 'expanded' ? CLATI18n.msg("web.collapse_sidebar", {}, "Collapse sidebar") : CLATI18n.msg("web.expand_sidebar", {}, "Expand sidebar"));
   dom['sessions-open'].setAttribute('aria-expanded', String(state.sidebar === 'expanded'));
   dom['inspector-toggle'].setAttribute('aria-expanded', String(state.inspector === 'open'));
   const themeRadio = document.querySelector(`input[name="theme"][value="${state.theme}"]`);
@@ -490,12 +489,17 @@ async function rpc(method, params) {
   });
   const body = await response.json().catch(() => null);
   if (!body || typeof body.ok !== 'boolean') {
-    throw Object.assign(new Error('malformed rpc reply'), { code: 'internal' });
+    throw Object.assign(CLATI18n.error(CLATI18n.msg("web.malformed_rpc_reply", {}, "malformed rpc reply")), { code: 'internal' });
   }
   if (body.ok) return body.value;
-  const error = new Error((body.error && body.error.message) || 'request failed');
+  const error = new Error((body.error && body.error.message) || CLATI18n.msg("web.request_failed", {}, "request failed"));
   error.code = (body.error && body.error.code) || 'internal';
   error.authentication = body.error && body.error.authentication;
+  error.presentation = body.error && body.error.presentation;
+  if (error.presentation) {
+    const raw=error.message;
+    Object.defineProperty(error,'message',{get:()=>String(CLATI18n.present(error.presentation,raw))});
+  }
   throw error;
 }
 
@@ -555,16 +559,16 @@ async function openStream() {
 }
 
 function setConnStatus(text, stateName) {
-  dom['conn-status'].textContent = text;
+  CLATI18n.bind(dom['conn-status'], "textContent", () => text);
   dom['conn-status'].dataset.state = stateName;
   dom['sidebar-footnote'].dataset.state = stateName;
-  dom['sidebar-connection'].textContent = stateName === 'live'
-    ? 'Local runtime connected'
-    : text.replace('…', '');
+  CLATI18n.bind(dom['sidebar-connection'], "textContent", () => stateName === 'live'
+    ? CLATI18n.msg("web.local_runtime_connected", {}, "Local runtime connected")
+    : String(text).replace('…', ''));
 }
 
 async function connect() {
-  setConnStatus('connecting…', 'connecting');
+  setConnStatus(CLATI18n.msg("web.connecting", {}, "connecting…"), 'connecting');
   try {
     await openStream();
   } catch (error) {
@@ -580,7 +584,7 @@ async function connect() {
       await boot();
       return;
     }
-    setConnStatus('reconnecting…', 'reconnecting');
+    setConnStatus(CLATI18n.msg('web.reconnecting'), 'reconnecting');
     const delay = state.reconnectDelayMs;
     state.reconnectDelayMs = Math.min(delay * 2, 10000);
     setTimeout(connect, delay);
@@ -722,7 +726,7 @@ function handleReplay(event) {
       break;
     }
     case 'retry_scheduled':
-      node = addNoticeLine('#' + event.retry + ' in ' + event.delay_ms + 'ms', event.type);
+      node = addNoticeLine(CLATI18n.msg("web.line_value_in_valuems",{value1:(event.retry),value2:(event.delay_ms)},"#{value1} in {value2}ms"), event.type);
       break;
     case 'turn_ended':
       // R2-F1：保持生产的 reason 原形状（字符串或 {error}/{aborted} 对象
@@ -752,7 +756,7 @@ function handleLive(event) {
       clearToolCardScope();
       state.runOutcomeNoted = null;
       for (const key of state.accountedKeys) if (key.startsWith('live:')) state.accountedKeys.delete(key);
-      updateRunState('running');
+      updateRunState(CLATI18n.msg('web.running'));
       updateRunDetail();
       syncInteractionControls();
       show(dom.cancel);
@@ -848,7 +852,7 @@ function finishRun(event) {
   state.run = null;
   const restoredText = finishTextSteering();
   const restoredDraft = restoreQueuedDraft() || restoredText;
-  updateRunState(restoredDraft ? 'run ended before steering was applied; draft restored' : '');
+  updateRunState(restoredDraft ? CLATI18n.msg("web.run_ended_before_steering_was_applied_draft_restored", {}, "run ended before steering was applied; draft restored") : '');
   updateRunDetail();
   hide(dom.cancel);
   syncInteractionControls();
@@ -856,9 +860,9 @@ function finishRun(event) {
     // CONT-1（C4）：live 终态与 prompt.settled 是同一终点的两条腿，任一
     // 先到即立唯一终态卡（noteRunOutcome 去重），另一条不再重复。
     if (noteRunOutcome('failed')) {
-      addVerdict('failed', 'run failed — ' + (event.message || 'unknown error'));
+      addVerdict('failed', CLATI18n.msg("web.line_run_failed_value",{value1:((event.message || CLATI18n.msg("web.unknown_error", {}, "unknown error")))},"run failed — {value1}"));
     }
-    updateRunState('run failed — ' + (event.message || 'unknown error'));
+    updateRunState(CLATI18n.msg("web.line_run_failed_value",{value1:((event.message || CLATI18n.msg("web.unknown_error", {}, "unknown error")))},"run failed — {value1}"));
   }
 }
 
@@ -879,7 +883,7 @@ function onSubscribed(ctl) {
   anchorAccountingOwner();
   state.connected = true;
   state.reconnectDelayMs = 1000;
-  setConnStatus('live', 'live');
+  setConnStatus(CLATI18n.msg('web.live'), 'live');
   setSwitching(false);
   if (ctl && Object.prototype.hasOwnProperty.call(ctl, 'session_id')) {
     state.sessionId = ctl.session_id || null;
@@ -900,7 +904,7 @@ function onApprovalResolved(ctl) {
     // their late-answer path; the host remains the first-answer-wins arbiter.
     if (!card.querySelector('.actions button')) continue;
     card.classList.add('resolved');
-    card.querySelector('.resolution').textContent = 'answered or closed by host';
+    CLATI18n.bind(card.querySelector('.resolution'), "textContent", () => CLATI18n.msg("web.answered_or_closed_by_host", {}, "answered or closed by host"));
   }
 }
 
@@ -909,32 +913,32 @@ function onApprovalRequested(ctl) {
   const request = ctl.request || {};
   const card = el('div', 'approval-card');
   card.dataset.rpcId = ctl.rpc_id;
-  const title = el('div', 'title', 'Permission required — ' + (request.tool || 'unknown tool'));
-  const meta = el('div', 'note', (request.effect || 'side effect') + ' · ' + (request.reason || ''));
-  const args = el('div', 'args', jsonText(request.arguments));
+  const title = el('div', 'title', () => (CLATI18n.msg("web.line_permission_required_value",{value1:((request.tool || CLATI18n.msg("web.unknown_tool", {}, "unknown tool")))},"Permission required — {value1}")));
+  const meta = el('div', 'note', () => ((request.effect || CLATI18n.msg("web.side_effect", {}, "side effect")) + ' · ' + (request.reason || '')));
+  const args = el('div', 'args', () => (jsonText(request.arguments)));
   const actions = el('div', 'actions');
-  const note = el('div', 'note resolution', '');
+  const note = el('div', 'note resolution', () => (''));
   const resolve = (text) => {
     card.classList.add('resolved');
-    note.textContent = text;
+    CLATI18n.bind(note, "textContent", () => text);
     actions.replaceChildren();
   };
 
   for (const decision of ['allow', 'deny']) {
     const button = el(
-      'button', decision === 'allow' ? 'primary' : 'ghost', decision === 'allow' ? 'Allow' : 'Deny',
+      'button', decision === 'allow' ? 'primary' : 'ghost', () => (decision === 'allow' ? CLATI18n.msg("web.allow_short",{},"Allow") : CLATI18n.msg("web.deny_short",{},"Deny")),
     );
     button.type = 'button';
     button.addEventListener('click', async () => {
       button.disabled = true;
       try {
         await rpc('approval.respond', { rpcId: ctl.rpc_id, decision });
-        resolve('answered: ' + decision);
+        resolve(CLATI18n.msg("web.line_answered_value",{value1:(decision)},"answered: {value1}"));
       } catch (error) {
-        if (error.code === 'not-pending') resolve('already answered elsewhere');
+        if (error.code === 'not-pending') resolve(CLATI18n.msg("web.already_answered_elsewhere", {}, "already answered elsewhere"));
         else {
           button.disabled = false;
-          note.textContent = 'error: ' + error.message;
+          CLATI18n.bind(note, "textContent", () => CLATI18n.msg("web.line_error_value",{value1:(error.message)},"error: {value1}"));
         }
       }
     });
@@ -966,24 +970,24 @@ function onSettled(ctl) {
     switch (outcome.type) {
       case 'completed':
         if (noteRunOutcome('completed')) {
-          addVerdict('completed', 'completed · ' + (outcome.turns || 0) + ' turns · ' + usageText(outcome.usage));
+          addVerdict('completed', CLATI18n.msg("web.line_completed_value_turns_value",{value1:((outcome.turns || 0)),value2:(usageText(outcome.usage))},"completed · {value1} turns · {value2}"));
         }
         break;
       case 'cancelled':
         if (noteRunOutcome('cancelled')) {
-          addVerdict('cancelled', 'cancelled after ' + (outcome.turns || 0) + ' turns');
+          addVerdict('cancelled', CLATI18n.msg("web.line_cancelled_after_value_turns",{value1:((outcome.turns || 0))},"cancelled after {value1} turns"));
         }
         break;
       case 'failed':
         if (noteRunOutcome('failed')) {
-          addVerdict('failed', 'failed — ' + (outcome.error || 'unknown error'));
+          addVerdict('failed', CLATI18n.msg("web.line_failed_value",{value1:((outcome.error || CLATI18n.msg("web.unknown_error", {}, "unknown error")))},"failed — {value1}"));
         }
         break;
       default: console.warn('[clat] unknown settled outcome:', outcome.type);
     }
     accountUnfinishedWork(outcome.type, rpcId ? `settled:${rpcId}` : `live:${outcome.type}`);
     const idleText = settledIdleText(outcome.type);
-    if (idleText && (dom['run-state'].textContent === '' || dom['run-state'].textContent === 'running')) {
+    if (idleText && (dom['run-state'].textContent === '' || dom['run-state'].dataset.presentation === 'web.running')) {
       updateRunState(idleText);
     }
   }
@@ -998,14 +1002,14 @@ function onSettled(ctl) {
 /// 路径同词汇）。用户中止（aborted: user）与 interrupted 视为取消；
 /// error/其它异常终态如实标注失败可见；未知形状退守中性文案，不虚构。
 function replayedIdleText(reason) {
-  if (reason === 'completed') return 'run completed — send a message to continue';
-  if (reason === 'interrupted') return 'run cancelled — send a message to continue';
+  if (reason === 'completed') return CLATI18n.msg("web.run_completed_send_a_message_to_continue", {}, "run completed — send a message to continue");
+  if (reason === 'interrupted') return CLATI18n.msg("web.run_cancelled_send_a_message_to_continue", {}, "run cancelled — send a message to continue");
   if (reason && typeof reason === 'object') {
-    if (reason.aborted === 'user') return 'run cancelled — send a message to continue';
-    if (typeof reason.error === 'string') return 'run failed — see the failure notice above';
-    return 'run ended — see the transcript above';
+    if (reason.aborted === 'user') return CLATI18n.msg("web.run_cancelled_send_a_message_to_continue", {}, "run cancelled — send a message to continue");
+    if (typeof reason.error === 'string') return CLATI18n.msg("web.run_failed_see_the_failure_notice_above", {}, "run failed — see the failure notice above");
+    return CLATI18n.msg("web.run_ended_see_the_transcript_above", {}, "run ended — see the transcript above");
   }
-  if (typeof reason === 'string' && reason) return 'run ended (' + reason + ') — see the transcript above';
+  if (typeof reason === 'string' && reason) return CLATI18n.msg("web.line_run_ended_value_see_the_transcript_above",{value1:(reason)},"run ended ({value1}) — see the transcript above");
   return '';
 }
 
@@ -1013,9 +1017,9 @@ function replayedIdleText(reason) {
 /// 不随瞬时提示一起消失；新 run 的 run_started 会重置为 running。
 function settledIdleText(type) {
   switch (type) {
-    case 'completed': return 'run completed — send a message to continue';
-    case 'cancelled': return 'run cancelled — send a message to continue';
-    case 'failed': return 'run failed — see the failure notice above';
+    case 'completed': return CLATI18n.msg("web.run_completed_send_a_message_to_continue", {}, "run completed — send a message to continue");
+    case 'cancelled': return CLATI18n.msg("web.run_cancelled_send_a_message_to_continue", {}, "run cancelled — send a message to continue");
+    case 'failed': return CLATI18n.msg("web.run_failed_see_the_failure_notice_above", {}, "run failed — see the failure notice above");
     default: return '';
   }
 }
@@ -1115,14 +1119,12 @@ async function renderUnfinishedWorkAccounting(outcomeType, key, gateOwner) {
   if (open.length === 0) return;
   const total = todos.length;
   const sample = open.slice(0, 5).map((todo) => '"' + (todo.content || 'untitled') + '"').join(', ');
-  const more = open.length > 5 ? ` (+${open.length - 5} more)` : '';
+  const more = open.length > 5 ? CLATI18n.msg('web.more_count',{count:open.length-5}) : '';
   const line = addNoticeLine(
-    outcomeType + ' run ended — ' + open.length + ' of ' + total
-    + ' todos unfinished · task completion not verified: ' + sample + more
-    + ' · send a message to continue',
+    CLATI18n.msg("web.line_value_run_ended_value_of_value_todos_unfinished_task_completion_not_verified_valuevalue_send_a_message_to_continue",{value1:(outcomeType),value2:(open.length),value3:(total),value4:(sample),value5:(more)},"{value1} run ended — {value2} of {value3} todos unfinished · task completion not verified: {value4}{value5} · send a message to continue"),
   );
   line.classList.add('is-warning');
-  line.setAttribute('aria-label', 'Unfinished work accounting')
+  CLATI18n.attribute(line,'aria-label',()=>CLATI18n.msg("web.unfinished_work_accounting", {}, "Unfinished work accounting"))
 }
 
 function onNotice(ctl) {
@@ -1137,7 +1139,7 @@ function onNotice(ctl) {
       refreshWorkbench();
       break;
     case 'next_turn_error':
-      updateRunState('next turn paused: ' + (payload?.message || 'startup failed'));
+      updateRunState(CLATI18n.msg("web.line_next_turn_paused_value",{value1:((payload?.message || CLATI18n.msg("web.startup_failed", {}, "startup failed")))},"next turn paused: {value1}"));
       refreshWorkbench();
       break;
     case 'selection':
@@ -1159,14 +1161,14 @@ function onNotice(ctl) {
     case 'compaction':
       if (payload && payload.status === 'started') {
         state.compactionActive = true;
-        updateRunState('compacting history');
+        updateRunState(CLATI18n.msg("web.compacting_history", {}, "compacting history"));
       } else if (payload && payload.status === 'finished') {
         state.compactionActive = false;
-        updateRunState(payload.note ? String(payload.note) : 'compaction finished');
+        updateRunState(payload.note ? CLATI18n.present(payload.presentation, String(payload.note)) : CLATI18n.msg("web.compaction_finished", {}, "compaction finished"));
         if (payload.succeeded) {
-          addNoticeLine(payload.note ? String(payload.note) : 'compaction finished', 'compaction');
+          addNoticeLine(payload.note ? CLATI18n.present(payload.presentation, String(payload.note)) : CLATI18n.msg("web.compaction_finished", {}, "compaction finished"), 'compaction');
         } else {
-          addNoticeLine(payload.note ? String(payload.note) : 'compaction did not change history');
+          addNoticeLine(payload.note ? CLATI18n.present(payload.presentation, String(payload.note)) : CLATI18n.msg("web.compaction_did_not_change_history", {}, "compaction did not change history"));
         }
         refreshWorkbench();
       }
@@ -1174,29 +1176,32 @@ function onNotice(ctl) {
       break;
     case 'title':
       if (payload && payload.title) {
-        dom['session-title'].textContent = payload.title;
+        CLATI18n.bind(dom['session-title'], "textContent", () => payload.title);
         refreshSessions();
         refreshWorkbench();
       }
       break;
     case 'mcp_startup':
-      addNoticeLine('mcp startup: ' + jsonText(payload));
+      addNoticeLine(CLATI18n.msg("web.line_mcp_startup_value",{value1:(jsonText(payload))},"mcp startup: {value1}"));
       refreshWorkbench();
+      break;
+    case 'vision_probe':
+      addNoticeLine(CLATI18n.present(payload?.presentation, `vision probe ${payload?.outcome || ''} · ${payload?.note || ''}`));
       break;
     case 'process_finished': {
       const id = payload && payload.session_id;
       const state = payload && payload.timed_out
-        ? 'timed out'
+        ? CLATI18n.msg("web.timed_out", {}, "timed out")
         : payload && payload.cancelled
-          ? 'cancelled'
+          ? CLATI18n.msg("tui.process_cancelled")
           : payload && payload.terminated
-            ? 'terminated'
+            ? CLATI18n.msg("tui.process_terminated")
             : payload && payload.signal
-              ? 'signal ' + payload.signal
+              ? CLATI18n.msg("web.line_signal_value",{value1:(payload.signal)},"signal {value1}")
             : payload && payload.exit_code !== null && payload.exit_code !== undefined
-              ? 'exit ' + payload.exit_code
-              : 'finished';
-      addNoticeLine('process ' + id + ': ' + state);
+              ? CLATI18n.msg("web.line_exit_value",{value1:(payload.exit_code)},"exit {value1}")
+              : CLATI18n.msg("tui.process_finished");
+      addNoticeLine(CLATI18n.msg("web.line_process_value_value",{value1:(id),value2:(state)},"process {value1}: {value2}"));
       break;
     }
     default: break;
@@ -1208,12 +1213,12 @@ function onNotice(ctl) {
 function resolveQuestionCard(card, message) {
   card.classList.add('resolved');
   card.querySelector('.actions').replaceChildren();
-  card.querySelector('.resolution').textContent = message;
+  CLATI18n.bind(card.querySelector('.resolution'), "textContent", () => message);
 }
 
 function closeQuestionCards() {
   for (const card of document.querySelectorAll('.question-card:not(.resolved)')) {
-    resolveQuestionCard(card, 'Connection changed — pending questions return after reconnect.');
+    resolveQuestionCard(card, CLATI18n.msg("web.connection_changed_pending_questions_return_after_reconnect", {}, "Connection changed — pending questions return after reconnect."));
   }
 }
 
@@ -1225,7 +1230,7 @@ function onQuestionNotice(ctl) {
     .find((card) => card.dataset.rpcId === payload.rpc_id);
   if (ctl.kind === 'question_resolved') {
     if (existing && !existing.classList.contains('resolved')) {
-      resolveQuestionCard(existing, 'Answered or closed by host.');
+      resolveQuestionCard(existing, CLATI18n.msg("web.answered_or_closed_by_host_2", {}, "Answered or closed by host."));
     }
   } else if (!existing && payload.question && typeof payload.question.question === 'string') {
     appendTranscript(createQuestionCard(payload));
@@ -1237,35 +1242,35 @@ function onQuestionNotice(ctl) {
 function createQuestionCard(payload) {
   const card = el('section', 'question-card');
   card.dataset.rpcId = payload.rpc_id;
-  card.setAttribute('aria-label', 'Question from agent');
+  CLATI18n.attribute(card,'aria-label',()=>CLATI18n.msg("web.question_from_agent", {}, "Question from agent"));
   const question = payload.question;
   const actions = el('form', 'actions');
-  const note = el('div', 'note resolution', 'Shared with connected clients · first answer wins');
+  const note = el('div', 'note resolution', () => (CLATI18n.msg("web.shared_with_connected_clients_first_answer_wins", {}, "Shared with connected clients · first answer wins")));
   note.setAttribute('role', 'status');
-  card.append(el('div', 'eyebrow', 'YOUR INPUT'), el('h3', 'title', question.question), actions, note);
+  card.append(el('div', 'eyebrow', () => (CLATI18n.msg("web.your_input", {}, "YOUR INPUT"))), el('h3', 'title', () => (question.question)), actions, note);
   const options = Array.isArray(question.options) ? question.options : [];
   for (const option of options) {
-    const button = el('button', 'ghost question-option', option.label);
+    const button = el('button', 'ghost question-option', () => (option.label));
     button.type = 'button';
-    button.setAttribute('aria-label', option.label);
-    if (option.description) button.appendChild(el('span', 'question-description', option.description));
+    CLATI18n.attribute(button,'aria-label',()=>option.label);
+    if (option.description) button.appendChild(el('span', 'question-description', () => (option.description)));
     button.addEventListener('click', () => submitQuestionAnswer(card, {
       kind: 'selected', value: option.label,
     }));
     actions.appendChild(button);
   }
   if (question.allow_custom || options.length === 0) {
-    const label = el('label', 'question-custom', 'Your answer');
+    const label = el('label', 'question-custom', () => (CLATI18n.msg("web.your_answer", {}, "Your answer")));
     const input = el('textarea');
     input.rows = 3;
     label.appendChild(input);
-    const send = el('button', 'primary', 'Send answer');
+    const send = el('button', 'primary', () => (CLATI18n.msg("web.send_answer", {}, "Send answer")));
     send.type = 'submit';
     actions.append(label, send);
     actions.addEventListener('submit', (event) => {
       event.preventDefault();
       if (!input.value.trim() || new TextEncoder().encode(input.value).length > 65536) {
-        note.textContent = 'Enter a nonblank answer of at most 64 KiB.';
+        CLATI18n.bind(note, "textContent", () => CLATI18n.msg("web.enter_a_nonblank_answer_of_at_most_64_kib", {}, "Enter a nonblank answer of at most 64 KiB."));
         input.focus();
         return;
       }
@@ -1274,7 +1279,7 @@ function createQuestionCard(payload) {
   } else {
     actions.addEventListener('submit', (event) => event.preventDefault());
   }
-  const decline = el('button', 'ghost', 'Decline');
+  const decline = el('button', 'ghost', () => (CLATI18n.msg("web.decline_short",{},"Decline")));
   decline.type = 'button';
   decline.addEventListener('click', () => submitQuestionAnswer(card, { kind: 'declined' }));
   actions.appendChild(decline);
@@ -1291,12 +1296,12 @@ async function submitQuestionAnswer(card, answer) {
   controls.forEach((control) => { control.disabled = true; });
   try {
     await rpc('question.respond', { rpcId: card.dataset.rpcId, answer });
-    if (current()) resolveQuestionCard(card, 'Answer accepted.');
+    if (current()) resolveQuestionCard(card, CLATI18n.msg("web.answer_accepted", {}, "Answer accepted."));
   } catch (error) {
     if (!current()) return;
-    if (error.code === 'not-pending') resolveQuestionCard(card, 'Already answered or closed by host.');
+    if (error.code === 'not-pending') resolveQuestionCard(card, CLATI18n.msg("web.already_answered_or_closed_by_host", {}, "Already answered or closed by host."));
     else {
-      card.querySelector('.resolution').textContent = 'Answer retained. Check the host before retrying: ' + error.message;
+      CLATI18n.bind(card.querySelector('.resolution'), "textContent", () => CLATI18n.msg("web.line_answer_retained_check_the_host_before_retrying_value",{value1:(error.message)},"Answer retained. Check the host before retrying: {value1}"));
       controls.forEach((control) => { control.disabled = false; });
     }
   } finally {
@@ -1329,8 +1334,7 @@ function appendWorkRecord(node, toolName) {
   const records = Number(group.dataset.records) + 1;
   group.dataset.records = String(records);
   if (toolName) group.dataset.tool = toolName;
-  group.querySelector('.work-summary-label').textContent = 'Work · ' + records
-    + (records === 1 ? ' record' : ' records') + (group.dataset.tool ? ' · ' + group.dataset.tool : '');
+  CLATI18n.bind(group.querySelector('.work-summary-label'), "textContent", () => CLATI18n.msg('web.work_records',{count:records,tool:group.dataset.tool?' · '+group.dataset.tool:''}));
   return node;
 }
 
@@ -1345,7 +1349,7 @@ function addPermissionNotice(event) {
 
 function addTurnEndNotice(event) {
   const completed = event.reason === 'completed';
-  const line = addNoticeLine('turn ' + event.turn + ' · ' + turnEndText(event.reason), event.type, completed);
+  const line = addNoticeLine(CLATI18n.msg("web.line_turn_value_value",{value1:(event.turn),value2:(turnEndText(event.reason))},"turn {value1} · {value2}"), event.type, completed);
   if (!completed) line.classList.add(event.reason?.error ? 'is-error' : 'is-warning');
   return line;
 }
@@ -1397,7 +1401,7 @@ async function loadTranscriptImage(img, attachment) {
     img.classList.remove('is-loading');
     img.closest('.message-attachment')?.classList.remove('is-unavailable');
   } catch (_) {
-    img.alt = `${attachment.display_name || 'image'} unavailable`;
+    img.alt = CLATI18n.msg("web.dynamic_value_unavailable", {value1:(attachment.display_name || 'image')}, "{value1} unavailable");
     img.closest('.message-attachment')?.classList.add('is-unavailable');
   }
 }
@@ -1409,11 +1413,11 @@ function addMessageAttachments(attachments) {
     const card = el('button', 'message-attachment');
     card.type = 'button';
     const image = el('img', 'message-attachment-preview is-loading');
-    image.alt = `${attachment.display_name || 'attached image'} loading`;
+    image.alt = CLATI18n.msg("web.dynamic_value_loading", {value1:(attachment.display_name || CLATI18n.msg("web.attached_image", {}, "attached image"))}, "{value1} loading");
     const label = el('span', 'message-attachment-label');
     const name = attachment.display_name || 'image';
     const dimensions = attachment.width && attachment.height ? `${attachment.width} × ${attachment.height}` : 'image';
-    label.textContent = `${name} · ${dimensions}`;
+    CLATI18n.bind(label, "textContent", () => `${name} · ${dimensions}`);
     card.append(image, label);
     card.addEventListener('click', () => {
       if (image.src) openImageLightbox(image.src, image.alt);
@@ -1430,9 +1434,9 @@ function openImageLightbox(src, label) {
     dialog = document.createElement('dialog');
     dialog.id = 'image-lightbox';
     dialog.className = 'image-lightbox';
-    const close = el('button', 'icon-button image-lightbox-close', '×');
+    const close = el('button', 'icon-button image-lightbox-close', () => ('×'));
     close.type = 'button';
-    close.title = 'Close image preview';
+    CLATI18n.bind(close, "title", () => CLATI18n.msg("web.close_image_preview", {}, "Close image preview"));
     close.addEventListener('click', () => dialog.close());
     const image = el('img', 'image-lightbox-image');
     dialog.append(close, image);
@@ -1447,7 +1451,7 @@ function openImageLightbox(src, label) {
 
 function addUserMessage(text, blocks) {
   const msg = el('article', 'msg user');
-  msg.setAttribute('aria-label', 'Your message');
+  CLATI18n.attribute(msg,'aria-label',()=>CLATI18n.msg("web.your_message", {}, "Your message"));
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('user'));
   const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
@@ -1455,28 +1459,28 @@ function addUserMessage(text, blocks) {
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
   if (attachments) msg.appendChild(attachments);
-  rememberFindMessage(msg, 'User', () => String(text || ''));
+  rememberFindMessage(msg, CLATI18n.msg("web.user_short",{},"User"), () => String(text || ''));
   return appendTranscript(msg);
 }
 
 function addAssistantMessage() {
   const msg = el('article', 'msg assistant');
-  msg.setAttribute('aria-label', 'Agent reply');
+  CLATI18n.attribute(msg,'aria-label',()=>CLATI18n.msg("web.agent_reply", {}, "Agent reply"));
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('agent'));
   msg.append(marker);
   const body = el('div', 'body rich-text');
   let bodyText = document.createTextNode('');
   const bodyChunks = [];
-  rememberFindMessage(msg, 'Agent', () => bodyChunks.join(''));
+  rememberFindMessage(msg, CLATI18n.msg("web.agent_short",{},"Agent"), () => bodyChunks.join(''));
   let bodyRendered = false;
   body.appendChild(bodyText);
   const reasoning = el('details', 'reasoning hidden');
   const reasoningSummary = el('summary');
-  const reasoningTitle = el('span', 'reasoning-title', 'Think');
+  const reasoningTitle = el('span', 'reasoning-title', () => (CLATI18n.msg("web.think_short",{},"Think")));
   const reasoningDot = el('span', 'reasoning-dot');
   const reasoningPreview = el('span', 'reasoning-preview');
-  const reasoningRunning = el('span', 'visually-hidden reasoning-running', 'Thinking in progress');
+  const reasoningRunning = el('span', 'visually-hidden reasoning-running', () => (CLATI18n.msg("web.thinking_in_progress", {}, "Thinking in progress")));
   reasoningSummary.append(
     svgIcon('trace'), reasoningTitle, reasoningDot, reasoningPreview, reasoningRunning,
   );
@@ -1513,24 +1517,24 @@ function addAssistantMessage() {
       reasoningText.appendData(text);
       reasoning.dataset.running = 'true';
       const lines = reasoningText.data.split(/\r?\n/).filter((line) => line.trim());
-      reasoningPreview.textContent = lines.at(-1) || reasoningText.data;
+      CLATI18n.bind(reasoningPreview, "textContent", () => lines.at(-1) || reasoningText.data);
     },
     setReasoning(text) {
       show(reasoning);
       reasoningText.data = text;
       delete reasoning.dataset.running;
-      reasoningRunning.textContent = '';
-      reasoningPreview.textContent = text.split(/\r?\n/).find((line) => line.trim()) || text;
+      CLATI18n.bind(reasoningRunning, "textContent", () => '');
+      CLATI18n.bind(reasoningPreview, "textContent", () => text.split(/\r?\n/).find((line) => line.trim()) || text);
     },
     setTraceKind(eventId) {
-      reasoningTitle.textContent = eventId === 'reasoning_summary_delta' ? 'Summary' : 'Think';
-      reasoningSummary.title = 'Event ID: ' + eventId;
+      CLATI18n.bind(reasoningTitle, "textContent", () => eventId === 'reasoning_summary_delta' ? CLATI18n.msg("web.summary_short",{},"Summary") : CLATI18n.msg("web.think_short",{},"Think"));
+      CLATI18n.bind(reasoningSummary, "title", () => CLATI18n.msg("web.line_event_id_value",{value1:(eventId)},"Event ID: {value1}"));
     },
     finishReasoning() {
       delete reasoning.dataset.running;
-      reasoningRunning.textContent = '';
+      CLATI18n.bind(reasoningRunning, "textContent", () => '');
       const first = reasoningText.data.split(/\r?\n/).find((line) => line.trim());
-      if (first) reasoningPreview.textContent = first;
+      if (first) CLATI18n.bind(reasoningPreview, "textContent", () => first);
     },
   };
 }
@@ -1581,7 +1585,7 @@ function openToolCard(name, argsText, rawId, key) {
     if (existing) {
       const body = existing.querySelector('.tool-body');
       if (body && argsText && !existing.querySelector('.tool-args')) {
-        const args = el('div', 'tool-args', argsText);
+        const args = el('div', 'tool-args', () => (argsText));
         body.insertBefore(args, body.querySelector('.tool-output') || body.firstChild);
       }
       return existing;
@@ -1595,11 +1599,11 @@ function openToolCard(name, argsText, rawId, key) {
   const summary = el('summary');
   summary.append(
     svgIcon('tool'),
-    el('span', null, name || 'Unknown tool'),
-    el('span', 'tool-state', 'Running'),
+    el('span', null, () => (name || CLATI18n.msg("web.unknown_tool_2", {}, "Unknown tool"))),
+    el('span', 'tool-state', () => (CLATI18n.msg("web.running_short",{},"Running"))),
   );
   const body = el('div', 'tool-body');
-  if (argsText) body.appendChild(el('div', 'tool-args', argsText));
+  if (argsText) body.appendChild(el('div', 'tool-args', () => (argsText)));
   card.append(summary, body);
   if (key) state.toolCards.set(key, card);
   return appendWorkRecord(card, name);
@@ -1615,19 +1619,19 @@ function settleToolCard(rawId, explicitKey, outputText, isError, toolName, state
     card = el('details', 'tool-card');
     card.dataset.state = 'pending';
     const summary = el('summary');
-    summary.append(svgIcon('tool'), el('span', null, toolName || 'Tool'), el('span', 'tool-state'));
+    summary.append(svgIcon('tool'), el('span', null, () => (toolName || CLATI18n.msg("web.tool_short",{},"Tool"))), el('span', 'tool-state'));
     card.append(summary, el('div', 'tool-body'));
     const nameSpan = card.querySelector('.tool-state');
     if (!isError) appendWorkRecord(card, toolName || null);
     card.dataset.state = isError ? 'error' : 'done';
     card.classList.toggle('is-error', Boolean(isError));
-    if (nameSpan) nameSpan.textContent = isError ? 'Failed' : 'Done';
+    if (nameSpan) CLATI18n.bind(nameSpan, "textContent", () => isError ? CLATI18n.msg("web.failed_short",{},"Failed") : CLATI18n.msg("web.done_short",{},"Done"));
     if (rawId) card.dataset.callId = rawId;
   }
   card.dataset.state = isError ? 'error' : 'done';
   card.classList.toggle('is-error', Boolean(isError));
   const stateSpan = card.querySelector('.tool-state');
-  if (stateSpan) stateSpan.textContent = stateText || (isError ? 'Failed' : 'Done');
+  if (stateSpan) CLATI18n.bind(stateSpan, "textContent", () => stateText || (isError ? CLATI18n.msg("web.failed_short",{},"Failed") : CLATI18n.msg("web.done_short",{},"Done")));
   const body = card.querySelector('.tool-body');
   if (body) {
     let output = body.querySelector('.tool-output');
@@ -1658,7 +1662,7 @@ function denyToolCard(rawId, reason) {
   if (!card) return;
   card.dataset.state = 'denied';
   const stateSpan = card.querySelector('.tool-state');
-  if (stateSpan) stateSpan.textContent = 'Denied';
+  if (stateSpan) CLATI18n.bind(stateSpan, "textContent", () => CLATI18n.msg("web.denied_short",{},"Denied"));
   const body = card.querySelector('.tool-body');
   if (body && reason) {
     let output = body.querySelector('.tool-output');
@@ -1666,7 +1670,7 @@ function denyToolCard(rawId, reason) {
       output = el('div', 'tool-output');
       body.appendChild(output);
     }
-    output.replaceChildren(document.createTextNode('denied — ' + reason));
+    output.replaceChildren(CLATI18n.textNode(CLATI18n.msg("web.line_denied_value",{value1:(reason)},"denied — {value1}")));
   }
 }
 
@@ -1677,8 +1681,7 @@ function detachWorkRecord(card, group) {
   group.dataset.records = String(rest);
   const label = group.querySelector('.work-summary-label');
   if (label) {
-    label.textContent = 'Work · ' + rest + (rest === 1 ? ' record' : ' records')
-      + (group.dataset.tool ? ' · ' + group.dataset.tool : '');
+    CLATI18n.bind(label, "textContent", () => CLATI18n.msg('web.work_records',{count:rest,tool:group.dataset.tool?' · '+group.dataset.tool:''}));
   }
   if (rest === 0) group.remove();
 }
@@ -1689,7 +1692,7 @@ function addToolCard(name, argsText, outputText, isError) {
   const card = settleToolCard(null, null, outputText, Boolean(isError), name);
   const body = card.querySelector('.tool-body');
   if (body && argsText && !card.querySelector('.tool-args')) {
-    body.insertBefore(el('div', 'tool-args', argsText), body.firstChild);
+    body.insertBefore(el('div', 'tool-args', () => (argsText)), body.firstChild);
   }
   return card;
 }
@@ -1700,7 +1703,7 @@ function clearToolCardScope() {
 }
 
 function addVerdict(kind, text) {
-  appendTranscript(el('div', 'verdict ' + kind, text));
+  appendTranscript(el('div', `verdict ${kind}`, () => (text)));
   scrollIfNearEnd();
 }
 
@@ -1710,12 +1713,12 @@ function addNoticeLine(text, eventId, ordinary = ['model_requested', 'model_resp
   const label = eventId ? humanEventName(eventId) : text;
   const copy = el('span');
   if (eventId) {
-    copy.append(el('b', null, label));
-    if (text) copy.append(el('small', null, ' · ' + text));
+    copy.append(el('b', null, () => (label)));
+    if (text) copy.append(el('small', null, () => (' · ' + text)));
     line.classList.add('trace-event');
-    line.title = 'Event ID: ' + eventId;
+    CLATI18n.bind(line, "title", () => CLATI18n.msg("web.line_event_id_value",{value1:(eventId)},"Event ID: {value1}"));
   } else {
-    copy.textContent = text;
+    CLATI18n.bind(copy, "textContent", typeof text==='function'?text:() => text);
   }
   line.appendChild(copy);
   if (['permission_denied', 'retry_scheduled'].includes(eventId)) line.classList.add('is-warning');
@@ -1729,7 +1732,7 @@ function contextAmount(value) {
 }
 
 function injectionState(value) {
-  return Number(value) > 0 ? 'injected' : 'not injected';
+  return Number(value) > 0 ? CLATI18n.msg("web.injected",{},"injected") : CLATI18n.msg("web.not_injected", {}, "not injected");
 }
 
 function formatContextSnapshot(snapshot) {
@@ -1743,31 +1746,31 @@ function formatContextSnapshot(snapshot) {
   const diagnostics = Array.isArray(context.skill_diagnostics)
     ? context.skill_diagnostics : [];
   const lines = [
-    `Context estimate · ${unit}`,
-    estimate('Base prompt', 'base_prompt'),
-    estimate('Project instructions', 'project_instructions'),
-    `${estimate('Plan policy', 'plan_policy')} · ${injectionState(context.plan_policy)}`,
-    estimate('Skill catalog', 'skill_catalog'),
-    `${estimate('Goal policy', 'goal_policy')} · ${injectionState(context.goal_policy)}`,
-    `Memory injection: ${contextAmount(context.memory)} / ${contextAmount(context.memory_budget_bytes)} bytes · ${injectionState(context.memory)}`,
-    estimate('Tool schemas', 'tool_schemas'),
-    estimate('History / compaction view', 'history'),
-    `Images: ${contextAmount(context.image_count)}`,
-    `Images before projection: ${contextAmount(context.image_original_count)}`,
-    `Older images omitted: ${contextAmount(context.image_offloaded_count)}`,
-    `Image bytes: ${contextAmount(context.image_bytes)} bytes`,
-    estimate('Visual token estimate', 'image_tokens'),
-    `Visual safety factor: ${contextAmount(context.image_safety_factor)}.0x`,
-    estimate('Output reserve', 'output_reserve'),
-    estimate('Input estimate', 'input'),
-    estimate('Total estimate', 'total'),
-    `Tools: ${tools}`,
-    `Skills: ${skills}`,
+    CLATI18n.msg("web.dynamic_context_estimate_value", {value1:(unit)}, "Context estimate · {value1}"),
+    estimate(CLATI18n.msg("web.base_prompt", {}, "Base prompt"), 'base_prompt'),
+    estimate(CLATI18n.msg("web.project_instructions", {}, "Project instructions"), 'project_instructions'),
+    `${estimate(CLATI18n.msg("web.plan_policy", {}, "Plan policy"), 'plan_policy')} · ${injectionState(context.plan_policy)}`,
+    estimate(CLATI18n.msg("web.skill_catalog", {}, "Skill catalog"), 'skill_catalog'),
+    `${estimate(CLATI18n.msg("web.goal_policy", {}, "Goal policy"), 'goal_policy')} · ${injectionState(context.goal_policy)}`,
+    CLATI18n.msg("web.dynamic_memory_injection_value_value_bytes_value", {value1:(contextAmount(context.memory)),value2:(contextAmount(context.memory_budget_bytes)),value3:(injectionState(context.memory))}, "Memory injection: {value1} / {value2} bytes · {value3}"),
+    estimate(CLATI18n.msg("web.tool_schemas", {}, "Tool schemas"), 'tool_schemas'),
+    estimate(CLATI18n.msg("web.history_compaction_view", {}, "History / compaction view"), 'history'),
+    CLATI18n.msg("web.dynamic_images_value", {value1:(contextAmount(context.image_count))}, "Images: {value1}"),
+    CLATI18n.msg("web.dynamic_images_before_projection_value", {value1:(contextAmount(context.image_original_count))}, "Images before projection: {value1}"),
+    CLATI18n.msg("web.dynamic_older_images_omitted_value", {value1:(contextAmount(context.image_offloaded_count))}, "Older images omitted: {value1}"),
+    CLATI18n.msg("web.dynamic_image_bytes_value_bytes", {value1:(contextAmount(context.image_bytes))}, "Image bytes: {value1} bytes"),
+    estimate(CLATI18n.msg("web.visual_token_estimate", {}, "Visual token estimate"), 'image_tokens'),
+    CLATI18n.msg("web.dynamic_visual_safety_factor_value_0x", {value1:(contextAmount(context.image_safety_factor))}, "Visual safety factor: {value1}.0x"),
+    estimate(CLATI18n.msg("web.output_reserve", {}, "Output reserve"), 'output_reserve'),
+    estimate(CLATI18n.msg("web.input_estimate", {}, "Input estimate"), 'input'),
+    estimate(CLATI18n.msg("web.total_estimate", {}, "Total estimate"), 'total'),
+    CLATI18n.msg("web.dynamic_tools_value", {value1:(tools)}, "Tools: {value1}"),
+    CLATI18n.msg("web.dynamic_skills_value", {value1:(skills)}, "Skills: {value1}"),
   ];
   if (diagnostics.length === 0) {
-    lines.push('Skill diagnostics: none');
+    lines.push(CLATI18n.msg("web.skill_diagnostics_none", {}, "Skill diagnostics: none"));
   } else {
-    lines.push('Skill diagnostics:');
+    lines.push(CLATI18n.msg("web.skill_diagnostics", {}, "Skill diagnostics:"));
     for (const diagnostic of diagnostics) {
       const source = diagnostic && diagnostic.source ? diagnostic.source : '-';
       const name = diagnostic && diagnostic.name ? diagnostic.name : '-';
@@ -1776,14 +1779,14 @@ function formatContextSnapshot(snapshot) {
       lines.push(`! ${source} / ${name} / ${kind}: ${message}`);
     }
   }
-  if (context.estimator) lines.push(`Estimator: ${context.estimator}`);
+  if (context.estimator) lines.push(CLATI18n.msg("web.dynamic_estimator_value", {value1:(context.estimator)}, "Estimator: {value1}"));
   return lines.join('\n');
 }
 
 function addContextSnapshot(snapshot) {
-  const line = addNoticeLine(formatContextSnapshot(snapshot));
+  const line = addNoticeLine(()=>formatContextSnapshot(snapshot));
   line.classList.add('context-notice');
-  line.setAttribute('aria-label', 'Context estimate');
+  CLATI18n.attribute(line,'aria-label',()=>CLATI18n.msg("web.context_estimate", {}, "Context estimate"));
 }
 
 function syncPlanModeBadge() {
@@ -1816,7 +1819,7 @@ function syncHistoryStatus() {
   }
   show(status);
   status.disabled = state.history.loading;
-  status.textContent = state.history.loading ? 'Loading earlier messages…' : 'Earlier messages available';
+  CLATI18n.bind(status, "textContent", () => state.history.loading ? CLATI18n.msg("web.loading_earlier_messages", {}, "Loading earlier messages…") : CLATI18n.msg("web.earlier_messages_available", {}, "Earlier messages available"));
 }
 
 function viewportAnchor() {
@@ -1856,7 +1859,7 @@ async function loadOlderHistory() {
   } catch (error) {
     if (selection !== state.selectionGeneration || stream !== state.stream) return false;
     console.warn('[clat] earlier history failed:', error.message);
-    updateRunState('earlier history failed: ' + error.message);
+    updateRunState(CLATI18n.msg("web.line_earlier_history_failed_value",{value1:(error.message)},"earlier history failed: {value1}"));
     return false;
   } finally {
     if (selection !== state.selectionGeneration || stream !== state.stream) return;
@@ -1902,12 +1905,12 @@ function buildMapPreviews(outline) {
 
 function showMapPreview(item) {
   const rows = state.history.mapPreviewByTurn.get(item.turn || 0);
-  const fallback = [{ role: item.role, text: plainOutlinePreview(item.preview) || 'Empty message' }];
+  const fallback = [{ role: item.role, text: plainOutlinePreview(item.preview) || CLATI18n.msg("web.empty_message", {}, "Empty message") }];
   const fragment = document.createDocumentFragment();
   for (const row of rows && rows.length > 0 ? rows : fallback) {
     const line = el('div', `map-preview-row ${row.role === 'user' ? 'is-user' : 'is-assistant'}`);
-    line.append(el('span', 'map-preview-role', row.role === 'user' ? 'You' : 'Agent'));
-    line.append(el('span', 'map-preview-text', row.text));
+    line.append(el('span', 'map-preview-role', () => (row.role === 'user' ? CLATI18n.msg("web.you_short",{},"You") : CLATI18n.msg("web.agent_short",{},"Agent"))));
+    line.append(el('span', 'map-preview-text', () => (row.text)));
     fragment.append(line);
   }
   dom['message-map-preview'].replaceChildren(fragment);
@@ -1933,7 +1936,7 @@ function renderMapWindow() {
     bar.type = 'button';
     bar.style.top = `${index * MAP_ITEM_HEIGHT}px`;
     bar.dataset.seq = String(item.seq);
-    bar.setAttribute('aria-label', `${item.role || 'message'} at turn ${item.turn || 0}`);
+    CLATI18n.attribute(bar,'aria-label',()=>CLATI18n.msg("web.dynamic_value_at_turn_value", {value1:(item.role || 'message'),value2:(item.turn || 0)}, "{value1} at turn {value2}"));
     const preview = () => showMapPreview(item);
     bar.addEventListener('mouseenter', preview);
     bar.addEventListener('focus', preview);
@@ -2089,10 +2092,10 @@ function turnEndText(reason) {
 }
 
 function usageText(usage) {
-  if (!usage) return 'usage unavailable';
-  const parts = [(usage.input_tokens || 0) + ' in', (usage.output_tokens || 0) + ' out'];
-  if (usage.cached_input_tokens !== undefined) parts.push(usage.cached_input_tokens + ' cached');
-  return parts.join(' · ');
+  if (!usage) return CLATI18n.msg("web.usage_unavailable", {}, "usage unavailable");
+  const parts = [CLATI18n.msg("web.line_value_in",{value1:((usage.input_tokens || 0))},"{value1} in"), CLATI18n.msg("web.line_value_out",{value1:((usage.output_tokens || 0))},"{value1} out")];
+  if (usage.cached_input_tokens !== undefined) parts.push(CLATI18n.msg("web.line_value_cached",{value1:(usage.cached_input_tokens)},"{value1} cached"));
+  return CLATI18n.view(()=>parts.join(' · '));
 }
 
 function compactNumber(value) {
@@ -2105,16 +2108,16 @@ function compactNumber(value) {
 /* —— Workbench and session read models ——————————————————— */
 
 const PERMISSION_LABELS = {
-  'read-only': 'Read Only',
-  'workspace-write': 'Project Write',
-  'danger-full-access': 'Full Access',
+  'read-only': CLATI18n.msg("web.read_only", {}, "Read Only"),
+  'workspace-write': CLATI18n.msg("web.project_write", {}, "Project Write"),
+  'danger-full-access': CLATI18n.msg("web.full_access", {}, "Full Access"),
 };
 
 function updateDocumentTitle(sessionTitle) {
   const session = (state.workbench && state.workbench.session) || {};
   const hasSession = sessionTitle !== undefined || Boolean(session.id);
-  const name = sessionTitle !== undefined ? sessionTitle : (session.title || 'Untitled session');
-  document.title = hasSession ? name + ' - CLAT' : 'CLAT · local agent workbench';
+  const name = sessionTitle !== undefined ? sessionTitle : (session.title || CLATI18n.msg("web.untitled_session", {}, "Untitled session"));
+  CLATI18n.bind(document, "title", () => hasSession ? name + ' - CLAT' : CLATI18n.msg("web.clat_local_agent_workbench", {}, "CLAT · local agent workbench"));
 }
 
 async function refreshWorkbench() {
@@ -2139,37 +2142,37 @@ async function refreshWorkbench() {
     state.compactionActive = Boolean(info.active_compaction);
     syncPlanModeBadge();
 
-    dom['project-name'].textContent = project.name || 'Current project';
-    dom['project-root'].textContent = project.root || '';
-    dom['project-root'].title = project.root || '';
-    dom['session-title'].textContent = session.title || 'Untitled session';
+    CLATI18n.bind(dom['project-name'], "textContent", () => project.name || CLATI18n.msg("web.current_project", {}, "Current project"));
+    CLATI18n.bind(dom['project-root'], "textContent", () => project.root || '');
+    CLATI18n.bind(dom['project-root'], "title", () => project.root || '');
+    CLATI18n.bind(dom['session-title'], "textContent", () => session.title || CLATI18n.msg("web.untitled_session", {}, "Untitled session"));
     updateDocumentTitle();
     renderModelIdentity(
       dom['header-model'],
-      model.model || 'model unavailable',
+      model.model || CLATI18n.msg("web.model_unavailable", {}, "model unavailable"),
       Boolean(model.image_input),
     );
-    dom['model-picker-label'].textContent = (model.model || 'Choose model')
-      + (model.thinking_level ? ' · ' + model.thinking_level : '');
-    dom['model-picker-trigger'].title = `Model for next run: ${model.model || 'not configured'}`;
-    const modeLabel = permission.label || PERMISSION_LABELS[permission.mode] || 'Permission mode';
-    dom['header-permission'].textContent = modeLabel;
-    dom['composer-permission-label'].textContent = modeLabel;
+    CLATI18n.bind(dom['model-picker-label'], "textContent", () => (model.model || CLATI18n.msg("web.choose_model", {}, "Choose model"))
+      + (model.thinking_level ? ' · ' + model.thinking_level : ''));
+    CLATI18n.bind(dom['model-picker-trigger'], "title", () => CLATI18n.msg("web.dynamic_model_for_next_run_value", {value1:(model.model || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Model for next run: {value1}"));
+    const modeLabel = (Object.hasOwn(PERMISSION_LABELS, permission.mode) && PERMISSION_LABELS[permission.mode]) || permission.label || CLATI18n.msg("web.permission_mode", {}, "Permission mode");
+    CLATI18n.bind(dom['header-permission'], "textContent", () => modeLabel);
+    CLATI18n.bind(dom['composer-permission-label'], "textContent", () => modeLabel);
     // PU-8：Full Access 与 TUI 同语——权限文字转警示黄（CSS 按 data-mode 着色）。
     dom['header-permission'].dataset.mode = permission.mode || '';
     dom['composer-permission'].dataset.mode = permission.mode || '';
 
-    dom['detail-seq'].textContent = session.committed_seq === null || session.committed_seq === undefined
-      ? '—' : String(session.committed_seq);
-    dom['detail-session'].textContent = session.id ? shortenId(session.id) : 'Fresh';
-    dom['detail-session'].title = session.id || '';
+    CLATI18n.bind(dom['detail-seq'], "textContent", () => session.committed_seq === null || session.committed_seq === undefined
+      ? '—' : String(session.committed_seq));
+    CLATI18n.bind(dom['detail-session'], "textContent", () => session.id ? shortenId(session.id) : CLATI18n.msg("web.fresh", {}, "Fresh"));
+    CLATI18n.bind(dom['detail-session'], "title", () => session.id || '');
     renderModelIdentity(dom['detail-model'], model.model || '—', Boolean(model.image_input));
-    dom['detail-protocol'].textContent = [model.protocol, model.active_profile || model.preset]
-      .filter(Boolean).join(' / ') || '—';
-    dom['detail-context'].textContent = model.max_context_tokens
-      ? compactNumber(model.max_context_tokens) + ' tok' : 'manual only';
-    dom['detail-budget'].textContent = model.run_token_budget === 0
-      ? 'off' : compactNumber(model.run_token_budget) + ' tok';
+    CLATI18n.bind(dom['detail-protocol'], "textContent", () => [model.protocol, model.active_profile || model.preset]
+      .filter(Boolean).join(' / ') || '—');
+    CLATI18n.bind(dom['detail-context'], "textContent", () => model.max_context_tokens
+      ? compactNumber(model.max_context_tokens) + ' tok' : CLATI18n.msg("web.manual_only", {}, "manual only"));
+    CLATI18n.bind(dom['detail-budget'], "textContent", () => model.run_token_budget === 0
+      ? 'off' : compactNumber(model.run_token_budget) + ' tok');
 
     renderCapabilities(info.capabilities || []);
     renderMcp(info.mcp || {});
@@ -2190,7 +2193,7 @@ function shortenId(id) {
 function renderCapabilities(capabilities) {
   dom['capability-list'].replaceChildren();
   for (const capability of capabilities) {
-    dom['capability-list'].appendChild(el('span', null, String(capability).replaceAll('-', ' ')));
+    dom['capability-list'].appendChild(el('span', null, () => (String(capability).replaceAll('-', ' '))));
   }
 }
 
@@ -2198,15 +2201,15 @@ function renderMcp(mcp) {
   const configured = mcp.configured || 0;
   const connected = mcp.connected || 0;
   const connecting = mcp.connecting || 0;
-  dom['detail-mcp'].textContent = configured === 0
-    ? 'No servers configured'
-    : `${connected}/${configured} connected${connecting ? ` · ${connecting} connecting` : ''}`;
+  CLATI18n.bind(dom['detail-mcp'], "textContent", () => configured === 0
+    ? CLATI18n.msg("web.no_servers_configured", {}, "No servers configured")
+    : CLATI18n.msg("web.dynamic_value_value_connectedvalue", {value1:(connected),value2:(configured),value3:(connecting ? ` · ${connecting} connecting` : '')}, "{value1}/{value2} connected{value3}"));
   dom['mcp-servers'].replaceChildren();
   for (const server of mcp.servers || []) {
     const card = el('div', 'mcp-server');
     card.append(
-      el('strong', null, server.name || 'unnamed'),
-      el('span', null, `${server.transport || 'transport'} · ${server.tools || 0} tools`),
+      el('strong', null, () => (server.name || 'unnamed')),
+      el('span', null, () => (CLATI18n.msg("web.dynamic_value_value_tools", {value1:(server.transport || 'transport'),value2:(server.tools || 0)}, "{value1} · {value2} tools"))),
     );
     dom['mcp-servers'].appendChild(card);
   }
@@ -2214,9 +2217,9 @@ function renderMcp(mcp) {
 
 function updateRunDetail(serverActive) {
   const active = serverActive === undefined ? state.runActive : serverActive;
-  dom['detail-run'].textContent = state.compactionActive
-    ? 'Compacting'
-    : active ? 'Running' : (state.connected ? 'Idle' : 'Disconnected');
+  CLATI18n.bind(dom['detail-run'], "textContent", () => state.compactionActive
+    ? CLATI18n.msg("web.compacting_short",{},"Compacting")
+    : active ? CLATI18n.msg("web.running_short",{},"Running") : (state.connected ? CLATI18n.msg("web.idle", {}, "Idle") : CLATI18n.msg("web.disconnected_short",{},"Disconnected")));
 }
 
 async function refreshSessions() {
@@ -2249,7 +2252,7 @@ async function refreshUtilitySettings() {
     if (formGeneration !== utilityFormGeneration) return;
     state.utilitySettings = null;
     syncSuggestionControl();
-    if (dom['utility-settings-error']) dom['utility-settings-error'].textContent = error.message;
+    if (dom['utility-settings-error']) CLATI18n.bind(dom['utility-settings-error'], "textContent", () => error.message);
   }
 }
 
@@ -2263,28 +2266,28 @@ function renderSessions() {
     return !query || title.toLocaleLowerCase().includes(query) || session.id.toLocaleLowerCase().includes(query);
   });
   dom['session-list'].replaceChildren();
-  dom['session-count'].textContent = String(state.sessions.length);
+  CLATI18n.bind(dom['session-count'], "textContent", () => String(state.sessions.length));
   for (const session of filtered) {
     const item = el('li', session.id === state.sessionId ? 'active' : '');
     item.dataset.sessionId = session.id;
     const button = el('button', 'session-item');
     button.type = 'button';
     button.disabled = state.switching || state.compactionActive;
-    button.title = session.title || 'Untitled session';
-    const title = session.title || 'Untitled session';
-    const glyph = el('span', 'session-glyph', title.trim().slice(0, 1).toLocaleUpperCase() || '·');
+    CLATI18n.bind(button, "title", () => session.title || CLATI18n.msg("web.untitled_session", {}, "Untitled session"));
+    const title = session.title || CLATI18n.msg("web.untitled_session", {}, "Untitled session");
+    const glyph = el('span', 'session-glyph', () => (String(title).trim().slice(0, 1).toLocaleUpperCase() || '·'));
     const copy = el('span', 'session-copy');
     copy.append(
-      el('strong', null, `${session.pinned ? '★ ' : ''}${title}${session.archived ? ' · archived' : ''}`),
-      el('small', null, `${session.turns || 0} turns · ${session.message_count || 0} messages`),
+      el('strong', null, () => (`${session.pinned ? '★ ' : ''}${title}${session.archived ? CLATI18n.t('web.archived_suffix') : ''}`)),
+      el('small', null, () => (CLATI18n.msg("web.dynamic_value_turns_value_messages", {value1:(session.turns || 0),value2:(session.message_count || 0)}, "{value1} turns · {value2} messages"))),
     );
     button.append(glyph, copy);
     button.addEventListener('click', () => switchSession(session.id));
     item.appendChild(button);
-    const more = el('button', 'session-more', '⋯');
+    const more = el('button', 'session-more', () => ('⋯'));
     more.type = 'button';
-    more.setAttribute('aria-label', `Actions for ${title}`);
-    more.title = `More actions for ${title}`;
+    CLATI18n.attribute(more,'aria-label',()=>CLATI18n.msg("web.dynamic_actions_for_value", {value1:(title)}, "Actions for {value1}"));
+    CLATI18n.bind(more, "title", () => CLATI18n.msg("web.dynamic_more_actions_for_value", {value1:(title)}, "More actions for {value1}"));
     more.setAttribute('aria-haspopup', 'menu');
     more.addEventListener('click', () => {
       const bounds = more.getBoundingClientRect();
@@ -2336,16 +2339,16 @@ function openSessionMenu(session, x, y, source) {
   closeSessionMenu();
   const menu = el('div', 'session-context-menu');
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'Session actions');
+  CLATI18n.attribute(menu,'aria-label',()=>CLATI18n.msg("web.session_actions", {}, "Session actions"));
   const actions = [
-    ['Open session', () => switchSession(session.id), state.switching || state.compactionActive],
-    ['Rename session', () => dom['session-title'].click(), session.id !== state.sessionId || state.switching || state.compactionActive],
-    ['Copy session ID', () => navigator.clipboard.writeText(session.id), false],
-    [session.pinned ? 'Unpin session' : 'Pin session', () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
-    [session.archived ? 'Restore archived session' : 'Archive session…', () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
+    [CLATI18n.msg("web.open_session", {}, "Open session"), () => switchSession(session.id), state.switching || state.compactionActive],
+    [CLATI18n.msg("web.rename_session", {}, "Rename session"), () => dom['session-title'].click(), session.id !== state.sessionId || state.switching || state.compactionActive],
+    [CLATI18n.msg("web.copy_session_id", {}, "Copy session ID"), () => navigator.clipboard.writeText(session.id), false],
+    [session.pinned ? CLATI18n.msg("web.unpin_session", {}, "Unpin session") : CLATI18n.msg("web.pin_session", {}, "Pin session"), () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
+    [session.archived ? CLATI18n.msg("web.restore_archived_session", {}, "Restore archived session") : CLATI18n.msg("web.archive_session", {}, "Archive session…"), () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
   ];
   for (const [label, action, disabled] of actions) {
-    const button = el('button', '', label);
+    const button = el('button', '', () => (label));
     button.type = 'button';
     button.setAttribute('role', 'menuitem');
     button.disabled = disabled;
@@ -2388,8 +2391,8 @@ function setSwitching(active) {
   state.switching = active;
   syncInteractionControls();
   renderSessions();
-  if (active) updateRunState('switching session');
-  else if (dom['run-state'].textContent === 'switching session') updateRunState('');
+  if (active) updateRunState(CLATI18n.msg("web.switching_session", {}, "switching session"));
+  else if (dom['run-state'].dataset.presentation === 'web.switching_session') updateRunState('');
 }
 
 function invalidateSuggestion() {
@@ -2397,7 +2400,7 @@ function invalidateSuggestion() {
   state.suggestionPending = false;
   state.suggestion = null;
   hide(dom['suggestion-panel']);
-  dom['suggestion-text'].textContent = '';
+  CLATI18n.bind(dom['suggestion-text'], "textContent", () => '');
   syncInteractionControls();
 }
 
@@ -2406,7 +2409,7 @@ function renderSuggestion() {
     hide(dom['suggestion-panel']);
     return;
   }
-  dom['suggestion-text'].textContent = state.suggestion.text;
+  CLATI18n.bind(dom['suggestion-text'], "textContent", () => state.suggestion.text);
   show(dom['suggestion-panel']);
 }
 
@@ -2417,11 +2420,11 @@ function syncSuggestionControl() {
   dom.suggest.disabled = disabled;
   dom.suggest.dataset.pending = String(state.suggestionPending);
   dom.suggest.setAttribute('aria-busy', String(state.suggestionPending));
-  if (state.suggestionPending) dom.suggest.title = 'Generating a prompt suggestion…';
-  else if (!enabled) dom.suggest.title = 'Enable manual suggestions in Workbench settings';
-  else if (!state.sessionId) dom.suggest.title = 'Start a session before requesting a suggestion';
-  else if (state.runActive || state.compactionActive || state.switching) dom.suggest.title = 'Suggestions are available while idle';
-  else dom.suggest.title = 'Generate prompt suggestion';
+  if (state.suggestionPending) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.generating_a_prompt_suggestion", {}, "Generating a prompt suggestion…"));
+  else if (!enabled) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.enable_manual_suggestions_in_workbench_settings", {}, "Enable manual suggestions in Workbench settings"));
+  else if (!state.sessionId) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.start_a_session_before_requesting_a_suggestion", {}, "Start a session before requesting a suggestion"));
+  else if (state.runActive || state.compactionActive || state.switching) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.suggestions_are_available_while_idle", {}, "Suggestions are available while idle"));
+  else CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.generate_prompt_suggestion", {}, "Generate prompt suggestion"));
 }
 
 function syncInteractionControls() {
@@ -2435,9 +2438,9 @@ function syncInteractionControls() {
     || thinking.dataset.adjustable !== 'true';
   dom['new-session'].disabled = locked;
   dom['session-title'].disabled = locked || !state.sessionId;
-  dom['compact-session'].textContent = state.compactionActive
-    ? 'Cancel compaction'
-    : 'Compact history';
+  CLATI18n.bind(dom['compact-session'], "textContent", () => state.compactionActive
+    ? CLATI18n.msg("web.cancel_compaction", {}, "Cancel compaction")
+    : CLATI18n.msg("web.compact_history", {}, "Compact history"));
   dom['compact-session'].disabled = state.switching
     || !state.sessionId
     || (state.runActive && !state.compactionActive);
@@ -2458,7 +2461,7 @@ async function switchSession(id) {
     resubscribe();
   } catch (error) {
     setSwitching(false);
-    updateRunState('switch failed: ' + error.message);
+    updateRunState(CLATI18n.msg("web.line_switch_failed_value",{value1:(error.message)},"switch failed: {value1}"));
   }
 }
 
@@ -2471,22 +2474,22 @@ dom['new-session'].addEventListener('click', async () => {
     resubscribe();
   } catch (error) {
     setSwitching(false);
-    updateRunState('new session failed: ' + error.message);
+    updateRunState(CLATI18n.msg("web.line_new_session_failed_value",{value1:(error.message)},"new session failed: {value1}"));
   }
 });
 
 dom['session-title'].addEventListener('click', async () => {
   if (!state.sessionId || state.switching || state.compactionActive) return;
-  const title = window.prompt('Session title', dom['session-title'].textContent || '');
+  const title = window.prompt(CLATI18n.msg("web.session_title", {}, "Session title"), dom['session-title'].textContent || '');
   if (title === null || title.trim() === '') return;
   try {
     await rpc('session.rename', { id: state.sessionId, title });
-    dom['session-title'].textContent = title.trim();
+    CLATI18n.bind(dom['session-title'], "textContent", () => title.trim());
     updateDocumentTitle(title.trim());
     refreshSessions();
     refreshWorkbench();
   } catch (error) {
-    updateRunState('rename failed: ' + error.message);
+    updateRunState(CLATI18n.msg("web.line_rename_failed_value",{value1:(error.message)},"rename failed: {value1}"));
   }
 });
 
@@ -2502,15 +2505,15 @@ dom['compact-session'].addEventListener('click', async () => {
       // before this response is observed. Re-read the server-owned slot rather
       // than resurrecting stale local "active" state after a finished notice.
       await refreshWorkbench();
-      if (state.compactionActive) updateRunState('compacting history');
+      if (state.compactionActive) updateRunState(CLATI18n.msg("web.compacting_history", {}, "compacting history"));
     } else if (value && value.status === 'cancelling') {
-      updateRunState('cancelling compaction');
+      updateRunState(CLATI18n.msg("web.cancelling_compaction",{},"cancelling compaction"));
     } else {
       state.compactionActive = false;
       updateRunState('');
     }
   } catch (error) {
-    updateRunState('compaction failed: ' + error.message);
+    updateRunState(CLATI18n.msg("web.line_compaction_failed_value",{value1:(error.message)},"compaction failed: {value1}"));
     await refreshWorkbench();
   } finally {
     syncInteractionControls();
@@ -2523,18 +2526,18 @@ dom['compact-session'].addEventListener('click', async () => {
 const MARKET_CATALOG_URL = 'https://pi.at.cn/catalog.json';
 const MARKET_FALLBACK = [
   {
-    id: 'dev.clat.digest', name: 'Digest Lab', runtime: 'wasm-component', status: 'preview',
-    summary: 'A minimal-permission Rust/WASM component for deterministic digests.',
+    id: 'dev.clat.digest', name: CLATI18n.msg("web.digest_lab", {}, "Digest Lab"), runtime: 'wasm-component', status: 'preview',
+    summary: CLATI18n.msg("web.a_minimal_permission_rust_wasm_component_for_deterministic_digests", {}, "A minimal-permission Rust/WASM component for deterministic digests."),
     tags: ['WASM', 'Pure', 'Rust'],
   },
   {
-    id: 'dev.clat.greeter', name: 'Greeter Component', runtime: 'wasm-component', status: 'preview',
-    summary: 'An end-to-end starter for the Rust SDK, configuration and host context.',
+    id: 'dev.clat.greeter', name: CLATI18n.msg("web.greeter_component", {}, "Greeter Component"), runtime: 'wasm-component', status: 'preview',
+    summary: CLATI18n.msg("web.an_end_to_end_starter_for_the_rust_sdk_configuration_and_host_context", {}, "An end-to-end starter for the Rust SDK, configuration and host context."),
     tags: ['WASM', 'SDK', 'Starter'],
   },
   {
-    id: 'cn.at.clat.dsh-port', name: 'DSH Porting Bridge', runtime: 'mcp-stdio', status: 'preview',
-    summary: 'Project DSH/Cordis tools, prompts, sampling and elicitation into CLAT.',
+    id: 'cn.at.clat.dsh-port', name: CLATI18n.msg("web.dsh_porting_bridge", {}, "DSH Porting Bridge"), runtime: 'mcp-stdio', status: 'preview',
+    summary: CLATI18n.msg("web.project_dsh_cordis_tools_prompts_sampling_and_elicitation_into_clat", {}, "Project DSH/Cordis tools, prompts, sampling and elicitation into CLAT."),
     tags: ['DSH', 'Cordis', 'MCP'],
   },
 ];
@@ -2554,33 +2557,33 @@ function renderMarket() {
     const top = el('div', 'market-item-top');
     const icon = el('span', 'market-item-icon');
     icon.appendChild(svgIcon(plugin.runtime === 'wasm-component' ? 'wasm' : 'mcp'));
-    const statusLabel = { available: 'Available', preview: 'Preview', withdrawn: 'Withdrawn' };
+    const statusLabel = { available: CLATI18n.msg("web.available_short",{},"Available"), preview: CLATI18n.msg("web.preview_short",{},"Preview"), withdrawn: CLATI18n.msg("web.withdrawn_short",{},"Withdrawn") };
     top.append(
       icon,
-      el('span', 'market-item-state', statusLabel[plugin.status]),
+      el('span', 'market-item-state', () => (statusLabel[plugin.status])),
     );
     const tags = el('div', 'market-tags');
-    for (const tag of plugin.tags || []) tags.appendChild(el('span', null, tag));
+    for (const tag of plugin.tags || []) tags.appendChild(el('span', null, () => (tag)));
     card.append(
       top,
-      el('h3', null, plugin.name || plugin.id),
-      el('p', 'market-id', plugin.id),
-      el('p', 'market-summary', plugin.summary || 'No summary provided.'),
+      el('h3', null, () => (plugin.name || plugin.id)),
+      el('p', 'market-id', () => (plugin.id)),
+      el('p', 'market-summary', () => (plugin.summary || CLATI18n.msg("web.no_summary_provided", {}, "No summary provided."))),
       tags,
     );
     pluginMarket.decorate(card, plugin);
     dom['market-list'].appendChild(card);
   }
   if (packages.length === 0) {
-    dom['market-list'].appendChild(el('div', 'market-item market-empty', 'No matching plugins.'));
+    dom['market-list'].appendChild(el('div', 'market-item market-empty', () => (CLATI18n.msg("web.no_matching_plugins", {}, "No matching plugins."))));
   }
-  const source = state.marketFallback ? 'built-in preview · pi.at.cn unavailable' : 'public catalog';
-  dom['market-status'].textContent = `${packages.length} of ${state.marketPackages.length} · ${source}`;
+  const source = state.marketFallback ? CLATI18n.msg("web.built_in_preview_pi_at_cn_unavailable", {}, "built-in preview · pi.at.cn unavailable") : CLATI18n.msg("web.public_catalog", {}, "public catalog");
+  CLATI18n.bind(dom['market-status'], "textContent", () => CLATI18n.msg("web.dynamic_value_of_value_value", {value1:(packages.length),value2:(state.marketPackages.length),value3:(source)}, "{value1} of {value2} · {value3}"));
 }
 
 async function loadMarket() {
   if (state.marketLoaded) return;
-  dom['market-status'].textContent = 'Loading public catalog…';
+  CLATI18n.bind(dom['market-status'], "textContent", () => CLATI18n.msg("web.loading_public_catalog", {}, "Loading public catalog…"));
   try {
     const response = await fetch(MARKET_CATALOG_URL, {
       method: 'GET',
@@ -2751,8 +2754,8 @@ function openSettings(category = 'appearance') {
   closeModelPicker();
   const mode = state.workbench && state.workbench.permission && state.workbench.permission.mode;
   selectPermissionMode(mode || 'workspace-write');
-  dom['settings-error'].textContent = '';
-  dom['settings-saved'].textContent = '';
+  CLATI18n.bind(dom['settings-error'], "textContent", () => '');
+  CLATI18n.bind(dom['settings-saved'], "textContent", () => '');
   if (!dom['settings-dialog'].open) dom['settings-dialog'].showModal();
   refreshWechatStatus();
   refreshWorkspaces();
@@ -2773,9 +2776,9 @@ modelField('profile-new').addEventListener('click', () => {
   modelField('profile-protocol').value = 'open_ai_compatible';
   modelField('profile-path').value = '/chat/completions';
   modelField('profile-clear-key').checked = false;
-  modelField('profile-key-state').textContent = '';
-  modelField('settings-saved').textContent = '';
-  modelField('settings-error').textContent = '';
+  CLATI18n.bind(modelField('profile-key-state'), "textContent", () => '');
+  CLATI18n.bind(modelField('settings-saved'), "textContent", () => '');
+  CLATI18n.bind(modelField('settings-error'), "textContent", () => '');
   modelField('profile-editor').open = true;
   modelField('profile-name').focus();
 });
@@ -2786,8 +2789,7 @@ async function refreshModelSettings() {
   try {
     const view = await rpc('model.settings.get', {});
     if (generation !== modelSettingsRefresh) return;
-    modelField('current').textContent = (view.current.model || 'No model selected') +
-      ' · key ' + (view.current.credential_set ? 'set' : 'not set');
+    CLATI18n.bind(modelField('current'), "textContent", () => CLATI18n.msg("web.line_value_key_value",{value1:((view.current.model || CLATI18n.msg("web.no_model_selected", {}, "No model selected"))),value2:((view.current.credential_set ? 'set' : CLATI18n.msg("web.not_set", {}, "not set")))},"{value1} · key {value2}"));
     renderModelPicker(view);
     modelField('profiles').replaceChildren();
     for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
@@ -2799,8 +2801,8 @@ async function refreshModelSettings() {
     }
     syncSuggestionControl();
   } catch (error) {
-    if (dom['settings-dialog'].open) modelField('settings-error').textContent = error.message;
-    if (modelPickerOpen()) dom['model-picker-error'].textContent = error.message;
+    if (dom['settings-dialog'].open) CLATI18n.bind(modelField('settings-error'), "textContent", () => error.message);
+    if (modelPickerOpen()) CLATI18n.bind(dom['model-picker-error'], "textContent", () => error.message);
   }
 }
 
@@ -2812,7 +2814,7 @@ function closeModelPicker({ focus = false } = {}) {
   hide(dom['model-picker']);
   dom['model-picker-trigger'].setAttribute('aria-expanded', 'false');
   dom['model-picker-key'].value = '';
-  dom['model-picker-error'].textContent = '';
+  CLATI18n.bind(dom['model-picker-error'], "textContent", () => '');
   if (focus) dom['model-picker-trigger'].focus();
 }
 
@@ -2823,8 +2825,8 @@ async function openModelPicker() {
   }
   show(dom['model-picker']);
   dom['model-picker-trigger'].setAttribute('aria-expanded', 'true');
-  dom['model-picker-error'].textContent = '';
-  dom['model-picker-list'].replaceChildren(el('p', 'model-picker-current', 'Loading model routes…'));
+  CLATI18n.bind(dom['model-picker-error'], "textContent", () => '');
+  dom['model-picker-list'].replaceChildren(el('p', 'model-picker-current', () => (CLATI18n.msg("web.loading_model_routes", {}, "Loading model routes…"))));
   await refreshModelSettings();
   if (modelPickerOpen()) dom['model-picker-close'].focus();
 }
@@ -2835,16 +2837,16 @@ function renderModelPicker(view) {
   const levels = view.current.thinking_levels || [];
   thinking.dataset.adjustable = String(levels.length > 0);
   for (const level of levels) {
-    const option = el('option', '', level.charAt(0).toUpperCase() + level.slice(1));
+    const option = el('option', '', () => (level.charAt(0).toUpperCase() + level.slice(1)));
     option.value = level;
     thinking.appendChild(option);
   }
   if (!levels.length) {
-    const option = el('option', '', 'Not adjustable');
+    const option = el('option', '', () => (CLATI18n.msg("web.not_adjustable", {}, "Not adjustable")));
     option.value = '';
     thinking.appendChild(option);
   } else if (!view.current.thinking_level) {
-    const option = el('option', '', 'Choose intensity');
+    const option = el('option', '', () => (CLATI18n.msg("web.choose_intensity", {}, "Choose intensity")));
     option.value = '';
     option.disabled = true;
     thinking.prepend(option);
@@ -2852,40 +2854,40 @@ function renderModelPicker(view) {
   thinking.value = view.current.thinking_level || '';
   thinking.disabled = !levels.length || state.modelSelectionPending || state.runActive
     || state.switching || state.compactionActive;
-  dom['model-picker-current'].textContent = `Current · ${view.current.model || 'not configured'}`;
+  CLATI18n.bind(dom['model-picker-current'], "textContent", () => CLATI18n.msg("web.dynamic_current_value", {value1:(view.current.model || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Current · {value1}"));
   dom['model-picker-list'].replaceChildren();
   const presets = (view.presets || []).map((preset) => ({
     label: preset.name,
-    detail: `${preset.vendor} · built-in preset`,
+    detail: CLATI18n.msg("web.dynamic_value_built_in_preset", {value1:(preset.vendor)}, "{value1} · built-in preset"),
     active: !view.active_profile && view.current.preset === preset.id,
     method: 'model.preset.select',
     params: { id: preset.id },
     preset: true,
   }));
-  appendModelChoiceGroup('Built-in presets', presets);
+  appendModelChoiceGroup(CLATI18n.msg("web.built_in_presets", {}, "Built-in presets"), presets);
   const profiles = (view.profiles || []).map((name) => ({
     label: name,
-    detail: 'Saved profile',
+    detail: CLATI18n.msg("web.saved_profile", {}, "Saved profile"),
     active: view.active_profile === name,
     method: 'model.profile.activate',
     params: { name },
     preset: false,
   }));
-  appendModelChoiceGroup('Saved profiles', profiles);
+  appendModelChoiceGroup(CLATI18n.msg("web.saved_profiles", {}, "Saved profiles"), profiles);
 }
 
 function appendModelChoiceGroup(label, choices) {
   if (choices.length === 0) return;
-  dom['model-picker-list'].appendChild(el('p', 'model-picker-group', label));
+  dom['model-picker-list'].appendChild(el('p', 'model-picker-group', () => (label)));
   for (const choice of choices) {
     const button = el('button', 'model-choice');
     button.type = 'button';
     button.setAttribute('role', 'radio');
     button.setAttribute('aria-checked', String(choice.active));
-    button.setAttribute('aria-label', `Use ${choice.label}`);
+    CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg("web.dynamic_use_value", {value1:(choice.label)}, "Use {value1}"));
     const copy = el('span');
-    copy.append(el('strong', '', choice.label), el('small', '', choice.detail));
-    button.append(copy, el('span', 'model-choice-mark', choice.active ? '●' : ''));
+    copy.append(el('strong', '', () => (choice.label)), el('small', '', () => (choice.detail)));
+    button.append(copy, el('span', 'model-choice-mark', () => (choice.active ? '●' : '')));
     button.addEventListener('click', () => selectModelChoice(choice));
     dom['model-picker-list'].appendChild(button);
   }
@@ -2894,7 +2896,7 @@ function appendModelChoiceGroup(label, choices) {
 async function selectModelChoice(choice) {
   if (state.modelSelectionPending) return;
   state.modelSelectionPending = true;
-  dom['model-picker-error'].textContent = '';
+  CLATI18n.bind(dom['model-picker-error'], "textContent", () => '');
   syncInteractionControls();
   const params = { ...choice.params };
   if (choice.preset && dom['model-picker-key'].value) params.api_key = dom['model-picker-key'].value;
@@ -2905,7 +2907,7 @@ async function selectModelChoice(choice) {
     await refreshModelSettings();
     await refreshWorkbench();
   } catch (error) {
-    dom['model-picker-error'].textContent = error.message;
+    CLATI18n.bind(dom['model-picker-error'], "textContent", () => error.message);
   } finally {
     state.modelSelectionPending = false;
     syncInteractionControls();
@@ -2918,10 +2920,10 @@ function renderUtilitySettings(settings, profiles = []) {
   dom['utility-suggestions-enabled'].checked = settings.suggestions_enabled === true;
   const select = dom['utility-profile'];
   const chosen = settings.profile || '';
-  select.replaceChildren(el('option', '', 'Use primary model'));
+  select.replaceChildren(el('option', '', () => (CLATI18n.msg("web.use_primary_model", {}, "Use primary model"))));
   select.options[0].value = '';
   for (const name of profiles) {
-    const option = el('option', '', name);
+    const option = el('option', '', () => (name));
     option.value = name;
     select.appendChild(option);
   }
@@ -2930,14 +2932,15 @@ function renderUtilitySettings(settings, profiles = []) {
 
 function renderModelProfile(name, active) {
   const row = el('div', 'model-profile-row');
-  row.appendChild(el('strong', '', name + (active ? ' · active' : '')));
-  for (const action of ['Edit', 'Delete']) {
-    const button = el('button', 'ghost', action);
+  row.appendChild(el('strong', '', () => (name + (active ? CLATI18n.t('web.active_suffix') : ''))));
+  for (const action of ['Edit','Delete']) {
+    const label=CLATI18n.msg(action==='Edit'?'web.edit_short':'web.delete_short',{},action);
+    const button = el('button', 'ghost', () => (label));
     button.type = 'button';
-    button.setAttribute('aria-label', action + ' profile ' + name);
+    CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg("web.line_value_profile_value",{value1:(label),value2:(name)},"{value1} profile {value2}"));
     button.addEventListener('click', () => modelAction(button, async () => {
       if (action === 'Edit') return loadModelProfile(name);
-      if (action === 'Delete' && !window.confirm('Delete profile “' + name + '”? An active profile falls back to the next saved profile, or an unconfigured model.')) return;
+      if (action === 'Delete' && !window.confirm(CLATI18n.msg("web.line_delete_profile_value_an_active_profile_falls_back_to_the_next_saved_profile_or_an_unconfigured_model",{value1:(name)},"Delete profile “{value1}”? An active profile falls back to the next saved profile, or an unconfigured model."))) return;
       await rpc('model.profile.delete', { name });
     }));
     row.appendChild(button);
@@ -2949,27 +2952,26 @@ async function loadModelProfile(name) {
   const generation = ++modelProfileGeneration;
   const view = await rpc('model.profile.get', { name });
   if (generation !== modelProfileGeneration || !dom['settings-dialog'].open) return;
-  if (!view) throw new Error('Profile no longer exists');
+  if (!view) throw CLATI18n.error(CLATI18n.msg("web.profile_no_longer_exists", {}, "Profile no longer exists"));
   modelField('profile-name').value = name;
   for (const [field, key] of [['protocol', 'protocol'], ['model', 'model'], ['endpoint', 'endpoint'], ['path', 'request_path']]) {
     modelField('profile-' + field).value = view[key];
   }
   modelField('profile-key').value = '';
   modelField('profile-clear-key').checked = false;
-  modelField('profile-key-state').textContent = 'Key ' + (view.credential_set ? 'is set' : 'is not set') +
-    (view.advanced_settings_present ? ' · Advanced settings are retained only on an unchanged route.' : '');
+  CLATI18n.bind(modelField('profile-key-state'), "textContent", () => CLATI18n.msg("web.line_key_valuevalue",{value1:((view.credential_set ? CLATI18n.msg("web.key_set",{},"is set") : CLATI18n.msg("web.is_not_set", {}, "is not set"))),value2:((view.advanced_settings_present ? CLATI18n.msg("web.advanced_settings_are_retained_only_on_an_unchanged_route", {}, " · Advanced settings are retained only on an unchanged route.") : ''))},"Key {value1}{value2}"));
   modelField('profile-editor').open = true;
 }
 
 async function modelAction(button, action) {
   button.disabled = true;
-  modelField('settings-error').textContent = '';
-  modelField('settings-saved').textContent = '';
+  CLATI18n.bind(modelField('settings-error'), "textContent", () => '');
+  CLATI18n.bind(modelField('settings-saved'), "textContent", () => '');
   try {
     await action();
     await refreshModelSettings();
     await refreshWorkbench();
-  } catch (error) { modelField('settings-error').textContent = error.message; }
+  } catch (error) { CLATI18n.bind(modelField('settings-error'), "textContent", () => error.message); }
   finally { button.disabled = false; }
 }
 
@@ -2982,7 +2984,7 @@ modelField('profile-save').addEventListener('click', (event) => modelAction(even
   else if (modelField('profile-key').value) params.api_key = modelField('profile-key').value;
   modelField('profile-key').value = '';
   await rpc('model.profile.save', params);
-  modelField('settings-saved').textContent = 'Profile saved. Choose Use to activate it.';
+  CLATI18n.bind(modelField('settings-saved'), "textContent", () => CLATI18n.msg("web.profile_saved_choose_use_to_activate_it", {}, "Profile saved. Choose Use to activate it."));
 }));
 
 dom['settings-dialog'].addEventListener('close', () => {
@@ -2992,8 +2994,8 @@ dom['settings-dialog'].addEventListener('close', () => {
 
 async function saveUtilitySettings(button) {
   button.disabled = true;
-  dom['utility-settings-error'].textContent = '';
-  dom['utility-settings-saved'].textContent = '';
+  CLATI18n.bind(dom['utility-settings-error'], "textContent", () => '');
+  CLATI18n.bind(dom['utility-settings-saved'], "textContent", () => '');
   try {
     const settings = {
       naming_enabled: dom['utility-naming-enabled'].checked,
@@ -3007,11 +3009,11 @@ async function saveUtilitySettings(button) {
     utilitySettingsRefresh++;
     state.utilitySettings = settings;
     renderUtilitySettings(settings, [...dom['utility-profile'].options].slice(1).map((option) => option.value));
-    dom['utility-settings-saved'].textContent = 'Utility policy saved for every connected frontend.';
+    CLATI18n.bind(dom['utility-settings-saved'], "textContent", () => CLATI18n.msg("web.utility_policy_saved_for_every_connected_frontend", {}, "Utility policy saved for every connected frontend."));
     syncSuggestionControl();
     await refreshWorkbench();
   } catch (error) {
-    dom['utility-settings-error'].textContent = error.message;
+    CLATI18n.bind(dom['utility-settings-error'], "textContent", () => error.message);
   } finally {
     button.disabled = false;
   }
@@ -3032,14 +3034,13 @@ async function refreshWorkspaces() {
     const result = await rpc('workspace.list', {});
     list.replaceChildren();
     for (const workspace of result.workspaces) {
-      const link = el('a', 'workspace-link', workspace.root);
+      const link = el('a', 'workspace-link', () => (workspace.root));
       link.href = '/?workspace=' + encodeURIComponent(workspace.id);
       link.target = '_blank';
       link.rel = 'noopener';
       list.appendChild(link);
     }
-    error.textContent = '';
-  } catch (failure) { error.textContent = failure.message; }
+  } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
 }
 
 document.getElementById('workspace-open').addEventListener('click', async () => {
@@ -3048,18 +3049,18 @@ document.getElementById('workspace-open').addEventListener('click', async () => 
   const root = document.getElementById('workspace-root').value.trim();
   const trust = document.getElementById('workspace-trust').checked;
   button.disabled = true;
-  error.textContent = '';
+  CLATI18n.bind(error, "textContent", () => '');
   try {
     const result = await rpc('workspace.open', { root, trust });
     await refreshWorkspaces();
     // A separate tab keeps this client's draft, stream and selection intact.
-    const link = el('a', 'workspace-link', 'Open project in a new tab');
+    const link = el('a', 'workspace-link', () => (CLATI18n.msg("web.open_project_in_a_new_tab", {}, "Open project in a new tab")));
     link.href = '/?workspace=' + encodeURIComponent(result.id);
     link.target = '_blank';
     link.rel = 'noopener';
     error.replaceChildren(link);
     document.getElementById('workspace-trust').checked = false;
-  } catch (failure) { error.textContent = failure.message; }
+  } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
   finally { button.disabled = false; }
 });
 
@@ -3077,16 +3078,16 @@ document.getElementById('inspector-context').addEventListener('click', async (ev
   const isCurrent = () => session === state.sessionId && selection === state.selectionGeneration;
   button.disabled = true;
   const feedback = document.getElementById('inspector-feedback');
-  feedback.textContent = 'Reading context…';
+  CLATI18n.bind(feedback, "textContent", () => CLATI18n.msg("web.reading_context", {}, "Reading context…"));
   try {
     const value = await rpc('command.run', { command: '/context' });
     if (!isCurrent()) return;
-    if (value.kind !== 'context') throw new Error('Context is unavailable');
+    if (value.kind !== 'context') throw CLATI18n.error(CLATI18n.msg("web.context_is_unavailable", {}, "Context is unavailable"));
     addContextSnapshot(value.context);
-    feedback.textContent = 'Context breakdown added to conversation';
-  } catch (error) { if (isCurrent()) feedback.textContent = error.message; }
+    CLATI18n.bind(feedback, "textContent", () => CLATI18n.msg("web.context_breakdown_added_to_conversation", {}, "Context breakdown added to conversation"));
+  } catch (error) { if (isCurrent()) CLATI18n.bind(feedback, "textContent", () => error.message); }
   finally {
-    if (!isCurrent()) feedback.textContent = '';
+    if (!isCurrent()) CLATI18n.bind(feedback, "textContent", () => '');
     button.disabled = false;
   }
 });
@@ -3097,7 +3098,7 @@ document.getElementById('model-thinking').addEventListener('change', async (even
   try {
     await rpc('model.overrides.set', { field: 'thinking_level', state: 'set', value: event.target.value });
     await refreshWorkbench();
-  } catch (error) { dom['model-picker-error'].textContent = error.message; }
+  } catch (error) { CLATI18n.bind(dom['model-picker-error'], "textContent", () => error.message); }
   finally {
     state.modelSelectionPending = false;
     await refreshModelSettings();
@@ -3138,10 +3139,10 @@ dom['reading-options'].addEventListener('change', (event) => {
 
 dom['permission-save'].addEventListener('click', async () => {
   const mode = selectedPermissionMode();
-  dom['settings-error'].textContent = '';
-  dom['settings-saved'].textContent = '';
+  CLATI18n.bind(dom['settings-error'], "textContent", () => '');
+  CLATI18n.bind(dom['settings-saved'], "textContent", () => '');
   if (mode === 'danger-full-access' && !dom['full-access-confirm'].checked) {
-    dom['settings-error'].textContent = 'Confirm the Full Access warning before applying it.';
+    CLATI18n.bind(dom['settings-error'], "textContent", () => CLATI18n.msg("web.confirm_the_full_access_warning_before_applying_it", {}, "Confirm the Full Access warning before applying it."));
     return;
   }
   dom['permission-save'].disabled = true;
@@ -3150,9 +3151,9 @@ dom['permission-save'].addEventListener('click', async () => {
     if (mode === 'danger-full-access') params.confirm = mode;
     await rpc('permission.set', params);
     await refreshWorkbench();
-    dom['settings-saved'].textContent = 'Permission mode updated.';
+    CLATI18n.bind(dom['settings-saved'], "textContent", () => CLATI18n.msg("web.permission_mode_updated", {}, "Permission mode updated."));
   } catch (error) {
-    dom['settings-error'].textContent = error.message;
+    CLATI18n.bind(dom['settings-error'], "textContent", () => error.message);
   } finally {
     dom['permission-save'].disabled = false;
   }
@@ -3168,17 +3169,18 @@ function clearWechatQr() {
 }
 
 async function refreshWechatStatus() {
-  dom['wechat-error'].textContent = '';
+  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   try {
     const status = await rpc('wechat.binding.status', {});
-    dom['wechat-status'].textContent = status.bound ? 'Bound' : 'Not bound';
-    dom['wechat-counts'].textContent = `${status.paired_users || 0} paired · ${status.mapped_chats || 0} chats`;
-    dom['wechat-bind'].textContent = status.bound ? 'Replace binding' : 'Bind WeChat';
+    CLATI18n.bind(dom['wechat-status'], "textContent", () => status.bound ? CLATI18n.msg("web.bound_short",{},"Bound") : CLATI18n.msg("web.not_bound", {}, "Not bound"));
+    CLATI18n.bind(dom['wechat-counts'], "textContent", () => CLATI18n.msg("web.dynamic_value_paired_value_chats", {value1:(status.paired_users || 0),value2:(status.mapped_chats || 0)}, "{value1} paired · {value2} chats"));
+    dom['wechat-bind'].dataset.bound = String(Boolean(status.bound));
+  CLATI18n.bind(dom['wechat-bind'], "textContent", () => status.bound ? CLATI18n.msg("web.replace_binding", {}, "Replace binding") : CLATI18n.msg("web.bind_wechat", {}, "Bind WeChat"));
     dom['wechat-pair'].disabled = !status.bound;
     dom['wechat-unbind'].disabled = !status.bound;
   } catch (error) {
-    dom['wechat-status'].textContent = 'Unavailable';
-    dom['wechat-error'].textContent = error.message;
+    CLATI18n.bind(dom['wechat-status'], "textContent", () => CLATI18n.msg("web.unavailable_short",{},"Unavailable"));
+    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 }
 
@@ -3189,15 +3191,15 @@ async function pollWechatBinding(pollId, verifyCode) {
     const value = await rpc('wechat.binding.poll', params);
     if (pollId !== state.wechatBindingPoll) return;
     const labels = {
-      waiting: 'Waiting for scan…',
-      scanned: 'Scanned; confirm on the phone…',
-      need_verify_code: 'Enter the verification code shown by WeChat.',
-      verify_code_blocked: 'Verification was blocked. Wait before trying again.',
-      expired: 'QR code expired. Start a new binding.',
-      already_bound: 'The account is already bound and returned no new credential.',
-      confirmed: 'Binding confirmed. Create a one-time user pairing code next.',
+      waiting: CLATI18n.msg("web.waiting_for_scan", {}, "Waiting for scan…"),
+      scanned: CLATI18n.msg("web.scanned_confirm_on_the_phone", {}, "Scanned; confirm on the phone…"),
+      need_verify_code: CLATI18n.msg("web.enter_the_verification_code_shown_by_wechat", {}, "Enter the verification code shown by WeChat."),
+      verify_code_blocked: CLATI18n.msg("web.verification_was_blocked_wait_before_trying_again", {}, "Verification was blocked. Wait before trying again."),
+      expired: CLATI18n.msg("web.qr_code_expired_start_a_new_binding", {}, "QR code expired. Start a new binding."),
+      already_bound: CLATI18n.msg("web.the_account_is_already_bound_and_returned_no_new_credential", {}, "The account is already bound and returned no new credential."),
+      confirmed: CLATI18n.msg("web.binding_confirmed_create_a_one_time_user_pairing_code_next", {}, "Binding confirmed. Create a one-time user pairing code next."),
     };
-    dom['wechat-qr-state'].textContent = labels[value.state] || value.state;
+    CLATI18n.bind(dom['wechat-qr-state'], "textContent", () => labels[value.state] || value.state);
     if (value.state === 'need_verify_code') {
       show(dom['wechat-verify-row']);
       dom['wechat-verify-code'].focus();
@@ -3211,15 +3213,15 @@ async function pollWechatBinding(pollId, verifyCode) {
     }
     window.setTimeout(() => pollWechatBinding(pollId), 500);
   } catch (error) {
-    if (pollId === state.wechatBindingPoll) dom['wechat-error'].textContent = error.message;
+    if (pollId === state.wechatBindingPoll) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 }
 
 dom['wechat-bind'].addEventListener('click', async () => {
-  dom['wechat-error'].textContent = '';
+  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   hide(dom['wechat-pairing']);
-  const replacing = dom['wechat-bind'].textContent === 'Replace binding';
-  if (replacing && !window.confirm('Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared.')) return;
+  const replacing = dom['wechat-bind'].dataset.bound === 'true';
+  if (replacing && !window.confirm(CLATI18n.msg("web.replace_the_current_binding_existing_user_grants_are_kept_until_the_new_qr_is_conf", {}, "Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared."))) return;
   dom['wechat-bind'].disabled = true;
   try {
     const value = await rpc('wechat.binding.start', { replace: replacing });
@@ -3227,12 +3229,12 @@ dom['wechat-bind'].addEventListener('click', async () => {
     const blob = new Blob([value.qr_svg], { type: 'image/svg+xml' });
     state.wechatQrUrl = URL.createObjectURL(blob);
     dom['wechat-qr-image'].src = state.wechatQrUrl;
-    dom['wechat-qr-state'].textContent = 'Waiting for scan…';
+    CLATI18n.bind(dom['wechat-qr-state'], "textContent", () => CLATI18n.msg("web.waiting_for_scan", {}, "Waiting for scan…"));
     show(dom['wechat-qr']);
     const pollId = ++state.wechatBindingPoll;
     pollWechatBinding(pollId);
   } catch (error) {
-    dom['wechat-error'].textContent = error.message;
+    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   } finally {
     dom['wechat-bind'].disabled = false;
   }
@@ -3241,7 +3243,7 @@ dom['wechat-bind'].addEventListener('click', async () => {
 dom['wechat-verify-submit'].addEventListener('click', () => {
   const code = dom['wechat-verify-code'].value.trim();
   if (!/^[A-Za-z0-9]{1,32}$/.test(code)) {
-    dom['wechat-error'].textContent = 'Verification code must be 1–32 letters or digits.';
+    CLATI18n.bind(dom['wechat-error'], "textContent", () => CLATI18n.msg("web.verification_code_must_be_1_32_letters_or_digits", {}, "Verification code must be 1–32 letters or digits."));
     return;
   }
   hide(dom['wechat-verify-row']);
@@ -3249,19 +3251,19 @@ dom['wechat-verify-submit'].addEventListener('click', () => {
 });
 
 dom['wechat-pair'].addEventListener('click', async () => {
-  dom['wechat-error'].textContent = '';
+  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   try {
     const value = await rpc('wechat.pairing.create', {});
-    dom['wechat-pairing-code'].textContent = value.code;
+    CLATI18n.bind(dom['wechat-pairing-code'], "textContent", () => value.code);
     show(dom['wechat-pairing']);
   } catch (error) {
-    dom['wechat-error'].textContent = error.message;
+    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 });
 
 dom['wechat-unbind'].addEventListener('click', async () => {
-  if (!window.confirm('Remove the WeChat credential, paired users, and chat mappings?')) return;
-  dom['wechat-error'].textContent = '';
+  if (!window.confirm(CLATI18n.msg("web.remove_the_wechat_credential_paired_users_and_chat_mappings", {}, "Remove the WeChat credential, paired users, and chat mappings?"))) return;
+  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   try {
     await rpc('wechat.binding.unbind', { confirm: 'unbind-wechat' });
     state.wechatBindingPoll += 1;
@@ -3269,7 +3271,7 @@ dom['wechat-unbind'].addEventListener('click', async () => {
     hide(dom['wechat-pairing']);
     await refreshWechatStatus();
   } catch (error) {
-    dom['wechat-error'].textContent = error.message;
+    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 });
 
@@ -3335,7 +3337,7 @@ function formatBytes(bytes) {
 }
 
 function imageLabel(image) {
-  const dimensions = image.width && image.height ? `${image.width} × ${image.height}` : 'checking dimensions';
+  const dimensions = image.width && image.height ? `${image.width} × ${image.height}` : CLATI18n.msg("web.checking_dimensions", {}, "checking dimensions");
   return `${image.name} · ${dimensions} · ${formatBytes(image.bytes)}`;
 }
 
@@ -3372,7 +3374,7 @@ function renderDraft() {
   dom['attachment-rail'].replaceChildren();
   if (images.length === 0) {
     hide(dom['attachment-rail']);
-    dom['attachment-summary'].textContent = state.draft.notice;
+    CLATI18n.bind(dom['attachment-summary'], "textContent", () => state.draft.notice);
     return;
   }
   show(dom['attachment-rail']);
@@ -3381,44 +3383,44 @@ function renderDraft() {
     chip.dataset.imageId = image.id;
     const thumb = el('img', 'attachment-thumb');
     thumb.src = image.url;
-    thumb.alt = `${image.name} preview`;
-    const indexMark = el('span', 'attachment-index', String(index + 1).padStart(2, '0'));
+    CLATI18n.bind(thumb, "alt", () => CLATI18n.msg("web.dynamic_value_preview", {value1:(image.name)}, "{value1} preview"));
+    const indexMark = el('span', 'attachment-index', () => (String(index + 1).padStart(2, '0')));
     const copy = el('div', 'attachment-copy');
     copy.append(
-      el('strong', null, image.name),
-      el('small', null, imageLabel(image)),
-      el('small', 'attachment-state', image.status === 'uploaded'
-        ? 'staged locally'
+      el('strong', null, () => (image.name)),
+      el('small', null, () => (imageLabel(image))),
+      el('small', 'attachment-state', () => (image.status === 'uploaded'
+        ? CLATI18n.msg("web.staged_locally", {}, "staged locally")
         : image.status === 'queued'
-          ? 'steering queued · held for recovery'
+          ? CLATI18n.msg("web.steering_queued_held_for_recovery", {}, "steering queued · held for recovery")
         : image.status === 'uploading'
-          ? 'staging…'
+          ? CLATI18n.msg('web.staging')
           : image.status === 'failed'
-            ? `not staged · ${image.error || 'retry required'}`
-            : 'ready to stage'),
+            ? CLATI18n.msg("web.dynamic_not_staged_value", {value1:(image.error || CLATI18n.msg("web.retry_required", {}, "retry required"))}, "not staged · {value1}")
+            : CLATI18n.msg("web.ready_to_stage", {}, "ready to stage"))),
     );
     const controls = el('div', 'attachment-controls');
-    const moveEarlier = el('button', 'attachment-order', '↑');
+    const moveEarlier = el('button', 'attachment-order', () => ('↑'));
     moveEarlier.type = 'button';
-    moveEarlier.title = 'Move image earlier';
+    CLATI18n.bind(moveEarlier, "title", () => CLATI18n.msg("web.move_image_earlier", {}, "Move image earlier"));
     moveEarlier.disabled = state.compactionActive || index === 0 || state.draft.sending || state.draft.queuedClientMessageId !== null;
     moveEarlier.addEventListener('click', () => moveDraftImage(index, index - 1));
-    const moveLater = el('button', 'attachment-order', '↓');
+    const moveLater = el('button', 'attachment-order', () => ('↓'));
     moveLater.type = 'button';
-    moveLater.title = 'Move image later';
+    CLATI18n.bind(moveLater, "title", () => CLATI18n.msg("web.move_image_later", {}, "Move image later"));
     moveLater.disabled = state.compactionActive || index === images.length - 1 || state.draft.sending || state.draft.queuedClientMessageId !== null;
     moveLater.addEventListener('click', () => moveDraftImage(index, index + 1));
     if (image.status === 'failed') {
-      const retry = el('button', 'attachment-retry', '↻');
+      const retry = el('button', 'attachment-retry', () => ('↻'));
       retry.type = 'button';
-      retry.title = `Retry staging ${image.name}`;
+      CLATI18n.bind(retry, "title", () => CLATI18n.msg("web.dynamic_retry_staging_value", {value1:(image.name)}, "Retry staging {value1}"));
       retry.disabled = state.compactionActive;
       retry.addEventListener('click', () => retryDraftImage(image));
       controls.appendChild(retry);
     }
-    const remove = el('button', 'attachment-remove', '×');
+    const remove = el('button', 'attachment-remove', () => ('×'));
     remove.type = 'button';
-    remove.title = `Remove ${image.name}`;
+    CLATI18n.bind(remove, "title", () => CLATI18n.msg("web.dynamic_remove_value", {value1:(image.name)}, "Remove {value1}"));
     remove.disabled = state.compactionActive || state.draft.sending || state.draft.queuedClientMessageId !== null;
     remove.addEventListener('click', () => removeDraftImage(image.id));
     controls.append(moveEarlier, moveLater, remove);
@@ -3428,14 +3430,14 @@ function renderDraft() {
   const staged = images.filter((image) => image.status === 'uploaded').length;
   const failed = images.filter((image) => image.status === 'failed').length;
   let summary = failed
-    ? `${failed} image${failed === 1 ? '' : 's'} need attention`
+    ? CLATI18n.msg("web.images_attention",{count:failed},"{count} images need attention")
     : state.draft.queuedClientMessageId !== null
-      ? `${images.length} image${images.length === 1 ? '' : 's'} queued with the active run · draft held until claimed`
+      ? CLATI18n.msg("web.images_queued",{count:images.length},"{count} images queued with the active run · draft held until claimed")
     : staged === images.length
-      ? `${staged} image${staged === 1 ? '' : 's'} ready · ${formatBytes(totalDraftBytes())}`
-      : `${staged}/${images.length} images staged`;
-  if (state.draft.notice) summary += ` · ${state.draft.notice}`;
-  dom['attachment-summary'].textContent = summary;
+      ? CLATI18n.msg("web.images_ready",{count:staged,size:formatBytes(totalDraftBytes())},"{count} images ready · {size}")
+      : CLATI18n.msg("web.dynamic_value_value_images_staged", {value1:(staged),value2:(images.length)}, "{value1}/{value2} images staged");
+  const notice=state.draft.notice;
+  CLATI18n.bind(dom['attachment-summary'], "textContent", () => String(summary)+(notice ? ' · '+String(notice):''));
 }
 
 function clearDraft() {
@@ -3500,7 +3502,7 @@ async function uploadDraftImage(image, epoch) {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok || !body || !body.ok || !body.value || typeof body.value.uploadId !== 'string') {
-      const message = body && body.error && body.error.message ? body.error.message : `upload rejected (HTTP ${response.status})`;
+      const message = body && body.error && body.error.message ? body.error.message : CLATI18n.msg("web.dynamic_upload_rejected_http_value", {value1:(response.status)}, "upload rejected (HTTP {value1})");
       throw new Error(message);
     }
     if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
@@ -3509,18 +3511,18 @@ async function uploadDraftImage(image, epoch) {
   } catch (error) {
     if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
     image.status = 'failed';
-    image.error = error.message || 'upload failed';
+    image.error = error.message || CLATI18n.msg("web.upload_failed",{},"upload failed");
   }
   renderDraft();
 }
 
 async function addDraftFiles(files) {
   if (state.compactionActive || state.switching) {
-    updateRunState('wait for history compaction to finish');
+    updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
     return;
   }
   if (state.draft.queuedClientMessageId !== null) {
-    updateRunState('waiting for queued steering to be claimed or the run to end');
+    updateRunState(CLATI18n.msg("web.waiting_for_queued_steering_to_be_claimed_or_the_run_to_end", {}, "waiting for queued steering to be claimed or the run to end"));
     return;
   }
   const list = Array.from(files || []);
@@ -3530,23 +3532,23 @@ async function addDraftFiles(files) {
   const accepted = [];
   let nextBytes = totalDraftBytes();
   for (const file of list) {
-    if (accepted.length >= available) { issues.push(`at most ${MAX_DRAFT_IMAGES} images per message`); break; }
+    if (accepted.length >= available) { issues.push(CLATI18n.msg("web.dynamic_at_most_value_images_per_message", {value1:(MAX_DRAFT_IMAGES)}, "at most {value1} images per message")); break; }
     if (!(file instanceof File) || !['image/png', 'image/jpeg'].includes(file.type)) {
-      issues.push(`${file && file.name ? file.name : 'file'} is not a PNG or JPEG`);
+      issues.push(CLATI18n.msg("web.dynamic_value_is_not_a_png_or_jpeg", {value1:(file && file.name ? file.name : 'file')}, "{value1} is not a PNG or JPEG"));
       continue;
     }
     if (file.size === 0 || file.size > MAX_DRAFT_IMAGE_BYTES) {
-      issues.push(`${file.name} must be 1..${formatBytes(MAX_DRAFT_IMAGE_BYTES)}`);
+      issues.push(CLATI18n.msg("web.dynamic_value_must_be_1_value", {value1:(file.name),value2:(formatBytes(MAX_DRAFT_IMAGE_BYTES))}, "{value1} must be 1..{value2}"));
       continue;
     }
     if (nextBytes + file.size > MAX_DRAFT_BATCH_BYTES) {
-      issues.push(`all images together may use at most ${formatBytes(MAX_DRAFT_BATCH_BYTES)}`);
+      issues.push(CLATI18n.msg("web.dynamic_all_images_together_may_use_at_most_value", {value1:(formatBytes(MAX_DRAFT_BATCH_BYTES))}, "all images together may use at most {value1}"));
       continue;
     }
     nextBytes += file.size;
     accepted.push(file);
   }
-  state.draft.notice = issues.join(' · ');
+  state.draft.notice = CLATI18n.view(()=>issues.join(' · '));
   const epoch = state.draft.epoch;
   const added = accepted.map((file, offset) => ({
     id: newOpaqueClientId('image'), file, name: file.name || `image-${state.draft.images.length + offset + 1}`,
@@ -3559,7 +3561,7 @@ async function addDraftFiles(files) {
   for (const image of added) {
     try {
       const dimensions = await imageDimensions(image.file);
-      if (dimensions.width * dimensions.height > MAX_DRAFT_PIXELS) throw new Error(`exceeds the ${MAX_DRAFT_PIXELS}-pixel limit`);
+      if (dimensions.width * dimensions.height > MAX_DRAFT_PIXELS) throw CLATI18n.error(CLATI18n.msg("web.dynamic_exceeds_the_value_pixel_limit", {value1:(MAX_DRAFT_PIXELS)}, "exceeds the {value1}-pixel limit"));
       if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) continue;
       image.width = dimensions.width;
       image.height = dimensions.height;
@@ -3568,7 +3570,7 @@ async function addDraftFiles(files) {
     } catch (error) {
       if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) continue;
       image.status = 'failed';
-      image.error = error.message || 'image validation failed';
+      image.error = error.message || CLATI18n.msg("web.image_failed",{},"image validation failed");
       renderDraft();
     }
   }
@@ -3581,7 +3583,8 @@ async function retryDraftImage(image) {
 }
 
 function updateRunState(text) {
-  dom['run-state'].textContent = text;
+  dom['run-state'].dataset.presentation = text?.key || '';
+  CLATI18n.bind(dom['run-state'], "textContent", () => text);
 }
 
 function resizePrompt() {
@@ -3613,7 +3616,7 @@ async function requestSuggestion() {
     state.suggestion = { text: String(result.text || ''), composerGeneration };
     renderSuggestion();
   } catch (error) {
-    if (request === state.suggestionRequest) updateRunState('suggestion unavailable: ' + error.message);
+    if (request === state.suggestionRequest) updateRunState(CLATI18n.msg("web.line_suggestion_unavailable_value",{value1:(error.message)},"suggestion unavailable: {value1}"));
   } finally {
     if (request === state.suggestionRequest) {
       state.suggestionPending = false;
@@ -3643,7 +3646,7 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 
 async function submitPrompt() {
   if (state.compactionActive || state.switching) {
-    updateRunState('wait for history compaction to finish');
+    updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
     return;
   }
   const text = dom.prompt.value.trim();
@@ -3653,19 +3656,19 @@ async function submitPrompt() {
   const owner = composerScope;
   if (!text && images.length === 0) return;
   if (state.draft.queuedClientMessageId !== null) {
-    updateRunState('steering is queued; waiting for the active run');
+    updateRunState(CLATI18n.msg("web.steering_is_queued_waiting_for_the_active_run", {}, "steering is queued; waiting for the active run"));
     return;
   }
   if (images.some((image) => image.status === 'uploading' || image.status === 'ready')) {
-    updateRunState('waiting for images to stage');
+    updateRunState(CLATI18n.msg("web.waiting_for_images_to_stage", {}, "waiting for images to stage"));
     return;
   }
   if (images.some((image) => image.status !== 'uploaded')) {
-    updateRunState('resolve image staging failures before sending');
+    updateRunState(CLATI18n.msg("web.resolve_image_staging_failures_before_sending", {}, "resolve image staging failures before sending"));
     return;
   }
   if (text.startsWith('/') && images.length > 0) {
-    updateRunState('commands do not accept draft images; draft retained');
+    updateRunState(CLATI18n.msg("web.commands_do_not_accept_draft_images_draft_retained", {}, "commands do not accept draft images; draft retained"));
     return;
   }
   state.draft.sending = images.length > 0;
@@ -3722,7 +3725,7 @@ function restoreQueuedDraft() {
   for (const image of state.draft.images) {
     if (image.status === 'queued') image.status = 'uploaded';
   }
-  state.draft.notice = 'the run ended before this steering was claimed; draft restored';
+  state.draft.notice = CLATI18n.msg("web.the_run_ended_before_this_steering_was_claimed_draft_restored", {}, "the run ended before this steering was claimed; draft restored");
   renderDraft();
   return true;
 }
@@ -3761,9 +3764,9 @@ function caretVisualLineTop(index) {
   caretLineMirror.style.whiteSpace = 'pre-wrap';
   caretLineMirror.style.overflowWrap = 'break-word';
   caretLineMirror.style.height = 'auto';
-  caretLineMirror.textContent = dom.prompt.value.slice(0, index);
+  CLATI18n.bind(caretLineMirror, "textContent", () => dom.prompt.value.slice(0, index));
   const marker = document.createElement('span');
-  marker.textContent = '\u200b';
+  CLATI18n.bind(marker, "textContent", () => '\u200b');
   caretLineMirror.appendChild(marker);
   return marker.offsetTop;
 }
@@ -3822,7 +3825,7 @@ dom['attachment-input'].addEventListener('change', async () => {
 
 for (const eventName of ['dragenter', 'dragover']) {
   dom['composer-shell'].addEventListener(eventName, (event) => {
-    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes(CLATI18n.msg("web.files",{},"Files"))) return;
     event.preventDefault();
     show(dom['drop-overlay']);
   });
@@ -3846,7 +3849,7 @@ dom.prompt.addEventListener('paste', async (event) => {
 
 dom.cancel.addEventListener('click', async () => {
   try { await rpc('run.cancel', {}); }
-  catch (error) { updateRunState('cancel failed: ' + error.message); }
+  catch (error) { updateRunState(CLATI18n.msg("web.line_cancel_failed_value",{value1:(error.message)},"cancel failed: {value1}")); }
 });
 
 /* —— Landing and boot ————————————————————————————————————— */
@@ -3873,9 +3876,9 @@ function enterWorkbench() {
 dom['connect-form'].addEventListener('submit', async (event) => {
   event.preventDefault();
   const credential = dom['connect-token'].value.trim();
-  dom['connect-error'].textContent = '';
+  CLATI18n.bind(dom['connect-error'], "textContent", () => '');
   if (!credential) {
-    dom['connect-error'].textContent = 'Enter the access credential supplied by your host operator.';
+    CLATI18n.bind(dom['connect-error'], "textContent", () => CLATI18n.msg("web.enter_the_access_credential_supplied_by_your_host_operator", {}, "Enter the access credential supplied by your host operator."));
     return;
   }
   const button = dom['connect-form'].querySelector('button[type="submit"]');
@@ -3887,7 +3890,7 @@ dom['connect-form'].addEventListener('submit', async (event) => {
     enterWorkbench();
   } catch (error) {
     if (error.authentication === 'invalid_credentials') clearAuthToken();
-    dom['connect-error'].textContent = 'Connection failed: ' + error.message;
+    CLATI18n.bind(dom['connect-error'], "textContent", () => CLATI18n.msg("web.line_connection_failed_value",{value1:(error.message)},"Connection failed: {value1}"));
   } finally {
     button.disabled = false;
   }
@@ -3914,14 +3917,17 @@ async function boot() {
   } catch (error) {
     if (error.authentication === 'invalid_credentials') clearAuthToken();
     if (error.code === 'forbidden' || error.authentication === 'invalid_credentials') {
-      dom['connect-error'].textContent = error.authentication === 'untrusted_request'
-        ? 'This request did not pass the host security checks.' : '';
+      CLATI18n.bind(dom['connect-error'], "textContent", () => error.authentication === 'untrusted_request'
+        ? CLATI18n.msg("web.this_request_did_not_pass_the_host_security_checks", {}, "This request did not pass the host security checks.") : '');
       stopApp();
     } else {
       show(dom.app);
-      setConnStatus('reconnecting…', 'reconnecting');
+      setConnStatus(CLATI18n.msg('web.reconnecting'), 'reconnecting');
       setTimeout(boot, 3000);
     }
   }
 }
 boot();
+
+CLATI18n.bind(document.getElementById('connect-help'), 'textContent', () => CLATI18n.msg('web.local_connection_hint', {command:'clat serve',port:2691}));
+CLATI18n.bind(document.getElementById('wechat-pairing-instruction'), 'textContent', () => CLATI18n.msg('web.wechat_pairing_instruction', {command:'/pair <code>',minutes:60}));

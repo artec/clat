@@ -5,6 +5,7 @@
 //! call the same core without shelling out.
 
 use crate::control_storage::sentinel;
+use crate::i18n::{LocaleContext, PresentedText, UiMessage};
 use crate::plugin::{
     DEFAULT_MARKET_URL, InstallKind, Market, MarketAuditFinding, MarketInstallOptions,
     PackageInspection, PackageMutation, PackageStore, PluginRuntimeKind, TrustLabel,
@@ -20,19 +21,45 @@ pub struct PluginCliOutcome {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: u8,
+    presentation: Option<UiMessage>,
+    usage: bool,
 }
 
 impl PluginCliOutcome {
+    fn success_message(message: UiMessage) -> Self {
+        let mut result = Self::success(message.english());
+        result.presentation = Some(message);
+        result
+    }
+    pub fn localize(mut self, locale: LocaleContext) -> Self {
+        if let Some(message) = &self.presentation {
+            let rendered = locale.render(message);
+            if self.exit_code == 0 {
+                self.stdout = rendered;
+            } else {
+                self.stderr = rendered;
+                if self.usage {
+                    self.stderr.push_str(locale.text("cli.plugin_help_hint"));
+                }
+            }
+        }
+        self
+    }
     fn success(stdout: impl Into<String>) -> Self {
         Self {
             stdout: stdout.into(),
             stderr: String::new(),
             exit_code: 0,
+            presentation: None,
+            usage: false,
         }
     }
 
-    fn failure(message: impl Into<String>, usage: bool) -> Self {
-        let mut stderr = format!("clat: plugin: {}\n", message.into());
+    fn failure(message: impl Into<PresentedText>, usage: bool) -> Self {
+        let detail: PresentedText = message.into();
+        let presentation =
+            UiMessage::new("cli.plugin_error").arg_message("detail", detail.message());
+        let mut stderr = format!("clat: plugin: {detail}\n");
         if usage {
             stderr.push_str("Run `clat plugin --help` for usage.\n");
         }
@@ -40,6 +67,8 @@ impl PluginCliOutcome {
             stdout: String::new(),
             stderr,
             exit_code: if usage { 2 } else { 1 },
+            presentation: Some(presentation),
+            usage,
         }
     }
 }
@@ -70,31 +99,18 @@ where
 {
     let mut args = args.into_iter();
     let Some(command) = args.next() else {
-        return PluginCliOutcome::success(help());
+        return PluginCliOutcome::success_message(UiMessage::new("cli.plugin_help"));
     };
     if matches!(command.as_str(), "-h" | "--help" | "help") {
         if args.next().is_some() {
-            return PluginCliOutcome::failure("help takes no arguments", true);
+            return PluginCliOutcome::failure(UiMessage::new("cli.plugin_no_help_args"), true);
         }
-        return PluginCliOutcome::success(help());
+        return PluginCliOutcome::success_message(UiMessage::new("cli.plugin_help"));
     }
     match command.as_str() {
-        "pack" => {
-            let parsed = match parse_pack_args(args) {
-                Ok(parsed) => parsed,
-                Err(error) => return PluginCliOutcome::failure(error, true),
-            };
-            match pack_directory(&parsed.source, &parsed.output) {
-                Ok(()) => PluginCliOutcome::success(format!(
-                    "packed {} -> {}\n",
-                    parsed.source.display(),
-                    parsed.output.display()
-                )),
-                Err(error) => PluginCliOutcome::failure(error, false),
-            }
-        }
+        "pack" => pack_command(args),
         "inspect" => {
-            let path = match one_argument(args, "inspect requires a package directory") {
+            let path = match one_argument(args, UiMessage::new("cli.plugin_inspect_path")) {
                 Ok(path) => PathBuf::from(path),
                 Err(error) => return PluginCliOutcome::failure(error, true),
             };
@@ -129,11 +145,11 @@ where
         }
         "list" => {
             if args.next().is_some() {
-                return PluginCliOutcome::failure("list takes no arguments", true);
+                return PluginCliOutcome::failure(UiMessage::new("cli.plugin_no_list_args"), true);
             }
             match installed_packages(storage_root) {
                 Ok(entries) if entries.is_empty() => {
-                    PluginCliOutcome::success("No installed plugins.\n")
+                    PluginCliOutcome::success_message(UiMessage::new("cli.plugin_empty"))
                 }
                 Ok(entries) => {
                     let mut output = "ID\tNAME\tVERSION\tRUNTIME\tSTATE\tTRUST\tPUBLISHER\tHEALTH\tDIGEST\tROLLBACK\n".to_owned();
@@ -165,7 +181,10 @@ where
             }
         }
         "enable" | "disable" | "rollback" | "uninstall" => {
-            let id = match one_argument(args, &format!("{command} requires a plugin id")) {
+            let id = match one_argument(
+                args,
+                UiMessage::new("cli.plugin_id_required").arg("command", command.clone()),
+            ) {
                 Ok(id) => id,
                 Err(error) => return PluginCliOutcome::failure(error, true),
             };
@@ -186,7 +205,25 @@ where
             }
         }
         "market" => run_market(storage_root, args),
-        other => PluginCliOutcome::failure(format!("unknown command `{other}`"), true),
+        other => PluginCliOutcome::failure(
+            UiMessage::new("cli.plugin_unknown_command").arg("command", other),
+            true,
+        ),
+    }
+}
+
+fn pack_command(args: impl IntoIterator<Item = String>) -> PluginCliOutcome {
+    let parsed = match parse_pack_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return PluginCliOutcome::failure(error, true),
+    };
+    match pack_directory(&parsed.source, &parsed.output) {
+        Ok(()) => PluginCliOutcome::success_message(
+            UiMessage::new("cli.plugin_packed")
+                .arg("source", parsed.source.display().to_string())
+                .arg("output", parsed.output.display().to_string()),
+        ),
+        Err(error) => PluginCliOutcome::failure(error, false),
     }
 }
 
@@ -195,7 +232,7 @@ struct PackArgs {
     output: PathBuf,
 }
 
-fn parse_pack_args<I>(args: I) -> Result<PackArgs, String>
+fn parse_pack_args<I>(args: I) -> Result<PackArgs, PresentedText>
 where
     I: IntoIterator<Item = String>,
 {
@@ -206,25 +243,31 @@ where
         match argument.as_str() {
             "--output" => {
                 if output.is_some() {
-                    return Err("--output may be provided only once".into());
+                    return Err(UiMessage::new("cli.plugin_output_once").into());
                 }
                 output = Some(PathBuf::from(
                     args.next()
-                        .ok_or_else(|| "--output requires a path".to_owned())?,
+                        .ok_or_else(|| UiMessage::new("cli.plugin_output_path"))?,
                 ));
             }
-            value if value.starts_with('-') => return Err(format!("unknown option `{value}`")),
+            value if value.starts_with('-') => {
+                return Err(UiMessage::new("cli.plugin_unknown_option")
+                    .arg("value", value)
+                    .into());
+            }
             value => {
                 if source.is_some() {
-                    return Err(format!("unexpected extra argument `{value}`"));
+                    return Err(UiMessage::new("cli.plugin_extra_argument")
+                        .arg("value", value)
+                        .into());
                 }
                 source = Some(PathBuf::from(value));
             }
         }
     }
     Ok(PackArgs {
-        source: source.ok_or_else(|| "pack requires a package directory".to_owned())?,
-        output: output.ok_or_else(|| "pack requires --output <file.clatpkg>".to_owned())?,
+        source: source.ok_or_else(|| UiMessage::new("cli.plugin_pack_path"))?,
+        output: output.ok_or_else(|| UiMessage::new("cli.plugin_pack_output"))?,
     })
 }
 
@@ -234,13 +277,13 @@ where
 {
     let mut args = args.into_iter();
     let Some(command) = args.next() else {
-        return PluginCliOutcome::success(market_help());
+        return PluginCliOutcome::success_message(UiMessage::new("cli.market_help"));
     };
     if matches!(command.as_str(), "-h" | "--help" | "help") {
         if args.next().is_some() {
-            return PluginCliOutcome::failure("market help takes no arguments", true);
+            return PluginCliOutcome::failure(UiMessage::new("cli.plugin_market_help_args"), true);
         }
-        return PluginCliOutcome::success(market_help());
+        return PluginCliOutcome::success_message(UiMessage::new("cli.market_help"));
     }
     let mut arguments = args.collect::<Vec<_>>();
     let market_url = match extract_option(&mut arguments, "--market") {
@@ -250,7 +293,10 @@ where
     match command.as_str() {
         "list" => {
             if !arguments.is_empty() {
-                return PluginCliOutcome::failure("market list takes only --market", true);
+                return PluginCliOutcome::failure(
+                    UiMessage::new("cli.plugin_market_list_args"),
+                    true,
+                );
             }
             let market = match Market::load(storage_root, &market_url) {
                 Ok(market) => market,
@@ -260,7 +306,10 @@ where
         }
         "search" => {
             if arguments.len() != 1 {
-                return PluginCliOutcome::failure("market search requires one query", true);
+                return PluginCliOutcome::failure(
+                    UiMessage::new("cli.plugin_market_search_args"),
+                    true,
+                );
             }
             let market = match Market::load(storage_root, &market_url) {
                 Ok(market) => market,
@@ -268,45 +317,7 @@ where
             };
             render_market_packages(&market, &arguments[0])
         }
-        "info" => {
-            if arguments.len() != 1 {
-                return PluginCliOutcome::failure("market info requires one package id", true);
-            }
-            let market = match Market::load(storage_root, &market_url) {
-                Ok(market) => market,
-                Err(error) => return PluginCliOutcome::failure(error, false),
-            };
-            match market.latest(&arguments[0]) {
-                Ok(selection) => PluginCliOutcome::success(format!(
-                    "id: {}\nname: {}\nversion: {}\nruntime: {}\npublisher: {}\nsummary: {}\n\
-                     dependencies: {}\ncapabilities: {}\nhomepage: {}\n",
-                    selection.package.id,
-                    selection.package.name,
-                    selection.version.version,
-                    runtime_name(selection.version.runtime),
-                    selection.version.publisher,
-                    selection.package.summary,
-                    if selection.version.dependencies.is_empty() {
-                        "none".into()
-                    } else {
-                        selection
-                            .version
-                            .dependencies
-                            .iter()
-                            .map(|(id, range)| format!("{id}@{range}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    },
-                    capability_names(&selection.version.capabilities),
-                    if selection.package.homepage.is_empty() {
-                        "-"
-                    } else {
-                        &selection.package.homepage
-                    },
-                )),
-                Err(error) => PluginCliOutcome::failure(error, false),
-            }
-        }
+        "info" => market_info(storage_root, &market_url, &arguments),
         "install" | "update" => {
             let parsed = match parse_market_install_args(arguments) {
                 Ok(parsed) => parsed,
@@ -341,28 +352,74 @@ where
         }
         "audit" => {
             if !arguments.is_empty() {
-                return PluginCliOutcome::failure("market audit takes only --market", true);
+                return PluginCliOutcome::failure(
+                    UiMessage::new("cli.plugin_market_audit_args"),
+                    true,
+                );
             }
             let market = match Market::load(storage_root, &market_url) {
                 Ok(market) => market,
                 Err(error) => return PluginCliOutcome::failure(error, false),
             };
             match market.audit_installed(storage_root) {
-                Ok(findings) if findings.is_empty() => PluginCliOutcome::success(
-                    "No known market advisories affect installed plugins.\n",
+                Ok(findings) if findings.is_empty() => PluginCliOutcome::success_message(
+                    UiMessage::new("cli.plugin_market_no_advisories"),
                 ),
                 Ok(findings) => PluginCliOutcome::failure(render_audit_findings(&findings), false),
                 Err(error) => PluginCliOutcome::failure(error, false),
             }
         }
-        other => PluginCliOutcome::failure(format!("unknown market command `{other}`"), true),
+        other => PluginCliOutcome::failure(
+            UiMessage::new("cli.plugin_market_unknown").arg("command", other),
+            true,
+        ),
+    }
+}
+
+fn market_info(storage_root: &Path, market_url: &str, arguments: &[String]) -> PluginCliOutcome {
+    if arguments.len() != 1 {
+        return PluginCliOutcome::failure(UiMessage::new("cli.plugin_market_info_args"), true);
+    }
+    let market = match Market::load(storage_root, market_url) {
+        Ok(market) => market,
+        Err(error) => return PluginCliOutcome::failure(error, false),
+    };
+    match market.latest(&arguments[0]) {
+        Ok(selection) => PluginCliOutcome::success(format!(
+            "id: {}\nname: {}\nversion: {}\nruntime: {}\npublisher: {}\nsummary: {}\n\
+                     dependencies: {}\ncapabilities: {}\nhomepage: {}\n",
+            selection.package.id,
+            selection.package.name,
+            selection.version.version,
+            runtime_name(selection.version.runtime),
+            selection.version.publisher,
+            selection.package.summary,
+            if selection.version.dependencies.is_empty() {
+                "none".into()
+            } else {
+                selection
+                    .version
+                    .dependencies
+                    .iter()
+                    .map(|(id, range)| format!("{id}@{range}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            capability_names(&selection.version.capabilities),
+            if selection.package.homepage.is_empty() {
+                "-"
+            } else {
+                &selection.package.homepage
+            },
+        )),
+        Err(error) => PluginCliOutcome::failure(error, false),
     }
 }
 
 fn render_market_packages(market: &Market, query: &str) -> PluginCliOutcome {
     let packages = market.search(query);
     if packages.is_empty() {
-        return PluginCliOutcome::success("No matching market packages.\n");
+        return PluginCliOutcome::success_message(UiMessage::new("cli.plugin_market_no_matches"));
     }
     let mut output = "ID\tNAME\tLATEST\tRUNTIME\tPUBLISHER\tSUMMARY\n".to_owned();
     for package in packages {
@@ -395,7 +452,7 @@ struct MarketInstallArgs {
     accept_vulnerabilities: bool,
 }
 
-fn parse_market_install_args(arguments: Vec<String>) -> Result<MarketInstallArgs, String> {
+fn parse_market_install_args(arguments: Vec<String>) -> Result<MarketInstallArgs, PresentedText> {
     let mut id = None;
     let mut version = "*".to_owned();
     let mut version_seen = false;
@@ -407,51 +464,58 @@ fn parse_market_install_args(arguments: Vec<String>) -> Result<MarketInstallArgs
         match argument.as_str() {
             "--version" => {
                 if version_seen {
-                    return Err("--version may be provided only once".into());
+                    return Err(UiMessage::new("cli.plugin_version_once").into());
                 }
                 version = args
                     .next()
-                    .ok_or_else(|| "--version requires a range".to_owned())?;
+                    .ok_or_else(|| UiMessage::new("cli.plugin_version_range"))?;
                 version_seen = true;
             }
             "--accept-capabilities" => accept_capabilities = true,
             "--accept-vulnerabilities" => accept_vulnerabilities = true,
             "--config-json" => {
                 if config.is_some() {
-                    return Err("--config-json may be provided only once".into());
+                    return Err(UiMessage::new("cli.plugin_config_once").into());
                 }
                 let raw = args
                     .next()
-                    .ok_or_else(|| "--config-json requires a JSON value".to_owned())?;
-                config = Some(
-                    serde_json::from_str(&raw)
-                        .map_err(|error| format!("invalid --config-json: {error}"))?,
-                );
+                    .ok_or_else(|| UiMessage::new("cli.plugin_config_json"))?;
+                config = Some(serde_json::from_str(&raw).map_err(|error| {
+                    UiMessage::new("cli.plugin_config_invalid").arg("error", error.to_string())
+                })?);
             }
             "--config-file" => {
                 if config.is_some() {
-                    return Err("--config-json and --config-file are mutually exclusive".into());
+                    return Err(UiMessage::new("cli.plugin_config_exclusive").into());
                 }
                 let path = PathBuf::from(
                     args.next()
-                        .ok_or_else(|| "--config-file requires a path".to_owned())?,
+                        .ok_or_else(|| UiMessage::new("cli.plugin_config_path"))?,
                 );
-                config = Some(
-                    serde_json::from_str(&read_config_file(&path)?)
-                        .map_err(|error| format!("invalid --config-file JSON: {error}"))?,
-                );
+                config = Some(serde_json::from_str(&read_config_file(&path)?).map_err(
+                    |error| {
+                        UiMessage::new("cli.plugin_config_file_invalid")
+                            .arg("error", error.to_string())
+                    },
+                )?);
             }
-            value if value.starts_with('-') => return Err(format!("unknown option `{value}`")),
+            value if value.starts_with('-') => {
+                return Err(UiMessage::new("cli.plugin_unknown_option")
+                    .arg("value", value)
+                    .into());
+            }
             value => {
                 if id.is_some() {
-                    return Err(format!("unexpected extra argument `{value}`"));
+                    return Err(UiMessage::new("cli.plugin_extra_argument")
+                        .arg("value", value)
+                        .into());
                 }
                 id = Some(value.to_owned());
             }
         }
     }
     Ok(MarketInstallArgs {
-        id: id.ok_or_else(|| "market install/update requires a package id".to_owned())?,
+        id: id.ok_or_else(|| UiMessage::new("cli.plugin_market_install_id"))?,
         version,
         config,
         accept_capabilities,
@@ -459,7 +523,10 @@ fn parse_market_install_args(arguments: Vec<String>) -> Result<MarketInstallArgs
     })
 }
 
-fn extract_option(arguments: &mut Vec<String>, name: &str) -> Result<Option<String>, String> {
+fn extract_option(
+    arguments: &mut Vec<String>,
+    name: &str,
+) -> Result<Option<String>, PresentedText> {
     let mut found = None;
     let mut index = 0;
     while index < arguments.len() {
@@ -468,10 +535,14 @@ fn extract_option(arguments: &mut Vec<String>, name: &str) -> Result<Option<Stri
             continue;
         }
         if found.is_some() {
-            return Err(format!("{name} may be provided only once"));
+            return Err(UiMessage::new("cli.plugin_option_once")
+                .arg("name", name)
+                .into());
         }
         if index + 1 >= arguments.len() {
-            return Err(format!("{name} requires a URL"));
+            return Err(UiMessage::new("cli.plugin_option_url")
+                .arg("name", name)
+                .into());
         }
         arguments.remove(index);
         found = Some(arguments.remove(index));
@@ -536,7 +607,7 @@ struct InstallArgs {
     accept_capabilities: bool,
 }
 
-fn parse_install_args<I>(args: I) -> Result<InstallArgs, String>
+fn parse_install_args<I>(args: I) -> Result<InstallArgs, PresentedText>
 where
     I: IntoIterator<Item = String>,
 {
@@ -549,53 +620,55 @@ where
             "--accept-capabilities" => accept_capabilities = true,
             "--config-json" => {
                 if config.is_some() {
-                    return Err("--config-json may be provided only once".into());
+                    return Err(UiMessage::new("cli.plugin_config_once").into());
                 }
                 let raw = args
                     .next()
-                    .ok_or_else(|| "--config-json requires a JSON value".to_owned())?;
-                config = Some(
-                    serde_json::from_str(&raw)
-                        .map_err(|error| format!("invalid --config-json: {error}"))?,
-                );
+                    .ok_or_else(|| UiMessage::new("cli.plugin_config_json"))?;
+                config = Some(serde_json::from_str(&raw).map_err(|error| {
+                    UiMessage::new("cli.plugin_config_invalid").arg("error", error.to_string())
+                })?);
             }
             "--config-file" => {
                 if config.is_some() {
-                    return Err("--config-json and --config-file are mutually exclusive".into());
+                    return Err(UiMessage::new("cli.plugin_config_exclusive").into());
                 }
                 let path = PathBuf::from(
                     args.next()
-                        .ok_or_else(|| "--config-file requires a path".to_owned())?,
+                        .ok_or_else(|| UiMessage::new("cli.plugin_config_path"))?,
                 );
                 let raw = read_config_file(&path)?;
-                config = Some(
-                    serde_json::from_str(&raw)
-                        .map_err(|error| format!("invalid --config-file JSON: {error}"))?,
-                );
+                config = Some(serde_json::from_str(&raw).map_err(|error| {
+                    UiMessage::new("cli.plugin_config_file_invalid").arg("error", error.to_string())
+                })?);
             }
             value if value.starts_with('-') => {
-                return Err(format!("unknown option `{value}`"));
+                return Err(UiMessage::new("cli.plugin_unknown_option")
+                    .arg("value", value)
+                    .into());
             }
             value => {
                 if path.is_some() {
-                    return Err(format!("unexpected extra argument `{value}`"));
+                    return Err(UiMessage::new("cli.plugin_extra_argument")
+                        .arg("value", value)
+                        .into());
                 }
                 path = Some(PathBuf::from(value));
             }
         }
     }
     Ok(InstallArgs {
-        path: path.ok_or_else(|| "install/update requires a package directory".to_owned())?,
+        path: path.ok_or_else(|| UiMessage::new("cli.plugin_install_path"))?,
         config,
         accept_capabilities,
     })
 }
 
-fn read_config_file(path: &Path) -> Result<String, String> {
+fn read_config_file(path: &Path) -> Result<String, PresentedText> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("inspect --config-file: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("--config-file must be a regular non-symlink file".into());
+        return Err(UiMessage::new("cli.plugin_config_regular").into());
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -617,30 +690,32 @@ fn read_config_file(path: &Path) -> Result<String, String> {
         .metadata()
         .map_err(|error| format!("inspect opened --config-file: {error}"))?;
     if !opened.is_file() || opened.len() > MAX_CONFIG_FILE_BYTES {
-        return Err(format!(
-            "--config-file must be a regular file of at most {MAX_CONFIG_FILE_BYTES} bytes"
-        ));
+        return Err(UiMessage::new("cli.plugin_config_file_size")
+            .arg("limit", MAX_CONFIG_FILE_BYTES)
+            .into());
     }
     let mut bytes = Vec::new();
     file.take(MAX_CONFIG_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("read --config-file: {error}"))?;
     if bytes.len() as u64 > MAX_CONFIG_FILE_BYTES {
-        return Err(format!(
-            "--config-file exceeds the {MAX_CONFIG_FILE_BYTES} byte cap"
-        ));
+        return Err(UiMessage::new("cli.plugin_config_file_limit")
+            .arg("limit", MAX_CONFIG_FILE_BYTES)
+            .into());
     }
-    String::from_utf8(bytes).map_err(|_| "--config-file is not UTF-8".into())
+    String::from_utf8(bytes).map_err(|_| UiMessage::new("cli.plugin_config_utf8").into())
 }
 
-fn one_argument<I>(args: I, missing: &str) -> Result<String, String>
+fn one_argument<I>(args: I, missing: UiMessage) -> Result<String, PresentedText>
 where
     I: IntoIterator<Item = String>,
 {
     let mut args = args.into_iter();
-    let value = args.next().ok_or_else(|| missing.to_owned())?;
+    let value = args.next().ok_or(missing)?;
     if let Some(extra) = args.next() {
-        return Err(format!("unexpected extra argument `{extra}`"));
+        return Err(UiMessage::new("cli.plugin_extra_argument")
+            .arg("value", extra)
+            .into());
     }
     Ok(value)
 }
@@ -705,44 +780,6 @@ fn trust_name(trust: TrustLabel) -> &'static str {
         TrustLabel::LocalUnverified => "local/unverified",
         TrustLabel::PublisherVerified => "publisher/verified",
     }
-}
-
-fn help() -> String {
-    "Usage: clat plugin <COMMAND>\n\n\
-     Commands:\n\
-       pack <package> --output <file.clatpkg>    Build a deterministic package bundle\n\
-       inspect <package>                         Verify manifest and package tree\n\
-       install <package> [OPTIONS]               Install and activate a new package\n\
-       update <package> [OPTIONS]                Install and activate an update\n\
-       list                                      List installed packages\n\
-       enable <id>                               Enable an installed package\n\
-       disable <id>                              Disable an installed package\n\
-       rollback <id>                             Swap active and rollback versions\n\
-       uninstall <id>                            Remove a package and its artifacts\n\
-       market <COMMAND>                          Browse and install signed remote packages\n\n\
-     Install/update options:\n\
-       --config-json <json>                      Store package-private configuration\n\
-       --config-file <path>                      Read package-private JSON from a file\n\
-       --accept-capabilities                     Accept first/new capabilities\n"
-        .into()
-}
-
-fn market_help() -> String {
-    "Usage: clat plugin market <COMMAND> [--market <URL>]\n\n\
-     Commands:\n\
-       list                                      List installable packages\n\
-       search <query>                            Search ids, names, summaries and tags\n\
-       info <id>                                 Show the latest compatible version\n\
-       install <id> [OPTIONS]                    Resolve, verify and atomically install\n\
-       update <id> [OPTIONS]                     Resolve, verify and atomically update\n\
-       audit                                     Check installed versions against advisories\n\n\
-     Install/update options:\n\
-       --version <RANGE>                         *, exact, ^, ~, or comparison range\n\
-       --config-json <JSON>                      Root package configuration\n\
-       --config-file <PATH>                      Read root package configuration\n\
-       --accept-capabilities                     Accept capability expansion\n\
-       --accept-vulnerabilities                  Explicitly accept known advisories\n"
-        .into()
 }
 
 #[cfg(test)]

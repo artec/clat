@@ -13,6 +13,8 @@ pub struct InteractionCommand {
     pub name: String,
     pub aliases: Vec<String>,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_presentation: Option<crate::i18n::UiMessage>,
     pub group: String,
     pub usage: String,
     pub unavailable_reason: Option<String>,
@@ -31,8 +33,12 @@ impl TrustedProjectApplication {
                     None
                 },
                 usage: command_usage(&entry.name),
-                name: entry.name,
+                name: entry.name.clone(),
                 aliases: entry.aliases,
+                description_presentation: crate::i18n::command_presentation(
+                    &entry.name,
+                    &entry.description,
+                ),
                 description: entry.description,
                 group: entry.group.as_str().to_owned(),
             })

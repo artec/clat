@@ -16,36 +16,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 /// 三档的说明文案（弹框行 + /help 共用）。
-pub(crate) fn mode_description(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::ReadOnly => "every side effect asks before it runs",
-        PermissionMode::ProjectWrite => {
-            "file edits, reads, and network tools run; commands and destructive tools ask"
-        }
-        PermissionMode::FullAccess => "no approval prompts at all",
-    }
-}
-
-/// dsh 档词汇（D-2 §2.5）：显示名与 web 端 transform 后的产品标签一
-/// 致；description 为宿主 permission-presets 原文（read-only 在钉靶
-/// 源无 description——留空不造文）。三档 enum 复用 `PermissionMode`
-///（journal 值词汇与 DSH preset 同源，permission.rs:229）。
-pub(crate) fn dsh_mode_label(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::ReadOnly => "Read Only",
-        PermissionMode::ProjectWrite => "Workspace Write",
-        PermissionMode::FullAccess => "Full Access",
-    }
-}
-
-pub(crate) fn dsh_mode_description(mode: PermissionMode) -> &'static str {
+pub(crate) fn dsh_mode_description(
+    mode: PermissionMode,
+    locale: clat_core::client_ports::presentation::LocaleContext,
+) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "",
-        PermissionMode::ProjectWrite => {
-            "Write inside the workspace and permitted temporary directories; wider retries \
-             require approval."
-        }
-        PermissionMode::FullAccess => "Full access without approval prompts.",
+        PermissionMode::ProjectWrite => locale.text("tui.dsh_write_description"),
+        PermissionMode::FullAccess => locale.text("tui.dsh_full_description"),
     }
 }
 
@@ -64,6 +42,7 @@ pub(crate) enum PermissionSource {
 }
 
 pub(crate) struct PermissionPicker {
+    pub(crate) locale: clat_core::client_ports::presentation::LocaleContext,
     selected: usize,
     /// FA 确认子态：true 时 Enter 生效、Esc 退回列表。
     confirming_full_access: bool,
@@ -79,6 +58,7 @@ pub(crate) enum PermissionPickerAction {
 impl PermissionPicker {
     pub(crate) fn new(current: PermissionMode) -> Self {
         Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             selected: MODES
                 .iter()
                 .position(|mode| *mode == current)
@@ -92,6 +72,7 @@ impl PermissionPicker {
     /// 不同——INV-U9）。
     pub(crate) fn new_dsh(current: PermissionMode) -> Self {
         Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             selected: MODES
                 .iter()
                 .position(|mode| *mode == current)
@@ -105,15 +86,35 @@ impl PermissionPicker {
         match self.source {
             // local 的 Display 词汇即产品标签（Read Only / Project Write /
             // Full Access）。
-            PermissionSource::Local => mode.to_string(),
-            PermissionSource::Dsh => dsh_mode_label(mode).to_owned(),
+            PermissionSource::Local => self
+                .locale
+                .text(match mode {
+                    PermissionMode::ReadOnly => "web.read_only",
+                    PermissionMode::ProjectWrite => "web.project_write",
+                    PermissionMode::FullAccess => "web.full_access",
+                })
+                .into(),
+            PermissionSource::Dsh => self
+                .locale
+                .text(match mode {
+                    PermissionMode::ReadOnly => "web.read_only",
+                    PermissionMode::ProjectWrite => "tui.workspace_write",
+                    PermissionMode::FullAccess => "web.full_access",
+                })
+                .into(),
         }
     }
 
     fn description(&self, mode: PermissionMode) -> &'static str {
         match self.source {
-            PermissionSource::Local => mode_description(mode),
-            PermissionSource::Dsh => dsh_mode_description(mode),
+            PermissionSource::Local => self.locale.text(match mode {
+                PermissionMode::ReadOnly => "tui.every_side_effect_asks_before_it_runs",
+                PermissionMode::ProjectWrite => {
+                    "tui.file_edits_reads_and_network_tools_run_commands_and_destructive_tools_ask"
+                }
+                PermissionMode::FullAccess => "tui.no_approval_prompts_at_all",
+            }),
+            PermissionSource::Dsh => dsh_mode_description(mode, self.locale),
         }
     }
 
@@ -175,16 +176,14 @@ impl PermissionPicker {
         let lines: Vec<Line<'static>> = if self.confirming_full_access {
             let mut lines = vec![
                 Line::from(Span::styled(
-                    "Enable Full Access?",
+                    self.locale.text("tui.enable_full"),
                     theme::style(theme::Role::Bold),
                 )),
                 Line::from(""),
             ];
             for wrapped in [
-                "Full access removes every confirmation prompt — file edits, \
-                 commands, network, and destructive tools will run directly.",
-                "Only use it when you trust the current task. You can switch \
-                 back any time with /perm.",
+                self.locale.text("tui.full_warning"),
+                self.locale.text("tui.full_advice"),
             ]
             .iter()
             .flat_map(|text| crate::tui::wrap_text(text, width))
@@ -195,7 +194,7 @@ impl PermissionPicker {
             // 脚注键位说明用 Faint 灰——与 /help /mcp 弹窗的脚注样式
             // 统一（2026-08-19 用户反馈：Bold 亮白与其他弹窗不一致）。
             lines.push(Line::from(Span::styled(
-                "Enter — enable Full Access      ·      Esc — back",
+                self.locale.text("tui.full_confirm"),
                 theme::style(theme::Role::Faint),
             )));
             lines
@@ -228,7 +227,7 @@ impl PermissionPicker {
             lines.push(Line::from(""));
             // 脚注键位说明用 Faint 灰（同上，弹窗脚注样式统一）。
             lines.push(Line::from(Span::styled(
-                "↑/↓ select · Enter apply · Esc cancel",
+                self.locale.text("tui.mode_footer"),
                 theme::style(theme::Role::Faint),
             )));
             lines

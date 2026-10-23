@@ -165,27 +165,7 @@ impl CommandHandler for GoalCommand {
                 .goal_overview()
                 .map(CommandOutcome::ShowGoal)
                 .map_err(failed),
-            "create" => {
-                let parsed = parse_create(rest)?;
-                let view = application
-                    .goal_create(
-                        &parsed.objective,
-                        parsed.acceptance,
-                        parsed.limits,
-                        parsed.run,
-                    )
-                    .map_err(failed)?;
-                if parsed.run {
-                    Ok(CommandOutcome::StartGoalRun {
-                        message: application.goal_run_message(),
-                    })
-                } else {
-                    Ok(CommandOutcome::Status(format!(
-                        "Goal {} created at revision {} (disarmed). Use /goal run to start.",
-                        view.state.id, view.state.revision
-                    )))
-                }
-            }
+            "create" => create_goal(application, rest),
             "run" => {
                 let view = application
                     .goal()
@@ -201,14 +181,14 @@ impl CommandHandler for GoalCommand {
                 let view = application
                     .goal_pause(view.state.revision)
                     .map_err(failed)?;
-                Ok(CommandOutcome::Status(render_goal(&view)))
+                Ok(CommandOutcome::Status(render_goal(&view).into()))
             }
             "resume" => {
                 let view = current(application)?;
                 let view = application
                     .goal_resume(view.state.revision)
                     .map_err(failed)?;
-                Ok(CommandOutcome::Status(render_goal(&view)))
+                Ok(CommandOutcome::Status(render_goal(&view).into()))
             }
             "complete" => {
                 let view = current(application)?;
@@ -220,14 +200,16 @@ impl CommandHandler for GoalCommand {
                 let view = application
                     .goal_complete(view.state.revision, summary)
                     .map_err(failed)?;
-                Ok(CommandOutcome::Status(render_goal(&view)))
+                Ok(CommandOutcome::Status(render_goal(&view).into()))
             }
             "cancel" | "clear" => {
                 let view = current(application)?;
                 application
                     .goal_clear(view.state.revision)
                     .map_err(failed)?;
-                Ok(CommandOutcome::Status("Goal cleared and disarmed.".into()))
+                Ok(CommandOutcome::Status(
+                    crate::i18n::UiMessage::new("command.goal_cleared").into(),
+                ))
             }
             _ => Err(usage()),
         }
@@ -351,14 +333,39 @@ fn render_goal(view: &crate::goal::GoalView) -> String {
 }
 
 fn usage() -> CommandError {
-    CommandError::Failed {
-        message: "usage: /goal show | create <objective> [--run] [--rounds N] [--tokens N] [--seconds N] [--failures N] [--accept user|file-exists:path|file-contains:path:text] | run | pause | resume | complete [summary] | cancel".into(),
-    }
+    CommandError::presented(crate::i18n::UiMessage::new("command.goal_usage"))
 }
 
 fn failed(error: impl ToString) -> CommandError {
     CommandError::Failed {
         message: error.to_string(),
+    }
+}
+
+fn create_goal(
+    application: &mut TrustedProjectApplication,
+    rest: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let parsed = parse_create(rest)?;
+    let view = application
+        .goal_create(
+            &parsed.objective,
+            parsed.acceptance,
+            parsed.limits,
+            parsed.run,
+        )
+        .map_err(failed)?;
+    if parsed.run {
+        Ok(CommandOutcome::StartGoalRun {
+            message: application.goal_run_message(),
+        })
+    } else {
+        Ok(CommandOutcome::Status(
+            crate::i18n::UiMessage::new("command.goal_created")
+                .arg("id", view.state.id)
+                .arg("revision", view.state.revision)
+                .into(),
+        ))
     }
 }
 

@@ -45,40 +45,51 @@ impl App {
                 .add_paths(self.project.root(), draft.attachments.clone())
         {
             self.recovered_native_steering.push_front(draft);
-            self.flash_status(format!(
-                "steering recovery is waiting — source image is unavailable: {error}"
-            ));
+            self.flash_message(
+                UiMessage::new("tui.steering_image_unavailable")
+                    .arg_message("error", error.message()),
+            );
             return false;
         }
         self.input.insert_str(&draft.prompt);
         let remaining = self.recovered_native_steering.len();
         self.flash_status(if remaining == 0 {
-            "unclaimed steering restored — edit or Enter to retry".into()
+            UiMessage::new("tui.unclaimed_steering_restored_edit_or_enter_to_retry")
         } else {
-            format!(
-                "unclaimed steering restored — {remaining} more draft(s) remain queued for retry"
-            )
+            UiMessage::new("tui.steering_more_drafts").arg("count", remaining)
         });
         true
     }
 
     /// 写入一条瞬时提示：显示 `STATUS_TTL` 后自动回落到常驻状态
     /// （当前目录）。
-    pub(super) fn flash_status(&mut self, message: impl Into<String>) {
-        self.status = message.into();
+    pub(super) fn flash_message(&mut self, message: UiMessage) {
+        self.flash_status(message);
+    }
+    pub(super) fn flash_status(
+        &mut self,
+        message: impl Into<clat_core::client_ports::presentation::PresentedText>,
+    ) {
+        let message = message.into();
+        self.status = message.render(self.locale);
+        self.status_presentation = message.presentation;
         self.status_until = Some(Instant::now() + STATUS_TTL);
     }
-
     /// CONT-1（C1）：记录 run 的真实终态为常驻状态。瞬时提示过期后回落
     /// 到这里而不是项目目录，直到下一次 run 开工清空——终态不再随 4 秒
     /// 提示一起消失，也不把任何仍在执行的 run 改称完成/失败。
-    pub(super) fn set_terminal_status(&mut self, message: impl Into<String>) {
-        let text = message.into();
+    pub(super) fn set_terminal_status(
+        &mut self,
+        message: impl Into<clat_core::client_ports::presentation::PresentedText>,
+    ) {
+        let message = message.into();
+        let text = message.render(self.locale);
+        self.terminal_presentation = message.presentation.clone();
+        self.status_presentation = message.presentation;
         self.terminal_status = Some(text.clone());
         self.status = text;
         self.status_until = None;
     }
-
     /// draw 前调用：瞬时提示到期后回落为常驻状态。回落优先级：run 终态
     /// （若有）> 默认常驻（当前目录）。
     pub(super) fn expire_status(&mut self) {
@@ -88,6 +99,7 @@ impl App {
                 .clone()
                 .unwrap_or_else(|| self.default_status.clone());
             self.status_until = None;
+            self.status_presentation = self.terminal_presentation.clone();
         }
     }
 
@@ -124,8 +136,11 @@ impl App {
                     return;
                 }
                 match self.switch_session(session_id) {
-                    Ok(()) => self.flash_status("conversation resumed"),
-                    Err(error) => self.flash_status(format!("failed to resume: {error}")),
+                    Ok(()) => self.flash_message(UiMessage::new("tui.conversation_resumed")),
+                    Err(error) => self.flash_message(
+                        UiMessage::new("tui.message_failed_to_resume_value")
+                            .arg("error", (error).to_string()),
+                    ),
                 }
             }
         }
@@ -137,7 +152,11 @@ impl App {
         let window = self
             .application
             .as_mut()
-            .ok_or_else(|| "project application is unavailable".to_owned())?
+            .ok_or_else(|| {
+                self.locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned()
+            })?
             .switch_session_tail(session_id.clone(), CONVERSATION_HISTORY_PAGE_MESSAGES)
             .map_err(|error| error.to_string())?;
         let snapshot = window.snapshot;
@@ -187,9 +206,11 @@ impl App {
             // TC-3：Tencent Hy 思考服务端常开（标题栏 Thinking · Server）
             // ——按键如实告知不可调；其它未知端点本就无档位。
             self.flash_status(if vendor == ModelVendor::Tencent {
-                "thinking is always on for this model (server-side)"
+                self.locale
+                    .text("tui.thinking_is_always_on_for_this_model_server_side")
             } else {
-                "thinking levels apply to known reasoning vendors"
+                self.locale
+                    .text("tui.thinking_levels_apply_to_known_reasoning_vendors")
             });
             return;
         }
@@ -211,10 +232,16 @@ impl App {
             None => Ok(()),
         };
         match saved {
-            Ok(()) => self.flash_status(format!("Thinking · {}", next.label())),
+            Ok(()) => self.flash_message(
+                UiMessage::new("tui.message_thinking_value")
+                    .arg("value1", (next.label()).to_string()),
+            ),
             Err(error) => {
                 self.config = previous;
-                self.flash_status(format!("failed to save thinking level: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_failed_to_save_thinking_level_value")
+                        .arg("error", (error).to_string()),
+                );
             }
         }
     }
@@ -290,7 +317,7 @@ impl App {
             PickerAction::Cancel => {
                 self.picker = None;
                 self.picker_return = None;
-                self.flash_status("model selection cancelled");
+                self.flash_message(UiMessage::new("tui.model_selection_cancelled"));
             }
             PickerAction::SelectDshModel {
                 provider,
@@ -311,9 +338,9 @@ impl App {
                         model,
                         effort,
                     });
-                    self.flash_status("selecting model…");
+                    self.flash_message(UiMessage::new("tui.selecting_model"));
                 } else {
-                    self.flash_status("no active session");
+                    self.flash_message(UiMessage::new("tui.no_active_session"));
                 }
             }
             PickerAction::OpenProfileEditor { edit } => {
@@ -327,7 +354,9 @@ impl App {
                         self.editor = Some(ModelEditor::new_profile_template(
                             self.provider_descriptors.clone(),
                         ));
-                        self.flash_status("no custom models yet — create the first one");
+                        self.flash_message(UiMessage::new(
+                            "tui.no_custom_models_yet_create_the_first_one",
+                        ));
                     }
                     Some(name) => match self.load_model_profile(&name) {
                         Some((config, credentials)) => {
@@ -337,46 +366,20 @@ impl App {
                                 credentials,
                                 self.provider_descriptors.clone(),
                             ));
-                            self.flash_status(format!("editing profile {name}"));
+                            self.flash_message(
+                                UiMessage::new("tui.message_editing_profile_value")
+                                    .arg("name", (name).to_string()),
+                            );
                         }
-                        None => self.flash_status(format!("profile {name} not found")),
+                        None => self.flash_message(
+                            UiMessage::new("tui.message_profile_value_not_found")
+                                .arg("name", (name).to_string()),
+                        ),
                     },
                 }
             }
-            PickerAction::SwitchProfile(name) => {
-                let Some(application) = self.application.as_ref() else {
-                    return;
-                };
-                match application.activate_model_profile(&name) {
-                    Ok(Some((config, credentials))) => {
-                        self.config = config;
-                        self.credentials = credentials;
-                        self.provider_descriptors =
-                            application.provider_descriptors(&self.credentials);
-                        self.refresh_balance_now();
-                        self.picker = None;
-                        self.picker_return = None;
-                        self.flash_status(format!("switched to profile {name}"));
-                    }
-                    Ok(None) => self.flash_status(format!("profile {name} not found")),
-                    Err(error) => self.flash_status(format!("switch failed: {error}")),
-                }
-            }
-            PickerAction::DeleteProfile(name) => {
-                let Some(application) = self.application.as_ref() else {
-                    return;
-                };
-                match application.delete_model_profile_with_fallback(&name) {
-                    Ok(()) => {
-                        // 活动态可能已回退（首档案/出厂默认）——同步镜像。
-                        self.sync_model_state_from_application();
-                        self.picker = None;
-                        self.picker_return = None;
-                        self.flash_status(format!("profile {name} deleted"));
-                    }
-                    Err(error) => self.flash_status(format!("delete failed: {error}")),
-                }
-            }
+            PickerAction::SwitchProfile(name) => self.switch_local_profile(name),
+            PickerAction::DeleteProfile(name) => self.delete_local_profile(name),
             PickerAction::SelectPreset(preset) => {
                 let mut config = self.config.clone();
                 preset.apply(&mut config);
@@ -393,7 +396,11 @@ impl App {
                     match self
                         .application
                         .as_ref()
-                        .ok_or_else(|| "project application is unavailable".to_owned())
+                        .ok_or_else(|| {
+                            self.locale
+                                .text("tui.project_application_is_unavailable")
+                                .to_owned()
+                        })
                         .and_then(|application| {
                             application
                                 .save_model_state(&config, &self.credentials)
@@ -405,9 +412,15 @@ impl App {
                             self.refresh_balance_now();
                             self.picker = None;
                             self.picker_return = None;
-                            self.flash_status(format!("model switched to {}", preset.name));
+                            self.flash_message(
+                                UiMessage::new("tui.message_model_switched_to_value")
+                                    .arg("value1", (preset.name).to_string()),
+                            );
                         }
-                        Err(error) => self.flash_status(format!("failed to save model: {error}")),
+                        Err(error) => self.flash_message(
+                            UiMessage::new("tui.message_failed_to_save_model_value")
+                                .arg("error", (error).to_string()),
+                        ),
                     }
                 } else if let Some(restored) = self
                     .application
@@ -428,7 +441,11 @@ impl App {
                     match self
                         .application
                         .as_ref()
-                        .ok_or_else(|| "project application is unavailable".to_owned())
+                        .ok_or_else(|| {
+                            self.locale
+                                .text("tui.project_application_is_unavailable")
+                                .to_owned()
+                        })
                         .and_then(|application| {
                             application
                                 .save_model_state(&config, &restored)
@@ -440,12 +457,17 @@ impl App {
                             self.refresh_balance_now();
                             self.picker = None;
                             self.picker_return = None;
-                            self.flash_status(format!(
-                                "model switched to {} (saved key restored)",
-                                preset.name
-                            ));
+                            self.flash_message(
+                                UiMessage::new(
+                                    "tui.message_model_switched_to_value_saved_key_restored",
+                                )
+                                .arg("value1", (preset.name).to_string()),
+                            );
                         }
-                        Err(error) => self.flash_status(format!("failed to save model: {error}")),
+                        Err(error) => self.flash_message(
+                            UiMessage::new("tui.message_failed_to_save_model_value")
+                                .arg("error", (error).to_string()),
+                        ),
                     }
                 } else {
                     // INV-U1：转编辑器补密钥前拍下导航态（二级列表 + 光
@@ -459,7 +481,10 @@ impl App {
                     );
                     editor.apply_preset_and_focus_key(preset);
                     self.editor = Some(editor);
-                    self.flash_status(format!("enter the API key for {}", preset.vendor));
+                    self.flash_message(
+                        UiMessage::new("tui.message_enter_the_api_key_for_value")
+                            .arg("value1", (preset.vendor).to_string()),
+                    );
                 }
             }
         }
@@ -509,10 +534,16 @@ impl App {
                 self.refresh_balance_now();
                 self.editor = None;
                 self.picker_return = None;
-                self.flash_status(format!("profile {name} saved and activated"));
+                self.flash_message(
+                    UiMessage::new("tui.message_profile_value_saved_and_activated")
+                        .arg("name", (name).to_string()),
+                );
             }
             Err(error) => {
-                self.flash_status(format!("failed to save profile: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_failed_to_save_profile_value")
+                        .arg("error", (error).to_string()),
+                );
             }
         }
     }
@@ -533,7 +564,7 @@ impl App {
                     picker.restore_snapshot(snapshot);
                     self.picker = Some(picker);
                 } else {
-                    self.flash_status("model configuration cancelled");
+                    self.flash_message(UiMessage::new("tui.model_configuration_cancelled"));
                 }
             }
             EditorAction::SaveProfile(saved) => self.save_local_profile(*saved),
@@ -542,7 +573,11 @@ impl App {
                 match self
                     .application
                     .as_ref()
-                    .ok_or_else(|| "project application is unavailable".to_owned())
+                    .ok_or_else(|| {
+                        self.locale
+                            .text("tui.project_application_is_unavailable")
+                            .to_owned()
+                    })
                     .and_then(|application| {
                         application
                             .save_model_state(&config, &credentials)
@@ -557,15 +592,19 @@ impl App {
                         }
                         // 端点或密钥可能已变化，触发立即重新查询。
                         self.refresh_balance_now();
-                        self.flash_status(format!(
-                            "model saved: {} · {}",
-                            self.config.protocol, self.config.model
-                        ));
+                        self.flash_message(
+                            UiMessage::new("tui.message_model_saved_value_value")
+                                .arg("value1", (self.config.protocol).to_string())
+                                .arg("value2", (self.config.model).to_string()),
+                        );
                         self.editor = None;
                         self.picker_return = None;
                     }
                     Err(error) => {
-                        self.flash_status(format!("failed to save model: {error}"));
+                        self.flash_message(
+                            UiMessage::new("tui.message_failed_to_save_model_value")
+                                .arg("error", (error).to_string()),
+                        );
                     }
                 }
             }
@@ -574,17 +613,21 @@ impl App {
 
     pub(super) fn start_prompt_suggestion(&mut self) -> bool {
         if self.suggestions.pending() || self.running || self.run_start_pending {
-            self.flash_status("suggestions are available while idle");
+            self.flash_message(UiMessage::new("tui.suggestions_are_available_while_idle"));
             return true;
         }
         let Some(sender) = self.event_sender.clone() else {
-            self.flash_status("suggestion channel is unavailable");
+            self.flash_message(UiMessage::new("tui.suggestion_channel_is_unavailable"));
             return true;
         };
         let prepared = self
             .application
             .as_mut()
-            .ok_or_else(|| "project application is unavailable".to_owned())
+            .ok_or_else(|| {
+                self.locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned()
+            })
             .and_then(|application| {
                 application
                     .prepare_prompt_suggestion()
@@ -617,11 +660,14 @@ impl App {
             );
             return true;
         }
-        self.flash_status("generating a manual suggestion…");
+        self.flash_message(UiMessage::new("tui.generating_a_manual_suggestion"));
         true
     }
 
     pub(super) fn submit_input(&mut self) {
+        if self.handle_language_command() {
+            return;
+        }
         if self.native.is_some() {
             let text = self.input.take().trim().to_owned();
             self.submit_native(text);
@@ -632,7 +678,9 @@ impl App {
 
     fn submit_local_input(&mut self) {
         if self.clipboard_image_pending {
-            self.flash_status("wait for clipboard image preparation before sending");
+            self.flash_message(UiMessage::new(
+                "tui.wait_for_clipboard_image_preparation_before_sending",
+            ));
             return;
         }
         let value = self.input.take();
@@ -657,7 +705,9 @@ impl App {
         if self.dsh.is_some() || self.dsh_connect.is_some() {
             if !is_command && !self.attachments.is_empty() {
                 self.input.insert_str(&value);
-                self.flash_status("attachments are not supported in clat dsh mode — draft kept");
+                self.flash_message(UiMessage::new(
+                    "tui.attachments_are_not_supported_in_clat_dsh_mode_draft_kept",
+                ));
                 return;
             }
             self.submit_dsh(value);
@@ -677,19 +727,20 @@ impl App {
             let outcome = match self.application.as_mut() {
                 Some(application) => application.dispatch_command(&value),
                 None => Err(CommandError::Failed {
-                    message: "project application is unavailable".to_owned(),
+                    message: self
+                        .locale
+                        .text("tui.project_application_is_unavailable")
+                        .to_owned(),
                 }),
             };
             match outcome {
                 Ok(outcome) => self.render_command_outcome(outcome),
-                Err(error) => self.flash_status(error.to_string()),
+                Err(error) => self.flash_message(error.presentation()),
             }
         } else {
             if !self.attachments.is_empty() && !self.config.capabilities.accepts_image_input() {
                 self.input.insert_str(&value);
-                self.flash_status(
-                    "this model cannot send images — switch to a verified vision model or remove the draft",
-                );
+                self.flash_status(UiMessage::new("tui.this_model_cannot_send_images_switch_to_a_verified_vision_model_or_remove_the_draf"));
                 return;
             }
             let paths = self.attachments.paths();
@@ -733,7 +784,7 @@ impl App {
         self.pending_native_steering.clear();
         self.native_steering_claim_credits.clear();
         self.recovered_native_steering.clear();
-        self.flash_status("new conversation");
+        self.flash_message(UiMessage::new("tui.new_conversation"));
     }
 
     fn show_command_content(&mut self, title: &'static str, text: String) {
@@ -741,7 +792,10 @@ impl App {
             .application
             .as_ref()
             .and_then(|app| app.current_session_id());
-        self.content_view = Some(ContentView::Remote { title, text });
+        self.content_view = Some(ContentView::Remote {
+            title,
+            text: text.into(),
+        });
         self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Remote));
     }
 
@@ -750,12 +804,20 @@ impl App {
         self.picker_return = None;
         let profiles = self.model_profile_summaries();
         self.picker = Some(ModelPicker::new(&self.config, profiles));
-        self.flash_status("select a model");
+        self.flash_message(UiMessage::new("tui.select_a_model"));
+    }
+
+    fn flash_presented(&mut self, message: clat_core::client_ports::presentation::PresentedText) {
+        if let Some(presentation) = message.presentation {
+            self.flash_message(*presentation);
+        } else {
+            self.flash_status(message.raw);
+        }
     }
 
     fn render_command_outcome(&mut self, outcome: CommandOutcome) {
         match outcome {
-            CommandOutcome::Status(message) => self.flash_status(message),
+            CommandOutcome::Status(message) => self.flash_presented(message),
             CommandOutcome::ShowHelp { commands } => {
                 self.discovery.help_commands = commands;
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
@@ -811,7 +873,9 @@ impl App {
             CommandOutcome::StartVisionProbe(_) => {
                 // VP-1：探测异步执行，判定经 VisionProbeNotice 事件回流；
                 // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
-                self.flash_status("vision probe started — the verdict lands here");
+                self.flash_message(UiMessage::new(
+                    "tui.vision_probe_started_the_verdict_lands_here",
+                ));
             }
             CommandOutcome::ShowTask(text) => self.show_command_content("/task", text),
             CommandOutcome::ShowCapabilities(text) => {
@@ -837,11 +901,15 @@ impl App {
     /// 收尾窗口失败，文本退还编辑框——绝不丢用户输入。
     pub(super) fn steer_input(&mut self) {
         if self.run_start_pending {
-            self.flash_status("attachment admission is already in progress");
+            self.flash_message(UiMessage::new(
+                "tui.attachment_admission_is_already_in_progress",
+            ));
             return;
         }
         if self.clipboard_image_pending {
-            self.flash_status("wait for clipboard image preparation before sending");
+            self.flash_message(UiMessage::new(
+                "tui.wait_for_clipboard_image_preparation_before_sending",
+            ));
             return;
         }
         let value = self.input.take();
@@ -855,7 +923,9 @@ impl App {
         if value.starts_with('/') {
             // slash 命令只作用于空闲态；退还输入，避免用户丢字。
             self.input.insert_str(&value);
-            self.flash_status("slash commands run when idle — steering sends plain text");
+            self.flash_message(UiMessage::new(
+                "tui.slash_commands_run_when_idle_steering_sends_plain_text",
+            ));
             return;
         }
         // dsh 分流：running 态 Enter = steer（session.prompt mode:"steer"），
@@ -863,7 +933,9 @@ impl App {
         if self.dsh.is_some() || self.dsh_connect.is_some() {
             if !self.attachments.is_empty() {
                 self.input.insert_str(&value);
-                self.flash_status("attachments are not supported in clat dsh mode — draft kept");
+                self.flash_message(UiMessage::new(
+                    "tui.attachments_are_not_supported_in_clat_dsh_mode_draft_kept",
+                ));
                 return;
             }
             self.input.remember(value.clone());
@@ -872,9 +944,7 @@ impl App {
         }
         if !self.attachments.is_empty() && !self.config.capabilities.accepts_image_input() {
             self.input.insert_str(&value);
-            self.flash_status(
-                "this model cannot send images — switch to a verified vision model or remove the draft",
-            );
+            self.flash_status(UiMessage::new("tui.this_model_cannot_send_images_switch_to_a_verified_vision_model_or_remove_the_draf"));
             return;
         }
         self.input.remember(value.clone());
@@ -889,7 +959,6 @@ impl App {
             }
             return;
         }
-        let draft_count = paths.len();
         let outcome = self.application.as_ref().map(|application| {
             application.steer(crate::message::PendingMessage::from_front_end(
                 value.clone(),
@@ -899,21 +968,14 @@ impl App {
         });
         match outcome {
             Some(SteerOutcome::Queued { .. }) => {
-                let pending = if value.is_empty() {
-                    format!("[{draft_count} image(s)]")
-                } else if draft_count == 0 {
-                    value.clone()
-                } else {
-                    format!("{value}\n[{draft_count} image(s)]")
-                };
-                self.conversation.push_pending_steering(pending);
-                self.remember_native_steering(value, paths);
-                self.attachments.clear();
-                self.flash_status("steering queued — applies at the next model step");
+                self.commit_local_steering_echo(value, paths);
             }
             Some(SteerOutcome::Refused { reason, .. }) => {
                 self.input.insert_str(&value);
-                self.flash_status(format!("steering refused: {reason}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_steering_refused_value")
+                        .arg("reason", (reason).to_string()),
+                );
             }
             // Run already sealed: fall back to an ordinary submission with
             // the exact same image draft. Success transfers ownership;
@@ -942,7 +1004,7 @@ impl App {
             .clone()
             .expect("event channel is installed by run()");
         let Some(application) = self.application.take() else {
-            self.flash_status("project application is unavailable");
+            self.flash_message(UiMessage::new("tui.project_application_is_unavailable"));
             return false;
         };
         let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
@@ -989,7 +1051,7 @@ impl App {
         }
         self.run_start_pending = true;
         self.steering_admission_pending = true;
-        self.flash_status("preparing steering images…");
+        self.flash_message(UiMessage::new("tui.preparing_steering_images"));
         true
     }
 
@@ -1017,15 +1079,13 @@ impl App {
         prompt: String,
         attachments: Vec<std::path::PathBuf>,
     ) -> bool {
-        if !self.model_ready() {
-            self.flash_status("model is not configured — run /model first");
+        if !self.require_configured_model() {
             return false;
         }
         if attachments.is_empty() {
             return self.start_text_run(prompt);
         }
-        if self.run_start_pending {
-            self.flash_status("run startup is already preparing attachments");
+        if !self.image_admission_available() {
             return false;
         }
         let sender = self
@@ -1033,7 +1093,7 @@ impl App {
             .clone()
             .expect("event channel is installed by run()");
         let Some(application) = self.application.take() else {
-            self.flash_status("project application is unavailable");
+            self.flash_message(UiMessage::new("tui.project_application_is_unavailable"));
             return false;
         };
         // Spawn before moving the application. If the OS refuses the thread,
@@ -1110,7 +1170,7 @@ impl App {
         }
         self.run_start_pending = true;
         self.steering_admission_pending = false;
-        self.flash_status("preparing attachments…");
+        self.flash_message(UiMessage::new("tui.preparing_attachments"));
         true
     }
 
@@ -1137,7 +1197,11 @@ impl App {
         let handle = match self
             .application
             .as_mut()
-            .ok_or_else(|| "project application is unavailable".to_owned())
+            .ok_or_else(|| {
+                self.locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned()
+            })
             .and_then(|application| {
                 let result = if queued {
                     application.start_next_turn(request)
@@ -1148,7 +1212,10 @@ impl App {
             }) {
             Ok(handle) => handle,
             Err(error) => {
-                self.flash_status(format!("failed to start run: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_failed_to_start_run_value")
+                        .arg("error", (error).to_string()),
+                );
                 return false;
             }
         };
@@ -1160,11 +1227,12 @@ impl App {
         self.running = true;
         // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态。
         self.terminal_status = None;
+        self.terminal_presentation = None;
         self.run_usage_base = Some(self.session_usage.clone());
         self.run_usage_acc = Usage::default();
         self.run_routes_base = Some(self.usage_routes.clone());
         self.run_route = None;
-        self.flash_status("starting model…");
+        self.flash_message(UiMessage::new("tui.starting_model"));
         self.restore_next_recovered_steering();
         thread::spawn(move || {
             if let Ok(result) = completed.recv() {
@@ -1176,7 +1244,9 @@ impl App {
 
     fn start_controlled_run(&mut self, task: Option<crate::task::TaskResume>) -> bool {
         if !self.model_ready() {
-            self.flash_status("model is not configured — run /model first");
+            self.flash_message(UiMessage::new(
+                "tui.model_is_not_configured_run_model_first",
+            ));
             return false;
         }
         let sender = self
@@ -1194,7 +1264,11 @@ impl App {
         let (handle, prompt) = match self
             .application
             .as_mut()
-            .ok_or_else(|| "project application is unavailable".to_owned())
+            .ok_or_else(|| {
+                self.locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned()
+            })
             .and_then(|application| {
                 match task {
                     Some(task) => application.start_task_run(task, request),
@@ -1204,7 +1278,10 @@ impl App {
             }) {
             Ok(started) => started,
             Err(error) => {
-                self.flash_status(format!("failed to start goal: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_failed_to_start_goal_value")
+                        .arg("error", (error).to_string()),
+                );
                 return false;
             }
         };
@@ -1216,16 +1293,103 @@ impl App {
         self.running = true;
         // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态。
         self.terminal_status = None;
+        self.terminal_presentation = None;
         self.run_usage_base = Some(self.session_usage.clone());
         self.run_usage_acc = Usage::default();
         self.run_routes_base = Some(self.usage_routes.clone());
         self.run_route = None;
-        self.flash_status("starting explicit continuation…");
+        self.flash_message(UiMessage::new("tui.starting_explicit_continuation"));
         thread::spawn(move || {
             if let Ok(result) = completed.recv() {
                 let _ = sender.send(UiEvent::Worker(WorkerMessage::Done { epoch, result }));
             }
         });
+        true
+    }
+}
+
+impl App {
+    fn switch_local_profile(&mut self, name: String) {
+        let Some(application) = self.application.as_ref() else {
+            return;
+        };
+        match application.activate_model_profile(&name) {
+            Ok(Some((config, credentials))) => {
+                self.config = config;
+                self.credentials = credentials;
+                self.provider_descriptors = application.provider_descriptors(&self.credentials);
+                self.refresh_balance_now();
+                self.picker = None;
+                self.picker_return = None;
+                self.flash_message(
+                    UiMessage::new("tui.message_switched_to_profile_value")
+                        .arg("name", (name).to_string()),
+                );
+            }
+            Ok(None) => self.flash_message(
+                UiMessage::new("tui.message_profile_value_not_found")
+                    .arg("name", (name).to_string()),
+            ),
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_switch_failed_value").arg("error", (error).to_string()),
+            ),
+        }
+    }
+    fn delete_local_profile(&mut self, name: String) {
+        let Some(application) = self.application.as_ref() else {
+            return;
+        };
+        match application.delete_model_profile_with_fallback(&name) {
+            Ok(()) => {
+                // 活动态可能已回退（首档案/出厂默认）——同步镜像。
+                self.sync_model_state_from_application();
+                self.picker = None;
+                self.picker_return = None;
+                self.flash_message(
+                    UiMessage::new("tui.message_profile_value_deleted")
+                        .arg("name", (name).to_string()),
+                );
+            }
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_delete_failed_value").arg("error", (error).to_string()),
+            ),
+        }
+    }
+    fn commit_local_steering_echo(&mut self, value: String, paths: Vec<PathBuf>) {
+        let draft_count = paths.len();
+        let pending = if value.is_empty() {
+            format!("[{draft_count} image(s)]")
+        } else if draft_count == 0 {
+            value.clone()
+        } else {
+            format!("{value}\n[{draft_count} image(s)]")
+        };
+        self.conversation.push_pending_steering(pending);
+        self.remember_native_steering(value, paths);
+        self.attachments.clear();
+        self.flash_message(UiMessage::new(
+            "tui.steering_queued_applies_at_the_next_model_step",
+        ));
+    }
+    fn require_configured_model(&mut self) -> bool {
+        if !self.model_ready() {
+            self.flash_message(UiMessage::new(
+                "tui.model_is_not_configured_run_model_first",
+            ));
+            return false;
+        }
+        true
+    }
+}
+
+impl App {
+    fn image_admission_available(&mut self) -> bool {
+        if self.run_start_pending {
+            self.flash_message(UiMessage::new(
+                "tui.run_startup_is_already_preparing_attachments",
+            ));
+            return false;
+        }
         true
     }
 }

@@ -58,9 +58,12 @@ impl App {
         let (label, role) = if self.suggestions.preview.is_some()
             && self.suggestions.generation == self.input.generation()
         {
-            ("✦ ready · Ctrl+Y ", theme::Role::Success)
+            (self.locale.text("tui.suggest_ready"), theme::Role::Success)
         } else if self.suggestions.pending() {
-            ("✦ suggesting… ", theme::Role::ModelAccent)
+            (
+                self.locale.text("tui.suggest_busy"),
+                theme::Role::ModelAccent,
+            )
         } else {
             ("✦ Ctrl+G ", theme::Role::Faint)
         };
@@ -78,7 +81,7 @@ impl App {
             return false;
         }
         if self.dsh.is_some() {
-            self.flash_status("suggestions are unavailable in dsh mode");
+            self.flash_message(UiMessage::new("tui.suggest_dsh"));
         } else if self.native.is_some() {
             self.open_native_suggestion();
         } else {
@@ -113,7 +116,7 @@ impl App {
             .map(|text| Line::from(Span::styled(text, theme::style(theme::Role::Faint))))
             .collect();
         lines.resize(2, Line::from(""));
-        lines.push(Line::from("Ctrl+Y use suggestion · Esc ignore"));
+        lines.push(Line::from(self.locale.text("tui.suggest_keys")));
         lines
     }
 
@@ -139,12 +142,13 @@ impl App {
         match result {
             Ok(text) if !text.trim().is_empty() => {
                 self.suggestions.preview = Some(text);
-                self.flash_status(
-                    "suggestion preview · Ctrl+Y use · Esc ignore · typing dismisses",
-                );
+                self.flash_message(UiMessage::new("tui.suggest_preview"));
             }
-            Ok(_) => self.flash_status("suggestion unavailable: empty response"),
-            Err(error) => self.flash_status(format!("suggestion unavailable: {error}")),
+            Ok(_) => self.flash_message(UiMessage::new("tui.suggest_empty")),
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_suggestion_unavailable_value")
+                    .arg("error", (error).to_string()),
+            ),
         }
     }
 
@@ -158,14 +162,14 @@ impl App {
         }
         if key.code == KeyCode::Esc {
             self.suggestions.preview = None;
-            self.flash_status("suggestion ignored");
+            self.flash_message(UiMessage::new("tui.suggest_ignored"));
             return true;
         }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('y') {
             let text = self.suggestions.preview.take().expect("preview");
             self.input.clear();
             self.input.insert_str(&text);
-            self.flash_status("suggestion adopted — edit it, then Enter to send");
+            self.flash_message(UiMessage::new("tui.suggest_adopted"));
             return true;
         }
         false

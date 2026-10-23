@@ -139,7 +139,7 @@ impl FileBrowser {
         Ok(
             json!({"path":path,"start_line":start,"end_line":last,"content":content,"version":version,
             "modified":modified,"modified_at_ms":modified_at_ms,"read_at_ms":now,"truncated":truncated,"scope":"current_project",
-            "reference_semantics":"fixed_editable_text_snapshot","note":"Bounded UTF-8 preview. Refresh/recheck to detect staleness; no live file binding."}),
+            "reference_semantics":"fixed_editable_text_snapshot","presentation":crate::i18n::UiMessage::new("web.file_preview_note"),"note":"Bounded UTF-8 preview. Refresh/recheck to detect staleness; no live file binding."}),
         )
     }
 

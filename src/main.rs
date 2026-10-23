@@ -12,8 +12,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use clat::client_ports::presentation::{
+    LocaleContext, UiMessage, leading_language, terminal_language,
+};
+#[path = "cli/language.rs"]
+mod language_cli;
+
 const NAME: &str = "clat";
-const TAGLINE: &str = "command-line agent";
 
 #[path = "cli/host.rs"]
 mod host_cli;
@@ -35,53 +40,84 @@ fn main() -> ExitCode {
     run(env::args().skip(1))
 }
 
-fn run<I>(mut args: I) -> ExitCode
+fn run<I>(args: I) -> ExitCode
+where
+    I: Iterator<Item = String>,
+{
+    let (explicit, args) = match leading_language(args.collect()) {
+        Ok(value) => value,
+        Err(message) => {
+            eprintln!("{}", message.english());
+            return ExitCode::from(2);
+        }
+    };
+    let language = match terminal_language(explicit.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            eprintln!("{}", message.english());
+            return ExitCode::from(2);
+        }
+    };
+    for warning in language.warnings {
+        eprintln!("{}", language.context.render(&warning));
+    }
+    dispatch(args.into_iter(), language.context, language.preference)
+}
+fn dispatch<I>(
+    mut args: I,
+    locale: LocaleContext,
+    preference: clat::client_ports::presentation::LanguagePreference,
+) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
     match args.next().as_deref() {
-        None => host_cli::run_default_tui(),
+        None => host_cli::run_default_tui(locale),
+        Some("language") => language_cli::run(args, locale, preference),
         Some("standalone" | "--standalone") => {
             if args.next().is_some() {
-                eprintln!("clat: standalone accepts no arguments");
+                eprintln!("{}", locale.text("cli.standalone_args"));
                 ExitCode::from(2)
             } else {
-                run_tui()
+                run_tui(locale)
             }
         }
-        Some("host") => run_host_command(args),
-        Some("demo") => run_demo(),
-        Some("exec") => run_exec_command(args),
-        Some("dsh") => run_dsh_command(args),
-        Some("attach") => run_attach_command(args),
-        Some("serve") => run_serve_command(args),
-        Some("wechat") => run_wechat_command(args),
-        Some("plugin") => run_plugin_command(args),
-        Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check")),
+        Some("host") => run_host_command(args, locale),
+        Some("demo") => run_demo(locale),
+        Some("exec") => run_exec_command(args, locale),
+        Some("dsh") => run_dsh_command(args, locale),
+        Some("attach") => run_attach_command(args, locale),
+        Some("serve") => run_serve_command(args, locale),
+        Some("wechat") => run_wechat_command(args, locale),
+        Some("plugin") => run_plugin_command(args, locale),
+        Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check"), locale),
         Some("-V" | "--version") => {
             println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some("-h" | "--help") => {
-            print_help();
+            print_help(locale);
             ExitCode::SUCCESS
         }
         Some(command) => {
-            eprintln!("clat: unknown command or argument: {command}");
-            eprintln!("Run `clat --help` for usage.");
+            eprintln!(
+                "{}",
+                locale.render(&UiMessage::new("cli.unknown_command").arg("command", command))
+            );
+            eprintln!("{}", locale.text("cli.help_hint"));
             ExitCode::from(2)
         }
     }
 }
 
-fn run_dsh_command<I>(args: I) -> ExitCode
+fn run_dsh_command<I>(args: I, locale: LocaleContext) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
     let args: Vec<String> = args.collect();
     // D-2：dsh 态走 CLAT TUI 本体（同一 App/事件循环/弹框），仅数据源
     // 与命令后端换成宿主。
-    match clat::tui::run_dsh_mode(&args) {
+    match clat::tui::run_dsh_mode_with_locale(&args, locale) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("clat: dsh: {error}");
@@ -90,7 +126,7 @@ where
     }
 }
 
-fn run_attach_command(args: impl Iterator<Item = String>) -> ExitCode {
+fn run_attach_command(args: impl Iterator<Item = String>, locale: LocaleContext) -> ExitCode {
     let mut args = args;
     let mut port = 2691;
     let mut trust = false;
@@ -100,18 +136,18 @@ fn run_attach_command(args: impl Iterator<Item = String>) -> ExitCode {
             "--port" => match args.next().and_then(|value| value.parse::<u16>().ok()) {
                 Some(value) if value != 0 => port = value,
                 _ => {
-                    eprintln!("clat: attach --port needs a nonzero port");
+                    eprintln!("{}", locale.text("cli.attach_port"));
                     return ExitCode::from(2);
                 }
             },
             _ => {
-                eprintln!("clat: attach accepts --port <n> and --trust");
+                eprintln!("{}", locale.text("cli.attach_args"));
                 return ExitCode::from(2);
             }
         }
     }
-    let result =
-        Project::current().and_then(|project| clat::tui::run_host_mode(project, port, trust));
+    let result = Project::current()
+        .and_then(|project| clat::tui::run_host_mode_with_locale(project, port, trust, locale));
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -121,68 +157,35 @@ fn run_attach_command(args: impl Iterator<Item = String>) -> ExitCode {
     }
 }
 
-fn print_help() {
-    println!("{NAME} — {TAGLINE}");
-    println!();
-    println!("Usage: clat [COMMAND]");
-    println!();
-    println!("Running `clat` with no command opens the interactive TUI.");
-    println!("Inside the TUI, use `/model` to configure model parameters and credentials.");
-    println!();
-    println!("Commands:");
-    println!("  standalone       Run the traditional TUI without a background host");
-    println!("  host start       Start or attach to the background host [--trust] [--no-open]");
-    println!("  host status|stop Inspect or explicitly stop the host (--port <n>)");
-    println!("  exec [PROMPT]    Run one agent turn headlessly and print the reply on stdout");
-    println!("  dsh              Open the TUI as a client of a local DSH web host");
-    println!("  attach           Attach the TUI to an existing CLAT host (--port <n>, --trust)");
-    println!("  serve            Serve the local HTTP+SSE API on 127.0.0.1");
-    println!("  wechat           Bind, inspect, pair, or unbind the official WeChat channel");
-    println!("  plugin           Inspect, install, update, roll back, or remove plugins");
-    println!("  demo             Run the deterministic model → tool → model loop");
-    println!("  upgrade          Upgrade to the latest GitHub release");
-    println!();
-    println!("Options:");
-    println!("  -h, --help       Print help");
-    println!("  -V, --version    Print version");
-    println!();
-    println!("Serve options:");
-    println!("  --no-open        Print the URL without opening the system browser");
-    println!("  --port <n>       Port to bind on 127.0.0.1 (default 2691; 0 = pick free)");
-    println!("  --token <t>      Temporary auth token (default: ~/.clat/web-token)");
-    println!("  --rotate-token   Replace the persistent web token and revoke old clients");
-    println!("  --im wechat      Host the explicitly configured WeChat IM frontend (default off)");
-    println!();
-    println!("Exec options:");
-    println!("  --continue       Continue the project's most recent session");
-    println!("  --session <id>   Continue a specific session");
-    println!("  --command <cmd>  Run one /command headlessly (e.g. --command /compact)");
-    println!("  --trust          Trust the current project without the TUI prompt");
-    println!("  --yes            Approve every side-effecting tool call (dangerous)");
-    println!("  --quiet          Suppress stderr status output (assistant text only)");
-    println!("  --json           Print the RunEvent stream as NDJSON on stdout instead of text");
-    println!("  Piped stdin is used as the prompt, or as context when PROMPT is also present.");
+fn print_help(locale: LocaleContext) {
+    print!("{}", locale.text("cli.help"));
 }
 
-fn run_wechat_command<I>(args: I) -> ExitCode
+fn run_wechat_command<I>(args: I, locale: LocaleContext) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
     let project = match Project::current() {
         Ok(project) => project,
         Err(error) => {
-            eprintln!("clat: could not determine current project: {error}");
+            eprintln!(
+                "{}",
+                locale
+                    .render(&UiMessage::new("cli.project_error").arg("detail", error.to_string()))
+            );
             return ExitCode::FAILURE;
         }
     };
-    ExitCode::from(clat::serve::run_wechat_command(project, args))
+    ExitCode::from(clat::serve::run_wechat_command_with_locale(
+        project, args, locale,
+    ))
 }
 
-fn run_plugin_command<I>(args: I) -> ExitCode
+fn run_plugin_command<I>(args: I, locale: LocaleContext) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
-    let outcome = clat::plugin_cli::run(args);
+    let outcome = clat::plugin_cli::run(args).localize(locale);
     if !outcome.stdout.is_empty() {
         print!("{}", outcome.stdout);
     }
@@ -196,7 +199,7 @@ where
 /// HTTP+SSE 前端。
 /// 信号处理器在进程边界安装一次：Ctrl-C 以及 Unix SIGTERM/SIGHUP
 /// 第一次触发优雅关停（accept 循环完整走关停序列），第二次强退。
-fn run_serve_command<I>(args: I) -> ExitCode
+fn run_serve_command<I>(args: I, locale: LocaleContext) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
@@ -204,7 +207,7 @@ where
         Ok(parsed) => parsed,
         Err(message) => {
             eprintln!("clat: {message}");
-            eprintln!("Run `clat --help` for usage.");
+            eprintln!("{}", locale.text("cli.help_hint"));
             return ExitCode::from(2);
         }
     };
@@ -219,7 +222,7 @@ where
     })
     .is_err()
     {
-        eprintln!("clat: warning: process signals will not stop serve gracefully on this host");
+        eprintln!("{}", locale.text("cli.signal_serve"));
     }
     match clat::serve::run_serve_with_shutdown(parsed, shutdown) {
         0 => ExitCode::SUCCESS,
@@ -228,19 +231,26 @@ where
     }
 }
 
-fn run_tui() -> ExitCode {
+fn run_tui(locale: LocaleContext) -> ExitCode {
     let project = match Project::current() {
         Ok(project) => project,
         Err(error) => {
-            eprintln!("clat: could not determine current project: {error}");
+            eprintln!(
+                "{}",
+                locale
+                    .render(&UiMessage::new("cli.project_error").arg("detail", error.to_string()))
+            );
             return ExitCode::FAILURE;
         }
     };
 
-    match clat::tui::run(project) {
+    match clat::tui::run_with_locale(project, locale) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("clat: TUI failed: {error}");
+            eprintln!(
+                "{}",
+                locale.render(&UiMessage::new("cli.tui_error").arg("detail", error.to_string()))
+            );
             ExitCode::FAILURE
         }
     }
@@ -250,15 +260,15 @@ fn run_tui() -> ExitCode {
 /// 助手文本，状态走 stderr。退出码：0 成功、1 失败、2 用法错误、
 /// 130 用户中断。Ctrl-C 处理器在进程边界安装一次（HL-05）：第一次
 /// 优雅取消，第二次强退。
-fn run_exec_command<I>(args: I) -> ExitCode
+fn run_exec_command<I>(args: I, locale: LocaleContext) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
-    let parsed: ExecArgs = match clat::exec::parse_exec_args(args) {
+    let parsed: ExecArgs = match clat::exec::parse_exec_args_presented(args) {
         Ok(parsed) => parsed,
         Err(message) => {
-            eprintln!("clat: {message}");
-            eprintln!("Run `clat --help` for usage.");
+            eprintln!("clat: {}", locale.render(&message));
+            eprintln!("{}", locale.text("cli.help_hint"));
             return ExitCode::from(2);
         }
     };
@@ -273,7 +283,7 @@ where
     })
     .is_err()
     {
-        eprintln!("clat: warning: Ctrl-C will not cancel gracefully in this host");
+        eprintln!("{}", locale.text("cli.signal_exec"));
     }
     let interactive_stdin = io::stdin().is_terminal();
     let mut exec_io = ExecIo::new(
@@ -286,17 +296,19 @@ where
         exec_io = exec_io.with_permission_input(Arc::new(TerminalPermissionInput));
     }
     // FP-10：TTY 双契约——stdout 是终端时模型 delta 过可见转义。
-    exec_io = exec_io.with_stdout_terminal(io::stdout().is_terminal());
+    exec_io = exec_io
+        .with_locale(locale)
+        .with_stdout_terminal(io::stdout().is_terminal());
     match clat::exec::run_exec_with_cancel(parsed, exec_io, &cancel) {
         ExecOutcome::Success { .. } => ExitCode::SUCCESS,
         ExecOutcome::Cancelled { .. } => ExitCode::from(130),
         ExecOutcome::Failure(message) => {
-            eprintln!("clat: {message}");
+            eprintln!("clat: {}", message.render(locale));
             ExitCode::FAILURE
         }
         ExecOutcome::UsageError(message) => {
-            eprintln!("clat: {message}");
-            eprintln!("Run `clat --help` for usage.");
+            eprintln!("clat: {}", message.render(locale));
+            eprintln!("{}", locale.text("cli.help_hint"));
             ExitCode::from(2)
         }
     }
@@ -440,25 +452,34 @@ impl Drop for RawModeGuard {
     }
 }
 
-fn run_demo() -> ExitCode {
+fn run_demo(locale: LocaleContext) -> ExitCode {
     let project = match Project::current() {
         Ok(project) => project,
         Err(error) => {
-            eprintln!("clat: could not determine current project: {error}");
+            eprintln!(
+                "{}",
+                locale
+                    .render(&UiMessage::new("cli.project_error").arg("detail", error.to_string()))
+            );
             return ExitCode::FAILURE;
         }
     };
     let result = clat::demo::run_demo(
         project,
         "prove the agent loop works",
-        Box::new(DemoEventSink),
+        Box::new(DemoEventSink { locale }),
     );
     match result {
         Ok(output) => {
             println!();
             eprintln!(
-                "[{} turns, {} input tokens, {} output tokens]",
-                output.turns, output.usage.input_tokens, output.usage.output_tokens
+                "{}",
+                locale.render(
+                    &UiMessage::new("cli.demo_summary")
+                        .arg("turns", output.turns)
+                        .arg("input", output.usage.input_tokens)
+                        .arg("output", output.usage.output_tokens)
+                )
             );
             ExitCode::SUCCESS
         }
@@ -469,7 +490,14 @@ fn run_demo() -> ExitCode {
     }
 }
 
-struct DemoEventSink;
+struct DemoEventSink {
+    locale: LocaleContext,
+}
+impl DemoEventSink {
+    fn notice(&self, message: UiMessage) {
+        eprintln!("{}", self.locale.render(&message));
+    }
+}
 
 impl EventSink for DemoEventSink {
     fn emit(&mut self, event: RunEvent) {
@@ -478,7 +506,12 @@ impl EventSink for DemoEventSink {
                 turn,
                 provider,
                 model,
-            } => eprintln!("● {provider}/{model} turn {turn}"),
+            } => self.notice(
+                UiMessage::new("cli.exec_turn")
+                    .arg("provider", provider)
+                    .arg("model", model)
+                    .arg("turn", turn),
+            ),
             RunEvent::ModelStream {
                 event: ModelEvent::TextDelta { delta },
                 ..
@@ -490,18 +523,28 @@ impl EventSink for DemoEventSink {
                 print!("{delta}");
                 let _ = io::stdout().flush();
             }
-            RunEvent::ToolRequested { call } => {
-                eprintln!("\n● tool {} {}", call.name, call.arguments)
-            }
-            RunEvent::PermissionChecked { decision, .. } => eprintln!("● permission {decision:?}"),
-            RunEvent::PermissionDenied { tool, reason } => {
-                eprintln!("● permission denied {tool}: {reason}")
-            }
+            RunEvent::ToolRequested { call } => self.notice(
+                UiMessage::new("cli.demo_tool")
+                    .arg("name", call.name)
+                    .arg("arguments", call.arguments.to_string()),
+            ),
+            RunEvent::PermissionChecked { decision, .. } => self.notice(
+                UiMessage::new("cli.demo_permission").arg("decision", format!("{decision:?}")),
+            ),
+            RunEvent::PermissionDenied { tool, reason } => self.notice(
+                UiMessage::new("cli.demo_denied")
+                    .arg("tool", tool)
+                    .arg("reason", reason),
+            ),
             RunEvent::ToolFinished { result } => {
                 if result.is_error {
-                    eprintln!("● tool error {}", result.output);
+                    self.notice(
+                        UiMessage::new("cli.demo_error").arg("output", result.output.to_string()),
+                    );
                 } else {
-                    eprintln!("● tool result {}", result.output);
+                    self.notice(
+                        UiMessage::new("cli.demo_result").arg("output", result.output.to_string()),
+                    );
                 }
             }
             _ => {}

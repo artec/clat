@@ -558,7 +558,12 @@ fn native_help_combines_host_commands_with_terminal_help() {
             .is_some_and(|dialog| dialog.kind == InfoDialogKind::Help)
     );
     assert!(app.content_view.is_none());
-    let lines = help_dialog_lines(76, &app.discovery.help_commands);
+    let lines = help_dialog_lines(
+        76,
+        &app.discovery.help_commands,
+        clat_core::client_ports::presentation::LocaleContext::default(),
+        false,
+    );
     let text = lines
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
@@ -731,7 +736,7 @@ fn native_context_malformed_reply_is_visible_without_losing_the_dialog() {
         panic!("context dialog");
     };
     assert_eq!(*title, "/context");
-    assert_eq!(text, "Host returned an invalid context estimate");
+    assert_eq!(text.raw, "Host returned an invalid context estimate");
     assert!(app.info_dialog.is_some());
     assert!(!app.native_info_refreshable());
     drop(app);
@@ -1170,6 +1175,7 @@ fn native_image_submission_restores_only_uncommitted_images_before_new_draft() {
         app.input.insert_str("new text");
         let result = if outcome == "committed-error" {
             Err(HostCallError {
+                presentation: None,
                 message: "post-commit failure".into(),
                 code: None,
                 receipt: Some(
@@ -1309,6 +1315,7 @@ fn committed_submission_error_never_restores_a_duplicate_draft() {
     }))
     .unwrap();
     app.handle_native_event(NativeEvent::Submitted(Err(HostCallError {
+        presentation: None,
         message: "worker failed after commit".into(),
         code: Some("internal".into()),
         receipt: Some(receipt),

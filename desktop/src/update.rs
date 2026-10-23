@@ -1,4 +1,5 @@
 use crate::app::Desktop;
+use clat_core::client_ports::presentation::UiMessage;
 use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -6,7 +7,7 @@ use tokio::sync::watch;
 
 pub struct Updates {
     pub auto_check: bool,
-    pub status: String,
+    pub status: Option<UiMessage>,
     pub busy: bool,
     pub pending: Option<Update>,
     pub bytes: Option<Vec<u8>>,
@@ -16,7 +17,7 @@ impl Updates {
     pub fn new(auto_check: bool) -> Self {
         Self {
             auto_check,
-            status: String::new(),
+            status: None,
             busy: false,
             pending: None,
             bytes: None,
@@ -25,29 +26,29 @@ impl Updates {
     }
 }
 
-fn begin(app: &tauri::AppHandle, message: &str) -> Result<watch::Receiver<bool>, String> {
+fn begin(app: &tauri::AppHandle, message: &str) -> Result<watch::Receiver<bool>, UiMessage> {
     let state = app.state::<Desktop>();
     let mut updates = state
         .updates
         .lock()
         .map_err(|_| "update state unavailable")?;
     if updates.busy {
-        return Err("已有更新操作进行中".into());
+        return Err(UiMessage::new("update.busy"));
     }
     let (sender, receiver) = watch::channel(false);
     updates.cancel = Some(sender);
     updates.busy = true;
-    updates.status = message.into();
+    updates.status = Some(UiMessage::new(message));
     Ok(receiver)
 }
 
-fn finish(app: &tauri::AppHandle, result: &Result<(), String>) {
+fn finish(app: &tauri::AppHandle, result: &Result<(), UiMessage>) {
     let state = app.state::<Desktop>();
     let mut updates = state.updates.lock().expect("updates");
     updates.busy = false;
     updates.cancel = None;
     if let Err(error) = result {
-        updates.status = error.clone();
+        updates.status = Some(error.clone());
     }
 }
 
@@ -71,7 +72,7 @@ fn target() -> String {
     )
 }
 
-fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, String> {
+fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, UiMessage> {
     use std::io::Read;
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
@@ -80,22 +81,22 @@ fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, String> {
     let mut response = agent
         .get(url)
         .call()
-        .map_err(|_| "无法获取更新索引，请检查网络后重试")?;
+        .map_err(|_| UiMessage::new("update.index_network"))?;
     let mut bytes = Vec::new();
     response
         .body_mut()
         .as_reader()
         .take(cap + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "无法读取更新索引")?;
+        .map_err(|_| UiMessage::new("update.index_read"))?;
     if bytes.len() as u64 > cap {
-        return Err("更新索引过大".into());
+        return Err(UiMessage::new("update.index_large"));
     }
     Ok(bytes)
 }
 
-pub async fn check(app: &tauri::AppHandle) -> Result<(), String> {
-    let mut cancelled = begin(app, "正在检查桌面更新…")?;
+pub async fn check(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    let mut cancelled = begin(app, "update.checking")?;
     let operation = async {
         let updater = app
             .updater_builder()
@@ -124,21 +125,30 @@ pub async fn check(app: &tauri::AppHandle) -> Result<(), String> {
         }
         let state = app.state::<Desktop>();
         let mut updates = state.updates.lock().expect("updates");
-        updates.status = pending
-            .as_ref()
-            .map(|u| format!("桌面 {} 可用，点击下载更新", u.version))
-            .unwrap_or_else(|| "桌面已是最新版本".into());
+        updates.status = Some(
+            pending
+                .as_ref()
+                .map(|u| UiMessage::new("update.found").arg("version", u.version.clone()))
+                .unwrap_or_else(|| UiMessage::new("update.current")),
+        );
         updates.pending = pending;
         updates.bytes = None;
         Ok(())
     };
-    let result = tokio::select! { result = operation => result, _ = cancelled.changed() => Err("已取消检查".into()) };
+    let (result, was_cancelled) = tokio::select! { result = operation => (result,false), _ = cancelled.changed() => (Err(UiMessage::new("update.cancel_check")),true) };
     finish(app, &result);
+    if was_cancelled {
+        app.state::<Desktop>()
+            .updates
+            .lock()
+            .expect("updates")
+            .status = Some(UiMessage::new("update.cancel_check"));
+    }
     result
 }
 
-pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
-    let mut cancelled = begin(app, "正在下载桌面更新…")?;
+pub async fn download(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    let mut cancelled = begin(app, "update.downloading")?;
     let operation = async {
         let update = app
             .state::<Desktop>()
@@ -147,7 +157,7 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
             .expect("updates")
             .pending
             .clone()
-            .ok_or("请先检查更新")?;
+            .ok_or(UiMessage::new("update.check_first"))?;
         let mut received = 0u64;
         let bytes = update
             .download(
@@ -161,7 +171,10 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
                     {
                         let _ = cancel.send(true);
                     }
-                    updates.status = format!("已下载 {:.1} MB", received as f64 / 1048576.0);
+                    updates.status = Some(
+                        UiMessage::new("update.received")
+                            .arg("size", format!("{:.1}", received as f64 / 1048576.0)),
+                    );
                 },
                 || {},
             )
@@ -170,25 +183,32 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
         let state = app.state::<Desktop>();
         let mut updates = state.updates.lock().expect("updates");
         if bytes.len() > 512 * 1024 * 1024 {
-            return Err("更新文件超出大小限制".into());
+            return Err(UiMessage::new("update.package_large"));
         }
         updates.bytes = Some(bytes);
-        updates.status = "下载及验签完成，点击安装更新".into();
+        updates.status = Some(UiMessage::new("update.verified"));
         Ok(())
     };
-    let result = tokio::select! { result = operation => result, _ = cancelled.changed() => Err("已取消下载，或文件超出大小限制".into()) };
+    let (result, was_cancelled) = tokio::select! { result = operation => (result,false), _ = cancelled.changed() => (Err(UiMessage::new("update.cancel_download")),true) };
     finish(app, &result);
+    if was_cancelled {
+        app.state::<Desktop>()
+            .updates
+            .lock()
+            .expect("updates")
+            .status = Some(UiMessage::new("update.cancel_download"));
+    }
     result
 }
 
-pub async fn install(app: &tauri::AppHandle) -> Result<(), String> {
-    let mut cancelled = begin(app, "等待所有项目空闲后安装；当前任务会继续…")?;
+pub async fn install(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    let mut cancelled = begin(app, "update.waiting")?;
     let operation = async {
         {
             let state = app.state::<Desktop>();
             let updates = state.updates.lock().expect("updates");
             if updates.pending.is_none() || updates.bytes.is_none() {
-                return Err("请先下载并验证更新包".into());
+                return Err(UiMessage::new("update.verify_first"));
             }
         }
         loop {
@@ -205,7 +225,10 @@ pub async fn install(app: &tauri::AppHandle) -> Result<(), String> {
                         .updates
                         .lock()
                         .expect("updates")
-                        .status = format!("等待项目空闲：{}", value["busy_workspaces"])
+                        .status = Some(
+                        UiMessage::new("update.busy_projects")
+                            .arg("projects", value["busy_workspaces"].to_string()),
+                    )
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -214,14 +237,22 @@ pub async fn install(app: &tauri::AppHandle) -> Result<(), String> {
             let state = app.state::<Desktop>();
             let mut updates = state.updates.lock().expect("updates");
             (
-                updates.pending.clone().ok_or("请先检查更新")?,
-                updates.bytes.take().ok_or("请先下载更新")?,
+                updates
+                    .pending
+                    .clone()
+                    .ok_or(UiMessage::new("update.check_first"))?,
+                updates
+                    .bytes
+                    .take()
+                    .ok_or(UiMessage::new("update.download_first"))?,
             )
         };
         app.state::<Desktop>()
             .quitting
             .store(true, std::sync::atomic::Ordering::Release);
-        let result = update.install(&bytes).map_err(|e| e.to_string());
+        let result = update
+            .install(&bytes)
+            .map_err(|e| UiMessage::from(e.to_string()));
         if result.is_ok() {
             app.restart();
         }
@@ -230,8 +261,15 @@ pub async fn install(app: &tauri::AppHandle) -> Result<(), String> {
             .store(false, std::sync::atomic::Ordering::Release);
         result
     };
-    let result = tokio::select! { result = operation => result, _ = cancelled.changed() => Err("已取消等待安装，原版本继续运行".into()) };
+    let (result, was_cancelled) = tokio::select! { result = operation => (result,false), _ = cancelled.changed() => (Err(UiMessage::new("update.cancel_install")),true) };
     finish(app, &result);
+    if was_cancelled {
+        app.state::<Desktop>()
+            .updates
+            .lock()
+            .expect("updates")
+            .status = Some(UiMessage::new("update.cancel_install"));
+    }
     result
 }
 

@@ -173,8 +173,8 @@ test('WEB-3 display preferences survive reload without storing conversation cont
   await page.getByText('Single column', { exact: true }).click();
   await page.getByText('All steps', { exact: true }).click();
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('clat.presentation.v1')));
-  expect(saved).toMatchObject({ messageLayout: 'column', processView: 'expanded' });
-  expect(Object.keys(saved).sort()).toEqual(['inspector', 'messageLayout', 'processView', 'sidebar', 'theme']);
+  expect(saved).toMatchObject({ language:'system',messageLayout: 'column', processView: 'expanded' });
+  expect(Object.keys(saved).sort()).toEqual(['inspector', 'language','messageLayout', 'processView', 'sidebar', 'theme']);
   await page.reload();
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'column');

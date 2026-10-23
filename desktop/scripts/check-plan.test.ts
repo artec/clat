@@ -31,6 +31,9 @@ test('known documentation and empty diffs do not add desktop work; unavailable d
   expect(checksForPaths([])).toEqual({ native: false, tooling: false, web: false });
   expect(checksForPaths(undefined)).toEqual(all);
 });
+test('shared language resources select Rust, native shell and web checks together',()=>{
+  for(const path of ['locales/en.json','locales/manifest.json','src/i18n/mod.rs','scripts/i18n-check.ts'])expect(checksForPaths([path])).toEqual(all);
+});
 test('push spans all commits and PR spans the base to the tested merge; missing history widens', () => {
   const before = 'a'.repeat(40), base = 'b'.repeat(40), head = 'c'.repeat(40), calls: string[][] = [];
   const diff = (from: string, to: string) => { calls.push([from, to]); return ['desktop/scripts/release.ts']; };

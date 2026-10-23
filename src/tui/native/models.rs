@@ -15,7 +15,7 @@ impl App {
             return;
         };
         if !native.online || native.thinking_pending {
-            self.flash_status("host offline or thinking change pending; no request sent");
+            self.flash_message(UiMessage::new("tui.host_thinking_pending"));
             return;
         }
         native.thinking_pending = true;
@@ -35,9 +35,12 @@ impl App {
         match result {
             Ok(_) => {
                 self.refresh_native();
-                self.flash_status("host thinking updated; applies to the next run");
+                self.flash_message(UiMessage::new("tui.host_thinking_next"));
             }
-            Err(error) => self.flash_status(format!("{error} · check host before retrying")),
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_value_check_host_before_retrying")
+                    .arg("error", (error).to_string()),
+            ),
         }
     }
 
@@ -46,7 +49,7 @@ impl App {
             return;
         };
         if !native.online || native.models_pending {
-            self.flash_status("host offline or model change pending; reopen /model later");
+            self.flash_message(UiMessage::new("tui.host_model_reopen"));
             return;
         }
         native.models_request += 1;
@@ -55,7 +58,7 @@ impl App {
         self.picker = None;
         let (epoch, request) = (native.epoch, native.models_request);
         let client = native.client.clone();
-        self.flash_status("loading host models…");
+        self.flash_message(UiMessage::new("tui.host_models_loading"));
         thread::spawn(move || {
             let result = client.model_choices();
             let _ = ui.send(UiEvent::Native(NativeEvent::Models(epoch, request, result)));
@@ -94,7 +97,7 @@ impl App {
             ..Default::default()
         };
         self.picker = Some(ModelPicker::new_remote(&config, profiles));
-        self.flash_status("host models · changes apply to the next run");
+        self.flash_message(UiMessage::new("tui.host_models_next"));
     }
 
     fn native_model_request_matches(&self, epoch: u64, request: u64) -> bool {
@@ -123,7 +126,7 @@ impl App {
             PickerAction::SwitchProfile(name) => ("model.profile.activate", json!({"name":name})),
             PickerAction::DeleteProfile(name) => ("model.profile.delete", json!({"name":name})),
             _ => {
-                self.flash_status("profile editing is not attached yet; use PWA Models settings");
+                self.flash_message(UiMessage::new("tui.host_profile_pwa"));
                 return;
             }
         };
@@ -131,7 +134,7 @@ impl App {
             return;
         };
         if !native.online || native.models_pending || native.editor_pending {
-            self.flash_status("host offline or model change pending; no request sent");
+            self.flash_message(UiMessage::new("tui.host_model_not_sent"));
             return;
         }
         native.models_pending = true;
@@ -162,11 +165,12 @@ impl App {
             Ok(_) => {
                 self.picker = None;
                 self.refresh_native();
-                self.flash_status("host model updated; applies to the next run");
+                self.flash_message(UiMessage::new("tui.host_model_next"));
             }
-            Err(error) => {
-                self.flash_status(format!("{error} · check host settings before retrying"))
-            }
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_value_check_host_settings_before_retrying")
+                    .arg("error", (error).to_string()),
+            ),
         }
     }
 }

@@ -20,6 +20,7 @@
 //! 本模块不安装任何进程级信号处理器（HL-05）：中断由进程边界
 //! （main.rs）经 [`ExecCancel`] 注入；库形态可重复调用。
 
+use crate::i18n::{LocaleContext, PresentedText, UiMessage};
 use crate::{
     ApplicationEvent, ApplicationRunRequest, BootstrapApplication, CommandOutcome,
     CompactionStatus, EventSink, ModelEvent, PermissionApprover, PermissionDecision,
@@ -57,73 +58,8 @@ pub struct ExecArgs {
     pub json: bool,
 }
 
-/// 解析 `clat exec` 之后的参数。用法错误返回 `Err(message)`（退出码 2）。
-pub fn parse_exec_args<I>(args: I) -> Result<ExecArgs, String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut parsed = ExecArgs::default();
-    let mut iter = args.into_iter();
-    // `--` 之后的 token 全部视为位置参数（prompt 以 `-` 开头时必需）。
-    let mut positional_only = false;
-    while let Some(arg) = iter.next() {
-        let arg = arg.as_str();
-        if positional_only {
-            if parsed.prompt.is_some() {
-                return Err(format!("unexpected extra argument: {arg}"));
-            }
-            parsed.prompt = Some(arg.to_string());
-            continue;
-        }
-        match arg {
-            "--continue" => parsed.continue_session = true,
-            "--yes" => parsed.yes = true,
-            "--trust" => parsed.trust = true,
-            "--quiet" => parsed.quiet = true,
-            "--json" => parsed.json = true,
-            "--command" => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| "--command requires a /command".to_string())?;
-                if !value.starts_with('/') || value.trim().is_empty() {
-                    return Err(format!("invalid command: {value} (expected a /command)"));
-                }
-                parsed.command = Some(value);
-            }
-            "--session" => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| "--session requires a session id".to_string())?;
-                if value.trim().is_empty() {
-                    return Err("invalid session id: empty".to_string());
-                }
-                // DSH SessionId 是开放字符串（CLAT 生成 UUID）；不在此
-                // 强加格式，resume 时的存在性校验才是权威。
-                parsed.session = Some(value.to_string());
-            }
-            "--" => positional_only = true,
-            other if other.starts_with('-') && other != "-" => {
-                return Err(format!("unknown option: {other}"));
-            }
-            positional => {
-                if parsed.prompt.is_some() {
-                    return Err(format!("unexpected extra argument: {positional}"));
-                }
-                parsed.prompt = Some(positional.to_string());
-            }
-        }
-    }
-    if parsed.continue_session && parsed.session.is_some() {
-        return Err("--continue and --session are mutually exclusive".into());
-    }
-    if parsed.command.is_some() && parsed.prompt.is_some() {
-        return Err("--command cannot be combined with a prompt".into());
-    }
-    if parsed.json && parsed.command.is_some() {
-        return Err("--json cannot be combined with --command".into());
-    }
-    Ok(parsed)
-}
+mod args;
+pub use args::{parse_exec_args, parse_exec_args_presented};
 
 mod cancel;
 pub use cancel::{ExecCancel, InterruptOutcome};
@@ -160,6 +96,7 @@ pub struct ExecIo {
     /// 字符可见转义（OSC/CSI 注入失效）；管道路径保持字节保真契约。
     stdout_is_terminal: bool,
     permission_input: Option<Arc<dyn ExecPermissionInput>>,
+    locale: LocaleContext,
 }
 
 impl ExecIo {
@@ -176,7 +113,13 @@ impl ExecIo {
             interactive_stdin,
             stdout_is_terminal: false,
             permission_input: None,
+            locale: LocaleContext::default(),
         }
+    }
+
+    pub fn with_locale(mut self, locale: LocaleContext) -> Self {
+        self.locale = locale;
+        self
     }
 
     /// FP-10：标记 stdout 为 TTY（main 以 `io::stdout().is_terminal()`
@@ -283,9 +226,9 @@ pub enum ExecOutcome {
         usage: Usage,
     },
     /// 运行前/运行中错误（退出码 1）。I/O 写失败也归入此类（HL-04）。
-    Failure(String),
+    Failure(PresentedText),
     /// 用法错误（退出码 2）。
-    UsageError(String),
+    UsageError(PresentedText),
     /// 用户取消（退出码 130）。
     Cancelled { turns: usize, usage: Usage },
 }
@@ -304,7 +247,11 @@ pub fn run_exec_with_cancel(args: ExecArgs, io: ExecIo, cancel: &ExecCancel) -> 
     let project = match Project::current() {
         Ok(project) => project,
         Err(error) => {
-            return ExecOutcome::Failure(format!("could not determine current project: {error}"));
+            return ExecOutcome::Failure(
+                UiMessage::new("cli.exec_current_project")
+                    .arg("error", error.to_string())
+                    .into(),
+            );
         }
     };
     exec_with(
@@ -329,6 +276,7 @@ impl ApplicationEventForwarder {
         events: mpsc::Receiver<ApplicationEvent>,
         error: SharedWriter,
         io_state: SharedIoState,
+        locale: LocaleContext,
     ) -> Self {
         let join = std::thread::spawn(move || {
             while let Ok(event) = events.recv() {
@@ -337,7 +285,11 @@ impl ApplicationEventForwarder {
                     ..
                 }) = event
                 {
-                    write_status(&error, &io_state, format_args!("● {note}\n"));
+                    write_status(
+                        &error,
+                        &io_state,
+                        format_args!("● {}\n", note.render(locale)),
+                    );
                 }
             }
         });
@@ -372,37 +324,11 @@ where
 {
     let io_state: SharedIoState = Arc::new(ExecIoState::default());
 
-    let bootstrap = match storage_root {
-        Some(root) => BootstrapApplication::open(project.clone(), root),
-        None => BootstrapApplication::open_default(project.clone()),
-    };
-    let bootstrap = match bootstrap {
-        Ok(bootstrap) => bootstrap,
-        Err(error) => return ExecOutcome::Failure(error.to_string()),
-    };
-    // INV-2：未信任 → 只读检查即退出；--trust 是唯一非交互通路，经
-    // 一次性 ProjectAuthorization + authorize_and_mount（无独立
-    // trust 写入口，plan §16 阶段5）。
-    let mut application = match bootstrap.is_trusted() {
-        Ok(true) => match into_trusted(bootstrap) {
+    let mut application =
+        match open_exec_application(&project, storage_root, args.trust, into_trusted) {
             Ok(application) => application,
-            Err(error) => return ExecOutcome::Failure(error.to_string()),
-        },
-        Ok(false) if args.trust => {
-            match bootstrap.authorize_and_mount(crate::ProjectAuthorization::grant()) {
-                Ok(application) => application,
-                Err(error) => return ExecOutcome::Failure(error.to_string()),
-            }
-        }
-        Ok(false) => {
-            return ExecOutcome::Failure(
-                "project is not trusted — open `clat` once to review the trust prompt, \
-                 or pass --trust"
-                    .into(),
-            );
-        }
-        Err(error) => return ExecOutcome::Failure(error.to_string()),
-    };
+            Err(outcome) => return outcome,
+        };
 
     // 会话策略：默认新会话（脚本可预测）；--continue / --session 显式续接。
     if let Err(error) = apply_session_policy(&mut application, &args) {
@@ -423,7 +349,7 @@ where
         Err(error) => {
             return close_and_finalize(
                 application,
-                ExecOutcome::Failure(error),
+                ExecOutcome::Failure((error).into()),
                 &args,
                 &io,
                 &io_state,
@@ -439,7 +365,7 @@ where
         Err(error) => {
             return close_and_finalize(
                 application,
-                ExecOutcome::Failure(error.to_string()),
+                ExecOutcome::Failure((error.to_string()).into()),
                 &args,
                 &io,
                 &io_state,
@@ -449,9 +375,7 @@ where
     if !config.is_configured() {
         return close_and_finalize(
             application,
-            ExecOutcome::Failure(
-                "model is not configured — run `clat` and use /model to configure a model".into(),
-            ),
+            ExecOutcome::Failure(UiMessage::new("cli.exec_model_missing").into()),
             &args,
             &io,
             &io_state,
@@ -477,6 +401,7 @@ where
             events_rx,
             Arc::clone(&io.error),
             Arc::clone(&io_state),
+            io.locale,
         ));
     }
 
@@ -493,7 +418,7 @@ where
         Err(error) => {
             return close_and_finalize(
                 application,
-                ExecOutcome::Failure(error.to_string()),
+                ExecOutcome::Failure((error.to_string()).into()),
                 &args,
                 &io,
                 &io_state,
@@ -523,7 +448,7 @@ where
         cancel.detach();
         return close_and_finalize(
             application,
-            ExecOutcome::Failure(error.to_string()),
+            ExecOutcome::Failure((error.to_string()).into()),
             &args,
             &io,
             &io_state,
@@ -537,7 +462,11 @@ where
                 write_status(
                     &io.error,
                     &io_state,
-                    format_args!("[cancelled after {} turns]\n", done.turns),
+                    format_args!(
+                        "{}",
+                        io.locale
+                            .render(&UiMessage::new("cli.exec_cancelled").arg("turns", done.turns))
+                    ),
                 );
             }
             ExecOutcome::Cancelled {
@@ -551,8 +480,13 @@ where
                     &io.error,
                     &io_state,
                     format_args!(
-                        "[{} turns, {} input tokens, {} output tokens]\n",
-                        done.turns, done.usage.input_tokens, done.usage.output_tokens
+                        "{}",
+                        io.locale.render(
+                            &UiMessage::new("cli.exec_summary")
+                                .arg("turns", done.turns)
+                                .arg("input", done.usage.input_tokens)
+                                .arg("output", done.usage.output_tokens)
+                        )
                     ),
                 );
             }
@@ -572,7 +506,7 @@ where
                 usage: done.usage,
             }
         }
-        Err(failure) => ExecOutcome::Failure(failure.error),
+        Err(failure) => ExecOutcome::Failure((failure.error).into()),
     };
 
     // HL-04：输出写失败不得伪装成功。取消（下游已关）+ 成功都改判失败；
@@ -580,11 +514,14 @@ where
     let io_failure = io_state.take_first_error();
     let outcome = match (io_failure, outcome) {
         (Some(error), ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. }) => {
-            ExecOutcome::Failure(error)
+            ExecOutcome::Failure((error).into())
         }
-        (Some(error), ExecOutcome::Failure(message)) => {
-            ExecOutcome::Failure(format!("{message}; {error}"))
-        }
+        (Some(error), ExecOutcome::Failure(message)) => ExecOutcome::Failure(
+            UiMessage::new("cli.exec_failure_combined")
+                .arg_message("message", message.message())
+                .arg("error", error)
+                .into(),
+        ),
         // UsageError 路径早于 sink 存在，不会携带 I/O 错误。
         (Some(_), outcome @ ExecOutcome::UsageError(_)) => outcome,
         (None, outcome) => outcome,
@@ -622,6 +559,7 @@ fn headless_command_forwarder(
             events_rx,
             Arc::clone(&io.error),
             Arc::clone(io_state),
+            io.locale,
         ));
     }
     forwarder
@@ -642,11 +580,13 @@ fn run_headless_command(
             || (goal_words.get(1).copied() == Some("create") && goal_words.contains(&"--run")));
     let outcome = if interactive_goal_run {
         if let Err(error) = application.check_goal_activation() {
-            ExecOutcome::Failure(error.to_string())
+            ExecOutcome::Failure((error.to_string()).into())
         } else {
-            ExecOutcome::UsageError(format!(
-                "{command} requires an interactive frontend — run `clat` or `clat serve`"
-            ))
+            ExecOutcome::UsageError(
+                UiMessage::new("cli.headless_goal")
+                    .arg("command", command)
+                    .into(),
+            )
         }
     } else {
         match application.dispatch_command(command) {
@@ -658,7 +598,7 @@ fn run_headless_command(
                         write_status(
                             &io.error,
                             io_state,
-                            format_args!("● {}\n", report.status_text()),
+                            format_args!("● {}\n", io.locale.render(&report.status_presentation())),
                         );
                     }
                     ExecOutcome::Success {
@@ -667,8 +607,8 @@ fn run_headless_command(
                         usage: Usage::default(),
                     }
                 }
-                Ok(Err(message)) => ExecOutcome::Failure(message),
-                Err(error) => ExecOutcome::Failure(error.to_string()),
+                Ok(Err(message)) => ExecOutcome::Failure((message).into()),
+                Err(error) => ExecOutcome::Failure((error.to_string()).into()),
             },
             Ok(CommandOutcome::StartVisionProbe(handle)) => match handle.join_report() {
                 // VP-1：headless 腿同步等判定；报告一行式打印。
@@ -677,7 +617,7 @@ fn run_headless_command(
                         write_status(
                             &io.error,
                             io_state,
-                            format_args!("● {}\n", report.status_text()),
+                            format_args!("● {}\n", io.locale.render(&report.status_presentation())),
                         );
                     }
                     match report.outcome {
@@ -688,19 +628,19 @@ fn run_headless_command(
                         },
                         crate::application::VisionProbeOutcome::Rejected
                         | crate::application::VisionProbeOutcome::SilentDrop => {
-                            ExecOutcome::Failure(report.status_text())
+                            ExecOutcome::Failure(report.status_presentation().into())
                         }
                         crate::application::VisionProbeOutcome::Inconclusive => {
-                            ExecOutcome::Failure(report.status_text())
+                            ExecOutcome::Failure(report.status_presentation().into())
                         }
                     }
                 }
-                Err(error) => ExecOutcome::Failure(error.to_string()),
+                Err(error) => ExecOutcome::Failure((error.to_string()).into()),
             },
             Ok(CommandOutcome::ShowHelp { commands }) => write_help_view(&commands, io, io_state),
             Ok(CommandOutcome::ShowMcpStatus(status)) => write_mcp_view(status, io, io_state),
             Ok(CommandOutcome::ShowMemory(view)) => {
-                write_content_view(view.to_text(), io, io_state)
+                write_content_view(view.localized_text(io.locale), io, io_state)
             }
             Ok(CommandOutcome::ShowTask(text) | CommandOutcome::ShowCapabilities(text)) => {
                 write_content_view(text, io, io_state)
@@ -708,86 +648,25 @@ fn run_headless_command(
             Ok(CommandOutcome::StartTaskRun(_)) => {
                 ExecOutcome::Failure("task continuation was not routed to execution".into())
             }
-            Ok(CommandOutcome::ShowGoal(view)) => write_content_view(view.to_text(), io, io_state),
+            Ok(CommandOutcome::ShowGoal(view)) => {
+                write_content_view(view.localized_text(io.locale), io, io_state)
+            }
             Ok(CommandOutcome::ShowSubagentStatus(view)) => {
-                write_content_view(view.to_text(), io, io_state)
+                write_content_view(view.localized_text(io.locale), io, io_state)
             }
-            Ok(CommandOutcome::ShowSkills(overview)) => {
-                let mut text = format!("skills: {}\n", overview.entries.len());
-                for entry in &overview.entries {
-                    let execution = if entry.requires_execution {
-                        ", requires-execution"
-                    } else {
-                        ""
-                    };
-                    text.push_str(&format!(
-                        "● {}  {}{} — {}\n",
-                        entry.name, entry.source, execution, entry.description
-                    ));
-                }
-                for diagnostic in &overview.diagnostics {
-                    let name = diagnostic.name.as_deref().unwrap_or("-");
-                    text.push_str(&format!(
-                        "! {} / {} / {}: {}\n",
-                        diagnostic.source, name, diagnostic.kind, diagnostic.message
-                    ));
-                }
-                let write = stream_write(&io.output, format_args!("{text}"))
-                    .and_then(|()| stream_flush(&io.output));
-                if let Err(error) = write {
-                    io_state.note("stdout", error);
-                }
-                ExecOutcome::Success {
-                    output: text,
-                    turns: 0,
-                    usage: Usage::default(),
-                }
+            Ok(CommandOutcome::ShowSkills(view)) => {
+                write_content_view(view.localized_text(io.locale), io, io_state)
             }
-            Ok(CommandOutcome::ShowContext(snapshot)) => {
-                let mut text = format!(
-                    "context estimate ({})\nbase prompt: {}\nproject instructions: {}\nplan policy: {}\nskill catalog: {}\ngoal policy: {}\nmemory injection: {}/{} bytes\ntool schemas: {}\nhistory/compaction view: {}\noutput reserve: {}\ninput estimate: {}\ntotal estimate: {}\n",
-                    snapshot.unit,
-                    snapshot.base_prompt_estimate,
-                    snapshot.project_instructions_estimate,
-                    snapshot.plan_policy_estimate,
-                    snapshot.skill_catalog_estimate,
-                    snapshot.goal_policy_estimate,
-                    snapshot.memory_estimate,
-                    snapshot.memory_budget_bytes,
-                    snapshot.tool_schemas_estimate,
-                    snapshot.history_estimate,
-                    snapshot.output_reserve_estimate,
-                    snapshot.input_estimate,
-                    snapshot.total_estimate,
-                );
-                text.push_str(&format!("tools: {}\n", snapshot.tool_names.join(", ")));
-                text.push_str(&format!("skills: {}\n", snapshot.skill_names.join(", ")));
-                if snapshot.skill_diagnostics.is_empty() {
-                    text.push_str("skill diagnostics: none\n");
-                } else {
-                    text.push_str("skill diagnostics:\n");
-                    for diagnostic in &snapshot.skill_diagnostics {
-                        let name = diagnostic.name.as_deref().unwrap_or("-");
-                        text.push_str(&format!(
-                            "! {} / {} / {}: {}\n",
-                            diagnostic.source, name, diagnostic.kind, diagnostic.message
-                        ));
-                    }
-                }
-                let write = stream_write(&io.output, format_args!("{text}"))
-                    .and_then(|()| stream_flush(&io.output));
-                if let Err(error) = write {
-                    io_state.note("stdout", error);
-                }
-                ExecOutcome::Success {
-                    output: text,
-                    turns: 0,
-                    usage: Usage::default(),
-                }
+            Ok(CommandOutcome::ShowContext(view)) => {
+                write_content_view(view.localized_text(io.locale), io, io_state)
             }
             Ok(CommandOutcome::Status(message)) => {
                 if !args.quiet {
-                    write_status(&io.error, io_state, format_args!("{message}\n"));
+                    write_status(
+                        &io.error,
+                        io_state,
+                        format_args!("{}\n", message.render(io.locale)),
+                    );
                 }
                 ExecOutcome::Success {
                     output: String::new(),
@@ -797,7 +676,11 @@ fn run_headless_command(
             }
             Ok(CommandOutcome::SessionReset) => {
                 if !args.quiet {
-                    write_status(&io.error, io_state, format_args!("new conversation\n"));
+                    write_status(
+                        &io.error,
+                        io_state,
+                        format_args!("{}\n", io.locale.text("tui.new_conversation")),
+                    );
                 }
                 ExecOutcome::Success {
                     output: String::new(),
@@ -818,20 +701,25 @@ fn run_headless_command(
                 | CommandOutcome::StartPermissionModeSelection { .. }
                 | CommandOutcome::StartTitleEdit { .. }
                 | CommandOutcome::StartGoalRun { .. },
-            ) => ExecOutcome::UsageError(format!(
-                "{command} requires an interactive frontend — run `clat` and use it there"
-            )),
-            Err(error) => ExecOutcome::Failure(error.to_string()),
+            ) => ExecOutcome::UsageError(
+                UiMessage::new("cli.headless_interactive")
+                    .arg("command", command)
+                    .into(),
+            ),
+            Err(error) => ExecOutcome::Failure(error.presentation().into()),
         }
     };
     // HL-04 同款：stdout 写失败不得伪装成功。
     let outcome = match (io_state.take_first_error(), outcome) {
         (Some(error), ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. }) => {
-            ExecOutcome::Failure(error)
+            ExecOutcome::Failure((error).into())
         }
-        (Some(error), ExecOutcome::Failure(message)) => {
-            ExecOutcome::Failure(format!("{message}; {error}"))
-        }
+        (Some(error), ExecOutcome::Failure(message)) => ExecOutcome::Failure(
+            UiMessage::new("cli.exec_failure_combined")
+                .arg_message("message", message.message())
+                .arg("error", error)
+                .into(),
+        ),
         (Some(_), outcome @ ExecOutcome::UsageError(_)) => outcome,
         (None, outcome) => outcome,
     };
@@ -847,34 +735,7 @@ fn write_mcp_view(
     io: &ExecIo,
     io_state: &SharedIoState,
 ) -> ExecOutcome {
-    let connecting = if status.connecting > 0 {
-        format!(" · {} connecting", status.connecting)
-    } else {
-        String::new()
-    };
-    let mut text = format!(
-        "mcp: {}/{} connected{connecting}\n",
-        status.connected, status.configured
-    );
-    for server in &status.servers {
-        text.push_str(&format!(
-            "● {}  {} · {} · {} tools\n",
-            server.name, server.transport, server.protocol_version, server.tools
-        ));
-    }
-    for failure in &status.failures {
-        text.push_str(&format!("! {failure}\n"));
-    }
-    let write =
-        stream_write(&io.output, format_args!("{text}")).and_then(|()| stream_flush(&io.output));
-    if let Err(error) = write {
-        io_state.note("stdout", error);
-    }
-    ExecOutcome::Success {
-        output: text,
-        turns: 0,
-        usage: Usage::default(),
-    }
+    write_content_view(status.localized_text(io.locale), io, io_state)
 }
 
 fn write_content_view(text: String, io: &ExecIo, io_state: &SharedIoState) -> ExecOutcome {
@@ -898,17 +759,25 @@ fn close_application(application: TrustedProjectApplication, outcome: ExecOutcom
     match application.close() {
         Ok(()) => outcome,
         Err(error) => match outcome {
-            ExecOutcome::Failure(message) => {
-                ExecOutcome::Failure(format!("{message}; application close failed: {error}"))
-            }
+            ExecOutcome::Failure(message) => ExecOutcome::Failure(
+                UiMessage::new("cli.exec_close_combined")
+                    .arg_message("message", message.message())
+                    .arg("error", error.to_string())
+                    .into(),
+            ),
             // UsageError keeps its exit-code contract, but the close
             // failure still reaches the user (never swallowed).
-            ExecOutcome::UsageError(message) => {
-                ExecOutcome::UsageError(format!("{message}; application close failed: {error}"))
-            }
-            ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. } => {
-                ExecOutcome::Failure(format!("application close failed: {error}"))
-            }
+            ExecOutcome::UsageError(message) => ExecOutcome::UsageError(
+                UiMessage::new("cli.exec_close_combined")
+                    .arg_message("message", message.message())
+                    .arg("error", error.to_string())
+                    .into(),
+            ),
+            ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. } => ExecOutcome::Failure(
+                UiMessage::new("cli.exec_close_failure")
+                    .arg("error", error.to_string())
+                    .into(),
+            ),
         },
     }
 }
@@ -949,12 +818,16 @@ fn close_and_finalize(
         Err(error) => {
             io_state.note("stdout", error);
             match closed {
-                ExecOutcome::Failure(message) => {
-                    ExecOutcome::Failure(format!("{message}; stdout write failed"))
-                }
-                ExecOutcome::UsageError(message) => {
-                    ExecOutcome::UsageError(format!("{message}; stdout write failed"))
-                }
+                ExecOutcome::Failure(message) => ExecOutcome::Failure(
+                    UiMessage::new("cli.exec_write_combined")
+                        .arg_message("message", message.message())
+                        .into(),
+                ),
+                ExecOutcome::UsageError(message) => ExecOutcome::UsageError(
+                    UiMessage::new("cli.exec_write_combined")
+                        .arg_message("message", message.message())
+                        .into(),
+                ),
                 ExecOutcome::Success { .. } | ExecOutcome::Cancelled { .. } => {
                     ExecOutcome::Failure("stdout write failed".into())
                 }
@@ -970,7 +843,9 @@ fn close_and_finalize(
 fn resolve_prompt(args: &ExecArgs, io: &ExecIo, limit: usize) -> Result<String, ExecOutcome> {
     let instruction = match args.prompt.as_deref() {
         Some(instruction) if instruction.trim().is_empty() => {
-            return Err(ExecOutcome::UsageError("prompt must not be empty".into()));
+            return Err(ExecOutcome::UsageError(
+                UiMessage::new("cli.exec_empty_prompt").into(),
+            ));
         }
         instruction => instruction,
     };
@@ -978,7 +853,7 @@ fn resolve_prompt(args: &ExecArgs, io: &ExecIo, limit: usize) -> Result<String, 
         return match instruction {
             Some(instruction) => Ok(instruction.to_string()),
             None => Err(ExecOutcome::UsageError(
-                "missing prompt — pass it as an argument or pipe it on stdin".into(),
+                UiMessage::new("cli.exec_missing_prompt").into(),
             )),
         };
     }
@@ -987,7 +862,7 @@ fn resolve_prompt(args: &ExecArgs, io: &ExecIo, limit: usize) -> Result<String, 
         return match instruction {
             Some(instruction) => Ok(instruction.to_string()),
             None => Err(ExecOutcome::UsageError(
-                "no prompt provided on stdin".into(),
+                UiMessage::new("cli.exec_empty_stdin").into(),
             )),
         };
     }
@@ -1010,14 +885,20 @@ fn read_stdin_budgeted(io: &ExecIo, limit: usize) -> Result<String, ExecOutcome>
     let count = {
         let mut input = io.input.lock().expect("stdin");
         let mut reader = (&mut *input).take((limit + 1) as u64);
-        reader
-            .read_to_string(&mut buffer)
-            .map_err(|error| ExecOutcome::Failure(format!("could not read piped input: {error}")))?
+        reader.read_to_string(&mut buffer).map_err(|error| {
+            ExecOutcome::Failure(
+                UiMessage::new("cli.exec_stdin_read")
+                    .arg("error", error.to_string())
+                    .into(),
+            )
+        })?
     };
     if count > limit {
-        return Err(ExecOutcome::UsageError(format!(
-            "piped input exceeds the {limit}-byte limit; trim the input or summarize it first"
-        )));
+        return Err(ExecOutcome::UsageError(
+            UiMessage::new("cli.exec_stdin_limit")
+                .arg("limit", limit)
+                .into(),
+        ));
     }
     Ok(buffer)
 }
@@ -1025,7 +906,7 @@ fn read_stdin_budgeted(io: &ExecIo, limit: usize) -> Result<String, ExecOutcome>
 fn apply_session_policy(
     application: &mut TrustedProjectApplication,
     args: &ExecArgs,
-) -> Result<(), String> {
+) -> Result<(), PresentedText> {
     if args.continue_session {
         // 优先 workspace 选择；缺失时回退该项目最近会话（plan §13.1
         // 的回退语义，不再复刻旧 SQLite 秒级排序细节）。
@@ -1043,10 +924,13 @@ fn apply_session_policy(
                     .switch_session(session.id)
                     .map(|_| ())
                     .map_err(move |error| {
-                        format!("could not switch to session {display_id}: {error}")
+                        UiMessage::new("cli.exec_session_switch")
+                            .arg("id", display_id)
+                            .arg("error", error.to_string())
+                            .into()
                     })
             }
-            None => Err("no session to continue".into()),
+            None => Err(UiMessage::new("cli.exec_no_session").into()),
         };
     }
     if let Some(id) = args.session.clone() {
@@ -1054,11 +938,18 @@ fn apply_session_policy(
         return application
             .switch_session(session_id)
             .map(|_| ())
-            .map_err(|error| format!("could not switch to session {id}: {error}"));
+            .map_err(|error| {
+                UiMessage::new("cli.exec_session_switch")
+                    .arg("id", id)
+                    .arg("error", error.to_string())
+                    .into()
+            });
     }
-    application
-        .new_session()
-        .map_err(|error| format!("could not start a new session: {error}"))
+    application.new_session().map_err(|error| {
+        UiMessage::new("cli.exec_new_session")
+            .arg("error", error.to_string())
+            .into()
+    })
 }
 
 // ---- I/O 错误跟踪（HL-04）----
@@ -1127,6 +1018,7 @@ enum PermissionMode {
 /// 展示后读取一次，输入端口负责丢弃请求前积压按键并支持取消
 /// （HL-02/08/09）；非交互一律拒绝并说明原因。
 struct ExecApprover {
+    locale: LocaleContext,
     mode: PermissionMode,
     input: Option<Arc<dyn ExecPermissionInput>>,
     error: SharedWriter,
@@ -1134,6 +1026,69 @@ struct ExecApprover {
     interrupt: ExecCancel,
 }
 
+impl ExecApprover {
+    fn interactive(&self, request: PermissionRequest) -> PermissionDecision {
+        write_status(
+            &self.error,
+            &self.io_state,
+            format_args!(
+                "{}",
+                self.locale.render(
+                    &UiMessage::new("cli.exec_permission")
+                        .arg("tool", request.tool.clone())
+                        .arg("effect", format!("{:?}", request.effect))
+                        .arg("reason", request.reason.clone())
+                )
+            ),
+        );
+        write_status(
+            &self.error,
+            &self.io_state,
+            format_args!(
+                "{}",
+                self.locale.render(
+                    &UiMessage::new("cli.exec_arguments")
+                        .arg("arguments", request.arguments.clone())
+                )
+            ),
+        );
+        write_status(
+            &self.error,
+            &self.io_state,
+            format_args!("{}", self.locale.text("cli.exec_allow")),
+        );
+        if let Err(error) = stream_flush(&self.error) {
+            self.io_state.note("stderr", error);
+        }
+        let Some(input) = &self.input else {
+            return PermissionDecision::Unavailable {
+                reason: "interactive input is unavailable".into(),
+            };
+        };
+        let answer = input.read_answer(&self.interrupt);
+        write_status(&self.error, &self.io_state, format_args!("\n"));
+        match answer {
+            ExecPermissionAnswer::Answer(answer)
+                if answer.trim().eq_ignore_ascii_case("y")
+                    || answer.trim().eq_ignore_ascii_case("yes") =>
+            {
+                PermissionDecision::Allow
+            }
+            ExecPermissionAnswer::Answer(_) => PermissionDecision::Deny {
+                reason: "denied by user".into(),
+            },
+            ExecPermissionAnswer::Interrupted => PermissionDecision::Deny {
+                reason: "interrupted by user".into(),
+            },
+            ExecPermissionAnswer::Closed => PermissionDecision::Unavailable {
+                reason: "no answer available (stdin closed)".into(),
+            },
+            ExecPermissionAnswer::Error(error) => PermissionDecision::Unavailable {
+                reason: format!("permission input failed: {error}"),
+            },
+        }
+    }
+}
 impl PermissionApprover for ExecApprover {
     fn decide(
         &self,
@@ -1155,52 +1110,7 @@ impl PermissionApprover for ExecApprover {
                     request.tool
                 ),
             },
-            PermissionMode::Interactive => {
-                write_status(
-                    &self.error,
-                    &self.io_state,
-                    format_args!(
-                        "permission requested: {} ({:?}) — {}\n",
-                        request.tool, request.effect, request.reason
-                    ),
-                );
-                write_status(
-                    &self.error,
-                    &self.io_state,
-                    format_args!("arguments: {}\n", request.arguments),
-                );
-                write_status(&self.error, &self.io_state, format_args!("allow? [y/N] "));
-                if let Err(error) = stream_flush(&self.error) {
-                    self.io_state.note("stderr", error);
-                }
-                let Some(input) = &self.input else {
-                    return PermissionDecision::Unavailable {
-                        reason: "interactive input is unavailable".into(),
-                    };
-                };
-                let answer = input.read_answer(&self.interrupt);
-                write_status(&self.error, &self.io_state, format_args!("\n"));
-                match answer {
-                    ExecPermissionAnswer::Answer(answer)
-                        if answer.trim().eq_ignore_ascii_case("y")
-                            || answer.trim().eq_ignore_ascii_case("yes") =>
-                    {
-                        PermissionDecision::Allow
-                    }
-                    ExecPermissionAnswer::Answer(_) => PermissionDecision::Deny {
-                        reason: "denied by user".into(),
-                    },
-                    ExecPermissionAnswer::Interrupted => PermissionDecision::Deny {
-                        reason: "interrupted by user".into(),
-                    },
-                    ExecPermissionAnswer::Closed => PermissionDecision::Unavailable {
-                        reason: "no answer available (stdin closed)".into(),
-                    },
-                    ExecPermissionAnswer::Error(error) => PermissionDecision::Unavailable {
-                        reason: format!("permission input failed: {error}"),
-                    },
-                }
-            }
+            PermissionMode::Interactive => self.interactive(request),
         }
     }
 }
@@ -1241,6 +1151,7 @@ fn read_line(input: &SharedReader) -> Option<String> {
 /// 路径（文本在 `model_stream` 事件载荷里）；stderr 状态面原样。
 /// 写失败沿 INV-3 同一管道（记错 + 取消），退出语义不变（INV-J6）。
 struct ExecEventSink {
+    locale: LocaleContext,
     output: SharedWriter,
     error: SharedWriter,
     quiet: bool,
@@ -1250,18 +1161,29 @@ struct ExecEventSink {
     cancel: ExecCancel,
 }
 
+impl ExecEventSink {
+    fn output(&self, text: &str) {
+        let result = stream_write(&self.output, format_args!("{text}"))
+            .and_then(|()| stream_flush(&self.output));
+        if let Err(error) = result {
+            self.io_state.note("stdout", error);
+            self.cancel.cancel_active_run_waiting_for_handle();
+        }
+    }
+    fn notice(&self, message: UiMessage) {
+        if !self.quiet {
+            write_status(
+                &self.error,
+                &self.io_state,
+                format_args!("{}", self.locale.render(&message)),
+            );
+        }
+    }
+}
 impl EventSink for ExecEventSink {
     fn emit(&mut self, event: RunEvent) {
         if self.json {
-            // FP-10 由 wire 层承担：serde 转义 C0 + 补转义 DEL，结构性
-            // 字节全为可打印 ASCII，无需 TTY 消毒（INV-J3）。
-            let line = crate::wire::envelope_line(&event);
-            let result = stream_write(&self.output, format_args!("{line}"))
-                .and_then(|()| stream_flush(&self.output));
-            if let Err(error) = result {
-                self.io_state.note("stdout", error);
-                self.cancel.cancel_active_run_waiting_for_handle();
-            }
+            self.output(&crate::wire::envelope_line(&event));
         }
         match event {
             RunEvent::ModelStream {
@@ -1272,63 +1194,40 @@ impl EventSink for ExecEventSink {
                 event: ModelEvent::RefusalDelta { delta },
                 ..
             } if !self.json => {
-                // FP-10（双契约）：TTY 显示路径对 C0/DEL 做可见转义——
-                // 远端诱导的 OSC 52（剪贴板改写）/OSC 8/CSI 序列失去
-                // 效力；管道路径字节原样（assistant-text 契约不破）。
                 let text = if self.stdout_is_terminal {
                     sanitize_tty_text(&delta)
                 } else {
                     delta
                 };
-                let result = stream_write(&self.output, format_args!("{text}"))
-                    .and_then(|()| stream_flush(&self.output));
-                if let Err(error) = result {
-                    self.io_state.note("stdout", error);
-                    self.cancel.cancel_active_run_waiting_for_handle();
-                }
+                self.output(&text);
             }
             RunEvent::ModelRequested {
                 turn,
                 provider,
                 model,
-            } => {
-                if !self.quiet {
-                    write_status(
-                        &self.error,
-                        &self.io_state,
-                        format_args!("● {provider}/{model} turn {turn}\n"),
-                    );
-                }
-            }
+            } => self.notice(
+                UiMessage::new("cli.exec_turn")
+                    .arg("provider", provider)
+                    .arg("model", model)
+                    .arg("turn", turn),
+            ),
             RunEvent::ToolStarted { tool, .. } => {
-                if !self.quiet {
-                    write_status(&self.error, &self.io_state, format_args!("● tool {tool}\n"));
-                }
+                self.notice(UiMessage::new("cli.exec_tool").arg("tool", tool))
             }
-            RunEvent::PermissionDenied { tool, reason } => {
-                if !self.quiet {
-                    write_status(
-                        &self.error,
-                        &self.io_state,
-                        format_args!("● permission denied {tool}: {reason}\n"),
-                    );
-                }
-            }
-            RunEvent::ToolFinished { result } if !self.quiet => {
-                let mark = if result.is_error { "✗" } else { "✓" };
-                write_status(
-                    &self.error,
-                    &self.io_state,
-                    format_args!("● tool {mark} {}\n", result.tool_name),
-                );
-            }
+            RunEvent::PermissionDenied { tool, reason } => self.notice(
+                UiMessage::new("cli.exec_denied")
+                    .arg("tool", tool)
+                    .arg("reason", reason),
+            ),
+            RunEvent::ToolFinished { result } => self.notice(
+                UiMessage::new("cli.exec_finished")
+                    .arg("mark", if result.is_error { "✗" } else { "✓" })
+                    .arg("tool", result.tool_name),
+            ),
             _ => {}
         }
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 fn prepare_task_command(
     app: &mut TrustedProjectApplication,
@@ -1358,7 +1257,10 @@ fn write_help_view(
         for alias in &info.aliases {
             names.push_str(&format!(", /{alias}"));
         }
-        text.push_str(&format!("{names} — {}\n", info.description));
+        let description = crate::i18n::command_presentation(&info.name, &info.description)
+            .map(|m| io.locale.render(&m))
+            .unwrap_or_else(|| info.description.clone());
+        text.push_str(&format!("{names} — {description}\n"));
     }
     if let Err(error) =
         stream_write(&io.output, format_args!("{text}")).and_then(|()| stream_flush(&io.output))
@@ -1391,6 +1293,7 @@ fn exec_request(
         asker: None,
         completion,
         approver: Arc::new(ExecApprover {
+            locale: io.locale,
             mode,
             input: io.permission_input.clone(),
             error: Arc::clone(&io.error),
@@ -1398,6 +1301,7 @@ fn exec_request(
             interrupt: cancel.clone(),
         }),
         events: Box::new(ExecEventSink {
+            locale: io.locale,
             output: Arc::clone(&io.output),
             error: Arc::clone(&io.error),
             quiet: args.quiet,
@@ -1408,3 +1312,48 @@ fn exec_request(
         }),
     }
 }
+
+fn open_exec_application<F>(
+    project: &Project,
+    storage_root: Option<PathBuf>,
+    trust: bool,
+    into_trusted: F,
+) -> Result<TrustedProjectApplication, ExecOutcome>
+where
+    F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
+{
+    let bootstrap = match storage_root {
+        Some(root) => BootstrapApplication::open(project.clone(), root),
+        None => BootstrapApplication::open_default(project.clone()),
+    };
+    let bootstrap = match bootstrap {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => return Err(ExecOutcome::Failure((error.to_string()).into())),
+    };
+    // INV-2：未信任 → 只读检查即退出；--trust 是唯一非交互通路，经
+    // 一次性 ProjectAuthorization + authorize_and_mount（无独立
+    // trust 写入口，plan §16 阶段5）。
+    let application = match bootstrap.is_trusted() {
+        Ok(true) => match into_trusted(bootstrap) {
+            Ok(application) => application,
+            Err(error) => return Err(ExecOutcome::Failure((error.to_string()).into())),
+        },
+        Ok(false) if trust => {
+            match bootstrap.authorize_and_mount(crate::ProjectAuthorization::grant()) {
+                Ok(application) => application,
+                Err(error) => return Err(ExecOutcome::Failure((error.to_string()).into())),
+            }
+        }
+        Ok(false) => {
+            return Err(ExecOutcome::Failure(
+                UiMessage::new("cli.exec_untrusted").into(),
+            ));
+        }
+        Err(error) => return Err(ExecOutcome::Failure((error.to_string()).into())),
+    };
+
+    Ok(application)
+}
+
+#[cfg(test)]
+mod tests;

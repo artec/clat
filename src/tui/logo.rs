@@ -22,18 +22,28 @@ const LOGO_LINES: [&str; 6] = [
 
 /// 空会话欢迎页（启动 / `/new` / `/clear` 后的会话区）：LOGO +
 /// 版本行 + 起步提示。横向居中由调用方按最宽行处理。
+#[cfg(test)]
 pub(crate) fn welcome_lines(version: &str) -> Vec<Line<'static>> {
+    welcome_lines_localized(
+        version,
+        clat_core::client_ports::presentation::LocaleContext::default(),
+    )
+}
+pub(crate) fn welcome_lines_localized(
+    version: &str,
+    locale: clat_core::client_ports::presentation::LocaleContext,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = LOGO_LINES
         .iter()
         .map(|text| Line::from(Span::styled((*text).to_owned(), theme::style(Role::Logo))))
         .collect();
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("v{version} · cmd-line agent runtime"),
+        format!("v{version} · {}", locale.text("tui.runtime_tagline")),
         theme::style(Role::Dim),
     )));
     lines.push(Line::from(Span::styled(
-        "type a message to begin · /help for keys",
+        locale.text("tui.welcome_hint"),
         theme::style(Role::Faint),
     )));
     lines
@@ -41,7 +51,11 @@ pub(crate) fn welcome_lines(version: &str) -> Vec<Line<'static>> {
 
 /// 退出告别的 stdout 纯文本（ANSI 着色由 [`print_farewell`] 统一处理，
 /// 文本本身可测）。
+#[cfg(test)]
 pub(crate) fn farewell_text() -> String {
+    farewell_text_localized(clat_core::client_ports::presentation::LocaleContext::default())
+}
+fn farewell_text_localized(locale: clat_core::client_ports::presentation::LocaleContext) -> String {
     // 上、下各一个空行包夹 LOGO + 版本行：与恢复主屏后的提示符和
     // 之前的输出都隔出呼吸感（与 opencode 退出画面一致）。
     let mut out = String::from("\n");
@@ -51,21 +65,22 @@ pub(crate) fn farewell_text() -> String {
     }
     out.push('\n');
     out.push_str(&format!(
-        "clat v{} — cmd-line agent runtime\n\n",
-        env!("CARGO_PKG_VERSION")
+        "clat v{} — {}\n\n",
+        env!("CARGO_PKG_VERSION"),
+        locale.text("tui.runtime_tagline")
     ));
     out
 }
 
 /// 终端恢复主屏后打印告别 LOGO。仅在 stdout 为 TTY 时输出（TUI 之外
 /// 重定向的场景不污染管道）；失败静默——告别是纯装饰，不影响退出码。
-pub(crate) fn print_farewell() {
+pub(crate) fn print_farewell(locale: clat_core::client_ports::presentation::LocaleContext) {
     if !io::stdout().is_terminal() {
         return;
     }
     let dim = "\x1b[2m";
     let reset = "\x1b[0m";
-    let text = farewell_text();
+    let text = farewell_text_localized(locale);
     // 只裁最后一个换行再由 writeln 补回——版本行下的尾部空行必须
     // 保留，不能用 trim_end_matches 把它一并裁掉。
     let _ = writeln!(

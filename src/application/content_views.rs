@@ -1,18 +1,18 @@
 //! Bounded, read-only command projections shared by terminal, exec and serve.
 
 use super::{ApplicationError, TrustedProjectApplication};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MEMORY_OVERVIEW_ENTRIES: usize = 64;
 const MEMORY_PREVIEW_BYTES: usize = 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MemoryOverviewDto {
     pub entries: Vec<MemoryEntryDto>,
     pub omitted: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEntryDto {
     pub id: String,
     pub scope: String,
@@ -24,13 +24,13 @@ pub struct MemoryEntryDto {
     pub content_truncated: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GoalViewDto {
     pub goal: Option<crate::goal::GoalState>,
     pub armed: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SubagentStatusDto {
     pub enabled: bool,
 }

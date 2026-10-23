@@ -26,7 +26,7 @@ impl App {
         }
         let Ok(question) = serde_json::from_value::<AskQuestion>(payload["question"].clone())
         else {
-            self.flash_status("invalid host question; no answer sent");
+            self.flash_message(UiMessage::new("tui.host_bad_question"));
             return;
         };
         let questions = &mut self.native.as_mut().unwrap().questions;
@@ -107,9 +107,10 @@ impl App {
                         AskAnswer::Declined => {}
                     }
                 }
-                self.flash_status(format!(
-                    "{error} · check host before retrying; answer retained"
-                ));
+                self.flash_message(
+                    UiMessage::new("tui.message_value_check_host_before_retrying_answer_retained")
+                        .arg("error", (error).to_string()),
+                );
             }
         }
     }

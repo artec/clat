@@ -122,6 +122,16 @@ External MCP programs still need their configured executables. Finder's PATH can
 differ from a terminal's PATH; configure absolute executable paths when necessary.
 
 
+## Language
+
+The welcome page and workbench offer English, 简体中文 and 繁體中文, plus
+following system languages. The desktop choice controls the embedded workbench,
+native menus, notifications and update messages. It is separate from terminal
+and ordinary-browser preferences. Switching keeps drafts, pending interactions
+and update progress. Windows installers offer all three languages; macOS
+system-owned dialogs retain the operating system's language behavior.
+See [Interface languages](localization.md).
+
 ## Local desktop testing
 
 From the repository root, run `bun start` to stage the matching private backend

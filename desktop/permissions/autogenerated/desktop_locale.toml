@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-locale"
+description = "Enables the desktop_locale command without any pre-configured scope."
+commands.allow = ["desktop_locale"]
+
+[[permission]]
+identifier = "deny-desktop-locale"
+description = "Denies the desktop_locale command without any pre-configured scope."
+commands.deny = ["desktop_locale"]

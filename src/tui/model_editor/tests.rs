@@ -1044,3 +1044,20 @@ fn editor_prefills_preset_and_focuses_the_api_key_row() {
     assert_eq!(editor.credentials.value(0), Some(""));
     assert_eq!(editor.visible_rows()[editor.selected], RowKind::ApiKey);
 }
+
+#[test]
+fn retained_validation_error_rerenders_without_retrying_or_changing_model_input() {
+    use clat_core::client_ports::presentation::{Locale, LocaleContext};
+    let mut editor = editor();
+    editor.model.clear();
+    assert!(matches!(editor.save_action(), EditorAction::Continue));
+    let raw = editor.error.as_ref().unwrap().raw.clone();
+    for locale in [Locale::Simplified, Locale::Traditional, Locale::English] {
+        editor.locale = LocaleContext::new(locale);
+        let shown = editor.error_text();
+        assert!(!shown.contains("[missing translation]"));
+        assert_eq!(shown == raw, locale == Locale::English);
+        assert!(editor.model.is_empty());
+        assert!(editor.credentials.value(0).unwrap_or_default().is_empty());
+    }
+}

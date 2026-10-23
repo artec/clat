@@ -11,7 +11,7 @@ impl App {
             return;
         }
         let Some(id) = &self.session_id else {
-            self.flash_status("no active conversation");
+            self.flash_message(UiMessage::new("tui.no_conversation"));
             return;
         };
         native.rename_target = Some((native.epoch, native.selection, id.as_str().to_owned()));
@@ -32,7 +32,7 @@ impl App {
         };
         if native.epoch != epoch || native.selection != selection {
             self.rename_dialog = None;
-            self.flash_status("session changed; rename was not sent");
+            self.flash_message(UiMessage::new("tui.host_rename_changed"));
             return;
         }
         let client = native.client.clone();
@@ -68,9 +68,11 @@ impl App {
                 self.rename_dialog = None;
                 native.rename_target = None;
                 self.refresh_native();
-                self.flash_status("conversation renamed");
+                self.flash_message(UiMessage::new("tui.rename_done"));
             }
-            Err(error) => self.flash_status(format!("rename failed: {error}")),
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_rename_failed_value").arg("error", (error).to_string()),
+            ),
         }
     }
 }

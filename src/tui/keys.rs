@@ -61,7 +61,9 @@ impl App {
                 self.balance = value;
             }
             ApplicationEvent::CompactionUpdated(status) => match status {
-                CompactionStatus::Started => self.flash_status("compacting…"),
+                CompactionStatus::Started => {
+                    self.flash_message(UiMessage::new("tui.compacting_progress"))
+                }
                 CompactionStatus::Finished { note, succeeded } => {
                     self.flash_status(note);
                     // 仅当历史确实收缩（成功且 replace 事件族耐久落盘）时，
@@ -74,9 +76,9 @@ impl App {
             },
             // A4-1（W1-21）：MCP/WASM 启动失败一次性响亮提示（详情 /mcp）。
             ApplicationEvent::McpStartupNotice { failures } => {
-                self.flash_status(format!(
-                    "mcp: {failures} tool/server registration issue(s) — /mcp for detail"
-                ));
+                self.flash_message(
+                    UiMessage::new("tui.mcp_registration_issues").arg("count", failures),
+                );
             }
             ApplicationEvent::LanguageIntelligenceNotice { message } => {
                 self.flash_status(message);
@@ -94,23 +96,30 @@ impl App {
                 terminated,
             } => {
                 let state = if timed_out {
-                    "timed out".to_owned()
+                    UiMessage::new("web.timed_out")
                 } else if cancelled {
-                    "cancelled".to_owned()
+                    UiMessage::new("tui.process_cancelled")
                 } else if terminated {
-                    "terminated".to_owned()
+                    UiMessage::new("tui.process_terminated")
                 } else if let Some(signal) = signal {
-                    format!("signal {signal}")
+                    UiMessage::new("tui.process_signal").arg("signal", signal)
                 } else {
-                    exit_code.map_or_else(|| "finished".into(), |code| format!("exit {code}"))
+                    exit_code.map_or_else(
+                        || UiMessage::new("tui.process_finished"),
+                        |code| UiMessage::new("tui.process_exit").arg("code", code),
+                    )
                 };
-                self.flash_status(format!("process {session_id} · {state}"));
+                self.flash_message(
+                    UiMessage::new("tui.process_finished_status")
+                        .arg("id", session_id)
+                        .arg_message("state", state),
+                );
                 self.notify();
             }
             // VP-1：custom 视觉探针判定——状态栏一行摘要（覆盖位已在
             // core 侧落盘，TUI 不触碰持久化）。
             ApplicationEvent::VisionProbeNotice { report } => {
-                self.flash_status(report.status_text());
+                self.flash_message(report.status_presentation());
             }
         }
     }
@@ -122,7 +131,7 @@ impl App {
             self.config = config;
             self.credentials = credentials;
         }
-        self.flash_status("model settings updated");
+        self.flash_message(UiMessage::new("tui.model_updated"));
     }
 
     /// 处理一条终端事件：按键/粘贴/鼠标。
@@ -172,7 +181,7 @@ impl App {
                 && matches!(key.code, KeyCode::Char('c' | 'C'))
             {
                 self.quit_after_run_start = true;
-                self.flash_status("finishing attachment admission before exit…");
+                self.flash_message(UiMessage::new("tui.finishing_attachment_admission"));
             }
             return;
         }
@@ -221,6 +230,9 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.language_key(key) {
+            return;
+        }
         // Preserve priority: global presentation/copy-exit, trust, selection,
         // modal dialogs, then composer. Bracketed paste stays a separate event.
         if self.handle_global_key(key)
@@ -250,7 +262,7 @@ impl App {
         // 时刻可用——纯呈现状态，不持久化（G5）。
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
             self.card_visibility = self.card_visibility.next();
-            self.flash_status(format!("tool cards: {:?}", self.card_visibility));
+            self.flash_message(self.card_visibility.presentation());
             return true;
         }
         // Ctrl+R：Think 披露行全局展开/折叠。与 Ctrl+O 同为纯呈现
@@ -260,9 +272,9 @@ impl App {
         {
             let expanded = self.conversation.toggle_reasoning();
             self.flash_status(if expanded {
-                "reasoning: expanded"
+                UiMessage::new("tui.reasoning_open")
             } else {
-                "reasoning: collapsed"
+                UiMessage::new("tui.reasoning_closed")
             });
             return true;
         }
@@ -284,7 +296,7 @@ impl App {
             // Shift 组合（Ctrl+Shift+C）意图是复制而非退出：没选中任何
             // 内容时给出提示，不退出。
             if key.modifiers.contains(KeyModifiers::SHIFT) {
-                self.flash_status("nothing selected to copy — drag to select");
+                self.flash_message(UiMessage::new("tui.no_copy"));
                 return true;
             }
             self.should_quit = true;
@@ -328,16 +340,22 @@ impl App {
                         // 确权路径从未订阅的历史缺口）。
                         self.wire_application_events();
                         if let Err(error) = self.adopt_snapshot() {
-                            self.flash_status(format!("failed to trust project: {error}"));
+                            self.flash_message(
+                                UiMessage::new("tui.message_failed_to_trust_project_value")
+                                    .arg("error", error.to_string()),
+                            );
                             return true;
                         }
                         self.trust_prompt = false;
-                        self.flash_status("project trusted — welcome");
+                        self.flash_message(UiMessage::new("tui.trust_welcome"));
                     }
                     Err(error) => {
                         self.bootstrap =
                             BootstrapApplication::open_default(self.project.clone()).ok();
-                        self.flash_status(format!("failed to trust project: {error}"));
+                        self.flash_message(
+                            UiMessage::new("tui.message_failed_to_trust_project_value")
+                                .arg("error", (error).to_string()),
+                        );
                     }
                 }
             } else if leave {
@@ -485,43 +503,12 @@ impl App {
                     // claim 的插话先召回（文本退回编辑框，可改可重发，
                     // run 不受影响）；队列空了才轮到取消 run。已被
                     // claim 的消息 core 侧返回 None，自然落到取消路径。
-                    let recalled = self
-                        .application
-                        .as_ref()
-                        .and_then(|application| application.recall_pending_steering());
-                    match recalled {
-                        Some(message) => {
-                            // core 召回成功 ⇒ pending 区必含对应回显
-                            //（入队与回显同路径）；区侧同步弹出最后一条。
-                            // 回填按发送顺序排列、换行分隔（多次召回时
-                            // 先发的想法靠前——见 prepend_recalled_line）。
-                            self.conversation.recall_pending_steering();
-                            self.pending_native_steering.pop_back();
-                            self.input
-                                .prepend_recalled_line(&message.message.content.plain_text());
-                            let roots = self.project.root().to_path_buf();
-                            let restored = message.message.staged_attachments.len();
-                            let restore = self
-                                .attachments
-                                .add_paths(&roots, message.message.staged_attachments);
-                            match restore {
-                                Ok(_) if restored > 0 => self.flash_status(format!(
-                                    "steering recalled — restored {restored} image(s), edit then Enter requeues"
-                                )),
-                                Ok(_) => self
-                                    .flash_status("steering recalled — edit it, Enter requeues"),
-                                Err(error) => self.flash_status(format!(
-                                    "steering text recalled; image draft restore failed: {error}"
-                                )),
-                            }
-                        }
-                        None => {
-                            if let Some(handle) = &self.run_handle {
-                                handle.cancel();
-                                self.cancel_requested = true;
-                                self.flash_status("cancelling…");
-                            }
-                        }
+                    if !self.recall_local_steering()
+                        && let Some(handle) = &self.run_handle
+                    {
+                        handle.cancel();
+                        self.cancel_requested = true;
+                        self.flash_message(UiMessage::new("tui.cancelling_progress"));
                     }
                 } else if let Some(handle) = self
                     .compact_handle
@@ -532,7 +519,7 @@ impl App {
                     // 总截止，join 最长会冻结 UI 一分钟；完成事件（失败
                     // 文本）异步回流覆盖状态栏。
                     handle.cancel();
-                    self.flash_status("cancelling compaction…");
+                    self.flash_message(UiMessage::new("tui.cancel_compact"));
                 } else {
                     // 空闲 Esc：清输入连同未发送的附件。
                     self.input.clear();
@@ -542,6 +529,42 @@ impl App {
             KeyCode::Char(ch) => self.input.insert_char(ch),
             _ => {}
         }
+    }
+
+    fn recall_local_steering(&mut self) -> bool {
+        let Some(message) = self
+            .application
+            .as_ref()
+            .and_then(|app| app.recall_pending_steering())
+        else {
+            return false;
+        };
+
+        // core 召回成功 ⇒ pending 区必含对应回显
+        //（入队与回显同路径）；区侧同步弹出最后一条。
+        // 回填按发送顺序排列、换行分隔（多次召回时
+        // 先发的想法靠前——见 prepend_recalled_line）。
+        self.conversation.recall_pending_steering();
+        self.pending_native_steering.pop_back();
+        self.input
+            .prepend_recalled_line(&message.message.content.plain_text());
+        let roots = self.project.root().to_path_buf();
+        let restored = message.message.staged_attachments.len();
+        let restore = self
+            .attachments
+            .add_paths(&roots, message.message.staged_attachments);
+        match restore {
+            Ok(_) if restored > 0 => self.flash_message(
+                UiMessage::new("tui.steering_images_recalled").arg("count", restored),
+            ),
+            Ok(_) => self.flash_message(UiMessage::new("tui.steering_recalled")),
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.steering_image_restore_failed")
+                    .arg_message("error", error.message()),
+            ),
+        }
+
+        true
     }
 
     fn handle_paste(&mut self, text: &str) {
@@ -575,11 +598,12 @@ impl App {
                 match self.attachments.add_paths(&root, [image]) {
                     Ok(_) => {
                         let count = self.attachments.len();
-                        self.flash_status(format!(
-                            "image attached ({count}) — Enter sends it with your message · Esc drops it"
-                        ));
+                        self.flash_message(UiMessage::new("tui.message_image_attached_value_enter_sends_it_with_your_message_esc_drops_it").arg("count",(count).to_string()));
                     }
-                    Err(error) => self.flash_status(format!("attach failed: {error}")),
+                    Err(error) => self.flash_message(
+                        UiMessage::new("tui.message_attach_failed_value")
+                            .arg_message("error", error.message()),
+                    ),
                 }
             } else {
                 // 普通文本粘贴：仅写入草稿。换行在此归一为 `\n`
@@ -601,7 +625,7 @@ impl App {
             PermissionPickerAction::Continue => {}
             PermissionPickerAction::Cancel => {
                 self.permission_picker = None;
-                self.flash_status("permission mode unchanged");
+                self.flash_message(UiMessage::new("tui.unchanged_permission"));
             }
             PermissionPickerAction::Apply(mode) => {
                 self.permission_picker = None;
@@ -620,9 +644,9 @@ impl App {
                                 steer: false,
                                 text: format!("/permission {}", mode.journal_value()),
                             });
-                            self.flash_status("switching permission…");
+                            self.flash_message(UiMessage::new("tui.switch_permission"));
                         }
-                        None => self.flash_status("no active session"),
+                        None => self.flash_message(UiMessage::new("tui.no_active")),
                     }
                     return;
                 }
@@ -630,11 +654,18 @@ impl App {
                     // journal 写失败不回滚内存档位（本进程行为已生效），
                     // 只提示；同值切换零事件。
                     if let Err(error) = application.set_permission_mode(mode) {
-                        self.flash_status(format!(
-                            "permission mode: {mode} (not saved to this session: {error})"
-                        ));
+                        self.flash_message(
+                            UiMessage::new(
+                                "tui.message_permission_mode_value_not_saved_to_this_session_value",
+                            )
+                            .arg("mode", (mode).to_string())
+                            .arg("error", (error).to_string()),
+                        );
                     } else {
-                        self.flash_status(format!("permission mode: {mode}"));
+                        self.flash_message(
+                            UiMessage::new("tui.message_permission_mode_value")
+                                .arg("mode", (mode).to_string()),
+                        );
                     }
                 }
             }
@@ -663,7 +694,7 @@ impl App {
                     } else {
                         let text = buffer.text().trim().to_owned();
                         if text.is_empty() {
-                            self.flash_status("name is empty");
+                            self.flash_message(UiMessage::new("tui.empty_name"));
                         } else {
                             outcome = Outcome::Commit(text);
                         }
@@ -700,9 +731,9 @@ impl App {
                             });
                             self.session_title = Some(name);
                             self.rename_dialog = None;
-                            self.flash_status("renaming…");
+                            self.flash_message(UiMessage::new("tui.renaming_progress"));
                         }
-                        None => self.flash_status("no active session"),
+                        None => self.flash_message(UiMessage::new("tui.no_active")),
                     }
                     return;
                 }
@@ -724,15 +755,19 @@ impl App {
             Some(Ok(RenameOutcome::Renamed { title })) => {
                 self.session_title = Some(title);
                 self.rename_dialog = None;
-                self.flash_status("conversation renamed");
+                self.flash_message(UiMessage::new("tui.rename_done"));
             }
-            Some(Ok(RenameOutcome::Invalid)) => self.flash_status("name is empty"),
+            Some(Ok(RenameOutcome::Invalid)) => {
+                self.flash_message(UiMessage::new("tui.empty_name"))
+            }
             Some(Ok(RenameOutcome::NoSession)) => {
                 self.rename_dialog = None;
-                self.flash_status("no active conversation");
+                self.flash_message(UiMessage::new("tui.no_conversation"));
             }
-            Some(Err(error)) => self.flash_status(format!("rename failed: {error}")),
-            None => self.flash_status("project application is unavailable"),
+            Some(Err(error)) => self.flash_message(
+                UiMessage::new("tui.message_rename_failed_value").arg("error", (error).to_string()),
+            ),
+            None => self.flash_message(UiMessage::new("tui.project_application_is_unavailable")),
         }
     }
 
@@ -805,11 +840,11 @@ impl App {
         {
             let note = match &answer {
                 crate::interaction::AskAnswer::Selected(label)
-                | crate::interaction::AskAnswer::Custom(label) => {
-                    format!("answered: {label}")
-                }
+                | crate::interaction::AskAnswer::Custom(label) => self.locale.render(
+                    &UiMessage::new("tui.message_answered_value").arg("label", (label).to_string()),
+                ),
                 crate::interaction::AskAnswer::Declined => {
-                    "declined — the model continues without an answer".to_owned()
+                    self.locale.text("tui.answer_declined").to_owned()
                 }
             };
             let _ = pending.answer_tx.send(answer);
@@ -963,11 +998,9 @@ impl App {
             let copied =
                 osc52_copy_bytes(&text).is_some_and(|bytes| (self.clipboard_writer)(&bytes));
             if copied {
-                self.flash_status(format!(
-                    "copied {count} chars · Shift+drag uses the terminal's own selection"
-                ));
+                self.flash_message(UiMessage::new("tui.message_copied_value_chars_shift_drag_uses_the_terminal_s_own_selection").arg("count",(count).to_string()));
             } else {
-                self.flash_status("clipboard copy failed — Ctrl+C retries");
+                self.flash_message(UiMessage::new("tui.copy_retry"));
             }
         }
     }
@@ -1038,9 +1071,11 @@ impl App {
         // FIX-5/CA-08：编码后经注入写出口。
         let copied = osc52_copy_bytes(&text).is_some_and(|bytes| (self.clipboard_writer)(&bytes));
         if copied {
-            self.flash_status(format!("copied {count} chars"));
+            self.flash_message(
+                UiMessage::new("tui.message_copied_value_chars").arg("count", (count).to_string()),
+            );
         } else {
-            self.flash_status("clipboard copy failed");
+            self.flash_message(UiMessage::new("tui.copy_failed"));
         }
         true
     }
@@ -1062,7 +1097,9 @@ impl App {
         if let Some(bytes) = osc52_copy_bytes(&text) {
             let _ = (self.clipboard_writer)(&bytes);
         }
-        self.flash_status(format!("cut {count} chars"));
+        self.flash_message(
+            UiMessage::new("tui.message_cut_value_chars").arg("count", (count).to_string()),
+        );
         self.selection = None;
         true
     }

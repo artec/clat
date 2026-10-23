@@ -2,6 +2,32 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn language_switch_keeps_plugin_ticket_and_secret_form_but_requires_new_consent() {
+    let client = crate::host::HostClient::fixture_for_frontend_tests(&std::env::temp_dir());
+    let mut dialog = PluginDialog::new();
+    dialog.review = Some(client.plugin_review_fixture_for_tests(json!({"review":{"packages":[]}})));
+    dialog.view = View::Review;
+    dialog.total = 40;
+    dialog.reviewed = 40;
+    dialog.accepted = true;
+    dialog.config.insert_str("private-form-value");
+    assert!(dialog.can_commit());
+    let mut ui = PluginUi {
+        dialog: Some(dialog),
+        ..PluginUi::default()
+    };
+    ui.set_locale(LocaleContext::new(
+        clat_core::client_ports::presentation::Locale::Traditional,
+    ));
+    let dialog = ui.dialog.as_ref().unwrap();
+    assert!(dialog.review.is_some());
+    assert_eq!(dialog.config.text(), "private-form-value");
+    assert!(!dialog.can_commit());
+    assert_eq!(dialog.reviewed, 0);
+    assert!(!dialog.accepted);
+}
+
+#[test]
 fn plg6_capability_commit_requires_explicit_approval_and_all_review_pages() {
     let client = crate::host::HostClient::fixture_for_frontend_tests(&std::env::temp_dir());
     let mut dialog = PluginDialog::new();

@@ -15,15 +15,19 @@ impl ModelEditor {
     }
 
     pub(super) fn auth_row_label(&self, prefix: bool) -> (String, String) {
-        let label = if prefix { "Auth Prefix" } else { "Auth Header" };
+        let label = if prefix {
+            self.locale.text("tui.auth_prefix")
+        } else {
+            self.locale.text("tui.auth_header")
+        };
         let value = if let Some(auth) = &self.remote_auth {
             match auth
                 .get(if prefix { "prefix" } else { "header" })
                 .and_then(Value::as_str)
             {
-                None => "host value hidden · unchanged".into(),
-                Some("") => "clear on save".into(),
-                Some(_) => "replacement entered · hidden".into(),
+                None => self.locale.text("tui.hidden_host_value").into(),
+                Some("") => self.locale.text("tui.clear_on_save").into(),
+                Some(_) => self.locale.text("tui.hidden_replacement").into(),
             }
         } else if prefix {
             display_spaces(&self.auth_prefix)

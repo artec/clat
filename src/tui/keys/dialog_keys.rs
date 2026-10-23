@@ -204,21 +204,19 @@ impl App {
                 let _ = pending.decision_tx.send(decision);
                 if let Some(mode) = escalation {
                     match persist_warning {
-                        Some(error) => self.flash_status(format!(
-                            "permission mode: {mode} — call allowed (not saved to this session: {error})"
-                        )),
+                        Some(error) => self.flash_message(UiMessage::new("tui.message_permission_mode_value_call_allowed_not_saved_to_this_session_value").arg("mode",(mode).to_string()).arg("error",(error).to_string())),
                         None => {
-                            self.flash_status(format!("permission mode: {mode} — call allowed"));
+                            self.flash_message(UiMessage::new("tui.message_permission_mode_value_call_allowed").arg("mode",(mode).to_string()));
                         }
                     }
                 } else if allow {
-                    self.flash_status("permission granted");
+                    self.flash_message(UiMessage::new("tui.permission_granted"));
                 } else {
-                    self.flash_status("permission denied — informing the model");
+                    self.flash_message(UiMessage::new("tui.permission_denied_model"));
                 }
             }
             if blocked_allow {
-                self.flash_status("review all permission arguments before allowing");
+                self.flash_message(UiMessage::new("tui.permission_review"));
             }
             return true;
         }

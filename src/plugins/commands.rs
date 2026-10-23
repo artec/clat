@@ -214,8 +214,11 @@ fn run_vision_probe(
     application
         .start_vision_probe()
         .map(CommandOutcome::StartVisionProbe)
-        .map_err(|error| CommandError::Failed {
-            message: format!("vision probe unavailable: {error}"),
+        .map_err(|error| {
+            CommandError::presented(
+                crate::i18n::UiMessage::new("command.vision_unavailable")
+                    .arg("error", error.to_string()),
+            )
         })
 }
 
@@ -244,8 +247,11 @@ fn run_compact(
     application
         .compact_session()
         .map(CommandOutcome::StartCompaction)
-        .map_err(|error| CommandError::Failed {
-            message: format!("compaction unavailable: {error}"),
+        .map_err(|error| {
+            CommandError::presented(
+                crate::i18n::UiMessage::new("command.compaction_unavailable")
+                    .arg("error", error.to_string()),
+            )
         })
 }
 
@@ -253,8 +259,11 @@ fn run_resume(application: &mut TrustedProjectApplication) -> Result<CommandOutc
     application
         .list_sessions()
         .map(|sessions| CommandOutcome::StartSessionSelection { sessions })
-        .map_err(|error| CommandError::Failed {
-            message: format!("failed to list conversations: {error}"),
+        .map_err(|error| {
+            CommandError::presented(
+                crate::i18n::UiMessage::new("command.sessions_unavailable")
+                    .arg("error", error.to_string()),
+            )
         })
 }
 
@@ -265,8 +274,7 @@ fn run_update(application: &mut TrustedProjectApplication) -> Result<CommandOutc
             message: error.to_string(),
         })?;
     Ok(CommandOutcome::Status(
-        "Session is now at the current format and is writable; original generation retained."
-            .into(),
+        crate::i18n::UiMessage::new("command.session_updated").into(),
     ))
 }
 

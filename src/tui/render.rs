@@ -60,7 +60,11 @@ impl App {
         let page = self
             .application
             .as_ref()
-            .ok_or_else(|| "project application is unavailable".to_owned())
+            .ok_or_else(|| {
+                self.locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned()
+            })
             .and_then(|application| {
                 application
                     .session_history(Some(before_seq), CONVERSATION_HISTORY_PAGE_MESSAGES)
@@ -70,7 +74,10 @@ impl App {
             Ok(page) => self.prepend_conversation_page(&page.events, page.has_more),
             Err(error) => {
                 self.conversation_history_loading = false;
-                self.flash_status(format!("history load failed: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_history_load_failed_value")
+                        .arg("error", (error).to_string()),
+                );
             }
         }
     }
@@ -120,14 +127,31 @@ impl App {
 
     pub(super) fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        if let Some(picker) = self.session_picker.as_mut() {
+            picker.locale = self.locale;
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            picker.locale = self.locale;
+        }
+        if let Some(picker) = self.permission_picker.as_mut() {
+            picker.locale = self.locale;
+        }
+        if let Some(editor) = self.editor.as_mut() {
+            editor.locale = self.locale;
+        }
+        if self.language_picker.is_some() {
+            self.draw_language(frame, area);
+            return;
+        }
         // 未确权：不渲染主界面（会话/输入框/状态栏全部不可见），
         // 清屏后只画确权对话框——没有可滚动的层、没有可输入的框、
         // 没有闪烁的光标，确权是唯一可能的交互。
         if self.trust_prompt {
             frame.render_widget(Clear, area);
-            render_trust_dialog(frame, area, self.project.root());
+            render_trust_dialog(frame, area, self.project.root(), self.locale);
             return;
         }
+        self.conversation.set_locale(self.locale);
         let tick = self.animation_tick();
         // 流式 assistant 前缀的活动帧：run 进行中为 spinner（等待首
         // token / 长思考时转录区不再是一动不动的 ⏺），run 结束落定。
@@ -319,7 +343,7 @@ impl App {
         let area = frame.area();
         let inner_width = popup_inner_width(84, area);
         let commands = self.discovery.help_commands.clone();
-        let lines = help_dialog_lines(inner_width, &commands);
+        let lines = help_dialog_lines(inner_width, &commands, self.locale, self.dsh.is_some());
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
         // 可视行数：内框（去边框）减空行与脚注各一行。
         let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
@@ -335,12 +359,13 @@ impl App {
         let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
         let footer = if max_scroll > 0 {
             if offset < max_scroll {
-                " ↑↓/PgUp/PgDn scroll · more below · Esc close "
+                self.locale
+                    .text("tui.pgup_pgdn_scroll_more_below_esc_close")
             } else {
-                " ↑↓/PgUp/PgDn scroll · end · Esc close "
+                self.locale.text("tui.pgup_pgdn_scroll_end_esc_close")
             }
         } else {
-            " Esc close "
+            self.locale.text("tui.esc_close")
         };
         // 空行钉在脚注上方（2026-08-21 统一：与其余弹窗的内容/脚注节奏
         // 一致），不占滚动内容窗口。
@@ -362,7 +387,7 @@ impl App {
         let area = frame.area();
         let inner_width = popup_inner_width(84, area);
         let view = self.mcp_view.clone().unwrap_or_default();
-        let lines = mcp_dialog_lines(&view, inner_width);
+        let lines = mcp_dialog_lines(&view, inner_width, self.locale);
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
         let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
         let max_scroll = lines.len().saturating_sub(visible);
@@ -377,12 +402,14 @@ impl App {
         let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
         let footer = if max_scroll > 0 {
             if offset < max_scroll {
-                " ↑↓/PgUp/PgDn scroll · more below · r refresh · Esc close "
+                self.locale
+                    .text("tui.pgup_pgdn_scroll_more_below_r_refresh_esc_close")
             } else {
-                " ↑↓/PgUp/PgDn scroll · end · r refresh · Esc close "
+                self.locale
+                    .text("tui.pgup_pgdn_scroll_end_r_refresh_esc_close")
             }
         } else {
-            " r refresh · Esc close "
+            self.locale.text("tui.r_refresh_esc_close")
         };
         // 空行钉在脚注上方（2026-08-21 统一，同 /help）。
         body.push(Line::from(""));
@@ -400,7 +427,7 @@ impl App {
         let Some(view) = self.context_view.as_ref() else {
             return;
         };
-        let lines = context_dialog_lines(view, inner_width);
+        let lines = context_dialog_lines(view, inner_width, self.locale);
         let dialog = centered_rect(84, content_dialog_height(lines.len(), area), area);
         let visible = (dialog.height.saturating_sub(2 + 2)) as usize;
         let max_scroll = lines.len().saturating_sub(visible);
@@ -415,12 +442,13 @@ impl App {
         let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
         let footer = if max_scroll > 0 {
             if offset < max_scroll {
-                " ↑↓/PgUp/PgDn scroll · more below · Esc close "
+                self.locale
+                    .text("tui.pgup_pgdn_scroll_more_below_esc_close")
             } else {
-                " ↑↓/PgUp/PgDn scroll · end · Esc close "
+                self.locale.text("tui.pgup_pgdn_scroll_end_esc_close")
             }
         } else {
-            " Esc close "
+            self.locale.text("tui.esc_close")
         };
         body.push(Line::from(""));
         body.push(Line::from(Span::styled(
@@ -439,7 +467,7 @@ impl App {
         let Some(view) = self.skills_view.as_ref() else {
             return;
         };
-        let lines = skills_dialog_lines(view, inner_width);
+        let lines = skills_dialog_lines(view, inner_width, self.locale);
         self.draw_readonly_dialog(frame, "/skill", lines);
     }
 
@@ -447,7 +475,7 @@ impl App {
         let Some(view) = self.content_view.as_ref() else {
             return;
         };
-        let lines = view.lines(popup_inner_width(84, frame.area()));
+        let lines = view.lines(popup_inner_width(84, frame.area()), self.locale);
         self.draw_readonly_dialog(frame, view.title(), lines);
     }
 
@@ -488,12 +516,13 @@ impl App {
         let mut body: Vec<Line<'static>> = lines.into_iter().skip(offset).take(visible).collect();
         let footer = if max_scroll > 0 {
             if offset < max_scroll {
-                " ↑↓/PgUp/PgDn scroll · more below · Esc close "
+                self.locale
+                    .text("tui.pgup_pgdn_scroll_more_below_esc_close")
             } else {
-                " ↑↓/PgUp/PgDn scroll · end · Esc close "
+                self.locale.text("tui.pgup_pgdn_scroll_end_esc_close")
             }
         } else {
-            " Esc close "
+            self.locale.text("tui.esc_close")
         };
         let footer = if self.native_info_refreshable() {
             format!("{} · r refresh", footer.trim())
@@ -560,27 +589,19 @@ impl App {
                 }
             }
             if pending.question.allow_custom {
-                let selected = pending.selection == pending.question.options.len();
-                let marker = if selected { "● " } else { "○ " };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        marker,
-                        theme::style(if selected {
-                            theme::Role::Selected
-                        } else {
-                            theme::Role::Faint
-                        }),
-                    ),
-                    Span::styled("type a custom answer…", theme::style(theme::Role::Italic)),
-                ]));
+                lines.push(custom_question_option(
+                    pending.selection == pending.question.options.len(),
+                    self.locale,
+                ));
             }
         }
 
         lines.push(Line::from(""));
         let footer = if pending.custom.is_some() {
-            "Enter send · Esc back / decline"
+            self.locale.text("tui.enter_send_esc_back_decline")
         } else {
-            "↑↓ select · Enter confirm · c custom · Esc decline"
+            self.locale
+                .text("tui.select_enter_confirm_c_custom_esc_decline")
         };
         lines.push(Line::from(Span::styled(
             footer,
@@ -597,7 +618,10 @@ impl App {
             spans.extend(lines);
         }
         clear_popup_with_guards(frame, dialog);
-        frame.render_widget(Paragraph::new(spans).block(popup_block("Question")), dialog);
+        frame.render_widget(
+            Paragraph::new(spans).block(popup_block(self.locale.text("tui.question"))),
+            dialog,
+        );
     }
 
     pub(super) fn draw_permission_dialog(&mut self, frame: &mut Frame) {
@@ -609,31 +633,18 @@ impl App {
         // 必须使用本次真实矩形宽度换行，否则在 80 列终端里会按
         // 78 列排版、再被约 65 列的框裁掉危险命令尾部。
         let argument_width = permission_argument_width(area);
-        let mut lines = vec![
-            Line::from(Span::styled(
-                "Permission required",
-                theme::style(theme::Role::Bold),
-            )),
-            Line::from(""),
-            Line::from(format!("tool:      {}", pending.request.tool)),
-            Line::from(format!("effect:    {}", pending.request.effect)),
-            Line::from(format!("reason:    {}", pending.request.reason)),
-        ];
-        // 危险字段摘要：参数的顶层键全部列出，一眼可见隐藏在长
-        // JSON 深处的 command/path/url 等目标——批准前不可错过。
-        if let Some(keys) = top_level_argument_keys(&pending.request.arguments) {
-            lines.push(Line::from(format!("fields:    {keys}")));
-        }
+        let mut lines = permission_headers(&pending.request, self.locale);
         // 写/执行类工具的专用预览：JSON 转义长串对内容审阅不友好
         // （write_file 的 content 会变成一行带 \n 的转义串）。改为
         // 人类可读形式：edit_file 显示 old→new 的迷你 diff，write_file
         // 显示目标与内容，run_command 突出命令与执行环境。其余工具
         // 回退完整 pretty JSON。两种形态共享同一滚动/强制审阅机制
         // ——预览行就是被审阅的参数。
-        let argument_lines = match tool_argument_lines(
+        let argument_lines = match tool_argument_lines_localized(
             &pending.request.tool,
             &pending.request.arguments,
             argument_width,
+            self.locale,
         ) {
             Some(preview) => preview,
             None => {
@@ -660,8 +671,8 @@ impl App {
             .escalations
             .iter()
             .map(|mode| match mode {
-                PermissionMode::ProjectWrite => "w — Project Write",
-                PermissionMode::FullAccess => "f — Full Access",
+                PermissionMode::ProjectWrite => self.locale.text("tui.w_project_write"),
+                PermissionMode::FullAccess => self.locale.text("tui.f_full_access"),
                 PermissionMode::ReadOnly => "",
             })
             .filter(|hint| !hint.is_empty())
@@ -674,17 +685,20 @@ impl App {
             pending.argument_line_count = argument_lines.len();
             let compact = vec![
                 Line::from(Span::styled(
-                    "Permission required",
+                    self.locale.text("tui.permission_required"),
                     theme::style(theme::Role::Bold),
                 )),
-                Line::from("Terminal is too small to review arguments."),
-                Line::from("Maximize to continue · Esc / n — deny"),
+                Line::from(
+                    self.locale
+                        .text("tui.terminal_is_too_small_to_review_arguments"),
+                ),
+                Line::from(self.locale.text("tui.maximize_to_continue_esc_n_deny")),
             ];
             let height = (compact.len() as u16 + 2).min(max_dialog_height);
             let dialog = centered_rect(84, height, area);
             clear_popup_with_guards(frame, dialog);
             frame.render_widget(
-                Paragraph::new(compact).block(popup_block("Permission")),
+                Paragraph::new(compact).block(popup_block(self.locale.text("tui.permission"))),
                 dialog,
             );
             return;
@@ -705,19 +719,26 @@ impl App {
         pending.reviewed_through = advance_reviewed_through(pending.reviewed_through, start, end);
         pending.reviewed_to_end = pending.reviewed_through >= pending.argument_line_count;
         lines.push(Line::from(Span::styled(
-            format!(
-                "arguments lines {}–{} of {} · ↑/↓ PgUp/PgDn Home/End",
-                start.saturating_add(1).min(pending.argument_line_count),
-                end,
-                pending.argument_line_count
+            self.locale.render(
+                &UiMessage::new(
+                    "tui.message_arguments_lines_value_value_of_value_pgup_pgdn_home_end",
+                )
+                .arg(
+                    "value1",
+                    (start.saturating_add(1).min(pending.argument_line_count)).to_string(),
+                )
+                .arg("value2", (end).to_string())
+                .arg("value3", (pending.argument_line_count).to_string()),
             ),
             theme::style(theme::Role::Bold),
         )));
         lines.push(Line::from(""));
         let mut actions = if pending.reviewed_to_end {
-            "Enter / y — allow      ·      Esc / n — deny".to_owned()
+            self.locale.text("tui.enter_y_allow_esc_n_deny").to_owned()
         } else {
-            "Review through the final line to enable Allow · Esc / n — deny".to_owned()
+            self.locale
+                .text("tui.review_through_the_final_line_to_enable_allow_esc_n_deny")
+                .to_owned()
         };
         // 升级提示（P5）：只列出本弹框 offered 的档位——切过去仍要问
         // 的档位不出现（Execute@Read Only 不提示切 Project Write）。
@@ -736,7 +757,7 @@ impl App {
         let dialog = centered_rect(84, height.max(10), area);
         clear_popup_with_guards(frame, dialog);
         frame.render_widget(
-            Paragraph::new(lines).block(popup_block("Permission")),
+            Paragraph::new(lines).block(popup_block(self.locale.text("tui.permission"))),
             dialog,
         );
     }
@@ -760,7 +781,7 @@ impl App {
         // 脚注键位说明用 Faint 灰——与 /help /mcp /perm 弹窗统一
         //（2026-08-19 用户反馈：Bold 亮白与其他弹窗脚注不一致）。
         lines.push(Line::from(Span::styled(
-            "Enter — rename      ·      Esc — cancel",
+            self.locale.text("tui.enter_rename_esc_cancel"),
             theme::style(theme::Role::Faint),
         )));
         let height = (lines.len() as u16 + 2).min(popup_height_cap(area));
@@ -788,47 +809,27 @@ impl App {
         // native/dsh 复用绿实心在线、红空心离线的唯一视觉语法。
         let connecting = self.dsh.is_none() && self.dsh_connect.is_some();
         let loading = self.loading.is_some() || self.run_start_pending || connecting;
-        let state = if loading {
-            "loading"
+        let state = self.locale.text(if loading {
+            "tui.header_loading"
         } else if self.running {
-            "running"
+            "tui.header_running"
         } else {
-            "ready"
-        };
+            "tui.header_ready"
+        });
         let (prefix, second_line, model, level): (
             Vec<Span<'static>>,
             String,
             String,
             Option<String>,
         ) = if let Some(dsh) = self.dsh.as_ref() {
-            let marker = if dsh.connected {
-                " ● dsh"
-            } else {
-                " ○ dsh"
-            };
-            let role = if dsh.connected {
-                theme::Role::Success
-            } else {
-                theme::Role::Error
-            };
-            let mut prefix = vec![
-                Span::styled("CLAT", theme::style(theme::Role::Bold)),
-                Span::styled(marker, theme::style(role)),
-            ];
-            // 词汇违规徽标（§2.2，INV-D8 呈现）：标题栏追加 ` ⚠ N`
-            //（Warning 角色，与状态栏 steering 徽标同族）。
-            if dsh.unknown_events > 0 {
-                prefix.push(Span::styled(
-                    format!(" ⚠ {}", dsh.unknown_events),
-                    theme::style(theme::Role::Warning),
-                ));
-            }
+            let prefix = dsh_header_prefix(dsh);
             (
                 prefix,
-                format!(
-                    "project: {}",
-                    abbreviate_home(std::path::Path::new(dsh.cwd().as_str()))
-                ),
+                self.locale
+                    .render(&UiMessage::new("tui.message_project_value").arg(
+                        "value1",
+                        (abbreviate_home(std::path::Path::new(dsh.cwd().as_str()))).to_string(),
+                    )),
                 dsh.model_label.clone(),
                 // 档位段（档位接入 2026-08-23）：宿主 adapter 自有词汇的
                 // 展示名（efforts 表解析；无档位 → None 隐藏段）。
@@ -840,7 +841,10 @@ impl App {
                     Span::styled("CLAT", theme::style(theme::Role::Bold)),
                     Span::styled(" ○ dsh", theme::style(theme::Role::Error)),
                 ],
-                format!("project: {}", self.project.root().display()),
+                self.locale.render(
+                    &UiMessage::new("tui.message_project_value")
+                        .arg("value1", (self.project.root().display()).to_string()),
+                ),
                 "dsh web".to_owned(),
                 None,
             )
@@ -853,7 +857,10 @@ impl App {
                 };
                 (name, self.display_thinking_level().map(str::to_owned))
             } else {
-                ("not configured — /model".to_owned(), None)
+                (
+                    self.locale.text("tui.not_configured_model").to_owned(),
+                    None,
+                )
             };
             let prefix = match self.native_online() {
                 Some(online) => vec![
@@ -871,7 +878,10 @@ impl App {
             };
             (
                 prefix,
-                format!("project: {}", self.project.root().display()),
+                self.locale.render(
+                    &UiMessage::new("tui.message_project_value")
+                        .arg("value1", (self.project.root().display()).to_string()),
+                ),
                 model,
                 level,
             )
@@ -894,7 +904,11 @@ impl App {
                 && self.config.capabilities.accepts_image_input(),
         };
         let mut first_line = prefix;
-        first_line.extend(compose_header_rest(&header, rest_budget));
+        first_line.extend(compose_header_rest_localized(
+            &header,
+            rest_budget,
+            self.locale,
+        ));
         frame.render_widget(
             Paragraph::new(vec![Line::from(first_line), Line::from(second_line)])
                 // 水平内边距 1 列：文字与边框字符之间留空，不贴框。
@@ -922,16 +936,16 @@ impl App {
                 .as_ref()
                 .is_some_and(|app| app.session_is_legacy_read_only())
         {
-            " Conversation · read-only legacy · /update "
+            self.locale.text("tui.conversation_read_only_legacy_update")
         } else if self.dsh.is_none()
             && self
                 .application
                 .as_ref()
                 .is_some_and(|app| app.session_is_read_only())
         {
-            " Conversation · read-only V4 · /new "
+            self.locale.text("tui.conversation_read_only_v4_new")
         } else {
-            " Conversation "
+            self.locale.text("tui.conversation")
         };
         let mut block = Block::default().title(left_title).borders(Borders::ALL);
         if let Some(title) = self
@@ -972,7 +986,7 @@ impl App {
             self.conversation_rows = 0;
             frame.render_widget(&block, area);
             self.draw_history_indicator(frame, inner);
-            draw_welcome(frame, content_area, self.render_version());
+            draw_welcome(frame, content_area, self.render_version(), self.locale);
             self.draw_dsh_banner(frame, area);
             return;
         }
@@ -1035,11 +1049,11 @@ impl App {
             return;
         }
         let text = if self.conversation_history_loading {
-            " ↑ loading earlier messages… "
+            self.locale.text("tui.loading_earlier_messages")
         } else if self.conversation_has_more {
-            " ↑ scroll up for earlier messages "
+            self.locale.text("tui.scroll_up_for_earlier_messages")
         } else {
-            " ↑ start of conversation "
+            self.locale.text("tui.start_of_conversation")
         };
         frame.render_widget(
             Paragraph::new(Span::styled(text, theme::style(theme::Role::Faint))),
@@ -1051,7 +1065,7 @@ impl App {
     /// Error 角色同族样式——渲染层叠加而非会话 item（零新组件红线），
     /// 空会话（欢迎页）路径同样可见。
     fn draw_dsh_banner(&self, frame: &mut Frame, area: Rect) {
-        if let Some(banner) = self.dsh.as_ref().and_then(|dsh| dsh.banner.as_deref()) {
+        if let Some(banner) = self.dsh.as_ref().and_then(|dsh| dsh.banner.as_ref()) {
             let row = Rect {
                 x: area.x + 1,
                 y: area.y + 1,
@@ -1060,7 +1074,7 @@ impl App {
             };
             frame.render_widget(
                 Paragraph::new(Span::styled(
-                    format!(" ⚠ {banner} "),
+                    format!(" ⚠ {} ", banner.render(self.locale)),
                     theme::style(theme::Role::Error),
                 )),
                 row,
@@ -1081,12 +1095,13 @@ impl App {
         // 的运行提示无 "recalls queued" 段（INV-U3 例外②：无栈式召回）。
         let title = if self.running {
             if self.dsh.is_some() {
-                "Running — Enter steers · Esc cancels"
+                self.locale.text("tui.running_enter_steers_esc_cancels")
             } else {
-                "Running — Enter steers · Esc recalls queued, then cancels"
+                self.locale
+                    .text("tui.running_enter_steers_esc_recalls_queued_then_cancels")
             }
         } else {
-            "Message"
+            self.locale.text("tui.message")
         };
         // 右上角档位（与左上角 Message 对称；DSH composer Access 徽标
         // 对应物）。Full Access / danger-full-access 用警示黄——它是
@@ -1105,7 +1120,7 @@ impl App {
                 } else {
                     theme::style(theme::Role::Faint)
                 };
-                let label = dsh_preset_label(preset);
+                let label = dsh_preset_label_localized(preset, self.locale);
                 block = block.title(
                     Line::from(format!(" {label} "))
                         .style(style)
@@ -1127,14 +1142,14 @@ impl App {
                 .is_some_and(|goal| goal.armed)
             {
                 spans.push(Span::styled(
-                    "Goal",
+                    self.locale.text("web.goal"),
                     Style::default().fg(ratatui::style::Color::Rgb(92, 240, 125)),
                 ));
                 spans.push(Span::styled(" · ", theme::style(theme::Role::Faint)));
             }
             if application.plan_mode_active() {
                 spans.push(Span::styled(
-                    "Plan",
+                    self.locale.text("web.plan"),
                     Style::default().fg(ratatui::style::Color::Rgb(240, 189, 90)),
                 ));
                 spans.push(Span::styled(" · ", theme::style(theme::Role::Faint)));
@@ -1216,15 +1231,24 @@ impl App {
         }
         let mut rail = self
             .attachments
-            .rows()
+            .rows_localized(self.locale)
             .map(|row| Line::from(Span::styled(row, theme::style(theme::Role::Faint))))
             .collect::<Vec<_>>();
         rail.push(Line::from(Span::styled(
-            format!(
-                "{} image(s) · {} source · ~{} visual tokens · /image remove|move",
-                self.attachments.len(),
-                crate::tui::attachments::human_bytes(self.attachments.total_source_bytes()),
-                self.attachments.total_estimated_tokens()
+            self.locale.render(
+                &UiMessage::new(
+                    "tui.message_value_image_s_value_source_value_visual_tokens_image_remove_move",
+                )
+                .arg("value1", (self.attachments.len()).to_string())
+                .arg(
+                    "value2",
+                    (crate::tui::attachments::human_bytes(self.attachments.total_source_bytes()))
+                        .to_string(),
+                )
+                .arg(
+                    "value3",
+                    (self.attachments.total_estimated_tokens()).to_string(),
+                ),
             ),
             theme::style(theme::Role::Faint),
         )));
@@ -1238,23 +1262,25 @@ impl App {
         } else if self.native.is_some() {
             self.native_status_segments()
         } else {
-            status_suffix_segments(
+            status_suffix_segments_localized(
                 &self.config,
                 &self.balance,
                 current_route_usage(&self.usage_routes, &self.config),
                 self.last_turn_usage.as_ref(),
+                self.locale,
             )
         };
         let budget = bar.width.saturating_sub(MIN_STATUS_LEFT + 2) as usize;
         let suffix = fit_status_suffix(&segments, budget);
         let mut status_line = if let Some(phase) = self.phases.phase {
-            phase_line(
+            phase_line_localized(
                 tick,
                 phase,
                 self.phase_elapsed(),
                 self.run_elapsed(),
                 self.conversation.pending_steering_count(),
                 self.cancel_requested,
+                self.locale,
             )
         } else {
             Line::from(self.status.as_str())
@@ -1290,4 +1316,75 @@ pub(super) fn scrollbar_position(start: usize, max_start: usize, content_length:
     }
     let domain = content_length.saturating_sub(1);
     (start.saturating_mul(domain) / max_start).min(domain)
+}
+
+fn permission_headers(request: &PermissionRequest, locale: LocaleContext) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            locale.text("tui.permission_required"),
+            theme::style(theme::Role::Bold),
+        )),
+        Line::from(""),
+        Line::from(locale.render(
+            &UiMessage::new("tui.message_tool_value").arg("value1", (request.tool).to_string()),
+        )),
+        Line::from(locale.render(
+            &UiMessage::new("tui.message_effect_value").arg("value1", (request.effect).to_string()),
+        )),
+        Line::from(locale.render(
+            &UiMessage::new("tui.message_reason_value").arg("value1", (request.reason).to_string()),
+        )),
+    ];
+    // 危险字段摘要：参数的顶层键全部列出，一眼可见隐藏在长
+    // JSON 深处的 command/path/url 等目标——批准前不可错过。
+    if let Some(keys) = top_level_argument_keys(&request.arguments, locale) {
+        lines.push(Line::from(locale.render(
+            &UiMessage::new("tui.message_fields_value").arg("keys", (keys).to_string()),
+        )));
+    }
+    lines
+}
+
+fn custom_question_option(selected: bool, locale: LocaleContext) -> Line<'static> {
+    let marker = if selected { "● " } else { "○ " };
+    Line::from(vec![
+        Span::styled(
+            marker,
+            theme::style(if selected {
+                theme::Role::Selected
+            } else {
+                theme::Role::Faint
+            }),
+        ),
+        Span::styled(
+            locale.text("tui.type_a_custom_answer"),
+            theme::style(theme::Role::Italic),
+        ),
+    ])
+}
+
+fn dsh_header_prefix(dsh: &DshState) -> Vec<Span<'static>> {
+    let marker = if dsh.connected {
+        " ● dsh"
+    } else {
+        " ○ dsh"
+    };
+    let role = if dsh.connected {
+        theme::Role::Success
+    } else {
+        theme::Role::Error
+    };
+    let mut prefix = vec![
+        Span::styled("CLAT", theme::style(theme::Role::Bold)),
+        Span::styled(marker, theme::style(role)),
+    ];
+    // 词汇违规徽标（§2.2，INV-D8 呈现）：标题栏追加 ` ⚠ N`
+    //（Warning 角色，与状态栏 steering 徽标同族）。
+    if dsh.unknown_events > 0 {
+        prefix.push(Span::styled(
+            format!(" ⚠ {}", dsh.unknown_events),
+            theme::style(theme::Role::Warning),
+        ));
+    }
+    prefix
 }

@@ -5,7 +5,7 @@ const LOG_CAP: usize = 16 * 1024;
 const RETENTION: &str = "Current run generation only; in-memory bounded tails. Drained entries may disappear on the next spawn; all entries disappear at run cleanup/host restart. Not background jobs; no process cancel/stdin authority here.";
 
 pub(crate) fn unavailable() -> Value {
-    json!({"state":"unavailable","note":RETENTION,"tasks":[]})
+    json!({"state":"unavailable","note":RETENTION,"presentation":crate::i18n::UiMessage::new("web.process_retention_note"),"tasks":[]})
 }
 
 impl ProcessService {
@@ -20,7 +20,7 @@ impl ProcessService {
             .filter(|e| e.owner_generation == owner.generation && e.owner_session_id == session)
             .collect();
         entries.sort_by_key(|e| e.id);
-        json!({"state":"available","session":session,"generation":owner.generation,"note":RETENTION,
+        json!({"state":"available","session":session,"generation":owner.generation,"note":RETENTION,"presentation":crate::i18n::UiMessage::new("web.process_retention_note"),
             "tasks":entries.iter().take(32).map(|e|e.review(false)).collect::<Vec<_>>(),"truncated":entries.len()>32})
     }
 
@@ -47,7 +47,7 @@ impl ProcessEntry {
             "command":self.command.chars().take(2048).collect::<String>(),"command_truncated":self.command.chars().count()>2048,
             "state":if terminal.is_some(){"completed"}else{"running"},"tty":self.tty,
             "exit_code":terminal.and_then(|s|s.exit_code),"signal":terminal.and_then(|s|s.signal.as_ref()),
-            "timed_out":terminal.is_some_and(|s|s.timed_out),"cancelled":terminal.is_some_and(|s|s.cancelled),"note":RETENTION});
+            "timed_out":terminal.is_some_and(|s|s.timed_out),"cancelled":terminal.is_some_and(|s|s.cancelled),"note":RETENTION,"presentation":crate::i18n::UiMessage::new("web.process_retention_note")});
         if logs {
             for (name, ring) in [
                 ("stdout", &state.stdout),

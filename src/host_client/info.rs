@@ -51,6 +51,32 @@ impl HostClient {
             .ok_or_else(|| "Host returned no displayable content".into())
     }
 
+    /// Read-only rendering of retained host values; no request, refresh or writer.
+    pub fn info_dialog_text_localized(
+        value: &serde_json::Value,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<String, String> {
+        if value["kind"] == "context" {
+            return super::context::display_localized(&value["context"], locale);
+        }
+        if let Ok(parts) =
+            serde_json::from_value::<Vec<crate::i18n::UiMessage>>(value["presentation"].clone())
+            && !parts.is_empty()
+        {
+            return Ok(parts
+                .iter()
+                .map(|m| locale.render(m))
+                .collect::<Vec<_>>()
+                .join("\n\n"));
+        }
+        if let Ok(message) =
+            serde_json::from_value::<crate::i18n::UiMessage>(value["presentation"].clone())
+        {
+            return Ok(locale.render(&message));
+        }
+        Self::info_dialog_text(value)
+    }
+
     /// Extract the host-owned command catalog so terminal clients can combine
     /// it with frontend-local composer and keyboard help.
     pub fn help_commands(value: &serde_json::Value) -> Result<Option<Vec<CommandInfo>>, String> {
@@ -172,5 +198,25 @@ mod capability_tests {
             HostClient::info_dialog_request("/skills"),
             Some(("/skill", "/skill".into()))
         );
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    use crate::i18n::{Locale, LocaleContext};
+    use serde_json::json;
+    #[test]
+    fn missing_or_malformed_presentation_cannot_hide_original_host_content() {
+        for presentation in [json!(null), json!({}), json!([]), json!([{"key":12}])] {
+            let value = json!({"kind":"status","message":"original diagnostic {path}","presentation":presentation});
+            for locale in [Locale::English, Locale::Simplified, Locale::Traditional] {
+                assert_eq!(
+                    HostClient::info_dialog_text_localized(&value, LocaleContext::new(locale))
+                        .unwrap(),
+                    "original diagnostic {path}"
+                );
+            }
+        }
     }
 }

@@ -227,7 +227,7 @@ impl App {
                 session: session_for_names,
             });
         }
-        self.flash_status("loading history…");
+        self.flash_message(UiMessage::new("tui.dsh_history"));
     }
 
     // ---- WS 帧归约 ----

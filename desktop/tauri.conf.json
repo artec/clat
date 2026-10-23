@@ -30,12 +30,18 @@
     ],
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "entitlements": "Entitlements.plist"
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist"
     },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": true,
+        "languages": [
+          "English",
+          "SimpChinese",
+          "TradChinese"
+        ]
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",

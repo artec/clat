@@ -30,7 +30,7 @@ impl App {
                 // AFK 提醒：run 正卡在等你批准——不响铃它可能静默卡到
                 // 天荒地老。
                 self.notify();
-                self.flash_status("permission required — review arguments, then allow or deny");
+                self.flash_message(UiMessage::new("tui.approval_wait"));
             }
             WorkerMessage::AskUserRequest {
                 question,
@@ -47,7 +47,7 @@ impl App {
                 });
                 // AFK 提醒：同权限框——run 在等你的回答。
                 self.notify();
-                self.flash_status("the model asks a question — answer or Esc to decline");
+                self.flash_message(UiMessage::new("tui.question_wait"));
             }
             WorkerMessage::ClipboardPastePrepared(result) => self.apply_clipboard_result(result),
             WorkerMessage::RunStartFinished(finished) => self.restore_started_run(*finished),
@@ -75,13 +75,16 @@ impl App {
             Ok(crate::tui::attachments::PreparedClipboardPaste::Image(path)) => {
                 let root = self.project.root().to_path_buf();
                 match self.attachments.add_paths(&root, [path.clone()]) {
-                    Ok(_) => self.flash_status(format!(
-                        "clipboard image attached ({}) — Enter sends · Esc drops draft",
-                        self.attachments.len()
-                    )),
+                    Ok(_) => self.flash_status(
+                        UiMessage::new("tui.clipboard_attached")
+                            .arg("value1", (self.attachments.len()).to_string()),
+                    ),
                     Err(error) => {
                         self.release_core_staged_attachment_paths([path]);
-                        self.flash_status(format!("clipboard image staging failed: {error}"));
+                        self.flash_message(
+                            UiMessage::new("tui.message_clipboard_image_staging_failed_value")
+                                .arg_message("error", error.message()),
+                        );
                     }
                 }
             }
@@ -89,10 +92,10 @@ impl App {
                 // Ctrl+V 系统剪贴板文本与 bracketed paste 同一保真契约
                 //（PASTE-1）：段落换行归一为 `\n` 后入草稿。
                 self.input.insert_paste(&text);
-                self.flash_status("clipboard text pasted");
+                self.flash_message(UiMessage::new("tui.clipboard_text"));
             }
             Ok(crate::tui::attachments::PreparedClipboardPaste::Empty) => {
-                self.flash_status("clipboard is empty or unreadable");
+                self.flash_message(UiMessage::new("tui.clipboard_empty"));
             }
             Err(error) => self.flash_status(error),
         }
@@ -124,6 +127,7 @@ impl App {
                 // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态——旧
                 // 终态不得把新 run 的执行期误标成已完成/已失败。
                 self.terminal_status = None;
+                self.terminal_presentation = None;
                 if exit_after_start && let Some(handle) = &self.run_handle {
                     handle.cancel();
                 }
@@ -132,7 +136,7 @@ impl App {
                 self.run_routes_base = Some(self.usage_routes.clone());
                 self.run_route = None;
                 self.clear_attachment_draft();
-                self.flash_status("starting model…");
+                self.flash_message(UiMessage::new("tui.run_starting"));
                 self.restore_next_recovered_steering();
 
                 let sender = self
@@ -154,7 +158,10 @@ impl App {
                 // Restore only text; image IDs/order and staged files
                 // remain byte-for-byte the same for a lossless retry.
                 self.input.insert_str(&prompt);
-                self.flash_status(format!("failed to start run: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_failed_to_start_run_value")
+                        .arg("error", (error).to_string()),
+                );
             }
         }
         if exit_after_start {
@@ -184,11 +191,14 @@ impl App {
                 self.conversation.push_pending_steering(pending);
                 self.remember_native_steering(prompt, self.attachments.paths());
                 self.attachments.clear();
-                self.flash_status("steering queued — applies at the next model step");
+                self.flash_message(UiMessage::new("tui.steering_pending"));
             }
             SteerOutcome::Refused { reason, .. } => {
                 self.input.insert_str(&prompt);
-                self.flash_status(format!("steering refused: {reason}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_steering_refused_value")
+                        .arg("reason", (reason).to_string()),
+                );
             }
             // The run sealed while decode/admission was in flight.
             // Restore the sole application owner first, then take the
@@ -261,7 +271,7 @@ impl App {
                 // 本次 run 的入账路由（journal source 同口径，INV-C1）：
                 // 以实际运行的 provider/model 为准，run 中途切配置不串桶。
                 self.run_route = Some(crate::model::model_route_key(&provider, &model));
-                self.flash_status(format!("{provider}/{model} · turn {turn}"));
+                self.flash_message(model_request_message(provider, model, turn.to_string()));
             }
             RunEvent::ModelStream {
                 turn,
@@ -273,7 +283,10 @@ impl App {
             } => {
                 // 流式追加与贴底滚动由模型负责；这里只管状态行。
                 self.conversation_scroll_from_bottom = 0;
-                self.flash_status(format!("answering · turn {turn}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_answering_turn_value")
+                        .arg("turn", (turn).to_string()),
+                );
             }
             RunEvent::ModelStream {
                 event: ModelEvent::ReasoningDelta { .. },
@@ -307,17 +320,13 @@ impl App {
                 }
             }
             RunEvent::ToolRequested { call } => {
-                self.flash_status(format!("tool → {} {}", call.name, call.arguments));
+                self.flash_message(tool_request_message(call.name, call.arguments))
             }
             RunEvent::PermissionDenied { tool, reason } => {
-                self.flash_status(format!("permission ✗ {tool} — {reason}"));
+                self.flash_message(tool_denied_message(tool, reason))
             }
             RunEvent::ToolFinished { result } => {
-                if result.is_error {
-                    self.flash_status(format!("tool ✗ {}", result.tool_name));
-                } else {
-                    self.flash_status(format!("tool ✓ {}", result.tool_name));
-                }
+                self.flash_message(tool_finished_message(result.tool_name, result.is_error))
             }
             RunEvent::SteeringApplied { message, .. } => {
                 // 转录用户块与 pending 区升级都由会话模型负责
@@ -357,28 +366,31 @@ impl App {
         let todos = self.application.as_ref().and_then(open_todo_summary);
         match (&todos, done.cancelled) {
             (Some((open, total, sample)), false) => {
-                self.conversation.push_turn_end(format!(
-                    "run completed — {open} of {total} todos unfinished (task completion not verified): {sample}"
-                ));
-                self.set_terminal_status(format!(
-                    "completed · {} model turns · {open} todos unfinished — send a message to continue",
-                    done.turns
-                ));
+                self.conversation.push_turn_end_message(UiMessage::new("tui.message_run_completed_value_of_value_todos_unfinished_task_completion_not_verified_value").arg("open",(open).to_string()).arg("total",(total).to_string()).arg("sample",(sample).to_string()));
+                self.set_terminal_status(UiMessage::new("tui.message_completed_value_model_turns_value_todos_unfinished_send_a_message_to_continue").arg("value1",(done.turns).to_string()).arg("open",(open).to_string()));
             }
             (Some((open, _, _)), true) => {
-                self.set_terminal_status(format!(
-                    "cancelled · {} model turns · {open} todos unfinished",
-                    done.turns
-                ));
+                self.set_terminal_status(
+                    UiMessage::new(
+                        "tui.message_cancelled_value_model_turns_value_todos_unfinished",
+                    )
+                    .arg("value1", (done.turns).to_string())
+                    .arg("open", (open).to_string()),
+                );
             }
             (None, false) => {
-                self.set_terminal_status(format!(
-                    "completed · {} model turns — send a message to continue",
-                    done.turns
-                ));
+                self.set_terminal_status(
+                    UiMessage::new(
+                        "tui.message_completed_value_model_turns_send_a_message_to_continue",
+                    )
+                    .arg("value1", (done.turns).to_string()),
+                );
             }
             (None, true) => {
-                self.set_terminal_status(format!("cancelled · {} model turns", done.turns));
+                self.set_terminal_status(
+                    UiMessage::new("tui.message_cancelled_value_model_turns")
+                        .arg("value1", (done.turns).to_string()),
+                );
             }
         }
     }
@@ -449,9 +461,11 @@ impl App {
                 self.conversation.settle_streamed_output(&done.output);
                 // 终态通知进转录（G7）：与回放 TurnEnded 同源文本。
                 if done.cancelled {
-                    self.conversation.push_turn_end("cancelled".into());
+                    self.conversation
+                        .push_turn_end_message(UiMessage::new("tui.turn_cancelled"));
                 } else {
-                    self.conversation.push_turn_end("completed".into());
+                    self.conversation
+                        .push_turn_end_message(UiMessage::new("tui.turn_completed"));
                     // AFK 提醒：对话结束响铃。用户主动取消不响——人就在
                     // 键盘前（Esc 是他按的）。
                     self.notify();
@@ -490,30 +504,22 @@ impl App {
                         }
                     }
                 }
-                self.conversation
-                    .push_turn_end(format!("error: {}", failure.error));
+                self.conversation.push_turn_end_message(
+                    UiMessage::new("tui.turn_error").arg("detail", failure.error.to_string()),
+                );
                 // CONT-1（C1）：失败原因常驻状态栏（同文本），不随 4 秒
                 // 提示消失；转录终态行与 RUNERR-1 词汇同源。
-                self.set_terminal_status(format!(
-                    "run failed after {} model turns: {}",
-                    failure.turns, failure.error
-                ));
+                self.set_terminal_status(
+                    UiMessage::new("tui.run_failed_status")
+                        .arg("value1", (failure.turns).to_string())
+                        .arg("value2", (failure.error).to_string()),
+                );
                 // 失败也是"对话结束"——AFK 下同样需要知道。
                 self.notify();
             }
         }
         let discarded = self.conversation.discard_pending_steering();
-        if discarded > 0 {
-            // 未经 claim 的插话不落盘（S4），但 frontend-owned 原始草稿
-            // 必须继续可重试。逐条恢复，不合并独立消息的图片预算。
-            self.recovered_native_steering
-                .extend(self.pending_native_steering.drain(..));
-            if !self.restore_next_recovered_steering() {
-                self.flash_status(format!(
-                    "{discarded} unclaimed steering draft(s) retained for retry"
-                ));
-            }
-        }
+        self.retain_unclaimed_steering(discarded);
         self.conversation_scroll_from_bottom = 0;
     }
 }
@@ -553,4 +559,47 @@ pub(super) fn open_todo_summary(
     application: &crate::TrustedProjectApplication,
 ) -> Option<(usize, usize, String)> {
     summarize_open_todos(&application.workflow_details().ok()?)
+}
+
+impl App {
+    fn retain_unclaimed_steering(&mut self, discarded: usize) {
+        if discarded > 0 {
+            // 未经 claim 的插话不落盘（S4），但 frontend-owned 原始草稿
+            // 必须继续可重试。逐条恢复，不合并独立消息的图片预算。
+            self.recovered_native_steering
+                .extend(self.pending_native_steering.drain(..));
+            if !self.restore_next_recovered_steering() {
+                self.flash_status(
+                    UiMessage::new("tui.steering_retained")
+                        .arg("discarded", (discarded).to_string()),
+                );
+            }
+        }
+    }
+}
+
+fn tool_request_message(name: String, arguments: serde_json::Value) -> UiMessage {
+    UiMessage::new("tui.run_tool")
+        .arg("value1", name)
+        .arg("value2", arguments.to_string())
+}
+fn tool_denied_message(tool: String, reason: String) -> UiMessage {
+    UiMessage::new("tui.run_denied")
+        .arg("tool", tool)
+        .arg("reason", reason)
+}
+fn tool_finished_message(tool: String, error: bool) -> UiMessage {
+    UiMessage::new(if error {
+        "tui.run_tool_error"
+    } else {
+        "tui.run_tool_success"
+    })
+    .arg("value1", tool)
+}
+
+fn model_request_message(provider: String, model: String, turn: String) -> UiMessage {
+    UiMessage::new("tui.message_value_value_turn_value")
+        .arg("provider", provider)
+        .arg("model", model)
+        .arg("turn", turn)
 }

@@ -1,6 +1,7 @@
 'use strict';
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const status = document.getElementById('status');
+CLATI18n.bind(status,'textContent',()=>CLATI18n.t('desktop.checking_host'));
 let opening = false, refreshing = false, actionError = '';
 async function refresh() {
   if (opening || refreshing) return;
@@ -8,14 +9,14 @@ async function refresh() {
   try {
     const info = await invoke('desktop_info');
     document.getElementById('version').textContent = `CLAT ${info.desktopVersion}`;
-    status.textContent = actionError || info.backendError || info.connectionError || '选择项目后，可在授权范围内使用本地工具。';
+    CLATI18n.bind(status,'textContent',()=>actionError || info.backendError || info.connectionError || CLATI18n.t('desktop.welcome'));
   } catch (error) { status.textContent = actionError || String(error); }
   finally { refreshing = false; }
 }
 document.getElementById('open').onclick = async event => {
   opening = true; actionError = '';
   event.currentTarget.disabled = true;
-  status.textContent = '请选择项目目录…';
+  CLATI18n.bind(status,'textContent',()=>CLATI18n.t('desktop.choose_folder'));
   try { await invoke('desktop_open_project'); }
   catch (error) { actionError = String(error); }
   finally {

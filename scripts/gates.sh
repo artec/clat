@@ -24,6 +24,7 @@
 # 当前 DSH 0.1.5 checkout 首次运行前需在其根目录执行 `pnpm install`，
 # 再执行 `pnpm build:native-system`；具体钉靶 revision 仍由测试断言负责。
 set -euo pipefail
+export CLAT_LANG=en
 # Cargo default-members are both product crates (clat-core + clat), not the
 # optional WASI example plugins. All full/CI commands retain that same scope.
 cd "$(dirname "$0")/.."
@@ -73,6 +74,9 @@ python3 -m unittest discover -s scripts -p test_ci_box_sources.py -q
 python3 -m unittest discover -s scripts -p test_ci_windows.py -q
 bun install --cwd desktop --frozen-lockfile --ignore-scripts
 bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json
+bun scripts/i18n-check.ts
+bun scripts/i18n-installers.ts --check
+bun test scripts/i18n-check.test.ts scripts/i18n-installers.test.ts
 bun test desktop/scripts --timeout 60000
 
 step "Format (cargo fmt --all -- --check)"

@@ -1,5 +1,6 @@
 //! Application-owned compaction at complete model/tool request boundaries.
 use super::*;
+use crate::i18n::{PresentedText, UiMessage};
 use crate::model::{ModelItem, ModelOptions, RunSpendLedger, Usage};
 use crate::run::RequestContextManager;
 use crate::tool::ToolDefinition;
@@ -51,21 +52,33 @@ impl RequestContextManager for ActiveContext {
             ApplicationEvent::CompactionUpdated(CompactionStatus::Started),
         );
         let result = self.reduce(items, usage, instructions, definitions, &cost, target);
-        let (note, succeeded) = match &result {
+        let (note, succeeded): (PresentedText, bool) = match &result {
             Ok((count, _)) if *count > 0 => (
-                format!("compacted active task: {count} context checkpoint(s)"),
+                UiMessage::new("command.compacted_active")
+                    .arg("count", *count)
+                    .into(),
                 true,
             ),
             Ok((_, reason)) => (
-                format!(
-                    "compaction deferred: {}",
-                    reason
-                        .as_deref()
-                        .unwrap_or("no smaller complete exchange range")
-                ),
+                UiMessage::new("command.compaction_deferred")
+                    .arg_message(
+                        "reason",
+                        reason
+                            .as_ref()
+                            .map(|reason| {
+                                UiMessage::new("common.diagnostic").arg("detail", reason.clone())
+                            })
+                            .unwrap_or_else(|| UiMessage::new("command.compaction_no_range")),
+                    )
+                    .into(),
                 false,
             ),
-            Err(error) => (format!("compaction failed: {error}"), false),
+            Err(error) => (
+                UiMessage::new("command.compaction_failed")
+                    .arg("error", error.clone())
+                    .into(),
+                false,
+            ),
         };
         broadcast_to(
             &self.subscribers,

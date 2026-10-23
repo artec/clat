@@ -221,7 +221,7 @@ impl CommandHandler for TaskCommand {
             "pause" => {
                 app.task_pause().map_err(failed)?;
                 Ok(CommandOutcome::Status(
-                    "Task paused; last committed checkpoint retained.".into(),
+                    crate::i18n::UiMessage::new("command.task_paused").into(),
                 ))
             }
             "complete" | "cancel" => {

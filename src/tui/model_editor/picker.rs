@@ -205,6 +205,7 @@ const MODEL_NAME_COLUMN: usize = 40;
 /// Enter 进入/确认，Esc 在二级返回一级、在一级关闭，数字键 1-9 快选，
 /// 鼠标点击行等价于选中并 Enter。
 pub(crate) struct ModelPicker {
+    pub(crate) locale: clat_core::client_ports::presentation::LocaleContext,
     remote: bool,
     /// 当前展示的厂商；None 表示一级列表。
     vendor: Option<&'static str>,
@@ -249,6 +250,7 @@ impl ModelPicker {
         let active = profiles.iter().find(|profile| profile.active);
         let _ = active;
         Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             remote: false,
             vendor: None,
             selected: 0,
@@ -266,6 +268,7 @@ impl ModelPicker {
     /// dsh 形态构造（两级骨架复用，数据全宿主动态）。
     pub fn new_dsh(data: DshModelData) -> Self {
         Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             remote: false,
             vendor: None,
             selected: 0,
@@ -292,9 +295,9 @@ impl ModelPicker {
 
     fn preset_footer(&self) -> &'static str {
         if self.remote {
-            "↑↓ select · Enter confirm · e key · Esc back"
+            self.locale.text("tui.select_enter_confirm_e_key_esc_back")
         } else {
-            "↑↓ select · Enter confirm · Esc back"
+            self.locale.text("tui.select_enter_confirm_esc_back")
         }
     }
 
@@ -624,19 +627,7 @@ impl ModelPicker {
         // 永不被挤出框外。VP-3 返工二轮（2026-09-03）：能力图例并入
         // 说明行行尾（`· ⧉ images`），不再单占一行——一处足矣，
         // 拒绝重复张贴。
-        let title = if let Some(dsh) = &self.dsh {
-            match self.dsh_group.and_then(|index| dsh.groups.get(index)) {
-                Some(group) => format!("/model · {}", group.name),
-                None => "/model".to_owned(),
-            }
-        } else if self.custom_list {
-            "/model · Custom".to_owned()
-        } else {
-            match self.vendor {
-                None => "/model".to_owned(),
-                Some(vendor) => format!("/model · {vendor}"),
-            }
-        };
+        let title = self.picker_title();
         let block = crate::tui::popup_block(&title);
         let inner = block.inner(area);
         let [content_area, footer_area] =
@@ -648,8 +639,10 @@ impl ModelPicker {
         for (index, row) in self.rows().iter().enumerate() {
             let (mut label, mut hint, current, image_input) = self.row_display(index);
             if self.confirm_delete == Some(index) {
-                label = format!("delete {label}?");
-                hint = "d again to confirm · any other key cancels".into();
+                label = self.locale.render(
+                    &UiMessage::new("tui.message_delete_value").arg("label", (label).to_string()),
+                );
+                hint = self.locale.text("tui.picker_delete_confirm").into();
             }
             let style = if index == self.selected {
                 crate::tui::theme::style(crate::tui::theme::Role::Selected)
@@ -692,10 +685,10 @@ impl ModelPicker {
         );
 
         let footer = if self.custom_list {
-            "↑↓ select · Enter switch · e edit · d delete · Esc back"
+            self.locale.text("tui.picker_custom_keys")
         } else if self.dsh.is_some() {
             match self.dsh_group {
-                None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
+                None => self.locale.text("tui.picker_group_keys"),
                 // 高亮模型有档位表才提示 ⇧Tab（无档位模型不可达）。
                 Some(_) => {
                     let has_efforts = match self.rows().get(self.selected) {
@@ -708,15 +701,15 @@ impl ModelPicker {
                         _ => false,
                     };
                     if has_efforts {
-                        "↑↓ select · ⇧Tab effort · Enter confirm · Esc back"
+                        self.locale.text("tui.picker_effort_keys")
                     } else {
-                        "↑↓ select · Enter confirm · Esc back"
+                        self.locale.text("tui.select_enter_confirm_esc_back")
                     }
                 }
             }
         } else {
             match self.vendor {
-                None => "↑↓ select · Enter open · 1-9 quick pick · Esc close",
+                None => self.locale.text("tui.picker_group_keys"),
                 Some(_) => self.preset_footer(),
             }
         };
@@ -724,7 +717,7 @@ impl ModelPicker {
         // 不显示）。
         let mut footer = footer.to_owned();
         if self.dsh.is_none() {
-            footer.push_str(" · ⧉ images");
+            footer.push_str(self.locale.text("tui.images_legend"));
         }
         frame.render_widget(
             Paragraph::new(vec![Line::from(Span::styled(
@@ -750,68 +743,24 @@ impl ModelPicker {
                             .is_some_and(|(provider, _)| *provider == group.id);
                         (
                             group.name.clone(),
-                            format!("{} models", group.models.len()),
+                            self.locale.render(
+                                &UiMessage::new("tui.message_value_models")
+                                    .arg("count", group.models.len()),
+                            ),
                             current,
                             false,
                         )
                     }
                     None => (String::new(), String::new(), false, false),
                 },
-                PickerRow::DshModel(group_index, model_index) => {
-                    match dsh
-                        .groups
-                        .get(*group_index)
-                        .and_then(|group| group.models.get(*model_index))
-                    {
-                        Some(model) => {
-                            let current = dsh.current.as_ref().is_some_and(|(provider, id)| {
-                                dsh.groups
-                                    .get(*group_index)
-                                    .is_some_and(|group| *provider == group.id)
-                                    && id == &model.id
-                            });
-                            // 档位呈现：高亮行的 Shift+Tab pending 优先；
-                            // 否则当前模型行常显其当前档位（efforts 表
-                            // 解析展示名，未命中回落裸 id）。
-                            let pending = if index == self.selected {
-                                self.dsh_effort
-                                    .clone()
-                                    .filter(|effort| model.efforts.iter().any(|e| &e.id == effort))
-                            } else {
-                                None
-                            };
-                            let effort = pending.or_else(|| {
-                                let id =
-                                    current.then_some(dsh.current_effort.as_deref()).flatten()?;
-                                let name = model
-                                    .efforts
-                                    .iter()
-                                    .find(|e| e.id == id)
-                                    .map(|e| e.name.clone())
-                                    .unwrap_or_else(|| id.to_owned());
-                                Some(name)
-                            });
-                            let hint = match effort {
-                                Some(effort) => {
-                                    format!(
-                                        "{} · {}",
-                                        model
-                                            .description
-                                            .clone()
-                                            .unwrap_or_else(|| model.id.clone()),
-                                        effort
-                                    )
-                                }
-                                None => model
-                                    .description
-                                    .clone()
-                                    .unwrap_or_else(|| model.id.clone()),
-                            };
-                            (model.name.clone(), hint, current, false)
-                        }
-                        None => (String::new(), String::new(), false, false),
-                    }
-                }
+                PickerRow::DshModel(group_index, model_index) => match dsh
+                    .groups
+                    .get(*group_index)
+                    .and_then(|group| group.models.get(*model_index))
+                {
+                    Some(model) => self.dsh_model_row(index, *group_index, dsh, model),
+                    None => (String::new(), String::new(), false, false),
+                },
                 PickerRow::DshFailure(index) => match dsh.failures.get(*index) {
                     Some(failure) => (
                         format!("{} ⚠", failure.name),
@@ -832,14 +781,21 @@ impl ModelPicker {
                     .is_some_and(|preset| preset.vendor == *vendor);
                 (
                     (*vendor).to_owned(),
-                    format!("{count} models"),
+                    self.locale.render(
+                        &UiMessage::new("tui.message_value_models")
+                            .arg("count", (count).to_string()),
+                    ),
                     current,
                     false,
                 )
             }
             PickerRow::Preset(preset) => (
                 preset.name.to_owned(),
-                preset.description.to_owned(),
+                self.locale
+                    .render(&clat_core::client_ports::presentation::preset_presentation(
+                        preset.id,
+                        preset.description,
+                    )),
                 self.current_preset
                     .is_some_and(|current| current.id == preset.id),
                 preset.owned_capabilities().accepts_image_input(),
@@ -847,12 +803,13 @@ impl ModelPicker {
             PickerRow::Custom => {
                 let count = self.profiles.len();
                 let hint = if count == 0 {
-                    "create your first custom model".to_owned()
+                    self.locale.text("tui.first_custom_model").to_owned()
                 } else {
-                    format!("{count} custom model{}", if count == 1 { "" } else { "s" })
+                    self.locale
+                        .render(&UiMessage::new("tui.custom_model_count").arg("count", count))
                 };
                 (
-                    "Custom".to_owned(),
+                    self.locale.text("tui.custom").to_owned(),
                     hint,
                     self.current_preset.is_none(),
                     false,
@@ -871,7 +828,12 @@ impl ModelPicker {
                     profile.image_input,
                 )
             }
-            PickerRow::NewProfile => ("New…".to_owned(), "blank template".to_owned(), false, false),
+            PickerRow::NewProfile => (
+                self.locale.text("tui.new_profile").to_owned(),
+                self.locale.text("tui.blank_template").to_owned(),
+                false,
+                false,
+            ),
             // dsh 行在上方 dsh 分支早退，此处不可达。
             PickerRow::DshGroup(_) | PickerRow::DshModel(_, _) | PickerRow::DshFailure(_) => {
                 (String::new(), String::new(), false, false)
@@ -894,4 +856,71 @@ enum PickerRow {
     DshModel(usize, usize),
     /// dsh 一级尾部：失败组灰行（不可选）。
     DshFailure(usize),
+}
+
+impl ModelPicker {
+    fn picker_title(&self) -> String {
+        if let Some(dsh) = &self.dsh {
+            match self.dsh_group.and_then(|index| dsh.groups.get(index)) {
+                Some(group) => format!("/model · {}", group.name),
+                None => "/model".to_owned(),
+            }
+        } else if self.custom_list {
+            self.locale.text("tui.picker_custom_title").to_owned()
+        } else {
+            match self.vendor {
+                None => "/model".to_owned(),
+                Some(vendor) => format!("/model · {vendor}"),
+            }
+        }
+    }
+}
+
+impl ModelPicker {
+    fn dsh_model_row(
+        &self,
+        index: usize,
+        group_index: usize,
+        dsh: &DshModelData,
+        model: &DshModelEntry,
+    ) -> (String, String, bool, bool) {
+        let current = dsh.current.as_ref().is_some_and(|(provider, id)| {
+            dsh.groups
+                .get(group_index)
+                .is_some_and(|group| *provider == group.id)
+                && id == &model.id
+        });
+        let pending = if index == self.selected {
+            self.dsh_effort
+                .clone()
+                .filter(|effort| model.efforts.iter().any(|e| &e.id == effort))
+        } else {
+            None
+        };
+        let effort = pending.or_else(|| {
+            let id = current.then_some(dsh.current_effort.as_deref()).flatten()?;
+            let name = model
+                .efforts
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| id.to_owned());
+            Some(name)
+        });
+        let hint = match effort {
+            Some(effort) => format!(
+                "{} · {}",
+                model
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| model.id.clone()),
+                effort
+            ),
+            None => model
+                .description
+                .clone()
+                .unwrap_or_else(|| model.id.clone()),
+        };
+        (model.name.clone(), hint, current, false)
+    }
 }

@@ -1,5 +1,6 @@
 //! Explicit host management. Never opens a writer or retries a stop request.
 use super::HostClient;
+use crate::i18n::UiMessage;
 use serde_json::json;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -9,31 +10,37 @@ pub struct HostManagementArgs {
 }
 
 impl HostManagementArgs {
-    pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+    pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
+        Self::parse_presented(args).map_err(|m| m.english())
+    }
+    pub fn parse_presented(mut args: impl Iterator<Item = String>) -> Result<Self, UiMessage> {
         let stop = match args.next().as_deref() {
             Some("status") => false,
             Some("stop") => true,
-            _ => return Err("use clat host status|stop [--port <n>]".into()),
+            _ => return Err(UiMessage::new("cli.host_usage")),
         };
         let mut port = None;
         if let Some(arg) = args.next() {
             if arg != "--port" {
-                return Err("host accepts only --port <n>".into());
+                return Err(UiMessage::new("cli.host_only_port"));
             }
             port = Some(
                 args.next()
                     .and_then(|s| s.parse().ok())
                     .filter(|p| *p != 0)
-                    .ok_or("host --port needs a nonzero port")?,
+                    .ok_or(UiMessage::new("cli.host_nonzero_port"))?,
             );
         }
         if args.next().is_some() {
-            return Err("unexpected host argument".into());
+            return Err(UiMessage::new("cli.host_extra_argument"));
         }
         Ok(Self { stop, port })
     }
 
     pub fn execute(&self) -> Result<String, String> {
+        self.execute_presented().map(|m| m.english())
+    }
+    pub fn execute_presented(&self) -> Result<crate::i18n::UiMessage, String> {
         let client = match self.port {
             Some(port) => {
                 let root = crate::control_storage::sentinel::default_storage_root()?;
@@ -50,17 +57,13 @@ impl HostManagementArgs {
             if result["stopping"] != true {
                 return Err("host did not acknowledge shutdown; do not retry automatically".into());
             }
-            Ok(format!(
-                "Host {} accepted shutdown; all connected frontends will disconnect.",
-                client.instance_id()
-            ))
+            Ok(crate::i18n::UiMessage::new("cli.host_stopping")
+                .arg("instance", client.instance_id()))
         } else {
-            Ok(format!(
-                "Host {} online at 127.0.0.1:{}\nStorage: {}",
-                client.instance_id(),
-                client.port,
-                client.storage_root().display()
-            ))
+            Ok(crate::i18n::UiMessage::new("cli.host_status")
+                .arg("instance", client.instance_id())
+                .arg("port", client.port)
+                .arg("root", client.storage_root().display().to_string()))
         }
     }
 }

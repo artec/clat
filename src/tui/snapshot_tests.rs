@@ -3270,7 +3270,12 @@ fn help_dialog_lines_carry_the_frontend_local_composer_section() {
     let harness = Harness::trusted("snap-help-composer", 80, 24);
     let commands = harness.app.application.as_ref().unwrap().command_catalog();
     let mut text = String::new();
-    for line in super::dialogs::help_dialog_lines(76, &commands) {
+    for line in super::dialogs::help_dialog_lines(
+        76,
+        &commands,
+        clat_core::client_ports::presentation::LocaleContext::default(),
+        false,
+    ) {
         for span in line.spans {
             text.push_str(&span.content);
         }

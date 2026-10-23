@@ -15,8 +15,9 @@ use crate::model::ModelEvent;
 use crate::session::replay::{ReplayEvent, ReplayTurnEnd};
 use crate::tui::markdown::render_markdown;
 use crate::tui::theme;
-use crate::tui::tool_argument_lines;
+use crate::tui::tool_argument_lines_localized;
 use crate::tui::wrap_text;
+use clat_core::client_ports::presentation::{LocaleContext, UiMessage};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -63,6 +64,7 @@ pub(crate) enum ConversationItem {
     #[allow(dead_code)]
     TurnEnd {
         text: String,
+        presentation: Option<UiMessage>,
         /// F3/CF-R3-2：settled 来源的 `prompt_rpc_id` 主键（standalone/
         /// replay/命令回执为 None）。转录本身即不可遗忘的有界去重记忆。
         settled_id: Option<String>,
@@ -109,6 +111,13 @@ pub(crate) enum ToolCardVisibility {
 pub(crate) const MAX_TOOL_OUTPUT_LINES: usize = 6;
 
 impl ToolCardVisibility {
+    pub(crate) fn presentation(self) -> clat_core::client_ports::presentation::UiMessage {
+        clat_core::client_ports::presentation::UiMessage::new(match self {
+            Self::Collapsed => "tui.cards_collapsed",
+            Self::Expanded => "tui.cards_expanded",
+            Self::Hidden => "tui.cards_hidden",
+        })
+    }
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Collapsed => Self::Expanded,
@@ -120,6 +129,7 @@ impl ToolCardVisibility {
 
 #[derive(Default)]
 pub(crate) struct ConversationModel {
+    locale: LocaleContext,
     items: Vec<(ConversationItem, ItemCache)>,
     /// Exclusive cursor for loading the page immediately before this model.
     /// It tracks the earliest replay event even when that event is a
@@ -155,6 +165,17 @@ impl ConversationModel {
         Self::default()
     }
 
+    pub(crate) fn set_locale(&mut self, locale: LocaleContext) {
+        if self.locale.locale == locale.locale {
+            return;
+        }
+        self.locale = locale;
+        for (_, cache) in &mut self.items {
+            cache.dirty = true;
+        }
+        self.pending_width = None;
+    }
+
     // ---- 共享构造器（live 与 replay 的唯一汇合点，G8）----
 
     fn push_item(&mut self, item: ConversationItem) {
@@ -173,21 +194,25 @@ impl ConversationModel {
     pub(crate) fn push_turn_end(&mut self, text: String) {
         self.push_item(ConversationItem::TurnEnd {
             text,
+            presentation: None,
             settled_id: None,
         });
     }
 
-    /// settled 帧专属：终态卡携带 `prompt_rpc_id` 主键（F3/CF-R3-2）。
-    /// 转录本身就是**不可遗忘的有界记忆**——以此 id 为主键的卡一旦
-    /// 存在，该 prompt 的任何重发（相邻重复或任意历史距离的迟到重放，
-    /// 不受固定去重窗淘汰）都是重复结算，由 `has_settled_card` 拦截。
-    pub(crate) fn push_settled_turn_end(&mut self, text: String, settled_id: String) {
+    pub(crate) fn push_turn_end_message(&mut self, message: UiMessage) {
+        self.push_presented_turn_end(message, None);
+    }
+    pub(crate) fn push_presented_turn_end(
+        &mut self,
+        message: UiMessage,
+        settled_id: Option<String>,
+    ) {
         self.push_item(ConversationItem::TurnEnd {
-            text,
-            settled_id: Some(settled_id),
+            text: message.english(),
+            presentation: Some(message),
+            settled_id,
         });
     }
-
     /// 该 prompt 的终态卡是否已在转录中（任意历史距离，O(轮数)，
     /// 每轮结算至多查一次；转录无删除路径，记忆与会话同生命周期）。
     pub(crate) fn has_settled_card(&self, settled_id: &str) -> bool {
@@ -527,7 +552,7 @@ impl ConversationModel {
                     self.push_compaction(summary_text.clone());
                 }
                 ReplayEvent::TurnEnded { reason, .. } => {
-                    self.push_turn_end(turn_end_notice_text(reason));
+                    self.push_turn_end_message(turn_end_notice_message(reason));
                 }
                 // 权限与重试只影响状态行，不进转录。
                 ReplayEvent::PermissionChecked { .. } | ReplayEvent::RetryScheduled { .. } => {}
@@ -576,8 +601,13 @@ impl ConversationModel {
                 cache.dirty || cache.width != Some(width) || cache.marker != marker
             };
             if needs {
-                let rendered =
-                    render_item(&self.items[index].0, width, marker, self.reasoning_expanded);
+                let rendered = render_item(
+                    &self.items[index].0,
+                    width,
+                    marker,
+                    self.reasoning_expanded,
+                    self.locale,
+                );
                 let (_, cache) = &mut self.items[index];
                 cache.lines = rendered;
                 cache.width = Some(width);
@@ -593,7 +623,7 @@ impl ConversationModel {
             self.pending_lines = self
                 .pending_steering
                 .iter()
-                .map(|text| render_pending_steering(text, width))
+                .map(|text| render_pending_steering(text, width, self.locale))
                 .collect();
             self.pending_width = Some(width);
             self.pending_rendered_generation = self.pending_generation;
@@ -702,7 +732,7 @@ impl ConversationModel {
         let mut row = 0usize;
         let end = start + count;
         'items: for (item, cache) in &self.items {
-            let rows = item_rows(item, cache, visibility);
+            let rows = item_rows(item, cache, visibility, self.locale);
             for line in rows.as_slice() {
                 if row >= end {
                     break 'items;
@@ -761,7 +791,7 @@ impl ConversationModel {
         }
         let mut current = 0usize;
         for (item, cache) in &self.items {
-            let rows = item_rows(item, cache, visibility);
+            let rows = item_rows(item, cache, visibility, self.locale);
             for line in rows.as_slice() {
                 if current == row {
                     // 复制出口统一裁尾（G4）：用户块的满宽背景填充是纯
@@ -828,9 +858,12 @@ fn item_rows<'a>(
     item: &'a ConversationItem,
     cache: &'a ItemCache,
     visibility: ToolCardVisibility,
+    locale: LocaleContext,
 ) -> Rows<'a> {
     match item {
-        ConversationItem::ToolCard { .. } => Rows::Owned(card_display_lines(cache, visibility)),
+        ConversationItem::ToolCard { .. } => {
+            Rows::Owned(card_display_lines(cache, visibility, locale))
+        }
         _ => Rows::Borrowed(&cache.lines),
     }
 }
@@ -840,6 +873,7 @@ fn render_item(
     width: usize,
     stream_marker: Option<&'static str>,
     reasoning_expanded: bool,
+    locale: LocaleContext,
 ) -> Vec<Line<'static>> {
     match item {
         ConversationItem::User { text } | ConversationItem::Compaction { text } => {
@@ -857,16 +891,25 @@ fn render_item(
             reasoning_expanded,
             width,
             stream_marker,
+            locale,
         ),
         ConversationItem::ToolCard {
             tool,
             arguments,
             state,
             ..
-        } => render_tool_card(tool, arguments, state, width),
+        } => render_tool_card_localized(tool, arguments, state, width, locale),
         // run 终态通知（G7）：dim 单行，每个停止都解释自己。
-        ConversationItem::TurnEnd { text, .. } => vec![Line::from(Span::styled(
-            format!("· {text}"),
+        ConversationItem::TurnEnd {
+            text, presentation, ..
+        } => vec![Line::from(Span::styled(
+            format!(
+                "· {}",
+                presentation
+                    .as_ref()
+                    .map(|m| locale.render(m))
+                    .unwrap_or_else(|| text.clone())
+            ),
             theme::style(theme::Role::Dim),
         ))],
     }
@@ -875,15 +918,23 @@ fn render_item(
 /// 终态原因 → 通知文本。终态是封闭集之外的兜底已在回放适配器侧
 /// 归并为 Error（"unsupported turn-end kind: …"），此处任何变体都
 /// 产出非空解释（G7：未知终态显示通用解释而非静默）。
+#[cfg(test)]
 pub(crate) fn turn_end_notice_text(reason: &ReplayTurnEnd) -> String {
+    turn_end_notice_message(reason).english()
+}
+fn turn_end_notice_message(reason: &ReplayTurnEnd) -> UiMessage {
     match reason {
-        ReplayTurnEnd::Completed => "completed".into(),
-        ReplayTurnEnd::Aborted { cause } if cause == "user" => "cancelled".into(),
-        ReplayTurnEnd::Aborted { cause } => format!("aborted ({cause})"),
-        ReplayTurnEnd::Blocked => "blocked".into(),
-        ReplayTurnEnd::MaxTokens => "max tokens".into(),
-        ReplayTurnEnd::Interrupted => "interrupted".into(),
-        ReplayTurnEnd::Error { message } => format!("error: {}", diagnostic_notice_text(message)),
+        ReplayTurnEnd::Completed => UiMessage::new("tui.turn_completed"),
+        ReplayTurnEnd::Aborted { cause } if cause == "user" => UiMessage::new("tui.turn_cancelled"),
+        ReplayTurnEnd::Aborted { cause } => {
+            UiMessage::new("tui.turn_aborted").arg("cause", cause.clone())
+        }
+        ReplayTurnEnd::Blocked => UiMessage::new("tui.turn_blocked"),
+        ReplayTurnEnd::MaxTokens => UiMessage::new("tui.turn_max_tokens"),
+        ReplayTurnEnd::Interrupted => UiMessage::new("tui.turn_interrupted"),
+        ReplayTurnEnd::Error { message } => {
+            UiMessage::new("tui.turn_error").arg("detail", diagnostic_notice_text(message))
+        }
     }
 }
 
@@ -899,18 +950,18 @@ pub(crate) fn turn_end_notice_text(reason: &ReplayTurnEnd) -> String {
 ///
 /// 原因文本经 `diagnostic_notice_text`（E4：凭据遮蔽 + 单行折叠 +
 /// 有界截断）。
-pub(crate) fn settled_outcome_notice(payload: &serde_json::Value) -> String {
+pub(crate) fn settled_outcome_notice(payload: &serde_json::Value) -> UiMessage {
     let outcome = &payload["outcome"];
     match outcome["type"].as_str() {
         Some("failed") => match outcome["error"].as_str() {
             Some(error) if !error.is_empty() => {
-                format!("error: {}", diagnostic_notice_text(error))
+                UiMessage::new("tui.turn_error").arg("detail", diagnostic_notice_text(error))
             }
-            _ => "failed — no reason provided".into(),
+            _ => UiMessage::new("tui.turn_no_reason"),
         },
-        Some("completed") => "completed".into(),
-        Some("cancelled") => "cancelled".into(),
-        _ => "settled".into(),
+        Some("completed") => UiMessage::new("tui.turn_completed"),
+        Some("cancelled") => UiMessage::new("tui.turn_cancelled"),
+        _ => UiMessage::new("tui.turn_settled"),
     }
 }
 
@@ -968,11 +1019,21 @@ fn redact_for_notice(text: &str) -> String {
 /// 工具卡 = 单行状态头 + dim 正文（参数 + 结果）。缓存持有**展开全文**，
 /// 折叠/隐藏在展平阶段按 visibility 裁剪（先渲染后截断——上游 07-23
 /// 教训：先截断源文本会撕开多行结构）。
+#[cfg(test)]
 fn render_tool_card(
     tool: &str,
     arguments: &Value,
     state: &CardState,
     width: usize,
+) -> Vec<Line<'static>> {
+    render_tool_card_localized(tool, arguments, state, width, LocaleContext::default())
+}
+fn render_tool_card_localized(
+    tool: &str,
+    arguments: &Value,
+    state: &CardState,
+    width: usize,
+    locale: LocaleContext,
 ) -> Vec<Line<'static>> {
     let (glyph, role) = match state {
         CardState::Pending => ("○", theme::Role::Dim),
@@ -984,10 +1045,14 @@ fn render_tool_card(
         }
     };
     let mut lines = vec![Line::from(Span::styled(
-        format!("{glyph} Tool / {tool}"),
+        locale.render(
+            &UiMessage::new("tui.tool_heading")
+                .arg("glyph", glyph)
+                .arg("tool", tool),
+        ),
         theme::style(role),
     ))];
-    if let Some(argument_lines) = tool_argument_lines(tool, arguments, width) {
+    if let Some(argument_lines) = tool_argument_lines_localized(tool, arguments, width, locale) {
         lines.extend(argument_lines);
     } else {
         // 未知工具：参数 JSON 兜底（dim）。
@@ -1016,7 +1081,7 @@ fn render_tool_card(
         }
         CardState::Denied { reason } => {
             lines.push(Line::from(Span::styled(
-                format!("✗ permission denied — {reason}"),
+                locale.render(&UiMessage::new("tui.card_denied").arg("reason", reason.clone())),
                 theme::style(theme::Role::Error),
             )));
         }
@@ -1033,7 +1098,11 @@ fn value_display_text(value: &Value) -> String {
 
 /// 卡片在当前 visibility 下的展示行。折叠 = head/tail 各
 /// `MAX_TOOL_OUTPUT_LINES/2` + 计数标记；隐藏 = 0 行（G5）。
-fn card_display_lines(cache: &ItemCache, visibility: ToolCardVisibility) -> Vec<Line<'static>> {
+fn card_display_lines(
+    cache: &ItemCache,
+    visibility: ToolCardVisibility,
+    locale: LocaleContext,
+) -> Vec<Line<'static>> {
     match visibility {
         ToolCardVisibility::Hidden => Vec::new(),
         ToolCardVisibility::Expanded => cache.lines.clone(),
@@ -1046,9 +1115,8 @@ fn card_display_lines(cache: &ItemCache, visibility: ToolCardVisibility) -> Vec<
             let tail = budget - head;
             let mut out: Vec<Line<'static>> = cache.lines[..head].to_vec();
             out.push(Line::from(Span::styled(
-                format!(
-                    "  … +{} lines (Ctrl+O to expand)",
-                    cache.lines.len() - budget
+                locale.render(
+                    &UiMessage::new("tui.card_more").arg("count", cache.lines.len() - budget),
                 ),
                 theme::style(theme::Role::Dim),
             )));
@@ -1065,7 +1133,7 @@ fn card_display_lines(cache: &ItemCache, visibility: ToolCardVisibility) -> Vec<
 /// pending steering 回显块：与用户块同构但整体 dim、尾行追加 queued
 /// 标记——它是"已入队、下一模型步生效"的视图状态（INV-SV1），claim
 /// 后由 `confirm_pending_steering` 升级为正式用户块。
-fn render_pending_steering(text: &str, width: usize) -> Vec<Line<'static>> {
+fn render_pending_steering(text: &str, width: usize, locale: LocaleContext) -> Vec<Line<'static>> {
     let style = theme::style(theme::Role::Dim);
     let marker = theme::style(theme::Role::Faint);
     let text_width = width.saturating_sub(2).max(1);
@@ -1080,7 +1148,11 @@ fn render_pending_steering(text: &str, width: usize) -> Vec<Line<'static>> {
             } else {
                 ("  ", style)
             };
-            let queued = if index == last { " · queued" } else { "" };
+            let queued = if index == last {
+                locale.text("tui.queued_suffix")
+            } else {
+                ""
+            };
             let used = UnicodeWidthStr::width(prefix)
                 + UnicodeWidthStr::width(line.as_str())
                 + UnicodeWidthStr::width(queued);
@@ -1126,6 +1198,7 @@ fn render_assistant(
     reasoning_expanded: bool,
     width: usize,
     stream_marker: Option<&'static str>,
+    locale: LocaleContext,
 ) -> Vec<Line<'static>> {
     // 流式进行中的 assistant 以"太阳"四分圆帧作前缀（灰色，保持圆形
     // 字形——与落定 ⏺ 同色族，与状态栏蓝色盲文 spinner 不同形不同
@@ -1141,25 +1214,14 @@ fn render_assistant(
     let reasoning = reasoning.filter(|value| !value.trim().is_empty());
     let mut lines = Vec::new();
     if let Some(reasoning) = reasoning {
-        let summary = if reasoning_running {
-            reasoning.lines().rev().find(|line| !line.trim().is_empty())
-        } else {
-            reasoning.lines().find(|line| !line.trim().is_empty())
-        }
-        .unwrap_or(reasoning)
-        .trim();
-        let disclosure = if reasoning_expanded { "▾" } else { "▸" };
-        let prefix_width = 2 + 2 + UnicodeWidthStr::width("Think · ");
-        let summary = truncate_display_width(summary, width.saturating_sub(prefix_width));
-        lines.push(Line::from(vec![
-            marker.clone(),
-            Span::styled(
-                format!("{disclosure} Think"),
-                theme::style(theme::Role::ThinkingGlyph).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · ", theme::style(theme::Role::Faint)),
-            Span::styled(summary, theme::style(theme::Role::Faint)),
-        ]));
+        lines.push(reasoning_summary(
+            reasoning,
+            reasoning_running,
+            reasoning_expanded,
+            width,
+            &marker,
+            locale,
+        ));
         if reasoning_expanded {
             for line in wrap_text(reasoning, width.saturating_sub(4).max(1)) {
                 lines.push(Line::from(vec![
@@ -1224,6 +1286,35 @@ fn truncate_display_width(text: &str, max: usize) -> String {
     }
     out.push('…');
     out
+}
+
+fn reasoning_summary(
+    reasoning: &str,
+    reasoning_running: bool,
+    reasoning_expanded: bool,
+    width: usize,
+    marker: &Span<'static>,
+    locale: LocaleContext,
+) -> Line<'static> {
+    let summary = if reasoning_running {
+        reasoning.lines().rev().find(|line| !line.trim().is_empty())
+    } else {
+        reasoning.lines().find(|line| !line.trim().is_empty())
+    }
+    .unwrap_or(reasoning)
+    .trim();
+    let disclosure = if reasoning_expanded { "▾" } else { "▸" };
+    let prefix_width = 2 + 2 + UnicodeWidthStr::width(locale.text("tui.think_prefix"));
+    let summary = truncate_display_width(summary, width.saturating_sub(prefix_width));
+    Line::from(vec![
+        marker.clone(),
+        Span::styled(
+            locale.render(&UiMessage::new("tui.think_label").arg("disclosure", disclosure)),
+            theme::style(theme::Role::ThinkingGlyph).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", theme::style(theme::Role::Faint)),
+        Span::styled(summary, theme::style(theme::Role::Faint)),
+    ])
 }
 
 #[cfg(all(test, feature = "runtime-tests"))]

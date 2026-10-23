@@ -11,7 +11,8 @@ export function checksForPaths(paths: string[] | undefined): CheckPlan {
   if (!paths) return { native: true, tooling: true, web: true };
   let native = false, tooling = false, web = false;
   for (const path of paths) {
-    if (path.startsWith('web/')) web = true;
+    if (path.startsWith('locales/') || path.startsWith('src/i18n/') || path.startsWith('scripts/i18n-')) { native=true;tooling=true;web=true; }
+    else if (path.startsWith('web/')) web = true;
     else if (path.startsWith('desktop/scripts/') || /^(desktop\/(package\.json|bun\.lock|tsconfig\.json)|package\.json|publish)$/.test(path)) tooling = true;
     else if (!/^(docs\/|\.agents\/|\.claude\/|README(?:\.[^/]+)?$|LICENSE$|\.gitignore$|\.editorconfig$)/.test(path)) native = true;
   }

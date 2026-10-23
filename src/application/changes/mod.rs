@@ -25,6 +25,8 @@ pub struct WorkspaceChanges {
     pub state: String,
     pub scope: &'static str,
     pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<crate::i18n::UiMessage>,
     pub truncated: bool,
     pub files: Vec<ChangedFile>,
 }
@@ -44,6 +46,8 @@ pub struct WorkspaceDiff {
     pub path: String,
     pub state: String,
     pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<crate::i18n::UiMessage>,
     pub staged: String,
     pub unstaged: String,
 }
@@ -66,7 +70,7 @@ impl WorkspaceReview {
         match git::status(&self.project) {
             Ok(files) => {
                 let truncated = files.len() > FILE_CAP;
-                WorkspaceChanges { state: "available".into(), scope: "workspace", note: "Current project working tree, including existing edits; not agent or run attribution.".into(), truncated, files: files.into_iter().take(FILE_CAP).collect() }
+                WorkspaceChanges { state: "available".into(), scope: "workspace", note: "Current project working tree, including existing edits; not agent or run attribution.".into(), presentation: Some(crate::i18n::UiMessage::new("web.workspace_snapshot_note")), truncated, files: files.into_iter().take(FILE_CAP).collect() }
             }
             Err(note) => failed(
                 if note.starts_with("spawn-not-found:") {
@@ -107,6 +111,7 @@ fn failed(state: &str, note: String) -> WorkspaceChanges {
         state: state.into(),
         scope: "workspace",
         note,
+        presentation: None,
         truncated: false,
         files: Vec::new(),
     }

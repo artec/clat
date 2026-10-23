@@ -1,5 +1,6 @@
 //! Selecting a row fills input; Enter on an already complete command submits normally.
 use super::*;
+use clat_core::client_ports::presentation::PresentedText;
 use serde_json::Value;
 
 /// One frontend-only discovery state: shared help catalog, picker and find panel.
@@ -28,9 +29,9 @@ impl DiscoveryUi {
 #[derive(Clone)]
 struct Choice {
     text: String,
-    label: String,
-    description: String,
-    hint: String,
+    label: PresentedText,
+    description: PresentedText,
+    hint: PresentedText,
     aliases: String,
     unavailable: bool,
     skill: bool,
@@ -41,17 +42,17 @@ pub(super) struct CommandPicker {
     query: String,
     selected: usize,
     request: u64,
-    status: String,
+    status: PresentedText,
 }
 
 impl CommandPicker {
     pub(super) fn new(request: u64) -> Self {
         Self {
-            choices: Vec::new(),
+            choices: local_choices(),
             query: String::new(),
             selected: 0,
             request,
-            status: "Loading current host commands and skills…".into(),
+            status: UiMessage::new("tui.commands_loading").into(),
         }
     }
 
@@ -77,13 +78,19 @@ impl CommandPicker {
                     unavailable: entry["unavailable_reason"].is_string(),
                     skill: false,
                     text: format!("/{name} "),
-                    label: format!("/{name}"),
-                    description: entry["description"].as_str().unwrap_or("").into(),
+                    label: format!("/{name}").into(),
+                    description: PresentedText {
+                        raw: entry["description"].as_str().unwrap_or("").into(),
+                        presentation: serde_json::from_value(
+                            entry["description_presentation"].clone(),
+                        )
+                        .ok(),
+                    },
                     hint: entry["unavailable_reason"]
                         .as_str()
                         .or_else(|| entry["usage"].as_str())
-                        .unwrap_or("Edit arguments before sending")
-                        .into(),
+                        .map(PresentedText::from)
+                        .unwrap_or_else(|| UiMessage::new("tui.edit_arguments_hint").into()),
                 });
             }
         }
@@ -99,8 +106,14 @@ impl CommandPicker {
                     unavailable: false,
                     skill: true,
                     text: format!("/skill {name} "),
-                    label: format!("Skill · {name}"),
-                    description: entry["description"].as_str().unwrap_or("").into(),
+                    label: UiMessage::new("tui.skill_choice").arg("name", name).into(),
+                    description: PresentedText {
+                        raw: entry["description"].as_str().unwrap_or("").into(),
+                        presentation: serde_json::from_value(
+                            entry["description_presentation"].clone(),
+                        )
+                        .ok(),
+                    },
                     hint: format!(
                         "{}{}",
                         entry["source"].as_str().unwrap_or("host"),
@@ -109,11 +122,13 @@ impl CommandPicker {
                         } else {
                             ""
                         }
-                    ),
+                    )
+                    .into(),
                 });
             }
         }
-        self.status = "No matching commands or skills".into();
+        self.choices.extend(local_choices());
+        self.status = UiMessage::new("tui.commands_empty").into();
     }
 
     fn filtered(&self) -> Vec<&Choice> {
@@ -183,7 +198,7 @@ impl App {
         let mut picker = CommandPicker::new(request);
         if self.native.is_some() {
             if let Err(error) = self.request_command_discovery(request) {
-                picker.status = error;
+                picker.status = error.into();
             }
         } else if let Some(app) = &self.application {
             match app
@@ -192,7 +207,7 @@ impl App {
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
             {
                 Ok(value) => picker.load(&value),
-                Err(error) => picker.status = error.to_string(),
+                Err(error) => picker.status = error.to_string().into(),
             }
         }
         self.discovery.picker = Some(picker);
@@ -213,7 +228,7 @@ impl App {
         {
             match result {
                 Ok(value) => picker.load(&value),
-                Err(error) => picker.status = error,
+                Err(error) => picker.status = error.into(),
             }
         }
     }
@@ -277,8 +292,6 @@ impl App {
         let Some(picker) = &self.discovery.picker else {
             return;
         };
-        let filtered = picker.filtered();
-        let first = picker.selected.saturating_sub(3);
         // 内容区宽度：弹框与输入框等宽（几何契约），扣除边框与左右内边距。
         let inner = self
             .input_area
@@ -286,34 +299,11 @@ impl App {
             .saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize;
         // 渲染候选（≤5 条）为物理行，并记录选中条目与其分组头的行号——
         // R1-F2：折行后视口必须围绕选中条目，而不是按条目数取前 N 条。
-        let mut body: Vec<Line<'static>> = Vec::new();
-        let mut section = None;
-        let mut anchor = 0usize;
-        let mut anchor_section_head = 0usize;
-        for (index, choice) in filtered.iter().skip(first).take(5).enumerate() {
-            let is_selected = first + index == picker.selected;
-            if section != Some(choice.skill) {
-                section = Some(choice.skill);
-                if is_selected {
-                    anchor_section_head = body.len();
-                }
-                body.push(Line::from(Span::styled(
-                    if choice.skill { "Skills" } else { "Commands" },
-                    theme::style(theme::Role::Faint),
-                )));
-            }
-            if is_selected {
-                anchor = body.len();
-            }
-            body.extend(entry_lines(choice, is_selected, inner));
-        }
-        if body.is_empty() {
-            body.push(Line::from(picker.status.clone()));
-        }
+        let (body, anchor_section_head, anchor) = picker_body(picker, inner, self.locale);
         // 底部键位提示：正文与 footer 之间至少一个分隔空行（空间足够时），
         // footer 用现有对话框 footer 的 Dim 弱化（CMDPOP-1）。footer 自身
         // 超宽时按同一宽度折行（窄屏不截断键位语义）。
-        let footer = "↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close";
+        let footer = self.locale.text("tui.commands_keys");
         let footer_rows: Vec<String> = wrap_text(footer, inner.max(1));
         let wanted = (body.len() + 2 + footer_rows.len() + 1) as u16; // 边框+正文+空行+footer
         let height = wanted.min(self.input_area.y);
@@ -345,7 +335,7 @@ impl App {
         );
         clear_popup_with_guards(frame, area);
         frame.render_widget(
-            Paragraph::new(lines).block(popup_block("Commands / Skills")),
+            Paragraph::new(lines).block(popup_block(self.locale.text("tui.commands_title"))),
             area,
         );
     }
@@ -381,7 +371,12 @@ fn viewport_rows(
 /// `·` 合并到同一行。R1-F3：缩进与连接符计入宽度——所有行按
 /// `inner - INDENT` 折行，首行不加前缀、续行加 INDENT 前缀后仍 ≤ inner，
 /// 任何行都不再因隐藏前缀被 Paragraph 截断。
-fn entry_lines(choice: &Choice, selected: bool, inner: usize) -> Vec<Line<'static>> {
+fn entry_lines_localized(
+    choice: &Choice,
+    selected: bool,
+    inner: usize,
+    locale: LocaleContext,
+) -> Vec<Line<'static>> {
     const INDENT: usize = 2;
     let style = if selected {
         theme::style(theme::Role::Selected)
@@ -392,9 +387,13 @@ fn entry_lines(choice: &Choice, selected: bool, inner: usize) -> Vec<Line<'stati
     let indent = " ".repeat(INDENT);
     let mut rows: Vec<String> = Vec::new();
     let mut current: Option<String> = None;
-    for (segment_index, segment) in [&choice.label, &choice.description, &choice.hint]
-        .into_iter()
-        .enumerate()
+    for (segment_index, segment) in [
+        choice.label.render(locale),
+        choice.description.render(locale),
+        choice.hint.render(locale),
+    ]
+    .into_iter()
+    .enumerate()
     {
         for (line_index, logical) in segment.split('\n').enumerate() {
             for wrapped in wrap_text(logical, wrap_width) {
@@ -430,6 +429,59 @@ fn entry_lines(choice: &Choice, selected: bool, inner: usize) -> Vec<Line<'stati
     rows.into_iter()
         .map(|row| Line::from(Span::styled(row, style)))
         .collect()
+}
+
+fn local_choices() -> Vec<Choice> {
+    clat_core::client_ports::presentation::client_commands()
+        .into_iter()
+        .map(|command| Choice {
+            text: format!("/{} ", command.name),
+            label: format!("/{}", command.name).into(),
+            description: UiMessage::new("command.language.description").into(),
+            hint: UiMessage::new("tui.language_keys").into(),
+            aliases: String::new(),
+            unavailable: false,
+            skill: false,
+        })
+        .collect()
+}
+
+fn picker_body(
+    picker: &CommandPicker,
+    inner: usize,
+    locale: LocaleContext,
+) -> (Vec<Line<'static>>, usize, usize) {
+    let filtered = picker.filtered();
+    let first = picker.selected.saturating_sub(3);
+    let mut body = Vec::new();
+    let mut section = None;
+    let mut anchor = 0;
+    let mut section_head = 0;
+    for (index, choice) in filtered.iter().skip(first).take(5).enumerate() {
+        let selected = first + index == picker.selected;
+        if section != Some(choice.skill) {
+            section = Some(choice.skill);
+            if selected {
+                section_head = body.len();
+            }
+            body.push(Line::from(Span::styled(
+                locale.text(if choice.skill {
+                    "tui.skills"
+                } else {
+                    "tui.commands"
+                }),
+                theme::style(theme::Role::Faint),
+            )));
+        }
+        if selected {
+            anchor = body.len();
+        }
+        body.extend(entry_lines_localized(choice, selected, inner, locale));
+    }
+    if body.is_empty() {
+        body.push(Line::from(picker.status.render(locale)));
+    }
+    (body, section_head, anchor)
 }
 
 #[cfg(test)]

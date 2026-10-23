@@ -129,30 +129,54 @@ struct NativeSteeringDraft {
 }
 
 pub fn run(project: Project) -> io::Result<()> {
+    run_with_locale(project, LocaleContext::default())
+}
+pub fn run_with_locale(project: Project, locale: LocaleContext) -> io::Result<()> {
     let app = match App::open_deferred(project, None) {
         Ok(app) => app,
         Err(error) => return Err(io::Error::other(error)),
     };
-    run_frontend(app)
+    run_frontend(localization::with_locale(app, locale))
 }
 
 /// Explicit native attach during migration. Never opens a local runtime.
 pub fn run_host_mode(project: Project, port: u16, trust: bool) -> io::Result<()> {
+    run_host_mode_with_locale(project, port, trust, LocaleContext::default())
+}
+pub fn run_host_mode_with_locale(
+    project: Project,
+    port: u16,
+    trust: bool,
+    locale: LocaleContext,
+) -> io::Result<()> {
     let client = crate::host::HostClient::connect_local(port).map_err(io::Error::other)?;
     let client = client
         .open_project(project.root(), trust)
         .map_err(io::Error::other)?;
-    run_host_client(project, client)
+    run_host_client_with_locale(project, client, locale)
 }
 
 pub fn run_host_client(project: Project, client: crate::host::HostClient) -> io::Result<()> {
-    run_frontend(App::open_native(project, client).map_err(io::Error::other)?)
+    run_host_client_with_locale(project, client, LocaleContext::default())
+}
+pub fn run_host_client_with_locale(
+    project: Project,
+    client: crate::host::HostClient,
+    locale: LocaleContext,
+) -> io::Result<()> {
+    run_frontend(localization::with_locale(
+        App::open_native(project, client).map_err(io::Error::other)?,
+        locale,
+    ))
 }
 
 /// `clat dsh` 入口（D-2 §1.0）：构造 dsh 态 App（不走本地信任门/存储），
 /// 连接期由后台 ensure_online 线程驱动（`dsh_connect` 占位 + loading 状态），
 /// 复用同一终端生命周期与 App::run 主循环。
 pub fn run_dsh_mode(args: &[String]) -> io::Result<()> {
+    run_dsh_mode_with_locale(args, LocaleContext::default())
+}
+pub fn run_dsh_mode_with_locale(args: &[String], locale: LocaleContext) -> io::Result<()> {
     let port = parse_dsh_port(args).unwrap_or(crate::dsh::connect::DEFAULT_PORT);
     // DV-9/S4：`--url`（外起 0.1.2+ 宿主的 token 入口）。DSH 的 launch
     // token 只在宿主 stdout 打印一次（research §2），CLAT 无法探测外起
@@ -164,7 +188,7 @@ pub fn run_dsh_mode(args: &[String]) -> io::Result<()> {
         unsafe { std::env::set_var("CLAT_DSH_URL", url) };
     }
     let app = App::open_dsh(port).map_err(io::Error::other)?;
-    run_frontend(app)
+    run_frontend(localization::with_locale(app, locale))
 }
 
 /// `--port <n>` 解析（D-1 原样迁移）。
@@ -259,7 +283,7 @@ fn run_frontend(mut app: App) -> io::Result<()> {
     ratatui::restore();
     // 告别 LOGO：主屏恢复后打印，与启动欢迎页成对（TTY 守卫 + 静默
     // 失败，纯装饰不影响退出码与管道输出）。
-    crate::tui::logo::print_farewell();
+    crate::tui::logo::print_farewell(app.locale);
     // 显式 shutdown 的失败在终端恢复后可见地报告（plan §16 阶段5）。
     if let Some(error) = close_error {
         let _ = writeln!(io::stderr(), "{}", user_facing_error_line(&error));
@@ -275,7 +299,12 @@ fn user_facing_error_line(error: &str) -> String {
     format!("clat: {stripped}")
 }
 
+mod localization;
+use clat_core::client_ports::presentation::{LanguagePreference, LocaleContext, UiMessage};
+
 struct App {
+    locale: LocaleContext,
+    language_picker: Option<usize>,
     native: Option<native::NativeState>,
     project: Project,
     bootstrap: Option<BootstrapApplication>,
@@ -303,12 +332,14 @@ struct App {
     /// 常驻状态栏文本（当前项目目录），瞬时提示过期后回落到这里。
     default_status: String,
     status: String,
+    status_presentation: Option<Box<UiMessage>>,
     /// 瞬时提示的过期时刻；None 表示当前 status 即常驻内容。
     status_until: Option<Instant>,
     /// CONT-1（C1）：最近一次 run 的真实终态文本。run 结束后常驻状态栏
     /// （瞬时提示过期后回落到这里而不是项目目录），直到下一次 run 开工
     /// 才清空——「4 秒提示消失」不再独自把已完成/失败/取消抹回平静目录。
     terminal_status: Option<String>,
+    terminal_presentation: Option<Box<UiMessage>>,
     editor: Option<ModelEditor>,
     /// 二级模型选择器；与 editor 互斥，/model 命令打开。
     picker: Option<ModelPicker>,
@@ -530,7 +561,8 @@ impl App {
             );
         });
         app.loading = Some(loading);
-        app.status = "loading conversation…".into();
+        app.status = UiMessage::new("tui.loading_conversation").english();
+        app.status_presentation = Some(Box::new(UiMessage::new("tui.loading_conversation")));
         app.status_until = None;
         Ok(app)
     }
@@ -538,18 +570,14 @@ impl App {
     /// 最小构造（两阶段构造 A-02 的第一阶段）：打开全局存储、查询信
     /// 任表；不挂载项目、不读会话、不启动 MCP。
     fn open_minimal(project: Project, storage_root: Option<PathBuf>) -> Result<Self, String> {
-        let bootstrap = match storage_root {
-            Some(root) => BootstrapApplication::open(project.clone(), root),
-            None => BootstrapApplication::open_default(project.clone()),
-        }
-        .map_err(|error| error.to_string())?;
-        let trusted = bootstrap.is_trusted().map_err(|error| error.to_string())?;
-        let config = ModelConfig::default();
-        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let (bootstrap, trusted) = minimal_bootstrap(&project, storage_root)?;
+        let (config, credentials) = initial_model_state();
 
         // 状态栏初始显示当前打开的项目目录（home 缩写为 ~）。
         let status = abbreviate_home(project.root());
         Ok(Self {
+            locale: LocaleContext::default(),
+            language_picker: None,
             native: None,
             project,
             bootstrap: Some(bootstrap),
@@ -566,8 +594,10 @@ impl App {
             trust_prompt: !trusted,
             default_status: status.clone(),
             status,
+            status_presentation: None,
             status_until: None,
             terminal_status: None,
+            terminal_presentation: None,
             cancel_requested: false,
             editor: None,
             picker: None,
@@ -631,10 +661,7 @@ impl App {
             test_phase_elapsed: None,
             #[cfg(test)]
             test_run_elapsed: None,
-            bell: bell::bell_for_app_build(
-                env::var("CLAT_NO_BELL").ok(),
-                env::var("CLAT_BELL_COMMAND").ok(),
-            ),
+            bell: app_bell(),
             focused: None,
             dsh: None,
             dsh_connect: None,
@@ -655,9 +682,10 @@ impl App {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let (dsh_tx, dsh_rx) = crate::dsh::backend::event_channel();
         let status = "connecting to dsh…".to_owned();
-        let config = ModelConfig::default();
-        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let (config, credentials) = initial_model_state();
         Ok(Self {
+            locale: LocaleContext::default(),
+            language_picker: None,
             native: None,
             project: Project::new(&cwd),
             bootstrap: None,
@@ -674,8 +702,10 @@ impl App {
             trust_prompt: false,
             default_status: status.clone(),
             status,
+            status_presentation: None,
             status_until: None,
             terminal_status: None,
+            terminal_presentation: None,
             cancel_requested: false,
             editor: None,
             picker: None,
@@ -739,10 +769,7 @@ impl App {
             test_phase_elapsed: None,
             #[cfg(test)]
             test_run_elapsed: None,
-            bell: bell::bell_for_app_build(
-                env::var("CLAT_NO_BELL").ok(),
-                env::var("CLAT_BELL_COMMAND").ok(),
-            ),
+            bell: app_bell(),
             focused: None,
             dsh: None,
             dsh_connect: Some((preferred_port, dsh_tx)),
@@ -803,6 +830,7 @@ impl App {
                 // 复：adopt_snapshot 里的 MCP 状态提示是 flash——复位放
                 // 在后面会把它立即覆盖，用户永远看不到）。
                 self.status = self.default_status.clone();
+                self.status_presentation = None;
                 self.status_until = None;
                 if let Err(error) = self.adopt_snapshot() {
                     self.close_error = Some(format!("project initialization failed: {error}"));
@@ -1064,6 +1092,32 @@ impl App {
         self.phases.run_started.map(|since| since.elapsed())
     }
 }
+
+fn minimal_bootstrap(
+    project: &Project,
+    storage_root: Option<PathBuf>,
+) -> Result<(BootstrapApplication, bool), String> {
+    let bootstrap = match storage_root {
+        Some(root) => BootstrapApplication::open(project.clone(), root),
+        None => BootstrapApplication::open_default(project.clone()),
+    }
+    .map_err(|error| error.to_string())?;
+    let trusted = bootstrap.is_trusted().map_err(|error| error.to_string())?;
+    Ok((bootstrap, trusted))
+}
+
+fn app_bell() -> bell::BellMode {
+    bell::bell_for_app_build(
+        env::var("CLAT_NO_BELL").ok(),
+        env::var("CLAT_BELL_COMMAND").ok(),
+    )
+}
+fn initial_model_state() -> (ModelConfig, ProviderCredentials) {
+    let config = ModelConfig::default();
+    let credentials = ProviderCredentials::for_protocol(config.protocol);
+    (config, credentials)
+}
+
 #[cfg(all(test, feature = "runtime-tests"))]
 mod snapshot_tests;
 
@@ -1523,6 +1577,7 @@ mod tests {
                         frame,
                         frame.area(),
                         Path::new("/Users/deng/Documents/GitHub/clat"),
+                        clat_core::client_ports::presentation::LocaleContext::default(),
                     );
                 })
                 .expect("draw");
@@ -1595,6 +1650,7 @@ mod tests {
                         frame,
                         frame.area(),
                         Path::new("/Users/deng/Documents/GitHub/clat"),
+                        clat_core::client_ports::presentation::LocaleContext::default(),
                     );
                 })
                 .expect("draw");

@@ -5,7 +5,7 @@ let nextTurnRecallRetry = null;
 function renderNextTurnQueue(items) {
   dom['next-turn-queue'].replaceChildren();
   for (const [index, item] of items.entries()) {
-    const row = el('div', 'queue-item', `${index + 1}. ${item.text}`);
+    const row = el('div', 'queue-item', () => (`${index + 1}. ${item.text}`));
     dom['next-turn-queue'].appendChild(row);
   }
   dom['next-turn-queue'].hidden = !items.length;
@@ -15,7 +15,7 @@ async function enqueueNextTurn() {
   if (nextTurnBusy || state.switching || state.compactionActive) return;
   const text = dom.prompt.value;
   if (!state.runActive || !text.trim() || state.draft.images.length) {
-    updateRunState('Queue requires text during an active run; images remain in the composer');
+    updateRunState(CLATI18n.msg("web.queue_requires_text_during_an_active_run_images_remain_in_the_composer", {}, "Queue requires text during an active run; images remain in the composer"));
     return;
   }
   const owner = composerScope, generation = state.composerGeneration;
@@ -28,7 +28,7 @@ async function enqueueNextTurn() {
     clearOwnedSubmittedText(owner, generation);
     nextTurnRetry = null;
     await refreshWorkbench();
-  } catch (error) { updateRunState('queue failed: ' + error.message); }
+  } catch (error) { updateRunState(CLATI18n.msg("web.line_queue_failed_value",{value1:(error.message)},"queue failed: {value1}")); }
   finally { nextTurnBusy = false; }
 }
 async function recallNextTurn() {
@@ -41,7 +41,7 @@ async function recallNextTurn() {
     nextTurnRecallRetry = null;
     if (value.item) restoreTextSteering('', { owner: retry.owner, text: value.item.text });
     await refreshWorkbench();
-  } catch (error) { dom['queue-recall'].hidden = false; updateRunState('recall failed; retry to recover: ' + error.message); }
+  } catch (error) { dom['queue-recall'].hidden = false; updateRunState(CLATI18n.msg("web.line_recall_failed_retry_to_recover_value",{value1:(error.message)},"recall failed; retry to recover: {value1}")); }
   finally { nextTurnBusy = false; }
 }
 function installNextTurn() {

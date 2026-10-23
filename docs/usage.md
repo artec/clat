@@ -91,6 +91,16 @@ requests are presented.
 | projection/checkpoint | derived state / a cache of derived state; neither replaces the journal |
 | durable terminal | a run outcome published only after its closing journal events commit |
 
+## Interface language
+
+CLAT follows the system or browser by default and includes English, Simplified
+Chinese and Traditional Chinese. Use `clat --lang zh-Hans --help` for one
+invocation, `clat language zh-Hant` to save the terminal choice, or
+`/language` (`Ctrl+Shift+L`) inside the TUI. Web/PWA and desktop offer a
+chooser in settings and on the connection/welcome page. Each client chooses
+independently; switching does not restart a Host or interrupt work.
+See [Interface languages](localization.md) for precedence, storage and contracts.
+
 ## First run and project trust
 
 Run `clat` in the repository you want CLAT to work on. The first open of an

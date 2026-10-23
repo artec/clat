@@ -45,9 +45,7 @@ function updateConversationFind() {
   let index = findMatches.findIndex((m) => m.id === findActive?.id && m.offset === findActive?.offset);
   if (index < 0) { index = 0; findActive = findMatches[0] || null; }
   for (const message of findMessages.values()) message.node.classList.toggle('find-current', message.id === findActive?.id);
-  document.getElementById('find-status').textContent =
-    (findMatches.length ? `${index + 1}/${findMatches.length}${findMatches.length === 2000 ? '+' : ''}` : '0 matches')
-    + ' · user/agent original body · ' + (state.history.hasMore ? 'loaded window only; earlier available' : 'all messages loaded');
+  CLATI18n.bind(document.getElementById('find-status'), "textContent", () => CLATI18n.msg("web.line_value_user_agent_original_body_value",{value1:((findMatches.length ? `${index + 1}/${findMatches.length}${findMatches.length === 2000 ? '+' : ''}` : CLATI18n.t('web.no_matches'))),value2:((state.history.hasMore ? CLATI18n.msg("web.loaded_window_only_earlier_available", {}, "loaded window only; earlier available") : CLATI18n.msg("web.all_messages_loaded", {}, "all messages loaded")))},"{value1} · user/agent original body · {value2}"));
   document.getElementById('find-earlier').disabled = !state.history.hasMore || state.history.loading;
 }
 
@@ -58,13 +56,13 @@ function moveConversationFind(direction) {
   findActive = findMatches[(current + direction + findMatches.length) % findMatches.length];
   updateConversationFind();
   findActive.node.scrollIntoView({ block: 'center', behavior: 'auto' });
-  document.getElementById('find-preview').textContent = findActive.role + ': '
-    + findActive.source().slice(Math.max(0, findActive.offset - 40), findActive.offset + 160);
+  CLATI18n.bind(document.getElementById('find-preview'), "textContent", () => findActive.role + ': '
+    + findActive.source().slice(Math.max(0, findActive.offset - 40), findActive.offset + 160));
 }
 
 async function findEarlierMessages() {
   const request = ++findRequest;
-  document.getElementById('find-status').textContent = 'Loading one earlier page… · Close to cancel search';
+  CLATI18n.bind(document.getElementById('find-status'), "textContent", () => CLATI18n.msg("web.loading_one_earlier_page_close_to_cancel_search", {}, "Loading one earlier page… · Close to cancel search"));
   await loadOlderHistory();
   if (request === findRequest) updateConversationFind();
 }

@@ -43,21 +43,30 @@ impl App {
                     &events,
                     value["has_more"].as_bool().unwrap_or(false),
                 ),
-                Err(error) => self.flash_status(format!("history decode failed: {error}")),
+                Err(error) => self.flash_message(
+                    UiMessage::new("tui.message_history_decode_failed_value")
+                        .arg("error", (error).to_string()),
+                ),
             },
-            Err(error) => self.flash_status(format!("history load failed: {error}")),
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_history_load_failed_value")
+                    .arg("error", (error).to_string()),
+            ),
         }
     }
 
     pub(in crate::tui) fn request_command_discovery(&self, request: u64) -> Result<(), String> {
-        let native = self.native.as_ref().ok_or("No host")?;
+        let native = self
+            .native
+            .as_ref()
+            .ok_or(self.locale.text("tui.host_no"))?;
         if !native.online {
-            return Err("Host offline · /reconnect".into());
+            return Err(self.locale.text("tui.host_offline").into());
         }
         let ui = self
             .event_sender
             .clone()
-            .ok_or("Host transport unavailable")?;
+            .ok_or(self.locale.text("tui.host_unavailable"))?;
         let (client, epoch, selection) = (native.client.clone(), native.epoch, native.selection);
         thread::spawn(move || {
             let result = client.call("interaction.catalog", &serde_json::json!({}));
@@ -111,9 +120,9 @@ impl App {
         self.content_view = Some(ContentView::Remote {
             title,
             text: if native.online {
-                "Loading…"
+                UiMessage::new("web.loading")
             } else {
-                "Host offline · /reconnect"
+                UiMessage::new("tui.host_offline")
             }
             .into(),
         });
@@ -123,7 +132,7 @@ impl App {
         let Some(ui) = self.event_sender.clone() else {
             self.content_view = Some(ContentView::Remote {
                 title,
-                text: "Host transport unavailable".into(),
+                text: UiMessage::new("tui.host_unavailable").into(),
             });
             return true;
         };
@@ -165,24 +174,58 @@ impl App {
         {
             return;
         }
-        let Some(ContentView::Remote { .. }) = self.content_view.as_ref() else {
+        let Some(ContentView::Remote { title, .. }) = self.content_view.as_ref() else {
             return;
         };
         let display = match result {
-            Ok(value) => match HostClient::help_commands(&value) {
-                Ok(Some(commands)) => {
-                    self.discovery.help_commands = commands;
-                    self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
-                    self.content_view = None;
+            Ok(value) => {
+                if let Some(view) = native_content(&value, title) {
+                    self.content_view = Some(view);
                     return;
                 }
-                Ok(_) => HostClient::info_dialog_text(&value).unwrap_or_else(|error| error),
-                Err(error) => error,
-            },
-            Err(error) => format!("{error} · close and reopen to retry"),
+                match HostClient::help_commands(&value) {
+                    Ok(Some(commands)) => {
+                        self.discovery.help_commands = commands;
+                        self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
+                        self.content_view = None;
+                        return;
+                    }
+                    Ok(_) => clat_core::client_ports::presentation::PresentedText {
+                        raw: HostClient::info_dialog_text(&value).unwrap_or_else(|error| error),
+                        presentation: serde_json::from_value(value["presentation"].clone()).ok(),
+                    },
+                    Err(error) => error.into(),
+                }
+            }
+            Err(error) => UiMessage::new("tui.message_value_close_and_reopen_to_retry")
+                .arg_message("error", error.presentation_or_fallback())
+                .into(),
         };
         if let Some(ContentView::Remote { text, .. }) = &mut self.content_view {
             *text = display;
         }
+    }
+}
+
+fn native_content(value: &Value, title: &'static str) -> Option<ContentView> {
+    if (value["kind"] == "context" || value["presentation"].is_array())
+        && HostClient::info_dialog_text(value).is_ok()
+    {
+        return Some(ContentView::Host {
+            title,
+            value: Box::new(value.clone()),
+        });
+    }
+    match value["kind"].as_str()? {
+        "memory" => serde_json::from_value(value["memory"].clone())
+            .ok()
+            .map(ContentView::Memory),
+        "goal" => serde_json::from_value(value["goal"].clone())
+            .ok()
+            .map(|v| ContentView::Goal(Box::new(v))),
+        "subagent_status" => serde_json::from_value(value["subagent_status"].clone())
+            .ok()
+            .map(ContentView::SubagentStatus),
+        _ => None,
     }
 }

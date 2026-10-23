@@ -76,13 +76,18 @@ impl DshUsageAcc {
 
 /// 宿主 preset journal 值 → 输入框右上角显示词汇（§2.6：与 web 端
 /// transform 后的产品标签一致；未知/自定义值原样显示 name）。
+#[cfg(test)]
 pub(crate) fn dsh_preset_label(preset: &str) -> String {
-    match preset {
-        "read-only" => "Read Only".into(),
-        "workspace-write" => "Workspace Write".into(),
-        "danger-full-access" => "Full Access".into(),
-        other => other.to_owned(),
-    }
+    dsh_preset_label_localized(preset, LocaleContext::default())
+}
+pub(crate) fn dsh_preset_label_localized(preset: &str, locale: LocaleContext) -> String {
+    let key = match preset {
+        "read-only" => "web.read_only",
+        "workspace-write" => "tui.workspace_write",
+        "danger-full-access" => "web.full_access",
+        other => return other.to_owned(),
+    };
+    locale.text(key).into()
 }
 
 /// 在途审批：rpc 关联 + 决定通道（弹框键位路径零改动——决定经通道
@@ -220,7 +225,7 @@ pub(crate) struct DshState {
     /// 词汇违规计数（INV-D8 呈现：状态栏 flash + 标题栏 ⚠）。
     pub(crate) unknown_events: usize,
     /// 会话区顶部通知条文本（断线/重连中/流错误）。
-    pub(crate) banner: Option<String>,
+    pub(crate) banner: Option<clat_core::client_ports::presentation::PresentedText>,
     reconnect_at: Option<Instant>,
     reconnecting: bool,
     ws_open: bool,
@@ -586,7 +591,10 @@ impl App {
                         });
                     }
                     self.pending_permission = None;
-                    self.flash_status(format!("approval {outcome}"));
+                    self.flash_message(
+                        UiMessage::new("tui.message_approval_value")
+                            .arg("outcome", (outcome).to_string()),
+                    );
                 }
                 Err(TryRecvError::Empty) => {
                     if let Some(dsh) = self.dsh.as_mut() {
@@ -627,7 +635,7 @@ impl App {
                 });
             }
             self.pending_ask_user = None;
-            self.flash_status("question cancelled");
+            self.flash_message(UiMessage::new("tui.dsh_question_cancelled"));
             return;
         }
         let entry = match answer {
@@ -664,7 +672,7 @@ impl App {
             });
         }
         self.pending_ask_user = None;
-        self.flash_status("question answered");
+        self.flash_message(UiMessage::new("tui.dsh_question_answered"));
     }
 
     // ---- 连接生命周期 ----
@@ -692,8 +700,12 @@ impl App {
         {
             dsh.connected = false;
             dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
-            dsh.banner = Some(format!("disconnected ({reason}) — reconnecting…"));
-            flash = Some("disconnected — reconnecting…".to_owned());
+            dsh.banner = Some(
+                UiMessage::new("tui.message_disconnected_value_reconnecting")
+                    .arg("reason", (reason).to_string())
+                    .into(),
+            );
+            flash = Some(UiMessage::new("tui.dsh_reconnecting"));
         }
         // running 归约以 turn 帧为准；断线期间无帧可依，先落 false。
         self.running = false;
@@ -717,13 +729,7 @@ impl App {
             // 安装），恢复最近活跃会话（§1.0 启动序列）。
             let (_, events_tx) = self.dsh_connect.take().expect("checked above");
             let (task_tx, task_rx) = mpsc::channel::<DshTask>();
-            let mut era_client = DshClient::new(port);
-            if era == crate::dsh::client::DshEra::Typert {
-                if let Some(cookie) = &cookie {
-                    era_client = era_client.with_cookie(cookie);
-                }
-                era_client = era_client.with_typert_era();
-            }
+            let era_client = negotiated_client(port, era, cookie.as_deref());
             backend::spawn_worker(era_client.clone(), port, task_rx, events_tx.clone());
             let mut dsh = DshState::new(port, describe, task_tx, events_tx);
             dsh.client = era_client;
@@ -737,8 +743,9 @@ impl App {
             dsh.send_task(DshTask::Restore { prefer });
             self.dsh = Some(dsh);
             self.status = self.default_status.clone();
+            self.status_presentation = None;
             self.status_until = None;
-            self.flash_status("connected — restoring session…");
+            self.flash_message(UiMessage::new("tui.dsh_restoring"));
             return;
         }
         // 重连成功：换 client/port/describe，App 线程重开一对新代际
@@ -746,13 +753,7 @@ impl App {
         // 自然恢复）。
         if let Some(dsh) = self.dsh.as_mut() {
             dsh.port = port;
-            let mut era_client = DshClient::new(port);
-            if era == crate::dsh::client::DshEra::Typert {
-                if let Some(cookie) = &cookie {
-                    era_client = era_client.with_cookie(cookie);
-                }
-                era_client = era_client.with_typert_era();
-            }
+            let era_client = negotiated_client(port, era, cookie.as_deref());
             dsh.client = era_client;
             dsh.era = era;
             dsh.cookie = cookie;
@@ -792,13 +793,17 @@ impl App {
                     dsh.reconnecting = false;
                     dsh.reconnect_at = None;
                     dsh.banner = None;
-                    flash = Some("reconnected".to_owned());
+                    flash = Some(UiMessage::new("tui.dsh_reconnected_status"));
                 }
                 Err(message) => {
                     dsh.connected = false;
                     dsh.reconnecting = false;
                     dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
-                    dsh.banner = Some(format!("reconnect failed ({message}) — reconnecting…"));
+                    dsh.banner = Some(
+                        UiMessage::new("tui.message_reconnect_failed_value_reconnecting")
+                            .arg("message", (message).to_string())
+                            .into(),
+                    );
                 }
             }
         }
@@ -823,7 +828,11 @@ impl App {
                 if let Some(dsh) = self.dsh.as_mut() {
                     dsh.connected = false;
                     dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
-                    dsh.banner = Some(format!("stream failed ({message}) — reconnecting…"));
+                    dsh.banner = Some(
+                        UiMessage::new("tui.message_stream_failed_value_reconnecting")
+                            .arg("message", (message).to_string())
+                            .into(),
+                    );
                 }
             }
         }
@@ -894,7 +903,7 @@ impl App {
                     self.dsh_switch_session(session);
                 }
                 None => {
-                    self.flash_status("no previous session — /new to start one");
+                    self.flash_message(UiMessage::new("tui.dsh_no_previous"));
                     self.dsh_open_downlinks();
                 }
             },
@@ -926,7 +935,7 @@ impl App {
                     self.dsh_set_workspace(cwd);
                 }
                 self.dsh_switch_session(session);
-                self.flash_status("session created");
+                self.flash_message(UiMessage::new("tui.dsh_created"));
             }
             TaskReply::Models(value) => {
                 if let Some(dsh) = self.dsh.as_mut() {
@@ -935,9 +944,9 @@ impl App {
                 match crate::tui::model_editor::dsh_model_data_from(&value) {
                     Some(data) => {
                         self.picker = Some(ModelPicker::new_dsh(data));
-                        self.flash_status("select a model");
+                        self.flash_message(UiMessage::new("tui.dsh_select_model"));
                     }
-                    None => self.flash_status("no models available"),
+                    None => self.flash_message(UiMessage::new("tui.dsh_no_models")),
                 }
             }
             TaskReply::ModelNames(value) => {
@@ -956,7 +965,7 @@ impl App {
                     dsh.set_model_ids(&provider, &model);
                     dsh.current_effort = effort;
                 }
-                self.flash_status("model selected");
+                self.flash_message(UiMessage::new("tui.dsh_model_selected"));
             }
             TaskReply::Status(message) => self.flash_status(message),
             TaskReply::Failed(message) => {
@@ -964,24 +973,15 @@ impl App {
                 // 装载在途失败：解除暂存态并补放 live 帧（fail-soft——
                 // 宁可缺历史页 + 报错，不让 loading 悬挂，审计 P2-1）。
                 self.dsh_abort_history_loading();
-                self.flash_status(format!("error: {message}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_error_value").arg("message", (message).to_string()),
+                );
                 // 启动链 fail-soft：Restore/History 失败时流尚未打开，
                 // 照常开流（HTTP 一次失败不代表 WS 不可用）；开不了则
                 // 由其错误路径转入重连机制，不再永久停在 restoring。
                 self.dsh_open_downlinks();
             }
-            TaskReply::ReconnectFailed(message) => {
-                // 重连尝试失败（审计 P1-3）：复位单飞守卫并重新排程——
-                // 否则 reconnecting 永真，自动重连一次失败后永久停摆。
-                if let Some(dsh) = self.dsh.as_mut() {
-                    dsh.reconnecting = false;
-                    if !dsh.connected {
-                        dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
-                        dsh.banner = Some(format!("reconnect failed ({message}) — retrying…"));
-                    }
-                }
-                self.flash_status(format!("reconnect failed: {message}"));
-            }
+            TaskReply::ReconnectFailed(message) => self.dsh_reconnect_failed(message),
             TaskReply::Reconnected { .. } => {
                 unreachable!("worker reroutes Reconnected to DshEvent")
             }
@@ -1144,13 +1144,18 @@ impl App {
         {
             dsh.connected = false;
             dsh.reconnect_at = retryable.then(|| Instant::now() + DSH_RECONNECT_INTERVAL);
-            let suffix = if retryable {
-                "reconnecting…"
+            let suffix = UiMessage::new(if retryable {
+                "tui.dsh_reconnecting"
             } else {
-                "check host compatibility or request, then restart"
-            };
-            dsh.banner = Some(format!("stream error ({message}) — {suffix}"));
-            flash = Some(format!("stream error — {suffix}"));
+                "tui.dsh_restart_hint"
+            });
+            dsh.banner = Some(
+                UiMessage::new("tui.dsh_stream_banner")
+                    .arg("message", message)
+                    .arg_message("suffix", suffix.clone())
+                    .into(),
+            );
+            flash = Some(UiMessage::new("tui.dsh_stream_status").arg_message("suffix", suffix));
         }
         if let Some(text) = flash {
             self.running = false;
@@ -1311,7 +1316,7 @@ impl App {
         });
         self.phases.finish();
         self.notify();
-        self.flash_status("approval requested");
+        self.flash_message(UiMessage::new("tui.dsh_approval"));
     }
 
     fn dsh_open_question(&mut self, rpc_id: String, session_id: String, questions: Value) {
@@ -1338,7 +1343,7 @@ impl App {
         });
         self.phases.finish();
         self.notify();
-        self.flash_status("question requested");
+        self.flash_message(UiMessage::new("tui.dsh_question"));
     }
 
     /// /resume 的 dsh 数据源（§2.5 返工终版）：数据面（INV-D6
@@ -1358,7 +1363,7 @@ impl App {
             _ => {
                 let prefer = crate::dsh::last_session::read_last_session_at(&self.dsh_memory_path);
                 dsh.send_task(DshTask::Restore { prefer });
-                self.flash_status("listing sessions…");
+                self.flash_message(UiMessage::new("tui.dsh_listing"));
             }
         }
     }
@@ -1379,7 +1384,7 @@ impl App {
             session_id: Some(row.session_id),
             cwd: Some(row.workspace_path),
         });
-        self.flash_status("switching session…");
+        self.flash_message(UiMessage::new("tui.dsh_switch_session"));
     }
 
     /// 会话 workspace 落位（恢复带回 / 收养跟随）：常驻状态行改为
@@ -1413,11 +1418,11 @@ impl App {
             return;
         }
         let Some(dsh) = self.dsh.as_ref() else {
-            self.flash_status("connecting to dsh…");
+            self.flash_message(UiMessage::new("tui.dsh_connecting"));
             return;
         };
         let Some(session) = dsh.current_session.clone() else {
-            self.flash_status("no session — start one with /new");
+            self.flash_message(UiMessage::new("tui.dsh_no_session"));
             return;
         };
         let steer = self.running;
@@ -1430,9 +1435,9 @@ impl App {
             // §2.3：running 态 Enter = steer，本地回显（session/queue 帧
             // 到达时按 steering 数修剪——advisory 语义同 local）。
             self.conversation.push_pending_steering(text);
-            self.flash_status("steering…");
+            self.flash_message(UiMessage::new("tui.steering_progress"));
         } else {
-            self.flash_status("sending…");
+            self.flash_message(UiMessage::new("tui.sending_progress"));
         }
     }
 
@@ -1445,7 +1450,7 @@ impl App {
         };
         let name = head.strip_prefix('/').unwrap_or(head);
         let Some(dsh) = self.dsh.as_mut() else {
-            self.flash_status("connecting to dsh…");
+            self.flash_message(UiMessage::new("tui.dsh_connecting"));
             return;
         };
         match name {
@@ -1456,7 +1461,7 @@ impl App {
                     session_id: None,
                     cwd: (!cwd.is_empty()).then_some(cwd),
                 });
-                self.flash_status("creating session…");
+                self.flash_message(UiMessage::new("tui.dsh_creating"));
             }
             "rename" => {
                 if args.is_empty() {
@@ -1470,9 +1475,9 @@ impl App {
                         title: args.to_owned(),
                     });
                     self.session_title = Some(args.to_owned());
-                    self.flash_status("renaming…");
+                    self.flash_message(UiMessage::new("tui.renaming_progress"));
                 } else {
-                    self.flash_status("no active session");
+                    self.flash_message(UiMessage::new("tui.no_active"));
                 }
             }
             "resume" => {
@@ -1482,7 +1487,7 @@ impl App {
             "model" => {
                 let session = dsh.current_session().map(str::to_owned);
                 dsh.send_task(DshTask::Models { session });
-                self.flash_status("loading models…");
+                self.flash_message(UiMessage::new("tui.loading_models_progress"));
             }
             "perm" | "permission" => {
                 let current = dsh
@@ -1501,62 +1506,22 @@ impl App {
                 self.conversation_has_more = false;
                 self.conversation_history_loading = false;
                 self.conversation_history_windowed = false;
-                self.flash_status("cleared");
+                self.flash_message(UiMessage::new("tui.cleared_progress"));
             }
             "help" => {
                 // InfoDialog(Help) 复用（§2.5）：命令清单按 dsh 表标注
                 // 可用性（映射/本地 + 置灰全集不出现——弹框只列可用集）。
-                self.discovery.help_commands = vec![
-                    CommandInfo {
-                        name: "new".into(),
-                        aliases: Vec::new(),
-                        description: "start a fresh session on the host".into(),
-                        group: crate::command::CommandGroup::Conversation,
-                    },
-                    CommandInfo {
-                        name: "resume".into(),
-                        aliases: Vec::new(),
-                        description: "pick a session (grouped by workspace)".into(),
-                        group: crate::command::CommandGroup::Conversation,
-                    },
-                    CommandInfo {
-                        name: "rename".into(),
-                        aliases: Vec::new(),
-                        description: "rename the current session".into(),
-                        group: crate::command::CommandGroup::Conversation,
-                    },
-                    CommandInfo {
-                        name: "clear".into(),
-                        aliases: Vec::new(),
-                        description: "clear the local conversation view".into(),
-                        group: crate::command::CommandGroup::Conversation,
-                    },
-                    CommandInfo {
-                        name: "model".into(),
-                        aliases: Vec::new(),
-                        description: "show and switch the host's model groups".into(),
-                        group: crate::command::CommandGroup::Model,
-                    },
-                    CommandInfo {
-                        name: "perm".into(),
-                        aliases: vec!["permission".into()],
-                        description: "switch the host permission preset".into(),
-                        group: crate::command::CommandGroup::Safety,
-                    },
-                    CommandInfo {
-                        name: "quit".into(),
-                        aliases: vec!["exit".into()],
-                        description: "leave the TUI".into(),
-                        group: crate::command::CommandGroup::Meta,
-                    },
-                ];
+                self.discovery.help_commands = dsh_help_commands();
                 self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Help));
             }
             other => {
                 // 软置灰（可发现、不可用）：/compact /mcp 永久置灰
                 //（方法名未经钉靶核实，不猜协议）；/resume /model /perm
                 // 由 Stage E 接管为映射命令。
-                self.flash_status(format!("/{other} is not available in clat dsh mode"));
+                self.flash_message(
+                    UiMessage::new("tui.message_value_is_not_available_in_clat_dsh_mode")
+                        .arg("other", (other).to_string()),
+                );
             }
         }
     }
@@ -1569,7 +1534,7 @@ impl App {
         };
         if let Some(session) = dsh.current_session.clone() {
             dsh.send_task(DshTask::Cancel { session });
-            self.flash_status("cancelling…");
+            self.flash_message(UiMessage::new("tui.cancelling_progress"));
         }
     }
 
@@ -1582,11 +1547,11 @@ impl App {
             return;
         };
         let Some(session) = dsh.current_session.clone() else {
-            self.flash_status("no session");
+            self.flash_message(UiMessage::new("tui.no_session_progress"));
             return;
         };
         let Some(next) = dsh.next_effort() else {
-            self.flash_status("this model has no reasoning efforts");
+            self.flash_message(UiMessage::new("tui.dsh_no_efforts"));
             return;
         };
         let (provider, model) = dsh.model_ids.clone();
@@ -1596,7 +1561,7 @@ impl App {
             model,
             effort: Some(next),
         });
-        self.flash_status("switching effort…");
+        self.flash_message(UiMessage::new("tui.dsh_effort"));
     }
 
     /// dsh 状态栏右侧段（§2.4：Wallet 隐藏——余额是本地 MonitorService
@@ -1608,14 +1573,19 @@ impl App {
         };
         let mut parts = Vec::new();
         if let Some(percent) = dsh.usage.cache_percent() {
-            parts.push(format!("Cache: {percent}%"));
+            parts
+                .push(self.locale.render(
+                    &UiMessage::new("tui.cache_value").arg("cache", format!("{percent}%")),
+                ));
         }
         if let Some(window) = dsh.context_window {
-            parts.push(format!(
-                "Context: {}/{}",
-                format_tokens(dsh.usage.context_current()),
-                format_tokens(window),
-            ));
+            parts.push(
+                self.locale.render(
+                    &UiMessage::new("tui.context_value")
+                        .arg("current", format_tokens(dsh.usage.context_current()))
+                        .arg("window", format_tokens(window)),
+                ),
+            );
         }
         parts
     }
@@ -1669,6 +1639,89 @@ fn dsh_ask_dialog(
         selection: 0,
         custom: None,
     }
+}
+
+fn negotiated_client(
+    port: u16,
+    era: crate::dsh::client::DshEra,
+    cookie: Option<&str>,
+) -> DshClient {
+    let mut client = DshClient::new(port);
+    if era == crate::dsh::client::DshEra::Typert {
+        if let Some(cookie) = cookie {
+            client = client.with_cookie(cookie);
+        }
+        client = client.with_typert_era();
+    }
+    client
+}
+impl App {
+    fn dsh_reconnect_failed(&mut self, message: String) {
+        // 重连尝试失败（审计 P1-3）：复位单飞守卫并重新排程——
+        // 否则 reconnecting 永真，自动重连一次失败后永久停摆。
+        if let Some(dsh) = self.dsh.as_mut() {
+            dsh.reconnecting = false;
+            if !dsh.connected {
+                dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
+                dsh.banner = Some(
+                    UiMessage::new("tui.message_reconnect_failed_value_retrying")
+                        .arg("message", (message).to_string())
+                        .into(),
+                );
+            }
+        }
+        self.flash_message(
+            UiMessage::new("tui.message_reconnect_failed_value")
+                .arg("message", (message).to_string()),
+        );
+    }
+}
+
+fn dsh_help_commands() -> Vec<CommandInfo> {
+    vec![
+        CommandInfo {
+            name: "new".into(),
+            aliases: Vec::new(),
+            description: "start a fresh session on the host".into(),
+            group: crate::command::CommandGroup::Conversation,
+        },
+        CommandInfo {
+            name: "resume".into(),
+            aliases: Vec::new(),
+            description: "pick a session (grouped by workspace)".into(),
+            group: crate::command::CommandGroup::Conversation,
+        },
+        CommandInfo {
+            name: "rename".into(),
+            aliases: Vec::new(),
+            description: "rename the current session".into(),
+            group: crate::command::CommandGroup::Conversation,
+        },
+        CommandInfo {
+            name: "clear".into(),
+            aliases: Vec::new(),
+            description: "clear the local conversation view".into(),
+            group: crate::command::CommandGroup::Conversation,
+        },
+        CommandInfo {
+            name: "model".into(),
+            aliases: Vec::new(),
+            description: "show and switch the host's model groups".into(),
+            group: crate::command::CommandGroup::Model,
+        },
+        CommandInfo {
+            name: "perm".into(),
+            aliases: vec!["permission".into()],
+            description: "switch the host permission preset".into(),
+            group: crate::command::CommandGroup::Safety,
+        },
+        CommandInfo {
+            name: "quit".into(),
+            aliases: vec!["exit".into()],
+            description: "leave the TUI".into(),
+            group: crate::command::CommandGroup::Meta,
+        },
+    ]
 }
 
 #[cfg(all(test, feature = "runtime-tests"))]

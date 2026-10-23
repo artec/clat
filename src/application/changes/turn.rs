@@ -18,7 +18,7 @@ impl TrustedProjectApplication {
         let Some(ledger) = review.load(&session, turn).map_err(error)? else {
             return Ok(
                 json!({"scope":"captured_operations", "session": session, "turn":turn,
-                "state":"not_captured", "note":NOTE, "files":[]}),
+                "state":"not_captured", "note":NOTE,"presentation":crate::i18n::UiMessage::new("web.turn_capture_note"), "files":[]}),
             );
         };
         let statuses = review.preview(&self.project, &ledger);
@@ -30,7 +30,7 @@ impl TrustedProjectApplication {
                 "expected_after_hash":digest(e.after.as_bytes()),"recovery_path":e.recovery_path,"note":e.note})
         }).collect();
         let mut result = json!({"scope":"captured_operations","state":"available", "session":session,
-            "turn":turn,"revision":revision(&ledger)?,"note":NOTE,"files":files});
+            "turn":turn,"revision":revision(&ledger)?,"note":NOTE,"presentation":crate::i18n::UiMessage::new("web.turn_capture_note"),"files":files});
         if let Some(path) = path {
             let entry = ledger
                 .files

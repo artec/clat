@@ -132,9 +132,12 @@ impl CommandHandler for SkillCommand {
             .map_err(|error| CommandError::Failed {
                 message: error.to_string(),
             })?;
-        Ok(CommandOutcome::Status(format!(
-            "skill `{name}` ({source} layer) will guide your next message"
-        )))
+        Ok(CommandOutcome::Status(
+            crate::i18n::UiMessage::new("command.skill_armed")
+                .arg("name", name)
+                .arg("source", source.to_string())
+                .into(),
+        ))
     }
 }
 

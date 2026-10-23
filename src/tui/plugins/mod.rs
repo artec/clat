@@ -28,6 +28,7 @@ enum View {
 }
 
 pub(super) struct PluginDialog {
+    locale: LocaleContext,
     view: View,
     installed: Vec<Value>,
     market: Vec<Value>,
@@ -44,7 +45,7 @@ pub(super) struct PluginDialog {
     review_width: usize,
     page: usize,
     pending: bool,
-    status: String,
+    status: clat_core::client_ports::presentation::PresentedText,
     request: u64,
     remove: Option<(String, bool)>,
     expires: Option<Instant>,
@@ -53,6 +54,7 @@ pub(super) struct PluginDialog {
 impl PluginDialog {
     fn new() -> Self {
         Self {
+            locale: LocaleContext::default(),
             view: View::Installed,
             installed: vec![],
             market: vec![],
@@ -69,7 +71,7 @@ impl PluginDialog {
             review_width: 0,
             page: 1,
             pending: false,
-            status: "Loading installed plugins…".into(),
+            status: UiMessage::new("tui.plugin_loading").into(),
             request: 0,
             remove: None,
             expires: None,
@@ -110,7 +112,7 @@ impl PluginDialog {
         {
             self.clear_review();
             self.view = View::Installed;
-            self.status = "Review expired; prepare again".into();
+            self.status = UiMessage::new("tui.plugin_expired").into();
         }
     }
     fn can_commit(&self) -> bool {
@@ -146,7 +148,7 @@ pub(super) enum PluginReply {
 impl App {
     pub(super) fn open_plugin_dialog(&mut self) {
         if self.native.is_none() {
-            self.flash_status("Plugin management uses the shared CLAT host; restart with clat (not standalone/DSH)");
+            self.flash_message(UiMessage::new("tui.plugin_host_only"));
             return;
         }
         self.close_plugin_dialog();
@@ -162,5 +164,20 @@ impl App {
     }
     pub(super) fn close_plugin_dialog(&mut self) {
         self.plugins.dialog = None;
+    }
+}
+
+impl PluginUi {
+    pub(super) fn set_locale(&mut self, locale: LocaleContext) {
+        if let Some(dialog) = self.dialog.as_mut()
+            && dialog.locale.locale != locale.locale
+        {
+            dialog.locale = locale;
+            dialog.accepted = false;
+            dialog.reviewed = 0;
+            dialog.scroll = 0;
+            dialog.review_width = 0;
+            self.review_terminal_area = None;
+        }
     }
 }

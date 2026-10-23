@@ -5,313 +5,313 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#1b1d1b">
-<title>CLAT · local agent workbench</title>
+<title data-i18n="web.clat_local_agent_workbench">CLAT · local agent workbench</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="icon" href="/icons/icon-192.png">
 <link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body>
-<a class="skip-link" href="#prompt">Skip to composer</a>
+<a class="skip-link" href="#prompt" data-i18n="web.skip_to_composer">Skip to composer</a>
 
 <div id="landing" class="landing hidden">
   <main class="landing-card">
     <div class="landing-rail" aria-hidden="true">
-      <span>LOCAL</span><span>ONE BINARY</span><span>PERMISSION FIRST</span>
+      <span data-i18n="web.local">LOCAL</span><span data-i18n="web.one_binary">ONE BINARY</span><span data-i18n="web.permission_first">PERMISSION FIRST</span>
     </div>
     <section class="landing-copy">
       <div class="landing-mark">
         <img src="/icons/icon-192.png" alt="">
-        <span>CLAT / WORKBENCH</span>
+        <span data-i18n="web.clat_workbench">CLAT / WORKBENCH</span>
       </div>
-      <p class="eyebrow">A local agent, at the project boundary</p>
-      <h1>Return to your<br><em>working context.</em></h1>
-      <p class="landing-intro">Remote access requires the credential supplied privately by your
+      <p class="eyebrow" data-i18n="web.a_local_agent_at_the_project_boundary">A local agent, at the project boundary</p>
+      <h1 data-i18n="web.return_context_heading">Return to your working context.</h1>
+      <p class="landing-intro" data-i18n="web.remote_access_requires_the_credential_supplied_privately_by_your_host_operator_loc">Remote access requires the credential supplied privately by your
         host operator. Local access connects automatically.</p>
+      <div data-language-control></div>
       <form id="connect-form">
-        <label for="connect-token">Remote access credential</label>
+        <label for="connect-token" data-i18n="web.remote_access_credential">Remote access credential</label>
         <div class="connect-row">
-          <input id="connect-token" type="password" placeholder="Enter access credential"
+          <input id="connect-token" type="password" placeholder="Enter access credential" data-i18n-placeholder="web.enter_access_credential"
                  autocomplete="off" spellcheck="false" aria-describedby="connect-help">
-          <button type="submit" class="primary">Connect securely</button>
+          <button type="submit" class="primary" data-i18n="web.connect_securely">Connect securely</button>
         </div>
       </form>
       <p id="connect-error" class="error" role="alert"></p>
-      <p id="connect-help" class="landing-hint"><code>clat serve</code> · loopback only ·
-        default port 2691 · local access is automatic</p>
+      <p id="connect-help" class="landing-hint"></p>
     </section>
   </main>
 </div>
 
 <div id="app" class="app hidden" data-sidebar="expanded" data-inspector="closed" data-mobile-sidebar="closed">
-  <aside id="sidebar" class="sidebar" aria-label="Project and sessions">
+  <aside id="sidebar" class="sidebar" aria-label="Project and sessions" data-i18n-aria-label="web.project_and_sessions">
     <div class="sidebar-head">
       <div class="brand-lockup">
         <img src="/icons/icon-192.png" alt="" class="brand-icon">
         <div class="sidebar-expanded-only">
           <strong>CLAT</strong>
-          <span>agent workbench</span>
+          <span data-i18n="web.agent_workbench">agent workbench</span>
         </div>
       </div>
       <button id="sidebar-toggle" class="icon-button desktop-only" type="button"
-              aria-label="Collapse sidebar" aria-expanded="true">
+              aria-label="Collapse sidebar" data-i18n-aria-label="web.collapse_sidebar" aria-expanded="true">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>
       </button>
       <button id="mobile-sidebar-close" class="icon-button mobile-only" type="button"
-              aria-label="Close sidebar">
+              aria-label="Close sidebar" data-i18n-aria-label="web.close_sidebar">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
       </button>
     </div>
 
     <section class="project-card sidebar-expanded-only" aria-labelledby="project-name">
-      <span class="section-kicker">PROJECT</span>
-      <strong id="project-name">Loading…</strong>
+      <span class="section-kicker" data-i18n="web.project">PROJECT</span>
+      <strong id="project-name" data-i18n="web.loading">Loading…</strong>
       <span id="project-root" class="project-root"></span>
     </section>
 
     <button id="new-session" class="new-session" type="button">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      <span class="sidebar-expanded-only">New session</span>
+      <span class="sidebar-expanded-only" data-i18n="web.new_session">New session</span>
     </button>
 
-    <button id="sessions-open" class="sessions-open" type="button" title="Open sessions"
-            aria-label="Open sessions" aria-controls="session-list" aria-expanded="false">
+    <button id="sessions-open" class="sessions-open" type="button" title="Open sessions" data-i18n-title="web.open_sessions"
+            aria-label="Open sessions" data-i18n-aria-label="web.open_sessions" aria-controls="session-list" aria-expanded="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4V4Z"/><path d="M8 8h8M8 12h5"/></svg>
     </button>
 
     <label class="session-search sidebar-expanded-only" for="session-search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
-      <input id="session-search" type="search" placeholder="Session title or ID" autocomplete="off"
-             aria-label="Find a session by title or ID">
+      <input id="session-search" type="search" placeholder="Session title or ID" data-i18n-placeholder="web.session_title_or_id" autocomplete="off"
+             aria-label="Find a session by title or ID" data-i18n-aria-label="web.find_a_session_by_title_or_id">
       <kbd>/</kbd>
     </label>
 
-    <nav class="session-nav sidebar-expanded-only" aria-label="Sessions">
+    <nav class="session-nav sidebar-expanded-only" aria-label="Sessions" data-i18n-aria-label="web.sessions">
       <div class="section-row sidebar-expanded-only">
-        <span class="section-kicker">SESSIONS</span>
+        <span class="section-kicker" data-i18n="web.sessions">SESSIONS</span>
         <span id="session-count">0</span>
       </div>
       <ul id="session-list" class="session-list"></ul>
-      <p id="session-empty" class="session-empty sidebar-expanded-only hidden">No matching sessions.</p>
+      <p id="session-empty" class="session-empty sidebar-expanded-only hidden" data-i18n="web.no_matching_sessions">No matching sessions.</p>
     </nav>
 
     <div class="sidebar-footer">
       <button id="market-open" class="sidebar-footer-button market-entry" type="button">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11H4zM7 8V5h10v3M8 12h3m2 0h3"/></svg>
-        <span class="sidebar-expanded-only"><strong>Plugin Index</strong><small>pi.at.cn</small></span>
+        <span class="sidebar-expanded-only"><strong data-i18n="web.plugin_index">Plugin Index</strong><small>pi.at.cn</small></span>
       </button>
       <button id="settings-open" class="sidebar-footer-button" type="button">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></svg>
-        <span class="sidebar-expanded-only">Workbench settings</span>
+        <span class="sidebar-expanded-only" data-i18n="web.workbench_settings">Workbench settings</span>
       </button>
       <div id="sidebar-footnote" class="sidebar-footnote sidebar-expanded-only" data-state="connecting">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="7"/></svg>
-        <span id="sidebar-connection">Connecting to local runtime</span>
+        <span id="sidebar-connection" data-i18n="web.connecting_to_local_runtime">Connecting to local runtime</span>
       </div>
     </div>
   </aside>
 
-  <main class="conversation" aria-label="Conversation">
+  <main class="conversation" aria-label="Conversation" data-i18n-aria-label="web.conversation">
     <header class="conversation-header">
       <button id="mobile-sidebar-open" class="icon-button mobile-only" type="button"
-              aria-label="Open sessions">
+              aria-label="Open sessions" data-i18n-aria-label="web.open_sessions">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <div class="conversation-identity">
-        <button id="session-title" class="session-title" type="button" title="Rename session">Untitled session</button>
+        <button id="session-title" class="session-title" type="button" title="Rename session" data-i18n-title="web.rename_session" data-i18n="web.untitled_session">Untitled session</button>
         <div class="conversation-meta">
-          <span id="conn-status" class="conn-status" data-state="connecting" role="status">connecting…</span>
+          <span id="conn-status" class="conn-status" data-state="connecting" role="status" data-i18n="web.connecting">connecting…</span>
           <span aria-hidden="true">/</span>
-          <span id="header-model" class="model-identity">model unavailable</span>
+          <span id="header-model" class="model-identity" data-i18n="web.model_unavailable">model unavailable</span>
         </div>
       </div>
       <div class="header-actions">
-        <button id="review-open" class="icon-button" type="button" aria-label="Review workspace changes" title="Review workspace changes">
+        <button id="review-open" class="icon-button" type="button" aria-label="Review workspace changes" data-i18n-aria-label="web.review_workspace_changes" title="Review workspace changes" data-i18n-title="web.review_workspace_changes">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h4M8 11h4m4 3v4m-2-2h4"/></svg>
         </button>
-        <button id="find-open" class="icon-button" type="button" aria-label="Find in conversation" title="Find in conversation (Ctrl/⌘ F)">
+        <button id="find-open" class="icon-button" type="button" aria-label="Find in conversation" data-i18n-aria-label="web.find_in_conversation" title="Find in conversation (Ctrl/⌘ F)" data-i18n-title="web.find_in_conversation_ctrl_f">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg>
         </button>
-        <span id="header-permission" class="permission-badge hidden">Project Write</span>
+        <span id="header-permission" class="permission-badge hidden" data-i18n="web.project_write">Project Write</span>
         <button id="inspector-toggle" class="icon-button" type="button"
-                aria-label="Toggle workbench details" aria-expanded="false">
+                aria-label="Toggle workbench details" data-i18n-aria-label="web.toggle_workbench_details" aria-expanded="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM15 5v14M18 9h-1m1 3h-1"/></svg>
         </button>
       </div>
     </header>
 
-    <section id="find-bar" class="find-bar hidden" aria-label="Find in current conversation">
-      <div class="find-controls"><input id="find-query" type="search" maxlength="256" aria-label="Find message text" placeholder="Find message text">
-        <button id="find-prev" type="button" aria-label="Previous match">↑</button><button id="find-next" type="button" aria-label="Next match">↓</button>
-        <button id="find-earlier" type="button">Load earlier</button><button id="find-close" type="button" aria-label="Close conversation search">×</button></div>
+    <section id="find-bar" class="find-bar hidden" aria-label="Find in current conversation" data-i18n-aria-label="web.find_in_current_conversation">
+      <div class="find-controls"><input id="find-query" type="search" maxlength="256" aria-label="Find message text" data-i18n-aria-label="web.find_message_text" placeholder="Find message text" data-i18n-placeholder="web.find_message_text">
+        <button id="find-prev" type="button" aria-label="Previous match" data-i18n-aria-label="web.previous_match">↑</button><button id="find-next" type="button" aria-label="Next match" data-i18n-aria-label="web.next_match">↓</button>
+        <button id="find-earlier" type="button" data-i18n="web.load_earlier">Load earlier</button><button id="find-close" type="button" aria-label="Close conversation search" data-i18n-aria-label="web.close_conversation_search">×</button></div>
       <small id="find-status" role="status"></small><small id="find-preview"></small>
     </section>
     <div id="transcript-scroll" class="transcript-scroll">
-      <button id="history-status" class="history-status hidden" type="button">Loading earlier messages…</button>
+      <button id="history-status" class="history-status hidden" type="button" data-i18n="web.loading_earlier_messages">Loading earlier messages…</button>
       <div id="empty-state" class="empty-state">
-        <p class="eyebrow">Your project, ready to work</p>
-        <h2>What should we work through?</h2>
-        <p>Ask CLAT to inspect, change, and verify the repository. Tool effects remain governed by the active permission mode.</p>
-        <div class="prompt-suggestions" aria-label="Prompt suggestions">
-          <button type="button" data-prompt="Map the architecture and identify the highest-risk boundary.">Map the architecture</button>
-          <button type="button" data-prompt="Inspect the current changes and run the most relevant checks.">Review current changes</button>
+        <p class="eyebrow" data-i18n="web.your_project_ready_to_work">Your project, ready to work</p>
+        <h2 data-i18n="web.what_should_we_work_through">What should we work through?</h2>
+        <p data-i18n="web.ask_clat_to_inspect_change_and_verify_the_repository_tool_effects_remain_governed_">Ask CLAT to inspect, change, and verify the repository. Tool effects remain governed by the active permission mode.</p>
+        <div class="prompt-suggestions" aria-label="Prompt suggestions" data-i18n-aria-label="web.prompt_suggestions">
+          <button type="button" data-prompt="Map the architecture and identify the highest-risk boundary." data-i18n="web.map_the_architecture">Map the architecture</button>
+          <button type="button" data-prompt="Inspect the current changes and run the most relevant checks." data-i18n="web.review_current_changes">Review current changes</button>
         </div>
       </div>
       <div id="transcript" class="transcript" aria-live="polite" aria-relevant="additions text"></div>
     </div>
 
-    <aside id="message-map" class="message-map hidden" aria-label="Conversation map">
-      <div id="message-map-track" class="message-map-track" tabindex="0" aria-label="Conversation map; use arrow keys to browse"></div>
+    <aside id="message-map" class="message-map hidden" aria-label="Conversation map" data-i18n-aria-label="web.conversation_map">
+      <div id="message-map-track" class="message-map-track" tabindex="0" aria-label="Conversation map; use arrow keys to browse" data-i18n-aria-label="web.conversation_map_use_arrow_keys_to_browse"></div>
       <div id="message-map-preview" class="message-map-preview hidden" role="tooltip"></div>
     </aside>
 
-    <section class="composer" aria-label="Message composer">
+    <section class="composer" aria-label="Message composer" data-i18n-aria-label="web.message_composer">
       <div id="composer-shell" class="composer-shell">
         <div id="next-turn-queue" class="queue-preview" aria-live="polite" hidden></div>
         <input id="attachment-input" class="visually-hidden" type="file" multiple
-               accept="image/png,image/jpeg" aria-label="Choose PNG or JPEG images">
+               accept="image/png,image/jpeg" aria-label="Choose PNG or JPEG images" data-i18n-aria-label="web.choose_png_or_jpeg_images">
         <div id="drop-overlay" class="drop-overlay hidden" aria-hidden="true">
-          <strong>DROP IMAGES TO STAGE</strong>
-          <span>PNG or JPEG · up to 8 images</span>
+          <strong data-i18n="web.drop_images_to_stage">DROP IMAGES TO STAGE</strong>
+          <span data-i18n="web.png_or_jpeg_up_to_8_images">PNG or JPEG · up to 8 images</span>
         </div>
         <div class="composer-context">
-          <button type="button" id="plan-mode-badge" class="workflow-badge plan-mode-badge hidden" aria-label="Plan details">Plan</button>
-          <button type="button" id="goal-badge" class="workflow-badge goal-badge hidden" aria-label="Goal details">Goal</button>
+          <button type="button" id="plan-mode-badge" class="workflow-badge plan-mode-badge hidden" aria-label="Plan details" data-i18n-aria-label="web.plan_details" data-i18n="web.plan">Plan</button>
+          <button type="button" id="goal-badge" class="workflow-badge goal-badge hidden" aria-label="Goal details" data-i18n-aria-label="web.goal_details" data-i18n="web.goal">Goal</button>
           <span id="run-state" class="run-state" role="status"></span>
           <button id="suggest" class="suggestion-trigger" type="button"
-                  aria-label="Generate prompt suggestion" title="Generate prompt suggestion">
+                  aria-label="Generate prompt suggestion" data-i18n-aria-label="web.generate_prompt_suggestion" title="Generate prompt suggestion" data-i18n-title="web.generate_prompt_suggestion">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M9.5 3.5c0 4-2 6-6 6 4 0 6 2 6 6 0-4 2-6 6-6-4 0-6-2-6-6Z"/>
               <path d="M18.5 3c0 2-1 3-3 3 2 0 3 1 3 3 0-2 1-3 3-3-2 0-3-1-3-3Z"/>
             </svg>
           </button>
         </div>
-        <div id="attachment-rail" class="attachment-rail hidden" aria-label="Staged images"></div>
-        <section id="suggestion-panel" class="suggestion-panel hidden" aria-live="polite" aria-label="Prompt suggestion">
-          <div class="suggestion-panel-head"><span class="section-kicker">COMPANION UTILITY</span><button id="suggestion-dismiss" class="icon-button" type="button" aria-label="Dismiss suggestion">×</button></div>
+        <div id="attachment-rail" class="attachment-rail hidden" aria-label="Staged images" data-i18n-aria-label="web.staged_images"></div>
+        <section id="suggestion-panel" class="suggestion-panel hidden" aria-live="polite" aria-label="Prompt suggestion" data-i18n-aria-label="web.prompt_suggestion">
+          <div class="suggestion-panel-head"><span class="section-kicker" data-i18n="web.companion_utility">COMPANION UTILITY</span><button id="suggestion-dismiss" class="icon-button" type="button" aria-label="Dismiss suggestion" data-i18n-aria-label="web.dismiss_suggestion">×</button></div>
           <p id="suggestion-text" class="suggestion-text"></p>
-          <div class="suggestion-actions"><button id="suggestion-use" class="primary" type="button">Use suggestion</button><button id="suggestion-ignore" class="ghost" type="button">Ignore</button></div>
+          <div class="suggestion-actions"><button id="suggestion-use" class="primary" type="button" data-i18n="web.use_suggestion">Use suggestion</button><button id="suggestion-ignore" class="ghost" type="button" data-i18n="web.ignore">Ignore</button></div>
         </section>
-        <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" aria-label="Message CLAT"></textarea>
+        <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" data-i18n-placeholder="web.describe_the_outcome_you_want" aria-label="Message CLAT" data-i18n-aria-label="web.message_clat"></textarea>
         <div class="composer-row">
-          <button id="attachment-open" class="attachment-open" type="button" aria-label="Add images" title="Add images">
+          <button id="attachment-open" class="attachment-open" type="button" aria-label="Add images" data-i18n-aria-label="web.add_images" title="Add images" data-i18n-title="web.add_images">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-            <span>Add images</span>
+            <span data-i18n="web.add_images">Add images</span>
           </button>
           <span id="attachment-summary" class="attachment-summary" role="status"></span>
-          <button id="composer-permission" class="context-pill" type="button" title="Change permission mode">
+          <button id="composer-permission" class="context-pill" type="button" title="Change permission mode" data-i18n-title="web.change_permission_mode">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8-8 10-4.6-2-8-5-8-10V7z"/></svg>
-            <span id="composer-permission-label">Project Write</span>
+            <span id="composer-permission-label" data-i18n="web.project_write">Project Write</span>
           </button>
           <div class="composer-actions">
-            <button id="cancel" class="ghost hidden" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg> Stop</button>
+            <button id="cancel" class="ghost hidden" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg> <span data-i18n="web.stop">Stop</span></button>
             <div class="model-picker-seat">
               <button id="model-picker-trigger" class="model-picker-trigger" type="button"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="model-picker">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 8 6-3 6 3-6 3-6-3Z"/><path d="m6 12 6 3 6-3M6 16l6 3 6-3"/></svg>
-                <span id="model-picker-label">Model</span>
+                <span id="model-picker-label" data-i18n="web.model">Model</span>
                 <svg class="picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
               </button>
-              <section id="model-picker" class="model-picker hidden" role="dialog" aria-label="Choose model">
+              <section id="model-picker" class="model-picker hidden" role="dialog" aria-label="Choose model" data-i18n-aria-label="web.choose_model">
                 <header>
-                  <div><span class="section-kicker">NEXT RUN</span><strong>Choose model</strong></div>
-                  <button id="model-picker-close" class="icon-button" type="button" aria-label="Close model picker">×</button>
+                  <div><span class="section-kicker" data-i18n="web.next_run">NEXT RUN</span><strong data-i18n="web.choose_model">Choose model</strong></div>
+                  <button id="model-picker-close" class="icon-button" type="button" aria-label="Close model picker" data-i18n-aria-label="web.close_model_picker">×</button>
                 </header>
                 <p id="model-picker-current" class="model-picker-current" role="status"></p>
-                <label class="model-picker-key">Thinking intensity
-                  <select id="model-thinking" aria-label="Thinking intensity" disabled><option>Not adjustable</option></select>
+                <label class="model-picker-key"><span data-i18n="web.thinking_intensity">Thinking intensity</span>
+                  <select id="model-thinking" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled><option data-i18n="web.not_adjustable">Not adjustable</option></select>
                 </label>
-                <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models"></div>
-                <label class="model-picker-key">Preset API key
+                <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models" data-i18n-aria-label="web.available_models"></div>
+                <label class="model-picker-key"><span data-i18n="web.preset_api_key">Preset API key</span>
                   <input id="model-picker-key" type="password" autocomplete="new-password"
-                         placeholder="Optional · uses remembered vendor key">
+                         placeholder="Optional · uses remembered vendor key" data-i18n-placeholder="web.optional_uses_remembered_vendor_key">
                 </label>
                 <p id="model-picker-error" class="error model-picker-error" role="alert"></p>
-                <button id="model-picker-manage" class="model-picker-manage" type="button">Manage model profiles…</button>
+                <button id="model-picker-manage" class="model-picker-manage" type="button" data-i18n="web.manage_model_profiles">Manage model profiles…</button>
               </section>
             </div>
-            <button id="queue-enqueue" type="button" title="Queue text for the next turn (Ctrl+Q)" aria-label="Queue next turn">Queue</button>
-            <button id="queue-recall" type="button" title="Recall latest queued text (Alt+Q)" hidden aria-label="Recall latest next-turn item">Recall</button>
-            <button id="send" class="send-button" type="button" aria-label="Send message">Send <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg></button>
+            <button id="queue-enqueue" type="button" title="Queue text for the next turn (Ctrl+Q)" data-i18n-title="web.queue_text_for_the_next_turn_ctrl_q" aria-label="Queue next turn" data-i18n-aria-label="web.queue_next_turn" data-i18n="web.queue">Queue</button>
+            <button id="queue-recall" type="button" title="Recall latest queued text (Alt+Q)" data-i18n-title="web.recall_latest_queued_text_alt_q" hidden aria-label="Recall latest next-turn item" data-i18n-aria-label="web.recall_latest_next_turn_item" data-i18n="web.recall">Recall</button>
+            <button id="send" class="send-button" type="button" aria-label="Send message" data-i18n-aria-label="web.send_message"><span data-i18n="web.send">Send</span> <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg></button>
           </div>
         </div>
       </div>
     </section>
   </main>
 
-  <aside id="inspector" class="inspector" aria-label="Workbench details">
+  <aside id="inspector" class="inspector" aria-label="Workbench details" data-i18n-aria-label="web.workbench_details">
     <header class="inspector-head">
       <div>
-        <span class="section-kicker">CONTEXT</span>
-        <strong>Workbench details</strong>
+        <span class="section-kicker" data-i18n="web.context">CONTEXT</span>
+        <strong data-i18n="web.workbench_details">Workbench details</strong>
       </div>
-      <button id="inspector-close" class="icon-button" type="button" aria-label="Close details">
+      <button id="inspector-close" class="icon-button" type="button" aria-label="Close details" data-i18n-aria-label="web.close_details">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
       </button>
     </header>
     <div class="inspector-scroll">
       <div class="inspector-toolbar">
-        <button id="inspector-refresh" class="ghost" type="button">Refresh details</button>
+        <button id="inspector-refresh" class="ghost" type="button" data-i18n="web.refresh_details">Refresh details</button>
         <span id="inspector-feedback" role="status"></span>
       </div>
       <section class="inspector-section">
-        <h2>Session</h2>
+        <h2 data-i18n="web.session">Session</h2>
         <dl>
-          <div><dt>Status</dt><dd id="detail-run">Idle</dd></div>
-          <div><dt>Journal seq</dt><dd id="detail-seq">—</dd></div>
-          <div><dt>Session ID</dt><dd id="detail-session" class="mono-detail">Fresh</dd></div>
+          <div><dt data-i18n="web.status">Status</dt><dd id="detail-run" data-i18n="web.idle">Idle</dd></div>
+          <div><dt data-i18n="web.journal_seq">Journal seq</dt><dd id="detail-seq">—</dd></div>
+          <div><dt data-i18n="web.session_id">Session ID</dt><dd id="detail-session" class="mono-detail" data-i18n="web.fresh">Fresh</dd></div>
         </dl>
-        <button id="compact-session" class="ghost inspector-action" type="button">Compact history</button>
-        <button id="inspector-context" class="ghost inspector-action" type="button">Inspect context usage</button>
+        <button id="compact-session" class="ghost inspector-action" type="button" data-i18n="web.compact_history">Compact history</button>
+        <button id="inspector-context" class="ghost inspector-action" type="button" data-i18n="web.inspect_context_usage">Inspect context usage</button>
       </section>
       <section class="inspector-section">
-        <h2>Model route</h2>
+        <h2 data-i18n="web.model_route">Model route</h2>
         <strong id="detail-model" class="model-identity model-route-row">—</strong>
         <p id="detail-protocol">—</p>
-        <button id="inspector-models" class="ghost inspector-action" type="button">Manage model profiles</button>
+        <button id="inspector-models" class="ghost inspector-action" type="button" data-i18n="web.manage_model_profiles">Manage model profiles</button>
         <div class="metric-grid">
-          <div><span>Context</span><strong id="detail-context">—</strong></div>
-          <div><span>Run guard</span><strong id="detail-budget">—</strong></div>
+          <div><span data-i18n="web.context">Context</span><strong id="detail-context">—</strong></div>
+          <div><span data-i18n="web.run_guard">Run guard</span><strong id="detail-budget">—</strong></div>
         </div>
       </section>
       <section class="inspector-section">
-        <h2>Capabilities</h2>
+        <h2 data-i18n="web.capabilities">Capabilities</h2>
         <div id="capability-list" class="capability-list"></div>
       </section>
       <section class="inspector-section">
         <h2>MCP</h2>
-        <p id="detail-mcp">No servers configured</p>
+        <p id="detail-mcp" data-i18n="web.no_servers_configured">No servers configured</p>
         <div id="mcp-servers" class="mcp-servers"></div>
       </section>
     </div>
   </aside>
 
-  <button id="sidebar-backdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close sessions"></button>
+  <button id="sidebar-backdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close sessions" data-i18n-aria-label="web.close_sessions"></button>
 </div>
 
 <dialog id="market-dialog" class="market-dialog" aria-labelledby="market-title">
   <section class="market-panel">
     <header>
       <div>
-        <span class="section-kicker">PUBLIC CATALOG · READ ONLY</span>
-        <h2 id="market-title">CLAT Plugin Index</h2>
-        <p>Install and manage verified plugins on your local CLAT host.</p>
+        <span class="section-kicker" data-i18n="web.public_catalog_read_only">PUBLIC CATALOG · READ ONLY</span>
+        <h2 id="market-title" data-i18n="web.clat_plugin_index">CLAT Plugin Index</h2>
+        <p data-i18n="web.install_and_manage_verified_plugins_on_your_local_clat_host">Install and manage verified plugins on your local CLAT host.</p>
       </div>
-      <button id="market-close" class="icon-button" type="button" aria-label="Close plugin market">
+      <button id="market-close" class="icon-button" type="button" aria-label="Close plugin market" data-i18n-aria-label="web.close_plugin_market">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
       </button>
     </header>
     <div class="market-toolbar">
       <label for="market-search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
-        <input id="market-search" type="search" placeholder="Search plugins…" autocomplete="off">
+        <input id="market-search" type="search" placeholder="Search plugins…" data-i18n-placeholder="web.search_plugins" autocomplete="off">
       </label>
-      <a href="https://pi.at.cn" target="_blank" rel="noopener noreferrer">Open pi.at.cn <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h11v11M19 5 5 19"/></svg></a>
+      <a href="https://pi.at.cn" target="_blank" rel="noopener noreferrer"><span data-i18n="web.open_pi_at_cn">Open pi.at.cn</span> <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h11v11M19 5 5 19"/></svg></a>
     </div>
-    <p id="market-status" class="market-status" role="status">Loading public catalog…</p>
+    <p id="market-status" class="market-status" role="status" data-i18n="web.loading_public_catalog">Loading public catalog…</p>
     <div id="market-list" class="market-list" aria-live="polite"></div>
     <footer>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8-8 10-4.6-2-8-5-8-10V7z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>
-      <span>This panel never sends your local token to pi.at.cn. Installation and configuration stay on your local CLAT host.</span>
+      <span data-i18n="web.this_panel_never_sends_your_local_token_to_pi_at_cn_installation_and_configuration">This panel never sends your local token to pi.at.cn. Installation and configuration stay on your local CLAT host.</span>
     </footer>
   </section>
 </dialog>
@@ -320,83 +320,84 @@
   <form method="dialog" class="settings-panel">
     <header>
       <div>
-        <span class="section-kicker">LOCAL PREFERENCES + SESSION POLICY</span>
-        <h2 id="settings-title">Workbench settings</h2>
+        <span class="section-kicker" data-i18n="web.local_preferences_session_policy">LOCAL PREFERENCES + SESSION POLICY</span>
+        <h2 id="settings-title" data-i18n="web.workbench_settings">Workbench settings</h2>
       </div>
-      <button class="icon-button" value="cancel" aria-label="Close settings">
+      <button class="icon-button" value="cancel" aria-label="Close settings" data-i18n-aria-label="web.close_settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
       </button>
     </header>
 
-    <nav class="settings-nav" aria-label="Settings categories">
-      <button type="button" data-settings-category="appearance" aria-current="page">Appearance</button>
-      <button type="button" data-settings-category="projects">Projects</button>
-      <button type="button" data-settings-category="models">Models</button>
-      <button type="button" data-settings-category="utility">Companion</button>
-      <button type="button" data-settings-category="permissions">Permissions</button>
-      <button type="button" data-settings-category="wechat">WeChat</button>
+    <nav class="settings-nav" aria-label="Settings categories" data-i18n-aria-label="web.settings_categories">
+      <button type="button" data-settings-category="appearance" aria-current="page" data-i18n="web.appearance">Appearance</button>
+      <button type="button" data-settings-category="projects" data-i18n="web.projects">Projects</button>
+      <button type="button" data-settings-category="models" data-i18n="web.models">Models</button>
+      <button type="button" data-settings-category="utility" data-i18n="web.companion">Companion</button>
+      <button type="button" data-settings-category="permissions" data-i18n="web.permissions">Permissions</button>
+      <button type="button" data-settings-category="wechat" data-i18n="web.wechat">WeChat</button>
     </nav>
     <div class="settings-content">
     <section class="settings-section" data-settings-panel="appearance">
       <div class="settings-copy">
-        <h3>Appearance</h3>
-        <p>Stored only in this browser. Session content is never cached here.</p>
+        <h3 data-i18n="web.appearance">Appearance</h3>
+        <p data-i18n="web.stored_only_in_this_browser_session_content_is_never_cached_here">Stored only in this browser. Session content is never cached here.</p>
       </div>
-      <fieldset id="theme-options" class="segmented" aria-label="Theme">
-        <label><input type="radio" name="theme" value="system" checked><span>System</span></label>
-        <label><input type="radio" name="theme" value="light"><span>Light</span></label>
-        <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+      <div data-language-control></div>
+      <fieldset id="theme-options" class="segmented" aria-label="Theme" data-i18n-aria-label="web.theme">
+        <label><input type="radio" name="theme" value="system" checked><span data-i18n="web.system">System</span></label>
+        <label><input type="radio" name="theme" value="light"><span data-i18n="web.light">Light</span></label>
+        <label><input type="radio" name="theme" value="dark"><span data-i18n="web.dark">Dark</span></label>
       </fieldset>
       <div id="reading-options" class="reading-options">
-        <fieldset class="segmented reading-choice" aria-label="Message layout">
-          <legend>Message layout</legend>
-          <label><input type="radio" name="messageLayout" value="bubbles" checked><span>User bubbles</span></label>
-          <label><input type="radio" name="messageLayout" value="column"><span>Single column</span></label>
+        <fieldset class="segmented reading-choice" aria-label="Message layout" data-i18n-aria-label="web.message_layout">
+          <legend data-i18n="web.message_layout">Message layout</legend>
+          <label><input type="radio" name="messageLayout" value="bubbles" checked><span data-i18n="web.user_bubbles">User bubbles</span></label>
+          <label><input type="radio" name="messageLayout" value="column"><span data-i18n="web.single_column">Single column</span></label>
         </fieldset>
-        <fieldset class="segmented reading-choice" aria-label="Process display">
-          <legend>Process display</legend>
-          <label><input type="radio" name="processView" value="summaries" checked><span>Work summaries</span></label>
-          <label><input type="radio" name="processView" value="expanded"><span>All steps</span></label>
+        <fieldset class="segmented reading-choice" aria-label="Process display" data-i18n-aria-label="web.process_display">
+          <legend data-i18n="web.process_display">Process display</legend>
+          <label><input type="radio" name="processView" value="summaries" checked><span data-i18n="web.work_summaries">Work summaries</span></label>
+          <label><input type="radio" name="processView" value="expanded"><span data-i18n="web.all_steps">All steps</span></label>
         </fieldset>
-        <p class="settings-note">Compare these views on the same conversation. Summaries retain every record; approvals, questions and errors always stay visible.</p>
+        <p class="settings-note" data-i18n="web.compare_these_views_on_the_same_conversation_summaries_retain_every_record_approva">Compare these views on the same conversation. Summaries retain every record; approvals, questions and errors always stay visible.</p>
       </div>
     </section>
 
     <section class="settings-section" data-settings-panel="projects" hidden>
       <div class="settings-copy">
-        <h3>Projects</h3>
-        <p>Open another project in a new tab. Each project has its own session and permissions.</p>
+        <h3 data-i18n="web.projects">Projects</h3>
+        <p data-i18n="web.open_another_project_in_a_new_tab_each_project_has_its_own_session_and_permissions">Open another project in a new tab. Each project has its own session and permissions.</p>
       </div>
       <div id="workspace-list"></div>
-      <label for="workspace-root">Absolute project directory</label>
+      <label for="workspace-root" data-i18n="web.absolute_project_directory">Absolute project directory</label>
       <input id="workspace-root" type="text" autocomplete="off" placeholder="/path/to/project">
-      <label><input id="workspace-trust" type="checkbox"> I trust this project and authorize its tools and project instructions.</label>
-      <button id="workspace-open" class="primary" type="button">Add project</button>
+      <label><input id="workspace-trust" type="checkbox"> <span data-i18n="web.i_trust_this_project_and_authorize_its_tools_and_project_instructions">I trust this project and authorize its tools and project instructions.</span></label>
+      <button id="workspace-open" class="primary" type="button" data-i18n="web.add_project">Add project</button>
       <p id="workspace-error" class="error" role="alert"></p>
     </section>
 
     <section class="settings-section model-settings" data-settings-panel="models" hidden>
       <div class="settings-copy">
-        <h3>Model profiles <span class="section-kicker">SHARED BY ALL PROJECTS</span></h3>
-        <p>Create and maintain routes here. Choose the active model beside Send in the composer.</p>
+        <h3><span data-i18n="web.model_profiles">Model profiles</span> <span class="section-kicker" data-i18n="web.shared_by_all_projects">SHARED BY ALL PROJECTS</span></h3>
+        <p data-i18n="web.create_and_maintain_routes_here_choose_the_active_model_beside_send_in_the_compose">Create and maintain routes here. Choose the active model beside Send in the composer.</p>
       </div>
       <p id="model-current" class="mono-detail" role="status"></p>
-      <div id="model-profiles" class="model-profiles" aria-label="Saved model profiles"></div>
-      <button id="model-profile-new" class="ghost" type="button">New profile</button>
+      <div id="model-profiles" class="model-profiles" aria-label="Saved model profiles" data-i18n-aria-label="web.saved_model_profiles"></div>
+      <button id="model-profile-new" class="ghost" type="button" data-i18n="web.new_profile">New profile</button>
       <details id="model-profile-editor">
-        <summary>Create or edit a custom profile</summary>
-        <p class="settings-copy">Keys are write-only. Blank keeps a key only on an unchanged route. Changing the route resets advanced settings and credentials.</p>
+        <summary data-i18n="web.create_or_edit_a_custom_profile">Create or edit a custom profile</summary>
+        <p class="settings-copy" data-i18n="web.keys_are_write_only_blank_keeps_a_key_only_on_an_unchanged_route_changing_the_rout">Keys are write-only. Blank keeps a key only on an unchanged route. Changing the route resets advanced settings and credentials.</p>
         <div class="model-form-grid">
-          <label>Profile name<input id="model-profile-name" maxlength="128" autocomplete="off"></label>
-          <label>Protocol<select id="model-profile-protocol"><option value="open_ai_compatible">OpenAI Compatible</option><option value="open_ai_responses">OpenAI Responses</option></select></label>
-          <label>Model ID<input id="model-profile-model" maxlength="256" autocomplete="off"></label>
-          <label>Endpoint<input id="model-profile-endpoint" type="url" autocomplete="off" placeholder="Provider base URL"></label>
-          <label>Request path<input id="model-profile-path" value="/chat/completions" autocomplete="off"></label>
-          <label>API key<input id="model-profile-key" type="password" autocomplete="new-password" placeholder="Not returned by the host"></label>
+          <label><span data-i18n="web.profile_name">Profile name</span><input id="model-profile-name" maxlength="128" autocomplete="off"></label>
+          <label><span data-i18n="web.protocol">Protocol</span><select id="model-profile-protocol"><option value="open_ai_compatible">OpenAI Compatible</option><option value="open_ai_responses">OpenAI Responses</option></select></label>
+          <label><span data-i18n="web.model_id">Model ID</span><input id="model-profile-model" maxlength="256" autocomplete="off"></label>
+          <label><span data-i18n="web.endpoint">Endpoint</span><input id="model-profile-endpoint" type="url" autocomplete="off" placeholder="Provider base URL" data-i18n-placeholder="web.provider_base_url"></label>
+          <label><span data-i18n="web.request_path">Request path</span><input id="model-profile-path" value="/chat/completions" autocomplete="off"></label>
+          <label><span data-i18n="web.api_key">API key</span><input id="model-profile-key" type="password" autocomplete="new-password" placeholder="Not returned by the host" data-i18n-placeholder="web.not_returned_by_the_host"></label>
         </div>
-        <label><input id="model-profile-clear-key" type="checkbox"> Clear the stored API key</label>
+        <label><input id="model-profile-clear-key" type="checkbox"> <span data-i18n="web.clear_the_stored_api_key">Clear the stored API key</span></label>
         <p id="model-profile-key-state" role="status"></p>
-        <button id="model-profile-save" class="primary" type="button">Save profile</button>
+        <button id="model-profile-save" class="primary" type="button" data-i18n="web.save_profile">Save profile</button>
       </details>
       <p id="model-settings-error" class="error" role="alert"></p>
       <p id="model-settings-saved" role="status"></p>
@@ -404,83 +405,84 @@
 
     <section class="settings-section utility-settings" data-settings-panel="utility" hidden>
       <div class="settings-copy">
-        <h3>Companion utility <span class="section-kicker">HOST-WIDE</span></h3>
-        <p>Automatic session naming is enabled by default. Suggestions are manual only and never submit or write to the journal.</p>
+        <h3><span data-i18n="web.companion_utility">Companion utility</span> <span class="section-kicker" data-i18n="web.host_wide">HOST-WIDE</span></h3>
+        <p data-i18n="web.automatic_session_naming_is_enabled_by_default_suggestions_are_manual_only_and_nev">Automatic session naming is enabled by default. Suggestions are manual only and never submit or write to the journal.</p>
       </div>
-      <fieldset class="utility-options" aria-label="Companion utility switches">
-        <label><input id="utility-naming-enabled" type="checkbox"><span><strong>Continuous naming</strong><small>Rename sessions after eligible turns.</small></span></label>
-        <label><input id="utility-suggestions-enabled" type="checkbox"><span><strong>Manual suggestions</strong><small>Show a next-message hint from the sparkle button.</small></span></label>
+      <fieldset class="utility-options" aria-label="Companion utility switches" data-i18n-aria-label="web.companion_utility_switches">
+        <label><input id="utility-naming-enabled" type="checkbox"><span><strong data-i18n="web.continuous_naming">Continuous naming</strong><small data-i18n="web.rename_sessions_after_eligible_turns">Rename sessions after eligible turns.</small></span></label>
+        <label><input id="utility-suggestions-enabled" type="checkbox"><span><strong data-i18n="web.manual_suggestions">Manual suggestions</strong><small data-i18n="web.show_a_next_message_hint_from_the_sparkle_button">Show a next-message hint from the sparkle button.</small></span></label>
       </fieldset>
-      <label for="utility-profile">Utility model profile<select id="utility-profile"><option value="">Use primary model</option></select></label>
-      <p class="settings-note">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>
+      <label for="utility-profile"><span data-i18n="web.utility_model_profile">Utility model profile</span><select id="utility-profile"><option value="" data-i18n="web.use_primary_model">Use primary model</option></select></label>
+      <p class="settings-note" data-i18n="web.cost_guard_naming_waits_five_turns_and_five_minutes_between_successful_attempts_ea">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>
       <p id="utility-settings-error" class="error" role="alert"></p>
-      <div class="settings-actions"><span id="utility-settings-saved" role="status"></span><button id="utility-settings-save" class="primary" type="button">Save utility policy</button></div>
+      <div class="settings-actions"><span id="utility-settings-saved" role="status"></span><button id="utility-settings-save" class="primary" type="button" data-i18n="web.save_utility_policy">Save utility policy</button></div>
     </section>
 
     <section class="settings-section permission-settings" data-settings-panel="permissions" hidden>
       <div class="settings-copy">
-        <h3>Permission mode</h3>
-        <p>This is a session property. Changes apply at the next tool permission check.</p>
+        <h3 data-i18n="web.permission_mode">Permission mode</h3>
+        <p data-i18n="web.this_is_a_session_property_changes_apply_at_the_next_tool_permission_check">This is a session property. Changes apply at the next tool permission check.</p>
       </div>
-      <fieldset id="permission-options" class="permission-options" aria-label="Permission mode">
+      <fieldset id="permission-options" class="permission-options" aria-label="Permission mode" data-i18n-aria-label="web.permission_mode">
         <label>
           <input type="radio" name="permission-mode" value="read-only">
-          <span><strong>Read Only</strong><small>Ask before every side effect.</small></span>
+          <span><strong data-i18n="web.read_only">Read Only</strong><small data-i18n="web.ask_before_every_side_effect">Ask before every side effect.</small></span>
         </label>
         <label>
           <input type="radio" name="permission-mode" value="workspace-write" checked>
-          <span><strong>Project Write</strong><small>Edit this project; ask before commands and destructive tools.</small></span>
+          <span><strong data-i18n="web.project_write">Project Write</strong><small data-i18n="web.edit_this_project_ask_before_commands_and_destructive_tools">Edit this project; ask before commands and destructive tools.</small></span>
         </label>
         <label>
           <input type="radio" name="permission-mode" value="danger-full-access">
-          <span><strong>Full Access</strong><small>Allow every tool and absolute writes without prompts.</small></span>
+          <span><strong data-i18n="web.full_access">Full Access</strong><small data-i18n="web.allow_every_tool_and_absolute_writes_without_prompts">Allow every tool and absolute writes without prompts.</small></span>
         </label>
       </fieldset>
       <label id="full-access-confirm-row" class="danger-confirm hidden">
         <input id="full-access-confirm" type="checkbox">
-        <span>I understand that Full Access removes tool approval prompts.</span>
+        <span data-i18n="web.i_understand_that_full_access_removes_tool_approval_prompts">I understand that Full Access removes tool approval prompts.</span>
       </label>
       <p id="settings-error" class="error" role="alert"></p>
       <div class="settings-actions">
         <span id="settings-saved" role="status"></span>
-        <button id="permission-save" class="primary" type="button">Apply permission mode</button>
+        <button id="permission-save" class="primary" type="button" data-i18n="web.apply_permission_mode">Apply permission mode</button>
       </div>
     </section>
 
     <section class="settings-section wechat-settings" data-settings-panel="wechat" hidden>
       <div class="settings-copy">
-        <h3>WeChat remote control</h3>
-        <p>Uses the official iLink API. Bot binding and user authorization are separate; an empty authorization set denies everyone.</p>
+        <h3 data-i18n="web.wechat_remote_control">WeChat remote control</h3>
+        <p data-i18n="web.uses_the_official_ilink_api_bot_binding_and_user_authorization_are_separate_an_emp">Uses the official iLink API. Bot binding and user authorization are separate; an empty authorization set denies everyone.</p>
       </div>
       <div class="wechat-status-row">
-        <strong id="wechat-status">Checking…</strong>
+        <strong id="wechat-status" data-i18n="web.checking">Checking…</strong>
         <span id="wechat-counts"></span>
       </div>
       <div id="wechat-qr" class="wechat-qr hidden">
-        <img id="wechat-qr-image" alt="WeChat binding QR code">
-        <p id="wechat-qr-state" role="status">Waiting for scan…</p>
+        <img id="wechat-qr-image" alt="WeChat binding QR code" data-i18n-alt="web.wechat_binding_qr_code">
+        <p id="wechat-qr-state" role="status" data-i18n="web.waiting_for_scan">Waiting for scan…</p>
         <div id="wechat-verify-row" class="wechat-verify hidden">
-          <label for="wechat-verify-code">Verification code</label>
+          <label for="wechat-verify-code" data-i18n="web.verification_code">Verification code</label>
           <input id="wechat-verify-code" type="text" maxlength="32" autocomplete="one-time-code">
-          <button id="wechat-verify-submit" class="secondary" type="button">Submit</button>
+          <button id="wechat-verify-submit" class="secondary" type="button" data-i18n="web.submit">Submit</button>
         </div>
       </div>
       <div id="wechat-pairing" class="wechat-pairing hidden">
-        <span>One-time pairing code</span>
+        <span data-i18n="web.one_time_pairing_code">One-time pairing code</span>
         <code id="wechat-pairing-code"></code>
-        <small>Send <b>/pair &lt;code&gt;</b> as a standalone WeChat message within 60 minutes.</small>
+        <small id="wechat-pairing-instruction"></small>
       </div>
       <p id="wechat-error" class="error" role="alert"></p>
       <div class="wechat-actions">
-        <button id="wechat-bind" class="secondary" type="button">Bind WeChat</button>
-        <button id="wechat-pair" class="secondary" type="button">Create pairing code</button>
-        <button id="wechat-unbind" class="danger-button" type="button">Unbind</button>
+        <button id="wechat-bind" class="secondary" type="button" data-i18n="web.bind_wechat">Bind WeChat</button>
+        <button id="wechat-pair" class="secondary" type="button" data-i18n="web.create_pairing_code">Create pairing code</button>
+        <button id="wechat-unbind" class="danger-button" type="button" data-i18n="web.unbind">Unbind</button>
       </div>
     </section>
     </div>
   </form>
 </dialog>
 
+<script src="/i18n.js"></script>
 <script src="/composer-ux.js"></script>
 <script src="/next-turn.js"></script>
 <script src="/command-picker.js"></script>

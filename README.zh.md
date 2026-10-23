@@ -34,6 +34,10 @@ clat upgrade --check
 
 完整命令行参数见 `clat --help`。
 
+界面内置英文、简体中文和繁体中文，默认跟随系统。可用
+`clat --lang zh-Hans --help`、TUI 的 `/language` 或工作台语言选择器切换。
+详见[语言设置](docs/localization.md)。
+
 ## 使用界面
 
 | 界面 | 适用场景 | 入口 |
@@ -132,6 +136,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 |---|---|
 | 使用 TUI、`exec`、`serve` 或 `dsh` | [CLAT 使用指南](docs/usage.md) |
 | 安装并更新原生桌面版 | [桌面客户端](docs/desktop.md) |
+| 选择界面语言与维护翻译 | [多语言](docs/localization.md) |
 | 配置预设或自定义模型 | [模型编辑器](docs/model-editor.md) |
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
@@ -152,8 +157,8 @@ DSH 适配器包另有独立的[英文](sdk/dsh-adapter/README.md)和
 
 ## 开发
 
-日常编辑用 `scripts/gates.sh [test-filter ...]` 获取定向反馈；交付前
-运行一次 `scripts/gates.sh --full`。见[测试分级](docs/testing.md)。
+日常编辑用 `scripts/gates.sh [test-filter ...]` 获取定向反馈；负责人开始发布准备时，
+再运行一次 `scripts/gates.sh --full`。见[测试分级](docs/testing.md)。
 
 前置条件只有 Git 与当前稳定版 Rust 工具链：
 

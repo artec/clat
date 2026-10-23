@@ -10,7 +10,11 @@ class WindowsGateTests(unittest.TestCase):
         windows = workflow.split("\n  windows:\n", 1)[1].split("\n  plugin-performance:", 1)[0]
         commands = re.findall(r"^        run: (cargo test[^\n]*)$", windows, re.M)
         self.assertEqual(commands, ["cargo test --all-targets --all-features", "cargo test -p clat-wasm-net --lib"])
-        self.assertNotIn("run: |", windows)
+        # Installer parsing needs a multiline PowerShell step. Cargo suites
+        # must still be single-command steps so a later success cannot mask red.
+        blocks = re.findall(r"^        run: \|\n((?:          [^\n]*\n)*)", windows, re.M)
+        for block in blocks:
+            self.assertNotIn("cargo test", block)
 
 
 class LinuxGateBudgetTests(unittest.TestCase):

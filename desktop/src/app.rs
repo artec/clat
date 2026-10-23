@@ -15,6 +15,7 @@ pub struct Desktop {
     pub connection: Mutex<()>,
     pub host: Mutex<Option<HostClient>>,
     pub updates: Mutex<crate::update::Updates>,
+    pub language: Mutex<clat_core::client_ports::presentation::LanguagePreference>,
     pub quitting: AtomicBool,
     pub notification_targets:
         Mutex<BTreeMap<i32, (HostClient, clat_core::client_ports::host::HostNotification)>>,
@@ -44,7 +45,7 @@ pub fn welcome(app: &tauri::AppHandle) -> Result<(), String> {
 pub fn connected(app: &tauri::AppHandle, client: HostClient) -> Result<(), String> {
     let address = client.browser_url();
     if !crate::policy::permitted_page(&address) {
-        return Err("桌面后台需使用 127.0.0.1:2691；自定义端口请使用浏览器".into());
+        return Err(crate::localization::text(app, "desktop.port_required").into());
     }
     let url = address.parse().map_err(|_| "invalid workbench URL")?;
     *app.state::<Desktop>()
@@ -62,15 +63,6 @@ pub fn connected(app: &tauri::AppHandle, client: HostClient) -> Result<(), Strin
     Ok(())
 }
 
-pub fn preferences(app: &tauri::AppHandle, value: bool) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stage = dir.join("preferences.tmp");
-    std::fs::write(&stage, serde_json::json!({"autoCheck":value}).to_string())
-        .map_err(|e| e.to_string())?;
-    std::fs::rename(stage, dir.join("preferences.json")).map_err(|e| e.to_string())
-}
-
 fn initial_preferences(app: &tauri::AppHandle) -> bool {
     app.path()
         .app_config_dir()
@@ -85,7 +77,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let smoke = cfg!(debug_assertions) && std::env::var_os("CLAT_DESKTOP_SMOKE").is_some();
     let prepared = (|| {
         if smoke {
-            return Err("隔离界面验证模式：不连接共享 Host".to_owned());
+            return Err("isolated UI validation mode: shared Host is disconnected".to_owned());
         }
         let resources = app
             .path()
@@ -111,6 +103,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         connection: Mutex::new(()),
         host: Mutex::new(None),
         updates: Mutex::new(crate::update::Updates::new(auto_check)),
+        language: Mutex::new(crate::localization::load(app.handle())),
         quitting: AtomicBool::new(false),
         notification_targets: Mutex::new(BTreeMap::new()),
         streams: Mutex::new(BTreeMap::new()),
@@ -118,7 +111,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     create_window(app)?;
     create_tray(app)?;
     #[cfg(target_os = "macos")]
-    app.set_menu(tauri::menu::Menu::default(app.handle())?)?;
+    crate::localization::menu(app.handle())?;
     #[cfg(windows)]
     app.remove_menu()?;
     if !smoke {
@@ -136,6 +129,7 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
         .inner_size(1280.0, 820.0)
         .min_inner_size(960.0, 640.0)
         .disable_drag_drop_handler()
+        .initialization_script(clat_core::client_ports::presentation::browser_runtime())
         .initialization_script(include_str!("../ui/bridge.js"))
         .on_new_window(move |url, _| {
             if matches!(url.scheme(), "http" | "https")
@@ -246,6 +240,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             crate::commands::desktop_info,
+            crate::commands::desktop_locale,
             crate::commands::desktop_open_project,
             crate::commands::desktop_check_update,
             crate::commands::desktop_download_update,

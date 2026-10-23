@@ -4,20 +4,26 @@ const fs = require('fs');
 const path = require('path');
 const ui = path.resolve(__dirname, '../../../desktop/ui');
 
-async function welcome(page, busy = false) {
+async function welcome(page, busy = false, withSidebar = false) {
   await page.route('http://desktop.test/**', route => {
     const name = new URL(route.request().url()).pathname.slice(1) || 'index.html';
     if (!['index.html', 'welcome.css', 'welcome.js', 'icon.png'].includes(name)) return route.abort();
     const types = {html:'text/html',css:'text/css',js:'application/javascript',png:'image/png'};
-    return route.fulfill({ body:fs.readFileSync(path.join(ui, name)), contentType:types[name.split('.').pop()] });
+    let body=fs.readFileSync(path.join(ui,name));
+    if(withSidebar&&name==='index.html')body=Buffer.from(body.toString().replace('<footer>','<footer class="sidebar-footer">'));
+    return route.fulfill({ body, contentType:types[name.split('.').pop()] });
   });
   const bridge = fs.readFileSync(path.join(ui, 'bridge.js'), 'utf8');
-  const nativeMock = busy => {
+  const nativeMock = ({busy, catalogs,manifest}) => {
     window.desktopCalls = [];
+    window.desktopLanguage='zh-Hans';
+    const localeInfo=()=>({manifest,preference:window.desktopLanguage,locale:window.desktopLanguage==='system'?'en':window.desktopLanguage,catalogs});
     window.desktopInfo = { desktopVersion:'2.1.2',backendVersion:'2.1.2',hostVersion:'2.1.2',hostConnected:true,autoCheck:true,
       updateAvailable:busy,downloaded:busy,updateBusy:busy,updateStatus:busy ? '等待项目空闲' : '' };
     window.__TAURI__ = { core: { invoke:async (command, args) => {
       window.desktopCalls.push({command,args});
+      if (command === 'desktop_locale') return localeInfo();
+      if (command === 'desktop_preferences') { if(args?.language)window.desktopLanguage=args.language; return localeInfo(); }
       if (command === 'desktop_info') return structuredClone(window.desktopInfo);
       if (command === 'desktop_check_update') window.desktopInfo.updateAvailable = true;
       if (command === 'desktop_download_update') window.desktopInfo.downloaded = true;
@@ -32,11 +38,23 @@ async function welcome(page, busy = false) {
     }}};
   };
   // One script pins initialization order, including the native API shim.
-  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify(busy)});\n${bridge}`});
+  const runtime = fs.readFileSync(path.resolve(ui,'../../web/i18n.js'),'utf8');
+  const catalogs=Object.fromEntries(['en','zh-Hans','zh-Hant'].map(id=>[id,JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales',id+'.json'),'utf8'))]));
+  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${bridge}`});
   await page.goto('http://desktop.test/index.html');
   await page.locator('#settings').click();
   await expect(page.locator('#clat-desktop-settings')).toBeVisible();
 }
+
+test('language switching keeps the desktop sidebar launcher glyph and label nodes',async({page})=>{
+  await welcome(page,false,true);
+  const launcher=page.locator('.sidebar-footer .sidebar-footer-button');
+  for(const language of ['en','zh-Hant','zh-Hans']){
+    await page.locator('#clat-desktop-settings [data-language-select]').selectOption(language);
+    await expect(launcher.locator('[aria-hidden=true]')).toHaveText('▣');
+    await expect(launcher.locator('.sidebar-expanded-only')).not.toBeEmpty();
+  }
+});
 
 test('install requires a downloaded update and never discards unsent input', async ({page}) => {
   await welcome(page);
@@ -115,4 +133,20 @@ test('connection failure and recovery refresh on welcome and in settings', async
   await expect(page.locator('#clat-desktop-versions')).toContainText('当前 Host 2.2.0');
   await expect(page.locator('[data-action=stop]')).toBeEnabled();
   expect(await page.evaluate(() => window.desktopCalls.some(c => c.command === 'desktop_stop_host'))).toBe(false);
+});
+
+test('three desktop languages switch without reloading or losing a draft and pending update', async ({page}) => {
+  await welcome(page,true);
+  await page.evaluate(()=>{ const input=document.createElement('textarea'); input.id='prompt'; input.value='中文草稿 {path}';document.body.append(input); window.marker={}; });
+  const dialog=page.locator('#clat-desktop-settings');
+  const language=dialog.locator('[data-language-select]');
+  for(const [id,close] of [['en','Close'],['zh-Hant','關閉'],['zh-Hans','关闭']]) {
+    await language.selectOption(id);
+    await expect(dialog.locator('[data-action=close]')).toHaveText(close);
+    await expect(page.locator('#prompt')).toHaveValue('中文草稿 {path}');
+    await expect(dialog.locator('[data-action=cancel]')).toBeEnabled();
+    expect(await page.evaluate(()=>!!window.marker)).toBe(true);
+  }
+  const commands=await page.evaluate(()=>window.desktopCalls.map(c=>c.command));
+  expect(commands.filter(c=>!['desktop_info','desktop_locale','desktop_preferences'].includes(c))).toEqual([]);
 });

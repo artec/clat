@@ -1,5 +1,6 @@
 use crate::CancelToken;
 use crate::event::{EventSink, RunEvent};
+use crate::i18n::{PresentedText, UiMessage};
 use crate::model::{ModelConfig, ProviderCredentials};
 use crate::plugins::services::{
     CompactionNode, CompactionOutcome, CompactionRequest, HistoryCompactor,
@@ -126,16 +127,9 @@ impl TrustedProjectApplication {
                 if let Ok(mut slot) = report_slot.lock() {
                     *slot = Some(result.clone());
                 }
-                let note = match &result {
-                    Ok(report) => report.status_text(),
-                    Err(error) => format!("compaction failed: {error}"),
-                };
                 broadcast_to(
                     &subscribers,
-                    ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
-                        note,
-                        succeeded: result.is_ok(),
-                    }),
+                    ApplicationEvent::CompactionUpdated(compact_result_status(&result)),
                 );
                 busy.store(false, Ordering::Release);
             })
@@ -145,6 +139,19 @@ impl TrustedProjectApplication {
             .map_err(|_| ApplicationError::new("compaction join lock poisoned"))? = Some(worker);
         self.active_compaction = Some(handle.clone());
         Ok(handle)
+    }
+}
+
+fn compact_result_status(result: &Result<CompactReport, String>) -> CompactionStatus {
+    let note = match result {
+        Ok(report) => report.status_presentation().into(),
+        Err(error) => UiMessage::new("command.compaction_failed")
+            .arg("error", error.clone())
+            .into(),
+    };
+    CompactionStatus::Finished {
+        note,
+        succeeded: result.is_ok(),
     }
 }
 
@@ -268,7 +275,7 @@ pub(super) fn run_auto_compaction(
     credentials: &ProviderCredentials,
     cancel: &CancelToken,
     turn: u64,
-) -> Option<(String, bool)> {
+) -> Option<(PresentedText, bool)> {
     let nodes = sessions.surface_nodes().ok()?;
     if nodes.is_empty() {
         return None;
@@ -306,19 +313,27 @@ pub(super) fn run_auto_compaction(
             let _ = sessions.sync_active();
             match written {
                 Ok(_) => Some((
-                    format!(
-                        "compacted history: shadowed {} events",
-                        outcome.shadowed_count
-                    ),
+                    UiMessage::new("command.compacted_history")
+                        .arg("count", outcome.shadowed_count)
+                        .into(),
                     true,
                 )),
-                Err(error) => Some((format!("compaction could not be persisted: {error}"), false)),
+                Err(error) => Some((
+                    UiMessage::new("command.compaction_persistence_failed")
+                        .arg("error", error)
+                        .into(),
+                    false,
+                )),
             }
         }
-        None => outcome
-            .degraded
-            .as_ref()
-            .map(|reason| (format!("compaction degraded: {reason}"), false)),
+        None => outcome.degraded.as_ref().map(|reason| {
+            (
+                UiMessage::new("command.compaction_degraded")
+                    .arg("reason", reason.clone())
+                    .into(),
+                false,
+            )
+        }),
     }
 }
 
@@ -374,10 +389,12 @@ pub struct CompactReport {
 }
 
 impl CompactReport {
-    pub(crate) fn status_text(&self) -> String {
-        let base = format!("compacted: shadowed {} events", self.shadowed_count);
+    pub fn status_presentation(&self) -> UiMessage {
+        let base = UiMessage::new("command.compacted").arg("count", self.shadowed_count);
         match &self.degraded {
-            Some(reason) => format!("{base} (degraded: {reason})"),
+            Some(reason) => UiMessage::new("command.compacted_degraded")
+                .arg_message("summary", base)
+                .arg("reason", reason.clone()),
             None => base,
         }
     }

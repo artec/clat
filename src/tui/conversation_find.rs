@@ -155,13 +155,13 @@ impl App {
             .iter()
             .position(|m| Some((m.identity, m.offset)) == find.active);
         let scope = if self.conversation_has_more {
-            "loaded window only · Alt+L earlier page"
+            self.locale.text("tui.find_loaded_window")
         } else {
-            "all messages loaded"
+            self.locale.text("tui.find_all_loaded")
         };
         let preview = index
             .map(|i| matches[i].preview.as_str())
-            .unwrap_or("User / agent original body only");
+            .unwrap_or(self.locale.text("tui.find_body_only"));
         let area = Rect::new(
             self.input_area.x,
             self.input_area.y.saturating_sub(5),
@@ -171,18 +171,21 @@ impl App {
         clear_popup_with_guards(frame, area);
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(format!(
-                    "Find: {} · {}/{}",
-                    find.query.text(),
-                    index.map_or(0, |i| i + 1),
-                    matches.len()
-                )),
-                Line::from(format!(
-                    "{scope} · Enter next · Shift+Enter previous · Esc cancel"
-                )),
+                Line::from(
+                    self.locale.render(
+                        &UiMessage::new("tui.find_query")
+                            .arg("query", find.query.text())
+                            .arg("current", index.map_or(0, |i| i + 1))
+                            .arg("count", matches.len()),
+                    ),
+                ),
+                Line::from(
+                    self.locale
+                        .render(&UiMessage::new("tui.find_footer").arg("scope", scope)),
+                ),
                 Line::from(preview.to_owned()),
             ])
-            .block(popup_block("Find in conversation")),
+            .block(popup_block(self.locale.text("tui.find_title"))),
             area,
         );
     }

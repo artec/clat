@@ -13,6 +13,7 @@
 use crate::SessionSummary;
 use crate::dsh::files::DshSessionRow;
 use crate::session::id::SessionId;
+use clat_core::client_ports::presentation::UiMessage;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -109,6 +110,7 @@ impl DshResumeData {
 }
 
 pub(crate) struct SessionPicker {
+    pub(crate) locale: clat_core::client_ports::presentation::LocaleContext,
     all_sessions: Vec<SessionSummary>,
     filter: String,
     filtering: bool,
@@ -223,6 +225,7 @@ impl SessionPicker {
 
     pub fn new(sessions: Vec<SessionSummary>, current: Option<SessionId>) -> Self {
         let mut picker = Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             all_sessions: sessions.clone(),
             filter: String::new(),
             filtering: false,
@@ -296,6 +299,7 @@ impl SessionPicker {
             .or(first_session_row)
             .unwrap_or(0);
         Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             all_sessions: Vec::new(),
             filter: String::new(),
             filtering: false,
@@ -441,7 +445,7 @@ impl SessionPicker {
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
         let title = if self.show_archived {
-            "/resume · archived"
+            self.locale.text("tui.resume_archived")
         } else {
             "/resume"
         };
@@ -449,10 +453,12 @@ impl SessionPicker {
         let row_width = block.inner(area).width as usize;
         let mut lines = Vec::new();
         if self.filtering || !self.filter.is_empty() {
-            lines.push(Line::from(format!(
-                "Filter title / ID: {} · Enter browse · Esc clear",
-                self.filter
-            )));
+            lines.push(Line::from(
+                self.locale.render(
+                    &UiMessage::new("tui.message_filter_title_id_value_enter_browse_esc_clear")
+                        .arg("value1", (self.filter).to_string()),
+                ),
+            ));
         }
         if let Some(dsh) = self.dsh.as_deref() {
             self.draw_dsh(dsh, &mut lines, row_width);
@@ -470,13 +476,14 @@ impl SessionPicker {
     fn draw_local(&self, lines: &mut Vec<Line<'static>>, row_width: usize) {
         if self.sessions.is_empty() {
             lines.push(Line::from(if self.filter.is_empty() {
-                "no previous conversations in this project"
+                self.locale
+                    .text("tui.no_previous_conversations_in_this_project")
             } else {
-                "no matching conversations (title / ID)"
+                self.locale.text("tui.no_matching_conversations_title_id")
             }));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Esc close",
+                self.locale.text("tui.esc_close_527"),
                 Style::default().add_modifier(Modifier::DIM),
             )));
         } else {
@@ -494,12 +501,23 @@ impl SessionPicker {
                 let title = format!(
                     "{}{}{}",
                     if session.pinned { "★ " } else { "" },
-                    session.title.as_deref().unwrap_or("(untitled)"),
-                    if session.archived { " [archived]" } else { "" }
+                    session
+                        .title
+                        .as_deref()
+                        .unwrap_or(self.locale.text("tui.untitled")),
+                    if session.archived {
+                        self.locale.text("tui.session_archived_suffix")
+                    } else {
+                        ""
+                    }
                 );
                 let current = Some(&session.id) == self.current.as_ref();
                 // VP-3 四轮定稿：✓ 锚定名称——数字列之后、标题之前。
-                let body = format!("{title:<32}{} msgs", session.message_count);
+                let body = self.locale.render(
+                    &UiMessage::new("tui.session_messages")
+                        .arg("title", format!("{title:<32}"))
+                        .arg("count", session.message_count),
+                );
                 lines.push(Line::from(Span::styled(
                     crate::tui::numbered_picker_row(&number, &body, current, row_width),
                     style,
@@ -508,11 +526,14 @@ impl SessionPicker {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 if self.archive_confirmation.is_some() {
-                    "A again: confirm archive (content retained) · Esc cancel"
+                    self.locale
+                        .text("tui.a_again_confirm_archive_content_retained_esc_cancel")
                 } else if self.show_archived {
-                    "↑↓ · Enter open · / find · P pin · A restore · F2 active · Esc"
+                    self.locale
+                        .text("tui.enter_open_find_p_pin_a_restore_f2_active_esc")
                 } else {
-                    "↑↓ · Enter open · / find · P pin · A archive · F2 archived · Esc"
+                    self.locale
+                        .text("tui.enter_open_find_p_pin_a_archive_f2_archived_esc")
                 },
                 Style::default().add_modifier(Modifier::DIM),
             )));
@@ -525,13 +546,13 @@ impl SessionPicker {
     fn draw_dsh(&self, dsh: &DshResumeData, lines: &mut Vec<Line<'static>>, row_width: usize) {
         if dsh.rows.is_empty() {
             lines.push(Line::from(if self.filter.is_empty() {
-                "no dsh sessions — /new to start one"
+                self.locale.text("tui.no_dsh_sessions_new_to_start_one")
             } else {
-                "no matching conversations (title / ID)"
+                self.locale.text("tui.no_matching_conversations_title_id")
             }));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Esc close",
+                self.locale.text("tui.esc_close_527"),
                 Style::default().add_modifier(Modifier::DIM),
             )));
             return;
@@ -574,7 +595,8 @@ impl SessionPicker {
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑↓ select · Enter resume · 1-9 quick pick · / filter · Esc close",
+            self.locale
+                .text("tui.select_enter_resume_1_9_quick_pick_filter_esc_close"),
             Style::default().add_modifier(Modifier::DIM),
         )));
     }

@@ -1,53 +1,78 @@
 //! Presentation decoding of the existing context wire shape, never estimation.
+use crate::i18n::{LocaleContext, UiMessage};
 use serde_json::Value;
 
 const INVALID: &str = "Host returned an invalid context estimate";
 
+const FIELDS: &[&str] = &[
+    "base_prompt",
+    "project_instructions",
+    "plan_policy",
+    "skill_catalog",
+    "invoked_skill",
+    "goal_policy",
+    "tool_schemas",
+    "history",
+    "image_count",
+    "image_original_count",
+    "image_offloaded_count",
+    "image_bytes",
+    "image_tokens",
+    "output_reserve",
+    "input",
+    "total",
+];
+
 pub(super) fn display(value: &Value) -> Result<String, String> {
-    let mut lines = vec![format!("Context estimate · {}", string(value, "unit")?)];
-    for (field, label) in [
-        ("base_prompt", "Base prompt"),
-        ("project_instructions", "Project instructions"),
-        ("plan_policy", "Plan policy"),
-        ("skill_catalog", "Skill catalog"),
-        ("invoked_skill", "Invoked skill"),
-        ("goal_policy", "Goal policy"),
-        ("tool_schemas", "Tool schemas"),
-        ("history", "History / compaction view"),
-        ("image_count", "Images"),
-        ("image_original_count", "Images before projection"),
-        ("image_offloaded_count", "Older images omitted"),
-        ("image_bytes", "Image bytes"),
-        ("image_tokens", "Visual token estimate"),
-        ("output_reserve", "Output reserve"),
-        ("input", "Input estimate"),
-        ("total", "Total estimate"),
-    ] {
-        lines.push(format!("{label}: {}", number(value, field)?));
+    display_localized(value, LocaleContext::default())
+}
+pub(super) fn display_localized(value: &Value, locale: LocaleContext) -> Result<String, String> {
+    let mut lines = vec![
+        locale.render(&UiMessage::new("cli.context_heading").arg("unit", string(value, "unit")?)),
+    ];
+    for field in FIELDS {
+        lines.push(
+            locale.render(
+                &UiMessage::new("cli.context_number")
+                    .arg("label", locale.text(&format!("context.{field}")))
+                    .arg("value", number(value, field)?),
+            ),
+        );
     }
-    lines.push(format!(
-        "Visual safety factor: {}.0x",
-        number(value, "image_safety_factor")?
+    lines.push(locale.render(
+        &UiMessage::new("cli.context_safety").arg("factor", number(value, "image_safety_factor")?),
     ));
-    lines.push(format!(
-        "Memory injection: {} / {} bytes",
-        number(value, "memory")?,
-        number(value, "memory_budget_bytes")?
-    ));
-    lines.push(format!("Estimator: {}", string(value, "estimator")?));
-    for (field, label) in [("tools", "Tools"), ("skills", "Skills")] {
+    lines.push(
+        locale.render(
+            &UiMessage::new("cli.context_memory")
+                .arg("value", number(value, "memory")?)
+                .arg("budget", number(value, "memory_budget_bytes")?),
+        ),
+    );
+    lines.push(
+        locale.render(
+            &UiMessage::new("cli.context_estimator").arg("name", string(value, "estimator")?),
+        ),
+    );
+    for field in ["tools", "skills"] {
         let names = value[field]
             .as_array()
             .ok_or(INVALID)?
             .iter()
             .map(|item| item.as_str().ok_or(INVALID))
             .collect::<Result<Vec<_>, _>>()?;
-        lines.push(format!("{label}: {}", names.join(", ")));
+        lines.push(
+            locale.render(
+                &UiMessage::new("cli.context_number")
+                    .arg("label", locale.text(&format!("context.{field}")))
+                    .arg("value", names.join(", ")),
+            ),
+        );
     }
-    lines.push("Skill diagnostics".into());
+    lines.push(locale.text("cli.context_diagnostics_header").into());
     let diagnostics = value["skill_diagnostics"].as_array().ok_or(INVALID)?;
     if diagnostics.is_empty() {
-        lines.push("  none".into());
+        lines.push(locale.text("cli.context_diagnostics_none").into());
     }
     for item in diagnostics {
         let name = match &item["name"] {
@@ -90,6 +115,29 @@ mod tests {
             &json!({"kind":"context", "context":value}),
         )
         .unwrap();
+        for locale in [
+            crate::i18n::Locale::Simplified,
+            crate::i18n::Locale::Traditional,
+        ] {
+            let translated = crate::host_client::HostClient::info_dialog_text_localized(
+                &json!({"kind":"context","context":value}),
+                crate::i18n::LocaleContext::new(locale),
+            )
+            .unwrap();
+            assert_ne!(translated, text);
+            assert!(translated.contains("host-test"));
+            assert!(translated.contains("read_file"));
+            assert!(translated.contains("project / - / invalid: bad catalog"));
+            let mut invalid = value.clone();
+            invalid.as_object_mut().unwrap().remove("total");
+            assert!(
+                crate::host_client::HostClient::info_dialog_text_localized(
+                    &json!({"kind":"context","context":invalid}),
+                    crate::i18n::LocaleContext::new(locale)
+                )
+                .is_err()
+            );
+        }
         for expected in [
             "Total estimate: 16",
             "Visual token estimate: 13",

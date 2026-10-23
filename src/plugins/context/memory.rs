@@ -207,10 +207,11 @@ impl CommandHandler for MemoryCommand {
                 let record = application
                     .memory_add(scope, content, source)
                     .map_err(failed)?;
-                Ok(CommandOutcome::Status(format!(
-                    "Memory {} added at revision 1.",
-                    record.id
-                )))
+                Ok(CommandOutcome::Status(
+                    crate::i18n::UiMessage::new("command.memory_added")
+                        .arg("id", record.id)
+                        .into(),
+                ))
             }
             "edit" => {
                 let (id, tail) = split_once(rest);
@@ -222,10 +223,12 @@ impl CommandHandler for MemoryCommand {
                 let record = application
                     .memory_update(id, revision, content)
                     .map_err(failed)?;
-                Ok(CommandOutcome::Status(format!(
-                    "Memory {} updated to revision {}.",
-                    record.id, record.revision
-                )))
+                Ok(CommandOutcome::Status(
+                    crate::i18n::UiMessage::new("command.memory_updated")
+                        .arg("id", record.id)
+                        .arg("revision", record.revision)
+                        .into(),
+                ))
             }
             "delete" => {
                 let (id, revision) = split_once(rest);
@@ -234,7 +237,11 @@ impl CommandHandler for MemoryCommand {
                     return Err(usage());
                 }
                 application.memory_delete(id, revision).map_err(failed)?;
-                Ok(CommandOutcome::Status(format!("Memory {id} deleted.")))
+                Ok(CommandOutcome::Status(
+                    crate::i18n::UiMessage::new("command.memory_deleted")
+                        .arg("id", id)
+                        .into(),
+                ))
             }
             _ => Err(usage()),
         }
@@ -267,9 +274,7 @@ fn split_source(value: &str) -> Result<(&str, Option<&str>), CommandError> {
 }
 
 fn usage() -> CommandError {
-    CommandError::Failed {
-        message: "usage: /memory list [all|project|user] | show <id> | add <project|user> <content> [--source file:path] | edit <id> <revision> <content> | delete <id> <revision>".into(),
-    }
+    CommandError::presented(crate::i18n::UiMessage::new("command.memory_usage"))
 }
 
 fn failed(error: impl ToString) -> CommandError {

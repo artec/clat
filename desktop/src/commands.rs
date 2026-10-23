@@ -1,4 +1,5 @@
 use crate::app::Desktop;
+use clat_core::client_ports::presentation::UiMessage;
 use serde_json::{Value, json};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -41,7 +42,7 @@ pub async fn desktop_info(
         Ok(json!({"desktopVersion":env!("CARGO_PKG_VERSION"),"backendVersion":env!("CARGO_PKG_VERSION"),
             "hostVersion":host_version,"hostConnected":host_connected,"backendError":state.backend_error,"connectionError":connection_error,
             "hostStatus":host_status,"backendPending":backend_pending,
-            "autoCheck":update.auto_check,"updateStatus":update.status,"updateAvailable":update.pending.is_some(),
+            "autoCheck":update.auto_check,"updateStatus":update.status.as_ref().map(|m|crate::localization::context(&app).render(m)),"updatePresentation":update.status,"updateAvailable":update.pending.is_some(),
             "downloaded":update.bytes.is_some(),"updateBusy":update.busy}))
     }).await.map_err(|_| "desktop info worker failed")?
 }
@@ -59,19 +60,24 @@ pub async fn desktop_open_project(
         let path = path.into_path().map_err(|e| e.to_string())?;
         let trust = if clat_core::client_ports::host::PackagedBackend::project_needs_trust(&path)? {
             app.dialog()
-                .message(format!(
-                    "信任此项目并允许 CLAT 在权限控制下使用工具？\n{}",
-                    path.display()
+                .message(crate::localization::message(
+                    &app,
+                    "desktop.trust_body",
+                    "path",
+                    path.display().to_string(),
                 ))
-                .title("项目信任")
+                .title(crate::localization::text(&app, "desktop.trust_title"))
                 .kind(MessageDialogKind::Warning)
-                .buttons(MessageDialogButtons::OkCancel)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    crate::localization::text(&app, "common.confirm").into(),
+                    crate::localization::text(&app, "common.cancel").into(),
+                ))
                 .blocking_show()
         } else {
             true
         };
         if !trust {
-            return Err("未授权项目信任；未启动后台".into());
+            return Err(crate::localization::text(&app, "desktop.trust_denied").into());
         }
         let state = app.state::<Desktop>();
         let _connection = state
@@ -81,7 +87,7 @@ pub async fn desktop_open_project(
         let backend = state
             .backend
             .as_ref()
-            .ok_or("包内后端不可用，请重新安装桌面应用")?;
+            .ok_or(crate::localization::text(&app, "desktop.backend_reinstall"))?;
         let client = backend.open_project(&path, trust)?;
         crate::app::connected(&app, client)
     })
@@ -93,7 +99,7 @@ pub async fn desktop_open_project(
 pub async fn desktop_check_update(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), UiMessage> {
     guard(&window)?;
     crate::update::check(&app).await
 }
@@ -101,7 +107,7 @@ pub async fn desktop_check_update(
 pub async fn desktop_download_update(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), UiMessage> {
     guard(&window)?;
     crate::update::download(&app).await
 }
@@ -109,7 +115,7 @@ pub async fn desktop_download_update(
 pub async fn desktop_install_update(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), UiMessage> {
     guard(&window)?;
     crate::update::install(&app).await
 }
@@ -123,20 +129,24 @@ pub fn desktop_cancel_update(
     Ok(())
 }
 #[tauri::command]
+pub fn desktop_locale(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Value, String> {
+    guard(&window)?;
+    Ok(crate::localization::payload(&app))
+}
+#[tauri::command]
 pub fn desktop_preferences(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-    auto_check: bool,
-) -> Result<(), String> {
+    auto_check: Option<bool>,
+    language: Option<String>,
+) -> Result<Value, String> {
     guard(&window)?;
-    crate::app::preferences(&app, auto_check)?;
-    app.state::<Desktop>()
-        .updates
-        .lock()
-        .map_err(|_| "update state unavailable")?
-        .auto_check = auto_check;
-    Ok(())
+    crate::localization::save(&app, auto_check, language)
 }
+
 #[tauri::command]
 pub fn desktop_quit(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     guard(&window)?;
@@ -155,10 +165,13 @@ pub async fn desktop_stop_host(
     tauri::async_runtime::spawn_blocking(move || {
         let confirmed = app
             .dialog()
-            .message("停止共享后台会影响 CLI、PWA 和其他项目。确认停止？")
-            .title("停止共享后台")
+            .message(crate::localization::text(&app, "desktop.stop_body"))
+            .title(crate::localization::text(&app, "desktop.stop"))
             .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancel)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                crate::localization::text(&app, "common.confirm").into(),
+                crate::localization::text(&app, "common.cancel").into(),
+            ))
             .blocking_show();
         if !confirmed {
             return Ok(());
@@ -171,7 +184,7 @@ pub async fn desktop_stop_host(
         state
             .backend
             .as_ref()
-            .ok_or("包内后端不可用")?
+            .ok_or(crate::localization::text(&app, "desktop.backend_missing"))?
             .stop_host()?;
         state
             .host

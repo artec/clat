@@ -202,7 +202,10 @@ impl std::error::Error for ApplicationError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompactionStatus {
     Started,
-    Finished { note: String, succeeded: bool },
+    Finished {
+        note: crate::i18n::PresentedText,
+        succeeded: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

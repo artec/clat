@@ -181,7 +181,8 @@ impl App {
         // The title already carries the host connection marker. Keep the
         // resident status as the project directory and use this only as a
         // transient connection notice.
-        app.status = "CLAT host · connecting · Ctrl+C detaches".into();
+        app.status = UiMessage::new("tui.native_connecting").english();
+        app.status_presentation = Some(Box::new(UiMessage::new("tui.native_connecting")));
         Ok(app)
     }
 
@@ -304,7 +305,7 @@ impl App {
         };
         if native.pending.is_some() || !native.online || self.suggestions.pending() || self.running
         {
-            self.flash_status("host offline/busy — suggestion kept out of the composer");
+            self.flash_message(UiMessage::new("tui.host_suggest_kept"));
             return;
         }
         let client = native.client.clone();
@@ -325,7 +326,7 @@ impl App {
                 result.map_err(|error| error.to_string()),
             )));
         });
-        self.flash_status("generating a manual suggestion…");
+        self.flash_message(UiMessage::new("tui.manual_suggestion"));
     }
 
     pub(super) fn submit_native(&mut self, text: String) {
@@ -349,9 +350,7 @@ impl App {
         }
         if !native.online || native.pending.is_some() || self.clipboard_image_pending {
             self.input.insert_str(&text);
-            self.flash_status(
-                "host offline/busy or clipboard pending — draft kept; /reconnect reconnects",
-            );
+            self.flash_message(UiMessage::new("tui.host_draft_kept"));
             return;
         }
         let Some(ui) = self.event_sender.clone() else {
@@ -530,7 +529,10 @@ impl App {
                         native.cancel_inflight = None;
                     }
                     if let Err(error) = result {
-                        self.flash_status(format!("cancel request failed: {error}"));
+                        self.flash_message(
+                            UiMessage::new("tui.message_cancel_request_failed_value")
+                                .arg("error", (error).to_string()),
+                        );
                     }
                 }
             }
@@ -570,7 +572,7 @@ impl App {
                 value["text"]
                     .as_str()
                     .map(str::to_owned)
-                    .ok_or_else(|| "host returned an empty suggestion".to_owned())
+                    .ok_or_else(|| self.locale.text("tui.host_empty_suggestion").to_owned())
             }),
         );
     }
@@ -621,7 +623,12 @@ impl App {
                 if let Some((_, text)) = history_entry {
                     self.input.remember(text);
                 }
-                if let Some(text) = value.get("message").and_then(Value::as_str) {
+                if let Some(presentation) = value
+                    .get("presentation")
+                    .and_then(|p| serde_json::from_value::<UiMessage>(p.clone()).ok())
+                {
+                    self.flash_message(presentation);
+                } else if let Some(text) = value.get("message").and_then(Value::as_str) {
                     self.conversation.push_turn_end(text.into());
                 } else if value.get("sessions").is_some() {
                     self.conversation.push_turn_end(value.to_string());
@@ -635,20 +642,24 @@ impl App {
                     if let Some((_, text)) = history_entry {
                         self.input.remember(text);
                     }
-                    self.flash_status(format!(
-                        "{} · message committed; not restored or resent",
-                        error
-                    ));
+                    self.flash_message(
+                        UiMessage::new(
+                            "tui.message_value_message_committed_not_restored_or_resent",
+                        )
+                        .arg_message("value1", error.presentation_or_fallback()),
+                    );
                     self.refresh_native();
                     return;
                 }
                 if let Some(draft) = draft {
                     self.input.prepend_recalled_line(&draft);
                 }
-                self.flash_status(format!(
-                    "{} · draft kept; check host history before resending",
-                    error
-                ));
+                self.flash_message(
+                    UiMessage::new(
+                        "tui.message_value_draft_kept_check_host_history_before_resending",
+                    )
+                    .arg_message("value1", error.presentation_or_fallback()),
+                );
             }
         }
     }
@@ -724,6 +735,7 @@ impl App {
                     self.running = true;
                     // CONT-1（C1）：新 run 开工即清上一 run 的常驻终态。
                     self.terminal_status = None;
+                    self.terminal_presentation = None;
                     // CF8（r4）：本地 run 序号推进——此后发起的取消请
                     // 求归属于新 run，旧轮回执不再匹配。
                     if let Some(native) = self.native.as_mut() {
@@ -766,7 +778,7 @@ impl App {
                 self.native.as_mut().unwrap().online = true;
                 self.native.as_mut().unwrap().selection =
                     payload["selection_generation"].as_u64().unwrap_or(0);
-                self.flash_status("attached to CLAT host");
+                self.flash_message(UiMessage::new("tui.host_attached"));
             }
             "prompt.settled" => self.native_prompt_settled(payload),
             "notice" if payload["kind"] == "selection" => self.start_native(),
@@ -792,12 +804,15 @@ impl App {
                 self.native_question_notice(&payload)
             }
             "notice" if payload["kind"] == "next_turn_error" => {
-                self.flash_status(format!(
-                    "next turn paused: {}",
-                    payload["payload"]["message"]
-                        .as_str()
-                        .unwrap_or("startup failed")
-                ));
+                self.flash_message(
+                    UiMessage::new("tui.message_next_turn_paused_value").arg(
+                        "value1",
+                        (payload["payload"]["message"]
+                            .as_str()
+                            .unwrap_or("startup failed"))
+                        .to_string(),
+                    ),
+                );
                 self.refresh_native();
             }
             "notice" => self.refresh_native(),
@@ -839,10 +854,7 @@ impl App {
         // 录，与 standalone/回放同词汇——不再只剩 `failed`。终态卡携带
         // prompt_rpc_id 主键（F3/CF-R3-2 的去重记忆）。
         let notice = crate::tui::conversation::settled_outcome_notice(&payload);
-        match rpc_id {
-            Some(id) => self.conversation.push_settled_turn_end(notice, id),
-            None => self.conversation.push_turn_end(notice),
-        }
+        self.conversation.push_presented_turn_end(notice, rpc_id);
         // CONT-1（C1/C2）：attached 腿与 standalone 同款——run 真实终态常
         // 驻状态栏；存在可观察未完成待办时给出诚实交代。todo 事实经既有
         // workflow.details RPC（不加新 wire 面）。
@@ -899,12 +911,13 @@ impl App {
         let Some(native) = self.native.as_ref() else {
             return Vec::new();
         };
-        status_telemetry_segments(
+        status_telemetry_segments_localized(
             native.vendor,
             &self.balance,
             current_route_usage(&self.usage_routes, &self.config),
             self.last_turn_usage.as_ref(),
             native.context_window,
+            self.locale,
         )
     }
 
@@ -965,24 +978,28 @@ impl App {
         };
         match (outcome_type.as_str(), todos) {
             ("completed", Some((open, total, sample))) => {
-                self.conversation.push_turn_end(format!(
-                    "run completed — {open} of {total} todos unfinished (task completion not verified): {sample}"
-                ));
-                self.set_terminal_status(format!(
-                    "completed · {open} todos unfinished — send a message to continue"
-                ));
+                self.conversation.push_turn_end_message(UiMessage::new("tui.message_run_completed_value_of_value_todos_unfinished_task_completion_not_verified_value").arg("open",(open).to_string()).arg("total",(total).to_string()).arg("sample",(sample).to_string()));
+                self.set_terminal_status(
+                    UiMessage::new(
+                        "tui.message_completed_value_todos_unfinished_send_a_message_to_continue",
+                    )
+                    .arg("open", (open).to_string()),
+                );
             }
             ("completed", None) => {
-                self.set_terminal_status("completed — send a message to continue");
+                self.set_terminal_status(UiMessage::new("tui.continue_notice"));
             }
             ("cancelled", Some((open, _, _))) => {
-                self.set_terminal_status(format!("cancelled · {open} todos unfinished"));
+                self.set_terminal_status(
+                    UiMessage::new("tui.message_cancelled_value_todos_unfinished")
+                        .arg("open", (open).to_string()),
+                );
             }
             ("cancelled", None) => {
                 self.set_terminal_status("cancelled");
             }
             ("failed", _) => {
-                self.set_terminal_status("run failed — see the failure notice above");
+                self.set_terminal_status(UiMessage::new("tui.failed_notice"));
             }
             _ => {}
         }

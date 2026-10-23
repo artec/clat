@@ -6,10 +6,16 @@ use serde_json::Value;
 pub struct HostCallError {
     pub message: String,
     pub code: Option<String>,
+    pub presentation: Option<Box<crate::i18n::UiMessage>>,
     pub receipt: Option<Box<AdmissionReceipt>>,
 }
 
 impl HostCallError {
+    pub fn presentation_or_fallback(&self) -> crate::i18n::UiMessage {
+        self.presentation.as_deref().cloned().unwrap_or_else(|| {
+            crate::i18n::UiMessage::new("common.diagnostic").arg("detail", self.message.clone())
+        })
+    }
     pub fn committed(&self) -> bool {
         self.receipt
             .as_ref()
@@ -22,6 +28,7 @@ impl From<String> for HostCallError {
         Self {
             message,
             code: None,
+            presentation: None,
             receipt: None,
         }
     }
@@ -61,6 +68,9 @@ pub(super) fn decode_result(result: Value) -> Result<Value, HostCallError> {
                     .unwrap_or("host rejected operation")
                     .into(),
                 code: error["code"].as_str().map(str::to_owned),
+                presentation: error
+                    .get("presentation")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
                 receipt,
             })
         }
@@ -111,5 +121,22 @@ mod tests {
             decode_result(json!({"ok":true,"value":{"answer":42}})).unwrap(),
             json!({"answer":42})
         );
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn presentation_never_replaces_execution_receipt_or_original_diagnostic() {
+        let msg = crate::i18n::UiMessage::new("common.error").arg("detail", "fixture");
+        let error = decode_result(serde_json::json!({"ok":false,"error":{
+            "code":"busy", "message":"raw diagnostic", "presentation":msg,
+        }}))
+        .unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("busy"));
+        assert_eq!(error.to_string(), "raw diagnostic");
+        assert_eq!(error.presentation.as_deref(), Some(&msg));
+        assert!(!error.committed());
     }
 }

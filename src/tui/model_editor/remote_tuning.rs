@@ -30,14 +30,16 @@ impl ModelEditor {
         Ok(())
     }
 
-    pub(super) fn remote_tuning_values(&self) -> Result<Value, String> {
+    pub(super) fn remote_tuning_values(&self) -> Result<Value, PresentedText> {
         let temperature = if self.override_is_clear(RowKind::Temperature) {
             None
         } else {
-            parse_optional_f64(&self.temperature, "Temperature")?
+            parse_optional_f64(&self.temperature, "tui.temperature")?
         };
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
-            return Err("Temperature must be a finite non-negative number".into());
+            return Err(
+                UiMessage::new("tui.temperature_must_be_a_finite_non_negative_number").into(),
+            );
         }
         let parallel = if self.override_is_clear(RowKind::Parallel) {
             Override::Clear
@@ -55,7 +57,7 @@ impl ModelEditor {
         }))
     }
 
-    pub(super) fn append_remote_tuning(&self, params: &mut Value) -> Result<(), String> {
+    pub(super) fn append_remote_tuning(&self, params: &mut Value) -> Result<(), PresentedText> {
         let Some(original) = &self.remote_tuning else {
             return Ok(());
         };

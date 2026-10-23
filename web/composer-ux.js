@@ -30,7 +30,7 @@ function observeComposerSession(id, selection) {
     const hadImages = state.draft.images.length > 0;
     clearDraft();
     if (hadImages) {
-      updateRunState('Session changed; attachments released. Reattach images in this session.');
+      updateRunState(CLATI18n.msg("web.session_changed_attachments_released_reattach_images_in_this_session", {}, "Session changed; attachments released. Reattach images in this session."));
     }
   }
   composerScope = scope;
@@ -110,14 +110,14 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
   }
   if (!composerOwns(owner) || draftEpoch !== state.draft.epoch) return;
   if (!value || value.outcome !== 'queued') {
-    updateRunState('run ended before steering was accepted; draft retained');
+    updateRunState(CLATI18n.msg("web.run_ended_before_steering_was_accepted_draft_retained", {}, "run ended before steering was accepted; draft retained"));
     return;
   }
-  addNoticeLine('steering queued');
+  addNoticeLine(CLATI18n.msg("web.steering_queued", {}, "steering queued"));
   if (images.length > 0 && state.draft.clientMessageId === clientMessageId) {
     state.draft.queuedClientMessageId = clientMessageId;
     for (const image of images) image.status = 'queued';
-    state.draft.notice = 'steering accepted; holding the local draft until durable claim';
+    state.draft.notice = CLATI18n.msg("web.steering_accepted_holding_the_local_draft_until_durable_claim", {}, "steering accepted; holding the local draft until durable claim");
   }
 }
 
@@ -126,7 +126,7 @@ async function submitComposerCommand({ text, owner }) {
     if (!confirmAttachmentSelection()) return false;
     await rpc('session.new', {});
     if (!composerOwns(owner)) return true;
-    addNoticeLine('new conversation');
+    addNoticeLine(CLATI18n.msg("tui.new_conversation", {}, "new conversation"));
     await loadSessions();
     resubscribe();
     return true;
@@ -138,15 +138,15 @@ async function submitComposerCommand({ text, owner }) {
     return true;
   }
   if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run', 'task', 'task_run', 'capabilities'].includes(value.kind)) {
-    const notice = addNoticeLine(value.message || 'command completed');
+    const notice = addNoticeLine(value.presentation ? CLATI18n.present(value.presentation,value.message) : value.message || CLATI18n.msg("web.command_completed", {}, "command completed"));
     if (['memory', 'goal', 'subagent_status', 'task', 'capabilities'].includes(value.kind)) {
       notice.classList.add('content-notice');
-      notice.setAttribute('aria-label', value.kind.replaceAll('_', ' '));
+      CLATI18n.attribute(notice,'aria-label',()=>value.kind.replaceAll('_', ' '));
     }
   } else if (value && value.kind === 'context') {
     addContextSnapshot(value.context);
   } else if (value && value.kind === 'session_reset') {
-    addNoticeLine('new conversation');
+    addNoticeLine(CLATI18n.msg("tui.new_conversation", {}, "new conversation"));
     await loadSessions();
     resubscribe();
   }
@@ -157,13 +157,13 @@ async function submitComposerCommand({ text, owner }) {
 async function recoverComposerSubmission(error, { owner, text, images, composerGeneration }) {
   if (!composerOwns(owner)) return;
   if (error.code !== 'busy' || images.length !== 0) {
-    updateRunState('send failed: ' + error.message); return;
+    updateRunState(CLATI18n.msg("web.line_send_failed_value",{value1:(error.message)},"send failed: {value1}")); return;
   }
-  updateRunState('run active · sending as steering');
+  updateRunState(CLATI18n.msg("web.run_active_sending_as_steering", {}, "run active · sending as steering"));
   try {
     await submitComposerSteering({ owner, text, images, composerGeneration, draftEpoch: state.draft.epoch });
   } catch (steerError) {
-    if (composerOwns(owner)) updateRunState('steering failed: ' + steerError.message);
+    if (composerOwns(owner)) updateRunState(CLATI18n.msg("web.line_steering_failed_value",{value1:(steerError.message)},"steering failed: {value1}"));
   }
 }
 
@@ -284,30 +284,30 @@ function navigateInputHistory(direction) {
 
 function confirmAttachmentSelection() {
   if (state.draft.sending || state.draft.queuedClientMessageId !== null) {
-    updateRunState('Wait for the submitted attachment receipt before changing sessions.');
+    updateRunState(CLATI18n.msg("web.wait_for_the_submitted_attachment_receipt_before_changing_sessions", {}, "Wait for the submitted attachment receipt before changing sessions."));
     return false;
   }
   return state.draft.images.length === 0 || window.confirm(
-    'Changing sessions releases these draft images. Text stays with its session. Continue?'
+    CLATI18n.msg("web.changing_sessions_releases_these_draft_images_text_stays_with_its_session_continue", {}, "Changing sessions releases these draft images. Text stays with its session. Continue?")
   );
 }
 
 async function copyMessageText(button, text) {
   const label = button.textContent;
   try {
-    if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+    if (!navigator.clipboard) throw CLATI18n.error(CLATI18n.msg("web.clipboard_unavailable", {}, "Clipboard unavailable"));
     await navigator.clipboard.writeText(text);
-    button.textContent = 'Copied';
+    CLATI18n.bind(button, "textContent", () => CLATI18n.msg("web.copied", {}, "Copied"));
   } catch (_) {
-    button.textContent = 'Copy failed';
+    CLATI18n.bind(button, "textContent", () => CLATI18n.msg("web.copy_failed", {}, "Copy failed"));
   }
-  setTimeout(() => { button.textContent = label; }, 1600);
+  setTimeout(() => { CLATI18n.bind(button, "textContent", () => label); }, 1600);
 }
 
 function copyTextButton(label, source) {
-  const button = el('button', 'text-action', label);
+  const button = el('button', 'text-action', () => (label));
   button.type = 'button';
-  button.setAttribute('aria-label', label);
+  CLATI18n.attribute(button,'aria-label',()=>label);
   button.addEventListener('click', () => { void copyMessageText(button, source()); });
   return button;
 }
@@ -315,7 +315,7 @@ function copyTextButton(label, source) {
 function addReplyActions(node, source) {
   if (node.querySelector(':scope > .message-actions')) return;
   const actions = el('div', 'message-actions');
-  actions.appendChild(copyTextButton('Copy reply', source));
+  actions.appendChild(copyTextButton(CLATI18n.msg("web.copy_reply", {}, "Copy reply"), source));
   node.appendChild(actions);
 }
 
@@ -332,7 +332,7 @@ function quoteSelection(text, role, seq) {
 }
 
 function installSelectionQuote() {
-  const button = el('button', 'selection-quote hidden', 'Quote selection');
+  const button = el('button', 'selection-quote hidden', () => (CLATI18n.msg("web.quote_selection", {}, "Quote selection")));
   button.type = 'button';
   let chosen = null;
   button.addEventListener('pointerdown', (event) => event.preventDefault());

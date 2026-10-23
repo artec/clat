@@ -1,5 +1,8 @@
 //! Narrow internal client ports. Stateful owners are deliberately not exported.
 //! This surface is not a plugin ABI; internal workspace crates evolve together.
+pub mod presentation {
+    pub use crate::i18n::*;
+}
 pub use crate::session::id::SessionId;
 pub use crate::session::use_cases::SessionSummary;
 // AG-DOGFOOD-4 返工 F1（E4）：前端展示面共享 core 的单一脱敏原语

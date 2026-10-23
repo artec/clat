@@ -21,7 +21,7 @@ impl ConversationModel {
         let mut matches = Vec::new();
         let mut row = 0;
         for (item, cache) in &self.items {
-            let rows = item_rows(item, cache, visibility);
+            let rows = item_rows(item, cache, visibility, self.locale);
             let text = match item {
                 ConversationItem::User { text } | ConversationItem::Assistant { text, .. } => {
                     Some(text)

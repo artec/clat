@@ -14,6 +14,7 @@
 //! 三入口共用同一 core 通道。
 
 use super::*;
+use crate::i18n::UiMessage;
 use crate::model::{
     ContentPart, ImageProjectionBudget, Modality, ModelConfig, ModelError, ModelErrorKind,
     ModelItem, ModelOptions, ModelRequest, ProviderCredentials,
@@ -60,12 +61,26 @@ pub struct VisionProbeReport {
     /// Pass 且配置为 custom 时覆盖位是否已随写盘。
     pub override_applied: bool,
     pub note: String,
+    pub note_presentation: Option<UiMessage>,
 }
 
 impl VisionProbeReport {
     /// 状态栏/终端一行摘要。
     pub fn status_text(&self) -> String {
         format!("vision probe {} · {}", self.outcome.as_str(), self.note)
+    }
+    pub fn status_presentation(&self) -> UiMessage {
+        UiMessage::new("command.vision_status")
+            .arg_message(
+                "outcome",
+                UiMessage::new(&format!("command.vision_{}", self.outcome.as_str())),
+            )
+            .arg_message(
+                "note",
+                self.note_presentation.clone().unwrap_or_else(|| {
+                    UiMessage::new("common.diagnostic").arg("detail", self.note.clone())
+                }),
+            )
     }
 }
 
@@ -106,6 +121,7 @@ impl VisionProbeHandle {
                     answer_excerpt: String::new(),
                     override_applied: false,
                     note: "no probe result".into(),
+                    note_presentation: Some(UiMessage::new("command.vision_no_result")),
                 })
             })
     }
@@ -181,6 +197,9 @@ impl TrustedProjectApplication {
                         answer_excerpt: String::new(),
                         override_applied: false,
                         note: format!("could not stage the probe image: {error}"),
+                        note_presentation: Some(
+                            UiMessage::new("command.vision_stage_failed").arg("error", error),
+                        ),
                     },
                 };
                 append_probe_evidence(&evidence_root, &report);
@@ -360,23 +379,18 @@ fn build_report(
     code: &str,
     persisted: Option<Result<(), String>>,
 ) -> VisionProbeReport {
-    let mut note = match outcome {
-        VisionProbeOutcome::Pass => "the model read the probe code".to_owned(),
-        VisionProbeOutcome::Rejected => "the endpoint rejected the image part (4xx)".to_owned(),
-        VisionProbeOutcome::SilentDrop => {
-            "the endpoint answered without reading the image".to_owned()
-        }
-        VisionProbeOutcome::Inconclusive => {
-            "the probe failed for reasons unrelated to vision; rerun it".to_owned()
-        }
-    };
+    let mut note = UiMessage::new(&format!("command.vision_note_{}", outcome.as_str()));
     let mut override_applied = false;
     match persisted {
         Some(Ok(())) => {
             override_applied = true;
-            note.push_str("; vision capability override saved to the configuration");
+            note = UiMessage::new("command.vision_override_saved").arg_message("note", note);
         }
-        Some(Err(error)) => note.push_str(&format!("; override not saved: {error}")),
+        Some(Err(error)) => {
+            note = UiMessage::new("command.vision_override_failed")
+                .arg_message("note", note)
+                .arg("error", error)
+        }
         None => {}
     }
     VisionProbeReport {
@@ -385,7 +399,8 @@ fn build_report(
         expected_code: code.to_owned(),
         answer_excerpt,
         override_applied,
-        note,
+        note: note.english(),
+        note_presentation: Some(note),
     }
 }
 
@@ -646,6 +661,7 @@ mod tests {
             answer_excerpt: "0713".into(),
             override_applied: true,
             note: "the model read the probe code".into(),
+            note_presentation: None,
         };
         append_probe_evidence(&root, &report);
         append_probe_evidence(&root, &report);

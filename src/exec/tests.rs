@@ -470,6 +470,7 @@ fn tty_deltas_escape_control_sequences_pipes_stay_verbatim() {
         let output = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(Vec::new()));
         let sink = ExecEventSink {
+            locale: LocaleContext::default(),
             output: Arc::new(Mutex::new(
                 Box::new(CapturedWriter(Arc::clone(&output))) as Box<dyn Write + Send>
             )),
@@ -651,6 +652,108 @@ fn json_stdout_is_pure_ndjson_and_keeps_stderr_status() {
     assert!(stderr.contains("turn"), "{stderr}");
     fs::remove_dir_all(storage_root).ok();
     fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn interface_language_changes_human_status_without_translating_model_or_wire() {
+    use crate::client_ports::presentation::{Locale, LocaleContext};
+    let mut expected_tags = None;
+    for locale in [Locale::English, Locale::Simplified, Locale::Traditional] {
+        for json in [false, true] {
+            let (storage, root, project) = setup(&format!("exec-language-{}-{json}", locale.id()));
+            prepare_storage(&project, &storage, TestBehavior::Success);
+            let (io, captured) = ExecIo::capture(b"");
+            let context = LocaleContext::new(locale);
+            let mut options = args(Some("原始提示词 {path}"));
+            options.json = json;
+            let outcome = exec(
+                &project,
+                &storage,
+                TestBehavior::Success,
+                options,
+                io.with_locale(context),
+            );
+            assert!(
+                matches!(outcome, ExecOutcome::Success { .. }),
+                "{outcome:?}"
+            );
+            let stdout = captured.output_string();
+            if json {
+                let events = parse_json_stream(&stdout);
+                let tags = json_type_tags(&events);
+                if let Some(expected) = &expected_tags {
+                    assert_eq!(&tags, expected);
+                } else {
+                    expected_tags = Some(tags);
+                }
+                let answer: String = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        crate::wire::WireEvent::Run(RunEvent::ModelStream {
+                            event: ModelEvent::TextDelta { delta },
+                            ..
+                        }) => Some(delta.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(answer, "done");
+                assert_eq!(last_line_exit_code(&stdout), 0);
+            } else {
+                assert_eq!(stdout, "done\n");
+            }
+            let stderr = captured.error_string();
+            let expected = context.render(
+                &UiMessage::new("cli.exec_turn")
+                    .arg("provider", "deterministic")
+                    .arg("model", "test-model")
+                    .arg("turn", 1),
+            );
+            // Provider and model facts stay raw; only the surrounding turn label changes.
+            let turn_label = expected.split("test-model").last().unwrap();
+            assert!(stderr.contains(turn_label), "{stderr}");
+            assert_eq!(
+                persisted_user_message(&project, &storage).1,
+                "原始提示词 {path}"
+            );
+            crate::test_support::cleanup_tree(&storage);
+            crate::test_support::cleanup_tree(&root);
+        }
+    }
+}
+
+#[test]
+fn localized_usage_failure_keeps_byte_identical_ndjson_and_exit_category() {
+    use crate::client_ports::presentation::{Locale, LocaleContext};
+    let mut expected = None;
+    for locale in [Locale::English, Locale::Simplified, Locale::Traditional] {
+        let (storage, root, project) = setup(&format!("exec-language-failure-{}", locale.id()));
+        prepare_storage(&project, &storage, TestBehavior::Success);
+        let (io, captured) = ExecIo::capture(b"");
+        let outcome = exec(
+            &project,
+            &storage,
+            TestBehavior::Success,
+            json_args(Some("")),
+            io.with_locale(LocaleContext::new(locale)),
+        );
+        let ExecOutcome::UsageError(message) = outcome else {
+            panic!("usage category must stay unchanged");
+        };
+        assert_eq!(message.raw, "prompt must not be empty");
+        assert!(message.presentation.is_some());
+        if locale != Locale::English {
+            assert_ne!(message.render(LocaleContext::new(locale)), message.raw);
+        }
+        let wire = captured.output_string();
+        assert_eq!(last_line_exit_code(&wire), 2);
+        if let Some(expected) = &expected {
+            assert_eq!(&wire, expected);
+        } else {
+            expected = Some(wire);
+        }
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&root);
+    }
 }
 
 /// INV-J4 + 验收④ + PWA1-01：两层各自恰一终态——Run 层
@@ -1130,7 +1233,8 @@ fn application_event_forwarder_drop_drains_queued_events_and_joins() {
     let writer: SharedWriter = Arc::new(Mutex::new(Box::new(CapturedWriter(Arc::clone(&output)))));
     let state = Arc::new(ExecIoState::default());
     let (sender, receiver) = mpsc::channel();
-    let forwarder = ApplicationEventForwarder::spawn(receiver, writer, state);
+    let forwarder =
+        ApplicationEventForwarder::spawn(receiver, writer, state, LocaleContext::default());
     sender
         .send(ApplicationEvent::CompactionUpdated(
             CompactionStatus::Finished {
@@ -1391,6 +1495,7 @@ fn interrupted_permission_wait_denies_instead_of_blocking_forever() {
     let cancel = ExecCancel::new();
     let (io, _captured) = ExecIo::capture(b"");
     let approver = ExecApprover {
+        locale: LocaleContext::default(),
         mode: PermissionMode::Interactive,
         input: Some(Arc::new(WaitForInterruptInput)),
         error: Arc::clone(&io.error),

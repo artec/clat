@@ -30,6 +30,22 @@ const ICON_512: &[u8] = include_bytes!("../../web/icons/icon-512.png");
 /// GET 资产表：`(字节, content-type)`；未知路径 `None`（404）。
 pub(crate) fn asset(path: &str) -> Option<(Cow<'static, [u8]>, &'static str)> {
     match path {
+        "/i18n.js" => Some((
+            Cow::Owned(crate::i18n::browser_runtime().into_bytes()),
+            "application/javascript",
+        )),
+        "/locales/en.json" => Some((
+            Cow::Borrowed(include_bytes!("../../locales/en.json")),
+            "application/json",
+        )),
+        "/locales/zh-Hans.json" => Some((
+            Cow::Borrowed(include_bytes!("../../locales/zh-Hans.json")),
+            "application/json",
+        )),
+        "/locales/zh-Hant.json" => Some((
+            Cow::Borrowed(include_bytes!("../../locales/zh-Hant.json")),
+            "application/json",
+        )),
         "/" => Some((Cow::Borrowed(INDEX), "text/html; charset=utf-8")),
         "/plugin-market.js" => Some((Cow::Borrowed(PLUGIN_MARKET), "application/javascript")),
         "/app.js" => Some((Cow::Borrowed(APP_JS), "application/javascript")),

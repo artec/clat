@@ -5,14 +5,41 @@ pub(in crate::tui::plugins) fn plugin_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     let text = match dialog.view {
-        View::Review => dialog.review.as_ref().map(|ticket| {
-            let packages = &ticket.review["review"]["packages"];
-            let native = packages.as_array().is_some_and(|packages| packages.iter().any(|p| p["runtime"] == "mcp-stdio"));
-            let warning = if native { "Native MCP runs with your account's file/network/process access.\n" } else { "" };
-            format!("Verified packages · {} · permissions and config schemas\n{warning}Config JSON: {{\"plugin.id\":{{...}}}}; blank keeps update config.\nConfigure requires an explicit plugin.id object; {{}} clears its fields.\n{}", label(&ticket.review,"action"), serde_json::to_string_pretty(packages).unwrap_or_default())
-        }).unwrap_or_default(),
-        View::Config => format!("Configuration is sent only to this host, never saved in input history.\n{} characters entered (all values masked):\n{}", dialog.config.text().chars().count(), "*".repeat(dialog.config.text().chars().count().min(160))),
-        View::Remove => dialog.remove.as_ref().map(|(id, uninstall)| format!("Confirm {} {id}?\n{}", if *uninstall {"uninstall"} else {"disable"}, if *uninstall {"Managed artifacts are removed."} else {"The plugin remains installed, but its contributions are revoked."})).unwrap_or_default(),
+        View::Review => review_text(dialog),
+        View::Config => dialog.locale.render(
+            &UiMessage::new("tui.plugin_config_body")
+                .arg("count", dialog.config.text().chars().count())
+                .arg(
+                    "mask",
+                    "*".repeat(dialog.config.text().chars().count().min(160)),
+                ),
+        ),
+        View::Remove => dialog
+            .remove
+            .as_ref()
+            .map(|(id, uninstall)| {
+                dialog.locale.render(
+                    &UiMessage::new("tui.plugin_remove_body")
+                        .arg(
+                            "action",
+                            dialog.locale.text(if *uninstall {
+                                "tui.uninstall_verb"
+                            } else {
+                                "tui.disable_verb"
+                            }),
+                        )
+                        .arg("id", id.clone())
+                        .arg(
+                            "detail",
+                            dialog.locale.text(if *uninstall {
+                                "tui.plugin_remove_artifacts"
+                            } else {
+                                "tui.plugin_disable_detail"
+                            }),
+                        ),
+                )
+            })
+            .unwrap_or_default(),
         View::Installed | View::Market => return browse_lines(dialog, width),
     };
     text.lines()
@@ -20,7 +47,16 @@ pub(in crate::tui::plugins) fn plugin_lines(
         .flat_map(|(index, line)| {
             let role = if index == 0 {
                 theme::Role::Bold
-            } else if line.starts_with("Native MCP") {
+            } else if dialog.view == View::Review
+                && dialog.review.as_ref().is_some_and(|ticket| {
+                    ticket.review["review"]["packages"]
+                        .as_array()
+                        .is_some_and(|packages| {
+                            packages.iter().any(|p| p["runtime"] == "mcp-stdio")
+                        })
+                })
+                && index == 1
+            {
                 theme::Role::Warning
             } else {
                 theme::Role::Dim
@@ -38,16 +74,26 @@ fn styled_lines(text: &str, width: usize, style: ratatui::style::Style) -> Vec<L
 }
 
 fn browse_lines(dialog: &PluginDialog, width: usize) -> Vec<Line<'static>> {
-    let heading = format!(
-        "{} · market v{} · filter: {}{}",
-        if dialog.view == View::Market {
-            "Signed market · Enter installs"
-        } else {
-            "Installed on this host"
-        },
-        dialog.market_generation,
-        dialog.query.text(),
-        if dialog.searching { " [editing]" } else { "" }
+    let heading = dialog.locale.render(
+        &UiMessage::new("tui.plugin_browse_heading")
+            .arg(
+                "heading",
+                dialog.locale.text(if dialog.view == View::Market {
+                    "tui.plugin_market_heading"
+                } else {
+                    "tui.plugin_installed_heading"
+                }),
+            )
+            .arg("generation", dialog.market_generation)
+            .arg("query", dialog.query.text())
+            .arg(
+                "editing",
+                if dialog.searching {
+                    dialog.locale.text("tui.plugin_editing")
+                } else {
+                    ""
+                },
+            ),
     );
     let mut lines = vec![Line::from(Span::styled(
         fit_display_width(&heading, width),
@@ -77,43 +123,11 @@ fn browse_lines(dialog: &PluginDialog, width: usize) -> Vec<Line<'static>> {
     }
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No matching plugins.",
+            dialog.locale.text("tui.plugin_empty"),
             theme::style(theme::Role::Dim),
         )));
     }
-    if let Some(row) = dialog.selected() {
-        let state = if row["enabled"] == true {
-            "enabled"
-        } else if row.get("enabled").is_some() {
-            "disabled"
-        } else {
-            "market"
-        };
-        let role = if row["enabled"] == true {
-            theme::Role::Success
-        } else {
-            theme::Role::Dim
-        };
-        lines.extend(styled_lines(
-            &format!(
-                "{} · {state} · publisher: {}",
-                label(&row, "name"),
-                label(&row, "publisher")
-            ),
-            width,
-            theme::style(role),
-        ));
-        lines.extend(styled_lines(
-            &label(&row, "summary"),
-            width,
-            theme::style(theme::Role::Dim),
-        ));
-        lines.extend(styled_lines(
-            &format!("Health: {}", label(&row, "health")),
-            width,
-            theme::style(theme::Role::Faint),
-        ));
-    }
+    append_selected(dialog, width, &mut lines);
     lines
 }
 
@@ -142,4 +156,72 @@ pub(in crate::tui::plugins) fn browse_viewport(
     lines.extend(detail);
     lines.truncate(height);
     lines
+}
+
+fn review_text(dialog: &PluginDialog) -> String {
+    dialog
+        .review
+        .as_ref()
+        .map(|ticket| {
+            let packages = &ticket.review["review"]["packages"];
+            let native = packages
+                .as_array()
+                .is_some_and(|packages| packages.iter().any(|p| p["runtime"] == "mcp-stdio"));
+            let warning = if native {
+                dialog.locale.text("tui.plugin_native_risk")
+            } else {
+                ""
+            };
+            dialog.locale.render(
+                &UiMessage::new("tui.plugin_review_body")
+                    .arg("action", label(&ticket.review, "action"))
+                    .arg("warning", warning)
+                    .arg("example", r#"{"plugin.id":{...}}"#)
+                    .arg("empty", "{}")
+                    .arg(
+                        "packages",
+                        serde_json::to_string_pretty(packages).unwrap_or_default(),
+                    ),
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn append_selected(dialog: &PluginDialog, width: usize, lines: &mut Vec<Line<'static>>) {
+    if let Some(row) = dialog.selected() {
+        let state = if row["enabled"] == true {
+            dialog.locale.text("tui.plugin_enabled_state")
+        } else if row.get("enabled").is_some() {
+            dialog.locale.text("tui.plugin_disabled_state")
+        } else {
+            dialog.locale.text("tui.plugin_market_state")
+        };
+        let role = if row["enabled"] == true {
+            theme::Role::Success
+        } else {
+            theme::Role::Dim
+        };
+        lines.extend(styled_lines(
+            &dialog.locale.render(
+                &UiMessage::new("tui.plugin_publisher")
+                    .arg("name", label(&row, "name"))
+                    .arg("state", state)
+                    .arg("publisher", label(&row, "publisher")),
+            ),
+            width,
+            theme::style(role),
+        ));
+        lines.extend(styled_lines(
+            &label(&row, "summary"),
+            width,
+            theme::style(theme::Role::Dim),
+        ));
+        lines.extend(styled_lines(
+            &dialog
+                .locale
+                .render(&UiMessage::new("tui.plugin_health").arg("health", label(&row, "health"))),
+            width,
+            theme::style(theme::Role::Faint),
+        ));
+    }
 }

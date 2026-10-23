@@ -16,7 +16,17 @@ impl App {
         } else {
             theme::Role::Faint
         };
-        Some(ratatui::text::Line::from(format!(" {mode} ")).style(theme::style(role)))
+        Some(
+            ratatui::text::Line::from(format!(
+                " {} ",
+                self.locale.text(match mode {
+                    PermissionMode::ReadOnly => "web.read_only",
+                    PermissionMode::ProjectWrite => "web.project_write",
+                    PermissionMode::FullAccess => "web.full_access",
+                })
+            ))
+            .style(theme::style(role)),
+        )
     }
 
     pub(in crate::tui) fn current_permission_mode(&self) -> PermissionMode {
@@ -41,12 +51,12 @@ impl App {
             return;
         };
         if !native.online || native.permissions.pending {
-            self.flash_status("host offline or permission change pending");
+            self.flash_message(UiMessage::new("tui.host_permission_pending"));
             return;
         }
         let Some(mode) = native.permissions.mode else {
             self.refresh_native();
-            self.flash_status("waiting for host permission state; reopen /perm");
+            self.flash_message(UiMessage::new("tui.host_permission_wait"));
             return;
         };
         native.permissions.target = Some((native.epoch, native.selection));
@@ -62,7 +72,7 @@ impl App {
             || native.permissions.pending
             || target != Some((native.epoch, native.selection))
         {
-            self.flash_status("permission target changed; reopen /perm");
+            self.flash_message(UiMessage::new("tui.host_permission_changed"));
             return;
         }
         native.permissions.pending = true;
@@ -90,10 +100,12 @@ impl App {
         }
         native.permissions.pending = false;
         match result {
-            Ok(value) => self.flash_status(format!(
-                "permission mode: {}",
-                value["label"].as_str().unwrap_or("updated")
-            )),
+            Ok(value) => {
+                self.flash_message(UiMessage::new("tui.message_permission_mode_value").arg(
+                    "value1",
+                    (value["label"].as_str().unwrap_or("updated")).to_string(),
+                ))
+            }
             Err(error) => self.flash_status(error),
         }
         // Even a persistence error may have changed the host's in-memory mode.

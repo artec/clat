@@ -39,6 +39,7 @@ python3 scripts/ci-box/source-files.py | docker run --rm -i --cpus "$cpus" \
     -v clat-ci-box-npm:/npm-cache \
     -v clat-ci-box-target:/target \
     -e CARGO_HOME=/cargo-cache \
+    -e CLAT_LANG=en \
     -e CARGO_TERM_COLOR=always \
     -e npm_config_cache=/npm-cache \
     -w /work \

@@ -4,24 +4,28 @@ use super::*;
 impl ModelEditor {
     pub(super) fn json_row_label(&self, body: bool) -> (String, String) {
         let (edited, draft, label) = if body {
-            (self.remote_body, &self.extra_body, "Extra Body JSON")
+            (
+                self.remote_body,
+                &self.extra_body,
+                self.locale.text("tui.extra_body_json"),
+            )
         } else {
             (
                 self.remote_headers,
                 &self.extra_headers,
-                "Extra Headers JSON",
+                self.locale.text("tui.extra_headers_json"),
             )
         };
         let value = match edited {
-            Some(false) => "host value hidden · unchanged".into(),
-            Some(true) if body => "replacement hidden · resets Thinking".into(),
-            Some(true) => "replacement entered · hidden".into(),
+            Some(false) => self.locale.text("tui.hidden_host_value").into(),
+            Some(true) if body => self.locale.text("tui.body_resets_thinking").into(),
+            Some(true) => self.locale.text("tui.hidden_replacement").into(),
             None => draft.clone(),
         };
         (label.into(), value)
     }
 
-    pub(super) fn append_remote_json(&self, params: &mut Value) -> Result<(), String> {
+    pub(super) fn append_remote_json(&self, params: &mut Value) -> Result<(), PresentedText> {
         for (edited, draft, key, strings_only) in [
             (
                 self.remote_headers,
@@ -60,13 +64,12 @@ impl ModelEditor {
     }
 }
 
-fn parse_draft(draft: &str, strings_only: bool) -> Result<Value, String> {
+fn parse_draft(draft: &str, strings_only: bool) -> Result<Value, PresentedText> {
     let error = || {
         if strings_only {
-            "Extra Headers must be an explicit JSON object of strings; {} clears".to_owned()
+            UiMessage::new("tui.headers_object_required").arg("empty", "{}")
         } else {
-            "Extra Body must be an explicit JSON object; {} clears and resets typed thinking"
-                .to_owned()
+            UiMessage::new("tui.body_object_required").arg("empty", "{}")
         }
     };
     let value: Value = serde_json::from_str(draft).map_err(|_| error())?;
@@ -74,7 +77,7 @@ fn parse_draft(draft: &str, strings_only: bool) -> Result<Value, String> {
         .as_object()
         .is_some_and(|fields| !strings_only || fields.values().all(Value::is_string))
     {
-        return Err(error());
+        return Err(error().into());
     }
     Ok(value)
 }

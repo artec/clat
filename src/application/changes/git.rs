@@ -72,12 +72,13 @@ pub(super) fn diff(project: &Project, file: &ChangedFile) -> Result<WorkspaceDif
         note:
             "Workspace snapshot; refresh after further edits. No stage, commit, or revert actions."
                 .into(),
+        presentation: Some(crate::i18n::UiMessage::new("web.diff_snapshot_note")),
         staged: String::new(),
         unstaged: String::new(),
     };
     if file.status.contains('U') || matches!(file.status.as_str(), "AA" | "DD") {
         result.state = "unsupported".into();
-        result.note = "Unmerged conflict; inspect with your Git editor".into();
+        result.set_note(crate::i18n::UiMessage::new("web.diff_conflict_note"));
         return Ok(result);
     }
     if file.untracked {
@@ -90,12 +91,14 @@ pub(super) fn diff(project: &Project, file: &ChangedFile) -> Result<WorkspaceDif
         }
         match String::from_utf8(bytes) {
             Ok(text) if !text.contains('\0') => {
-                result.note = "Untracked file preview (not a Git patch); symlinks and oversized files are not read.".into();
+                result.set_note(crate::i18n::UiMessage::new("web.diff_untracked_note"));
                 result.unstaged = text;
             }
             _ => {
                 result.state = "unsupported".into();
-                result.note = "Binary untracked file; no text preview".into();
+                result.set_note(crate::i18n::UiMessage::new(
+                    "web.diff_binary_untracked_note",
+                ));
             }
         }
         return Ok(result);
@@ -107,16 +110,23 @@ pub(super) fn diff(project: &Project, file: &ChangedFile) -> Result<WorkspaceDif
         result.unstaged = patch(project, file, false)?;
     }
     if result.staged.contains("Binary files ") || result.unstaged.contains("Binary files ") {
-        result.note = "Binary tracked file; Git reports a change without a text patch.".into();
+        result.set_note(crate::i18n::UiMessage::new("web.diff_binary_note"));
     } else if result.staged.contains("Subproject commit ")
         || result.unstaged.contains("Subproject commit ")
     {
-        result.note = "Submodule commit/worktree status, not a recursive file diff; inspect the submodule separately.".into();
+        result.set_note(crate::i18n::UiMessage::new("web.diff_submodule_note"));
     }
     if result.staged.is_empty() && result.unstaged.is_empty() {
-        result.note = "No text patch (submodule/status-only change or file changed since listing). Refresh or inspect with your Git editor.".into();
+        result.set_note(crate::i18n::UiMessage::new("web.diff_no_patch_note"));
     }
     Ok(result)
+}
+
+impl WorkspaceDiff {
+    fn set_note(&mut self, message: crate::i18n::UiMessage) {
+        self.note = message.english();
+        self.presentation = Some(message);
+    }
 }
 
 fn patch(project: &Project, file: &ChangedFile, staged: bool) -> Result<String, String> {

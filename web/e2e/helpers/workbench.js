@@ -23,7 +23,7 @@ async function openWorkbench(page, entry) {
     await page.goto(`${entry.origin}/`);
     await expect(page).toHaveURL(`${entry.origin}/`);
     await expect(page.locator('#landing')).toBeHidden(LIVE);
-    await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+    await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live', LIVE);
   } catch (error) {
     console.error('Workbench startup diagnostics:', JSON.stringify(diagnostics));
     throw error;

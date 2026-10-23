@@ -6,6 +6,7 @@
 //! admission time.
 
 use super::App;
+use clat_core::client_ports::presentation::{LocaleContext, PresentedText, UiMessage};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,22 +43,18 @@ pub(super) struct AttachmentDraft {
 }
 
 impl AttachmentDraft {
-    fn from_path(id: u64, path: PathBuf) -> Result<Self, String> {
+    fn from_path(id: u64, path: PathBuf) -> Result<Self, PresentedText> {
         let source = crate::media::validate_source_nofollow(&path)?;
         let source_bytes = source.bytes;
         if source_bytes > crate::media::MAX_ATTACHMENT_BYTES {
-            return Err(format!(
-                "image is too large ({} bytes > {}): {}",
-                source_bytes,
-                crate::media::MAX_ATTACHMENT_BYTES,
-                path.display()
-            ));
+            return Err(UiMessage::new("tui.image_too_large")
+                .arg("bytes", source_bytes)
+                .arg("limit", crate::media::MAX_ATTACHMENT_BYTES)
+                .arg("path", path.display().to_string())
+                .into());
         }
         let (width, height) = source.dimensions.ok_or_else(|| {
-            format!(
-                "cannot determine image dimensions before admission: {}",
-                path.display()
-            )
+            UiMessage::new("tui.image_dimensions_missing").arg("path", path.display().to_string())
         })?;
         let display_name = path
             .file_name()
@@ -76,15 +73,15 @@ impl AttachmentDraft {
         })
     }
 
-    pub(super) fn label(&self) -> String {
-        format!(
-            "[Image #{}] {} · {}x{} · {} · ~{} tok",
-            self.id,
-            self.display_name,
-            self.width,
-            self.height,
-            human_bytes(self.source_bytes),
-            self.estimated_tokens
+    pub(super) fn label(&self, locale: LocaleContext) -> String {
+        locale.render(
+            &UiMessage::new("tui.image_draft_row")
+                .arg("id", self.id)
+                .arg("name", self.display_name.clone())
+                .arg("width", self.width)
+                .arg("height", self.height)
+                .arg("size", human_bytes(self.source_bytes))
+                .arg("tokens", self.estimated_tokens),
         )
     }
 }
@@ -120,8 +117,15 @@ impl AttachmentComposer {
         *self = earlier;
     }
 
+    #[cfg(test)]
     pub(super) fn rows(&self) -> impl Iterator<Item = String> + '_ {
-        self.entries.iter().map(AttachmentDraft::label)
+        self.rows_localized(LocaleContext::default())
+    }
+    pub(super) fn rows_localized(
+        &self,
+        locale: LocaleContext,
+    ) -> impl Iterator<Item = String> + '_ {
+        self.entries.iter().map(move |entry| entry.label(locale))
     }
 
     pub(super) fn paths(&self) -> Vec<PathBuf> {
@@ -165,20 +169,20 @@ impl AttachmentComposer {
         &mut self,
         project_root: &Path,
         paths: impl IntoIterator<Item = PathBuf>,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, PresentedText> {
         let paths = paths
             .into_iter()
             .map(|path| resolve_attachment_path(project_root, &path))
             .collect::<Result<Vec<_>, _>>()?;
         if paths.is_empty() {
-            return Err("/attach needs at least one image path".into());
+            return Err(UiMessage::new("tui.attach_path_required").into());
         }
         let new_len = self.entries.len().saturating_add(paths.len());
         if new_len > crate::session::attachments::MAX_IMAGES_PER_MESSAGE {
-            return Err(format!(
-                "a message carries at most {} images (draft would contain {new_len})",
-                crate::session::attachments::MAX_IMAGES_PER_MESSAGE
-            ));
+            return Err(UiMessage::new("tui.image_count_limit")
+                .arg("limit", crate::session::attachments::MAX_IMAGES_PER_MESSAGE)
+                .arg("count", new_len)
+                .into());
         }
 
         let mut next_id = self.next_id;
@@ -192,10 +196,10 @@ impl AttachmentComposer {
             .checked_add(prepared.iter().map(|entry| entry.source_bytes).sum())
             .ok_or_else(|| "image draft byte total overflow".to_owned())?;
         if total > crate::session::attachments::MAX_RAW_BATCH_BYTES {
-            return Err(format!(
-                "message images total {total} bytes exceed the {}-byte batch limit",
-                crate::session::attachments::MAX_RAW_BATCH_BYTES
-            ));
+            return Err(UiMessage::new("tui.image_batch_limit")
+                .arg("bytes", total)
+                .arg("limit", crate::session::attachments::MAX_RAW_BATCH_BYTES)
+                .into());
         }
         let added = prepared.len();
         self.next_id = next_id;
@@ -210,15 +214,18 @@ impl AttachmentComposer {
 
     /// Move a stable attachment id to a one-based visual position. IDs never
     /// change, so text editing and reordering cannot retarget a placeholder.
-    pub(super) fn move_to(&mut self, id: u64, position: usize) -> Result<(), String> {
+    pub(super) fn move_to(
+        &mut self,
+        id: u64,
+        position: usize,
+    ) -> Result<(), clat_core::client_ports::presentation::PresentedText> {
         let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
-            return Err(format!("Image #{id} is not in the draft"));
+            return Err(UiMessage::new("tui.missing_image").arg("id", id).into());
         };
         if position == 0 || position > self.entries.len() {
-            return Err(format!(
-                "position must be between 1 and {}",
-                self.entries.len()
-            ));
+            return Err(UiMessage::new("tui.image_position_range")
+                .arg("count", self.entries.len())
+                .into());
         }
         let entry = self.entries.remove(index);
         self.entries.insert(position - 1, entry);
@@ -265,32 +272,43 @@ impl App {
             Ok(AttachmentCommand::Add(paths)) => {
                 let root = self.project.root().to_path_buf();
                 match self.attachments.add_paths(&root, paths) {
-                    Ok(added) => self.flash_status(format!(
-                        "attached {added} image(s) · {} total · Enter sends · Esc drops draft",
-                        self.attachments.len()
-                    )),
-                    Err(error) => self.flash_status(format!("attach failed: {error}")),
+                    Ok(added) => self.flash_status(
+                        UiMessage::new("tui.attached_summary")
+                            .arg("added", (added).to_string())
+                            .arg("value1", (self.attachments.len()).to_string()),
+                    ),
+                    Err(error) => self.flash_message(
+                        UiMessage::new("tui.message_attach_failed_value")
+                            .arg_message("error", error.message()),
+                    ),
                 }
             }
             Ok(AttachmentCommand::Remove(id)) => {
                 if let Some(path) = self.attachments.remove(id) {
                     self.release_core_staged_attachment_paths([path]);
-                    self.flash_status(format!("removed Image #{id}"));
+                    self.flash_message(
+                        UiMessage::new("tui.message_removed_image_value")
+                            .arg("id", (id).to_string()),
+                    );
                 } else {
-                    self.flash_status(format!("Image #{id} is not in the draft"));
+                    self.flash_status(
+                        UiMessage::new("tui.missing_image").arg("id", (id).to_string()),
+                    );
                 }
             }
             Ok(AttachmentCommand::Move { id, position }) => {
                 match self.attachments.move_to(id, position) {
-                    Ok(()) => {
-                        self.flash_status(format!("moved Image #{id} to position {position}"))
-                    }
+                    Ok(()) => self.flash_message(
+                        UiMessage::new("tui.message_moved_image_value_to_position_value")
+                            .arg("id", (id).to_string())
+                            .arg("position", (position).to_string()),
+                    ),
                     Err(error) => self.flash_status(error),
                 }
             }
             Ok(AttachmentCommand::Clear) => {
                 self.clear_attachment_draft();
-                self.flash_status("image draft cleared");
+                self.flash_message(UiMessage::new("tui.image_cleared"));
             }
             Ok(AttachmentCommand::PasteClipboard) => {
                 self.start_clipboard_paste(ClipboardPasteMode::ImageOnly)
@@ -310,7 +328,9 @@ pub(super) enum AttachmentCommand {
     PasteClipboard,
 }
 
-pub(super) fn parse_attachment_command(value: &str) -> Option<Result<AttachmentCommand, String>> {
+pub(super) fn parse_attachment_command(
+    value: &str,
+) -> Option<Result<AttachmentCommand, PresentedText>> {
     // Exact-match-first 名单（M-11 纪律）：凡以更短的 `/attach` 前缀
     // 开头的精确拼法，必须先于下方前缀解析器判定——旧顺序曾把
     // `/attachments clear` 当无效 `/attach...` 拼法吞掉（clear 面从未
@@ -330,10 +350,7 @@ pub(super) fn parse_attachment_command(value: &str) -> Option<Result<AttachmentC
     // `/attach` 前缀解析器（M-11 同型：否则被「非空白参数」守卫吞成
     // None → 普通消息）。
     if value.starts_with("/attachments") {
-        return Some(Err(
-            "/attachments was retired — use /ac (alias /attach-clear) to clear the image draft"
-                .into(),
-        ));
+        return Some(Err(UiMessage::new("tui.attachments_retired").into()));
     }
     if let Some(arguments) = value.strip_prefix("/attach") {
         if !arguments.is_empty() && !arguments.starts_with(char::is_whitespace) {
@@ -361,19 +378,19 @@ pub(super) fn parse_attachment_command(value: &str) -> Option<Result<AttachmentC
         let mut parts = arguments.split_whitespace();
         let id = parts
             .next()
-            .ok_or_else(|| "usage: /image move <image-id> <one-based-position>".to_owned());
+            .ok_or_else(|| UiMessage::new("tui.image_move_usage"));
         let position = parts
             .next()
-            .ok_or_else(|| "usage: /image move <image-id> <one-based-position>".to_owned());
+            .ok_or_else(|| UiMessage::new("tui.image_move_usage"));
         let extra = parts.next();
         return Some((|| {
             if extra.is_some() {
-                return Err("usage: /image move <image-id> <one-based-position>".into());
+                return Err(UiMessage::new("tui.image_move_usage").into());
             }
             let id = parse_stable_id(id?)?;
             let position = position?
                 .parse::<usize>()
-                .map_err(|_| "position must be a positive integer".to_owned())?;
+                .map_err(|_| UiMessage::new("tui.image_position_positive"))?;
             Ok(AttachmentCommand::Move { id, position })
         })());
     }
@@ -388,23 +405,23 @@ impl App {
     fn start_clipboard_paste(&mut self, mode: ClipboardPasteMode) {
         if self.clipboard_image_pending {
             self.flash_status(match mode {
-                ClipboardPasteMode::ImageOnly => "clipboard image preparation is already running",
-                ClipboardPasteMode::ImageOrText => "clipboard paste is already running",
+                ClipboardPasteMode::ImageOnly => UiMessage::new("tui.clipboard_busy"),
+                ClipboardPasteMode::ImageOrText => UiMessage::new("tui.paste_busy"),
             });
             return;
         }
         let stager = self.attachment_draft_store();
         if mode == ClipboardPasteMode::ImageOnly && stager.is_none() {
-            self.flash_status("system clipboard images are unavailable in clat dsh mode");
+            self.flash_message(UiMessage::new("tui.clipboard_dsh"));
             return;
         }
         if mode == ClipboardPasteMode::ImageOnly
             && self.attachments.len() >= crate::session::attachments::MAX_IMAGES_PER_MESSAGE
         {
-            self.flash_status(format!(
-                "image draft already has the {}-image maximum",
-                crate::session::attachments::MAX_IMAGES_PER_MESSAGE
-            ));
+            self.flash_message(
+                UiMessage::new("tui.image_draft_full")
+                    .arg("limit", crate::session::attachments::MAX_IMAGES_PER_MESSAGE),
+            );
             return;
         }
         let Some(sender) = self.event_sender.clone() else {
@@ -414,8 +431,8 @@ impl App {
         let reader = std::sync::Arc::clone(&self.clipboard_paste_reader);
         self.clipboard_image_pending = true;
         self.flash_status(match mode {
-            ClipboardPasteMode::ImageOnly => "reading clipboard image…",
-            ClipboardPasteMode::ImageOrText => "reading clipboard…",
+            ClipboardPasteMode::ImageOnly => UiMessage::new("tui.clipboard_read_image"),
+            ClipboardPasteMode::ImageOrText => UiMessage::new("tui.clipboard_read"),
         });
         let spawn = std::thread::Builder::new()
             .name("clat-clipboard-paste".into())
@@ -501,17 +518,17 @@ fn encode_clipboard_rgba(width: usize, height: usize, bytes: &[u8]) -> Result<Ve
     Ok(png)
 }
 
-fn parse_stable_id(value: &str) -> Result<u64, String> {
+fn parse_stable_id(value: &str) -> Result<u64, PresentedText> {
     value
         .trim()
         .trim_start_matches('#')
         .parse::<u64>()
-        .map_err(|_| "image id must be an integer such as 2 or #2".to_owned())
+        .map_err(|_| UiMessage::new("tui.image_id_integer").into())
 }
 
 /// Small argument parser, not a shell: quotes and backslash only group literal
 /// path text. No expansion, substitution, command execution, or globbing.
-fn split_quoted_paths(input: &str) -> Result<Vec<String>, String> {
+fn split_quoted_paths(input: &str) -> Result<Vec<String>, PresentedText> {
     let mut paths = Vec::new();
     let mut current = String::new();
     let mut quote = None;
@@ -545,10 +562,10 @@ fn split_quoted_paths(input: &str) -> Result<Vec<String>, String> {
         }
     }
     if escaped {
-        return Err("attachment path ends with an incomplete escape".into());
+        return Err(UiMessage::new("tui.attachment_incomplete_escape").into());
     }
     if quote.is_some() {
-        return Err("attachment path has an unclosed quote".into());
+        return Err(UiMessage::new("tui.attachment_unclosed_quote").into());
     }
     if !current.is_empty() {
         paths.push(current);

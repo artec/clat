@@ -8,7 +8,7 @@ impl App {
         let context = self.native_plugin_context();
         let dialog = self.plugins.dialog.as_mut()?;
         let Some((client, epoch, selection)) = context else {
-            dialog.status = "Host offline · close and /reconnect".into();
+            dialog.status = UiMessage::new("tui.plugin_offline").into();
             return None;
         };
         let ui = self.event_sender.clone()?;
@@ -22,7 +22,7 @@ impl App {
             // A failed generation switch must never leave old-generation rows
             // actionable under the new heading.
             dialog.market.clear();
-            dialog.status = "Loading verified market…".into();
+            dialog.status = UiMessage::new("tui.plugin_market_loading").into();
         }
         let generation = self
             .plugins
@@ -56,7 +56,7 @@ impl App {
         };
         let action = action.to_owned();
         self.plugins.dialog.as_mut().unwrap().status =
-            "Reading verified permissions and configuration schema…".into();
+            UiMessage::new("tui.plugin_review_loading").into();
         let job = thread::spawn(move || {
             let reply = PluginReply::Review(client.plugin_review(&id, &action, generation));
             // SendError owns the ticket and drops/cancels it if the UI exited.
@@ -83,7 +83,7 @@ impl App {
         };
         dialog.clear_review();
         dialog.view = View::Installed;
-        dialog.status = "Activating once; no automatic retry…".into();
+        dialog.status = UiMessage::new("tui.plugin_activating").into();
         let job = thread::spawn(move || {
             let reply = PluginReply::Mutation(ticket.commit(accepted, &configs));
             let _ = ui.send(UiEvent::Native(native::NativeEvent::Plugin(
@@ -143,10 +143,9 @@ impl App {
                             ),
                     );
                     dialog.review = Some(ticket);
-                    dialog.status =
-                        "Read all permissions, Space to approve, Enter to activate".into();
+                    dialog.status = UiMessage::new("tui.plugin_read").into();
                 }
-                Err(error) => dialog.status = error,
+                Err(error) => dialog.status = error.into(),
             },
             PluginReply::Mutation(result) => {
                 dialog.status = match result {
@@ -155,10 +154,10 @@ impl App {
                             .as_array()
                             .is_some_and(|warnings| !warnings.is_empty()) =>
                     {
-                        "Operation completed with runtime warnings; inspect /mcp".into()
+                        UiMessage::new("tui.plugin_warnings").into()
                     }
-                    Ok(_) => "Host operation completed; refreshing…".into(),
-                    Err(e) => e,
+                    Ok(_) => UiMessage::new("tui.plugin_done").into(),
+                    Err(e) => e.into(),
                 };
                 dialog.view = View::Installed;
                 self.refresh_native();
@@ -181,11 +180,16 @@ fn set_rows(dialog: &mut PluginDialog, result: Result<Value, String>, market: bo
                 dialog.installed = rows
             }
             dialog.selected = 0;
-            if dialog.status.starts_with("Loading") {
-                dialog.status = "Select a plugin · Tab switches installed/market".into();
+            if dialog.status.presentation.as_ref().is_some_and(|m| {
+                matches!(
+                    m.key.as_str(),
+                    "tui.plugin_loading" | "tui.plugin_market_loading"
+                )
+            }) {
+                dialog.status = UiMessage::new("tui.plugin_select").into();
             }
         }
-        Err(error) => dialog.status = error,
+        Err(error) => dialog.status = error.into(),
     }
 }
 

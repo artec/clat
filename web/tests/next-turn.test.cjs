@@ -10,7 +10,14 @@ function client() {
       if (ctx.state.composerGeneration === generation) ctx.dom.prompt.value = '';
     }, invalidateSuggestion() {}, clearDraft() {}, updateRunState() {}, addNoticeLine() {},
     newOpaqueClientId: () => 'unique-steering', rpc: async () => ({ outcome: 'queued' }),
+    __CLAT_BUILTIN_LOCALE__: {
+      manifest: JSON.parse(fs.readFileSync('locales/manifest.json', 'utf8')),
+      english: JSON.parse(fs.readFileSync('locales/en.json', 'utf8')),
+    },
+    navigator: { languages: ['en'] },
+    document: { readyState: 'loading', addEventListener() {} },
   });
+  vm.runInContext(fs.readFileSync('web/i18n.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(process.env.QUE_COMPOSER_SOURCE || 'web/composer-ux.js', 'utf8'), ctx);
   vm.runInContext("composerScope = 'session'; composerSession = 'session';", ctx);
   return ctx;
@@ -93,4 +100,25 @@ test('GA-3 capability command renders core content as text and never starts a ru
   assert.equal(notices[0].className, 'content-notice');
   assert.equal(notices[0]['aria-label'], 'capabilities');
   assert.equal(notices[0].text, '{"domain":"idle-user","candidates":[]}');
+});
+
+test('optional malformed language metadata cannot hide the original diagnostic', () => {
+  const ctx = client();
+  for (const value of [null, {}, [], [{key:12}], [{key:'extension.unknown'}]]) {
+    assert.equal(String(ctx.CLATI18n.present(value,'original diagnostic {path}')),'original diagnostic {path}');
+  }
+  assert.equal(String(ctx.CLATI18n.present({key:'extension.unknown',fallback:'English fallback {path}',args:{path:'<script>{other}'}})), 'English fallback <script>{other}');
+});
+
+test('static translation defaults cannot replace a newer status or accessibility binding', () => {
+  const ctx=client();
+  const attributes={title:'Project Write','data-i18n-title':'web.project_write'};
+  const node={dataset:{i18n:'web.project_write'},textContent:'Project Write',getAttribute:name=>attributes[name],setAttribute:(name,value)=>{attributes[name]=String(value);}};
+  ctx.document.documentElement={};
+  ctx.document.querySelectorAll=selector=>selector==='[data-i18n]'||selector==='[data-i18n-title]'?[node]:[];
+  ctx.CLATI18n.refresh();
+  ctx.CLATI18n.bind(node,'textContent',()=>ctx.CLATI18n.msg('web.read_only'));
+  ctx.CLATI18n.attribute(node,'title',()=>ctx.CLATI18n.msg('web.full_access'));
+  ctx.CLATI18n.refresh();ctx.CLATI18n.refresh();
+  assert.equal(node.textContent.toString(),'Read Only');assert.equal(attributes.title,'Full Access');
 });

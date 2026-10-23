@@ -10,6 +10,7 @@ impl App {
             self.close_plugin_dialog();
             return;
         }
+        self.plugins.set_locale(self.locale);
         let Some(dialog) = self.plugins.dialog.as_mut() else {
             return;
         };
@@ -29,7 +30,7 @@ impl App {
             lines = browse_viewport(dialog, width, visible);
         }
         clear_popup_with_guards(frame, layout.outer);
-        frame.render_widget(popup_block(title(dialog.view)), layout.outer);
+        frame.render_widget(popup_block(title(dialog.view, self.locale)), layout.outer);
         frame.render_widget(Paragraph::new(lines), layout.body);
         // Rebuild after advancing the visible review count. Counter columns
         // have fixed width, so this cannot change the pagination geometry.
@@ -66,13 +67,13 @@ fn review_viewport(
         .collect()
 }
 
-fn title(view: View) -> &'static str {
+fn title(view: View, locale: LocaleContext) -> &'static str {
     match view {
-        View::Installed => "/plugin · installed",
-        View::Market => "/plugin · market",
-        View::Review => "/plugin · permissions",
-        View::Config => "/plugin · configuration",
-        View::Remove => "/plugin · confirmation",
+        View::Installed => locale.text("tui.plugin_installed_title"),
+        View::Market => locale.text("tui.plugin_market_title"),
+        View::Review => locale.text("tui.plugin_permission_title"),
+        View::Config => locale.text("tui.plugin_config_title"),
+        View::Remove => locale.text("tui.plugin_confirm_title"),
     }
 }
 

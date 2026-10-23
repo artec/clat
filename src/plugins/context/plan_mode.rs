@@ -110,18 +110,18 @@ impl CommandHandler for PlanCommand {
             "on" => true,
             "off" => false,
             _ => {
-                return Err(CommandError::Failed {
-                    message: "usage: /plan [on|off]".into(),
-                });
+                return Err(CommandError::presented(crate::i18n::UiMessage::new(
+                    "command.plan_usage",
+                )));
             }
         };
         application
             .set_plan_mode(active)
             .map(|_| {
                 CommandOutcome::Status(if active {
-                    "Plan Mode enabled — /plan toggles it off".into()
+                    crate::i18n::UiMessage::new("command.plan_on").into()
                 } else {
-                    "Plan Mode disabled".into()
+                    crate::i18n::UiMessage::new("command.plan_off").into()
                 })
             })
             .map_err(|error| CommandError::Failed {

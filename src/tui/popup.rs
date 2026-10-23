@@ -1,4 +1,8 @@
+mod arguments;
 use super::*;
+#[cfg(test)]
+pub(crate) use arguments::tool_argument_lines;
+pub(crate) use arguments::tool_argument_lines_localized;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// 选择器单行的统一几何（VP-3 四轮定稿 + 2026-09-04 负责人五轮微调）：
@@ -80,7 +84,10 @@ pub(crate) fn truncate_display_width(text: &str, max: usize) -> String {
 /// 并标注剩余数），非对象（字符串/数字等）返回 None——摘要只在
 /// 键存在时才有意义。危险目标（command/path/url 等）可能藏在长
 /// JSON 深处，顶层键一览让批准前不可错过。
-pub(super) fn top_level_argument_keys(arguments: &serde_json::Value) -> Option<String> {
+pub(super) fn top_level_argument_keys(
+    arguments: &serde_json::Value,
+    locale: LocaleContext,
+) -> Option<String> {
     let map = arguments.as_object()?;
     if map.is_empty() {
         return None;
@@ -90,7 +97,9 @@ pub(super) fn top_level_argument_keys(arguments: &serde_json::Value) -> Option<S
     let shown: Vec<&str> = keys.iter().take(10).copied().collect();
     let mut summary = shown.join(", ");
     if keys.len() > 10 {
-        summary.push_str(&format!(" (+{} more)", keys.len() - 10));
+        summary.push_str(
+            &locale.render(&UiMessage::new("tui.more_fields").arg("count", keys.len() - 10)),
+        );
     }
     Some(summary)
 }
@@ -106,112 +115,6 @@ pub(super) fn top_level_argument_keys(arguments: &serde_json::Value) -> Option<S
 /// 工具参数的结构化呈现（edit_file 迷你 diff / write_file 全文 /
 /// run_command `$ cmd`）。权限对话框审阅与转录工具卡共用同一渲染器
 /// （phase-1 P1-4：预览即卡片正文）。
-pub(crate) fn tool_argument_lines(
-    tool: &str,
-    arguments: &serde_json::Value,
-    width: usize,
-) -> Option<Vec<Line<'static>>> {
-    let object = arguments.as_object()?;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    // 控制字符可见化：\r、\0、ESC 等 shell 语义字符在预览里显形
-    // 为 ^M、^@、^[，无法借零宽度隐身。
-    fn visible(text: &str) -> String {
-        text.chars()
-            .map(|ch| match ch {
-                '\t' => "    ".to_owned(),
-                '\n' => ch.to_string(),
-                '\x00'..='\x1f' => format!("^{}", (b'@' + ch as u8) as char),
-                '\x7f' => "^?".to_owned(),
-                _ => ch.to_string(),
-            })
-            .collect()
-    }
-    // 标题（edit/write 路径、$ 命令）也换行并可见化控制字符——
-    // 路径和命令同样可能长于对话框宽度，藏尾部即藏目标。
-    fn push_header(lines: &mut Vec<Line<'static>>, title: String, width: usize) {
-        for logical in visible(&title).split('\n') {
-            for wrapped in wrap_text(logical, width.saturating_sub(2)) {
-                lines.push(Line::from(Span::styled(
-                    format!("  {wrapped}"),
-                    theme::style(theme::Role::Bold),
-                )));
-            }
-        }
-    }
-    // 多行文本先按逻辑行拆分再换行：wrap_text 视 \n 为零宽字符，
-    // 直接喂多行会把内容挤成一坨，审阅时无法分清结构。
-    let push_wrapped = |lines: &mut Vec<Line<'static>>, prefix: &str, text: &str| {
-        for logical in visible(text).split('\n') {
-            for wrapped in wrap_text(logical, width.saturating_sub(prefix.len() + 2)) {
-                lines.push(Line::from(format!("{prefix} {wrapped}")));
-            }
-        }
-    };
-    match tool {
-        "edit_file" => {
-            let path = object.get("path")?.as_str()?;
-            let old_str = object.get("old_str")?.as_str()?;
-            let new_str = object
-                .get("new_str")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            push_header(&mut lines, format!("edit {path}"), width);
-            lines.push(Line::from(Span::styled(
-                "- old_str (must match the file exactly, once):",
-                theme::style(theme::Role::Dim),
-            )));
-            push_wrapped(&mut lines, "-", old_str);
-            lines.push(Line::from(Span::styled(
-                "+ new_str:",
-                theme::style(theme::Role::Dim),
-            )));
-            push_wrapped(&mut lines, "+", new_str);
-        }
-        "write_file" => {
-            let path = object.get("path")?.as_str()?;
-            let content = object.get("content")?.as_str()?;
-            push_header(
-                &mut lines,
-                format!("write {path} ({} bytes)", content.len()),
-                width,
-            );
-            for logical in visible(content).split('\n') {
-                for wrapped in wrap_text(logical, width.saturating_sub(2)) {
-                    lines.push(Line::from(format!("  {wrapped}")));
-                }
-            }
-        }
-        "run_command" => {
-            let command = object.get("command")?.as_str()?;
-            let timeout = object
-                .get("timeout_seconds")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(120);
-            let network = object
-                .get("network")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let sandbox = object
-                .get("sandbox")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("auto");
-            push_header(&mut lines, format!("$ {command}"), width);
-            let metadata = format!(
-                "in project root · timeout {timeout}s · sandbox {sandbox} · network {}",
-                if network { "requested" } else { "blocked" }
-            );
-            for wrapped in wrap_text(&metadata, width.saturating_sub(2)) {
-                lines.push(Line::from(Span::styled(
-                    format!("  {wrapped}"),
-                    theme::style(theme::Role::Dim),
-                )));
-            }
-        }
-        _ => return None,
-    }
-    Some(lines)
-}
-
 /// 扩展“从首行起连续看过”的区间。新视口与既有区间相接/重叠时
 /// 才前进；跳过中间行（例如直接 End）不能伪造完整审阅。
 pub(super) fn advance_reviewed_through(reviewed_through: usize, start: usize, end: usize) -> usize {

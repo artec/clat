@@ -11,7 +11,7 @@ impl App {
             return false;
         }
         if self.dsh.is_some() {
-            self.flash_status("next-turn queue is available on the CLAT backend");
+            self.flash_message(UiMessage::new("tui.queue_backend"));
             return true;
         }
         if enqueue
@@ -19,9 +19,7 @@ impl App {
                 || !self.attachments.is_empty()
                 || self.input.text().trim().is_empty())
         {
-            self.flash_status(
-                "Ctrl+Q queues non-empty text during a run; images remain in the composer",
-            );
+            self.flash_message(UiMessage::new("tui.queue_hint"));
             return true;
         }
         if self.native.is_some() {
@@ -36,13 +34,13 @@ impl App {
             match app.enqueue_next_turn(uuid::Uuid::new_v4().to_string(), text) {
                 Ok(()) => {
                     self.input.take();
-                    self.flash_status("next turn queued · Alt+Q recalls latest");
+                    self.flash_message(UiMessage::new("tui.queue_added"));
                 }
                 Err(error) => self.flash_status(error.to_string()),
             }
         } else if let Some(item) = app.recall_next_turn() {
             self.input.prepend_recalled_line(&item.text);
-            self.flash_status("next turn recalled; edit before sending");
+            self.flash_message(UiMessage::new("tui.queue_recall_edit"));
         }
         true
     }
@@ -70,7 +68,13 @@ impl App {
         };
         let first = texts.first()?;
         let preview: String = first.replace('\n', " ").chars().take(35).collect();
-        Some(format!("Next {}: {preview} · Alt+Q recall", texts.len()))
+        Some(
+            self.locale.render(
+                &UiMessage::new("tui.queue_summary")
+                    .arg("value1", (texts.len()).to_string())
+                    .arg("preview", (preview).to_string()),
+            ),
+        )
     }
 
     fn native_next_turn(&mut self, enqueue: bool) {
@@ -78,7 +82,7 @@ impl App {
             return;
         };
         if !native.online || native.queue_pending {
-            self.flash_status("queue control offline/busy; draft retained");
+            self.flash_message(UiMessage::new("tui.queue_offline"));
             return;
         }
         let text = if enqueue {
@@ -173,14 +177,17 @@ impl App {
                     self.input.prepend_recalled_line(text);
                 }
                 self.flash_status(if recall {
-                    "next turn recalled"
+                    self.locale.text("tui.queue_recalled")
                 } else {
-                    "next turn queued · Alt+Q recalls latest"
+                    self.locale.text("tui.queue_added")
                 });
             }
             Err(error) => {
                 self.input.prepend_recalled_line(&text);
-                self.flash_status(format!("queue operation failed: {error}"));
+                self.flash_message(
+                    UiMessage::new("tui.message_queue_operation_failed_value")
+                        .arg("error", (error).to_string()),
+                );
             }
         }
         self.refresh_native();

@@ -64,6 +64,7 @@ impl HostClient {
         if let Some(events) = &mut events {
             if accepted["outcome"] != "queued" {
                 return Err(HostCallError {
+                    presentation: None,
                     message: "run is no longer accepting steering; draft retained".into(),
                     code: Some("not-running".into()),
                     receipt: accepted

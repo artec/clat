@@ -42,6 +42,7 @@ pub(super) enum Phase {
 }
 
 impl Phase {
+    #[cfg(test)]
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::WaitingFirstToken => "Waiting first token",
@@ -117,6 +118,7 @@ pub(super) const SHIMMER_UNLIT_FLOOR: f64 = 0.03;
 
 /// 派生阶段状态行（phase-1 P1-5）：spinner + 探照灯阶段标签 + 双时钟
 /// `<phase> <phase-elapsed> · total <run-elapsed>`；Waiting 只报总计。
+#[cfg(test)]
 pub(super) fn phase_line(
     tick: u64,
     phase: Phase,
@@ -124,6 +126,25 @@ pub(super) fn phase_line(
     run_elapsed: Option<Duration>,
     steering_queued: usize,
     cancelling: bool,
+) -> Line<'static> {
+    phase_line_localized(
+        tick,
+        phase,
+        phase_elapsed,
+        run_elapsed,
+        steering_queued,
+        cancelling,
+        super::LocaleContext::default(),
+    )
+}
+pub(super) fn phase_line_localized(
+    tick: u64,
+    phase: Phase,
+    phase_elapsed: Option<Duration>,
+    run_elapsed: Option<Duration>,
+    steering_queued: usize,
+    cancelling: bool,
+    locale: super::LocaleContext,
 ) -> Line<'static> {
     let frame = spinner_frame(tick);
     let base = theme::style(theme::Role::ThinkingGlyph);
@@ -140,9 +161,14 @@ pub(super) fn phase_line(
     // CANCEL-1（C1）：取消请求一旦发出，标签即切换为 Cancelling…，
     // 保留 spinner 与 run 总时钟——反馈即刻可见，不等待 run 真正停止。
     let label = if cancelling {
-        "Cancelling…"
+        locale.text("tui.cancelling")
     } else {
-        phase.label()
+        locale.text(match phase {
+            Phase::WaitingFirstToken => "tui.waiting_first_token",
+            Phase::Thinking => "tui.thinking_536",
+            Phase::Responding => "tui.responding",
+            Phase::ExecutingTools => "tui.executing_tools",
+        })
     };
     let len = label.chars().count() as u64;
     let cycle = len + 2 * SWEEP_MARGIN_CHARS;
@@ -168,26 +194,14 @@ pub(super) fn phase_line(
     if let Some(run_elapsed) = run_elapsed {
         // Cancelling… 只保留 run 总时钟：当前 phase 的分项时钟在取消
         // 语境下没有意义（CANCEL-1/C1）。
-        let clocks = if cancelling {
-            format!(" {}", format_clock(run_elapsed))
-        } else {
-            match (phase, phase_elapsed) {
-                (Phase::WaitingFirstToken, _) => format!(" {}", format_clock(run_elapsed)),
-                (_, Some(phase_elapsed)) => format!(
-                    " {} · total {}",
-                    format_clock(phase_elapsed),
-                    format_clock(run_elapsed)
-                ),
-                (_, None) => format!(" · total {}", format_clock(run_elapsed)),
-            }
-        };
+        let clocks = phase_clocks(phase, phase_elapsed, run_elapsed, cancelling, locale);
         spans.push(Span::styled(clocks, theme::style(theme::Role::Faint)));
     }
     if steering_queued > 0 {
         // DSH `N queued` 徽标：advisory 实时状态，claim 后随
         // SteeringApplied 回收。
         spans.push(Span::styled(
-            format!(" · steering·{steering_queued}"),
+            locale.render(&UiMessage::new("tui.phase_steering").arg("count", steering_queued)),
             theme::style(theme::Role::Warning),
         ));
     }
@@ -276,11 +290,12 @@ pub(super) fn current_route_usage<'a>(
     ))
 }
 
-pub(super) fn status_suffix_segments(
+pub(super) fn status_suffix_segments_localized(
     config: &ModelConfig,
     balance: &Option<String>,
     route_usage: Option<&Usage>,
     last_turn_usage: Option<&Usage>,
+    locale: LocaleContext,
 ) -> Vec<String> {
     let window = config.max_context_tokens.map(u64::from).or_else(|| {
         config
@@ -289,21 +304,23 @@ pub(super) fn status_suffix_segments(
             .and_then(preset_by_id)
             .map(|preset| preset.context_window as u64)
     });
-    status_telemetry_segments(
+    status_telemetry_segments_localized(
         config.vendor(),
         balance,
         route_usage,
         last_turn_usage,
         window,
+        locale,
     )
 }
 
-pub(super) fn status_telemetry_segments(
+pub(super) fn status_telemetry_segments_localized(
     vendor: ModelVendor,
     balance: &Option<String>,
     route_usage: Option<&Usage>,
     last_turn_usage: Option<&Usage>,
     window: Option<u64>,
+    locale: LocaleContext,
 ) -> Vec<String> {
     let mut parts = Vec::new();
     if vendor == ModelVendor::Other {
@@ -313,9 +330,13 @@ pub(super) fn status_telemetry_segments(
     // 5 小时窗口剩余额度百分比（如 "87%"），加 Token 标签。
     if let Some(balance) = balance {
         if vendor == ModelVendor::DeepSeek {
-            parts.push(format!("Wallet: ￥{balance}"));
+            parts.push(
+                locale.render(&UiMessage::new("tui.wallet_value").arg("balance", balance.clone())),
+            );
         } else {
-            parts.push(format!("Token: {balance}"));
+            parts.push(
+                locale.render(&UiMessage::new("tui.token_value").arg("balance", balance.clone())),
+            );
         }
     }
     // Cache 段对 DeepSeek/GLM 常驻：无数据时显示 `--%`（该路由尚未跑
@@ -323,7 +344,7 @@ pub(super) fn status_telemetry_segments(
     let cache = route_usage
         .and_then(cache_hit_percent)
         .unwrap_or_else(|| "--%".into());
-    parts.push(format!("Cache: {cache}"));
+    parts.push(locale.render(&UiMessage::new("tui.cache_value").arg("cache", cache)));
     // Context 当前值 ≈ 最近一次模型请求的 input+output（下一次请求
     // 的近似起点）；分母是预设的官方上下文窗口，自定义端点未知则
     // 省略整段。新会话无请求历史时按 0 计。
@@ -331,11 +352,13 @@ pub(super) fn status_telemetry_segments(
         let current = last_turn_usage
             .map(|usage| usage.input_tokens.saturating_add(usage.output_tokens))
             .unwrap_or(0);
-        parts.push(format!(
-            "Context: {}/{}",
-            format_tokens(current),
-            format_tokens(window)
-        ));
+        parts.push(
+            locale.render(
+                &UiMessage::new("tui.context_value")
+                    .arg("current", format_tokens(current))
+                    .arg("window", format_tokens(window)),
+            ),
+        );
     }
     parts
 }
@@ -380,17 +403,21 @@ pub(super) struct HeaderModel<'a> {
 /// 标题栏首行在 "CLAT" 之后的内容，按可用显示宽度逐级退化（TUI-L02），
 /// 保证档位在窄终端仍可见：
 ///
-/// 1. 完整：` v0.5.1  ready  ·  {model} · Thinking · {level}`
+/// 1. 完整：` v0.5.1  ready  ·  {model} · {thinking} · {level}`
 /// 2. 紧凑：` v0.5.1 ready · {model} · {level}`（压缩间距、省略
 ///    "Thinking · " 文案）
-/// 3. 最小：` v0.5.1 ready · Thinking · {level}`（省略模型名）
+/// 3. 最小：` v0.5.1 ready · {thinking} · {level}`（省略模型名）
 ///
 /// 模型+思考+强度是一个整体：组内分隔符统一窄间距 ` · `，与主分段
 /// 的宽间距 `  ·  ` 区分。无档位（未配置 / 非 DeepSeek/GLM / 手工
 /// 关闭 / dsh 模式）时各层级不含档位片段；三级都放不下交由终端截断。
 /// 返回带样式的段序列：模型名段走 `Role::ModelAccent`（D-2 闪光点 b，
 /// local 与 dsh 同色），其余为原色。
-pub(super) fn compose_header_rest(header: &HeaderModel<'_>, width: usize) -> Vec<Span<'static>> {
+pub(super) fn compose_header_rest_localized(
+    header: &HeaderModel<'_>,
+    width: usize,
+    locale: LocaleContext,
+) -> Vec<Span<'static>> {
     let HeaderModel {
         version,
         state,
@@ -403,9 +430,10 @@ pub(super) fn compose_header_rest(header: &HeaderModel<'_>, width: usize) -> Vec
     } else {
         (*model).to_owned()
     };
+    let thinking = locale.text("tui.header_thinking");
     let full_prefix = format!(" v{version}  {state}  ·  ");
     let full_suffix = level
-        .map(|level| format!(" · Thinking · {level}"))
+        .map(|level| format!(" · {thinking} · {level}"))
         .unwrap_or_default();
     if spans_width(&full_prefix, &model, &full_suffix) <= width {
         return styled_spans(full_prefix, &model, full_suffix);
@@ -416,7 +444,7 @@ pub(super) fn compose_header_rest(header: &HeaderModel<'_>, width: usize) -> Vec
         return styled_spans(compact_prefix, &model, compact_suffix);
     }
     vec![Span::raw(match level {
-        Some(level) => format!(" v{version} {state} · Thinking · {level}"),
+        Some(level) => format!(" v{version} {state} · {thinking} · {level}"),
         None => format!(" v{version} {state}"),
     })]
 }
@@ -439,4 +467,47 @@ fn styled_spans(prefix: String, model: &str, suffix: String) -> Vec<Span<'static
 /// 瞬时提示是否已到期：无过期时刻（常驻状态）视为未到期。
 pub(super) fn status_expired(until: Option<Instant>, now: Instant) -> bool {
     until.is_some_and(|until| now >= until)
+}
+
+fn phase_clocks(
+    phase: Phase,
+    phase_elapsed: Option<Duration>,
+    run_elapsed: Duration,
+    cancelling: bool,
+    locale: LocaleContext,
+) -> String {
+    if cancelling {
+        format!(" {}", format_clock(run_elapsed))
+    } else {
+        match (phase, phase_elapsed) {
+            (Phase::WaitingFirstToken, _) => format!(" {}", format_clock(run_elapsed)),
+            (_, Some(phase_elapsed)) => locale.render(
+                &UiMessage::new("tui.phase_clocks")
+                    .arg("phase", format_clock(phase_elapsed))
+                    .arg("total", format_clock(run_elapsed)),
+            ),
+            (_, None) => locale
+                .render(&UiMessage::new("tui.phase_total").arg("total", format_clock(run_elapsed))),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn status_suffix_segments(
+    config: &ModelConfig,
+    balance: &Option<String>,
+    route_usage: Option<&Usage>,
+    last_turn_usage: Option<&Usage>,
+) -> Vec<String> {
+    status_suffix_segments_localized(
+        config,
+        balance,
+        route_usage,
+        last_turn_usage,
+        LocaleContext::default(),
+    )
+}
+#[cfg(test)]
+pub(super) fn compose_header_rest(header: &HeaderModel<'_>, width: usize) -> Vec<Span<'static>> {
+    compose_header_rest_localized(header, width, LocaleContext::default())
 }

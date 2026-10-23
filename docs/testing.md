@@ -918,3 +918,56 @@ even when earlier named build outputs remain, without deleting those outputs.
 The DMG layout test checks the CLAT volume label and Applications shortcut.
 These checks use temporary files and injected commands, without real signing or
 publication; native Windows shortcut rendering remains a platform smoke check.
+
+## Interface language contracts
+
+Ordinary test entry points pin `CLAT_LANG=en` so a developer's system language
+does not change existing assertions. New language tests choose an explicit
+`LocaleContext` or an isolated process/browser preference. They never use the
+owner's running Host or terminal preference file.
+
+`bun scripts/i18n-check.ts` validates the manifest, duplicate keys, identical key
+sets, named parameters, quantity forms, templates and literal source references.
+`bun scripts/i18n-installers.ts --check` rejects stale embedded installer
+subsets. The shared CI gate runs both checks and their Bun tests; language
+resource changes also select native desktop and web checks. Windows CI parses
+the PowerShell installer with the native parser.
+
+Use focused checks during editing:
+
+```sh
+scripts/gates.sh i18n:: exec:: tui:: host_client:: plugin_cli
+cargo test --test cli_language
+bun test scripts/i18n-check.test.ts scripts/i18n-installers.test.ts
+cd web/e2e
+bun x playwright test i18n.spec.js
+bun x playwright test --config playwright.desktop.config.js
+```
+
+The tests cover precedence and corrupt-file preservation, independent atomic UI
+preference merges, literal parameters and HTML injection, English fallback,
+localized command failures with original receipts, byte-identical NDJSON usage
+errors, original model answers and persisted prompts, active-stream switching,
+IME/composer/attachment node preservation, client isolation and plugin-consent
+reset without losing its ticket or secret form. TUI permission switching resets
+contiguous review progress before approval can be accepted again. Existing
+workspace-review tests also verify translated explanations beside unchanged raw
+patches; avoid a second concurrent query against its intentionally nonblocking
+query guard.
+
+The desktop browser suite mocks native commands; native Rust updater tests use
+throwaway signing fixtures and a disposable dummy bundle. Neither proves real
+WKWebView/Windows IME, multi-screen behavior, native menu interaction or NSIS
+installation. Record macOS, Windows and installer acceptance separately.
+
+The only intended TUI golden change is the added local language shortcut in help.
+Journal and RunEvent wire goldens retain their original bytes. See
+[Interface languages](localization.md) for the resource maintenance contract.
+
+The language browser suite also drives real isolated Host approval allow/deny
+and model → tool → model flows in all three languages. The normal Node web
+contracts initialize the real shared locale runtime, retaining their original
+queue/receipt assertions. They reject malformed display metadata and guard
+against static placeholders overriding newer text or accessibility bindings.
+The catalog checker rejects translation calls used as `el` CSS class arguments;
+selectors and status identities must remain independent of language.

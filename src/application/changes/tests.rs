@@ -38,6 +38,17 @@ fn available_review_labels_existing_edits_as_workspace_not_turn_attribution() {
     assert_eq!(changes.scope, "workspace");
     assert!(changes.note.contains("including existing edits"));
     assert!(changes.note.contains("not agent or run attribution"));
+    let presentation = changes.presentation.as_ref().unwrap();
+    assert_eq!(presentation.english(), changes.note);
+    for locale in [
+        crate::i18n::Locale::Simplified,
+        crate::i18n::Locale::Traditional,
+    ] {
+        assert_ne!(
+            crate::i18n::LocaleContext::new(locale).render(presentation),
+            changes.note
+        );
+    }
     assert!(changes.files.iter().any(|file| file.path == "existing.txt"));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -93,6 +104,18 @@ fn review_is_read_only_and_includes_existing_staged_unstaged_and_untracked_edits
     assert!(tracked.staged && tracked.unstaged);
     let patch = git::diff(&reader.project, tracked).unwrap();
     assert!(patch.staged.contains("+staged"));
+    assert_eq!(patch.presentation.as_ref().unwrap().english(), patch.note);
+    let raw = serde_json::to_value(&patch).unwrap();
+    for locale in [
+        crate::i18n::Locale::Simplified,
+        crate::i18n::Locale::Traditional,
+    ] {
+        assert_ne!(
+            crate::i18n::LocaleContext::new(locale).render(patch.presentation.as_ref().unwrap()),
+            patch.note
+        );
+        assert_eq!(serde_json::to_value(&patch).unwrap(), raw);
+    }
     assert!(patch.unstaged.contains("+unstaged"));
     let text = git::diff(
         &reader.project,

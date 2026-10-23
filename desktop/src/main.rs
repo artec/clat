@@ -4,6 +4,8 @@ mod app;
 #[cfg(any(target_os = "macos", windows))]
 mod commands;
 #[cfg(any(target_os = "macos", windows))]
+mod localization;
+#[cfg(any(target_os = "macos", windows))]
 mod notifications;
 mod policy;
 #[cfg(any(target_os = "macos", windows))]

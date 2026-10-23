@@ -624,25 +624,7 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
                 },
             ),
         ]),
-        ApplicationEvent::CompactionUpdated(status) => {
-            let (state, note, succeeded) = match status {
-                crate::CompactionStatus::Started => ("started".to_owned(), None, None),
-                crate::CompactionStatus::Finished { note, succeeded } => {
-                    ("finished".to_owned(), Some(note.clone()), Some(*succeeded))
-                }
-            };
-            let mut payload = vec![("status", Value::String(state))];
-            if let Some(note) = note {
-                payload.push(("note", Value::String(note)));
-            }
-            if let Some(succeeded) = succeeded {
-                payload.push(("succeeded", Value::Bool(succeeded)));
-            }
-            object(vec![
-                ("kind", Value::String("compaction".into())),
-                ("payload", object(payload)),
-            ])
-        }
+        ApplicationEvent::CompactionUpdated(status) => compaction_notice(status),
         ApplicationEvent::TitleUpdated { title } => object(vec![
             ("kind", Value::String("title".into())),
             (
@@ -688,8 +670,31 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
 
 // —— 通用构造 ——————————————————————————————————————————————————————
 
-fn vision_probe_notice(report: &crate::VisionProbeReport) -> Value {
+fn compaction_notice(status: &crate::CompactionStatus) -> Value {
+    let (state, note, succeeded) = match status {
+        crate::CompactionStatus::Started => ("started".to_owned(), None, None),
+        crate::CompactionStatus::Finished { note, succeeded } => {
+            ("finished".to_owned(), Some(note.clone()), Some(*succeeded))
+        }
+    };
+    let mut payload = vec![("status", Value::String(state))];
+    if let Some(note) = note {
+        payload.push(("note", Value::String(note.raw)));
+        if let Some(message) = note.presentation {
+            payload.push(("presentation", json!(message)));
+        }
+    }
+    if let Some(succeeded) = succeeded {
+        payload.push(("succeeded", Value::Bool(succeeded)));
+    }
     object(vec![
+        ("kind", Value::String("compaction".into())),
+        ("payload", object(payload)),
+    ])
+}
+
+fn vision_probe_notice(report: &crate::VisionProbeReport) -> Value {
+    let mut value = object(vec![
         ("kind", Value::String("vision_probe".into())),
         (
             "payload",
@@ -705,7 +710,11 @@ fn vision_probe_notice(report: &crate::VisionProbeReport) -> Value {
                 ("note", Value::String(report.note.clone())),
             ]),
         ),
-    ])
+    ]);
+    if report.note_presentation.is_some() {
+        value["payload"]["presentation"] = json!(report.status_presentation());
+    }
+    value
 }
 
 fn object(fields: Vec<(&str, Value)>) -> Value {

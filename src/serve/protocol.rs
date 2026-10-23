@@ -127,6 +127,7 @@ pub(crate) struct RpcError {
     pub code: ErrorCode,
     pub message: String,
     pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
+    pub presentation: Option<Box<crate::i18n::UiMessage>>,
 }
 
 impl From<ApplicationError> for RpcError {
@@ -136,10 +137,16 @@ impl From<ApplicationError> for RpcError {
 }
 
 impl RpcError {
+    pub(crate) fn with_presentation(mut self, message: crate::i18n::UiMessage) -> Self {
+        self.presentation = Some(Box::new(message));
+        self
+    }
+
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::BadRequest,
             message: message.into(),
+            presentation: None,
             receipt: None,
         }
     }
@@ -147,6 +154,7 @@ impl RpcError {
         Self {
             code: ErrorCode::NotFound,
             message: message.into(),
+            presentation: None,
             receipt: None,
         }
     }
@@ -154,6 +162,7 @@ impl RpcError {
         Self {
             code: ErrorCode::Busy,
             message: message.into(),
+            presentation: None,
             receipt: None,
         }
     }
@@ -161,6 +170,7 @@ impl RpcError {
         Self {
             code: ErrorCode::NotPending,
             message: message.into(),
+            presentation: None,
             receipt: None,
         }
     }
@@ -168,6 +178,7 @@ impl RpcError {
         Self {
             code: ErrorCode::Internal,
             message: message.into(),
+            presentation: None,
             receipt: None,
         }
     }
@@ -190,6 +201,9 @@ pub(crate) fn rpc_result_json(result: &Result<Value, RpcError>) -> String {
                 "ok": false,
                 "error": { "code": error.code.as_str(), "message": error.message },
             });
+            if let Some(presentation) = &error.presentation {
+                body["error"]["presentation"] = json!(presentation);
+            }
             if let Some(receipt) = &error.receipt {
                 body["error"]["receipt"] = crate::wire::admission_receipt_to_json(receipt);
             }
@@ -1031,7 +1045,9 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
             if claimed_goal_run.is_some() {
                 shared.release_run_claim();
             }
-            return Err(RpcError::bad_request(error.to_string()));
+            return Err(
+                RpcError::bad_request(error.to_string()).with_presentation(error.presentation())
+            );
         }
     };
     if !matches!(
@@ -1051,11 +1067,11 @@ fn command_reply(
 ) -> Result<Value, RpcError> {
     match outcome {
         crate::CommandOutcome::StartPluginManagement => Ok(json!({"kind":"plugin_manager"})),
-        crate::CommandOutcome::Status(message) => {
-            Ok(json!({ "kind": "status", "message": message }))
-        }
+        crate::CommandOutcome::Status(message) => Ok(
+            json!({ "kind": "status", "message": message.raw, "presentation":message.presentation }),
+        ),
         crate::CommandOutcome::ShowMemory(view) => Ok(json!({
-            "kind": "memory", "memory": view, "message": view.to_text(),
+            "kind": "memory", "memory": view, "message": view.to_text(),"presentation":view.presentation(),
         })),
         crate::CommandOutcome::ShowCapabilities(message) => {
             Ok(json!({"kind":"capabilities", "message":message}))
@@ -1066,10 +1082,10 @@ fn command_reply(
             start_goal_run(shared, id, Some(request))
         }
         crate::CommandOutcome::ShowGoal(view) => Ok(json!({
-            "kind": "goal", "goal": view, "message": view.to_text(),
+            "kind": "goal", "goal": view, "message": view.to_text(),"presentation":view.presentation(),
         })),
         crate::CommandOutcome::ShowSubagentStatus(view) => Ok(json!({
-            "kind": "subagent_status", "subagent_status": view, "message": view.to_text(),
+            "kind": "subagent_status", "subagent_status": view, "message": view.to_text(),"presentation":view.presentation(),
         })),
         crate::CommandOutcome::ShowHelp { commands } => help_reply(commands),
         crate::CommandOutcome::ShowMcpStatus(status) => mcp_reply(status),
@@ -1684,7 +1700,11 @@ fn with_app<T>(
 
 fn app_error(error: ApplicationError) -> RpcError {
     let receipt = error.admission_receipt().cloned().map(Box::new);
-    RpcError::internal(error.to_string()).with_receipt(receipt)
+    RpcError::internal(error.to_string())
+        .with_presentation(
+            crate::i18n::UiMessage::new("common.error").arg("detail", error.to_string()),
+        )
+        .with_receipt(receipt)
 }
 
 /// 会话类操作：不存在的会话 id → `not-found`（§3 错误模型）。core 的
@@ -1758,6 +1778,7 @@ fn help_reply(commands: Vec<crate::CommandInfo>) -> Result<Value, RpcError> {
                 "name": info.name,
                 "aliases": info.aliases,
                 "description": info.description,
+                "description_presentation": crate::i18n::command_presentation(&info.name,&info.description),
                 "group": info.group.as_str(),
             })
         })
@@ -1782,7 +1803,9 @@ fn mcp_reply(status: crate::McpStatusDto) -> Result<Value, RpcError> {
             .iter()
             .map(|failure| format!("failure: {failure}")),
     );
-    Ok(json!({ "kind": "status", "message": lines.join("\n") }))
+    Ok(
+        json!({ "kind": "status", "message": lines.join("\n"), "presentation":status.presentation() }),
+    )
 }
 
 fn skills_reply(overview: crate::SkillsOverviewDto) -> Result<Value, RpcError> {
@@ -1805,7 +1828,9 @@ fn skills_reply(overview: crate::SkillsOverviewDto) -> Result<Value, RpcError> {
             diagnostic.source, name, diagnostic.kind, diagnostic.message
         ));
     }
-    Ok(json!({ "kind": "status", "message": lines.join("\n") }))
+    Ok(
+        json!({ "kind": "status", "message": lines.join("\n"), "presentation":overview.presentation() }),
+    )
 }
 
 fn context_reply(snapshot: crate::ContextEstimateSnapshot) -> Result<Value, RpcError> {
@@ -1914,6 +1939,7 @@ mod tests {
             let body = rpc_result_json(&Err(RpcError {
                 code: ErrorCode::parse(code),
                 message: format!("{code} message"),
+                presentation: None,
                 receipt: None,
             }));
             let parsed = parse_rpc_result(&body).expect("parse");

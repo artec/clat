@@ -9,6 +9,6 @@ module.exports = defineConfig({
   workers: 1,
   retries: 0,
   reporter: [['list']],
-  use: { headless: true },
+  use: { headless: true, locale: 'en-US' },
   globalSetup: require.resolve('./global-setup.js'),
 });

@@ -34,6 +34,10 @@ clat upgrade --check
 
 Run `clat --help` for the complete command-line surface.
 
+English, Simplified Chinese and Traditional Chinese interfaces follow the system
+by default. Use `clat --lang zh-Hans --help`, `/language` in the TUI, or the
+workbench language chooser. [Language settings](docs/localization.md).
+
 ## Interfaces
 
 | Interface | Best for | Entry point |
@@ -146,6 +150,7 @@ Start with the document that matches your task:
 |---|---|
 | Use the TUI, `exec`, `serve`, or `dsh` | [Using CLAT](docs/usage.md) |
 | Install and update the native desktop client | [Desktop client](docs/desktop.md) |
+| Choose or maintain interface languages | [Interface languages](docs/localization.md) |
 | Configure a preset or custom model | [Model editor](docs/model-editor.md) |
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |
@@ -168,7 +173,7 @@ The DSH adapter package also has standalone
 ## Development
 
 For short edit feedback use `scripts/gates.sh [test-filter ...]`; run
-`scripts/gates.sh --full` once before delivery. See [Testing](docs/testing.md).
+`scripts/gates.sh --full` once when preparing a release at the owner's request. See [Testing](docs/testing.md).
 
 Prerequisites are Git and the current stable Rust toolchain:
 

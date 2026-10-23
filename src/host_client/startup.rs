@@ -7,6 +7,13 @@ use std::time::{Duration, Instant};
 
 impl HostClient {
     pub fn start_command(args: impl Iterator<Item = String>) -> Result<String, String> {
+        Self::start_command_presented(args)
+            .map(|m| m.english())
+            .map_err(|e| e.to_string())
+    }
+    pub fn start_command_presented(
+        args: impl Iterator<Item = String>,
+    ) -> Result<crate::i18n::UiMessage, crate::i18n::PresentedText> {
         let args: Vec<_> = args.collect();
         let mut trust = false;
         let mut no_open = false;
@@ -14,16 +21,14 @@ impl HostClient {
             match arg.as_str() {
                 "--trust" if !trust => trust = true,
                 "--no-open" if !no_open => no_open = true,
-                _ => return Err("use clat host start [--trust] [--no-open]".into()),
+                _ => return Err(crate::i18n::UiMessage::new("cli.host_start_usage").into()),
             }
         }
         let project = Project::current().map_err(|error| error.to_string())?;
         let client = Self::start_or_attach(&project, trust, !no_open)?;
-        Ok(format!(
-            "Host {} online at {}",
-            client.instance,
-            client.browser_url()
-        ))
+        Ok(crate::i18n::UiMessage::new("cli.host_started")
+            .arg("instance", client.instance.clone())
+            .arg("url", client.browser_url()))
     }
 
     pub fn browser_url(&self) -> String {

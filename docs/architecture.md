@@ -803,6 +803,22 @@ See [Persistent state](storage.md) for the file map and failure semantics.
 
 ## Frontends
 
+### Presentation context
+
+`src/i18n/` owns immutable embedded catalogs, language normalization, safe
+named-parameter formatting, optional `UiMessage` descriptors and atomic UI
+preference merges. Clients obtain these through `client_ports::presentation`
+and pass a `LocaleContext` explicitly. No mutable process-global locale exists.
+Core producers can supply English facts plus optional presentation metadata;
+client rendering chooses the language. Journal events, RunEvent wire, tool
+schemas and model input have no presentation locale.
+
+`web/i18n.js` is shared by browser and native welcome/workbench pages. It
+updates existing text/attribute bindings; raw message bodies and user input are
+not translated. Desktop injects its own context, while browsers keep their own
+preferences. Terminal UI preferences use an independent file lock and never
+acquire the business storage-root lease. See [Interface languages](localization.md).
+
 ### TUI
 
 `tui.rs` and `tui/` own terminal initialization, input, rendering, dialogs,

@@ -7,15 +7,16 @@ pub(super) fn lines(
     budget: usize,
 ) -> Vec<Line<'static>> {
     let mut status = vec![Line::from(Span::styled(
-        fit_display_width(&dialog.status, width),
+        fit_display_width(&dialog.status.render(dialog.locale), width),
         theme::style(theme::Role::Dim),
     ))];
     if dialog.view == View::Review {
         let digits = total.to_string().len();
-        let consent = format!(
-            "[{}] I approve all verified permissions · read {:>digits$}/{total} lines",
-            if dialog.accepted { "x" } else { " " },
-            dialog.reviewed
+        let consent = dialog.locale.render(
+            &UiMessage::new("tui.plugin_consent")
+                .arg("mark", if dialog.accepted { "x" } else { " " })
+                .arg("read", format!("{:>digits$}", dialog.reviewed))
+                .arg("total", total),
         );
         status.push(Line::from(Span::styled(
             fit_display_width(&consent, width),
@@ -29,7 +30,7 @@ pub(super) fn lines(
     let mut hints = wrap_text(footer(dialog), width.max(1));
     if dialog.view == View::Installed {
         hints.extend(wrap_text(
-            "E enable · U update · C configure · B rollback · D disable · X uninstall",
+            dialog.locale.text("tui.plugin_actions"),
             width.max(1),
         ));
     }
@@ -46,14 +47,14 @@ pub(super) fn lines(
 
 fn footer(dialog: &PluginDialog) -> &'static str {
     if dialog.pending {
-        "Working… · Esc closes; pending review will be cancelled"
+        dialog.locale.text("tui.plugin_working")
     } else if dialog.view == View::Review {
-        "↑↓/PgDn read · Space approve · C configs · Enter activate · Esc cancel"
+        dialog.locale.text("tui.plugin_review_keys")
     } else if dialog.view == View::Config {
-        "Enter keep · Ctrl+U clear · Esc discard · Shift+Enter newline"
+        dialog.locale.text("tui.plugin_config_keys")
     } else if dialog.view == View::Remove {
-        "Y explicitly confirms · Esc cancels"
+        dialog.locale.text("tui.plugin_confirm_keys")
     } else {
-        "Tab installed/market · / search · R refresh · V market v1/v2 · Esc close"
+        dialog.locale.text("tui.plugin_browse_keys")
     }
 }

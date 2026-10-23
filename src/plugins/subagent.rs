@@ -249,25 +249,26 @@ impl CommandHandler for SubagentCommand {
         args: &str,
     ) -> Result<CommandOutcome, CommandError> {
         match args.trim() {
-            "" | "status" => Ok(CommandOutcome::ShowSubagentStatus(crate::application::SubagentStatusDto {
-                enabled: application.subagents_enabled(),
-            })),
+            "" | "status" => Ok(CommandOutcome::ShowSubagentStatus(
+                crate::application::SubagentStatusDto {
+                    enabled: application.subagents_enabled(),
+                },
+            )),
             "on" => application
                 .set_subagents_enabled(true)
-                .map(|_| CommandOutcome::Status(
-                    "Read-only subagent experiment enabled for this session. Fixed explorer/reviewer, depth 1, bounded; no paid benchmark claim has been made."
-                        .into(),
-                ))
+                .map(|_| {
+                    CommandOutcome::Status(crate::i18n::UiMessage::new("command.sub_on").into())
+                })
                 .map_err(failed),
             "off" => application
                 .set_subagents_enabled(false)
-                .map(|_| CommandOutcome::Status(
-                    "Read-only subagent experiment disabled for this session.".into(),
-                ))
+                .map(|_| {
+                    CommandOutcome::Status(crate::i18n::UiMessage::new("command.sub_off").into())
+                })
                 .map_err(failed),
-            _ => Err(CommandError::Failed {
-                message: "usage: /subagents [status|on|off]".into(),
-            }),
+            _ => Err(CommandError::presented(crate::i18n::UiMessage::new(
+                "command.subagents_usage",
+            ))),
         }
     }
 }

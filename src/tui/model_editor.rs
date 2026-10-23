@@ -3,6 +3,7 @@ use crate::{
     ImageRequestPolicy, ModelCapabilities, ModelConfig, ModelProtocol, ProviderCredentials,
     ProviderDescriptor, ThinkingLevel,
 };
+use clat_core::client_ports::presentation::{LocaleContext, PresentedText, UiMessage};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -131,6 +132,7 @@ const BUDGET_DEFAULT: usize = 1;
 const CHOICE_CUSTOM: usize = usize::MAX;
 
 pub(crate) struct ModelEditor {
+    pub(crate) locale: clat_core::client_ports::presentation::LocaleContext,
     remote: bool,
     remote_key_edited: bool,
     remote_limits: bool,
@@ -180,7 +182,7 @@ pub(crate) struct ModelEditor {
     show_advanced: bool,
     selected: usize,
     editing: Option<EditPopup>,
-    error: Option<String>,
+    error: Option<PresentedText>,
 }
 
 impl ModelEditor {
@@ -190,6 +192,7 @@ impl ModelEditor {
         provider_descriptors: Vec<ProviderDescriptor>,
     ) -> Self {
         Self {
+            locale: clat_core::client_ports::presentation::LocaleContext::default(),
             remote: false,
             remote_key_edited: false,
             remote_limits: false,
@@ -321,7 +324,10 @@ impl ModelEditor {
     /// 测试探针：当前错误文案（校验失败提示）。
     #[cfg(test)]
     fn error_text(&self) -> String {
-        self.error.clone().unwrap_or_default()
+        self.error
+            .as_ref()
+            .map(|e| e.render(self.locale))
+            .unwrap_or_default()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> EditorAction {
@@ -449,7 +455,7 @@ impl ModelEditor {
 
         let footer = match &self.error {
             Some(error) => Line::from(Span::styled(
-                error.clone(),
+                error.render(self.locale),
                 crate::tui::theme::style(crate::tui::theme::Role::Error),
             )),
             None => Line::from(Span::styled(
@@ -471,78 +477,98 @@ impl ModelEditor {
             .collect()
     }
 
+    fn profile_name_row(&self) -> (String, String) {
+        let name = self
+            .profile
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        (
+            self.locale.text("tui.name").into(),
+            display_placeholder(&name),
+        )
+    }
+
     fn row_label(&self, kind: RowKind) -> (String, String) {
         use RowKind::*;
         match kind {
-            Name => (
-                "Name".into(),
-                display_placeholder(
-                    &self
-                        .profile
-                        .as_ref()
-                        .map(|profile| profile.name.clone())
-                        .unwrap_or_default(),
-                ),
-            ),
+            Name => self.profile_name_row(),
             Preset => (
-                "Preset".into(),
+                self.locale.text("tui.preset").into(),
                 format!(
                     "{}  ←/→",
-                    self.preset.map(|preset| preset.name).unwrap_or("Custom")
+                    self.preset
+                        .map(|preset| preset.name)
+                        .unwrap_or(self.locale.text("tui.custom"))
                 ),
             ),
-            Model => ("Model".into(), display_placeholder(&self.model)),
-            Endpoint => ("Endpoint".into(), display_placeholder(&self.endpoint)),
+            Model => (
+                self.locale.text("web.model").into(),
+                display_placeholder(&self.model),
+            ),
+            Endpoint => (
+                self.locale.text("web.endpoint").into(),
+                display_placeholder(&self.endpoint),
+            ),
             ApiKey => (self.credential_label(0), self.key_summary()),
             Advanced => (
-                "[ Advanced ]".into(),
+                self.locale.text("tui.advanced").into(),
                 if self.show_advanced {
-                    "shown ▾".into()
+                    self.locale.text("tui.shown").into()
                 } else {
-                    "hidden ▸".into()
+                    self.locale.text("tui.hidden").into()
                 },
             ),
-            Protocol => ("Protocol".into(), format!("{}  ←/→", self.protocol)),
-            RequestPath => ("Request Path".into(), self.request_path.clone()),
+            Protocol => (
+                self.locale.text("web.protocol").into(),
+                format!("{}  ←/→", self.protocol),
+            ),
+            RequestPath => (
+                self.locale.text("tui.request_path").into(),
+                self.request_path.clone(),
+            ),
             AuthHeader => self.auth_row_label(false),
             AuthPrefix => self.auth_row_label(true),
             ExtraHeaders => self.json_row_label(false),
             ExtraBody => self.json_row_label(true),
             OutputLimit => (
-                "Max Output Tokens".into(),
+                self.locale.text("tui.max_output_tokens").into(),
                 self.override_row_value(OutputLimit, self.output_row_value()),
             ),
             ContextWindow => (
-                "Context Window".into(),
+                self.locale.text("tui.context_window").into(),
                 self.override_row_value(ContextWindow, self.context_row_value()),
             ),
-            SpendBudget => ("Spend Budget".into(), self.budget_row_value()),
+            SpendBudget => (
+                self.locale.text("tui.spend_budget").into(),
+                self.budget_row_value(),
+            ),
             Thinking => (
-                "Thinking".into(),
+                self.locale.text("tui.thinking").into(),
                 self.override_row_value(Thinking, self.thinking_row_value()),
             ),
             Temperature => (
-                "Temperature".into(),
+                self.locale.text("tui.temperature").into(),
                 self.override_row_value(Temperature, self.temperature.clone()),
             ),
             Parallel => (
-                "Parallel Tool Calls".into(),
+                self.locale.text("tui.parallel_tool_calls").into(),
                 if self.override_is_clear(Parallel) {
-                    "cleared (field omitted)".into()
+                    self.locale.text("tui.cleared_field_omitted").into()
                 } else if self.parallel_tool_calls {
                     "on".into()
                 } else {
                     "off".into()
                 },
             ),
-            Save => ("[ Save ]".into(), "Ctrl+S".into()),
-            Cancel => ("[ Cancel ]".into(), "Esc".into()),
+            Save => (self.locale.text("tui.save").into(), "Ctrl+S".into()),
+            Cancel => (self.locale.text("tui.cancel").into(), "Esc".into()),
         }
     }
 
     fn override_row_value(&self, kind: RowKind, value: String) -> String {
         if self.override_is_clear(kind) {
-            "cleared (field omitted)".into()
+            self.locale.text("tui.cleared_field_omitted").into()
         } else {
             value
         }
@@ -628,7 +654,12 @@ impl ModelEditor {
             return self.context_window.clone();
         }
         match self.context_choice {
-            CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.context_window)),
+            CHOICE_CUSTOM => self
+                .locale
+                .render(&UiMessage::new("tui.message_custom_value").arg(
+                    "value1",
+                    (custom_or(&self.context_window, self.locale)).to_string(),
+                )),
             index => format!("{}  ←/→", human_tokens(u64::from(CONTEXT_CHOICES[index]))),
         }
     }
@@ -638,7 +669,12 @@ impl ModelEditor {
             return self.output_limit.clone();
         }
         match self.output_choice {
-            CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.output_limit)),
+            CHOICE_CUSTOM => self
+                .locale
+                .render(&UiMessage::new("tui.message_custom_value").arg(
+                    "value1",
+                    (custom_or(&self.output_limit, self.locale)).to_string(),
+                )),
             index => format!("{}  ←/→", human_tokens(u64::from(OUTPUT_CHOICES[index]))),
         }
     }
@@ -648,10 +684,15 @@ impl ModelEditor {
             return self.spend_budget.clone();
         }
         match self.budget_choice {
-            CHOICE_CUSTOM => format!("custom: {}  ←/→", custom_or(&self.spend_budget)),
+            CHOICE_CUSTOM => self
+                .locale
+                .render(&UiMessage::new("tui.message_custom_value").arg(
+                    "value1",
+                    (custom_or(&self.spend_budget, self.locale)).to_string(),
+                )),
             index => match BUDGET_CHOICES[index] {
-                None => "no cap (default)  ←/→".into(),
-                Some(0) => "off  ←/→".into(),
+                None => self.locale.text("tui.no_cap_default").into(),
+                Some(0) => self.locale.text("tui.off").into(),
                 Some(budget) => format!("{}  ←/→", human_tokens(budget)),
             },
         }
@@ -663,10 +704,10 @@ impl ModelEditor {
     /// 那里的原始通道——见 model-editor.md）。
     fn thinking_row_value(&self) -> String {
         match self.thinking_level {
-            Some(ThinkingLevel::Low) => "low  ←/→".into(),
-            Some(ThinkingLevel::High) => "high  ←/→".into(),
-            Some(ThinkingLevel::Max) => "max  ←/→".into(),
-            None => "off (vendor default)  ←/→".into(),
+            Some(ThinkingLevel::Low) => self.locale.text("tui.low").into(),
+            Some(ThinkingLevel::High) => self.locale.text("tui.high").into(),
+            Some(ThinkingLevel::Max) => self.locale.text("tui.max").into(),
+            None => self.locale.text("tui.off_vendor_default").into(),
         }
     }
 
@@ -676,7 +717,7 @@ impl ModelEditor {
             .find(|descriptor| descriptor.protocol == self.protocol)
             .and_then(|descriptor| descriptor.fields.get(index))
             .map(|field| field.label.clone())
-            .unwrap_or_else(|| "API Key".into())
+            .unwrap_or_else(|| self.locale.text("tui.api_key").into())
     }
 
     fn visible_rows(&self) -> Vec<RowKind> {
@@ -895,19 +936,19 @@ impl ModelEditor {
 
     fn edit_target_label(&self, target: EditTarget) -> &'static str {
         match target {
-            EditTarget::Name => "Profile Name",
-            EditTarget::Model => "Model",
-            EditTarget::Endpoint => "Endpoint",
-            EditTarget::ApiKey => "API Key",
-            EditTarget::RequestPath => "Request Path",
-            EditTarget::AuthHeader => "Auth Header",
-            EditTarget::AuthPrefix => "Auth Prefix",
-            EditTarget::ExtraHeaders => "Extra Headers JSON",
-            EditTarget::ExtraBody => "Extra Body JSON",
-            EditTarget::OutputLimit => "Max Output Tokens",
-            EditTarget::SpendBudget => "Spend Budget (tokens/run, 0=off)",
-            EditTarget::ContextWindow => "Context Window (tokens, empty = off)",
-            EditTarget::Temperature => "Temperature",
+            EditTarget::Name => self.locale.text("tui.profile_name"),
+            EditTarget::Model => self.locale.text("web.model"),
+            EditTarget::Endpoint => self.locale.text("web.endpoint"),
+            EditTarget::ApiKey => self.locale.text("tui.api_key"),
+            EditTarget::RequestPath => self.locale.text("tui.request_path"),
+            EditTarget::AuthHeader => self.locale.text("tui.auth_header"),
+            EditTarget::AuthPrefix => self.locale.text("tui.auth_prefix"),
+            EditTarget::ExtraHeaders => self.locale.text("tui.extra_headers_json"),
+            EditTarget::ExtraBody => self.locale.text("tui.extra_body_json"),
+            EditTarget::OutputLimit => self.locale.text("tui.max_output_tokens"),
+            EditTarget::SpendBudget => self.locale.text("tui.spend_budget_tokens_run_0_off"),
+            EditTarget::ContextWindow => self.locale.text("tui.context_window_tokens_empty_off"),
+            EditTarget::Temperature => self.locale.text("tui.temperature"),
         }
     }
 
@@ -937,7 +978,7 @@ impl ModelEditor {
             Line::from(shown),
             Line::from(""),
             Line::from(Span::styled(
-                "Enter confirm · Esc cancel",
+                self.locale.text("tui.enter_confirm_esc_cancel"),
                 crate::tui::theme::style(crate::tui::theme::Role::Faint),
             )),
         ];
@@ -1235,67 +1276,36 @@ impl ModelEditor {
         }
     }
 
-    fn build(&self) -> Result<(ModelConfig, ProviderCredentials), String> {
+    fn build(&self) -> Result<(ModelConfig, ProviderCredentials), PresentedText> {
         if self.profile.is_some()
             && self
                 .profile
                 .as_ref()
                 .is_some_and(|profile| profile.name.trim().is_empty())
         {
-            return Err("Profile name is required".into());
+            return Err(UiMessage::new("tui.profile_name_is_required").into());
         }
         if self.model.trim().is_empty() {
-            return Err("Model is required".into());
+            return Err(UiMessage::new("tui.model_is_required").into());
         }
         if self.endpoint.trim().is_empty() {
-            return Err("Endpoint is required".into());
+            return Err(UiMessage::new("tui.endpoint_is_required").into());
         }
         if self.request_path.trim().is_empty() {
-            return Err("Request Path is required".into());
+            return Err(UiMessage::new("tui.request_path_is_required").into());
         }
-        let extra_headers = parse_object(&self.extra_headers, "Extra Headers JSON")?;
-        let extra_body = parse_object(&self.extra_body, "Extra Body JSON")?;
-        // B9：档案模式按枚举位取值（Custom… 位才解析自由数字缓冲）。
+        let extra_headers = parse_object(&self.extra_headers, "tui.extra_headers_json")?;
+        let extra_body = parse_object(&self.extra_body, "tui.extra_body_json")?;
         let (output_limit, max_context_tokens, run_token_budget) = if self.profile.is_some() {
-            let output_limit = if self.output_choice == CHOICE_CUSTOM {
-                let parsed = parse_optional_u32(&self.output_limit, "Max Output Tokens")?;
-                if parsed.is_none() {
-                    return Err("Max Output Tokens: enter a number or pick a preset size".into());
-                }
-                parsed
-            } else {
-                Some(OUTPUT_CHOICES[self.output_choice])
-            };
-            let max_context_tokens = if self.context_choice == CHOICE_CUSTOM {
-                let parsed = parse_optional_u32(&self.context_window, "Context Window")?;
-                if parsed.is_none() {
-                    return Err("Context Window: enter a number or pick a preset size".into());
-                }
-                parsed
-            } else {
-                Some(CONTEXT_CHOICES[self.context_choice])
-            };
-            let run_token_budget = if self.budget_choice == CHOICE_CUSTOM {
-                parse_optional_u64(&self.spend_budget, "Spend Budget")?
-            } else {
-                BUDGET_CHOICES[self.budget_choice]
-            };
-            (output_limit, max_context_tokens, run_token_budget)
+            self.profile_limits()?
         } else {
-            let output_limit = parse_optional_u32(&self.output_limit, "Max Output Tokens")?;
-            if output_limit == Some(0) {
-                return Err("Max Output Tokens must be greater than zero".into());
-            }
-            let max_context_tokens = parse_optional_u32(&self.context_window, "Context Window")?;
-            if max_context_tokens.is_some_and(|tokens| tokens < 4_096) {
-                return Err("Context Window must be at least 4096 tokens".into());
-            }
-            let run_token_budget = parse_optional_u64(&self.spend_budget, "Spend Budget")?;
-            (output_limit, max_context_tokens, run_token_budget)
+            self.custom_limits()?
         };
-        let temperature = parse_optional_f64(&self.temperature, "Temperature")?;
+        let temperature = parse_optional_f64(&self.temperature, "tui.temperature")?;
         if temperature.is_some_and(|value| !value.is_finite() || value < 0.0) {
-            return Err("Temperature must be a finite non-negative number".into());
+            return Err(
+                UiMessage::new("tui.temperature_must_be_a_finite_non_negative_number").into(),
+            );
         }
         // INV-MM2-3/W2b：缓冲值与 preset-managed 默认精确相等 →
         // Inherit，不等 → Set；Ctrl+D 的独立 tombstone 状态优先生成
@@ -1382,6 +1392,54 @@ impl ModelEditor {
     }
 }
 
+type NumericLimits = (Option<u32>, Option<u32>, Option<u64>);
+impl ModelEditor {
+    fn profile_limits(&self) -> Result<NumericLimits, PresentedText> {
+        let output_limit = if self.output_choice == CHOICE_CUSTOM {
+            let parsed = parse_optional_u32(&self.output_limit, "tui.max_output_tokens")?;
+            if parsed.is_none() {
+                return Err(UiMessage::new(
+                    "tui.max_output_tokens_enter_a_number_or_pick_a_preset_size",
+                )
+                .into());
+            }
+            parsed
+        } else {
+            Some(OUTPUT_CHOICES[self.output_choice])
+        };
+        let max_context_tokens = if self.context_choice == CHOICE_CUSTOM {
+            let parsed = parse_optional_u32(&self.context_window, "tui.context_window")?;
+            if parsed.is_none() {
+                return Err(UiMessage::new(
+                    "tui.context_window_enter_a_number_or_pick_a_preset_size",
+                )
+                .into());
+            }
+            parsed
+        } else {
+            Some(CONTEXT_CHOICES[self.context_choice])
+        };
+        let run_token_budget = if self.budget_choice == CHOICE_CUSTOM {
+            parse_optional_u64(&self.spend_budget, "tui.spend_budget")?
+        } else {
+            BUDGET_CHOICES[self.budget_choice]
+        };
+        Ok((output_limit, max_context_tokens, run_token_budget))
+    }
+    fn custom_limits(&self) -> Result<NumericLimits, PresentedText> {
+        let output_limit = parse_optional_u32(&self.output_limit, "tui.max_output_tokens")?;
+        if output_limit == Some(0) {
+            return Err(UiMessage::new("tui.max_output_tokens_must_be_greater_than_zero").into());
+        }
+        let max_context_tokens = parse_optional_u32(&self.context_window, "tui.context_window")?;
+        if max_context_tokens.is_some_and(|tokens| tokens < 4_096) {
+            return Err(UiMessage::new("tui.context_window_must_be_at_least_4096_tokens").into());
+        }
+        let run_token_budget = parse_optional_u64(&self.spend_budget, "tui.spend_budget")?;
+        Ok((output_limit, max_context_tokens, run_token_budget))
+    }
+}
+
 mod picker;
 mod remote;
 mod remote_auth;
@@ -1455,9 +1513,9 @@ fn human_tokens(tokens: u64) -> String {
 }
 
 /// B9：Custom… 位的数字占位（空 = 提示输入数字）。
-fn custom_or(value: &str) -> String {
+fn custom_or(value: &str, locale: LocaleContext) -> String {
     if value.trim().is_empty() {
-        "<enter a number>".into()
+        locale.text("tui.enter_number").into()
     } else {
         value.trim().to_owned()
     }
@@ -1471,47 +1529,53 @@ fn display_placeholder(value: &str) -> String {
     }
 }
 
-fn parse_object(text: &str, label: &str) -> Result<Value, String> {
+fn parse_object(text: &str, label: &str) -> Result<Value, PresentedText> {
     if text.trim().is_empty() {
         return Ok(Value::Object(Default::default()));
     }
-    let value: Value = serde_json::from_str(text).map_err(|error| format!("{label}: {error}"))?;
+    let value: Value = serde_json::from_str(text).map_err(|error| {
+        UiMessage::new("tui.validation_json")
+            .arg_message("label", UiMessage::new(label))
+            .arg("error", error.to_string())
+    })?;
     if !value.is_object() {
-        return Err(format!("{label} must be a JSON object"));
+        return Err(UiMessage::new("tui.validation_object")
+            .arg_message("label", UiMessage::new(label))
+            .into());
     }
     Ok(value)
 }
-
-fn parse_optional_u32(text: &str, label: &str) -> Result<Option<u32>, String> {
+fn parse_optional_u32(text: &str, label: &str) -> Result<Option<u32>, PresentedText> {
     if text.trim().is_empty() {
         Ok(None)
     } else {
-        text.trim()
-            .parse::<u32>()
-            .map(Some)
-            .map_err(|_| format!("{label} must be an integer"))
+        text.trim().parse::<u32>().map(Some).map_err(|_| {
+            UiMessage::new("tui.validation_integer")
+                .arg_message("label", UiMessage::new(label))
+                .into()
+        })
     }
 }
-
-fn parse_optional_u64(text: &str, label: &str) -> Result<Option<u64>, String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    trimmed
-        .parse::<u64>()
-        .map(Some)
-        .map_err(|_| format!("{label} must be a non-negative integer"))
-}
-
-fn parse_optional_f64(text: &str, label: &str) -> Result<Option<f64>, String> {
+fn parse_optional_u64(text: &str, label: &str) -> Result<Option<u64>, PresentedText> {
     if text.trim().is_empty() {
         Ok(None)
     } else {
-        text.trim()
-            .parse::<f64>()
-            .map(Some)
-            .map_err(|_| format!("{label} must be a number"))
+        text.trim().parse::<u64>().map(Some).map_err(|_| {
+            UiMessage::new("tui.validation_nonnegative")
+                .arg_message("label", UiMessage::new(label))
+                .into()
+        })
+    }
+}
+fn parse_optional_f64(text: &str, label: &str) -> Result<Option<f64>, PresentedText> {
+    if text.trim().is_empty() {
+        Ok(None)
+    } else {
+        text.trim().parse::<f64>().map(Some).map_err(|_| {
+            UiMessage::new("tui.validation_number")
+                .arg_message("label", UiMessage::new(label))
+                .into()
+        })
     }
 }
 

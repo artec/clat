@@ -83,7 +83,7 @@ pub struct CommandInfo {
 /// 命令分发的前端中立结果。变体表达意图与数据，不是渲染指令。
 pub enum CommandOutcome {
     /// 纯信息性消息（前端以状态提示呈现）。
-    Status(String),
+    Status(crate::i18n::PresentedText),
     ShowTask(String),
     /// Read-only capability content through the existing content view.
     ShowCapabilities(String),
@@ -178,6 +178,8 @@ pub enum CommandError {
     /// 命令语义执行失败（消息自带的上下文，如
     /// `compaction unavailable: …`）。
     Failed { message: String },
+    /// User-facing failure with stable English facts and client-owned rendering.
+    FailedMessage(Box<crate::i18n::UiMessage>),
 }
 
 impl fmt::Display for CommandError {
@@ -193,11 +195,36 @@ impl fmt::Display for CommandError {
                 write!(formatter, "/{name} takes no arguments")
             }
             Self::Failed { message } => formatter.write_str(message),
+            Self::FailedMessage(message) => formatter.write_str(&message.english()),
         }
     }
 }
 
 impl std::error::Error for CommandError {}
+
+impl CommandError {
+    pub fn presented(message: crate::i18n::UiMessage) -> Self {
+        Self::FailedMessage(Box::new(message))
+    }
+    pub fn presentation(&self) -> crate::i18n::UiMessage {
+        use crate::i18n::UiMessage;
+        match self {
+            Self::NotACommand { input } => {
+                UiMessage::new("command.not_command").arg("input", input.clone())
+            }
+            Self::NotFound { input } => {
+                UiMessage::new("command.unknown").arg("input", input.clone())
+            }
+            Self::TakesNoArguments { name } => {
+                UiMessage::new("command.no_arguments").arg("name", name.clone())
+            }
+            Self::Failed { message } => {
+                UiMessage::new("common.diagnostic").arg("detail", message.clone())
+            }
+            Self::FailedMessage(message) => message.as_ref().clone(),
+        }
+    }
+}
 
 /// 命令处理器：前端中立，绝不向模型转发。`args` 是命令名之后的原文
 /// （已 trim）；是否接受参数由注册表的 `takes_args` 声明统一裁决
