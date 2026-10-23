@@ -371,8 +371,13 @@ configuration. Arguments containing secrets are not logged. Build subprocesses
 strip inherited Apple/Tauri signing variables; only the explicit local finalizer
 performs production signing. Never finalize partially built releases.
 The finalizer preflights tools, the local certificate, notarization configuration
-and the desktop key pair before modifying artifacts. DMGs use a simple
-App/Applications layout produced by hdiutil, without Finder automation.
+and the desktop key pair before modifying artifacts. DMGs use a 660 × 400
+Finder window with 128-point icons: CLAT on the left, Applications on the right.
+The local packager mounts a writable image, saves the Finder layout, detaches it,
+and compresses it before the existing DMG signing/notarization steps. macOS may
+request permission for the build terminal to control Finder. Layout failures
+stop packaging; detach failures retain the temporary image for recovery instead
+of recursively deleting a mounted volume. No extra release assets are added.
 
 The unsigned macOS build produces only an App archive, without a throwaway DMG.
 The final DMG is made once, after signing and notarizing the App. Cargo's local

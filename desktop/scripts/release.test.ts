@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import * as tar from 'tar';
 import { createArchive, safeExtract } from './archive';
 import { checksum, cleanEnv, DESKTOP, digest, json, redact, run, withTemp } from './common';
@@ -77,17 +77,68 @@ test('finalization refuses partial release without signing', async () => {
     expect(check).not.toHaveBeenCalled();
   });
 });
-test.skipIf(process.platform === 'win32')('DMG contains only App and Applications shortcut', async () => {
+test.skipIf(process.platform === 'win32')('DMG stores a large left-to-right Finder layout before compression', async () => {
   await fixture(async release => {
-    const app = join(release.root, 'CLAT.app'); mkdirSync(app); const seen: string[] = [];
+    const app = join(release.root, 'CLAT.app'); mkdirSync(app); const seen: string[][] = [];
     const packaging = new DesktopRelease(release.root, args => {
-      seen.push(args[0]!);
+      seen.push(args);
       if (args[0] === 'ditto') cpSync(args[1]!, args[2]!, { recursive: true });
-      else if (args[0] === 'hdiutil') { const image = args[args.indexOf('-srcfolder') + 1]!; expect(readdirSync(image).sort()).toEqual(['Applications', 'CLAT.app']); expect(readlinkSync(join(image, 'Applications'))).toBe('/Applications'); expect(args[args.indexOf('-volname') + 1]).toBe('CLAT'); }
-      else throw new Error('unexpected process');
+      if (args[0] === 'hdiutil' && args[1] === 'create') {
+        const image = args[args.indexOf('-srcfolder') + 1]!;
+        expect(readdirSync(image).sort()).toEqual(['Applications', 'CLAT.app']);
+        expect(readlinkSync(join(image, 'Applications'))).toBe('/Applications');
+        expect(args[args.indexOf('-volname') + 1]).toBe('CLAT');
+      }
+      if (args[0] === 'osascript') writeFileSync(join(args.at(-2)!, '.DS_Store'), 'fixture layout');
       return '';
     });
-    await packaging.makeDmg(app, join(release.root, 'output.dmg')); expect(seen).toEqual(['ditto', 'hdiutil']);
+    await packaging.makeDmg(app, join(release.root, 'output.dmg'));
+    expect(seen.filter(a => a[0] === 'hdiutil').map(a => a[1])).toEqual(['create', 'attach', 'detach', 'convert']);
+    const script = seen.find(a => a[0] === 'osascript')!;
+    expect(script).toBeDefined();
+    expect(script[2]).toContain('set icon size of viewOptions to 128');
+    expect(script[2]).toContain('{180, 170}'); expect(script[2]).toContain('{480, 170}');
+    expect(script[2]).toContain('{400, 200, 1060, 600}');
+    expect(script.at(-1)).toBe('CLAT.app');
+    expect(existsSync(app)).toBe(true);
+  });
+});
+test.skipIf(process.platform === 'win32')('DMG layout failure detaches and prevents publishing an unstyled image', async () => {
+  await fixture(async release => {
+    const app = join(release.root, 'CLAT.app'); mkdirSync(app); const seen: string[][] = [];
+    const packaging = new DesktopRelease(release.root, args => {
+      seen.push(args);
+      if (args[0] === 'osascript') throw new Error('Finder layout denied');
+      return '';
+    });
+    await expect(packaging.makeDmg(app, join(release.root, 'output.dmg'))).rejects.toThrow('Finder layout denied');
+    expect(seen.some(a => a[0] === 'hdiutil' && a[1] === 'detach')).toBe(true);
+    expect(seen.some(a => a[0] === 'hdiutil' && a[1] === 'convert')).toBe(false);
+  });
+});
+test.skipIf(process.platform === 'win32')('DMG requires a saved layout and detaches when it is missing', async () => {
+  await fixture(async release => {
+    const app = join(release.root, 'CLAT.app'); mkdirSync(app); const seen: string[][] = [];
+    const packaging = new DesktopRelease(release.root, args => { seen.push(args); return ''; });
+    await expect(packaging.makeDmg(app, join(release.root, 'output.dmg'))).rejects.toThrow('Finder did not save');
+    expect(seen.some(a => a[1] === 'detach')).toBe(true);
+    expect(seen.some(a => a[1] === 'convert')).toBe(false);
+  });
+});
+test.skipIf(process.platform === 'win32')('DMG detach failure retains mounted contents and never compresses', async () => {
+  await fixture(async release => {
+    const app = join(release.root, 'CLAT.app'); mkdirSync(app); let mount = ''; let converted = false;
+    const packaging = new DesktopRelease(release.root, args => {
+      if (args[0] === 'osascript') { mount = args.at(-2)!; writeFileSync(join(mount, '.DS_Store'), 'fixture layout'); }
+      if (args[1] === 'detach') throw new Error('fixture busy volume');
+      if (args[1] === 'convert') converted = true;
+      return '';
+    });
+    try {
+      await expect(packaging.makeDmg(app, join(release.root, 'output.dmg'))).rejects.toThrow('DMG detach failed');
+      expect(readFileSync(join(mount, '.DS_Store'), 'utf8')).toBe('fixture layout');
+      expect(converted).toBe(false);
+    } finally { if (mount) rmSync(dirname(mount), { recursive: true, force: true }); }
   });
 });
 test('archive round trip preserves nested executable bytes and permissions', async () => {

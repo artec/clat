@@ -1,6 +1,7 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { makeDmg } from "./dmg";
 import { createArchive, safeExtract } from './archive';
 import { sourceCommit, verifyBackend } from './backend';
 import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, writeJson, decodeWrapper, privateWrite } from './common';
@@ -88,13 +89,7 @@ export class DesktopRelease {
     return join(directory, matches[0]!);
   }
   async makeDmg(app: string, destination: string): Promise<void> {
-    mkdirSync(dirname(destination), { recursive: true });
-    await withTemp('clat-desktop-dmg-', folder => {
-      const image = join(folder, 'image-root'); mkdirSync(image);
-      this.execute(['ditto', app, join(image, basename(app))]);
-      symlinkSync('/Applications', join(image, 'Applications'));
-      this.execute(['hdiutil', 'create', '-volname', PRODUCT_NAME, '-srcfolder', image, '-ov', '-format', 'UDZO', destination]);
-    });
+    makeDmg(app, destination, PRODUCT_NAME, this.execute);
   }
   package(target: string, output: string, appOnly = false): void {
     const record = this.records('desktop').find(r => r.target === target);
@@ -182,7 +177,7 @@ export class DesktopRelease {
   }
   async preflightSigning(tag: string): Promise<void> {
     if (process.platform !== 'darwin') throw new Error('finalize the complete release on the owner’s macOS machine');
-    for (const tool of ['codesign', 'security', 'xcrun', 'lipo', 'plutil', 'hdiutil', 'ditto', 'minisign']) if (!Bun.which(tool)) throw new Error('required local release tool missing: ' + tool);
+    for (const tool of ['codesign', 'security', 'xcrun', 'lipo', 'plutil', 'hdiutil', 'ditto', 'osascript', 'sync', 'minisign']) if (!Bun.which(tool)) throw new Error('required local release tool missing: ' + tool);
     if (!existsSync(join(this.desktop, 'node_modules/@tauri-apps/cli/tauri.js'))) throw new Error('run bun install --cwd desktop --frozen-lockfile --ignore-scripts');
     if (!process.env.CLAT_NOTARY_PROFILE && !(process.env.APPLE_ID && process.env.APPLE_TEAM_ID && (process.env.APPLE_APP_SPECIFIC_PASSWORD || process.env.APPLE_PASSWORD))) throw new Error('configure local Apple notarization credentials before signing');
     const identity = process.env.APPLE_SIGNING_IDENTITY ?? 'Developer ID Application: Artec Inc. (VJUBRKV7K9)';

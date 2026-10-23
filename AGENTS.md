@@ -17,6 +17,7 @@ All contributors and coding agents working in this repository should preserve th
 
 - Rust is the implementation language for the core runtime and CLI.
 - Keep dependencies minimal and justified.
+- **Localize product UI text.** All new or changed CLAT-owned user-facing text in CLI, TUI, Web/PWA, Desktop and user installers must use stable keys in the shared `locales/` catalogs and the existing explicit locale/presentation APIs; never hardcode display text in product code. Update English, Simplified Chinese and Traditional Chinese together, preserve live language switching, and run the catalog checks. Keep protocol identifiers, model/tool content and raw third-party diagnostics unchanged. Follow [the localization specification](docs/localization.md).
 - Prefer standard, interoperable formats and protocols over project-specific equivalents.
 - **DSH is the reference implementation** for interoperable surfaces (session journal, event vocabulary, permission gating). Follow it unless there is a recorded reason not to; every deliberate deviation lands in a `docs/research/` mapping doc (see `dsh-permission-gating.md` for the pattern).
 - Keep the Agent Runtime, Model Provider, Tool, Permission, Context, Session, Project, and Event concepts separable.
