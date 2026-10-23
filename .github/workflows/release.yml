@@ -84,7 +84,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         if: contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')
         with:
-          prefix-key: v3-product-native
+          prefix-key: v4-product-native
           shared-key: product-${{ matrix.target }}
           # New tags restore the default branch's dependency cache. Do not
           # duplicate six large caches in an isolated scope for every version.

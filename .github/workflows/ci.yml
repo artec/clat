@@ -159,7 +159,8 @@ jobs:
         id: product-cache
         if: contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')
         with:
-          prefix-key: v3-product-native
+          # v3 warmed core alone; a hit there does not prove CLI features exist.
+          prefix-key: v4-product-native
           shared-key: product-${{ matrix.target }}
           # One writer owns native-check AND release dependencies. Script-only
           # runs must not publish an incomplete immutable cache on a cold key.
@@ -202,15 +203,16 @@ jobs:
       - name: Repeated SHA comparison (release)
         if: matrix.measure
         run: cargo test --locked --release --target ${{ matrix.target }} -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture
-      # A debug/check build has no release .rlib files. Prepare the expensive
-      # product dependency graph once per compiler/manifest/configuration key,
-      # using the same explicit target and optimization profile as Release.
-      - name: Warm release core dependencies
+      # Match Release's complete default-member selection, not core alone:
+      # CLI dependencies unify extra features (e.g. hashbrown via ratatui/lru)
+      # that also change Wasmtime/Cranelift fingerprints. Keep GUI warming a
+      # separate invocation so both production feature variants are cached.
+      - name: Warm release CLI dependencies
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.desktop-plan.outputs.native == 'true' && steps.product-cache.outputs.cache-hit != 'true' && (contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows'))
         timeout-minutes: 30
         env:
           CLAT_OFFICIAL_RELEASE: '1'
-        run: cargo build -p clat-core --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Warm release Windows GUI dependencies
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.desktop-plan.outputs.native == 'true' && steps.product-cache.outputs.cache-hit != 'true' && contains(matrix.target, 'windows')
         timeout-minutes: 30

@@ -85,7 +85,8 @@ test('main CI and Release share native runners and dependency cache identities',
   expect(warm.with!['shared-key']).toBe('product-${{ matrix.target }}');
   expect(consume.with!['shared-key']).toBe(warm.with!['shared-key']);
   expect(consume.with!['prefix-key']).toBe(warm.with!['prefix-key']);
-  expect(warm.with!['prefix-key']).toBe('v3-product-native');
+  // v3 already contains immutable snapshots warmed with the wrong feature graph.
+  expect(warm.with!['prefix-key']).toBe('v4-product-native');
   expect(warm.with!['save-if']).toContain('github.event.repository.default_branch');
   expect(warm.with!['save-if']).toContain("needs.desktop-plan.outputs.native == 'true'");
   expect(consume.with!['save-if']).toBe(false);
@@ -106,7 +107,9 @@ test('release dependency warming is bounded to main cache misses without packagi
     expect(step.run).toContain('--release --locked --target ${{ matrix.target }}');
     expect(step.run).not.toMatch(/release\.ts|\bpackage\b|\bpublish\b|tauri\.js/);
   }
-  expect(warm[0]!.run).toContain('-p clat-core');
+  const releaseBuild = workflow('.github/workflows/release.yml').jobs.build!.steps!.find(s => s.name === 'Build')!;
+  expect(warm[0]!.name).toBe('Warm release CLI dependencies');
+  expect(warm[0]!.run).toBe(releaseBuild.run);
   expect(warm[1]!.run).toContain('-p clat-desktop');
   expect(warm[1]!.run).toContain('--features tauri/custom-protocol');
   expect(warm[1]!.if).toContain("contains(matrix.target, 'windows')");
@@ -121,11 +124,11 @@ test('only the four desktop platforms use shared Release caches and extra warmin
   const release = workflow('.github/workflows/release.yml').jobs.build!;
   const predicate = "contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')";
   for (const job of [ci, release]) {
-    const caches = job.steps!.filter(s => s.with?.['prefix-key'] === 'v3-product-native');
+    const caches = job.steps!.filter(s => s.with?.['prefix-key'] === 'v4-product-native');
     expect(caches).toHaveLength(1); expect(caches[0]!.if).toContain(predicate);
   }
-  const coreWarm = ci.steps!.find(s => s.name === 'Warm release core dependencies')!;
-  expect(coreWarm.if).toContain(predicate);
+  const cliWarm = ci.steps!.find(s => s.name === 'Warm release CLI dependencies')!;
+  expect(cliWarm.if).toContain(predicate);
   expect(ci.strategy!.matrix.include.filter(r => r.target.includes('unknown-linux-gnu'))).toHaveLength(2);
   expect(ci.steps!.find(s => s.name === 'Compile the complete target surface')!.if).toBeUndefined();
   expect(ci.steps!.find(s => s.name === 'Repeated SHA comparison (release)')!.if).toBe('matrix.measure');

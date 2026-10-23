@@ -457,7 +457,7 @@ promise a particular cold-build duration.
 
 The six-platform `plugin-performance` CI matrix uses the same native runner
 labels as the release inventory. Its four macOS/Windows targets and Release use
-the same rust-cache prefix `v3-product-native` and shared key `product-<target>`.
+the same rust-cache prefix `v4-product-native` and shared key `product-<target>`.
 Compiler/environment and
 Cargo manifest/lockfile hashes remain enabled; operating systems, architectures,
 toolchains and incompatible flags are not mixed to force a hit. This replaces
@@ -473,12 +473,25 @@ shared cache. Those jobs run desktop clippy/tests and tooling checks on all four
 native platforms before saving; script-only runs cannot publish an incomplete
 immutable snapshot. On an exact cache miss in those native-input runs, including
 configuration changes restored through a fallback, those jobs build the
-optimized core library and, on Windows, the desktop executable
-with `tauri/custom-protocol`. They create no installers or release assets and
+complete CLI with exactly Release's `cargo build --release --locked --target ...`
+command and, on Windows, the desktop executable with `tauri/custom-protocol`
+in a separate invocation. Core-only warming is insufficient: CLI/TUI dependencies
+enable additional shared dependency features (for example ratatui/lru/hashbrown),
+which change Wasmtime/Cranelift dependency fingerprints. The separate GUI build
+keeps its own feature variant; combining both products in one Cargo invocation
+would warm a third union instead of their individual release graphs.
+These warm builds create no installers or release assets and
 use no signing credentials. Exact hits skip these extra builds. Existing SHA
 checks now use the same explicit target directory as Release, avoiding a second
 host-default release directory. The cache action retains dependency artifacts,
 not workspace binaries; real release code is still compiled and validated.
+
+The v4 generation replaces v3's incomplete core-only snapshots. A v3 cache hit
+must not skip the corrected warm build. The first successful native-input main
+CI therefore prepares v4 before a tag is pushed; this change does not delete
+remote caches or trigger jobs automatically. Cache restoration and Cargo artifact
+freshness are separate observations: a downloaded cache alone does not establish
+that expensive dependencies were reused.
 
 Tag releases restore the default branch's cache without saving another four
 large copies under each tag. Tags cannot read caches from different tags.

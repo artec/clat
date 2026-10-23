@@ -5,8 +5,8 @@ import { ROOT, run, withTemp, type Environment } from './common';
 
 async function cargoFixture(action: (fixture: {
   execute: (args: string[]) => string;
-  artifact: (output: string) => { fresh: boolean; profile: { debuginfo: number; debug_assertions: boolean; overflow_checks: boolean } };
-  version: (version: string) => void; root: string;
+  artifact: (output: string) => { fresh: boolean; features: string[]; profile: { debuginfo: number; debug_assertions: boolean; overflow_checks: boolean } };
+  version: (version: string) => void; relock: () => void; root: string;
 }) => void, extra: Environment = {}): Promise<void> {
   const toolchain = readFileSync(join(ROOT, 'rust-toolchain.toml'), 'utf8').match(/^channel\s*=\s*"([^"]+)"/m)![1]!;
   const env = { RUSTUP_TOOLCHAIN: toolchain, ...extra };
@@ -28,7 +28,7 @@ async function cargoFixture(action: (fixture: {
         .find(item => item.reason === 'compiler-artifact' && item.target?.name === 'cache_dep');
       expect(artifact).toBeDefined(); return artifact;
     };
-    action({ execute: args => execute([args[0]!, '--offline', '--locked', '--target', host, '--message-format=json', ...args.slice(1)]), artifact, version, root });
+    action({ execute: args => execute([args[0]!, '--offline', '--locked', '--target', host, '--message-format=json', ...args.slice(1)]), artifact, version, relock: () => execute(['generate-lockfile', '--offline']), root });
   });
 }
 
@@ -38,6 +38,67 @@ test('release library warming survives a product version change; debug artifacts
     version('1.0.1');
     expect(artifact(execute(['build', '--release', '--bin', 'cache-app'])).fresh).toBe(true);
     expect(artifact(execute(['build', '--lib'])).fresh).toBe(false);
+  });
+}, 60000);
+
+type Fixture = Parameters<Parameters<typeof cargoFixture>[0]>[0];
+async function featureFixture(action: (fixture: Fixture) => void): Promise<void> {
+  await cargoFixture(fixture => {
+    const { root, relock } = fixture;
+    writeFileSync(join(root, 'Cargo.toml'), `[package]
+name="cache-app"
+version="1.0.0"
+edition="2024"
+[workspace]
+members=["core","desktop"]
+default-members=[".","core"]
+exclude=["vendor/dep"]
+resolver="3"
+[dependencies]
+clat-core={path="core"}
+cache-dep={path="vendor/dep",features=["cli"]}
+[profile.release]
+lto="thin"
+codegen-units=1
+`);
+    writeFileSync(join(root, 'vendor/dep/Cargo.toml'), '[package]\nname="cache-dep"\nversion="1.0.0"\nedition="2024"\n[features]\nbase=[]\ncli=[]\ngui=[]\n');
+    for (const name of ['core', 'desktop']) {
+      mkdirSync(join(root, name, 'src'), { recursive: true });
+      const dependencies = name === 'core' ? 'cache-dep={path="../vendor/dep",features=["base"]}' : 'clat-core={path="../core"}\ncache-dep={path="../vendor/dep",features=["gui"]}';
+      writeFileSync(join(root, name, 'Cargo.toml'), `[package]\nname="clat-${name}"\nversion="1.0.0"\nedition="2024"\n[dependencies]\n${dependencies}\n`);
+      writeFileSync(join(root, name, 'src', name === 'core' ? 'lib.rs' : 'main.rs'), name === 'core' ? 'pub fn value()->u32 { cache_dep::value() }\n' : 'fn main() { println!("{}", clat_core::value()+cache_dep::value()); }\n');
+    }
+    relock(); action(fixture);
+  });
+}
+
+test('core-only warming is insufficient when the CLI unifies additional dependency features', async () => {
+  await featureFixture(({ execute, artifact }) => {
+    const core = artifact(execute(['build', '-p', 'clat-core', '--release']));
+    expect(core.features).toEqual(['base']);
+    const cli = artifact(execute(['build', '--release']));
+    expect(cli.features).toEqual(['base', 'cli']); expect(cli.fresh).toBe(false);
+    expect(artifact(execute(['build', '--release'])).fresh).toBe(true);
+  });
+}, 60000);
+
+test('configured CLI warming preserves CLI and GUI feature variants across a product version bump', async () => {
+  const ci = Bun.YAML.parse(readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')) as any;
+  const steps = ci.jobs['plugin-performance'].steps as { name?: string; run?: string }[];
+  const command = steps.find(step => step.name?.startsWith('Warm release') && !step.name.includes('Windows'))!.run!;
+  // The fixture supplies its native --target and --locked itself.
+  const warming = command.replace(' --target ${{ matrix.target }}', '').trim().split(/\s+/).slice(1).filter(arg => arg !== '--locked');
+  await featureFixture(({ execute, artifact, root, relock }) => {
+    execute(warming);
+    const cli = artifact(execute(['build', '--release']));
+    expect(cli.features).toEqual(['base', 'cli']); expect(cli.fresh).toBe(true);
+    const guiArgs = ['build', '-p', 'clat-desktop', '--release'];
+    const gui = artifact(execute(guiArgs));
+    expect(gui.features).toEqual(['base', 'gui']); expect(gui.fresh).toBe(false);
+    writeFileSync(join(root, 'Cargo.toml'), readFileSync(join(root, 'Cargo.toml'), 'utf8').replace('version="1.0.0"', 'version="1.0.1"'));
+    relock();
+    expect(artifact(execute(['build', '--release'])).fresh).toBe(true);
+    expect(artifact(execute(guiArgs)).fresh).toBe(true);
   });
 }, 60000);
 

@@ -460,9 +460,15 @@ Native runners, explicit target directories and cache identities match
 the release inventory; PRs and tags do not publish the shared cache. Extra warm
 builds are skipped on exact hits and never package or publish artifacts.
 `bun test desktop/scripts/ci-contract.test.ts desktop/scripts/cache-reuse.test.ts`
-checks that contract and runs a disposable, offline Cargo workspace experiment:
+checks that contract and runs disposable, offline Cargo workspace experiments:
 release-library warming survives a product version bump, while debug artifacts
-remain distinct. The experiment honors `rust-toolchain.toml` and does not use
+remain distinct. An additional core/CLI/GUI fixture gives the products different
+features on a shared dependency: core-only warming must miss for the CLI, the
+CLI warm command taken from CI must prepare the full release graph, and separate
+CLI/GUI variants must remain fresh after a product version bump. The workflow
+contract also requires the CLI warm and Release build commands to match exactly
+and all cache readers to use v4, excluding incomplete immutable v3 snapshots.
+The experiments honor `rust-toolchain.toml` and do not use
 the user's target directory. It verifies local Cargo reuse, not GitHub cache
 access or a promised speedup. These cache preparation steps belong to the
 parallel platform jobs; the sequential Linux/container gates stay unchanged.
