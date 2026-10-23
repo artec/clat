@@ -6,12 +6,12 @@ type Reporter<'a> = &'a mut dyn FnMut(UpgradeProgress);
 pub(super) fn download_asset(
     asset: &ReleaseAsset,
     checksum: &ReleaseAsset,
-    signature: &ReleaseAsset,
+    index: &ReleaseAsset,
     work_dir: &Path,
     release_tag: &str,
     report: Reporter<'_>,
 ) -> Result<PathBuf, String> {
-    for candidate in [asset, checksum, signature] {
+    for candidate in [asset, checksum, index] {
         validate_asset_name(&candidate.name)?;
     }
     if !is_allowed_download_host(&asset.url) {
@@ -23,7 +23,7 @@ pub(super) fn download_asset(
     report(UpgradeProgress::Downloading);
     let (slot, actual) = download_to_slot(asset, work_dir)?;
     prepare_downloaded_asset(asset, slot, work_dir, report, || {
-        verify_checksum(checksum, signature, &actual, &asset.name, release_tag)
+        verify_checksum(checksum, index, &actual, &asset.name, release_tag)
     })
 }
 

@@ -16,12 +16,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
 mod download;
+mod manifest;
 mod progress;
 pub use progress::{UpgradeProgress, upgrade, upgrade_with_progress};
 
 const RELEASE_PUBLIC_KEY_FILE: &str = include_str!("../release/minisign.pub");
 const MAX_CHECKSUM_BYTES: usize = 4 * 1024;
-const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 
 /// CLAT 的官方仓库（owner/repo）。
 pub const REPO: &str = "artec/clat";
@@ -323,7 +323,6 @@ fn is_allowed_download_host(url: &str) -> bool {
 }
 
 /// 计算字节的 SHA-256 摘要（十六进制）。
-#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
@@ -500,32 +499,31 @@ fn reject_extracted_links(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 下载、验签并比对 `{asset}.sha256`。签名覆盖清单的原始字节，公钥
-/// 编译进 CLAT 二进制，因此 GitHub 账户/CDN 只能替换资产而无法伪造
-/// 一份可通过验证的新清单。
+/// 下载精简单项校验文件与 latest.json，验证集中签名后再比对归档摘要。
 fn verify_checksum(
     checksum: &ReleaseAsset,
-    signature: &ReleaseAsset,
+    index: &ReleaseAsset,
     actual_sha256: &str,
     asset_name: &str,
     release_tag: &str,
 ) -> Result<(), String> {
     let checksum_bytes = download_small_asset(checksum, "checksum", MAX_CHECKSUM_BYTES)?;
-    let signature_bytes = download_small_asset(signature, "signature", MAX_SIGNATURE_BYTES)?;
-    verify_release_assets(
-        release_tag,
-        &checksum.name,
+    let index_bytes = download_small_asset(index, "release index", manifest::MAX_INDEX_BYTES)?;
+    manifest::verify_index_checksum(
+        &index_bytes,
         &checksum_bytes,
-        &signature_bytes,
         actual_sha256,
         asset_name,
+        release_tag,
     )
 }
 
-/// FP-04：验签核心（纯函数——离线可测重放场景）。签名真实性之上，
+/// 历史签名夹具的回归辅助，不参与 v2.1.2 生产升级协议。
+/// FP-04：签名真实性之上，
 /// trusted comment 必须绑定当前 release tag：签名证明「维护者签过这
 /// 份 manifest」，不证明「它属于当前 release」；被攻陷的 GitHub
 /// 控制面把历史合法签名的旧资产挂到新 tag 即构成 signed rollback。
+#[cfg(test)]
 fn verify_release_assets(
     release_tag: &str,
     checksum_name: &str,
@@ -588,6 +586,7 @@ fn release_public_key() -> Result<minisign_verify::PublicKey, String> {
         .map_err(|error| format!("invalid embedded release public key: {error}"))
 }
 
+#[cfg(test)]
 fn verify_manifest_signature(manifest: &[u8], signature: &[u8]) -> Result<String, String> {
     let signature = std::str::from_utf8(signature)
         .map_err(|_| "release manifest signature is not UTF-8".to_owned())?;
@@ -606,6 +605,7 @@ fn verify_manifest_signature(manifest: &[u8], signature: &[u8]) -> Result<String
 /// FP-04：签名身份绑定——trusted comment 必须精确等于 publish 惯例
 /// 文案 `CLAT {release tag} release checksum manifests`。历史 release
 /// 的注释 = 各自旧 tag，对被冒充的新 tag 天然失配 → 天然防重放。
+#[cfg(test)]
 fn ensure_signature_bound_to_tag(comment: &str, tag: &str) -> Result<(), String> {
     let expected = format!("CLAT {tag} release checksum manifests");
     if comment == expected {

@@ -2,6 +2,7 @@ import { afterEach, expect, mock, spyOn, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checksum, DESKTOP, digest, json, nativeTarget, ROOT } from './common';
+import { assembleIndex } from './release-index';
 import { OwnerRelease } from './owner-release';
 import { LocalMacos } from './local-macos';
 import { DesktopRelease } from './release';
@@ -41,7 +42,12 @@ test('build only makes native unsigned package', async () => {
   }, () => { throw new Error('build cannot access GitHub'); });
 });
 test('inventory retains six CLI and four desktop targets', () => {
-  const owner = new OwnerRelease(); expect(owner.archives()).toHaveLength(12); expect(owner.payloads()).toHaveLength(18); expect(owner.files()).toHaveLength(54); expect(new Set(owner.files()).size).toBe(54);
+  const owner = new OwnerRelease(); expect(owner.archives()).toHaveLength(12); expect(owner.payloads()).toHaveLength(13); expect(owner.files()).toHaveLength(23); expect(new Set(owner.files()).size).toBe(23);
+  expect(owner.files().some(n => n.endsWith('.sig') || n.endsWith('.minisig'))).toBe(false);
+  expect(owner.files()).toContain('latest.json');
+  for (const record of owner.release.records('desktop').filter(r => r.platform!.startsWith('darwin'))) {
+    expect(owner.files().filter(n => n.includes(record.label!))).toHaveLength(3);
+  }
 });
 async function withoutLock(owner: OwnerRelease): Promise<void> {
   spyOn(owner, 'localLock').mockImplementation(async action => action()); spyOn(console, 'log').mockImplementation(() => {});
@@ -126,13 +132,21 @@ test.skipIf(!Bun.which('minisign'))('complete signed inventory and validly signe
       const file = join(folder, name); sign(file, join(release.root, 'desktop.key'), `timestamp:1\tfile:${name}\tversion:2.0.0`);
       writeFileSync(file + '.sig', readFileSync(file + '.minisig').toString('base64'));
     };
-    updates.forEach(signUpdate); const index = fixtureIndex(release, owner, folder); signUpdate('desktop-latest.json');
-    for (const name of owner.payloads()) { checksum(join(folder, name)); sign(join(folder, name + '.sha256'), join(release.root, 'cli.key'), 'CLAT v2.0.0 release checksum manifests'); }
+    updates.forEach(signUpdate); const index = fixtureIndex(release, owner, folder);
+    const signIndex = async () => {
+      const { unlinkSync, existsSync } = await import('node:fs');
+      for (const suffix of ['.minisig', '.sig']) if (existsSync(index + suffix)) unlinkSync(index + suffix);
+      signUpdate('release-payload.json');
+      unlinkSync(index + '.minisig');
+      sign(index, join(release.root, 'cli.key'), 'CLAT v2.0.0 release index');
+      assembleIndex(folder);
+    };
+    await signIndex();
     await owner.verify(folder);
     writeFileSync(join(folder, updates[0]!), 'tampered'); await expect(owner.verify(folder)).rejects.toThrow(); writeFileSync(join(folder, updates[0]!), 'test-only package');
     const value = json<any>(index); value.platforms[Object.keys(value.platforms)[0]!].url = 'https://example.invalid/substituted'; writeFileSync(index, JSON.stringify(value));
     // Remove only our disposable signature to re-sign a deliberately wrong index.
-    const { unlinkSync } = await import('node:fs'); unlinkSync(index + '.minisig'); signUpdate('desktop-latest.json');
+    await signIndex();
     await expect(owner.verifyDesktop(folder)).rejects.toThrow('下载目标');
   });
 });

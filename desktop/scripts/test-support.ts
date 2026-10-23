@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleanEnv, digest, run, type Runner, withTemp, writeJson } from './common';
+import { writePayload, PAYLOAD } from './release-index';
 import type { BackendIdentity } from './backend';
 import { DesktopRelease } from './release';
 import { OwnerRelease, type RemoteRelease } from './owner-release';
@@ -31,7 +32,7 @@ export function fixtureIndex(release: DesktopRelease, owner: OwnerRelease, folde
     const name = `clat-desktop-${owner.tag()}-${record.label}${suffix}`;
     platforms[record.platform!] = { url: `https://github.com/artec/clat/releases/download/${owner.tag()}/${name}`, signature: readFileSync(join(folder, name + '.sig'), 'utf8').trim() };
   }
-  const index = join(folder, 'desktop-latest.json'); writeJson(index, { version: release.version(), platforms }); return index;
+  writePayload(release, folder, owner.tag(), platforms); return join(folder, PAYLOAD);
 }
 
 export const backendIdentity: BackendIdentity = { commit: 'a'.repeat(40), version: '2.0.0', target: 'aarch64-apple-darwin', runId: '123' };

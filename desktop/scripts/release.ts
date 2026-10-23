@@ -5,6 +5,8 @@ import { createArchive, safeExtract } from './archive';
 import { sourceCommit, verifyBackend } from './backend';
 import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, writeJson, decodeWrapper, privateWrite } from './common';
 
+import { PAYLOAD, writePayload } from './release-index';
+
 export interface AssetRecord { os: string; target: string; platform?: string; label?: string }
 export type AssetKind = 'cli' | 'desktop';
 const MATRIX = json<Record<AssetKind, AssetRecord[]>>(join(DESKTOP, 'assets.json'));
@@ -187,7 +189,7 @@ export class DesktopRelease {
   }
   async finalize(directory: string, tag: string, signedMacos = false): Promise<void> {
     if (tag !== 'v' + this.version()) throw new Error('tag does not match workspace version');
-    for (const name of this.names('desktop', tag)) {
+    for (const name of [...this.names('cli', tag), ...this.names('desktop', tag)]) {
       const path = join(directory, name), manifest = path + '.sha256';
       if (!existsSync(path) || !existsSync(manifest) || readFileSync(manifest, 'utf8').split(/\s/)[0] !== digest(path)) throw new Error('missing or mismatched draft asset: ' + name);
     }
@@ -200,11 +202,8 @@ export class DesktopRelease {
       await this.signFile(join(directory, name), tag);
       platforms[record.platform!] = { url: `https://github.com/artec/clat/releases/download/${tag}/${name}`, signature: readFileSync(join(directory, name + '.sig'), 'utf8').trim() };
     }
-    const index = join(directory, 'desktop-latest.json');
-    writeJson(index, { version: this.version(), notes: 'CLAT Desktop ' + tag, pub_date: new Date().toISOString(), platforms });
-    await this.signFile(index, tag);
-    const signed = [...this.names('desktop', tag), 'desktop-latest.json', 'desktop-latest.json.sig', ...readdirSync(directory).filter(n => /^clat-desktop-.*\.sig$/.test(n))];
-    signed.forEach(name => checksum(join(directory, name)));
+    writePayload(this, directory, tag, platforms);
+    await this.signFile(join(directory, PAYLOAD), tag);
   }
 }
 

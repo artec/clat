@@ -131,3 +131,45 @@ fn macos_signed_install_replaces_only_the_isolated_gui_bundle() {
     assert_eq!(std::fs::read(&runtime).unwrap(), b"running backend");
     drop(lease);
 }
+
+#[test]
+fn compact_index_drives_the_real_updater_without_signature_sidecars() {
+    let key = include_str!("../../tests/fixtures/release-index-desktop.pub");
+    let bytes = include_bytes!("../../tests/fixtures/release-index.json");
+    let metadata = crate::policy::release_metadata_with_key(bytes, key).unwrap();
+    crate::policy::validate_update(&metadata, "1.0.0", "darwin-aarch64").unwrap();
+    let app = app();
+    let updater = app
+        .updater_builder()
+        .pubkey(key.trim())
+        .target("darwin-aarch64")
+        .executable_path("fixture/app")
+        .build()
+        .unwrap();
+    let update = updater.restore_update(metadata).unwrap().unwrap();
+    update.verify(PACKAGE).unwrap();
+    assert!(update.verify(b"tampered").is_err());
+    assert!(
+        crate::policy::release_metadata(bytes).is_err(),
+        "test key is never a production trust root"
+    );
+    for field in ["payload", "signatures", "schema_version"] {
+        let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        value.as_object_mut().unwrap().remove(field);
+        assert!(
+            crate::policy::release_metadata_with_key(&serde_json::to_vec(&value).unwrap(), key)
+                .is_err()
+        );
+    }
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    value["payload"] = json!(
+        value["payload"]
+            .as_str()
+            .unwrap()
+            .replace("2.0.0", "99.0.0")
+    );
+    assert!(
+        crate::policy::release_metadata_with_key(&serde_json::to_vec(&value).unwrap(), key)
+            .is_err()
+    );
+}

@@ -82,3 +82,6 @@ tests/fixtures/upgrade-progress.tar.gz -text
 desktop/icons/*.png -text
 desktop/icons/*.icns -text
 desktop/icons/*.ico -text
+
+# v2.1.2 compact release envelope and disposable public verification keys.
+tests/fixtures/release-index* -text

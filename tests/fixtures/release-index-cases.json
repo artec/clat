@@ -1,0 +1,18 @@
+{
+  "wrong_version": {
+    "schema_version": 1,
+    "payload": "{\"version\":\"2.0.1\",\"platforms\":{\"darwin-aarch64\":{\"url\":\"https://github.com/artec/clat/releases/download/v2.0.0/clat-desktop-v2.0.0-macos-arm64.app.tar.gz\",\"signature\":\"dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUlVUZVA2UXRzNXBlTGJuZENxMjBqeHRFa21QbEtBU0Q4K0FWbnNFRnRqNjd6aHlDa29BdmVIUGFxSlo1SS9xM1ZvUFdkQ1NnM3k0TDV4c1dJKzdqcmN5c0VnaU1iTXJ6cHdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxCWZpbGU6cGFja2FnZQl2ZXJzaW9uOjIuMC4wCnNuY0RySSs1QVZDQzdsUktxVUg0SDNDdERqSnVsRjh3cXpjR3ZnSFFVSGg5L2NIWUEybjFjRGRvQjVueXE2RUNpNG9Mblcxa2ttUG9xSm1COWNxdkFnPT0K\"}},\"artifacts\":{\"clat-v2.0.0-aarch64-apple-darwin.tar.gz\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"clat-v2.0.0-aarch64-apple-darwin.tar.gz.sha256\":\"ea963d38e6f2d13e4346a8ce1f9a7b3f1b8a4fe455e63da3ca107c669ca33e55\"}}\n",
+    "signatures": {
+      "cli": "untrusted comment: signature from minisign secret key\nRUSBjK/p8R4AaXJ8KrbOoCAIc7Q5Dv+5dIJW0PJVHe3RkqEBh5YkOVErHakCGfeoEUtwgA04J1+QP88p0zULf4TnSE0PCimkxQk=\ntrusted comment: CLAT v2.0.0 release index\nefJmunF3jv5vYHgLP21xbt0JCHhuZStdaEpQ/Bq5zMV5Iw1gax8HGsXzdmi6xcNnVvAyNZ1IWGCm8vcfGDHFDw==\n",
+      "desktop": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUlVUZVA2UXRzNXBlTFdMdFU4RmNvOTZFZjNwSFd6bFFhMHM0MDdJemJybXJvemxGRFBjM2F3bzBlTFNrRVpWWDVxTVZFRlhXK1lBK09zU1RzZDRYWTYyQ1UwZysyZm12eFFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxCWZpbGU6cGF5bG9hZAl2ZXJzaW9uOjIuMC4wCkVsY3pueVM3aDBWRnl6Rkk1NDdKdjkySFhvelBKRTFQbVp1U1VpMjdNd0NZSmJURWtzTk5FZkk5MWlnallNdDcrOFNQdkpobnZ0SkVIWlFFVUl5VkRnPT0K"
+    }
+  },
+  "wrong_comment": {
+    "schema_version": 1,
+    "payload": "{\"version\":\"2.0.0\",\"platforms\":{\"darwin-aarch64\":{\"url\":\"https://github.com/artec/clat/releases/download/v2.0.0/clat-desktop-v2.0.0-macos-arm64.app.tar.gz\",\"signature\":\"dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUlVUZVA2UXRzNXBlTGJuZENxMjBqeHRFa21QbEtBU0Q4K0FWbnNFRnRqNjd6aHlDa29BdmVIUGFxSlo1SS9xM1ZvUFdkQ1NnM3k0TDV4c1dJKzdqcmN5c0VnaU1iTXJ6cHdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxCWZpbGU6cGFja2FnZQl2ZXJzaW9uOjIuMC4wCnNuY0RySSs1QVZDQzdsUktxVUg0SDNDdERqSnVsRjh3cXpjR3ZnSFFVSGg5L2NIWUEybjFjRGRvQjVueXE2RUNpNG9Mblcxa2ttUG9xSm1COWNxdkFnPT0K\"}},\"artifacts\":{\"clat-v2.0.0-aarch64-apple-darwin.tar.gz\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"clat-v2.0.0-aarch64-apple-darwin.tar.gz.sha256\":\"ea963d38e6f2d13e4346a8ce1f9a7b3f1b8a4fe455e63da3ca107c669ca33e55\"}}\n",
+    "signatures": {
+      "cli": "untrusted comment: signature from minisign secret key\nRUSBjK/p8R4AaWXFzk6KuhvwmlcKHTlGMpx8sV4kP4sLI2ijGfGd4trMC3J4FqDKs+5syx+kGYEHoTTamIyk0ZEerDFR3xq8Mw8=\ntrusted comment: CLAT v1.0.0 release index\nEaU0QLujzyUZk1IB4UzmnjfjBXvQ7Z36pQTgLo5OWQOJ007xziM6QxQYXxwS+nE2dlOa+ZpfCVPdy7TcKwMLCw==\n",
+      "desktop": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUlVUZVA2UXRzNXBlTFoxTzBTaCtrVTArZFBXL2tIS1hzbDNJQkoyKzUvdE52OU5iZzZUMDJxaU4xNTVkdm9RR1prb281Y3VBMjkvNjZXMFpiUTZ5emgrV0hBcUlvcDM1Q0FBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxCWZpbGU6cGF5bG9hZAl2ZXJzaW9uOjIuMC4wClg1VnR4ZGZCR211OFRFNHRqV3BBS3R5d25NaTdCcHZVUVltRUVMbDlpempaWHJHTG1mVXlZWUc1ZlJsRzZzU1BqcGVJeDgzcS93QlFsOGthUnRtOURnPT0K"
+    }
+  }
+}

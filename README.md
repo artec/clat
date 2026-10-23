@@ -47,6 +47,8 @@ Run `clat --help` for the complete command-line surface.
 | Plugin manager | Browsing the signed market; installing, updating, auditing, or rolling back packages | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | Offline demo | Verifying the core loop without credentials | `clat demo` |
 
+From v2.1.2, release assets use one shared signed `latest.json`; earlier CLI/Desktop clients need a one-time manual reinstall.
+
 `clat serve` binds only to `127.0.0.1:2691` by default and opens the responsive
 PWA in your default browser. Local access is automatic behind Host/Origin/Fetch
 Metadata checks; remote authorities require credentials. Browser sessions are

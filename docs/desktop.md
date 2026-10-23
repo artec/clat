@@ -16,6 +16,12 @@ Desktop installers ship alongside CLI archives in each desktop-enabled formal
   Installation is per-user. The installer bootstraps shared Evergreen WebView2
   when needed; it does not ship a browser runtime or modify your CLI PATH.
 
+From v2.1.2, each macOS architecture has three files: the DMG for installation,
+an App archive for automatic updates, and a combined SHA-256 list. Windows has
+one installer/update EXE and its checksum. All signatures live in the shared
+`latest.json`. Users of v2.1.1 or earlier must manually install v2.1.2 once;
+subsequent releases use the new built-in update path.
+
 Choose **打开项目** (Open project), select a directory and explicitly approve
 project trust when requested. Model configuration, permissions, tools, sessions
 and tasks use the existing workbench and the Host's normal policies.

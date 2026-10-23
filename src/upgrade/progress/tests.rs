@@ -142,3 +142,31 @@ fn upgrade_failed_swap_never_reports_success_and_keeps_original() {
     assert_eq!(fs::read(&destination).unwrap(), b"old-image");
     fs::remove_dir_all(folder).unwrap();
 }
+
+#[test]
+fn compact_assets_require_one_index_and_exact_repository_tag_paths() {
+    let name = format!("clat-v9999.0.0-{}.tar.gz", target_triple());
+    let mut release = Release {
+        tag: "v9999.0.0".into(),
+        assets: [name.clone(), format!("{name}.sha256"), "latest.json".into()]
+            .into_iter()
+            .map(|name| ReleaseAsset {
+                url: format!("https://github.com/{REPO}/releases/download/v9999.0.0/{name}"),
+                name,
+            })
+            .collect(),
+    };
+    let (_, _, index) = required_assets(&release).unwrap();
+    assert_eq!(index.name, "latest.json");
+    for position in 0..3 {
+        let original = release.assets[position].url.clone();
+        release.assets[position].url = original.replace("artec/clat", "other/clat");
+        assert!(required_assets(&release).is_err());
+        release.assets[position].url = original;
+    }
+    release.assets[2].name = format!("{name}.sha256.minisig");
+    assert!(
+        required_assets(&release).is_err(),
+        "legacy signature alone cannot replace latest.json"
+    );
+}

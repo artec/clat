@@ -3,11 +3,38 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checksum, DESKTOP, run, withTemp } from './common';
 import { LocalMacos } from './local-macos';
+import { PAYLOAD } from './release-index';
 import { ReleaseBuild } from './release-build';
 import { fixture } from './test-support';
 
 afterEach(() => mock.restore());
 const commit = 'a'.repeat(40);
+test('local stage reports elapsed time on success and failure, but labels cache reuse separately', async () => {
+  await fixture(async release => {
+    let now = 0;
+    const local = new LocalMacos(release, join(release.root, 'cache'), undefined, () => now);
+    spyOn(local, 'source').mockReturnValue(commit);
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const record = release.records('desktop')[0]!;
+    await withTemp('stage-timing-', async parent => {
+      const action = async (folder: string) => {
+        now += 125400;
+        writeFileSync(join(folder, local.names(record, false)[0]!), 'fixture');
+      };
+      await local.stage(parent, commit, record, 'unsigned', action);
+      expect(log.mock.calls.flat().join('\n')).toContain(`${record.label} 准备与编译打包完成，耗时 2分05秒`);
+      log.mockClear();
+      await local.stage(parent, commit, record, 'unsigned', action);
+      expect(log.mock.calls.flat().join('\n')).toContain('复用');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('完成，耗时');
+      log.mockClear();
+      await expect(local.stage(parent, commit, record, 'signed', async () => {
+        now += 3601000; throw new Error('notary offline');
+      })).rejects.toThrow('notary offline');
+      expect(log.mock.calls.flat().join('\n')).toContain(`${record.label} 签名、公证与安装包制作失败，已用时 1小时00分01秒`);
+    });
+  });
+});
 test('owner draft downloads six CLI and two Windows installers only', async () => {
   await fixture((_release, owner) => {
     expect(owner.remoteArchives()).toHaveLength(8);
@@ -44,8 +71,12 @@ test('local formal build rejects dirty source and mismatched tags before compili
 });
 test('failed notarization preserves unsigned builds; retry reuses signed targets and rejects changed bytes', async () => {
   await fixture(async release => {
-    const local = new LocalMacos(release, join(release.root, 'cache'), async () => ({ folder: 'verified-fixture-backend', runId: '123' }));
-    const build = spyOn(release, 'build').mockResolvedValue(undefined);
+    let now = 0;
+    const local = new LocalMacos(release, join(release.root, 'cache'), async () => {
+      now += 1000; return { folder: 'verified-fixture-backend', runId: '123' };
+    }, () => now);
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const build = spyOn(release, 'build').mockImplementation(async () => { now += 60000; });
     spyOn(release, 'package').mockImplementation((target, folder, appOnly) => {
       expect(appOnly).toBe(true);
       const record = release.records('desktop').find(r => r.target === target)!;
@@ -53,6 +84,7 @@ test('failed notarization preserves unsigned builds; retry reuses signed targets
     });
     let fail = true;
     const sign = spyOn(release, 'signMacos').mockImplementation(async (folder, record) => {
+      now += 120000;
       if (fail) throw new Error('notary offline');
       for (const name of local.names(record, true)) { writeFileSync(join(folder, name), 'signed fixture'); checksum(join(folder, name)); }
     });
@@ -61,7 +93,11 @@ test('failed notarization preserves unsigned builds; retry reuses signed targets
     expect(build).toHaveBeenCalledTimes(1);
     fail = false; await local.prepare(output);
     expect(build).toHaveBeenCalledTimes(2); expect(sign).toHaveBeenCalledTimes(3);
+    const records = release.records('desktop').filter(r => r.platform!.startsWith('darwin'));
+    expect(log.mock.calls.at(-1)![0]).toContain(`${records[0]!.label} 本次准备总耗时 2分00秒`);
+    expect(log.mock.calls.at(-1)![0]).toContain(`${records[1]!.label} 本次准备总耗时 3分01秒`);
     await local.prepare(output);
+    for (const record of records) expect(log.mock.calls.at(-1)![0]).toContain(`${record.label} 本次准备总耗时 0分00秒`);
     expect(build).toHaveBeenCalledTimes(2); expect(sign).toHaveBeenCalledTimes(3);
     expect(readFileSync(join(output, local.names(release.records('desktop')[0]!, true)[0]!), 'utf8')).toBe('signed fixture');
     const record = release.records('desktop')[0]!;
@@ -102,7 +138,7 @@ test('owner assembles local macOS and remote Windows into the unchanged complete
     });
     const finalize = spyOn(release, 'finalize').mockImplementation(async folder => {
       for (const name of owner.archives()) owner.verifyChecksum(folder, name);
-      for (const name of owner.payloads()) if (!existsSync(join(folder, name))) { writeFileSync(join(folder, name), 'signature fixture'); checksum(join(folder, name)); }
+      for (const name of [PAYLOAD, PAYLOAD + '.sig', PAYLOAD + '.minisig']) writeFileSync(join(folder, name), 'signature fixture');
     });
     const verify = spyOn(owner, 'verify').mockResolvedValue(undefined);
     const { OwnerRelease } = await import('./owner-release');

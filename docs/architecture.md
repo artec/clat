@@ -1346,3 +1346,12 @@ Bun. It stages the private Rust backend, invokes the pinned Tauri CLI through
 Bun, and handles owner-side packaging/signing/publication. The tooling is outside
 the Cargo runtime graph, consumes the root version and typed asset inventory,
 and adds no runtime dependency to CLI/core or installed desktop applications.
+
+From v2.1.2, `desktop/scripts/release-index.ts` owns the compact 23-file release
+inventory, checksum grouping and signed payload projection. One `latest.json`
+envelope carries both trust roots' signatures over the exact payload text;
+Tauri package signatures are embedded in its four platform entries. The CLI
+verifies through `src/upgrade/manifest.rs`; desktop's native policy verifies its
+own root before restoring authenticated metadata into the official updater.
+No standalone signature assets or legacy updater compatibility are published.
+This distribution format does not change Host identity or shared business data.

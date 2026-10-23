@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
 import { basename, join } from 'node:path';
 import * as tar from 'tar';
 import { createArchive, safeExtract } from './archive';
-import { cleanEnv, DESKTOP, digest, json, redact, run, withTemp } from './common';
+import { checksum, cleanEnv, DESKTOP, digest, json, redact, run, withTemp } from './common';
 import { DesktopRelease } from './release';
 import { fixture } from './test-support';
 
@@ -53,7 +53,13 @@ test('version and public key have one authority', () => {
   expect(new DesktopRelease().version()).toMatch(/^\d+\.\d+\.\d+$/);
 });
 test('finalization refuses partial release without signing', async () => {
-  await fixture(async release => { const check = spyOn(release, 'preflightSigning'); await expect(release.finalize(release.root, 'v2.0.0')).rejects.toThrow('missing or mismatched'); expect(check).not.toHaveBeenCalled(); });
+  await fixture(async release => {
+    const check = spyOn(release, 'preflightSigning');
+    await expect(release.finalize(release.root, 'v2.0.0')).rejects.toThrow('missing or mismatched');
+    for (const name of release.names('desktop', 'v2.0.0')) { writeFileSync(join(release.root, name), 'fixture'); checksum(join(release.root, name)); }
+    await expect(release.finalize(release.root, 'v2.0.0')).rejects.toThrow('missing or mismatched');
+    expect(check).not.toHaveBeenCalled();
+  });
 });
 test.skipIf(process.platform === 'win32')('DMG contains only App and Applications shortcut', async () => {
   await fixture(async release => {

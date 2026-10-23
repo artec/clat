@@ -4,8 +4,7 @@ use base64::Engine;
 use serde_json::Value;
 
 pub const REPO: &str = "https://github.com/artec/clat";
-pub const ENDPOINT: &str =
-    "https://github.com/artec/clat/releases/latest/download/desktop-latest.json";
+pub const ENDPOINT: &str = "https://github.com/artec/clat/releases/latest/download/latest.json";
 pub const PUBLIC_KEY: &str = include_str!("../updater.pub");
 
 pub fn permitted_page(url: &str) -> bool {
@@ -45,6 +44,27 @@ pub fn validate_update(value: &Value, current: &str, target: &str) -> Result<Str
     Ok(version.to_owned())
 }
 
+pub fn release_metadata(bytes: &[u8]) -> Result<Value, String> {
+    release_metadata_with_key(bytes, PUBLIC_KEY)
+}
+
+pub(crate) fn release_metadata_with_key(bytes: &[u8], key: &str) -> Result<Value, String> {
+    let envelope: Value = serde_json::from_slice(bytes).map_err(|_| "invalid release index")?;
+    if envelope["schema_version"] != 1 {
+        return Err("unsupported release index schema".into());
+    }
+    let payload = envelope["payload"]
+        .as_str()
+        .ok_or("release payload missing")?;
+    let signature = envelope["signatures"]["desktop"]
+        .as_str()
+        .ok_or("desktop index signature missing")?;
+    let value = serde_json::from_str(payload).map_err(|_| "invalid signed index")?;
+    verify_index_with_key(payload.as_bytes(), signature, &value, key)?;
+    Ok(value)
+}
+
+#[cfg(test)]
 pub fn verify_index(bytes: &[u8], signature: &str, expected: &Value) -> Result<(), String> {
     verify_index_with_key(bytes, signature, expected, PUBLIC_KEY)
 }

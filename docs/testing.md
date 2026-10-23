@@ -866,3 +866,18 @@ exercise directory `flock`; Windows retains its stable named-mutex identity.
 The `serve_lifecycle` integration target exercises two real launchers and Host
 readiness. Run it in the isolated Linux container when the local fixed Host port
 is occupied; do not stop the owner's Host to obtain a test result.
+
+### Compact release index (v2.1.2)
+
+Run `scripts/gates.sh upgrade::`, `cargo test -p clat-desktop policy::`, and, on
+a supported native platform, `cargo test -p clat-desktop updater_tests::`.
+`bun test desktop/scripts/release-index.test.ts desktop/scripts/workflow.test.ts desktop/scripts/local-macos.test.ts`
+covers the exact 23-file public allowlist, combined macOS checksums, real temporary
+Tauri/Minisign signing, both independent index signatures, tampering and unexpected
+remote assets. CLI tests authenticate a signed envelope and reject wrong keys,
+versions, filenames, hashes, schemas and download destinations. Desktop feeds the
+same envelope into the real updater and verifies version-bound package signatures.
+Fixture keys are disposable public test keys; the owner keys and installations
+are never touched. Historical v2.1.1 upgrade compatibility is deliberately absent.
+Local macOS timing tests use an injected monotonic clock to cover success, failure,
+cache reuse and per-architecture totals without waiting for compilation/notarization.

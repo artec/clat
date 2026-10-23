@@ -83,27 +83,34 @@ fn required_assets(
                 )
             })
     };
+    for candidate in [
+        asset,
+        find(&checksum_name, "checksum")?,
+        find("latest.json", "release index")?,
+    ] {
+        let expected = format!(
+            "https://github.com/{REPO}/releases/download/{}/{}",
+            release.tag, candidate.name
+        );
+        if candidate.url != expected {
+            return Err("release asset URL does not match repository, tag and filename".into());
+        }
+    }
     Ok((
         asset,
         find(&checksum_name, "checksum")?,
-        find(&format!("{checksum_name}.minisig"), "signature")?,
+        find("latest.json", "release index")?,
     ))
 }
 
 fn install_release(release: &Release, report: Reporter<'_>) -> Result<(), String> {
     // Missing signed assets fail before creating a directory or downloading.
-    let (asset, checksum, signature) = required_assets(release)?;
+    let (asset, checksum, index) = required_assets(release)?;
     let exe = std::env::current_exe().map_err(|error| format!("locate clat binary: {error}"))?;
     let work_dir = create_work_dir()?;
-    let result = super::download::download_asset(
-        asset,
-        checksum,
-        signature,
-        &work_dir,
-        &release.tag,
-        report,
-    )
-    .and_then(|binary| install_binary(&binary, &exe, report));
+    let result =
+        super::download::download_asset(asset, checksum, index, &work_dir, &release.tag, report)
+            .and_then(|binary| install_binary(&binary, &exe, report));
     let _ = fs::remove_dir_all(&work_dir);
     result
 }

@@ -6,159 +6,88 @@ rotation, and platform baseline. Plugin-market releases use the separate
 [market publishing/signing runbook](../market/PUBLISHING.md) and
 [FTP deployment runbook](../market/FTP-DEPLOY.md).
 
-## Trust model
+## Compact release assets (v2.1.2 onward)
 
-Each release archive has two companion files:
+CLAT's shared Host remains the core product; Desktop is an optional frontend.
+A formal release publishes exactly **23 assets**:
 
-```text
-<asset>
-<asset>.sha256
-<asset>.sha256.minisig
-```
+| Product | Per platform | Total |
+| --- | --- | --- |
+| CLI, six targets | archive + archive.sha256 | 12 |
+| macOS Desktop, two architectures | DMG + app.tar.gz + one combined .sha256 | 6 |
+| Windows Desktop, two architectures | setup.exe + setup.exe.sha256 | 4 |
+| Shared release index | latest.json | 1 |
 
-The SHA-256 manifest contains exactly one expected asset entry. The Minisign
-signature authenticates that manifest with the public key embedded in the
-installed CLAT binary from [`release/minisign.pub`](../release/minisign.pub).
+The macOS checksum file is named `clat-desktop-vX.Y.Z-macos-<arch>.sha256`
+and contains both the DMG and updater archive hashes. The Windows installer is
+also its updater package; no duplicate download is needed. There are no public
+`.sig`, `.minisig`, `desktop-latest.json` or per-signature checksum files.
+Intermediate signatures remain local and are excluded by the upload allowlist.
 
-`clat upgrade` fails closed unless all of these match:
+### Trust model
 
-- release tag;
-- expected asset name;
-- one-entry manifest shape;
-- archive SHA-256;
-- Minisign signature;
-- signature-covered trusted comment
-  `CLAT <tag> release checksum manifests`.
+`latest.json` is an envelope with `schema_version: 1`, a `payload` string
+and `signatures.cli` / `signatures.desktop`. The payload is the **exact UTF-8
+JSON text that was signed**, avoiding JSON reserialization or a self-signature
+cycle. It contains version, notes, publication time, four Tauri platform entries
+(including package signatures), and an `artifacts` map of all 22 downloadable
+packages/checksum files to SHA-256 digests.
 
-Binding the tag in the trusted comment prevents a genuinely signed historical
-asset from being replayed under a newer tag.
+The CLI verifies the payload using its unchanged embedded release public key;
+its signature-covered comment must equal `CLAT <tag> release index`.
+The CLI then matches the signed version, exact asset name, archive hash and
+checksum-file hash, and validates the one-entry checksum file before extracting.
+All three download URLs must match this repository and the exact release tag.
+Desktop verifies the same payload with its independent embedded desktop public
+key, then passes the authenticated platform metadata to the official updater.
+The updater still requires a version-bound package signature and rejects
+substitution or downgrade. No trust keys are rotated by this format change.
 
-## First install versus upgrade
+### Transition and first installation
 
-An installed CLAT binary has an immutable embedded trust root, so subsequent
-`clat upgrade` checks survive compromise of GitHub assets or the CDN unless the
-attacker also obtains the offline private key.
+**Clients before v2.1.2 must be reinstalled manually once.** The owner will notify
+the existing users; neither the old CLI `upgrade` path nor the old desktop updater
+can consume this new format. Do not retain obsolete sidecars for compatibility.
+Clients from v2.1.2 onward use the compact format exclusively.
 
-The default curl/PowerShell first-install path has a weaker bootstrap boundary:
-it fetches the installer and SHA-256 manifest from GitHub over HTTPS, but does
-not independently authenticate that manifest with Minisign. An attacker able
-to replace the repository/script can replace both archive and checksum.
-
-For account-compromise-resistant first installation, obtain the public key
-through an independent channel and verify the downloaded manifest manually, or
-use a package manager with its own signed trust chain.
-
-### Manual first-install verification
-
-After obtaining `release/minisign.pub` through an independent trusted channel,
-download one archive, its manifest, and signature from the same release. For
-example on macOS arm64:
+The normal first-install scripts continue to use HTTPS and SHA-256; they do not
+provide an independent signing-key bootstrap. For manual verification, obtain
+`release/minisign.pub` from a trusted independent channel and authenticate the
+index before using its hashes. Example (macOS; use sha256sum on Linux):
 
 ```bash
-CLAT_TAG=v0.9.2
-CLAT_TARGET=aarch64-apple-darwin
-CLAT_ASSET="clat-${CLAT_TAG}-${CLAT_TARGET}.tar.gz"
-CLAT_RELEASE_URL="https://github.com/artec/clat/releases/download/${CLAT_TAG}"
-
-curl -fLO "${CLAT_RELEASE_URL}/${CLAT_ASSET}"
-curl -fLO "${CLAT_RELEASE_URL}/${CLAT_ASSET}.sha256"
-curl -fLO "${CLAT_RELEASE_URL}/${CLAT_ASSET}.sha256.minisig"
-
-minisign -Vm "${CLAT_ASSET}.sha256" \
-  -x "${CLAT_ASSET}.sha256.minisig" \
-  -p /path/from-independent-channel/clat-minisign.pub
-
-# A Minisign signature is exactly four lines. The successful verification
-# above authenticates line 3 through the global signature; the structural
-# checks below also reject appended or substituted look-alike comments.
-CLAT_SIGNATURE="${CLAT_ASSET}.sha256.minisig"
-test "$(awk 'END { print NR }' "${CLAT_SIGNATURE}")" -eq 4
-case "$(sed -n '1p' "${CLAT_SIGNATURE}")" in
-  "untrusted comment:"*) ;;
-  *) exit 1 ;;
-esac
-test -n "$(sed -n '2p' "${CLAT_SIGNATURE}")"
-test "$(sed -n '3p' "${CLAT_SIGNATURE}")" = \
-  "trusted comment: CLAT ${CLAT_TAG} release checksum manifests"
-test -n "$(sed -n '4p' "${CLAT_SIGNATURE}")"
-
-# The signed manifest must have one non-empty line and name this asset.
-test "$(awk 'NF { n++ } END { print n + 0 }' "${CLAT_ASSET}.sha256")" -eq 1
-read -r CLAT_EXPECTED CLAT_PUBLISHED CLAT_EXTRA < "${CLAT_ASSET}.sha256"
-CLAT_PUBLISHED=${CLAT_PUBLISHED#\*}
-test "${#CLAT_EXPECTED}" -eq 64
-case "${CLAT_EXPECTED}" in *[!0-9A-Fa-f]*) exit 1 ;; esac
-test "${CLAT_PUBLISHED}" = "${CLAT_ASSET}"
-test -z "${CLAT_EXTRA:-}"
-
-# Verify the archive bytes against the now-authenticated manifest.
-shasum -a 256 -c "${CLAT_ASSET}.sha256"   # macOS
-# sha256sum -c "${CLAT_ASSET}.sha256"     # Linux
+CLAT_TAG=v2.1.2
+CLAT_ASSET="clat-${CLAT_TAG}-aarch64-apple-darwin.tar.gz"
+CLAT_URL="https://github.com/artec/clat/releases/download/${CLAT_TAG}"
+curl -fLO "${CLAT_URL}/${CLAT_ASSET}"
+curl -fLO "${CLAT_URL}/latest.json"
+# -j preserves the exact signed text; do not pretty-print the payload.
+jq -j '.payload' latest.json > release-payload.json
+jq -j '.signatures.cli' latest.json > release-payload.json.minisig
+minisign -Vm release-payload.json -x release-payload.json.minisig -p /trusted/clat-minisign.pub
+test "$(sed -n '3p' release-payload.json.minisig)" = "trusted comment: CLAT ${CLAT_TAG} release index"
+test "$(jq -r '.version' release-payload.json)" = "${CLAT_TAG#v}"
+CLAT_EXPECTED=$(jq -er --arg n "$CLAT_ASSET" '.artifacts[$n]' release-payload.json)
+test "$(shasum -a 256 "$CLAT_ASSET" | cut -d ' ' -f1)" = "$CLAT_EXPECTED"
 ```
 
-Substitute the release tag and target. The equivalent Windows PowerShell flow
-is executable as follows:
+Windows PowerShell equivalent after downloading the archive and latest.json:
 
 ```powershell
-$ClatTag = 'v0.9.2'
-$ClatTarget = 'x86_64-pc-windows-msvc'
-$ClatAsset = "clat-$ClatTag-$ClatTarget.zip"
-$ClatReleaseUrl = "https://github.com/artec/clat/releases/download/$ClatTag"
-$ClatPublicKey = 'C:\trusted\clat-minisign.pub'
-
-Invoke-WebRequest "$ClatReleaseUrl/$ClatAsset" -OutFile $ClatAsset
-Invoke-WebRequest "$ClatReleaseUrl/$ClatAsset.sha256" `
-  -OutFile "$ClatAsset.sha256"
-Invoke-WebRequest "$ClatReleaseUrl/$ClatAsset.sha256.minisig" `
-  -OutFile "$ClatAsset.sha256.minisig"
-
-& minisign -Vm "$ClatAsset.sha256" `
-  -x "$ClatAsset.sha256.minisig" `
-  -p $ClatPublicKey
-if ($LASTEXITCODE -ne 0) { throw 'Minisign verification failed' }
-
-# Successful Minisign verification authenticates line 3. Requiring exactly
-# four lines prevents an appended, unauthenticated look-alike comment.
-$SigLines = [IO.File]::ReadAllLines(
-  (Resolve-Path "$ClatAsset.sha256.minisig")
-)
-if ($SigLines.Count -ne 4) { throw 'Invalid signature structure' }
-if (-not $SigLines[0].StartsWith('untrusted comment:')) {
-  throw 'Invalid signature header'
-}
-if ([string]::IsNullOrWhiteSpace($SigLines[1]) -or
-    [string]::IsNullOrWhiteSpace($SigLines[3])) {
-  throw 'Invalid signature payload'
-}
-$ExpectedComment = "trusted comment: CLAT $ClatTag release checksum manifests"
-if ($SigLines[2] -cne $ExpectedComment) {
-  throw 'Release tag is not bound by the trusted comment'
-}
-
-$ManifestLines = [IO.File]::ReadAllLines(
-  (Resolve-Path "$ClatAsset.sha256")
-)
-$Entries = @($ManifestLines | Where-Object { $_.Trim().Length -gt 0 })
-if ($Entries.Count -ne 1) { throw 'Invalid manifest entry count' }
-$ManifestMatch = [regex]::Match(
-  $Entries[0],
-  '^([0-9A-Fa-f]{64}) [ *](.+)$',
-  [Text.RegularExpressions.RegexOptions]::CultureInvariant
-)
-if (-not $ManifestMatch.Success) { throw 'Invalid manifest structure' }
-$ExpectedHash = $ManifestMatch.Groups[1].Value.ToLowerInvariant()
-if ($ManifestMatch.Groups[2].Value -cne $ClatAsset) {
-  throw 'Unexpected manifest asset name'
-}
-$ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ClatAsset).Hash
-if ($ActualHash.ToLowerInvariant() -cne $ExpectedHash) {
-  throw 'Archive checksum mismatch'
-}
+$ClatTag = 'v2.1.2'
+$ClatAsset = "clat-$ClatTag-x86_64-pc-windows-msvc.zip"
+$Envelope = Get-Content -Raw -Encoding UTF8 latest.json | ConvertFrom-Json
+$Utf8 = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText("$PWD/release-payload.json", $Envelope.payload, $Utf8)
+[IO.File]::WriteAllText("$PWD/release-payload.json.minisig", $Envelope.signatures.cli, $Utf8)
+& minisign -Vm release-payload.json -x release-payload.json.minisig -p C:\trusted\clat-minisign.pub
+if ($LASTEXITCODE -ne 0) { throw 'Invalid release signature' }
+$Comment = [IO.File]::ReadAllLines("$PWD/release-payload.json.minisig")[2]
+if ($Comment -cne "trusted comment: CLAT $ClatTag release index") { throw 'Wrong release tag' }
+$Payload = $Envelope.payload | ConvertFrom-Json
+if ($Payload.version -cne $ClatTag.Substring(1)) { throw 'Wrong release version' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $ClatAsset).Hash.ToLowerInvariant() -cne $Payload.artifacts.$ClatAsset) { throw 'Archive checksum mismatch' }
 ```
-
-Use `aarch64-pc-windows-msvc` instead on Windows arm64. Do not fetch the
-"independent" public key from the same potentially compromised repository
-session as the artifacts.
 
 ## Maintainer prerequisites
 
@@ -257,7 +186,7 @@ The script:
 3. refuses to continue while an archive or manifest is missing;
 4. downloads all archives/manifests and checks exact names and bytes;
 5. signs/notarizes desktop assets locally, creates the signed updater index,
-   then signs all checksum manifests with the CLI key;
+   then signs the shared payload with the CLI key and embeds both index signatures;
 6. verifies both trust roots, version bindings and all four index destinations;
 7. uploads only the expected files, downloads them again to compare with the
    verified local copies, and publishes only after all checks succeed.
@@ -382,7 +311,7 @@ after verification. Failure leaves the original key intact. Back up the protecte
 key and keep its password separately; losing either prevents future signing.
 
 `./publish` asks for the desktop key password using hidden terminal input;
-Minisign then asks for the CLI key password once for all checksum manifests.
+Minisign then asks for the CLI key password once for the shared release index.
 Passwords never need to be typed into a command or placed in shell history.
 An existing CLAT_DESKTOP_KEY_PASSWORD environment value remains supported.
 
@@ -403,6 +332,14 @@ version tag. The script selects the exact tag/commit's Release run and waits onl
 for each required macOS CLI artifact, then compiles its desktop App locally while
 other remote platforms continue. The private backend reuses those CLI bytes;
 it is not compiled again locally. Pinned macOS targets are installed as needed.
+For each macOS architecture, the terminal reports elapsed time for preparation
+and compilation/packaging, Apple signing/notarization/installer creation, and the
+total, followed by a two-architecture summary. Preparation includes waiting for
+and downloading the verified CLI backend; these are wall-clock durations, not
+CPU compilation benchmarks. Failed stages report elapsed time before preserving
+the original error. Reused stages are explicitly labelled; totals measure only
+the current invocation, not the original cached build. No signing credentials
+or release assets are changed by timing.
 Once both local macOS stages and the remote Release finish, the script validates
 the complete draft and downloads the six CLI archives and two Windows installers.
 Signing and finalization follow this order:
@@ -414,8 +351,9 @@ Signing and finalization follow this order:
    then staple/validate it. Make updater archives from the stapled App.
 4. Sign Windows installers and macOS updater archives with the independent desktop
    key and an explicit signed app version; verify signatures locally.
-5. Generate/sign `desktop-latest.json`, recalculate final checksums, sign checksum
-   manifests with the existing CLI release root, then upload and publish together.
+5. Write combined desktop checksums and the exact release payload, sign it with
+   both release roots, embed all signatures in `latest.json`, then upload only
+   the 23 public assets and publish after exact remote inventory/byte verification.
 
 The available local identity is `Developer ID Application: Artec Inc. (VJUBRKV7K9)`.
 APPLE_SIGNING_IDENTITY can select another authorized identity. CLAT_NOTARY_PROFILE

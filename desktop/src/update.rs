@@ -94,28 +94,13 @@ fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn verify_metadata(update: &Update) -> Result<(), String> {
-    let version =
-        crate::policy::validate_update(&update.raw_json, env!("CARGO_PKG_VERSION"), &target())?;
-    let base = format!(
-        "{}/releases/download/v{version}/desktop-latest.json",
-        crate::policy::REPO
-    );
-    let bytes = fetch_small(&base, 1024 * 1024)?;
-    let signature = fetch_small(&format!("{base}.sig"), 16384)?;
-    crate::policy::verify_index(
-        &bytes,
-        std::str::from_utf8(&signature).map_err(|_| "invalid index signature")?,
-        &update.raw_json,
-    )
-}
-
 pub async fn check(app: &tauri::AppHandle) -> Result<(), String> {
     let mut cancelled = begin(app, "正在检查桌面更新…")?;
     let operation = async {
         let updater = app
             .updater_builder()
             .pubkey(crate::policy::PUBLIC_KEY.trim())
+            .target(target())
             .endpoints(vec![
                 crate::policy::ENDPOINT
                     .parse()
@@ -125,12 +110,17 @@ pub async fn check(app: &tauri::AppHandle) -> Result<(), String> {
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| e.to_string())?;
-        let pending = updater.check().await.map_err(|e| e.to_string())?;
+        let metadata = tauri::async_runtime::spawn_blocking(|| {
+            let bytes = fetch_small(crate::policy::ENDPOINT, 1024 * 1024)?;
+            crate::policy::release_metadata(&bytes)
+        })
+        .await
+        .map_err(|_| "index verification worker failed")??;
+        let pending = updater
+            .restore_update(metadata)
+            .map_err(|e| e.to_string())?;
         if let Some(update) = &pending {
-            let checked = update.clone();
-            tauri::async_runtime::spawn_blocking(move || verify_metadata(&checked))
-                .await
-                .map_err(|_| "index verification worker failed")??;
+            crate::policy::validate_update(&update.raw_json, env!("CARGO_PKG_VERSION"), &target())?;
         }
         let state = app.state::<Desktop>();
         let mut updates = state.updates.lock().expect("updates");

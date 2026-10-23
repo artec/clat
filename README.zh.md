@@ -47,6 +47,8 @@ clat upgrade --check
 | 插件管理器 | 浏览签名市场，安装、更新、审计或回滚插件包 | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
 
+从 v2.1.2 起，发布签名集中到一个 `latest.json`；此前的 CLI/Desktop 用户需手动重装一次，再使用内置升级。
+
 桌面本地调试使用 `bun start`，生成本机测试安装包使用 `bun app:build`。
 桌面开发与发布脚本由 Bun 直接执行 TypeScript，无需 Python。
 正式发布时，推送签名标签后即可运行 `./publish`，与 CI 构建重叠进行。
