@@ -796,6 +796,11 @@ CI and the Linux container pin Bun 1.3.14. Real temporary Minisign encryption
 and signing checks require Minisign and report skips explicitly when unavailable;
 macOS-only DMG/owner-platform checks and POSIX flock checks are platform-gated.
 The existing unrelated Python Rust-test fixtures remain in their own domains.
+Signer regressions use a disposable password-protected key with the actual
+pinned Tauri CLI and independent Minisign verification. Unbroken Base64, trailing
+LF and wrapped CRLF must all sign without changing the source key. Temporary
+key copies use permissions 0600 and must be removed on success or failure;
+passwords remain outside process arguments. The owner's real key is never read.
 
 Desktop push/PR verification covers all four native platforms in CI without a
 second set of native build jobs or installer generation. CI and Desktop use

@@ -23,7 +23,7 @@ test('signing password is not a process argument', async () => {
   await fixture(async release => {
     const calls: { args: string[]; password?: string }[] = [];
     const signing = new DesktopRelease(release.root, (args, options) => { calls.push({ args, password: options?.env?.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }); return ''; });
-    writeFileSync(join(release.root, '.release-secrets/clat-desktop.key'), 'not-a-real-key');
+    writeFileSync(join(release.root, '.release-secrets/clat-desktop.key'), Buffer.from('fixture-only-key').toString('base64'));
     writeFileSync(join(release.desktop, 'updater.pub'), Buffer.from('fixture-public').toString('base64'));
     const path = join(release.root, 'package'); writeFileSync(path + '.sig', Buffer.from('fixture-signature').toString('base64'));
     const previous = process.env.CLAT_DESKTOP_KEY_PASSWORD;
@@ -95,17 +95,48 @@ test('captured diagnostics redact inherited and explicitly supplied credentials'
 test('Bun directly invokes installed Tauri CLI', () => {
   expect(run([process.execPath, join(DESKTOP, 'node_modules/@tauri-apps/cli/tauri.js'), '--version'], { quiet: true })).toContain('tauri-cli 2.12.4');
 });
-test.skipIf(!Bun.which('minisign'))('Bun Tauri signer accepts password-protected existing-format keys', async () => {
+test.skipIf(!Bun.which('minisign'))('Bun Tauri signer accepts protected keys with LF and wrapped CRLF without rewriting originals', async () => {
   const { generateKey } = await import('./test-support'); const { minisign } = await import('./protect-key');
   await fixture(async release => {
     const raw = join(release.root, 'raw.key'), publicKey = join(release.desktop, 'raw.pub'); generateKey(raw, publicKey);
     minisign(['-C', '-s', raw], ['fixture-protected', 'fixture-protected']);
-    writeFileSync(join(release.root, '.release-secrets/clat-desktop.key'), readFileSync(raw).toString('base64'), { mode: 0o600 });
+    const key = join(release.root, '.release-secrets/clat-desktop.key'), encoded = readFileSync(raw).toString('base64');
     writeFileSync(join(release.desktop, 'updater.pub'), readFileSync(publicKey).toString('base64'));
-    const signing = new DesktopRelease(release.root, (args, options) => run(args[1]?.endsWith('tauri.js') ? [args[0]!, join(DESKTOP, 'node_modules/@tauri-apps/cli/tauri.js'), ...args.slice(2)] : args, { ...options, quiet: true }));
+    const staged: string[] = [];
+    const signing = new DesktopRelease(release.root, (args, options) => {
+      if (args.includes('--private-key-path')) staged.push(args[args.indexOf('--private-key-path') + 1]!);
+      return run(args[1]?.endsWith('tauri.js') ? [args[0]!, join(DESKTOP, 'node_modules/@tauri-apps/cli/tauri.js'), ...args.slice(2)] : args, { ...options, quiet: true });
+    });
     const path = join(release.root, 'package.bin'); writeFileSync(path, 'test-only package'); const previous = process.env.CLAT_DESKTOP_KEY_PASSWORD;
-    try { process.env.CLAT_DESKTOP_KEY_PASSWORD = 'fixture-protected'; await signing.signFile(path, 'v2.0.0'); }
+    try {
+      process.env.CLAT_DESKTOP_KEY_PASSWORD = 'fixture-protected';
+      for (const wrapper of [encoded, encoded + '\n', encoded.match(/.{1,64}/g)!.join('\r\n') + '\r\n']) {
+        writeFileSync(key, wrapper, { mode: 0o600 });
+        await signing.signFile(path, 'v2.0.0');
+        expect(readFileSync(key, 'utf8')).toBe(wrapper);
+        expect(staged.at(-1)).not.toBe(key); expect(existsSync(staged.at(-1)!)).toBe(false);
+      }
+    }
     finally { if (previous === undefined) delete process.env.CLAT_DESKTOP_KEY_PASSWORD; else process.env.CLAT_DESKTOP_KEY_PASSWORD = previous; }
     expect(existsSync(path + '.sig')).toBe(true);
   });
 }, 60000);
+
+test('signing uses a private normalized temporary key and removes it on failure', async () => {
+  await fixture(async release => {
+    const key = join(release.root, '.release-secrets/clat-desktop.key');
+    const encoded = Buffer.from('fixture-only Minisign secret\n').toString('base64'), original = encoded + '\r\n';
+    writeFileSync(key, original, { mode: 0o600 });
+    let staged = '';
+    const signing = new DesktopRelease(release.root, args => {
+      staged = args[args.indexOf('--private-key-path') + 1]!;
+      expect(staged).not.toBe(key);
+      expect(readFileSync(staged, 'utf8')).toBe(encoded);
+      if (process.platform !== 'win32') expect(statSync(staged).mode & 0o777).toBe(0o600);
+      throw new Error('fixture signing failure');
+    });
+    await expect(signing.signFile(join(release.root, 'package'), 'v2.0.0')).rejects.toThrow('fixture signing failure');
+    expect(staged).not.toBe(''); expect(existsSync(staged)).toBe(false);
+    expect(readFileSync(key, 'utf8')).toBe(original);
+  });
+});

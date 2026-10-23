@@ -389,6 +389,11 @@ An existing CLAT_DESKTOP_KEY_PASSWORD environment value remains supported.
 The desktop signer passes the password through its child environment rather than
 process arguments. Do not reuse another application's Tauri signing variables or
 the CLI Minisign key.
+It normalizes the key's outer Base64 wrapper (including trailing LF or wrapped
+CRLF) in a temporary file with permissions 0600 before invoking Tauri's strict
+signer. The encrypted key bytes and original private-key file stay unchanged;
+the temporary copy is removed after success or failure. No key rotation or
+manual editing of the backed-up key is required for this formatting issue.
 
 The owner still runs just `./publish` on macOS after pushing the signed tag;
 there is no need to wait for the complete CI draft first. No separate Bun

@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createArchive, safeExtract } from './archive';
 import { sourceCommit, verifyBackend } from './backend';
-import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, writeJson, decodeWrapper } from './common';
+import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, writeJson, decodeWrapper, privateWrite } from './common';
 
 export interface AssetRecord { os: string; target: string; platform?: string; label?: string }
 export type AssetKind = 'cli' | 'desktop';
@@ -163,9 +163,13 @@ export class DesktopRelease {
   async signFile(path: string, tag: string): Promise<void> {
     const key = join(this.root, '.release-secrets/clat-desktop.key');
     if (!existsSync(key)) throw new Error('desktop updater private key missing');
-    this.execute([process.execPath, join(this.desktop, 'node_modules/@tauri-apps/cli/tauri.js'), 'signer', 'sign', '--private-key-path', key,
-      '--app-version', tag.slice(1), path], { env: { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: process.env.CLAT_DESKTOP_KEY_PASSWORD ?? '' } });
-    await withTemp('clat-desktop-verify-', folder => {
+    await withTemp('clat-desktop-sign-', folder => {
+      // Tauri's file reader requires unbroken outer base64. Keep the encrypted
+      // Minisign bytes intact and never rewrite the owner's original key.
+      const signingKey = join(folder, 'key');
+      privateWrite(signingKey, Buffer.from(decodeWrapper(readFileSync(key)).toString('base64')));
+      this.execute([process.execPath, join(this.desktop, 'node_modules/@tauri-apps/cli/tauri.js'), 'signer', 'sign', '--private-key-path', signingKey,
+        '--app-version', tag.slice(1), path], { env: { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: process.env.CLAT_DESKTOP_KEY_PASSWORD ?? '' } });
       const publicKey = join(folder, 'public'), signature = join(folder, 'signature');
       writeFileSync(publicKey, decodeWrapper(readFileSync(join(this.desktop, 'updater.pub'))));
       writeFileSync(signature, decodeWrapper(readFileSync(path + '.sig')));
