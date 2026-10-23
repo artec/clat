@@ -1228,12 +1228,34 @@ fn pu_serve_content_kinds_and_workflow_refusals_preserve_state_and_release_claim
     let command = |text: &str| {
         protocol::dispatch("command.run", &serde_json::json!({"command":text}), &shared)
     };
+    // Presentation is an additive display contract; the original payload stays byte-exact.
+    let mut memory = command("/mem list").unwrap();
     assert_eq!(
-        command("/mem list").unwrap().to_string(),
-        r#"{"kind":"memory","memory":{"entries":[],"omitted":0},"message":"No explicit memories."}"#
+        memory
+            .as_object_mut()
+            .unwrap()
+            .remove("presentation")
+            .unwrap(),
+        serde_json::json!([{
+            "key": "command.memory_none", "args": {}, "fallback": "No explicit memories."
+        }])
     );
     assert_eq!(
-        command("/goal").unwrap().to_string(),
+        memory.to_string(),
+        r#"{"kind":"memory","memory":{"entries":[],"omitted":0},"message":"No explicit memories."}"#
+    );
+    let mut goal = command("/goal").unwrap();
+    assert_eq!(
+        goal.as_object_mut()
+            .unwrap()
+            .remove("presentation")
+            .unwrap(),
+        serde_json::json!([{
+            "key": "command.goal_none", "args": {}, "fallback": "No current goal."
+        }])
+    );
+    assert_eq!(
+        goal.to_string(),
         r#"{"kind":"goal","goal":{"goal":null,"armed":false},"message":"No current goal."}"#
     );
     for (command_text, enabled) in [("/sub", false), ("/sub on", true), ("/sub status", true)] {
