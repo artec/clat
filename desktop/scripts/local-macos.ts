@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, renameSync } from 'node
 import { join } from 'node:path';
 import { checksum, digest, json, withTemp, writeJson } from './common';
 import { DesktopRelease, type AssetRecord } from './release';
+import { ReleaseProgress } from './release-progress';
 
 interface Receipt { commit: string; target: string; stage: string; hashes: Record<string, string> }
 
@@ -14,6 +15,7 @@ function duration(milliseconds: number): string {
 
 // Rebuildable packaging cache only. No credentials or business data live here.
 export class LocalMacos {
+  readonly progress = new ReleaseProgress();
   constructor(readonly release: DesktopRelease, readonly directory: string,
     readonly backend: (target: string) => Promise<{ folder: string; runId: string }> = async () => { throw new Error('verified CLI backend provider required'); },
     readonly clock: () => number = () => performance.now()) {}
@@ -39,9 +41,10 @@ export class LocalMacos {
   }
   async stage(parent: string, commit: string, record: AssetRecord, stage: string, action: (folder: string) => Promise<void>): Promise<string> {
     const destination = join(parent, stage);
-    if (this.cached(destination, commit, record, stage)) { console.log(`✓ 复用 ${record.label} ${stage} 阶段产物`); return destination; }
+    if (this.cached(destination, commit, record, stage)) { this.progress.line('reused', `复用 ${record.label} ${stage} 阶段产物`); return destination; }
     const started = this.clock();
     const label = `${record.label} ${stage === 'unsigned' ? '准备与编译打包' : '签名、公证与安装包制作'}`;
+    this.progress.line('start', label);
     try {
       await withTemp('preparing-', async folder => {
         await action(folder);
@@ -51,10 +54,10 @@ export class LocalMacos {
         renameSync(folder, destination);
       }, parent);
     } catch (error) {
-      console.log(`✗ ${label}失败，已用时 ${duration(this.clock() - started)}`);
+      this.progress.line('failed', `${label}失败，已用时 ${this.progress.time(duration(this.clock() - started))}`);
       throw error;
     }
-    console.log(`✓ ${label}完成，耗时 ${duration(this.clock() - started)}`);
+    this.progress.line('done', `${label}完成，耗时 ${this.progress.time(duration(this.clock() - started))}`);
     return destination;
   }
   async prepare(output: string): Promise<void> {
@@ -66,21 +69,19 @@ export class LocalMacos {
       mkdirSync(parent, { recursive: true });
       const unsigned = await this.stage(parent, commit, record, 'unsigned', async folder => {
         const backend = await this.backend(record.target);
-        console.log(`⟳ 本机编译 ${record.label} 桌面程序（复用 CLI 后端）`);
         this.release.execute(['rustup', 'target', 'add', record.target], { cwd: this.release.root });
         await this.release.build(record.target, { release: true, official: true, appOnly: true, backend: backend.folder, runId: backend.runId });
         this.release.package(record.target, folder, true);
       });
       const signed = await this.stage(parent, commit, record, 'signed', async folder => {
         for (const name of this.names(record, false)) copyFileSync(join(unsigned, name), join(folder, name));
-        console.log(`⟳ 签名、公证并制作 ${record.label} 安装包`);
         await this.release.signMacos(folder, record, `v${this.release.version()}`);
       });
       for (const name of this.names(record, true)) { copyFileSync(join(signed, name), join(output, name)); checksum(join(output, name)); }
-      const total = `${record.label} 本次准备总耗时 ${duration(this.clock() - started)}`;
-      console.log(`✓ ${total}`); totals.push(total);
+      const total = `${record.label} 本次准备总耗时 ${this.progress.time(duration(this.clock() - started))}`;
+      this.progress.line('done', total); totals.push(total);
     }
     if (this.source() !== commit) throw new Error('本机构建结束时源码身份已改变。');
-    console.log('macOS 桌面打包耗时汇总（含后端等待/下载、编译、签名、公证；缓存复用只计本次检查时间）：\n' + totals.join('\n'));
+    this.progress.summary('macOS 桌面打包耗时汇总（含后端等待/下载、编译、签名、公证；缓存复用只计本次检查时间）：\n' + totals.join('\n'));
   }
 }

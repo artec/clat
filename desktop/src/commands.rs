@@ -32,13 +32,14 @@ pub async fn desktop_info(
         let host = state.host.lock().map_err(|_| "desktop state unavailable")?.clone();
         let host_version = host.as_ref().and_then(|host| host.description().ok())
             .and_then(|d|d["product_version"].as_str().map(str::to_owned));
+        let host_connected = host_version.is_some();
         let host_status = host.as_ref().and_then(|host| host.runtime_status().ok());
         let backend_pending = host_version.as_deref().and_then(|v|semver::Version::parse(v).ok())
             .is_some_and(|v|v < semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("package version"));
         let update = state.updates.lock().map_err(|_| "update state unavailable")?;
         let connection_error = state.connection_error.lock().map_err(|_| "desktop state unavailable")?.clone();
         Ok(json!({"desktopVersion":env!("CARGO_PKG_VERSION"),"backendVersion":env!("CARGO_PKG_VERSION"),
-            "hostVersion":host_version,"backendError":state.backend_error,"connectionError":connection_error,
+            "hostVersion":host_version,"hostConnected":host_connected,"backendError":state.backend_error,"connectionError":connection_error,
             "hostStatus":host_status,"backendPending":backend_pending,
             "autoCheck":update.auto_check,"updateStatus":update.status,"updateAvailable":update.pending.is_some(),
             "downloaded":update.bytes.is_some(),"updateBusy":update.busy}))
@@ -73,6 +74,10 @@ pub async fn desktop_open_project(
             return Err("未授权项目信任；未启动后台".into());
         }
         let state = app.state::<Desktop>();
+        let _connection = state
+            .connection
+            .lock()
+            .map_err(|_| "desktop state unavailable")?;
         let backend = state
             .backend
             .as_ref()
@@ -158,15 +163,21 @@ pub async fn desktop_stop_host(
         if !confirmed {
             return Ok(());
         }
-        let host = app
-            .state::<Desktop>()
+        let state = app.state::<Desktop>();
+        let _connection = state
+            .connection
+            .lock()
+            .map_err(|_| "desktop state unavailable")?;
+        state
+            .backend
+            .as_ref()
+            .ok_or("包内后端不可用")?
+            .stop_host()?;
+        state
             .host
             .lock()
             .map_err(|_| "desktop state unavailable")?
             .take();
-        if let Some(host) = host {
-            host.stop_host()?;
-        }
         crate::app::welcome(&app)
     })
     .await

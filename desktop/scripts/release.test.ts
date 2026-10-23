@@ -8,6 +8,22 @@ import { DesktopRelease } from './release';
 import { fixture } from './test-support';
 
 afterEach(() => mock.restore());
+test('desktop display name is CLAT while executable and application identity stay separate from CLI', () => {
+  const config = json<any>(join(DESKTOP, 'tauri.conf.json'));
+  expect(config.productName).toBe('CLAT');
+  expect(config.mainBinaryName).toBe('clat-desktop');
+  expect(config.identifier).toBe('com.artec.clat.desktop');
+});
+test('packaging selects the current app without deleting earlier build output', async () => {
+  await fixture(release => {
+    for (const name of ['CLAT.app', 'CLAT Desktop.app']) mkdirSync(join(release.root, name));
+    expect(release.single(release.root, '.app')).toBe(join(release.root, 'CLAT.app'));
+    expect(existsSync(join(release.root, 'CLAT Desktop.app'))).toBe(true);
+    for (const name of ['CLAT_2.0.0_x64.dmg', 'CLAT Desktop_2.0.0_x64.dmg']) writeFileSync(join(release.root, name), 'fixture');
+    expect(release.single(release.root, '.dmg')).toBe(join(release.root, 'CLAT_2.0.0_x64.dmg'));
+    expect(existsSync(join(release.root, 'CLAT Desktop_2.0.0_x64.dmg'))).toBe(true);
+  });
+});
 test('four desktop and six CLI targets are isolated', () => {
   const release = new DesktopRelease(), cli = release.names('cli', 'v2.2.0'), desktop = release.names('desktop', 'v2.2.0');
   expect(release.records('desktop')).toHaveLength(4); expect(release.records('cli')).toHaveLength(6);
@@ -63,11 +79,11 @@ test('finalization refuses partial release without signing', async () => {
 });
 test.skipIf(process.platform === 'win32')('DMG contains only App and Applications shortcut', async () => {
   await fixture(async release => {
-    const app = join(release.root, 'CLAT Desktop.app'); mkdirSync(app); const seen: string[] = [];
+    const app = join(release.root, 'CLAT.app'); mkdirSync(app); const seen: string[] = [];
     const packaging = new DesktopRelease(release.root, args => {
       seen.push(args[0]!);
       if (args[0] === 'ditto') cpSync(args[1]!, args[2]!, { recursive: true });
-      else if (args[0] === 'hdiutil') { const image = args[args.indexOf('-srcfolder') + 1]!; expect(readdirSync(image).sort()).toEqual(['Applications', 'CLAT Desktop.app']); expect(readlinkSync(join(image, 'Applications'))).toBe('/Applications'); }
+      else if (args[0] === 'hdiutil') { const image = args[args.indexOf('-srcfolder') + 1]!; expect(readdirSync(image).sort()).toEqual(['Applications', 'CLAT.app']); expect(readlinkSync(join(image, 'Applications'))).toBe('/Applications'); expect(args[args.indexOf('-volname') + 1]).toBe('CLAT'); }
       else throw new Error('unexpected process');
       return '';
     });

@@ -1314,7 +1314,7 @@ Native installation/update and window preferences are frontend-local OS concerns
 The shell loads the verified Host's existing workbench origin and uses a narrowly
 scoped native bridge. Permissions still go through the Host. Window close hides;
 GUI quit leaves the detached, leased backend alive. One Host owns one storage root
-across CLI/TUI/PWA/desktop. See [CLAT Desktop](desktop.md).
+across CLI/TUI/PWA/desktop. See [CLAT desktop client](desktop.md).
 
 `host.describe` advertises native-client compatibility generation 1, build kind
 and capabilities. Published compatible builds can share a Host despite different
@@ -1355,3 +1355,24 @@ verifies through `src/upgrade/manifest.rs`; desktop's native policy verifies its
 own root before restoring authenticated metadata into the official updater.
 No standalone signature assets or legacy updater compatibility are published.
 This distribution format does not change Host identity or shared business data.
+
+The v2.2.0 shared-Host coordinator lives in `src/host_client/reconcile.rs`.
+`PackagedBackend::reconcile` owns existing-Host discovery, compatible attachment
+and initial idle activation; its `BackendConnection` client-port result keeps
+`Missing` and `Connected` distinct from failures. Official builds connect across
+versions using the existing native compatibility contract; development builds
+retain fingerprint checks. There is no historical protocol adapter or migration.
+CLI startup and Desktop share the typed `try_upgrade_takeover` primitive; only a
+`busy` error permits continued attachment, while other failures retain their
+error. The Host atomically arbitrates readiness for all projects. An attached
+Desktop retains its selected project and compatible Host even after it becomes
+idle, avoiding page reloads that could lose unsent text. A newer packaged backend
+can activate at the next Desktop launch or explicit project open.
+Packaged startup, reconciliation and explicit stop share a coordinator lock.
+Explicit stop suspends polling until a successful project open; observation of a
+missing Host never starts a writer. Desktop's notification loop projects these
+results into native connection state; its welcome/about pages display and refresh
+that state. A frontend connection lock serializes publication/navigation with
+open/stop and notification selection; stale notification targets cannot reattach a
+stopped or replaced instance. No lifecycle or upgrade policy is implemented by
+the web page.

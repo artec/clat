@@ -21,6 +21,8 @@ mod sessions;
 mod startup;
 pub use backend::PackagedBackend;
 mod desktop;
+mod reconcile;
+pub use reconcile::BackendConnection;
 mod notification;
 pub use error::HostCallError;
 pub use models::HostModelChoices;

@@ -13,12 +13,12 @@
     const footer = document.querySelector('.sidebar-footer');
     const launchLabel = document.createElement('span'); launchLabel.className = 'sidebar-expanded-only';
     if (footer) {
-      launch.className = 'sidebar-footer-button'; launch.setAttribute('aria-label', 'CLAT Desktop');
+      launch.className = 'sidebar-footer-button'; launch.setAttribute('aria-label', 'CLAT');
       const glyph = document.createElement('span'); glyph.textContent = '▣'; glyph.setAttribute('aria-hidden', 'true');
       launch.replaceChildren(glyph, launchLabel);
     }
     const dialog = document.createElement('dialog'); dialog.id = 'clat-desktop-settings';
-    dialog.innerHTML = '<h2>CLAT Desktop</h2><p id="clat-desktop-versions"></p><label><input id="clat-desktop-auto" type="checkbox"> 自动检查更新</label><p id="clat-desktop-update" role="status" aria-live="polite"></p><div class="actions"><button data-action="open">打开项目</button><button data-action="check">检查更新</button><button data-action="download">下载更新</button><button data-action="install">安装更新</button><button data-action="cancel">取消等待</button></div><div class="actions"><button data-action="stop" class="danger">停止共享后台</button><button data-action="quit">退出桌面</button><button data-action="close">关闭</button></div><p class="secondary">关闭窗口后任务继续。退出桌面不会停止共享后台。</p>';
+    dialog.innerHTML = '<h2>CLAT</h2><p id="clat-desktop-versions"></p><label><input id="clat-desktop-auto" type="checkbox"> 自动检查更新</label><p id="clat-desktop-update" role="status" aria-live="polite"></p><div class="actions"><button data-action="open">打开项目</button><button data-action="check">检查更新</button><button data-action="download">下载更新</button><button data-action="install">安装更新</button><button data-action="cancel">取消等待</button></div><div class="actions"><button data-action="stop" class="danger">停止共享后台</button><button data-action="quit">退出桌面</button><button data-action="close">关闭</button></div><p class="secondary">关闭窗口后任务继续。退出桌面不会停止共享后台。</p>';
     host.append(launch, dialog); document.body.append(host);
     if (footer) footer.prepend(launch);
     const status = dialog.querySelector('#clat-desktop-update');
@@ -30,7 +30,7 @@
       try {
       const info = await invoke('desktop_info');
       const background = info.hostStatus ? (info.hostStatus.ready ? '共享后台空闲' : `${info.hostStatus.busy_workspaces.length} 个项目有活动工作`) : '';
-      dialog.querySelector('#clat-desktop-versions').textContent = `桌面 ${info.desktopVersion}\n当前 Host ${info.hostVersion || '未连接'}\n包内后端 ${info.backendVersion}${info.backendPending ? '（等待共享后台空闲后启用）' : ''}\n${background}`;
+      dialog.querySelector('#clat-desktop-versions').textContent = `桌面 ${info.desktopVersion}\n当前 Host ${info.hostConnected ? info.hostVersion : '未连接'}\n包内后端 ${info.backendVersion}${info.backendPending ? '（下次启动或打开项目时启用）' : ''}\n${background}`;
       dialog.querySelector('#clat-desktop-auto').checked = info.autoCheck;
       status.textContent = actionError || info.updateStatus || info.backendError || info.connectionError || '';
       const label = info.updateAvailable ? '桌面 · 有更新' : '桌面';
@@ -39,7 +39,7 @@
       dialog.querySelector('[data-action="download"]').disabled = info.updateBusy || !info.updateAvailable || info.downloaded;
       dialog.querySelector('[data-action="install"]').disabled = info.updateBusy || !info.downloaded;
       dialog.querySelector('[data-action="cancel"]').disabled = !info.updateBusy;
-      dialog.querySelector('[data-action="stop"]').disabled = !info.hostVersion;
+      dialog.querySelector('[data-action="stop"]').disabled = !info.hostConnected;
       } finally { refreshing = false; }
     };
     dialog.addEventListener('click', async event => {

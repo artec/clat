@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { cleanEnv, digest, readPassword, withTemp } from './common';
 import { DesktopRelease } from './release';
 import { LocalMacos } from './local-macos';
+import { ReleaseProgress } from './release-progress';
 import { ReleaseBuild } from './release-build';
 import { assembleIndex, PAYLOAD, publicFiles, verifyIndex } from './release-index';
 
@@ -12,6 +13,7 @@ export type Interactive = (args: string[]) => number;
 export const interactive: Interactive = args => Bun.spawnSync(args, { env: cleanEnv(), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' }).exitCode;
 
 export class OwnerRelease {
+  readonly progress = new ReleaseProgress();
   constructor(readonly release = new DesktopRelease(), readonly prompt = readPassword, readonly interact: Interactive = interactive) {}
   tag(): string { return 'v' + this.release.version(); }
   directory(): string { return join(this.release.root, 'dist-release', this.tag()); }
@@ -70,35 +72,39 @@ export class OwnerRelease {
       const previous = process.env.CLAT_DESKTOP_KEY_PASSWORD;
       try {
         process.env.CLAT_DESKTOP_KEY_PASSWORD = previous ?? await this.prompt('桌面更新私钥密码：');
-        await this.release.preflightSigning(this.tag());
+        await this.progress.step('检查本机签名与公证环境', () => this.release.preflightSigning(this.tag()));
         await this.buildPrepared(required);
       } finally {
         if (previous === undefined) delete process.env.CLAT_DESKTOP_KEY_PASSWORD;
         else process.env.CLAT_DESKTOP_KEY_PASSWORD = previous;
       }
     });
-    console.log('本机签名及公证完成。即将核验、上传并发布。');
+    this.progress.line('done', '本机签名及公证完成，即将上传并发布');
   }
   async buildPrepared(required: string[]): Promise<void> {
     const destination = join(this.directory(), 'prepared');
     if (existsSync(destination)) throw new Error('本版本已有 prepared 产物；请先移走该目录再重新准备，避免覆盖。');
     const commit = new LocalMacos(this.release, this.directory()).source();
     const build = new ReleaseBuild(this.gh.bind(this), commit, this.release.version(), this.directory());
-    await build.locate();
+    await this.progress.step('定位当前版本的远程构建', () => build.locate());
     const local = new LocalMacos(this.release, this.directory(), build.backend.bind(build));
     await withTemp('preparing-', async folder => {
       await local.prepare(folder);
-      await build.ready();
-      const remote = this.draft();
-      if (!required.every(n => remote.assets.some(a => a.name === n))) throw new Error('CI 草稿缺少正式发布产物或校验文件。');
-      this.gh('release', 'download', this.tag(), '--repo', REPO, '--dir', folder, ...required.flatMap(n => ['--pattern', n]));
-      for (const name of this.remoteArchives()) this.verifyChecksum(folder, name);
-      await this.release.finalize(folder, this.tag(), true);
-      const args = ['minisign', '-S', '-s', join(this.release.root, '.release-secrets/clat-minisign.key'), '-t', `CLAT ${this.tag()} release index`,
-        '-m', join(folder, PAYLOAD)];
-      if (this.interact(args) !== 0) throw new Error('CLI 索引签名失败；未上传。');
-      assembleIndex(folder);
-      await this.verify(folder);
+      await this.progress.step('等待远程构建并下载产物', async () => {
+        await build.ready();
+        const remote = this.draft();
+        if (!required.every(n => remote.assets.some(a => a.name === n))) throw new Error('CI 草稿缺少正式发布产物或校验文件。');
+        this.gh('release', 'download', this.tag(), '--repo', REPO, '--dir', folder, ...required.flatMap(n => ['--pattern', n]));
+        for (const name of this.remoteArchives()) this.verifyChecksum(folder, name);
+      });
+      await this.progress.step('签署更新索引并核验完整发布产物', async () => {
+        await this.release.finalize(folder, this.tag(), true);
+        const args = ['minisign', '-S', '-s', join(this.release.root, '.release-secrets/clat-minisign.key'), '-t', `CLAT ${this.tag()} release index`,
+          '-m', join(folder, PAYLOAD)];
+        if (this.interact(args) !== 0) throw new Error('CLI 索引签名失败；未上传。');
+        assembleIndex(folder);
+        await this.verify(folder);
+      });
       if (local.source() !== commit) throw new Error('签名期间源码身份已改变，未保存发布产物。');
       renameSync(folder, destination);
     }, this.directory());
@@ -111,22 +117,20 @@ export class OwnerRelease {
     });
   }
   async upload(): Promise<void> {
-    await this.localLock(async () => {
+    await this.progress.step('上传并核对 GitHub 草稿', () => this.localLock(async () => {
       this.draft(); const folder = join(this.directory(), 'prepared'); await this.verify(folder);
       this.gh('release', 'upload', this.tag(), '--repo', REPO, ...this.files().map(n => join(folder, n)), '--clobber');
       await this.compareRemote(this.draft());
-    });
-    console.log('已上传并核对草稿，准备公开发布。');
+    }));
   }
   async publish(): Promise<void> {
-    await this.localLock(async () => {
+    await this.progress.step('公开发布 ' + this.tag(), () => this.localLock(async () => {
       await this.verify(join(this.directory(), 'prepared')); await this.compareRemote(this.draft()); this.draft();
       await withTemp('clat-release-notes-', folder => {
         const notes = join(folder, 'notes.md'); writeFileSync(notes, this.notes());
         this.gh('release', 'edit', this.tag(), '--repo', REPO, '--notes-file', notes, '--draft=false');
       });
-    });
-    console.log('已公开发布 ' + this.tag());
+    }));
   }
   authenticate(): void {
     try { this.gh('auth', 'status'); }
@@ -136,9 +140,9 @@ export class OwnerRelease {
     }
   }
   async complete(): Promise<void> {
-    this.authenticate();
+    await this.progress.step('检查 GitHub 登录', async () => this.authenticate());
     if (existsSync(join(this.directory(), 'prepared'))) {
-      await this.verify(join(this.directory(), 'prepared')); console.log('复用已验证的本机签名产物，继续发布。');
+      await this.progress.step('核验并复用本机签名产物', () => this.verify(join(this.directory(), 'prepared')));
     } else await this.prepare();
     await this.upload(); await this.publish();
   }

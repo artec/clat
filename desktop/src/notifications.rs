@@ -1,5 +1,5 @@
 use crate::app::Desktop;
-use clat_core::client_ports::host::{HostClient, HostNotification};
+use clat_core::client_ports::host::{BackendConnection, HostClient, HostNotification};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
@@ -18,12 +18,12 @@ pub fn start(app: tauri::AppHandle) {
                 .ok()?
                 .remove(&notice.id())
         });
-        if let Some((client, notice)) = target
-            && let Ok(client) = client.focus_notification(&notice)
-        {
-            let _ = crate::app::connected(&clicked, client);
+        if let Some((client, notice)) = target {
+            let app = clicked.clone();
+            std::thread::spawn(move || focus_notification(&app, client, notice));
+        } else {
+            crate::app::show(&clicked);
         }
-        crate::app::show(&clicked);
     });
     std::thread::spawn(move || {
         while !app.state::<Desktop>().quitting.load(Ordering::Acquire) {
@@ -33,53 +33,52 @@ pub fn start(app: tauri::AppHandle) {
     });
 }
 
+fn focus_notification(app: &tauri::AppHandle, client: HostClient, notice: HostNotification) {
+    let state = app.state::<Desktop>();
+    let _connection = state.connection.lock().expect("connection state");
+    let current = state.host.lock().expect("host state").clone();
+    if current.is_some_and(|h| h.instance_id() == client.instance_id())
+        && let Ok(client) = client.focus_notification(&notice)
+    {
+        let _ = crate::app::connected(app, client);
+    }
+    crate::app::show(app);
+}
+
 fn observe_host(app: &tauri::AppHandle) {
     let state = app.state::<Desktop>();
     let Some(backend) = state.backend.as_ref() else {
         return;
     };
-    match backend.discover() {
-        Ok(Some(client)) => {
-            let scoped = state
-                .host
-                .lock()
-                .ok()
-                .and_then(|h| h.clone())
-                .filter(|h| h.instance_id() == client.instance_id())
-                .unwrap_or(client);
-            let client = match backend.activate_idle_upgrade(&scoped) {
-                Ok(upgraded) => upgraded.unwrap_or(scoped),
-                Err(error) => {
-                    *state.connection_error.lock().expect("connection state") = Some(error);
-                    return;
-                }
-            };
-            let changed = state
-                .host
-                .lock()
-                .ok()
-                .and_then(|h| h.as_ref().map(|h| h.instance_id().to_owned()))
-                .as_deref()
-                != Some(client.instance_id());
-            if changed && let Err(error) = crate::app::connected(app, client.clone()) {
-                *state.connection_error.lock().expect("connection state") = Some(error);
-                return;
-            }
-            refresh(app, &client);
-        }
-        Ok(None) => {
-            if state
-                .host
-                .lock()
-                .is_ok_and(|mut host| host.take().is_some())
-            {
+    let _connection = state.connection.lock().expect("connection state");
+    let current = state.host.lock().expect("host state").clone();
+    match backend.reconcile(current.as_ref()) {
+        Ok(BackendConnection::Connected(client)) => observe_connected(app, client),
+        Ok(BackendConnection::Missing) => {
+            *state.connection_error.lock().expect("connection state") = None;
+            if state.host.lock().expect("host state").take().is_some() {
                 let _ = crate::app::welcome(app);
             }
         }
-        Err(error) => {
-            *state.connection_error.lock().expect("connection state") = Some(error);
-        }
+        Err(error) => *state.connection_error.lock().expect("connection state") = Some(error),
     }
+}
+
+fn observe_connected(app: &tauri::AppHandle, client: HostClient) {
+    let state = app.state::<Desktop>();
+    let changed = state
+        .host
+        .lock()
+        .expect("host state")
+        .as_ref()
+        .map(|h| h.instance_id())
+        != Some(client.instance_id());
+    if changed && let Err(error) = crate::app::connected(app, client.clone()) {
+        *state.connection_error.lock().expect("connection state") = Some(error);
+        return;
+    }
+    *state.connection_error.lock().expect("connection state") = None;
+    refresh(app, &client);
 }
 
 fn refresh(app: &tauri::AppHandle, host: &HostClient) {
@@ -148,6 +147,6 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
         .builder()
         .id(id)
         .title(title)
-        .body("打开 CLAT Desktop 查看详情")
+        .body("打开 CLAT 查看详情")
         .show();
 }

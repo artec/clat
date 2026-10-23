@@ -41,7 +41,7 @@ Run `clat --help` for the complete command-line surface.
 | Terminal UI | Daily interactive repository work | `clat` |
 | Headless runner | Scripts, CI, git hooks, editor integrations | `clat exec` |
 | Web workbench | An installable local PWA and HTTP+SSE clients | `clat serve` |
-| Native desktop | A standalone macOS/Windows app with its own backend and updater | [CLAT Desktop](docs/desktop.md) |
+| Native desktop | A standalone macOS/Windows app with its own backend and updater | [Desktop client](docs/desktop.md) |
 | WeChat remote | Official iLink text, image, steering, and approvals | `clat serve --im wechat` |
 | DSH client | Using CLAT's TUI with a local DeepSeek Harness host | `clat dsh` |
 | Plugin manager | Browsing the signed market; installing, updating, auditing, or rolling back packages | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
@@ -54,7 +54,7 @@ PWA in your default browser. Local access is automatic behind Host/Origin/Fetch
 Metadata checks; remote authorities require credentials. Browser sessions are
 private HttpOnly cookies, and credentials never enter URLs. Use `--no-open`
 to suppress the browser handoff.
-CLAT Desktop installers accompany the CLI archives in desktop-enabled releases.
+CLAT desktop installers accompany the CLI archives in desktop-enabled releases.
 For local desktop development, use `bun start`; `bun app:build` creates a native
 test installer. Desktop tooling runs directly on Bun/TypeScript.
 For formal releases, push the signed tag and run `./publish` while CI builds.
@@ -145,7 +145,7 @@ Start with the document that matches your task:
 | Goal | Document |
 |---|---|
 | Use the TUI, `exec`, `serve`, or `dsh` | [Using CLAT](docs/usage.md) |
-| Install and update the native desktop client | [CLAT Desktop](docs/desktop.md) |
+| Install and update the native desktop client | [Desktop client](docs/desktop.md) |
 | Configure a preset or custom model | [Model editor](docs/model-editor.md) |
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |

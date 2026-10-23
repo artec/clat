@@ -340,6 +340,14 @@ CPU compilation benchmarks. Failed stages report elapsed time before preserving
 the original error. Reused stages are explicitly labelled; totals measure only
 the current invocation, not the original cached build. No signing credentials
 or release assets are changed by timing.
+Step headers and completions are separated by a blank line. Interactive terminals
+use cyan start markers, green success markers, red failures and yellow cache-reuse
+markers; per-stage durations and both architecture totals are bold yellow.
+Redirected output stays plain by default. `NO_COLOR` disables color;
+`FORCE_COLOR=1` enables it, while `FORCE_COLOR=0` or `TERM=dumb` disables it.
+The macOS architecture pipelines remain sequential, preserving the shared backend
+staging area and Cargo cache. Concurrent signing/notarization with the next build
+is a possible future optimization, not an implemented or measured speedup.
 Once both local macOS stages and the remote Release finish, the script validates
 the complete draft and downloads the six CLI archives and two Windows installers.
 Signing and finalization follow this order:

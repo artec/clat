@@ -14,7 +14,7 @@ async function welcome(page, busy = false) {
   const bridge = fs.readFileSync(path.join(ui, 'bridge.js'), 'utf8');
   const nativeMock = busy => {
     window.desktopCalls = [];
-    window.desktopInfo = { desktopVersion:'2.1.0',backendVersion:'2.1.0',hostVersion:'2.1.0',autoCheck:true,
+    window.desktopInfo = { desktopVersion:'2.1.2',backendVersion:'2.1.2',hostVersion:'2.1.2',hostConnected:true,autoCheck:true,
       updateAvailable:busy,downloaded:busy,updateBusy:busy,updateStatus:busy ? '等待项目空闲' : '' };
     window.__TAURI__ = { core: { invoke:async (command, args) => {
       window.desktopCalls.push({command,args});
@@ -91,4 +91,28 @@ test('waiting for installation prevents new unsaved text and cancellation restor
   await expect(dialog.locator('[data-action=cancel]')).toBeEnabled();
   await dialog.locator('[data-action=cancel]').click();
   await expect(page.locator('#prompt')).toBeEditable();
+});
+
+test('connection failure and recovery refresh on welcome and in settings', async ({page}) => {
+  await welcome(page);
+  await page.evaluate(() => {
+    Object.assign(window.desktopInfo, { hostVersion:null, hostConnected:false, backendPending:false,
+      connectionError:'后台协议不兼容，请从当前客户端重新启动后台。' });
+  });
+  await expect(page.locator('#status')).toContainText('后台协议不兼容');
+  // Reopen to refresh the about panel immediately, without changing native state.
+  await page.locator('[data-action=close]').click();
+  await page.locator('#settings').click();
+  await expect(page.locator('#clat-desktop-versions')).toContainText('当前 Host 未连接');
+  await expect(page.locator('[data-action=stop]')).toBeDisabled();
+  await expect(page.locator('#clat-desktop-update')).toContainText('后台协议不兼容');
+  await page.evaluate(() => Object.assign(window.desktopInfo, {
+    hostVersion:'2.2.0',hostConnected:true,backendPending:false,connectionError:null,
+  }));
+  await expect(page.locator('#status')).toContainText('选择项目后');
+  await page.locator('[data-action=close]').click();
+  await page.locator('#settings').click();
+  await expect(page.locator('#clat-desktop-versions')).toContainText('当前 Host 2.2.0');
+  await expect(page.locator('[data-action=stop]')).toBeEnabled();
+  expect(await page.evaluate(() => window.desktopCalls.some(c => c.command === 'desktop_stop_host'))).toBe(false);
 });

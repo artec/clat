@@ -1,4 +1,4 @@
-# CLAT Desktop development
+# CLAT desktop development
 
 This optional Rust workspace member is a native shell for the existing Host.
 Business clients use `clat-core::client_ports`; no Application is constructed here.

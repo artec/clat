@@ -16,11 +16,11 @@ pub mod host {
     pub fn wire_version() -> u64 {
         crate::wire::WIRE_VERSION
     }
+    pub use crate::host_client::{BackendConnection, HostManagementArgs, PluginReviewTicket};
     pub use crate::host_client::{
         HOST_PROTOCOL_VERSION, HostCallError, HostClient, HostEvent, HostEvents,
         HostEventsInterrupt, HostModelChoices, decode_host_approval, decode_host_event,
     };
-    pub use crate::host_client::{HostManagementArgs, PluginReviewTicket};
 }
 pub mod permission {
     pub use crate::permission::{PermissionDecision, PermissionMode, PermissionRequest};

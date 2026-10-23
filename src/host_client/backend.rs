@@ -19,8 +19,10 @@ struct Manifest {
 /// The executable is installation-owned, never supplied by web content.
 pub struct PackagedBackend {
     executable: PathBuf,
-    policy: BuildMatchPolicy,
+    pub(super) policy: BuildMatchPolicy,
     _lease: File,
+    pub(super) coordination: std::sync::Mutex<()>,
+    pub(super) observing: std::sync::atomic::AtomicBool,
 }
 
 fn executable_name() -> &'static str {
@@ -32,6 +34,20 @@ fn executable_name() -> &'static str {
 }
 
 impl PackagedBackend {
+    #[cfg(test)]
+    pub(super) fn fixture_for_reconcile(root: &Path) -> Self {
+        Self {
+            executable: root.join("unused-backend"),
+            policy: BuildMatchPolicy::Backend {
+                fingerprint: "client".into(),
+                official: true,
+            },
+            _lease: open_lease(root).unwrap(),
+            coordination: std::sync::Mutex::new(()),
+            observing: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
     pub fn prepare(resources: &Path, cache: &Path) -> Result<Self, String> {
         require_directory(resources)?;
         let text = read_regular(&resources.join("backend.json"), 16384)?;
@@ -68,49 +84,29 @@ impl PackagedBackend {
                 official: manifest.official,
             },
             _lease: lease,
+            coordination: std::sync::Mutex::new(()),
+            observing: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
-    pub fn discover(&self) -> Result<Option<HostClient>, String> {
-        let root = crate::control_storage::sentinel::default_storage_root()?;
-        match HostClient::discover_startup_with(&root, self.policy.clone())? {
-            super::discovery::StartupDiscovery::Compatible(client) => Ok(Some(client)),
-            super::discovery::StartupDiscovery::Missing
-            | super::discovery::StartupDiscovery::Upgradeable { .. } => Ok(None),
-        }
-    }
-
-    /// An explicitly launched newer desktop may activate its packaged runtime
-    /// once idle. Mere reconnection never creates a missing host.
-    pub fn activate_idle_upgrade(&self, client: &HostClient) -> Result<Option<HostClient>, String> {
-        if !matches!(
-            self.policy,
-            BuildMatchPolicy::Backend { official: true, .. }
-        ) {
-            return Ok(None);
-        }
-        let description = client.description()?;
-        let older = description["product_version"]
-            .as_str()
-            .is_some_and(|version| {
-                super::build_identity::compare_product_versions(
-                    super::build_identity::product_version(),
-                    version,
-                )
-                .ok()
-                    == Some(std::cmp::Ordering::Greater)
-            });
-        if !older || client.runtime_status()?["ready"] != true {
-            return Ok(None);
-        }
-        let info = client.call("workbench.info", &serde_json::json!({}))?;
-        let root = info["project"]["root"]
-            .as_str()
-            .ok_or("host omitted project root")?;
-        self.open_project(Path::new(root), false).map(Some)
-    }
-
     pub fn open_project(&self, path: &Path, trust: bool) -> Result<HostClient, String> {
+        let _guard = self
+            .coordination
+            .lock()
+            .map_err(|_| "backend coordination unavailable")?;
+        let result = self.open_project_inner(path, trust);
+        if result.is_ok() {
+            self.observing
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        result
+    }
+
+    pub(super) fn open_project_inner(
+        &self,
+        path: &Path,
+        trust: bool,
+    ) -> Result<HostClient, String> {
         if !path.is_dir() {
             return Err("project directory is unavailable".into());
         }

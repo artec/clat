@@ -22,16 +22,18 @@ test('local stage reports elapsed time on success and failure, but labels cache 
         writeFileSync(join(folder, local.names(record, false)[0]!), 'fixture');
       };
       await local.stage(parent, commit, record, 'unsigned', action);
-      expect(log.mock.calls.flat().join('\n')).toContain(`${record.label} 准备与编译打包完成，耗时 2分05秒`);
+      expect(Bun.stripANSI(String(log.mock.calls[0]![0]))).toBe(`\n⟳ ${record.label} 准备与编译打包`);
+      expect(Bun.stripANSI(String(log.mock.calls.at(-1)![0]))).toBe(`\n✓ ${record.label} 准备与编译打包完成，耗时 2分05秒`);
+      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).toContain(`${record.label} 准备与编译打包完成，耗时 2分05秒`);
       log.mockClear();
       await local.stage(parent, commit, record, 'unsigned', action);
-      expect(log.mock.calls.flat().join('\n')).toContain('复用');
-      expect(log.mock.calls.flat().join('\n')).not.toContain('完成，耗时');
+      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).toContain('复用');
+      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).not.toContain('完成，耗时');
       log.mockClear();
       await expect(local.stage(parent, commit, record, 'signed', async () => {
         now += 3601000; throw new Error('notary offline');
       })).rejects.toThrow('notary offline');
-      expect(log.mock.calls.flat().join('\n')).toContain(`${record.label} 签名、公证与安装包制作失败，已用时 1小时00分01秒`);
+      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).toContain(`${record.label} 签名、公证与安装包制作失败，已用时 1小时00分01秒`);
     });
   });
 });
@@ -94,10 +96,10 @@ test('failed notarization preserves unsigned builds; retry reuses signed targets
     fail = false; await local.prepare(output);
     expect(build).toHaveBeenCalledTimes(2); expect(sign).toHaveBeenCalledTimes(3);
     const records = release.records('desktop').filter(r => r.platform!.startsWith('darwin'));
-    expect(log.mock.calls.at(-1)![0]).toContain(`${records[0]!.label} 本次准备总耗时 2分00秒`);
-    expect(log.mock.calls.at(-1)![0]).toContain(`${records[1]!.label} 本次准备总耗时 3分01秒`);
+    expect(Bun.stripANSI(String(log.mock.calls.at(-1)![0]))).toContain(`${records[0]!.label} 本次准备总耗时 2分00秒`);
+    expect(Bun.stripANSI(String(log.mock.calls.at(-1)![0]))).toContain(`${records[1]!.label} 本次准备总耗时 3分01秒`);
     await local.prepare(output);
-    for (const record of records) expect(log.mock.calls.at(-1)![0]).toContain(`${record.label} 本次准备总耗时 0分00秒`);
+    for (const record of records) expect(Bun.stripANSI(String(log.mock.calls.at(-1)![0]))).toContain(`${record.label} 本次准备总耗时 0分00秒`);
     expect(build).toHaveBeenCalledTimes(2); expect(sign).toHaveBeenCalledTimes(3);
     expect(readFileSync(join(output, local.names(release.records('desktop')[0]!, true)[0]!), 'utf8')).toBe('signed fixture');
     const record = release.records('desktop')[0]!;

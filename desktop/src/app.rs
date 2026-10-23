@@ -11,6 +11,8 @@ pub struct Desktop {
     pub backend: Option<Arc<PackagedBackend>>,
     pub backend_error: Option<String>,
     pub connection_error: Mutex<Option<String>>,
+    // Publish navigation and Host state in the same order as lifecycle operations.
+    pub connection: Mutex<()>,
     pub host: Mutex<Option<HostClient>>,
     pub updates: Mutex<crate::update::Updates>,
     pub quitting: AtomicBool,
@@ -106,6 +108,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         backend,
         backend_error,
         connection_error: Mutex::new(None),
+        connection: Mutex::new(()),
         host: Mutex::new(None),
         updates: Mutex::new(crate::update::Updates::new(auto_check)),
         quitting: AtomicBool::new(false),
@@ -118,20 +121,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.set_menu(tauri::menu::Menu::default(app.handle())?)?;
     #[cfg(windows)]
     app.remove_menu()?;
-    let discovered = app
-        .state::<Desktop>()
-        .backend
-        .as_ref()
-        .map(|backend| backend.discover());
-    let error = match discovered {
-        Some(Ok(Some(client))) => connected(app.handle(), client).err(),
-        Some(Err(error)) => Some(error),
-        _ => None,
-    };
-    *app.state::<Desktop>()
-        .connection_error
-        .lock()
-        .expect("connection state") = error;
     if !smoke {
         crate::notifications::start(app.handle().clone());
         crate::update::start_automatic_checks(app.handle().clone());
@@ -143,7 +132,7 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
     let opener = app.handle().clone();
     let popup = app.handle().clone();
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("CLAT Desktop")
+        .title("CLAT")
         .inner_size(1280.0, 820.0)
         .min_inner_size(960.0, 640.0)
         .disable_drag_drop_handler()
@@ -220,7 +209,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let tray = TrayIconBuilder::new()
         .icon(tauri::include_image!("icons/clat-stat.png"))
         .icon_as_template(false)
-        .tooltip("CLAT Desktop")
+        .tooltip("CLAT")
         .show_menu_on_left_click(false);
     tray.on_tray_icon_event(|tray, event| {
         if matches!(
@@ -277,7 +266,7 @@ pub fn run() {
         .setup(setup);
     builder
         .build(tauri::generate_context!())
-        .expect("CLAT Desktop startup")
+        .expect("CLAT startup")
         .run(|app, event| match event {
             tauri::RunEvent::Exit => {
                 let state = app.state::<Desktop>();

@@ -881,3 +881,40 @@ Fixture keys are disposable public test keys; the owner keys and installations
 are never touched. Historical v2.1.1 upgrade compatibility is deliberately absent.
 Local macOS timing tests use an injected monotonic clock to cover success, failure,
 cache reuse and per-architecture totals without waiting for compilation/notarization.
+
+Release output checks: `bun test desktop/scripts/release-progress.test.ts desktop/scripts/local-macos.test.ts desktop/scripts/workflow.test.ts`.
+These cover blank-line step boundaries, colored status markers/times, plain output
+and color opt-outs, completion after success only, and propagation of the original
+failure. They preserve signing/publication ordering and stage-cache assertions;
+they use disposable test keys and do not perform production signing, Apple
+notarization or publication.
+
+### Shared Host coexistence (v2.2.0 task 1)
+
+Use `scripts/gates.sh host_client:: serve::workspaces::lifecycle_tests::` for
+client reconciliation and the existing server-side atomic takeover contracts.
+`host_client::reconcile::tests` uses isolated temporary storage, an ephemeral
+loopback RPC fixture and injected activation/trust checks; it never opens the
+owner's storage, port 2691 or a real background Host. Cases cover compatible
+busy/idle/same/newer Hosts, atomic busy races, activation and non-busy failures,
+untrusted projects, protocol/native-generation rejection, development build
+mismatch, explicit stop and selected-project preservation without hot replacement.
+Version-ordering fixtures use synthetic releases under the current compatibility
+contract; they do not implement historical Host migration.
+
+`cargo test -p clat-desktop` compiles the native integration and runs existing
+policy/updater cases. From `web/e2e`, run
+`bunx playwright test --config=playwright.desktop.config.js` to verify that welcome
+and about distinguish connection failure from a verified connection and refresh
+error/recovered states without sending stop commands. Browser native commands
+are mocked; these tests do not claim real macOS/Windows process replacement or
+cross-version installer acceptance. Real installed coexistence remains a separate
+release check.
+
+Desktop display-name checks are included in `desktop/scripts/release.test.ts`:
+the installed name is CLAT while `clat-desktop` and `com.artec.clat.desktop`
+remain separate from the CLI. Packaging selects the current `CLAT.app` and DMG
+even when earlier named build outputs remain, without deleting those outputs.
+The DMG layout test checks the CLAT volume label and Applications shortcut.
+These checks use temporary files and injected commands, without real signing or
+publication; native Windows shortcut rendering remains a platform smoke check.

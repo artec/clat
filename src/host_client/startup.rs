@@ -160,28 +160,15 @@ fn upgrade_idle_compatible(client: &HostClient) -> Result<bool, String> {
     }
     // The readiness read is advisory. The host rechecks atomically; losing a
     // race leaves the current host running and the caller attaches normally.
-    match client.call(
-        "host.takeover",
-        &serde_json::json!({"expected_instance_id":client.instance_id(),
-        "replacement_product_version":super::build_identity::product_version()}),
-    ) {
-        Ok(value) => Ok(value["stopping"] == true),
-        Err(_) => Ok(false),
-    }
+    try_upgrade_takeover(client).map_err(|e| e.to_string())
 }
 
 fn request_upgrade_takeover(root: &Path, host_version: &str) -> Result<(), String> {
     let client = HostClient::discover_for_management(root)?;
-    let instance = client.instance_id().to_owned();
-    let result = client.call(
-        "host.takeover",
-        &serde_json::json!({
-            "expected_instance_id": instance,
-            "replacement_product_version": super::build_identity::product_version()
-        }),
-    )?;
-    if result["stopping"] != true {
-        return Err("old host did not acknowledge upgrade takeover; no stop was retried".into());
+    if !try_upgrade_takeover(&client).map_err(|e| e.to_string())? {
+        return Err(format!(
+            "CLAT {host_version} host has active work; wait until idle before upgrading"
+        ));
     }
     eprintln!(
         "clat: upgrading idle background host CLAT {host_version} → CLAT {}; PWA remains at http://127.0.0.1:{}",
@@ -189,6 +176,22 @@ fn request_upgrade_takeover(root: &Path, host_version: &str) -> Result<(), Strin
         super::DEFAULT_HOST_PORT
     );
     Ok(())
+}
+
+/// The server's atomic idle check is authoritative, not a preceding readiness read.
+pub(super) fn try_upgrade_takeover(client: &HostClient) -> Result<bool, super::HostCallError> {
+    match client.call_with_receipt(
+        "host.takeover",
+        &serde_json::json!({
+            "expected_instance_id": client.instance_id(),
+            "replacement_product_version": super::build_identity::product_version()
+        }),
+    ) {
+        Ok(value) if value["stopping"] == true => Ok(true),
+        Ok(_) => Err("old host did not acknowledge upgrade takeover; no stop was retried".into()),
+        Err(error) if error.code.as_deref() == Some("busy") => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn child_exit_status(

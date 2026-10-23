@@ -10,6 +10,7 @@ import { PAYLOAD, writePayload } from './release-index';
 export interface AssetRecord { os: string; target: string; platform?: string; label?: string }
 export type AssetKind = 'cli' | 'desktop';
 const MATRIX = json<Record<AssetKind, AssetRecord[]>>(join(DESKTOP, 'assets.json'));
+const PRODUCT_NAME = json<{ productName: string }>(join(DESKTOP, 'tauri.conf.json')).productName;
 export interface BuildOptions { release?: boolean; official?: boolean; appOnly?: boolean; backend?: string; runId?: string }
 
 export class DesktopRelease {
@@ -77,11 +78,12 @@ export class DesktopRelease {
       const bundle = join(this.targetDirectory(), target, options.release ? 'release' : 'debug', 'bundle');
       const app = this.single(join(bundle, 'macos'), '.app');
       const arch = target.startsWith('aarch64-') ? 'aarch64' : 'x64';
-      await this.makeDmg(app, join(bundle, 'dmg', `CLAT Desktop_${this.version()}_${arch}.dmg`));
+      await this.makeDmg(app, join(bundle, 'dmg', `${PRODUCT_NAME}_${this.version()}_${arch}.dmg`));
     }
   }
   single(directory: string, suffix: string): string {
-    const matches = readdirSync(directory).filter(n => n.endsWith(suffix));
+    const matches = readdirSync(directory).filter(n => suffix === '.app' ? n === `${PRODUCT_NAME}.app`
+      : n.endsWith(suffix) && (suffix !== '.dmg' || n.startsWith(`${PRODUCT_NAME}_`)));
     if (matches.length !== 1) throw new Error('expected exactly one ' + suffix);
     return join(directory, matches[0]!);
   }
@@ -91,7 +93,7 @@ export class DesktopRelease {
       const image = join(folder, 'image-root'); mkdirSync(image);
       this.execute(['ditto', app, join(image, basename(app))]);
       symlinkSync('/Applications', join(image, 'Applications'));
-      this.execute(['hdiutil', 'create', '-volname', 'CLAT Desktop', '-srcfolder', image, '-ov', '-format', 'UDZO', destination]);
+      this.execute(['hdiutil', 'create', '-volname', PRODUCT_NAME, '-srcfolder', image, '-ov', '-format', 'UDZO', destination]);
     });
   }
   package(target: string, output: string, appOnly = false): void {

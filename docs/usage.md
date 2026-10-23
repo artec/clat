@@ -6,7 +6,7 @@ runner, local web workbench, native desktop, and DSH client. Configuration inter
 [Permissions](permissions.md), and persistence details in
 [Persistent state](storage.md).
 
-CLAT Desktop provides a self-contained macOS/Windows installer, shares the
+The CLAT desktop client provides a self-contained macOS/Windows installer, shares the
 existing Host and data, and updates independently of the CLI. See
 [desktop installation, background behavior and updates](desktop.md).
 

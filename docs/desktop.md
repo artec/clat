@@ -1,16 +1,22 @@
-# CLAT Desktop
+# CLAT desktop client
 
-CLAT Desktop is the native macOS/Windows client of the same local Host used by
+CLAT's desktop app is the native macOS/Windows client of the same local Host used by
 CLAT's attached TUI and web workbench. The installer contains its own private
 backend: installing a separate `clat` command is optional. The CLI remains a
 single-file installation with no Tauri or user-side Node/Python requirement.
+
+The installed display name is **CLAT**: `CLAT.app` on macOS, and CLAT in the
+Windows Start Menu and shortcuts. The desktop executable remains `clat-desktop`
+(`clat-desktop.exe` on Windows), with application identifier
+`com.artec.clat.desktop`. The separate CLI executable remains `clat`; desktop
+release assets keep the `clat-desktop-` prefix.
 
 ## Install and open a project
 
 Desktop installers ship alongside CLI archives in each desktop-enabled formal
 [GitHub release](https://github.com/artec/clat/releases/latest):
 
-- macOS 13+: choose `macos-arm64.dmg` or `macos-x64.dmg`, then drag CLAT Desktop
+- macOS 13+: choose `macos-arm64.dmg` or `macos-x64.dmg`, then drag CLAT
   into Applications.
 - Windows 10 22H2 x64 / Windows 11 ARM64: choose the matching `windows-*-setup.exe`.
   Installation is per-user. The installer bootstraps shared Evergreen WebView2
@@ -39,14 +45,37 @@ Desktop, CLI/TUI and PWA share the current storage root, normally `~/.clat`.
 There is one Host/writer, not a second desktop database. Each project's active
 session remains shared across its clients. Desktop uses one main window.
 
-Existing CLI installations need one upgrade to the first desktop-enabled release
-before native coexistence is supported. Published clients can then attach across
-product versions when Host/wire/journal contracts and native-client capabilities
-match. Development builds retain strict executable identity checks.
+From the v2.1.2 coexistence baseline, official CLI/Desktop versions need not match:
+authenticated Host/wire/journal contracts and native-client capabilities decide
+whether they can share the running Host. Development builds retain strict
+executable identity checks. Installed CLI/Desktop versions and the running Host
+version are separate; replacing an installed executable does not itself replace
+its running process.
 
-A newer packaged backend yields to active work, then uses the Host's existing
-atomic idle takeover. It never downgrades a newer Host. Missing/incompatible
+A newer packaged backend uses the Host's existing atomic idle takeover during
+activation. It never downgrades a newer Host. Missing/incompatible
 Hosts are reported explicitly; reconnecting does not silently start another one.
+From v2.2.0, automatic discovery and subsequent refresh use one core coordinator:
+
+- A compatible Host is connected directly. During initial activation, a newer
+  packaged backend can take over when idle; a busy compatible Host remains usable.
+  Once attached, Desktop keeps that Host for this interaction, even if it later
+  becomes idle. A newer backend can activate on the next Desktop launch or explicit
+  project open. This avoids reloading page-local unsent text merely for a newer
+  executable.
+- Equal/newer compatible Hosts are reused; an older backend never downgrades one.
+  Incompatible protocols, unavailable projects, missing trust and failed takeover
+  acknowledgements surface errors instead of forcing a stop or starting a second
+  writer. Development backends require explicit startup for mismatched builds.
+- Missing/disconnected Hosts require **打开项目** to start. Switching Hosts can
+  briefly disconnect other clients; refresh the PWA or reopen a current TUI if
+  needed. Existing tasks must finish before automatic takeover is accepted.
+
+The welcome page refreshes connection errors and their recovery. Settings shows
+the verified Host connection separately from installed versions.
+**停止共享后台** suspends automatic discovery in that Desktop process until
+**打开项目** succeeds (or Desktop is restarted), so its own polling does not undo
+the stop.
 Automatic desktop connections use `127.0.0.1:2691`; use the browser for an
 explicitly configured custom-port `clat serve` instance.
 
