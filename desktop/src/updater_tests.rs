@@ -181,13 +181,12 @@ fn compact_index_drives_the_real_updater_without_signature_sidecars() {
 
 // Local transport only. Production never accepts a page-provided endpoint/key/path.
 fn package_server(body: &'static [u8], status: u16) -> (url::Url, std::thread::JoinHandle<()>) {
-    use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
     let worker = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut stream = loop {
+        let stream = loop {
             match listener.accept() {
                 Ok((stream, _)) => break stream,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -200,19 +199,7 @@ fn package_server(body: &'static [u8], status: u16) -> (url::Url, std::thread::J
                 Err(error) => panic!("fixture accept: {error}"),
             }
         };
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let mut request = [0; 4096];
-        let count = stream.read(&mut request).unwrap();
-        assert!(request[..count].starts_with(b"GET /package "));
-        write!(
-            stream,
-            "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body).unwrap();
+        package_response(stream, body, status);
     });
     (format!("http://{address}/package").parse().unwrap(), worker)
 }
@@ -255,4 +242,81 @@ fn real_http_download_rejects_network_and_signature_failures_then_allows_verifie
             assert!(result.is_err());
         }
     }
+}
+
+fn package_response(mut stream: std::net::TcpStream, body: &[u8], status: u16) {
+    use std::io::{Read, Write};
+    // BSD can inherit the listener's nonblocking mode. The timeout below
+    // bounds a blocking read; it does not change that inherited mode.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        assert!(request.len() < 4096, "fixture request headers exceed limit");
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        request.push(byte[0]);
+    }
+    assert!(request.starts_with(b"GET /package "));
+    write!(
+        stream,
+        "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+}
+
+#[test]
+fn fixture_waits_for_a_delayed_complete_request_on_a_nonblocking_accepted_socket() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap(); // Force BSD's inherited mode on every platform.
+        ready_tx.send(()).unwrap();
+        let result = std::panic::catch_unwind(|| package_response(stream, PACKAGE, 200));
+        let _ = done_tx.send(result.is_ok());
+    });
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    client
+        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(
+        done_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+        "fixture must wait for request bytes"
+    );
+    client.write_all(b"GET /pa").unwrap();
+    assert_eq!(
+        done_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+        "fixture must wait for complete HTTP headers"
+    );
+    client
+        .write_all(b"ckage HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert!(response.ends_with(PACKAGE));
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+    );
+    worker.join().unwrap();
 }
