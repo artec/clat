@@ -89,7 +89,9 @@ impl BootstrapApplication {
 
     pub fn into_trusted(self) -> Result<TrustedProjectApplication, ApplicationError> {
         if !self.is_trusted()? {
-            return Err(ApplicationError::new("project is not trusted"));
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "host.project_untrusted_short",
+            )));
         }
         TrustedProjectApplication::mount(
             self.project,
@@ -120,7 +122,9 @@ impl BootstrapApplication {
         provider: Arc<dyn Plugin>,
     ) -> Result<TrustedProjectApplication, ApplicationError> {
         if !self.is_trusted()? {
-            return Err(ApplicationError::new("project is not trusted"));
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "host.project_untrusted_short",
+            )));
         }
         TrustedProjectApplication::mount_with_providers(
             self.project,

@@ -68,7 +68,12 @@ impl Fixture {
         }
     }
     fn args(&self, delay: u64, exit: i32, bytes: usize) -> Value {
-        json!({"label":"test job","argv":[self.helper.to_string_lossy(),self.root.join("executed").to_string_lossy(),delay.to_string(),exit.to_string(),bytes.to_string()],"timeout_ms":5000})
+        json!({"label":"test job","argv":[self.helper.to_string_lossy(),self.marker().to_string_lossy(),delay.to_string(),exit.to_string(),bytes.to_string()],"timeout_ms":5000})
+    }
+    fn marker(&self) -> PathBuf {
+        // The command may write inside its project, never the parent fixture
+        // directory that also owns session facts and test executables.
+        self.root.join("project").join("executed")
     }
     fn tool(&self, operation: tools::Operation) -> tools::JobTool {
         tools::JobTool {
@@ -119,7 +124,7 @@ fn native_job_survives_origin_run_cancel_and_scratch_cleanup() {
     let done = f.settled(&job.id);
     assert_eq!(done.state, "completed", "{done:?}");
     assert_eq!(done.observation.as_ref().unwrap()["exit_code"], 0);
-    assert!(f.root.join("executed").exists());
+    assert!(f.marker().exists());
     let output = f.registry.read_output(&job.id, Some(0)).unwrap();
     assert!(output.text.contains("job-output"));
     let scratch = output
@@ -185,7 +190,7 @@ fn native_job_frozen_start_cannot_move_to_a_different_session() {
             .invoke(&args, &Project::new("."), &CancelToken::new())
             .is_err()
     );
-    assert!(!f.root.join("executed").exists());
+    assert!(!f.marker().exists());
     assert!(f.registry.list().is_empty());
 }
 #[test]
@@ -201,7 +206,7 @@ fn native_job_registration_failure_prevents_execution() {
             .invoke(&f.args(0, 0, 0), &Project::new("."), &CancelToken::new())
             .is_err()
     );
-    assert!(!f.root.join("executed").exists());
+    assert!(!f.marker().exists());
     assert!(f.registry.list().is_empty());
     f.sessions.inject_persistence_faults(Default::default());
 }
@@ -316,7 +321,7 @@ fn native_job_error_after_spawn_never_claims_not_executed_or_replays() {
     let job = f.start(f.args(1000, 0, 0));
     assert_eq!(job.state, "interrupted");
     assert_eq!(job.observation.unwrap()["execution_outcome"], "unknown");
-    assert!(f.root.join("executed").exists());
+    assert!(f.marker().exists());
     assert!(!f.registry.has_active());
 }
 #[test]
@@ -333,7 +338,7 @@ fn native_job_restart_records_unknown_without_replaying_and_g7_is_scoped() {
     let original = entry.view().clone();
     drop(entry);
     f.registry.recover().unwrap();
-    assert!(!f.root.join("executed").exists());
+    assert!(!f.marker().exists());
     let rows = f.registry.list();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, "interrupted");
@@ -470,7 +475,7 @@ fn native_job_model_tool_model_denial_is_zero_execution_and_zero_registration() 
         );
         if denied {
             assert!(f.registry.list().is_empty());
-            assert!(!f.root.join("executed").exists());
+            assert!(!f.marker().exists());
         } else {
             let job = f.registry.list().into_iter().next().unwrap();
             assert_eq!(f.settled(&job.id).state, "completed");

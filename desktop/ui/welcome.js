@@ -9,8 +9,8 @@ async function refresh() {
   try {
     const info = await invoke('desktop_info');
     document.getElementById('version').textContent = `CLAT ${info.desktopVersion}`;
-    CLATI18n.bind(status,'textContent',()=>actionError || info.backendError || info.connectionError || CLATI18n.t('desktop.welcome'));
-  } catch (error) { status.textContent = actionError || String(error); }
+    CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || info.backendError || CLATI18n.present(info.connectionPresentation,info.connectionError) || CLATI18n.t('desktop.welcome'));
+  } catch (error) { CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(error,String(error))); }
   finally { refreshing = false; }
 }
 document.getElementById('open').onclick = async event => {
@@ -18,7 +18,7 @@ document.getElementById('open').onclick = async event => {
   event.currentTarget.disabled = true;
   CLATI18n.bind(status,'textContent',()=>CLATI18n.t('desktop.choose_folder'));
   try { await invoke('desktop_open_project'); }
-  catch (error) { actionError = String(error); }
+  catch (error) { actionError = error?.key ? error : String(error); }
   finally {
     opening = false; document.getElementById('open').disabled = false;
     await refresh();

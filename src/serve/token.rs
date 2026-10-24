@@ -18,19 +18,22 @@ pub(crate) struct ResolvedToken {
 }
 
 pub(crate) fn validate(value: &str) -> Result<(), String> {
+    validate_presented(value).map_err(|e| e.raw)
+}
+pub(crate) fn validate_presented(value: &str) -> Result<(), crate::i18n::PresentedText> {
     if value.is_empty() {
-        return Err("invalid token: empty".into());
+        return Err(crate::i18n::UiMessage::new("serve.token_empty").into());
     }
     if value.len() as u64 > MAX_TOKEN_BYTES {
-        return Err(format!(
-            "invalid token: longer than {MAX_TOKEN_BYTES} bytes"
-        ));
+        return Err(crate::i18n::UiMessage::new("serve.token_long")
+            .arg("limit", MAX_TOKEN_BYTES)
+            .into());
     }
     if !value
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
     {
-        return Err("invalid token: use only ASCII letters, digits, '-', '.', '_' or '~'".into());
+        return Err(crate::i18n::UiMessage::new("serve.token_ascii").into());
     }
     Ok(())
 }

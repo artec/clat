@@ -109,6 +109,11 @@ pub fn parse_serve_args<I>(args: I) -> Result<ServeArgs, String>
 where
     I: IntoIterator<Item = String>,
 {
+    parse_serve_args_presented(args).map_err(|e| e.raw)
+}
+pub fn parse_serve_args_presented<I: IntoIterator<Item = String>>(
+    args: I,
+) -> Result<ServeArgs, crate::i18n::PresentedText> {
     let mut parsed = ServeArgs::default();
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
@@ -118,43 +123,58 @@ where
             "--port" => {
                 let value = iter
                     .next()
-                    .ok_or_else(|| "--port requires a number".to_string())?;
-                parsed.port = value
-                    .parse()
-                    .map_err(|_| format!("invalid port: {value}"))?;
+                    .ok_or_else(|| crate::i18n::UiMessage::new("serve.port_required"))?;
+                parsed.port = value.parse().map_err(|_| {
+                    crate::i18n::UiMessage::new("serve.invalid_port").arg("value", value)
+                })?;
             }
             "--token" => {
                 let value = iter
                     .next()
-                    .ok_or_else(|| "--token requires a value".to_string())?;
-                token::validate(&value)?;
+                    .ok_or_else(|| crate::i18n::UiMessage::new("serve.token_required"))?;
+                token::validate_presented(&value)?;
                 parsed.token = Some(value);
             }
             "--rotate-token" => parsed.rotate_token = true,
             "--im" => {
                 let value = iter
                     .next()
-                    .ok_or_else(|| "--im requires a backend (wechat)".to_string())?;
+                    .ok_or_else(|| crate::i18n::UiMessage::new("serve.im_required"))?;
                 let backend = match value.as_str() {
                     "wechat" => ImBackend::Wechat,
-                    _ => return Err(format!("unsupported IM backend: {value}")),
+                    _ => {
+                        return Err(crate::i18n::UiMessage::new("serve.invalid_im")
+                            .arg("value", value)
+                            .into());
+                    }
                 };
                 if parsed.im.replace(backend).is_some() {
-                    return Err("--im may only be specified once".into());
+                    return Err(crate::i18n::UiMessage::new("serve.duplicate_im").into());
                 }
             }
-            "--" => return Err("serve takes no positional arguments".into()),
-            other => return Err(format!("unknown option: {other}")),
+            "--" => return Err(crate::i18n::UiMessage::new("serve.no_positionals").into()),
+            other => {
+                return Err(crate::i18n::UiMessage::new("serve.unknown_option")
+                    .arg("value", other)
+                    .into());
+            }
         }
     }
     if parsed.rotate_token && parsed.token.is_some() {
-        return Err("--rotate-token cannot be used with --token".into());
+        return Err(crate::i18n::UiMessage::new("serve.token_conflict").into());
     }
     Ok(parsed)
 }
 
 /// 生产入口（main.rs 挂 `Some("serve")`）。阻塞直到关停旗置位。
 pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i32 {
+    run_serve_with_locale(args, shutdown, crate::i18n::LocaleContext::default())
+}
+pub fn run_serve_with_locale(
+    args: ServeArgs,
+    shutdown: Arc<AtomicBool>,
+    locale: crate::i18n::LocaleContext,
+) -> i32 {
     // NETISO-1（R1-F2）：严格测试专用环境武装入口——`CLAT_NETISO_ALLOWLIST`
     // 未设置时零效果，普通用户契约不变；设置时本 serve 进程的所有
     // provider HTTP 出站被限制在授权字面环回监听器内（含重定向/代理）。
@@ -163,7 +183,13 @@ pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i3
     let project = match Project::current() {
         Ok(project) => project,
         Err(error) => {
-            eprintln!("clat: could not determine current project: {error}");
+            eprintln!(
+                "clat: {}",
+                locale.render(
+                    &crate::i18n::UiMessage::new("serve.current_project_failed")
+                        .arg("error", error.to_string())
+                )
+            );
             return 1;
         }
     };
@@ -177,49 +203,70 @@ pub fn run_serve_with_shutdown(args: ServeArgs, shutdown: Arc<AtomicBool>) -> i3
     ) {
         Ok(handle) => handle,
         Err(error) => {
-            eprintln!("clat: {error}");
+            eprintln!("clat: {}", error.render(locale));
             return 1;
         }
     };
     println!(
-        "clat serve listening on http://127.0.0.1:{}/",
-        handle.addr.port()
+        "{}",
+        locale.render(
+            &crate::i18n::UiMessage::new("serve.listening").arg("port", handle.addr.port())
+        )
     );
     crate::host_client::browser::open(
         &format!("http://127.0.0.1:{}/", handle.addr.port()),
         no_open,
     );
-    println!("Press Ctrl-C to stop.");
-    serve_join_exit(handle)
+    println!("{}", locale.text("serve.stop_hint"));
+    serve_join_exit_with_locale(handle, locale)
 }
 
 /// FIX-3/CA-05：join + 退出码映射（生产与测试共用同一接线——映射
 /// 不在生产入口被旁路）。
+#[cfg(test)]
 pub(crate) fn serve_join_exit(handle: ServeHandle) -> i32 {
-    serve_exit_code(&handle.join())
+    serve_join_exit_with_locale(handle, crate::i18n::LocaleContext::default())
+}
+fn serve_join_exit_with_locale(handle: ServeHandle, locale: crate::i18n::LocaleContext) -> i32 {
+    serve_exit_code_with_locale(&handle.join(), locale)
 }
 
 /// INV-F3-3 退出码语义：**显式 shutdown + accept 线程正常结束 +
 /// Application close 成功**三者同时成立才返回 0；accept 线程意外退出/
 /// panic、close Err、close_outcome None（归一失败降级）任一发生 →
 /// 非零，根因写 stderr。
+#[cfg(test)]
 pub(crate) fn serve_exit_code(exit: &ServeExit) -> i32 {
+    serve_exit_code_with_locale(exit, crate::i18n::LocaleContext::default())
+}
+fn serve_exit_code_with_locale(exit: &ServeExit, locale: crate::i18n::LocaleContext) -> i32 {
     let mut clean = true;
     match &exit.accept {
         Ok(()) => {}
         Err(reason) => {
-            eprintln!("clat: serve: accept loop ended unexpectedly: {reason}");
+            eprintln!(
+                "clat: serve: {}",
+                locale.render(
+                    &crate::i18n::UiMessage::new("serve.accept_failed")
+                        .arg("error", reason.as_str())
+                )
+            );
             clean = false;
         }
     }
     match &exit.close {
         Some(Ok(())) => {}
         Some(Err(error)) => {
-            eprintln!("clat: serve: application close failed: {error}");
+            eprintln!(
+                "clat: serve: {}",
+                locale.render(
+                    &crate::i18n::UiMessage::new("serve.close_failed").arg("error", error.as_str())
+                )
+            );
             clean = false;
         }
         None => {
-            eprintln!("clat: serve: could not close application cleanly");
+            eprintln!("clat: serve: {}", locale.text("serve.close_incomplete"));
             clean = false;
         }
     }
@@ -305,7 +352,7 @@ pub(crate) fn serve_with_with_queue<F>(
     into_trusted: F,
     shutdown: Arc<AtomicBool>,
     queue_frames: usize,
-) -> Result<ServeHandle, String>
+) -> Result<ServeHandle, crate::i18n::PresentedText>
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
 {
@@ -382,7 +429,7 @@ fn mount_serve_project<F>(
     storage_root: Option<PathBuf>,
     trust: bool,
     into_trusted: F,
-) -> Result<(TrustedProjectApplication, PathBuf), String>
+) -> Result<(TrustedProjectApplication, PathBuf), crate::i18n::PresentedText>
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
 {
@@ -390,22 +437,22 @@ where
         Some(root) => BootstrapApplication::open(project.clone(), root),
         None => BootstrapApplication::open_default(project.clone()),
     };
-    let bootstrap = bootstrap.map_err(|error| error.to_string())?;
+    let bootstrap =
+        bootstrap.map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?;
     let storage_root = bootstrap.storage_root().to_path_buf();
     let trusted = match bootstrap.is_trusted() {
-        Ok(true) => into_trusted(bootstrap).map_err(|error| error.to_string())?,
+        Ok(true) => into_trusted(bootstrap)
+            .map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?,
         Ok(false) if trust => bootstrap
             .with_permission_modes()
             .authorize_and_mount(crate::ProjectAuthorization::grant())
-            .map_err(|error| error.to_string())?,
+            .map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?,
         Ok(false) => {
             // serve 是常驻服务，不做信任授权交互——信任动作应发生在
             // 发起它的终端上下文（§9）。
-            return Err("project is not trusted — trust it once from a terminal \
-                 (`clat exec --trust` or open `clat` here), then start serve"
-                .into());
+            return Err(crate::i18n::UiMessage::new("serve.project_untrusted").into());
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(error.presentation().into()),
     };
 
     Ok((trusted, storage_root))

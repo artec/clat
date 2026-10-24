@@ -10,7 +10,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 pub struct Desktop {
     pub backend: Option<Arc<PackagedBackend>>,
     pub backend_error: Option<String>,
-    pub connection_error: Mutex<Option<String>>,
+    pub connection_error: Mutex<Option<clat_core::client_ports::presentation::PresentedText>>,
     // Publish navigation and Host state in the same order as lifecycle operations.
     pub connection: Mutex<()>,
     pub host: Mutex<Option<HostClient>>,

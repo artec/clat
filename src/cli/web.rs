@@ -21,7 +21,7 @@ pub(super) fn run(args: impl Iterator<Item = String>, locale: LocaleContext) -> 
     }
 }
 fn execute(args: Vec<String>, locale: LocaleContext) -> Result<String, String> {
-    let client = HostClient::connect_local(2691)?;
+    let client = HostClient::connect_local_presented(2691).map_err(|e| e.render(locale))?;
     let view = client
         .call_with_receipt("web.settings.get", &json!({}))
         .map_err(|e| locale.render(&e.presentation_or_fallback()))?;

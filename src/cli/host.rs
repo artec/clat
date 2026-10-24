@@ -4,7 +4,7 @@ use std::process::ExitCode;
 pub(super) fn run_default_tui(locale: LocaleContext) -> ExitCode {
     use clat::client_ports::host::HostClient;
     use std::io::{IsTerminal, Write};
-    let run = || -> Result<(), String> {
+    let run = || -> Result<(), clat::client_ports::presentation::PresentedText> {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return Err(locale.text("cli.terminal_required").into());
         }
@@ -29,14 +29,14 @@ pub(super) fn run_default_tui(locale: LocaleContext) -> ExitCode {
                 return Ok(());
             }
         }
-        let client = HostClient::spawn_or_attach(&project, trust)?;
+        let client = HostClient::spawn_or_attach_with_locale(&project, trust, locale)?;
         clat::tui::run_host_client_with_locale(project, client, locale)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string().into())
     };
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("clat: {error}");
+            eprintln!("clat: {}", error.render(locale));
             ExitCode::FAILURE
         }
     }
@@ -49,7 +49,7 @@ pub(super) fn run_host_command(
     let mut args = args.peekable();
     if args.peek().is_some_and(|arg| arg == "start") {
         args.next();
-        return match clat::client_ports::host::HostClient::start_command_presented(args) {
+        return match clat::client_ports::host::HostClient::start_command_with_locale(args, locale) {
             Ok(message) => {
                 println!("{}", locale.render(&message));
                 ExitCode::SUCCESS

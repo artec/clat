@@ -3924,13 +3924,36 @@ fn production_serve_entry_uses_the_checked_join_exit_seam() {
         .expect("production entry boundary");
     let body = &tail[..end];
     assert!(
-        body.contains("serve_join_exit(handle)"),
+        body.contains("serve_join_exit_with_locale(handle, locale)"),
         "production entry must route the real handle through the checked exit seam"
     );
     assert!(
         !body.contains("handle.join();"),
         "production entry must not discard the join outcome"
     );
+}
+
+#[test]
+fn serve_argument_errors_keep_three_language_recovery_and_token_privacy() {
+    for (args, key) in [
+        (vec!["--port"], "serve.port_required"),
+        (vec!["--port", "bad-port"], "serve.invalid_port"),
+        (vec!["--token", ""], "serve.token_empty"),
+        (vec!["--token", "secret token value"], "serve.token_ascii"),
+        (vec!["--im", "missing"], "serve.invalid_im"),
+    ] {
+        let error =
+            super::parse_serve_args_presented(args.into_iter().map(str::to_owned)).unwrap_err();
+        assert_eq!(error.message().key, key);
+        for locale in [
+            crate::i18n::Locale::Simplified,
+            crate::i18n::Locale::Traditional,
+        ] {
+            let text = error.render(crate::i18n::LocaleContext::new(locale));
+            assert_ne!(text, error.raw);
+            assert!(!text.contains("secret token value"));
+        }
+    }
 }
 
 #[test]

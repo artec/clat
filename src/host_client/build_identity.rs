@@ -30,7 +30,7 @@ pub(super) fn verify_advertised(
 ) -> Result<(), super::discovery::DiscoveryFailure> {
     verify_for(
         description,
-        current().map_err(super::discovery::DiscoveryFailure::Incompatible)?,
+        current().map_err(|e| super::discovery::DiscoveryFailure::Incompatible(e.into()))?,
         official_release(),
     )
 }
@@ -57,7 +57,7 @@ pub(super) fn verify_for(
                 .is_none_or(|v| semver::Version::parse(v).is_err())
         {
             return Err(super::discovery::DiscoveryFailure::Incompatible(
-                "incompatible native host capabilities".into(),
+                crate::i18n::UiMessage::new("host.incompatible_capabilities").into(),
             ));
         }
         return Ok(());
@@ -68,7 +68,7 @@ pub(super) fn verify_for(
     };
     let advertised = advertised.as_str().ok_or_else(|| {
         super::discovery::DiscoveryFailure::Incompatible(
-            "host build fingerprint is invalid; stop that host explicitly".into(),
+            crate::i18n::UiMessage::new("host.invalid_fingerprint").into(),
         )
     })?;
     if advertised == fingerprint {
@@ -77,12 +77,12 @@ pub(super) fn verify_for(
 
     let host_version = description["product_version"].as_str().ok_or_else(|| {
         super::discovery::DiscoveryFailure::Incompatible(
-            "a different CLAT build is hosting this storage root but did not advertise a product version; run `clat host stop` explicitly, then retry".into(),
+            crate::i18n::UiMessage::new("host.missing_product_version").into(),
         )
     })?;
     let order = compare_product_versions(product_version(), host_version).map_err(|_| {
         super::discovery::DiscoveryFailure::Incompatible(
-            "host product version is invalid; automatic host takeover is disabled".into(),
+            crate::i18n::UiMessage::new("host.invalid_product_version").into(),
         )
     })?;
     match order {
@@ -90,11 +90,13 @@ pub(super) fn verify_for(
             host_version: host_version.to_owned(),
         }),
         std::cmp::Ordering::Equal => Err(super::discovery::DiscoveryFailure::Incompatible(
-            "a different build of the same CLAT version is already hosting this storage root; run `clat host stop` explicitly, then retry".into(),
+            crate::i18n::UiMessage::new("host.same_version_different_build").into(),
         )),
-        std::cmp::Ordering::Less => Err(super::discovery::DiscoveryFailure::Incompatible(format!(
-            "a newer CLAT {host_version} host is already running; upgrade this client instead of replacing that host"
-        ))),
+        std::cmp::Ordering::Less => Err(super::discovery::DiscoveryFailure::Incompatible(
+            crate::i18n::UiMessage::new("host.newer_host")
+                .arg("version", host_version)
+                .into(),
+        )),
     }
 }
 
@@ -133,6 +135,34 @@ pub(super) fn fingerprint_for(executable: &std::path::Path) -> Result<String, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_build_rejection_keeps_localizable_reason_and_explicit_stop() {
+        let error = verify_for(
+            &serde_json::json!({
+                "build_fingerprint":"different", "product_version":product_version()
+            }),
+            "client",
+            false,
+        )
+        .err()
+        .unwrap();
+        let super::super::discovery::DiscoveryFailure::Incompatible(reason) = error else {
+            panic!("same-version mismatch must remain incompatible");
+        };
+        for (locale, expected) in [
+            (crate::i18n::Locale::English, "same CLAT version"),
+            (crate::i18n::Locale::Simplified, "同一版本"),
+            (crate::i18n::Locale::Traditional, "相同版本"),
+        ] {
+            let text = reason.render(crate::i18n::LocaleContext::new(locale));
+            assert!(text.contains(expected), "{text}");
+            assert!(
+                text.contains("clat host stop"),
+                "recovery command must stay literal"
+            );
+        }
+    }
 
     #[test]
     fn process_identity_is_cached_and_path_independent() {

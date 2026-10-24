@@ -16,6 +16,31 @@ struct Fixture {
     stop: Arc<AtomicBool>,
     done: mpsc::Receiver<()>,
 }
+
+#[test]
+fn host_reconcile_preserves_build_error_presentation_without_takeover() {
+    let description = json!({"build_kind":"development", "build_fingerprint":"other",
+        "product_version":super::super::build_identity::product_version()});
+    let mut fixture = Fixture::new(description, None);
+    fixture.backend.policy = BuildMatchPolicy::Backend {
+        fingerprint: "client".into(),
+        official: false,
+    };
+    let activations = std::cell::Cell::new(0);
+    let error = fixture.observe(true, &activations).err().unwrap();
+    assert_eq!(error.message().key, "host.same_version_different_build");
+    for locale in [
+        crate::i18n::Locale::Simplified,
+        crate::i18n::Locale::Traditional,
+    ] {
+        assert_ne!(
+            error.render(crate::i18n::LocaleContext::new(locale)),
+            error.raw
+        );
+    }
+    assert_eq!(activations.get(), 0);
+    assert_eq!(*fixture.calls.lock().unwrap(), vec!["host.describe"]);
+}
 impl Fixture {
     fn new(description: Value, error: Option<&'static str>) -> Self {
         let (root, _) = crate::test_support::roots("host-reconcile");
@@ -76,7 +101,7 @@ impl Fixture {
         &self,
         trusted: bool,
         activated: &std::cell::Cell<usize>,
-    ) -> Result<BackendConnection, String> {
+    ) -> Result<BackendConnection, crate::i18n::PresentedText> {
         self.backend.reconcile_at(
             &self.root,
             None,

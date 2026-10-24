@@ -140,3 +140,14 @@ mod presentation_tests {
         assert!(!error.committed());
     }
 }
+
+impl From<crate::i18n::UiMessage> for HostCallError {
+    fn from(message: crate::i18n::UiMessage) -> Self {
+        Self {
+            message: message.english(),
+            code: None,
+            presentation: Some(Box::new(message)),
+            receipt: None,
+        }
+    }
+}

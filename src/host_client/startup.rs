@@ -14,6 +14,12 @@ impl HostClient {
     pub fn start_command_presented(
         args: impl Iterator<Item = String>,
     ) -> Result<crate::i18n::UiMessage, crate::i18n::PresentedText> {
+        Self::start_command_with_locale(args, crate::i18n::LocaleContext::default())
+    }
+    pub fn start_command_with_locale(
+        args: impl Iterator<Item = String>,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<crate::i18n::UiMessage, crate::i18n::PresentedText> {
         let args: Vec<_> = args.collect();
         let mut trust = false;
         let mut no_open = false;
@@ -25,7 +31,7 @@ impl HostClient {
             }
         }
         let project = Project::current().map_err(|error| error.to_string())?;
-        let client = Self::start_or_attach(&project, trust, !no_open)?;
+        let client = Self::start_or_attach(&project, trust, !no_open, locale)?;
         Ok(crate::i18n::UiMessage::new("cli.host_started")
             .arg("instance", client.instance.clone())
             .arg("url", client.browser_url()))
@@ -48,17 +54,36 @@ impl HostClient {
     }
 
     pub fn spawn_or_attach(project: &Project, trust: bool) -> Result<Self, String> {
-        Self::start_or_attach(project, trust, false)
+        Self::spawn_or_attach_presented(project, trust).map_err(|e| e.raw)
     }
 
-    fn start_or_attach(project: &Project, trust: bool, open: bool) -> Result<Self, String> {
+    pub fn spawn_or_attach_presented(
+        project: &Project,
+        trust: bool,
+    ) -> Result<Self, crate::i18n::PresentedText> {
+        Self::spawn_or_attach_with_locale(project, trust, crate::i18n::LocaleContext::default())
+    }
+    pub fn spawn_or_attach_with_locale(
+        project: &Project,
+        trust: bool,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<Self, crate::i18n::PresentedText> {
+        Self::start_or_attach(project, trust, false, locale)
+    }
+    fn start_or_attach(
+        project: &Project,
+        trust: bool,
+        open: bool,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<Self, crate::i18n::PresentedText> {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        Self::start_with_backend(
+        Self::start_with_backend_locale(
             project,
             trust,
             open,
             &executable,
             super::BuildMatchPolicy::RequireIfAdvertised,
+            locale,
         )
     }
 
@@ -68,9 +93,26 @@ impl HostClient {
         open: bool,
         executable: &Path,
         policy: super::BuildMatchPolicy,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::i18n::PresentedText> {
+        Self::start_with_backend_locale(
+            project,
+            trust,
+            open,
+            executable,
+            policy,
+            crate::i18n::LocaleContext::default(),
+        )
+    }
+    fn start_with_backend_locale(
+        project: &Project,
+        trust: bool,
+        open: bool,
+        executable: &Path,
+        policy: super::BuildMatchPolicy,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<Self, crate::i18n::PresentedText> {
         if Self::project_needs_trust(project)? && !trust {
-            return Err("project is not trusted; explicit consent is required".into());
+            return Err(crate::i18n::UiMessage::new("host.project_untrusted").into());
         }
         let root = crate::control_storage::sentinel::default_storage_root()?;
         super::discovery::validate_existing(&root)?;
@@ -81,8 +123,11 @@ impl HostClient {
         loop {
             let host_missing = match Self::discover_startup_with(&root, policy.clone()) {
                 Ok(super::discovery::StartupDiscovery::Compatible(client)) => {
-                    if !attempted && takeover_from.is_none() && upgrade_idle_compatible(&client)? {
-                        takeover_from = Some("compatible host".into());
+                    if !attempted
+                        && takeover_from.is_none()
+                        && let Some(version) = upgrade_idle_compatible(&client)?
+                    {
+                        takeover_from = Some(version);
                         continue;
                     }
                     reap_host_child(child.take());
@@ -94,7 +139,7 @@ impl HostClient {
                 }
                 Ok(super::discovery::StartupDiscovery::Upgradeable { host_version }) => {
                     if takeover_from.is_none() {
-                        request_upgrade_takeover(&root, &host_version)?;
+                        request_upgrade_takeover(&root, &host_version, locale)?;
                         takeover_from = Some(host_version);
                     }
                     false
@@ -128,25 +173,19 @@ impl HostClient {
             }
             if Instant::now() >= deadline {
                 reap_host_child(child);
-                if let Some(version) = takeover_from {
-                    return Err(format!(
-                        "CLAT {version} host accepted upgrade takeover but did not release the storage root; inspect `clat host status` before retrying"
-                    ));
-                }
-                if !attempted {
-                    return Err("storage root is busy with another writer; stop that writer explicitly before starting a host".into());
-                }
-                return Err("host startup did not become ready; no operation retried. Check `clat host status` or run `clat serve` explicitly".into());
+                return Err(startup_timeout(takeover_from.as_deref(), attempted));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
 
-fn upgrade_idle_compatible(client: &HostClient) -> Result<bool, String> {
+fn upgrade_idle_compatible(
+    client: &HostClient,
+) -> Result<Option<String>, crate::i18n::PresentedText> {
     let description = client.description()?;
     if description["build_kind"] != "official" {
-        return Ok(false);
+        return Ok(None);
     }
     let version = description["product_version"]
         .as_str()
@@ -158,27 +197,39 @@ fn upgrade_idle_compatible(client: &HostClient) -> Result<bool, String> {
     .ok()
         != Some(std::cmp::Ordering::Greater)
     {
-        return Ok(false);
+        return Ok(None);
     }
     if client.runtime_status()?["ready"] != true {
-        return Ok(false);
+        return Ok(None);
     }
     // The readiness read is advisory. The host rechecks atomically; losing a
     // race leaves the current host running and the caller attaches normally.
-    try_upgrade_takeover(client).map_err(|e| e.to_string())
+    try_upgrade_takeover(client)
+        .map(|taken| taken.then(|| version.to_owned()))
+        .map_err(|e| e.presentation_or_fallback().into())
 }
 
-fn request_upgrade_takeover(root: &Path, host_version: &str) -> Result<(), String> {
+fn request_upgrade_takeover(
+    root: &Path,
+    host_version: &str,
+    locale: crate::i18n::LocaleContext,
+) -> Result<(), crate::i18n::PresentedText> {
     let client = HostClient::discover_for_management(root)?;
-    if !try_upgrade_takeover(&client).map_err(|e| e.to_string())? {
-        return Err(format!(
-            "CLAT {host_version} host has active work; wait until idle before upgrading"
-        ));
+    if !try_upgrade_takeover(&client)
+        .map_err(|e| crate::i18n::PresentedText::from(e.presentation_or_fallback()))?
+    {
+        return Err(crate::i18n::UiMessage::new("host.upgrade_busy")
+            .arg("version", host_version)
+            .into());
     }
     eprintln!(
-        "clat: upgrading idle background host CLAT {host_version} → CLAT {}; PWA remains at http://127.0.0.1:{}",
-        super::build_identity::product_version(),
-        super::DEFAULT_HOST_PORT
+        "clat: {}",
+        locale.render(
+            &crate::i18n::UiMessage::new("host.upgrading")
+                .arg("from", host_version)
+                .arg("to", super::build_identity::product_version())
+                .arg("port", super::DEFAULT_HOST_PORT)
+        )
     );
     Ok(())
 }
@@ -193,7 +244,7 @@ pub(super) fn try_upgrade_takeover(client: &HostClient) -> Result<bool, super::H
         }),
     ) {
         Ok(value) if value["stopping"] == true => Ok(true),
-        Ok(_) => Err("old host did not acknowledge upgrade takeover; no stop was retried".into()),
+        Ok(_) => Err(crate::i18n::UiMessage::new("host.takeover_unacknowledged").into()),
         Err(error) if error.code.as_deref() == Some("busy") => Ok(false),
         Err(error) => Err(error),
     }
@@ -214,17 +265,17 @@ fn child_exit_status(
     Ok(status)
 }
 
-fn ensure_background_port_available() -> Result<(), String> {
+fn ensure_background_port_available() -> Result<(), crate::i18n::PresentedText> {
     let port = super::DEFAULT_HOST_PORT;
     match std::net::TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
             drop(listener);
             Ok(())
         }
-        Err(error) => Err(format!(
-            "background host requires 127.0.0.1:{port}, but that port cannot be bound: {error}. \
-             Free port {port}, or run `clat serve --port <n>` explicitly for a custom port"
-        )),
+        Err(error) => Err(crate::i18n::UiMessage::new("host.port_unavailable")
+            .arg("port", port)
+            .arg("error", error.to_string())
+            .into()),
     }
 }
 
@@ -277,4 +328,55 @@ fn spawn_host(
     command
         .spawn()
         .map_err(|error| format!("cannot start host: {error}"))
+}
+
+fn startup_timeout(version: Option<&str>, attempted: bool) -> crate::i18n::PresentedText {
+    match version {
+        Some(version) => crate::i18n::UiMessage::new("host.takeover_timeout")
+            .arg("version", version)
+            .into(),
+        None => crate::i18n::UiMessage::new(if attempted {
+            "host.startup_timeout"
+        } else {
+            "host.writer_busy"
+        })
+        .into(),
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn host_startup_recovery_reasons_translate_without_changing_commands_or_diagnostics() {
+        for (version, attempted, key) in [
+            (None, false, "host.writer_busy"),
+            (None, true, "host.startup_timeout"),
+            (Some("9.8.7"), true, "host.takeover_timeout"),
+        ] {
+            let reason = startup_timeout(version, attempted);
+            assert_eq!(reason.message().key, key);
+            for locale in [
+                crate::i18n::Locale::Simplified,
+                crate::i18n::Locale::Traditional,
+            ] {
+                let rendered = reason.render(crate::i18n::LocaleContext::new(locale));
+                assert_ne!(rendered, reason.raw);
+                if version.is_some() {
+                    assert!(rendered.contains("9.8.7"));
+                }
+                if attempted {
+                    assert!(rendered.contains("clat host status"));
+                }
+            }
+        }
+        let diagnostic = "OS_ERROR_FIXTURE_42";
+        let message = crate::i18n::UiMessage::new("host.port_unavailable")
+            .arg("port", 2691)
+            .arg("error", diagnostic);
+        let text =
+            crate::i18n::LocaleContext::new(crate::i18n::Locale::Traditional).render(&message);
+        assert!(text.contains(diagnostic));
+        assert!(text.contains("clat serve --port <n>"));
+    }
 }

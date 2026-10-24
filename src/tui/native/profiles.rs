@@ -58,7 +58,7 @@ impl App {
                     "tui.profile_key_unset"
                 }));
             }
-            Err(error) => self.flash_status(error),
+            Err(error) => self.flash_message(error.message()),
         }
     }
 

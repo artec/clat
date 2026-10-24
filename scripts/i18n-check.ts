@@ -61,6 +61,7 @@ export function validateManifest(value: unknown): asserts value is {default:stri
   if(ids.size!==3)throw new Error('Missing supported language');
 }
 export function validateReferences(source:string,known:Set<string>):void {
+  if (/\bnew\s+Error\(\s*CLATI18n\.(?:msg|t|present)\(/.test(source)) throw new Error('Translated errors freeze their language; use CLATI18n.error instead');
   if (/\bel\([^,\n]+,\s*CLATI18n\.(?:msg|t)\(/.test(source)) throw new Error('CSS classes must be language independent');
   const patterns=[/UiMessage::new\(\s*["']([^"']+)["']/g, /(?:\.text|CLATI18n\.(?:msg|t))\(\s*["']((?:common|cli|tui|web|desktop|update|command|installer|context)\.[^"']+)["']/g, /data-i18n(?:-(?:title|placeholder|aria-label|alt))?=["']([^"']+)["']/g];
   for(const pattern of patterns)for(const match of source.matchAll(pattern)){

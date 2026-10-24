@@ -80,6 +80,27 @@ alongside the existing English fields. Unknown keys use the supplied English fal
 external text remains original. Do not recognize translations by comparing
 English error strings.
 
+Native Host build, version and protocol incompatibility reasons retain their
+`PresentedText` descriptor through discovery, startup and desktop reconciliation.
+Terminal entry points render it with their explicit locale. Desktop keeps both
+the English connection diagnostic and its presentation descriptor, so an existing
+welcome/settings error changes language without reconnecting or restarting the
+Host. The legacy string-returning client APIs remain English compatibility
+wrappers; new UI callers use the corresponding `*_presented` entry points.
+
+Host startup recovery and `clat serve` parameter, listening and shutdown messages
+also use the explicit terminal locale. The server's English string APIs remain
+compatibility wrappers. Project-trust errors retain presentation metadata through
+the Application and workspace RPC boundary; error codes and trust decisions do
+not depend on language.
+
+Use `CLATI18n.error(message)` when throwing a localizable browser error. Ordinary
+`new Error(message)` converts the message to a string immediately and loses live
+switching. Keep uploaded-image error descriptors until rendering too. The catalog
+checker rejects direct `new Error(CLATI18n.msg/t/present(...))` calls; this focused
+guard does not detect every alias or prove complete UI coverage. External error
+text, protocol-validation details and developer console diagnostics stay original.
+
 Web and desktop use the same small `web/i18n.js` runtime. Bind text and
 attributes on existing nodes; do not rebuild a form when the language changes.
 Use `CLATI18n.msg` for retained messages and `CLATI18n.bind` for values computed

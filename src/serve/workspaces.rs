@@ -299,16 +299,18 @@ impl WorkspaceHost {
             _ => return Err(RpcError::bad_request("trust must be a boolean")),
         };
         if !root.is_dir() {
-            return Err(RpcError::bad_request("project must be a directory"));
+            let message = crate::i18n::UiMessage::new("host.project_unavailable");
+            return Err(
+                RpcError::bad_request("project must be a directory").with_presentation(message)
+            );
         }
         if !authorize
             && !projects
                 .application
                 .is_project_trusted(&Project::new(&root))
         {
-            return Err(RpcError::bad_request(
-                "project is not trusted; explicit consent is required",
-            ));
+            let message = crate::i18n::UiMessage::new("host.project_untrusted");
+            return Err(RpcError::bad_request(message.english()).with_presentation(message));
         }
         if projects.routes.len() >= MAX_MOUNTED_PROJECTS {
             self.reclaim_one(projects)?;

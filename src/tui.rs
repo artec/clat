@@ -150,7 +150,8 @@ pub fn run_host_mode_with_locale(
     trust: bool,
     locale: LocaleContext,
 ) -> io::Result<()> {
-    let client = crate::host::HostClient::connect_local(port).map_err(io::Error::other)?;
+    let client = crate::host::HostClient::connect_local_presented(port)
+        .map_err(|e| io::Error::other(e.render(locale)))?;
     let client = client
         .open_project(project.root(), trust)
         .map_err(io::Error::other)?;

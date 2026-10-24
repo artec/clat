@@ -47,15 +47,18 @@ pub fn save(
     app: &tauri::AppHandle,
     auto_check: Option<bool>,
     language: Option<String>,
-) -> Result<Value, String> {
+) -> Result<Value, UiMessage> {
     let state = app.state::<Desktop>();
     let mut selected = state
         .language
         .lock()
-        .map_err(|_| "language state unavailable")?;
+        .map_err(|_| UiMessage::new("desktop.language_state_unavailable"))?;
     let preference = language
         .as_deref()
-        .map(|s| LanguagePreference::parse(s).ok_or("unsupported language"))
+        .map(|s| {
+            LanguagePreference::parse(s)
+                .ok_or_else(|| UiMessage::new("desktop.unsupported_language"))
+        })
         .transpose()?;
     let mut patch = json!({});
     if let Some(value) = auto_check {
@@ -73,7 +76,7 @@ pub fn save(
         state
             .updates
             .lock()
-            .map_err(|_| "update state unavailable")?
+            .map_err(|_| UiMessage::new("desktop.update_state_unavailable"))?
             .auto_check = value;
     }
     #[cfg(target_os = "macos")]

@@ -1,5 +1,13 @@
 # Development verification
 
+Localization error-path regressions use `scripts/gates.sh host_client::
+model_editor::remote serve::tests::`, `bun test scripts/i18n-check.test.ts`, and
+the `i18n.spec.js` / desktop shell browser tests. These cover Host build/trust
+rejections, startup and serve argument recovery, hidden profile fields, failed
+image staging and local validation errors across live language changes. The
+catalog checker guards direct construction of ordinary JavaScript Errors from
+translated messages; aliases and raw diagnostics still require review.
+
 Native Web contracts run with `scripts/gates.sh native_web`. They cover the
 model → permission → tool → model path with an injected transport,
 configuration sharing, zero-dispatch denials/cancellation, redirect boundaries,
@@ -1009,6 +1017,15 @@ those results. Keep the real shared Host and signing credentials out of local te
 History query coverage: `scripts/gates.sh history_query` exercises real committed compressed journals, English/Simplified/Traditional text, one-character queries, literal operators, external append/truncate/delete, derived-cache corruption, project and trust fences, current-step cutoff, read continuation and source-byte preservation. `web/e2e/tests/history-query.spec.js` uses isolated mock-model Hosts for search, event inspection, language switching, draft/selection preservation and text-only untrusted snippets. The replacement/fallback-title regression is expected to fail if old hidden content is restored to title indexing.
 
 Native background job checks: `scripts/gates.sh native_job target_writer`. They exercise actual isolated child processes, Run cancellation vs Job cancellation, original-conversation facts, UTF-8/redaction, independent output cursors, timeout/overflow, registration-before-spawn, post-spawn uncertainty, panic, recovery, terminal-save and cleanup retry, G7 scope, and shared writer release. `background-jobs.spec.js` uses an isolated Host and deterministic model to check approval, new-session/reconnect survival, language switching/draft preservation and explicit stop. These do not establish native Windows/Desktop behavior or paid-model effectiveness.
+
+When adding native tools or a projection, also run
+`scripts/gates.sh failed_run_spawn_does_not_mark rc_021:: runtime_status_observes_all_projects idle_scheduler_poll_never`.
+These pin the complete frozen tool order, foreign-owner Job isolation, checkpoint
+parity and actual Host readiness. Do not replace complete comparisons with subset
+checks. Sandboxed child-process fixtures must write their success markers inside
+their authorized project; a marker beside the project is an unauthorized write on
+Windows even if an unenforced local platform permits it. Empty scheduler polls
+must not publish an active Run while waiting for the Application lock.
 
 Automatic work: `scripts/gates.sh scheduler_ automatic_ target_run` covers frozen
 authorization/CAS, scoped drafts, budgets, unknown admission recovery, original

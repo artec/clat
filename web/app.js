@@ -506,14 +506,12 @@ async function rpc(method, params) {
     throw Object.assign(CLATI18n.error(CLATI18n.msg("web.malformed_rpc_reply", {}, "malformed rpc reply")), { code: 'internal' });
   }
   if (body.ok) return body.value;
-  const error = new Error((body.error && body.error.message) || CLATI18n.msg("web.request_failed", {}, "request failed"));
+  const raw = (body.error && body.error.message) || CLATI18n.msg("web.request_failed", {}, "request failed");
+  const presentation = body.error && body.error.presentation;
+  const error = CLATI18n.error(CLATI18n.view(() => CLATI18n.present(presentation,raw)));
   error.code = (body.error && body.error.code) || 'internal';
   error.authentication = body.error && body.error.authentication;
-  error.presentation = body.error && body.error.presentation;
-  if (error.presentation) {
-    const raw=error.message;
-    Object.defineProperty(error,'message',{get:()=>String(CLATI18n.present(error.presentation,raw))});
-  }
+  error.presentation = presentation;
   throw error;
 }
 
@@ -3499,9 +3497,9 @@ async function ensureDraftScope() {
   const clientDraftId = state.draft.clientDraftId;
   const scope = await rpc('draft.open', { clientDraftId });
   if (epoch !== state.draft.epoch || clientDraftId !== state.draft.clientDraftId) {
-    throw new Error('draft owner changed');
+    throw CLATI18n.error(CLATI18n.msg('web.draft_owner_changed'));
   }
-  if (!scope || typeof scope.draftScopeId !== 'string') throw new Error('invalid draft scope response');
+  if (!scope || typeof scope.draftScopeId !== 'string') throw CLATI18n.error(CLATI18n.msg('web.invalid_draft_scope'));
   state.draft.scope = scope;
   return scope;
 }
@@ -3525,7 +3523,7 @@ async function uploadDraftImage(image, epoch) {
     const body = await response.json().catch(() => null);
     if (!response.ok || !body || !body.ok || !body.value || typeof body.value.uploadId !== 'string') {
       const message = body && body.error && body.error.message ? body.error.message : CLATI18n.msg("web.dynamic_upload_rejected_http_value", {value1:(response.status)}, "upload rejected (HTTP {value1})");
-      throw new Error(message);
+      throw CLATI18n.error(CLATI18n.present(body?.error?.presentation,message));
     }
     if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
     image.uploadId = body.value.uploadId;
@@ -3533,7 +3531,7 @@ async function uploadDraftImage(image, epoch) {
   } catch (error) {
     if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
     image.status = 'failed';
-    image.error = error.message || CLATI18n.msg("web.upload_failed",{},"upload failed");
+    image.error = CLATI18n.view(() => error.message || CLATI18n.t("web.upload_failed"));
   }
   renderDraft();
 }

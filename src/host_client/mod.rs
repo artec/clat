@@ -95,9 +95,19 @@ impl HostClient {
         }
     }
     pub fn connect_local(port: u16) -> Result<Self, String> {
+        Self::connect_local_presented(port).map_err(|e| e.raw)
+    }
+    pub fn connect_local_presented(port: u16) -> Result<Self, crate::i18n::PresentedText> {
         let root = crate::control_storage::sentinel::default_storage_root()?;
         let token = credentials::read_token(&root)?;
-        Self::connect(port, token, &root)
+        Self::connect_checked(
+            port,
+            token,
+            &root,
+            None,
+            BuildMatchPolicy::RequireIfAdvertised,
+        )
+        .map_err(discovery::DiscoveryFailure::presented)
     }
     /// Read-only CLI queries must select an already mounted project, never the
     /// Host's bootstrap project or an implicitly trusted/newly mounted project.
@@ -106,7 +116,9 @@ impl HostClient {
         locale: crate::i18n::LocaleContext,
     ) -> Result<Self, String> {
         let project = crate::Project::current().map_err(|e| e.to_string())?;
-        Self::connect_local(port)?.for_mounted_project(project.root(), locale)
+        Self::connect_local_presented(port)
+            .map_err(|e| e.render(locale))?
+            .for_mounted_project(project.root(), locale)
     }
     pub fn for_mounted_project(
         &self,
@@ -210,7 +222,7 @@ impl HostClient {
             || description["journal_version"] != crate::session::compat::SESSION_FORMAT_VERSION
         {
             return Err(discovery::DiscoveryFailure::Incompatible(
-                "incompatible host protocol; stop the old host explicitly before upgrading".into(),
+                crate::i18n::UiMessage::new("host.incompatible_protocol").into(),
             ));
         }
         Ok(())

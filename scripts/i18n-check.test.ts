@@ -27,3 +27,9 @@ test('manifest cannot redirect catalog paths or assign one alias to two language
  const missing=structuredClone(valid);missing.languages.pop();
  for(const invalid of [conflict,path,missing])expect(()=>validateManifest(invalid)).toThrow();
 });
+test('translated errors must keep their live message instead of freezing Error.message',()=>{
+ const known=new Set(['web.request_failed']);
+ expect(()=>validateReferences(`throw new Error(CLATI18n.msg('web.request_failed'))`,known)).toThrow('freeze');
+ validateReferences(`throw CLATI18n.error(CLATI18n.msg('web.request_failed'))`,known);
+ validateReferences(`throw new Error('raw third-party diagnostic')`,known);
+});

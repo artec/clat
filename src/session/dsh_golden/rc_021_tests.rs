@@ -256,7 +256,11 @@ fn metadata_incremental_replay_and_every_checkpoint_cut_equal_full_fold() {
         );
         assert_eq!(full.surface_nodes().unwrap().len(), 1);
         assert!(full.state_snapshot("workingDirectory").is_none());
-        assert!(full.state_snapshot("jobs").is_none());
+        assert_eq!(
+            full.state_snapshot("jobs"),
+            Some(json!({"rows":{}})),
+            "the native Job projection exists, but must never adopt foreign DSH jobs"
+        );
     }
 }
 

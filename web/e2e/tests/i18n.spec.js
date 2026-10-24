@@ -2,6 +2,45 @@ const {test,expect}=require('@playwright/test');
 const {LIVE,hostInfo,openWorkbench}=require('../helpers/workbench');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 
+test('image upload rejection retains its presentation while a draft changes language',async({page})=>{
+  await openWorkbench(page,hostInfo('success'));
+  await page.route('**/api/drafts/*/images',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:{message:'original provider diagnostic',presentation:{key:'webtool.not_configured',args:{}}}})}));
+  await page.fill('#prompt','保留未发送的草稿');
+  await page.evaluate(async()=>{
+    const canvas=document.createElement('canvas');canvas.width=2;canvas.height=2;
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+    await addDraftFiles([new File([blob],'draft.png',{type:'image/png'})]);
+  });
+  await expect(page.locator('.attachment-chip.is-failed')).toHaveCount(1);
+  for(const locale of ['en','zh-Hans','zh-Hant']){
+    const expected=await page.evaluate(async locale=>{await CLATI18n.setLanguage(locale);return CLATI18n.t('webtool.not_configured');},locale);
+    await expect(page.locator('.attachment-state')).toContainText(expected);
+    await expect(page.locator('#prompt')).toHaveValue('保留未发送的草稿');
+  }
+});
+
+test('client validation and missing RPC reasons stay localizable without extra requests',async({page})=>{
+  await openWorkbench(page,hostInfo('success'));
+  let creates=0;
+  page.on('request',request=>{if(request.url().endsWith('/api/schedule.create'))creates++;});
+  await page.route('**/api/i18n.fixture',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({ok:false,error:{}})}));
+  await page.evaluate(async()=>{
+    const error=await rpc('i18n.fixture',{}).catch(error=>error);
+    document.body.append(el('p','i18n-error-fixture',()=>error.message));
+  });
+  await page.click('#schedules-open');
+  const dialog=page.locator('#schedules-dialog');
+  await dialog.locator('details').first().locator('summary').click();
+  await dialog.locator('[name=max_runs]').fill('-1');
+  await dialog.locator('.schedule-form').getByRole('button',{name:'Create draft',exact:true}).click();
+  for(const locale of ['en','zh-Hans','zh-Hant']){
+    const expected=await page.evaluate(async locale=>{await CLATI18n.setLanguage(locale);return [CLATI18n.t('schedule.invalid_budget'),CLATI18n.t('web.request_failed')];},locale);
+    await expect(dialog.locator('[role=status]')).toContainText(expected[0]);
+    await expect(page.locator('.i18n-error-fixture')).toContainText(expected[1]);
+  }
+  expect(creates).toBe(0);
+});
+
 test('a delayed project list cannot erase a newer trust failure or its translation binding',async({page})=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'clat-language-untrusted-'));
   let delayed;
@@ -17,7 +56,7 @@ test('a delayed project list cannot erase a newer trust failure or its translati
     await delayed.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,value:{workspaces:[]}})});delayed=null;
     await response;
     await page.evaluate(()=>CLATI18n.setLanguage('zh-Hant'));
-    await expect(page.locator('#workspace-error')).toContainText('not trusted');
+    await expect(page.locator('#workspace-error')).toContainText('尚未受信任');
   }finally{
     if(delayed)await delayed.abort();
     fs.rmSync(root,{recursive:true,force:true});

@@ -131,7 +131,9 @@ impl HostStorage {
             return Ok(());
         }
         if !authorize {
-            return Err(ApplicationError::new("project is not trusted"));
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "host.project_untrusted_short",
+            )));
         }
         self.control
             .add_trust(project.root())

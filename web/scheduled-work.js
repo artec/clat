@@ -62,7 +62,7 @@ function installScheduledWork() {
   select.onchange = visibility; visibility();
   function budget() {
     return Object.fromEntries(['max_runs', 'max_tokens', 'max_seconds', 'run_tokens', 'run_seconds', 'max_paid_web_calls', 'run_paid_web_calls'].map(key => {
-      const value = Number(fields[key].value); if (!Number.isSafeInteger(value) || value < 0) throw new Error(msg('invalid_budget')); return [key, value];
+      const value = Number(fields[key].value); if (!Number.isSafeInteger(value) || value < 0) throw CLATI18n.error(msg('invalid_budget')); return [key, value];
     }));
   }
   function timeRule() {

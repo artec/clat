@@ -90,6 +90,13 @@ impl PackagedBackend {
     }
 
     pub fn open_project(&self, path: &Path, trust: bool) -> Result<HostClient, String> {
+        self.open_project_presented(path, trust).map_err(|e| e.raw)
+    }
+    pub fn open_project_presented(
+        &self,
+        path: &Path,
+        trust: bool,
+    ) -> Result<HostClient, crate::i18n::PresentedText> {
         let _guard = self
             .coordination
             .lock()
@@ -106,9 +113,9 @@ impl PackagedBackend {
         &self,
         path: &Path,
         trust: bool,
-    ) -> Result<HostClient, String> {
+    ) -> Result<HostClient, crate::i18n::PresentedText> {
         if !path.is_dir() {
-            return Err("project directory is unavailable".into());
+            return Err(crate::i18n::UiMessage::new("host.project_unavailable").into());
         }
         let project = crate::Project::new(path.canonicalize().map_err(|e| e.to_string())?);
         HostClient::start_with_backend(
@@ -121,12 +128,16 @@ impl PackagedBackend {
     }
 
     pub fn project_needs_trust(path: &Path) -> Result<bool, String> {
+        Self::project_needs_trust_presented(path).map_err(|e| e.raw)
+    }
+    pub fn project_needs_trust_presented(path: &Path) -> Result<bool, crate::i18n::PresentedText> {
         if !path.is_dir() {
-            return Err("project directory is unavailable".into());
+            return Err(crate::i18n::UiMessage::new("host.project_unavailable").into());
         }
         HostClient::project_needs_trust(&crate::Project::new(
             path.canonicalize().map_err(|e| e.to_string())?,
         ))
+        .map_err(Into::into)
     }
 }
 

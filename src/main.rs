@@ -215,10 +215,10 @@ fn run_serve_command<I>(args: I, locale: LocaleContext) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
-    let parsed = match clat::serve::parse_serve_args(args) {
+    let parsed = match clat::serve::parse_serve_args_presented(args) {
         Ok(parsed) => parsed,
         Err(message) => {
-            eprintln!("clat: {message}");
+            eprintln!("clat: {}", message.render(locale));
             eprintln!("{}", locale.text("cli.help_hint"));
             return ExitCode::from(2);
         }
@@ -236,7 +236,7 @@ where
     {
         eprintln!("{}", locale.text("cli.signal_serve"));
     }
-    match clat::serve::run_serve_with_shutdown(parsed, shutdown) {
+    match clat::serve::run_serve_with_locale(parsed, shutdown, locale) {
         0 => ExitCode::SUCCESS,
         1 => ExitCode::FAILURE,
         _ => ExitCode::from(130),

@@ -13,6 +13,12 @@ impl PackagedBackend {
     /// Explicitly opening Desktop authorizes an idle upgrade of an existing Host.
     /// A missing/disconnected Host is only started by an explicit project open.
     pub fn reconcile(&self, current: Option<&HostClient>) -> Result<BackendConnection, String> {
+        self.reconcile_presented(current).map_err(|e| e.raw)
+    }
+    pub fn reconcile_presented(
+        &self,
+        current: Option<&HostClient>,
+    ) -> Result<BackendConnection, crate::i18n::PresentedText> {
         let _guard = self
             .coordination
             .lock()
@@ -22,10 +28,8 @@ impl PackagedBackend {
             &root,
             current,
             &|path| {
-                if Self::project_needs_trust(path)? {
-                    return Err(
-                        "project needs trust; open it explicitly before upgrading the host".into(),
-                    );
+                if Self::project_needs_trust_presented(path)? {
+                    return Err(crate::i18n::UiMessage::new("host.upgrade_needs_trust").into());
                 }
                 Ok(())
             },
@@ -53,9 +57,9 @@ impl PackagedBackend {
         &self,
         root: &Path,
         current: Option<&HostClient>,
-        check: &impl Fn(&Path) -> Result<(), String>,
-        activate: &impl Fn(&Path) -> Result<HostClient, String>,
-    ) -> Result<BackendConnection, String> {
+        check: &impl Fn(&Path) -> Result<(), crate::i18n::PresentedText>,
+        activate: &impl Fn(&Path) -> Result<HostClient, crate::i18n::PresentedText>,
+    ) -> Result<BackendConnection, crate::i18n::PresentedText> {
         if !self.observing.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(BackendConnection::Missing);
         }
@@ -74,7 +78,7 @@ impl PackagedBackend {
                 self.advance(client, check, activate)
             }
             StartupDiscovery::Upgradeable { host_version } => {
-                Err(super::discovery::DiscoveryFailure::Upgradeable { host_version }.message())
+                Err(super::discovery::DiscoveryFailure::Upgradeable { host_version }.presented())
             }
         }
     }
@@ -82,9 +86,9 @@ impl PackagedBackend {
     fn advance(
         &self,
         client: HostClient,
-        check: &impl Fn(&Path) -> Result<(), String>,
-        activate: &impl Fn(&Path) -> Result<HostClient, String>,
-    ) -> Result<BackendConnection, String> {
+        check: &impl Fn(&Path) -> Result<(), crate::i18n::PresentedText>,
+        activate: &impl Fn(&Path) -> Result<HostClient, crate::i18n::PresentedText>,
+    ) -> Result<BackendConnection, crate::i18n::PresentedText> {
         if !matches!(
             self.policy,
             BuildMatchPolicy::Backend { official: true, .. }
@@ -112,7 +116,9 @@ impl PackagedBackend {
                 .ok_or("host omitted project root")?,
         );
         check(project)?;
-        if !super::startup::try_upgrade_takeover(&client).map_err(|e| e.to_string())? {
+        if !super::startup::try_upgrade_takeover(&client)
+            .map_err(|e| crate::i18n::PresentedText::from(e.presentation_or_fallback()))?
+        {
             return Ok(BackendConnection::Connected(client));
         }
         activate(project).map(BackendConnection::Connected)

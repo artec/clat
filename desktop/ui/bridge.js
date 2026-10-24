@@ -30,6 +30,7 @@
   const ready = () => {
     const {dialog,status,launch,footer,launchLabel}=createPanel();
     let actionError = '';
+    const reportError = error => { actionError=error?.key?error:String(error); CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError)); };
     let request = null, latestInfo = {};
     let composing = false;
     document.addEventListener('compositionstart',e=>{if(e.target.id==='prompt')composing=true;},true);
@@ -53,7 +54,7 @@
       const background = () => info.hostStatus ? (info.hostStatus.ready ? t('desktop.idle') : t('desktop.busy',{count:info.hostStatus.busy_workspaces.length})) : '';
       CLATI18n.bind(dialog.querySelector('#clat-desktop-versions'),'textContent',()=>t('desktop.versions',{desktop:info.desktopVersion,host:info.hostConnected?info.hostVersion:t('desktop.not_connected'),backend:info.backendVersion,pending:info.backendPending?t('desktop.pending'):'',status:background()}));
       dialog.querySelector('#clat-desktop-auto').checked = info.autoCheck;
-      CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(info.updatePresentation,info.updateStatus) || info.backendError || info.connectionError || '');
+      CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(info.updatePresentation,info.updateStatus) || info.backendError || CLATI18n.present(info.connectionPresentation,info.connectionError) || '');
       const label = () => t(info.updateAvailable ? 'desktop.update_available' : 'desktop.entry');
       if (footer) { CLATI18n.bind(launchLabel,'textContent',label); CLATI18n.bind(launch,'title',label); } else CLATI18n.bind(launch,'textContent',label);
       buttons();
@@ -96,8 +97,8 @@
     dialog.addEventListener('click',event=>{const action=event.target.closest('[data-action]')?.dataset.action;if(action)void act(action);});
     window.__TAURI__.event?.listen('desktop-check-update',()=>{showSettings();void act('check');}).catch(()=>{});
     CLATI18n.onChange(() => refresh().catch(() => {}));
-    dialog.querySelector('#clat-desktop-auto').onchange = event => invoke('desktop_preferences', { autoCheck:event.target.checked }).catch(error => { status.textContent = String(error); });
-    launch.addEventListener('click', () => refresh().catch(error => { status.textContent = String(error); }));
+    dialog.querySelector('#clat-desktop-auto').onchange = event => invoke('desktop_preferences', { autoCheck:event.target.checked }).catch(reportError);
+    launch.addEventListener('click', () => refresh().catch(reportError));
     refresh().catch(() => {});
     CLATI18n.refresh();
     let ticks = 0;

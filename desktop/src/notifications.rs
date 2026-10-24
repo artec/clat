@@ -56,7 +56,7 @@ fn observe_host(app: &tauri::AppHandle) {
     };
     let _connection = state.connection.lock().expect("connection state");
     let current = state.host.lock().expect("host state").clone();
-    match backend.reconcile(current.as_ref()) {
+    match backend.reconcile_presented(current.as_ref()) {
         Ok(BackendConnection::Connected(client)) => observe_connected(app, client),
         Ok(BackendConnection::Missing) => {
             *state.connection_error.lock().expect("connection state") = None;
@@ -78,7 +78,7 @@ fn observe_connected(app: &tauri::AppHandle, client: HostClient) {
         .map(|h| h.instance_id())
         != Some(client.instance_id());
     if changed && let Err(error) = crate::app::connected(app, client.clone()) {
-        *state.connection_error.lock().expect("connection state") = Some(error);
+        *state.connection_error.lock().expect("connection state") = Some(error.into());
         return;
     }
     *state.connection_error.lock().expect("connection state") = None;

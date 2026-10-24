@@ -17,7 +17,11 @@ fn main() {
 }
 #[cfg(not(any(target_os = "macos", windows)))]
 fn main() {
-    eprintln!("CLAT Desktop supports macOS and Windows; use clat or the PWA on this platform.");
+    use clat_core::client_ports::presentation::{LanguagePreference, LocaleContext};
+    eprintln!(
+        "{}",
+        LocaleContext::system(LanguagePreference::System).text("desktop.unsupported_platform")
+    );
 }
 
 #[cfg(all(test, any(target_os = "macos", windows)))]

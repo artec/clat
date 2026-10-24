@@ -85,9 +85,9 @@ impl ModelEditor {
         editor
     }
 
-    pub(crate) fn remote_profile(name: &str, route: &Value) -> Result<Self, String> {
+    pub(crate) fn remote_profile(name: &str, route: &Value) -> Result<Self, PresentedText> {
         if route["route_redacted"] == true {
-            return Err("profile route contains hidden fields; use the standalone editor".into());
+            return Err(UiMessage::new("tui.hidden_profile_route").into());
         }
         let mut config = if route.is_null() {
             ModelConfig::default()
@@ -638,13 +638,19 @@ mod tests {
 
     #[test]
     fn remote_profile_never_serializes_unedited_key_or_hidden_settings() {
-        assert!(
-            ModelEditor::remote_profile(
-                "secret-route",
-                &serde_json::json!({"route_redacted":true})
-            )
-            .is_err()
-        );
+        let hidden = ModelEditor::remote_profile(
+            "secret-route",
+            &serde_json::json!({"route_redacted":true}),
+        )
+        .err()
+        .expect("redacted route must be rejected");
+        assert_eq!(hidden.message().key, "tui.hidden_profile_route");
+        for locale in [
+            crate::client_ports::presentation::Locale::Simplified,
+            crate::client_ports::presentation::Locale::Traditional,
+        ] {
+            assert_ne!(hidden.render(LocaleContext::new(locale)), hidden.raw);
+        }
         let mut editor = ModelEditor::remote_profile("remote", &serde_json::json!({
             "protocol":"open_ai_compatible", "model":"test", "endpoint":"https://example.invalid/v1",
             "request_path":"/chat/completions", "credential_set":true,

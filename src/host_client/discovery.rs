@@ -7,7 +7,7 @@ const FILE_NAME: &str = "host-endpoint.json";
 
 pub(super) enum DiscoveryFailure {
     Unavailable(String),
-    Incompatible(String),
+    Incompatible(crate::i18n::PresentedText),
     Upgradeable { host_version: String },
 }
 
@@ -25,11 +25,17 @@ impl From<&str> for DiscoveryFailure {
 
 impl DiscoveryFailure {
     pub(super) fn message(self) -> String {
+        self.presented().raw
+    }
+    pub(super) fn presented(self) -> crate::i18n::PresentedText {
         match self {
-            Self::Unavailable(message) | Self::Incompatible(message) => message,
-            Self::Upgradeable { host_version } => format!(
-                "CLAT {host_version} is hosting this storage root; restart through a newer client to take over when idle"
-            ),
+            Self::Unavailable(message) => message.into(),
+            Self::Incompatible(message) => message,
+            Self::Upgradeable { host_version } => {
+                crate::i18n::UiMessage::new("host.upgrade_required")
+                    .arg("version", host_version)
+                    .into()
+            }
         }
     }
 }
@@ -94,13 +100,13 @@ impl HostClient {
 
     #[cfg(test)]
     pub(super) fn discover_for_startup(root: &Path) -> Result<StartupDiscovery, String> {
-        Self::discover_startup_with(root, BuildMatchPolicy::RequireIfAdvertised)
+        Self::discover_startup_with(root, BuildMatchPolicy::RequireIfAdvertised).map_err(|e| e.raw)
     }
 
     pub(super) fn discover_startup_with(
         root: &Path,
         policy: BuildMatchPolicy,
-    ) -> Result<StartupDiscovery, String> {
+    ) -> Result<StartupDiscovery, crate::i18n::PresentedText> {
         match Self::discover_checked(root, policy) {
             Ok(client) => Ok(StartupDiscovery::Compatible(client)),
             Err(DiscoveryFailure::Unavailable(_)) => Ok(StartupDiscovery::Missing),

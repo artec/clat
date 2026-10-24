@@ -25,6 +25,7 @@ async function welcome(page, busy = false, withSidebar = false) {
       if (command === 'desktop_locale') return localeInfo();
       if (command === 'desktop_preferences') { if(args?.language)window.desktopLanguage=args.language; return localeInfo(); }
       if (command === 'desktop_info') return structuredClone(window.desktopInfo);
+      if (command === 'desktop_open_project' && window.desktopOpenError) throw window.desktopOpenError;
       if (command === 'desktop_check_update') {
         if(window.deferDesktopCheck) await new Promise(resolve=>{window.finishDesktopCheck=resolve;});
         if(window.desktopCheckError) throw window.desktopCheckError;
@@ -58,6 +59,39 @@ test('language switching keeps the desktop sidebar launcher glyph and label node
     await expect(launcher.locator('[aria-hidden=true]')).toHaveText('▣');
     await expect(launcher.locator('.sidebar-expanded-only')).not.toBeEmpty();
   }
+});
+
+test('Host compatibility errors retain their reason across live language changes', async ({page}) => {
+  await welcome(page);
+  await page.evaluate(() => {
+    window.desktopInfo.connectionError = 'English diagnostic';
+    window.desktopInfo.connectionPresentation = {key:'host.same_version_different_build',args:{}};
+  });
+  const dialog = page.locator('#clat-desktop-settings');
+  for (const [language,text] of [['zh-Hans','同一版本'],['zh-Hant','相同版本'],['en','same CLAT version']]) {
+    await dialog.locator('[data-language-select]').selectOption(language);
+    await expect(dialog.locator('#clat-desktop-update')).toContainText(text);
+    await expect(page.locator('#status')).toContainText(text);
+    await expect(page.locator('#status')).toContainText('clat host stop');
+  }
+  expect(await page.evaluate(() => window.desktopCalls.filter(c => ['desktop_stop_host','desktop_open_project'].includes(c.command)))).toEqual([]);
+});
+
+test('opening a project keeps a rejected Host reason localizable in welcome and settings', async ({page}) => {
+  await welcome(page);
+  await page.evaluate(() => { window.desktopOpenError = {key:'host.same_version_different_build',args:{}}; });
+  const dialog = page.locator('#clat-desktop-settings');
+  await dialog.locator('[data-action=open]').click();
+  await expect(dialog.locator('#clat-desktop-update')).toContainText('同一版本');
+  await dialog.locator('[data-action=close]').click();
+  await page.locator('#open').click();
+  await expect(page.locator('#status')).toContainText('同一版本');
+  await page.locator('#settings').click();
+  await dialog.locator('[data-language-select]').selectOption('zh-Hant');
+  await expect(dialog.locator('#clat-desktop-update')).toContainText('相同版本');
+  await expect(page.locator('#status')).toContainText('相同版本');
+  await expect(page.locator('#status')).toContainText('clat host stop');
+  expect(await page.evaluate(() => window.desktopCalls.filter(c => c.command==='desktop_stop_host'))).toEqual([]);
 });
 
 test('install requires a downloaded update and never discards unsent input', async ({page}) => {

@@ -120,25 +120,17 @@ fn tick(
     let Ok(_mutation) = shared.rpc_mutations.try_lock() else {
         return Ok(());
     };
-    let rpc = format!("auto-{}", uuid::Uuid::new_v4());
-    if !shared.try_claim_run(&rpc, super::state::now_ms()) {
+    if shared
+        .inner
+        .lock()
+        .expect("serve inner lock")
+        .active_run
+        .is_some()
+    {
         return Ok(());
     }
-    let result = start(shared);
-    match result {
-        Ok(Some(active)) => {
-            *running = Some(active);
-            Ok(())
-        }
-        Ok(None) => {
-            shared.release_run_claim();
-            Ok(())
-        }
-        Err(error) => {
-            shared.release_run_claim();
-            Err(error)
-        }
-    }
+    *running = start(shared)?;
+    Ok(())
 }
 fn start(shared: &Arc<ServeShared>) -> Result<Option<Running>, crate::ApplicationError> {
     let mut app = shared.app.lock().expect("application lock");
@@ -146,6 +138,12 @@ fn start(shared: &Arc<ServeShared>) -> Result<Option<Running>, crate::Applicatio
     let Some(claim) = app.automatic_candidate(super::state::now_ms())? else {
         return Ok(None);
     };
+    // rpc_mutations excludes human admission/takeover while the Application
+    // reconciles and reserves real work. Empty/future-only polls have no Run.
+    let rpc = format!("auto-{}", uuid::Uuid::new_v4());
+    if !shared.try_claim_run(&rpc, super::state::now_ms()) {
+        return Ok(None); // The durable reservation remains pending, not replayed.
+    }
     {
         let mut inner = shared.inner.lock().expect("serve inner lock");
         if let Some(run) = &mut inner.active_run {
@@ -192,7 +190,9 @@ fn start(shared: &Arc<ServeShared>) -> Result<Option<Running>, crate::Applicatio
                 turns: 0,
                 usage: Default::default(),
             });
-            app.settle_automatic(&claim, &failure, u64::MAX, 0, 0)?;
+            let settled = app.settle_automatic(&claim, &failure, u64::MAX, 0, 0);
+            shared.release_run_claim();
+            settled?;
             Err(error)
         }
     }
@@ -241,5 +241,84 @@ impl crate::EventSink for ScopedSink {
         ) {
             self.shared.publish_notification("completed", None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn idle_scheduler_poll_never_publishes_a_run_claim_while_waiting_for_application() {
+        let (storage, project) = crate::test_support::roots("idle-scheduler-slot");
+        std::fs::create_dir_all(&project).unwrap();
+        let app = crate::BootstrapApplication::open(crate::Project::new(&project), storage.clone())
+            .unwrap()
+            .authorize_and_mount_with_provider(Arc::new(crate::test_support::TestProviderPlugin {
+                behavior: crate::test_support::TestBehavior::Success,
+            }))
+            .unwrap();
+        let app = Arc::new(std::sync::Mutex::new(app));
+        let shared = Arc::new(ServeShared::new(app.clone(), "fixture".into(), 0));
+        let held = app.lock().unwrap();
+        let (done, receive) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = {
+            let shared = shared.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                // tick intentionally skips a contended RPC lane. Retry the
+                // empty poll so the observer's try_lock cannot consume its
+                // only attempt before it reaches the held Application lock.
+                let result = (|| {
+                    while !stop.load(Ordering::Acquire) {
+                        tick(&shared, &mut None)?;
+                        std::thread::yield_now();
+                    }
+                    Ok::<_, crate::ApplicationError>(())
+                })();
+                done.send(result.map_err(|e| e.to_string())).unwrap();
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let entered = loop {
+            if shared.rpc_mutations.try_lock().is_err() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        let observe_until = Instant::now() + Duration::from_millis(200);
+        let mut claimed = false;
+        while Instant::now() < observe_until {
+            if !shared.active_run_info().is_null() {
+                claimed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        stop.store(true, Ordering::Release);
+        drop(held);
+        receive
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        drop(shared);
+        Arc::try_unwrap(app)
+            .ok()
+            .expect("no remaining app owner")
+            .into_inner()
+            .unwrap()
+            .close()
+            .unwrap();
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&project);
+        assert!(entered, "poll did not enter its mutation lane");
+        assert!(
+            !claimed,
+            "an empty poll must not publish a phantom active Run"
+        );
     }
 }
