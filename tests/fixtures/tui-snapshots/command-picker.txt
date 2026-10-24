@@ -17,7 +17,7 @@ scroll 0
 013| │   No active conversation to rename                                           │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 014| │ /task · inspect, checkpoint, verify and explicitly resume one durable task   │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 015| │   /task                                                                      │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
-016| │ /compact · summarize earlier turns into a compact context · /compact         │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
+016| │ /history · Search and inspect committed session history · /history           │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 017| │                                                                              │  ⟦0..0 fg=Yellow · 79..79 fg=Yellow⟧
 018| │ ↑↓ browse · Tab fill · Enter fill/submit exact command · Esc close           │  ⟦0..0 fg=Yellow · 2..67 DIM · 79..79 fg=Yellow⟧
 019| └──────────────────────────────────────────────────────────────────────────────┘  ⟦0..79 fg=Yellow⟧
