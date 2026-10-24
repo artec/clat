@@ -15,17 +15,21 @@ async function welcome(page, busy = false, withSidebar = false) {
   });
   const bridge = fs.readFileSync(path.join(ui, 'bridge.js'), 'utf8');
   const nativeMock = ({busy, catalogs,manifest}) => {
-    window.desktopCalls = [];
+    window.desktopCalls = []; window.desktopEvents = {};
     window.desktopLanguage='zh-Hans';
     const localeInfo=()=>({manifest,preference:window.desktopLanguage,locale:window.desktopLanguage==='system'?'en':window.desktopLanguage,catalogs});
     window.desktopInfo = { desktopVersion:'2.1.2',backendVersion:'2.1.2',hostVersion:'2.1.2',hostConnected:true,autoCheck:true,
       updateAvailable:busy,downloaded:busy,updateBusy:busy,updateStatus:busy ? '等待项目空闲' : '' };
-    window.__TAURI__ = { core: { invoke:async (command, args) => {
+    window.__TAURI__ = { event:{listen:async(name,callback)=>{window.desktopEvents[name]=callback;return()=>{};}}, core: { invoke:async (command, args) => {
       window.desktopCalls.push({command,args});
       if (command === 'desktop_locale') return localeInfo();
       if (command === 'desktop_preferences') { if(args?.language)window.desktopLanguage=args.language; return localeInfo(); }
       if (command === 'desktop_info') return structuredClone(window.desktopInfo);
-      if (command === 'desktop_check_update') window.desktopInfo.updateAvailable = true;
+      if (command === 'desktop_check_update') {
+        if(window.deferDesktopCheck) await new Promise(resolve=>{window.finishDesktopCheck=resolve;});
+        if(window.desktopCheckError) throw window.desktopCheckError;
+        window.desktopInfo.updateAvailable = true;
+      }
       if (command === 'desktop_download_update') window.desktopInfo.downloaded = true;
       if (command === 'desktop_install_update' && window.deferDesktopInstall) {
         window.desktopInfo.updateBusy = true;
@@ -149,4 +153,78 @@ test('three desktop languages switch without reloading or losing a draft and pen
   }
   const commands=await page.evaluate(()=>window.desktopCalls.map(c=>c.command));
   expect(commands.filter(c=>!['desktop_info','desktop_locale','desktop_preferences'].includes(c))).toEqual([]);
+});
+
+test('native menu opens update panel and starts exactly one check',async({page})=>{
+  await welcome(page);
+  await page.locator('[data-action=close]').click();
+  await page.evaluate(()=>window.desktopEvents['desktop-check-update']?.({payload:null}));
+  await expect(page.locator('#clat-desktop-settings')).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.desktopCalls.filter(c=>c.command==='desktop_check_update').length)).toBe(1);
+  await expect(page.locator('[data-action=download]')).toBeEnabled();
+});
+test('slow check excludes repeated page and native menu actions',async({page})=>{
+  await welcome(page); await page.evaluate(()=>{window.deferDesktopCheck=true;});
+  await page.locator('[data-action=check]').click();
+  await expect(page.locator('[data-action=check]')).toBeDisabled();
+  await page.evaluate(()=>window.desktopEvents['desktop-check-update']?.({payload:null}));
+  expect(await page.evaluate(()=>window.desktopCalls.filter(c=>c.command==='desktop_check_update').length)).toBe(1);
+  await page.evaluate(()=>window.finishDesktopCheck());
+  await expect(page.locator('[data-action=download]')).toBeEnabled();
+});
+test('failed update explanation changes language and offers manual recovery without losing state',async({page})=>{
+  await welcome(page);
+  await page.evaluate(()=>{window.desktopCheckError={key:'update.index_network',args:{},fallback:'network failure'};});
+  await page.locator('[data-action=check]').click();
+  await expect(page.locator('#clat-desktop-update')).toContainText('网络');
+  await page.locator('[data-language-select]').selectOption('en');
+  await expect(page.locator('#clat-desktop-update')).toContainText('network');
+  await expect(page.locator('a[data-update-manual]')).toHaveAttribute('href','https://github.com/artec/clat/releases/latest');
+  await page.evaluate(()=>{window.desktopCheckError=null;});
+  await page.locator('[data-action=check]').click();
+  await expect(page.locator('[data-action=download]')).toBeEnabled();
+});
+test('image-only and composing drafts cannot start installation',async({page})=>{
+  await welcome(page); await page.locator('[data-action=check]').click();await page.locator('[data-action=download]').click();
+  await page.evaluate(()=>{
+    const input=document.createElement('textarea');input.id='prompt';document.body.append(input);
+    const rail=document.createElement('div');rail.id='attachment-rail';rail.innerHTML='<article class="attachment-chip">image.png</article>';document.body.append(rail);
+  });
+  await page.locator('[data-action=install]').click();
+  await expect(page.locator('#clat-desktop-update')).toContainText('先发送或清空');
+  await page.evaluate(()=>{document.querySelector('#attachment-rail').remove();document.querySelector('#prompt').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));});
+  await page.locator('[data-action=install]').click();
+  expect(await page.evaluate(()=>window.desktopCalls.filter(c=>c.command==='desktop_install_update').length)).toBe(0);
+  await page.evaluate(()=>document.querySelector('#prompt').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));
+  await page.locator('[data-action=install]').click();
+  expect(await page.evaluate(()=>window.desktopCalls.filter(c=>c.command==='desktop_install_update').length)).toBe(1);
+});
+
+test('native installation disables cancellation and quit without blocking status refresh',async({page})=>{
+  await welcome(page,true);
+  await page.evaluate(()=>Object.assign(window.desktopInfo,{updatePhase:'installing',updateCancellable:false,updatePresentation:{key:'update.installing',args:{},fallback:'Installing'}}));
+  await expect(page.locator('[data-action=cancel]')).toBeDisabled();
+  await expect(page.locator('[data-action=quit]')).toBeDisabled();
+  await expect(page.locator('[data-action=stop]')).toBeDisabled();
+  await expect(page.locator('#clat-desktop-update')).toContainText('正在安装');
+  await page.locator('[data-language-select]').selectOption('en');
+  await expect(page.locator('#clat-desktop-update')).toContainText('Installing desktop');
+});
+
+test('verified package remains installable after a native install error',async({page})=>{
+  await welcome(page);
+  await page.locator('[data-action=check]').click();await page.locator('[data-action=download]').click();
+  await page.evaluate(()=>{
+    const invoke=window.__TAURI__.core.invoke;let first=true;
+    window.__TAURI__.core.invoke=async(command,args)=>{
+      if(command==='desktop_install_update'&&first){first=false;throw {key:'update.install_failed',args:{detail:'fixture disk full'},fallback:'Install failed'};}
+      return invoke(command,args);
+    };
+  });
+  await page.locator('[data-action=install]').click();
+  await expect(page.locator('#clat-desktop-update')).toContainText('fixture disk full');
+  await expect(page.locator('[data-action=install]')).toBeEnabled();
+  await expect(page.locator('[data-action=download]')).toBeDisabled();
+  await page.locator('[data-action=install]').click();
+  expect(await page.evaluate(()=>window.desktopCalls.filter(c=>c.command==='desktop_install_update').length)).toBe(1);
 });

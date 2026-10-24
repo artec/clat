@@ -793,6 +793,7 @@ dependencies = [
  "base64 0.22.1",
  "clat-core",
  "minisign-verify 0.2.5",
+ "rustls",
  "semver",
  "serde",
  "serde_json",

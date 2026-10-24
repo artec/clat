@@ -82,7 +82,7 @@ pub fn save(
 }
 #[cfg(target_os = "macos")]
 pub fn menu(app: &tauri::AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{Menu, PredefinedMenuItem as Item, Submenu};
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem as Item, Submenu};
     let l = context(app);
     let application = Submenu::with_items(
         app,
@@ -90,6 +90,13 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         true,
         &[
             &Item::about(app, Some(l.text("desktop.menu_about")), None)?,
+            &MenuItem::with_id(
+                app,
+                "desktop-check-update",
+                l.text("desktop.check"),
+                true,
+                None::<&str>,
+            )?,
             &Item::separator(app)?,
             &Item::hide(app, Some(l.text("desktop.menu_hide")))?,
             &Item::hide_others(app, Some(l.text("desktop.menu_others")))?,

@@ -142,7 +142,12 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
         })
         .on_navigation(move |url| {
             if crate::policy::permitted_page(url.as_str()) {
-                return true;
+                return !opener
+                    .state::<Desktop>()
+                    .updates
+                    .lock()
+                    .expect("updates")
+                    .preserve_page();
             }
             if matches!(url.scheme(), "http" | "https") {
                 use tauri_plugin_opener::OpenerExt;
@@ -222,6 +227,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    crate::update::initialize_tls();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .plugin(tauri_plugin_dialog::init())
@@ -250,6 +256,13 @@ pub fn run() {
             crate::commands::desktop_quit,
             crate::commands::desktop_stop_host
         ])
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "desktop-check-update" {
+                use tauri::Emitter;
+                show(app);
+                let _ = app.emit_to("main", "desktop-check-update", ());
+            }
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
                 && !window.state::<Desktop>().quitting.load(Ordering::Acquire)
@@ -262,17 +275,32 @@ pub fn run() {
     builder
         .build(tauri::generate_context!())
         .expect("CLAT startup")
-        .run(|app, event| match event {
-            tauri::RunEvent::Exit => {
-                let state = app.state::<Desktop>();
-                state.quitting.store(true, Ordering::Release);
-                for (_, stream) in std::mem::take(&mut *state.streams.lock().expect("streams")) {
-                    stream.interrupt();
-                }
-                crate::update::cancel(app);
+        .run(run_event);
+}
+
+fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            if !app
+                .state::<Desktop>()
+                .updates
+                .lock()
+                .expect("updates")
+                .allow_exit(code == Some(tauri::RESTART_EXIT_CODE))
+            {
+                api.prevent_exit();
             }
-            #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { .. } => show(app),
-            _ => {}
-        });
+        }
+        tauri::RunEvent::Exit => {
+            let state = app.state::<Desktop>();
+            state.quitting.store(true, Ordering::Release);
+            for (_, stream) in std::mem::take(&mut *state.streams.lock().expect("streams")) {
+                stream.interrupt();
+            }
+            let _ = crate::update::cancel(app);
+        }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => show(app),
+        _ => {}
+    }
 }

@@ -9,6 +9,7 @@ const SIGNATURE: &str = include_str!("../fixtures/package.bin.sig");
 const PACKAGE: &[u8] = include_bytes!("../fixtures/package.bin");
 
 fn app() -> tauri::App<tauri::test::MockRuntime> {
+    crate::update::initialize_tls();
     let mut context = tauri::test::mock_context(tauri::test::noop_assets());
     context.config_mut().plugins.0.insert("updater".into(), json!({"pubkey":KEY.trim(),"requireSignedVersion":true,"endpoints":["https://example.invalid/update"]}));
     tauri::test::mock_builder()
@@ -120,12 +121,16 @@ fn macos_signed_install_replaces_only_the_isolated_gui_bundle() {
     let mut value = metadata("2.0.0");
     value["platforms"]["test-target"]["signature"] =
         json!(include_str!("../fixtures/install.app.tar.gz.sig").trim());
-    let update = updater.restore_update(value).unwrap().unwrap();
+    let mut update = updater.restore_update(value).unwrap().unwrap();
     assert!(update.install(b"bad package").is_err());
     assert_eq!(std::fs::read(&binary).unwrap(), b"old GUI version 0.1.0");
-    update
-        .install(include_bytes!("../fixtures/install.app.tar.gz"))
-        .unwrap();
+    let (url, worker) = package_server(include_bytes!("../fixtures/install.app.tar.gz"), 200);
+    update.download_url = url;
+    update.no_proxy = true;
+    update.timeout = Some(std::time::Duration::from_secs(5));
+    let package = tauri::async_runtime::block_on(update.download(|_, _| {}, || {})).unwrap();
+    worker.join().unwrap();
+    update.install(&package).unwrap();
     assert_eq!(std::fs::read(&binary).unwrap(), b"new GUI version 2.0.0\n");
     assert_eq!(std::fs::read(&cli).unwrap(), b"independent CLI");
     assert_eq!(std::fs::read(&runtime).unwrap(), b"running backend");
@@ -172,4 +177,82 @@ fn compact_index_drives_the_real_updater_without_signature_sidecars() {
         crate::policy::release_metadata_with_key(&serde_json::to_vec(&value).unwrap(), key)
             .is_err()
     );
+}
+
+// Local transport only. Production never accepts a page-provided endpoint/key/path.
+fn package_server(body: &'static [u8], status: u16) -> (url::Url, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let worker = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "updater did not request fixture"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("fixture accept: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut request = [0; 4096];
+        let count = stream.read(&mut request).unwrap();
+        assert!(request[..count].starts_with(b"GET /package "));
+        write!(
+            stream,
+            "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+    });
+    (format!("http://{address}/package").parse().unwrap(), worker)
+}
+
+#[test]
+fn real_http_download_rejects_network_and_signature_failures_then_allows_verified_retry() {
+    let app = app();
+    let updater = app
+        .updater_builder()
+        .target("test-target")
+        .executable_path("fixture/app")
+        .build()
+        .unwrap();
+    let update = updater.restore_update(metadata("2.0.0")).unwrap().unwrap();
+    for (body, status, success) in [
+        (PACKAGE, 503, false),
+        (b"tampered".as_slice(), 200, false),
+        (PACKAGE, 200, true),
+    ] {
+        let (url, worker) = package_server(body, status);
+        let mut attempt = update.clone();
+        attempt.download_url = url;
+        attempt.no_proxy = true;
+        attempt.timeout = Some(std::time::Duration::from_secs(5));
+        let mut received = 0;
+        let mut ended = false;
+        let result = tauri::async_runtime::block_on(attempt.download(
+            |chunk, total| {
+                received += chunk;
+                assert_eq!(total, Some(body.len() as u64));
+            },
+            || ended = true,
+        ));
+        worker.join().unwrap();
+        if success {
+            assert_eq!(result.unwrap(), PACKAGE);
+            assert_eq!(received, PACKAGE.len());
+            assert!(ended);
+        } else {
+            assert!(result.is_err());
+        }
+    }
 }

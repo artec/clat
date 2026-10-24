@@ -5,61 +5,44 @@ use tauri::Manager;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::watch;
 
-pub struct Updates {
-    pub auto_check: bool,
-    pub status: Option<UiMessage>,
-    pub busy: bool,
-    pub pending: Option<Update>,
-    pub bytes: Option<Vec<u8>>,
-    cancel: Option<watch::Sender<bool>>,
-}
-impl Updates {
-    pub fn new(auto_check: bool) -> Self {
-        Self {
-            auto_check,
-            status: None,
-            busy: false,
-            pending: None,
-            bytes: None,
-            cancel: None,
-        }
-    }
+mod state;
+pub use state::Phase;
+pub type Updates = state::State<Update>;
+
+pub fn initialize_tls() {
+    // restore_update skips the plugin check() path that normally selects a
+    // provider. reqwest 0.13 downloads require one even for a restored update.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-fn begin(app: &tauri::AppHandle, message: &str) -> Result<watch::Receiver<bool>, UiMessage> {
-    let state = app.state::<Desktop>();
-    let mut updates = state
+fn begin(app: &tauri::AppHandle, phase: Phase) -> Result<watch::Receiver<bool>, UiMessage> {
+    app.state::<Desktop>()
         .updates
         .lock()
-        .map_err(|_| "update state unavailable")?;
-    if updates.busy {
-        return Err(UiMessage::new("update.busy"));
-    }
-    let (sender, receiver) = watch::channel(false);
-    updates.cancel = Some(sender);
-    updates.busy = true;
-    updates.status = Some(UiMessage::new(message));
-    Ok(receiver)
+        .map_err(|_| "update state unavailable")?
+        .begin(phase)
 }
-
 fn finish(app: &tauri::AppHandle, result: &Result<(), UiMessage>) {
-    let state = app.state::<Desktop>();
-    let mut updates = state.updates.lock().expect("updates");
-    updates.busy = false;
-    updates.cancel = None;
-    if let Err(error) = result {
-        updates.status = Some(error.clone());
-    }
+    app.state::<Desktop>()
+        .updates
+        .lock()
+        .expect("updates")
+        .finish(result);
 }
-
-pub fn cancel(app: &tauri::AppHandle) {
-    if let Ok(updates) = app.state::<Desktop>().updates.lock()
-        && let Some(cancel) = &updates.cancel
-    {
-        let _ = cancel.send(true);
-    }
+pub fn cancel(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    app.state::<Desktop>()
+        .updates
+        .lock()
+        .map_err(|_| "update state unavailable")?
+        .cancel()
 }
-
+async fn cancellable<T>(
+    mut cancel: watch::Receiver<bool>,
+    key: &str,
+    operation: impl std::future::Future<Output = Result<T, UiMessage>>,
+) -> Result<T, UiMessage> {
+    tokio::select! { biased; _ = cancel.changed() => Err(UiMessage::new(key)), result = operation => result }
+}
 fn target() -> String {
     format!(
         "{}-{}",
@@ -71,7 +54,6 @@ fn target() -> String {
         std::env::consts::ARCH
     )
 }
-
 fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, UiMessage> {
     use std::io::Read;
     let agent = ureq::Agent::config_builder()
@@ -95,61 +77,50 @@ fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, UiMessage> {
     Ok(bytes)
 }
 
+async fn checked_update(app: &tauri::AppHandle) -> Result<Option<Update>, UiMessage> {
+    let updater = app
+        .updater_builder()
+        .pubkey(crate::policy::PUBLIC_KEY.trim())
+        .target(target())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let metadata = tauri::async_runtime::spawn_blocking(|| {
+        let bytes = fetch_small(crate::policy::ENDPOINT, 1024 * 1024)?;
+        crate::policy::release_metadata(&bytes)
+    })
+    .await
+    .map_err(|_| "index verification worker failed")??;
+    let mut pending = updater
+        .restore_update(metadata)
+        .map_err(|e| UiMessage::new("update.check_failed").arg("detail", e.to_string()))?;
+    if let Some(update) = &mut pending {
+        crate::policy::validate_update(&update.raw_json, env!("CARGO_PKG_VERSION"), &target())?;
+        // restore_update does not propagate builder timeout to the package request.
+        update.timeout = Some(Duration::from_secs(10 * 60));
+    }
+    Ok(pending)
+}
+
 pub async fn check(app: &tauri::AppHandle) -> Result<(), UiMessage> {
-    let mut cancelled = begin(app, "update.checking")?;
-    let operation = async {
-        let updater = app
-            .updater_builder()
-            .pubkey(crate::policy::PUBLIC_KEY.trim())
-            .target(target())
-            .endpoints(vec![
-                crate::policy::ENDPOINT
-                    .parse()
-                    .map_err(|_| "invalid update endpoint")?,
-            ])
-            .map_err(|e| e.to_string())?
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let metadata = tauri::async_runtime::spawn_blocking(|| {
-            let bytes = fetch_small(crate::policy::ENDPOINT, 1024 * 1024)?;
-            crate::policy::release_metadata(&bytes)
-        })
-        .await
-        .map_err(|_| "index verification worker failed")??;
-        let pending = updater
-            .restore_update(metadata)
-            .map_err(|e| e.to_string())?;
-        if let Some(update) = &pending {
-            crate::policy::validate_update(&update.raw_json, env!("CARGO_PKG_VERSION"), &target())?;
-        }
-        let state = app.state::<Desktop>();
-        let mut updates = state.updates.lock().expect("updates");
-        updates.status = Some(
-            pending
-                .as_ref()
-                .map(|u| UiMessage::new("update.found").arg("version", u.version.clone()))
-                .unwrap_or_else(|| UiMessage::new("update.current")),
-        );
-        updates.pending = pending;
-        updates.bytes = None;
-        Ok(())
-    };
-    let (result, was_cancelled) = tokio::select! { result = operation => (result,false), _ = cancelled.changed() => (Err(UiMessage::new("update.cancel_check")),true) };
-    finish(app, &result);
-    if was_cancelled {
+    let cancel = begin(app, Phase::Checking)?;
+    let result = cancellable(cancel, "update.cancel_check", async {
+        let pending = checked_update(app).await?;
+        let version = pending.as_ref().map(|u| u.version.clone());
         app.state::<Desktop>()
             .updates
             .lock()
             .expect("updates")
-            .status = Some(UiMessage::new("update.cancel_check"));
-    }
+            .checked(pending, version);
+        Ok(())
+    })
+    .await;
+    finish(app, &result);
     result
 }
 
 pub async fn download(app: &tauri::AppHandle) -> Result<(), UiMessage> {
-    let mut cancelled = begin(app, "update.downloading")?;
-    let operation = async {
+    let cancel = begin(app, Phase::Downloading)?;
+    let mut result = cancellable(cancel, "update.cancel_download", async {
         let update = app
             .state::<Desktop>()
             .updates
@@ -158,118 +129,91 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), UiMessage> {
             .pending
             .clone()
             .ok_or(UiMessage::new("update.check_first"))?;
-        let mut received = 0u64;
         let bytes = update
             .download(
                 |chunk, total| {
-                    received += chunk as u64;
-                    let state = app.state::<Desktop>();
-                    let mut updates = state.updates.lock().expect("updates");
-                    if (received > 512 * 1024 * 1024
-                        || total.is_some_and(|n| n > 512 * 1024 * 1024))
-                        && let Some(cancel) = &updates.cancel
-                    {
-                        let _ = cancel.send(true);
-                    }
-                    updates.status = Some(
-                        UiMessage::new("update.received")
-                            .arg("size", format!("{:.1}", received as f64 / 1048576.0)),
-                    );
-                },
-                || {},
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        let state = app.state::<Desktop>();
-        let mut updates = state.updates.lock().expect("updates");
-        if bytes.len() > 512 * 1024 * 1024 {
-            return Err(UiMessage::new("update.package_large"));
-        }
-        updates.bytes = Some(bytes);
-        updates.status = Some(UiMessage::new("update.verified"));
-        Ok(())
-    };
-    let (result, was_cancelled) = tokio::select! { result = operation => (result,false), _ = cancelled.changed() => (Err(UiMessage::new("update.cancel_download")),true) };
-    finish(app, &result);
-    if was_cancelled {
-        app.state::<Desktop>()
-            .updates
-            .lock()
-            .expect("updates")
-            .status = Some(UiMessage::new("update.cancel_download"));
-    }
-    result
-}
-
-pub async fn install(app: &tauri::AppHandle) -> Result<(), UiMessage> {
-    let mut cancelled = begin(app, "update.waiting")?;
-    let operation = async {
-        {
-            let state = app.state::<Desktop>();
-            let updates = state.updates.lock().expect("updates");
-            if updates.pending.is_none() || updates.bytes.is_none() {
-                return Err(UiMessage::new("update.verify_first"));
-            }
-        }
-        loop {
-            let status = tauri::async_runtime::spawn_blocking(
-                clat_core::client_ports::host::HostClient::local_runtime_status,
-            )
-            .await
-            .map_err(|_| "host status worker failed")??;
-            match status {
-                None => break,
-                Some(value) if value["ready"] == true => break,
-                Some(value) => {
                     app.state::<Desktop>()
                         .updates
                         .lock()
                         .expect("updates")
-                        .status = Some(
-                        UiMessage::new("update.busy_projects")
-                            .arg("projects", value["busy_workspaces"].to_string()),
-                    )
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        let (update, bytes) = {
-            let state = app.state::<Desktop>();
-            let mut updates = state.updates.lock().expect("updates");
-            (
-                updates
-                    .pending
-                    .clone()
-                    .ok_or(UiMessage::new("update.check_first"))?,
-                updates
-                    .bytes
-                    .take()
-                    .ok_or(UiMessage::new("update.download_first"))?,
+                        .progress(chunk, total);
+                },
+                || {},
             )
-        };
-        app.state::<Desktop>()
-            .quitting
-            .store(true, std::sync::atomic::Ordering::Release);
-        let result = update
-            .install(&bytes)
-            .map_err(|e| UiMessage::from(e.to_string()));
-        if result.is_ok() {
-            app.restart();
-        }
-        app.state::<Desktop>()
-            .quitting
-            .store(false, std::sync::atomic::Ordering::Release);
-        result
-    };
-    let (result, was_cancelled) = tokio::select! { result = operation => (result,false), _ = cancelled.changed() => (Err(UiMessage::new("update.cancel_install")),true) };
-    finish(app, &result);
-    if was_cancelled {
+            .await
+            .map_err(|e| UiMessage::new("update.download_failed").arg("detail", e.to_string()))?;
         app.state::<Desktop>()
             .updates
             .lock()
             .expect("updates")
-            .status = Some(UiMessage::new("update.cancel_install"));
+            .downloaded(bytes)
+    })
+    .await;
+    if app
+        .state::<Desktop>()
+        .updates
+        .lock()
+        .expect("updates")
+        .limit_hit
+    {
+        result = Err(UiMessage::new("update.package_large"));
     }
+    finish(app, &result);
+    result
+}
+
+async fn wait_idle(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    loop {
+        let status = tauri::async_runtime::spawn_blocking(
+            clat_core::client_ports::host::HostClient::local_runtime_status,
+        )
+        .await
+        .map_err(|_| "host status worker failed")?
+        .map_err(|e| UiMessage::new("update.readiness_failed").arg("detail", e))?;
+        match status {
+            None => return Ok(()),
+            Some(value) if value["ready"] == true => return Ok(()),
+            Some(value) => {
+                app.state::<Desktop>()
+                    .updates
+                    .lock()
+                    .expect("updates")
+                    .status = Some(
+                    UiMessage::new("update.busy_projects")
+                        .arg("projects", value["busy_workspaces"].to_string()),
+                )
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn install_verified(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    let (update, bytes) = app
+        .state::<Desktop>()
+        .updates
+        .lock()
+        .expect("updates")
+        .enter_install()?;
+    // No cancellable select here: once the installer starts it owns the result.
+    // Retain the same verified bytes in state for retry if the native installer fails.
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes.as_slice()))
+        .await
+        .map_err(|_| UiMessage::new("update.install_worker_failed"))?
+        .map_err(|e| UiMessage::new("update.install_failed").arg("detail", e.to_string()))?;
+    app.state::<Desktop>()
+        .quitting
+        .store(true, std::sync::atomic::Ordering::Release);
+    app.restart();
+}
+
+pub async fn install(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    let cancel = begin(app, Phase::Waiting)?;
+    let result = match cancellable(cancel, "update.cancel_install", wait_idle(app)).await {
+        Ok(()) => install_verified(app).await,
+        Err(error) => Err(error),
+    };
+    finish(app, &result);
     result
 }
 
@@ -287,7 +231,7 @@ pub fn start_automatic_checks(app: tauri::AppHandle) {
             let should_check = {
                 let state = app.state::<Desktop>();
                 let updates = state.updates.lock().expect("updates");
-                updates.auto_check && !updates.busy && updates.bytes.is_none()
+                updates.auto_check && !updates.busy() && updates.bytes.is_none()
             };
             if should_check {
                 let _ = check(&app).await;
@@ -295,4 +239,22 @@ pub fn start_automatic_checks(app: tauri::AppHandle) {
             tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cancelled_check_cannot_commit_a_ready_result() {
+        let (sender, receiver) = watch::channel(false);
+        sender.send(true).unwrap();
+        let mut committed = false;
+        let result =
+            tauri::async_runtime::block_on(cancellable(receiver, "update.cancel_check", async {
+                committed = true;
+                Ok(())
+            }));
+        assert_eq!(result.unwrap_err().key, "update.cancel_check");
+        assert!(!committed);
+    }
 }

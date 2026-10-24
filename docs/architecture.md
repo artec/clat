@@ -1372,6 +1372,18 @@ own root before restoring authenticated metadata into the official updater.
 No standalone signature assets or legacy updater compatibility are published.
 This distribution format does not change Host identity or shared business data.
 
+`desktop/src/update/state.rs` owns exclusive check/download/wait/install phases,
+cancellation and retained verified bytes. `update.rs` coordinates authenticated
+metadata, the official updater and the read-only Host readiness port. Restored
+updates initialize the existing rustls ring provider explicitly and give package
+downloads a timeout. Installation runs on a blocking worker; cancellation ends
+at the atomic transition into native installation. The bridge only renders state
+and guards page-local drafts; menu events reuse the same commands. Waiting or
+installing preserves the current page, suppressing notification navigation and
+backend reconciliation during the operation; automatic reconciliation resumes
+afterwards. CLI and cached Host files are
+outside the GUI install target.
+
 The v2.2.0 shared-Host coordinator lives in `src/host_client/reconcile.rs`.
 `PackagedBackend::reconcile` owns existing-Host discovery, compatible attachment
 and initial idle activation; its `BackendConnection` client-port result keeps

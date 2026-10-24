@@ -96,6 +96,14 @@ The app checks on startup and every 24 hours; automatic checking can be disabled
 A page indicator announces available updates. Checking never downloads or installs
 without a user action. The panel exposes download progress, install and cancellation.
 
+On macOS, choose **CLAT → Check for updates** to open the update panel and check
+GitHub. On both platforms, open **Settings and about** on the welcome page or use
+the desktop button in the workbench sidebar; Windows has no application menu bar.
+The panel identifies
+the available desktop version and shows download progress. Choose **Download
+update**, then **Install version …** after signature verification. Successful
+installation restarts the desktop app. Background checks only announce updates.
+
 The desktop updater and `clat upgrade` have separate installation targets and
 signing roots. Neither overwrites the other's executable. Both use the same
 formal release version and publication batch.
@@ -106,12 +114,23 @@ version. Downgrades, malformed metadata and invalid signatures are rejected.
 Installation waits for Host-owned readiness across projects. Cancellation leaves
 work running; a new task racing the check keeps its original cached Host alive.
 
-Text drafts are currently page-local. Send or clear the composer before applying
-an update or opening another project. Image drafts, approvals, queues and active
+Text drafts are currently page-local. Before updating, send or clear unsent text
+and images in every session, and finish any input-method composition. Pending
+steering that might restore a draft also blocks installation. Before opening
+another project, finish the current draft. Image drafts, approvals, queues and active
 runs also block backend takeover; the updater never clears them to make progress.
-The text composer stays read-only while installation is waiting; cancelling the
-wait restores editing.
-Download/install failures leave business data intact and expose a retry path.
+The composer and attachment inputs stay locked while installation is waiting;
+cancelling the wait restores editing. Checking and downloading can also be cancelled.
+Once native installation begins, it cannot be cancelled or interrupted by quitting
+the desktop app. An operation in progress excludes repeated update requests.
+
+Download or verification failures allow another download. If native installation
+returns an error before handing off to the Windows installer, the same verified
+package remains available for retry during this desktop session. A restart requires
+downloading it again. The panel also links to the official GitHub installer for
+manual recovery. After a Windows installer takes over, its own result UI reports
+any later installation failure; reopen CLAT or use the installer to retry.
+Neither failure recovery nor cancellation stops the shared Host or clears its data.
 
 macOS release artifacts use Developer ID signing, Apple notarization and stapled
 tickets. Windows' initial release has no Authenticode publisher signature and may

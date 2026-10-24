@@ -362,6 +362,7 @@ const state = {
   marketFallback: false,
   workbenchRequest: 0,
   composerGeneration: 0,
+  desktopUpdateLocked: false,
   suggestionRequest: 0,
   suggestionPending: false,
   suggestion: null,
@@ -445,6 +446,19 @@ for (const id of [
 ]) {
   dom[id] = document.getElementById(id);
 }
+
+// The desktop shell asks synchronously before starting an installation wait.
+// No RPC or draft mutation is performed by these display-only guards.
+window.addEventListener('clat-desktop-install-lock',event=>{
+  if(!window.__TAURI__)return;
+  const heldText=[...composerDrafts].some(([owner,draft])=>owner!==composerScope&&draft.text.trim());
+  if(dom.prompt.value.trim()||state.draft.images.length||state.draft.sending||pendingTextSteering.size||heldText||state.switching||state.compactionActive) {event.preventDefault();return;}
+  state.desktopUpdateLocked=true;syncInteractionControls();
+});
+window.addEventListener('clat-desktop-install-unlock',()=>{
+  if(!window.__TAURI__)return;
+  state.desktopUpdateLocked=false;syncInteractionControls();
+});
 
 function applyPresentation() {
   document.documentElement.dataset.theme = state.theme;
@@ -2415,7 +2429,7 @@ function renderSuggestion() {
 
 function syncSuggestionControl() {
   const enabled = Boolean(state.utilitySettings && state.utilitySettings.suggestions_enabled);
-  const disabled = state.suggestionPending || !enabled || state.runActive
+  const disabled = state.desktopUpdateLocked || state.suggestionPending || !enabled || state.runActive
     || state.compactionActive || state.switching || !state.sessionId;
   dom.suggest.disabled = disabled;
   dom.suggest.dataset.pending = String(state.suggestionPending);
@@ -2428,7 +2442,7 @@ function syncSuggestionControl() {
 }
 
 function syncInteractionControls() {
-  const locked = state.switching || state.compactionActive;
+  const locked = state.switching || state.compactionActive || state.desktopUpdateLocked;
   dom.send.disabled = locked;
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked;
@@ -3517,6 +3531,7 @@ async function uploadDraftImage(image, epoch) {
 }
 
 async function addDraftFiles(files) {
+  if(state.desktopUpdateLocked)return;
   if (state.compactionActive || state.switching) {
     updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
     return;
@@ -3626,6 +3641,7 @@ async function requestSuggestion() {
 }
 
 function useSuggestion() {
+  if(state.desktopUpdateLocked)return;
   if (!state.suggestion || state.suggestion.composerGeneration !== state.composerGeneration) {
     hide(dom['suggestion-panel']);
     return;
@@ -3645,6 +3661,7 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 }
 
 async function submitPrompt() {
+  if(state.desktopUpdateLocked)return;
   if (state.compactionActive || state.switching) {
     updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
     return;

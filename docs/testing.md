@@ -971,3 +971,28 @@ queue/receipt assertions. They reject malformed display metadata and guard
 against static placeholders overriding newer text or accessibility bindings.
 The catalog checker rejects translation calls used as `el` CSS class arguments;
 selectors and status identities must remain independent of language.
+
+### GitHub desktop update lifecycle
+
+Run `cargo test -p clat-desktop --bin clat-desktop --locked` on a supported native
+platform. The updater tests use throwaway fixture signatures and bounded loopback
+HTTP servers to exercise network failure, tampering, successful download and a
+macOS temporary bundle replacement. CLI and a leased backend fixture must retain
+exactly their original bytes. No production key or installed app is involved.
+State tests cover exclusive operations, retained verified bytes after failure,
+cancellation at the wait-to-install handoff, irreversible installation, and the
+package size limit. TLS initialization is part of the real download path; restored
+metadata must work without first calling the plugin's network `check()` method.
+
+From `web/e2e`, run `bun x playwright test --config playwright.desktop.config.js`
+for menu events, progress controls, local concurrency, retained errors, retry and
+language changes. `bun x playwright test tests/desktop-update.spec.js` separately
+uses an isolated Host to check actual workbench text/image/hidden-session drafts,
+late image selection and restored editing. These are not native window tests.
+
+Before claiming platform release acceptance, install N in an isolated macOS or
+Windows account, update to N+1 through its real menu/page, and reopen it. Verify
+that the new desktop version runs, CLI bytes remain unchanged and the cached Host
+survives. Windows NSIS handoff/restart and macOS signed bundle permissions need
+native verification; mock commands and a temporary test bundle do not establish
+those results. Keep the real shared Host and signing credentials out of local tests.

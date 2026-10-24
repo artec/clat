@@ -43,7 +43,8 @@ pub async fn desktop_info(
             "hostVersion":host_version,"hostConnected":host_connected,"backendError":state.backend_error,"connectionError":connection_error,
             "hostStatus":host_status,"backendPending":backend_pending,
             "autoCheck":update.auto_check,"updateStatus":update.status.as_ref().map(|m|crate::localization::context(&app).render(m)),"updatePresentation":update.status,"updateAvailable":update.pending.is_some(),
-            "downloaded":update.bytes.is_some(),"updateBusy":update.busy}))
+            "downloaded":update.bytes.is_some(),"updateBusy":update.busy(),"updatePhase":update.phase.id(),"updateCancellable":update.cancellable(),
+            "updateVersion":update.pending.as_ref().map(|u|u.version.clone()),"updateReceived":update.received,"updateTotal":update.total}))
     }).await.map_err(|_| "desktop info worker failed")?
 }
 
@@ -125,8 +126,7 @@ pub fn desktop_cancel_update(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     guard(&window)?;
-    crate::update::cancel(&app);
-    Ok(())
+    crate::update::cancel(&app).map_err(|m| crate::localization::context(&app).render(&m))
 }
 #[tauri::command]
 pub fn desktop_locale(
@@ -150,9 +150,18 @@ pub fn desktop_preferences(
 #[tauri::command]
 pub fn desktop_quit(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     guard(&window)?;
-    app.state::<Desktop>()
+    let state = app.state::<Desktop>();
+    let updates = state
+        .updates
+        .lock()
+        .map_err(|_| "update state unavailable")?;
+    if !updates.allow_exit(false) {
+        return Err(crate::localization::text(&app, "update.cannot_cancel").into());
+    }
+    state
         .quitting
         .store(true, std::sync::atomic::Ordering::Release);
+    drop(updates);
     app.exit(0);
     Ok(())
 }

@@ -36,6 +36,10 @@ pub fn start(app: tauri::AppHandle) {
 fn focus_notification(app: &tauri::AppHandle, client: HostClient, notice: HostNotification) {
     let state = app.state::<Desktop>();
     let _connection = state.connection.lock().expect("connection state");
+    if state.updates.lock().expect("updates").preserve_page() {
+        crate::app::show(app);
+        return;
+    }
     let current = state.host.lock().expect("host state").clone();
     if current.is_some_and(|h| h.instance_id() == client.instance_id())
         && let Ok(client) = client.focus_notification(&notice)
