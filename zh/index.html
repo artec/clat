@@ -382,7 +382,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.0.0 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.1.4 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -391,27 +391,27 @@
         <div class="row"><span class="dim"># 把同一套 TUI 变成 DSH 宿主的终端客户端</span></div>
         <div class="row"><span class="p">❯</span><span>clat plugin</span></div>
         <div class="row"><span class="dim"># 浏览签名插件市场，一条命令安装</span></div>
-        <div class="row"><span class="p">❯</span><span>clat upgrade</span></div>
-        <div class="row"><span class="dim"># 自更新到最新 GitHub Release</span></div>
+        <div class="row"><span class="p">❯</span><span>clat web</span></div>
+        <div class="row"><span class="dim"># 配置原生网页搜索与抓取工具</span></div>
       </div>
       <div class="hero-links">
         <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.0.0 实测 11.3 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.1.4 实测 13.7 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">11.3 MB</div>
+          <div class="stat-number">13.7 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
-          <div class="stat-number">6 种</div>
-          <div class="stat-label">支持平台：macOS / Linux / Windows</div>
+          <div class="stat-number">5 个</div>
+          <div class="stat-label">客户端：TUI / 桌面 / Web / 微信 / DSH</div>
         </div>
         <div class="stat">
           <div class="stat-number">5 个</div>
-          <div class="stat-label">预设厂商：DS / GLM / Qwen / Kimi / Hy</div>
+          <div class="stat-label">界面语言：中文简繁 / English，随系统自动</div>
         </div>
       </div>
     </header>
@@ -489,17 +489,17 @@
         <div class="feature-cell">
           <p class="feature-label">06 — 集成</p>
           <h3>MCP 原生</h3>
-          <p>MCP 服务器支持 stdio 与 Streamable HTTP 远程传输，GLM Coding Plan 自动挂载官方四台服务器；<code>/mcp</code> 查看连接状态与已注册工具，官方 DSH 网页搜索套件可从市场一键安装。</p>
+          <p>MCP 服务器支持 stdio 与 Streamable HTTP，GLM Coding Plan 自动挂载官方四台服务器；<code>/web</code> 配置原生网页搜索与抓取工具，官方 DSH 网页搜索套件也可从市场安装。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">07 — 智能体</p>
           <h3>记忆、目标与子代理</h3>
-          <p>记忆由你显式管理，模型只读检索、绝不自动把对话写成记忆；<code>/goal</code> 设定带轮数、令牌、时长硬上限的会话目标，验收条件自动核验；<code>/subagents on</code> 派只读子代理并行探索，用量计入父会话。</p>
+          <p>记忆由你显式管理，模型只读检索、绝不自动把对话写成记忆；<code>/jobs</code> 与 <code>/schedule</code> 派后台任务与定时调度，按时间或任务完成自动触发，进度随时可查；只读子代理并行探索，用量计入父会话。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">08 — 持久化</p>
           <h3>崩溃安全的会话持久化</h3>
-          <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近的完整批次；DSH 兼容格式可被其他工具直接读取，旧格式经 <code>/update</code> 一键升级；输入历史按会话跨端共用。</p>
+          <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近批次；DSH 兼容格式可被其他工具读取，<code>/history</code> 对已提交会话全文检索；输入历史按会话跨端共用。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">09 — 技能</p>
@@ -518,8 +518,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — 前端</p>
-          <h3>后台宿主与多端挂接</h3>
-          <p><code>clat</code> 启动后台宿主：TUI、Web 工作台、微信遥控挂接同一批会话，关掉 TUI 宿主照常运行，新版 CLAT 自动平滑替换旧宿主、首启自动开浏览器；工作台含工作区审查、文件浏览、会话搜索与命令面板。</p>
+          <h3>多端与桌面版</h3>
+          <p><code>clat</code> 启动后台宿主：TUI、Web 工作台、微信遥控挂接同一批会话，关掉 TUI 宿主照常运行；macOS / Windows 桌面版独立安装、共享数据、自带更新。界面三语（中文简繁 / English），随系统自动切换。</p>
         </div>
       </div>
     </section>
