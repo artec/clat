@@ -76,6 +76,7 @@ mod actions;
 mod attachments;
 mod bell;
 mod dialogs;
+mod history;
 mod keys;
 mod popup;
 mod render;

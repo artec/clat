@@ -101,6 +101,9 @@ impl TrustedProjectApplication {
                 project: project.clone(),
                 storage_root: storage_root.clone(),
                 control: Arc::clone(&control),
+                history_index: Arc::clone(&storage.history),
+                job_capacity: Arc::clone(&storage.job_capacity),
+                scheduler: Arc::clone(&storage.scheduler),
                 sessions: Arc::clone(&session_service),
                 provider_plugins,
                 permission_modes,
@@ -141,6 +144,10 @@ impl TrustedProjectApplication {
         subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
         permission_modes: bool,
     ) -> Self {
+        let canonical_root = project
+            .root()
+            .canonicalize()
+            .unwrap_or_else(|_| project.root().to_path_buf());
         let language_startup_notice = Arc::new(Mutex::new(ports.language_startup_diagnostic));
         let control = Arc::clone(&storage.control);
         let draft_images = Arc::new(crate::draft::DraftImageStore::new(control.root_path()));
@@ -151,8 +158,13 @@ impl TrustedProjectApplication {
             control,
             draft_images,
             config: ports.config,
+            web: ports.web,
+            history: ports.history,
+            jobs: ports.jobs,
+            scheduler: ports.scheduler,
             providers: ports.providers,
             tools: ports.tools,
+            tool_pipeline: ports.tool_pipeline,
             prompts: ports.prompts,
             dynamic_instructions: ports.dynamic_instructions,
             process_service: ports.process_service,
@@ -177,10 +189,7 @@ impl TrustedProjectApplication {
             title_worker: None,
             subscribers,
             language_startup_notice,
-            canonical_root: project
-                .root()
-                .canonicalize()
-                .unwrap_or_else(|_| project.root().to_path_buf()),
+            canonical_root,
             workspace_id: None,
             selection: None,
             fresh_session_open: true,
@@ -1191,7 +1200,7 @@ impl TrustedProjectApplication {
     }
 
     pub fn model_state(&self) -> Result<(ModelConfig, ProviderCredentials), ApplicationError> {
-        let (mut config, credentials) = self
+        let (config, credentials) = self
             .config
             .load_model_state()
             .map_err(store_error)?
@@ -1200,16 +1209,7 @@ impl TrustedProjectApplication {
                 let credentials = ProviderCredentials::for_protocol(config.protocol);
                 (config, credentials)
             });
-        // INV-MM2-3 冻结合并序：①旧配置迁移（版本门，只在首次 load
-        // 逐字段生成 overrides）→ ②preset-managed 默认 stamp →
-        // ③typed 显式 overrides（含 thinking_level 的厂商映射——
-        // 在这**一次**完成，此后不得再改 extra_body）。④allowlisted
-        // extra 层在 provider 请求构造时合并（null = tombstone）。
-        config.migrate_legacy_overrides();
-        if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
-            preset.apply(&mut config);
-        }
-        config.apply_overrides();
+        let config = config.normalized();
         Ok((config, credentials))
     }
 
@@ -1616,6 +1616,9 @@ impl TrustedProjectApplication {
             && let Err(error) = worker.shutdown()
         {
             errors.push(error.to_string());
+        }
+        if let Err(error) = self.jobs.close() {
+            errors.push(error.presentation().english());
         }
         if let Err(error) = self.sessions.quiesce_active() {
             errors.push(format!("session quiesce failed: {error}"));

@@ -203,6 +203,10 @@ fn builtin_specs() -> Vec<CommandSpec> {
         },
     ]);
     entries.push(crate::tool::capabilities::command_spec());
+    entries.push(crate::web_tools::command::spec());
+    entries.push(crate::background_jobs::command::spec());
+    entries.push(crate::scheduler::command::spec());
+    entries.push(crate::session_query::command::spec());
     entries
 }
 
@@ -489,6 +493,9 @@ mod tests {
                 "/resume",
                 "/rename",
                 "/task",
+                "/history",
+                "/jobs",
+                "/schedule",
                 "/compact",
                 "/context",
                 "/model",
@@ -498,13 +505,14 @@ mod tests {
                 "/skill, /skills",
                 "/plugin",
                 "/capabilities",
+                "/web",
                 "/mem, /memory",
                 "/goal",
                 "/sub, /subagents",
                 "/help",
                 "/quit, /exit",
             ],
-            "the catalog must fold to the authoritative eighteen-row table"
+            "the catalog must fold to the authoritative twenty-one-row table"
         );
         // 附加工单（2026-09-03 负责人令）：`/vision-probe` 不进帮助目录
         //（listed = false），但仍可派发——隐藏 ≠ 下线。判定只区分

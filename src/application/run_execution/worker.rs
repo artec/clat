@@ -37,6 +37,7 @@ impl RunWorker {
             header_reason,
             context,
         } = start;
+        deps.jobs.bind(input.session_id.clone());
         if let Some(todo) = &deps.todo_service {
             todo.bind_run(&input.session_id, Arc::clone(&input.journal));
         }
@@ -75,6 +76,10 @@ impl RunWorker {
             captured_text,
             ui_sink,
         }
+    }
+    fn clear_run_slots(&self) {
+        self.deps.jobs.unbind();
+        self.deps.slots.clear();
     }
     pub(super) fn run(mut self) {
         let result = self.rounds();
@@ -290,7 +295,7 @@ impl RunWorker {
                 Err(failure)
             }
         };
-        self.deps.slots.clear();
+        self.clear_run_slots();
         let sampled = self
             .deps
             .sampling_usage
@@ -332,6 +337,7 @@ impl RunWorker {
                 credentials: self.deps.credentials.clone(),
             });
         }
+        let result = self.close_target(result);
         let result = result
             .map(|mut done| {
                 done.receipt = self.input.receipt.clone();
@@ -343,5 +349,28 @@ impl RunWorker {
             });
         self.deps.busy.store(false, Ordering::Release);
         let _ = self.deps.completion.send(result);
+    }
+}
+
+impl RunWorker {
+    fn close_target(&self, result: ApplicationRunResult) -> ApplicationRunResult {
+        match (
+            result,
+            self.deps.target.as_ref().map_or(Ok(()), |t| t.close()),
+        ) {
+            (result, Ok(())) => result,
+            (Ok(done), Err(error)) => Err(ApplicationRunFailure {
+                receipt: done.receipt,
+                error: format!("target cleanup failed: {error}"),
+                turns: done.turns,
+                usage: done.usage,
+            }),
+            (Err(mut failure), Err(error)) => {
+                failure
+                    .error
+                    .push_str(&format!("; target cleanup failed: {error}"));
+                Err(failure)
+            }
+        }
     }
 }

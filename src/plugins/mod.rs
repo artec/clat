@@ -14,7 +14,7 @@ mod language_intelligence;
 mod mcp;
 mod monitor;
 mod permission;
-mod process;
+pub(crate) mod process;
 mod providers;
 mod run_scope;
 mod search;
@@ -88,3 +88,10 @@ pub(crate) use permission::network_test_factory_with_access;
 pub(crate) use process::acceptance::{
     command_observation, command_plan, prior_command_matches, task_checkers,
 };
+
+pub(crate) use apply_patch::execution_tool as target_patch_tool;
+pub(crate) use goal::execution_tool as target_goal_tool;
+pub(crate) use instructions::execution_observer as target_instruction_observer;
+pub(crate) use permission::execution_factory as target_permission_factory;
+pub(crate) use plan_mode::execution_tool as target_plan_tool;
+pub(crate) use todo::execution_tool as target_todo_tool;

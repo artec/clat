@@ -33,6 +33,25 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "workspace.list",
     "workspace.open",
     "workbench.info",
+    "jobs.list",
+    "schedule.list",
+    "schedule.deliveries",
+    "schedule.create",
+    "schedule.update",
+    "schedule.review",
+    "schedule.confirm",
+    "schedule.pause",
+    "schedule.resume",
+    "schedule.delete",
+    "schedule.reload",
+    "jobs.output",
+    "jobs.kill",
+    "jobs.retry",
+    "history.search",
+    "history.events",
+    "history.event.read",
+    "web.settings.get",
+    "web.settings.set",
     "interaction.catalog",
     "workspace.changes",
     "workspace.diff",
@@ -359,24 +378,7 @@ fn dispatch_guarded_project(
     params: &Value,
     shared: &Arc<ServeShared>,
 ) -> Result<Value, RpcError> {
-    let mutating = matches!(
-        method,
-        "session.new"
-            | "session.switch"
-            | "session.rename"
-            | "session.organize"
-            | "session.compact"
-            | "permission.set"
-            | "draft.open"
-            | "command.run"
-            | "prompt.send"
-            | "steer.send"
-            | "queue.enqueue"
-            | "queue.recall"
-            | "run.cancel"
-            | "model.overrides.set"
-            | "turn.restore"
-    );
+    let mutating = project_mutation(method);
     let _mutation = mutating.then(|| shared.rpc_mutations.lock().expect("project RPC mutation"));
     if mutating && shared.is_shutting_down() {
         return Err(RpcError::busy(
@@ -1076,7 +1078,18 @@ fn command_reply(
         crate::CommandOutcome::ShowCapabilities(message) => {
             Ok(json!({"kind":"capabilities", "message":message}))
         }
+        crate::CommandOutcome::QueryHistory(request) => {
+            let reader = with_app(shared, |app| Ok(app.history_reader())).map_err(app_error)?;
+            let view = reader
+                .execute(request, &crate::CancelToken::new())
+                .map_err(app_error)?;
+            Ok(json!({"kind":"history","history":view}))
+        }
         crate::CommandOutcome::ShowTask(message) => Ok(json!({"kind":"task", "message":message})),
+        crate::CommandOutcome::ShowJobs(jobs) => Ok(json!({"kind":"jobs", "jobs":jobs})),
+        crate::CommandOutcome::ShowSchedules(value) => {
+            Ok(json!({"kind":"schedules","schedules":value}))
+        }
         crate::CommandOutcome::StartTaskRun(request) => {
             let id = claimed_goal_run.ok_or_else(|| RpcError::internal("task run lacks claim"))?;
             start_goal_run(shared, id, Some(request))
@@ -1492,6 +1505,19 @@ fn dispatch_workbench_tools(
     params: &Map<String, Value>,
 ) -> Option<Result<Value, RpcError>> {
     Some(match method {
+        "web.settings.get" => with_app(shared, |app| app.web_settings())
+            .map_err(app_error)
+            .and_then(|v| {
+                serde_json::to_value(v).map_err(|e| RpcError::bad_request(e.to_string()))
+            }),
+        "web.settings.set" => dispatch_web_settings(shared, params),
+        _ if method.starts_with("schedule.") => super::schedules::dispatch(shared, method, params),
+        "jobs.list" | "jobs.output" | "jobs.kill" | "jobs.retry" => {
+            dispatch_jobs(shared, method, params)
+        }
+        "history.search" | "history.events" | "history.event.read" => {
+            dispatch_history_query(shared, method, params)
+        }
         "turn.changes" | "turn.restore" => dispatch_turn_review(shared, method, params),
         "files.search" | "files.preview" | "files.reference" => {
             dispatch_files(shared, method, params)
@@ -1501,6 +1527,97 @@ fn dispatch_workbench_tools(
         "tasks.list" | "tasks.logs" => dispatch_tasks(shared, method, params),
         _ => return None,
     })
+}
+
+fn job_request_error() -> RpcError {
+    let message = crate::i18n::UiMessage::new("job.invalid_request");
+    RpcError::bad_request(message.english()).with_presentation(message)
+}
+
+fn dispatch_jobs(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let reader = with_app(shared, |app| Ok(app.jobs_reader())).map_err(app_error)?;
+    let result = match method {
+        "jobs.list" => return Ok(json!({"jobs":reader.list().map_err(app_error)?})),
+        "jobs.output" => {
+            let id = params
+                .get("job_id")
+                .and_then(Value::as_str)
+                .ok_or_else(job_request_error)?;
+            let offset = match params.get("offset") {
+                None => 0,
+                Some(value) => value.as_u64().ok_or_else(job_request_error)?,
+            };
+            serde_json::to_value(reader.read_output(id, offset).map_err(app_error)?)
+        }
+        "jobs.kill" | "jobs.retry" => {
+            let id = params
+                .get("job_id")
+                .and_then(Value::as_str)
+                .ok_or_else(job_request_error)?;
+            if params.get("confirm").and_then(Value::as_str) != Some(id) {
+                let message = crate::i18n::UiMessage::new("job.stop_confirm");
+                return Err(RpcError::bad_request(message.english()).with_presentation(message));
+            }
+            serde_json::to_value(
+                if method == "jobs.retry" {
+                    reader.retry_settlement(id)
+                } else {
+                    reader.kill(id)
+                }
+                .map_err(app_error)?,
+            )
+        }
+        _ => unreachable!(),
+    };
+    result.map_err(|e| RpcError::internal(e.to_string()))
+}
+
+fn dispatch_history_query(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let reader = with_app(shared, |app| Ok(app.history_reader())).map_err(app_error)?;
+    let cancel = crate::CancelToken::new();
+    let value = Value::Object(params.clone());
+    fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
+        serde_json::from_value(value).map_err(|_| {
+            let message = crate::i18n::UiMessage::new("history.invalid_query").arg("detail", "");
+            RpcError::bad_request(message.english()).with_presentation(message)
+        })
+    }
+    let result = match method {
+        "history.search" => {
+            serde_json::to_value(reader.search(decode(value)?, &cancel).map_err(app_error)?)
+        }
+        "history.events" => {
+            serde_json::to_value(reader.events(decode(value)?, &cancel).map_err(app_error)?)
+        }
+        "history.event.read" => {
+            serde_json::to_value(reader.read(decode(value)?, &cancel).map_err(app_error)?)
+        }
+        _ => unreachable!(),
+    };
+    result.map_err(|e| RpcError::internal(e.to_string()))
+}
+
+fn dispatch_web_settings(
+    shared: &Arc<ServeShared>,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let edit = serde_json::from_value(Value::Object(params.clone())).map_err(|_| {
+        let message = crate::i18n::UiMessage::new("webtool.invalid_settings");
+        RpcError::bad_request(message.english()).with_presentation(message)
+    })?;
+    with_app(shared, |app| app.save_web_settings(edit))
+        .map_err(app_error)
+        .and_then(|view| {
+            serde_json::to_value(view).map_err(|e| RpcError::bad_request(e.to_string()))
+        })
 }
 
 fn dispatch_tasks(
@@ -1698,12 +1815,10 @@ fn with_app<T>(
     call(&mut app)
 }
 
-fn app_error(error: ApplicationError) -> RpcError {
+pub(super) fn app_error(error: ApplicationError) -> RpcError {
     let receipt = error.admission_receipt().cloned().map(Box::new);
     RpcError::internal(error.to_string())
-        .with_presentation(
-            crate::i18n::UiMessage::new("common.error").arg("detail", error.to_string()),
-        )
+        .with_presentation(error.presentation())
         .with_receipt(receipt)
 }
 
@@ -1868,6 +1983,28 @@ fn context_reply(snapshot: crate::ContextEstimateSnapshot) -> Result<Value, RpcE
             })).collect::<Vec<_>>(),
         }
     }))
+}
+
+fn project_mutation(method: &str) -> bool {
+    matches!(
+        method,
+        "session.new"
+            | "session.switch"
+            | "session.rename"
+            | "session.organize"
+            | "session.compact"
+            | "permission.set"
+            | "draft.open"
+            | "command.run"
+            | "prompt.send"
+            | "steer.send"
+            | "queue.enqueue"
+            | "queue.recall"
+            | "run.cancel"
+            | "model.overrides.set"
+            | "turn.restore"
+    ) || method.starts_with("schedule.")
+        && !matches!(method, "schedule.list" | "schedule.deliveries")
 }
 
 #[cfg(test)]

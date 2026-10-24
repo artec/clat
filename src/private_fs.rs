@@ -6,6 +6,8 @@
 //! an already-open capability directory and a single file name; this module
 //! owns symlink rejection, 0600 temporary files, fsync, and atomic publish.
 
+mod read;
+pub(crate) use read::read_private_text;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};

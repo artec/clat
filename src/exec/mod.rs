@@ -590,61 +590,41 @@ fn run_headless_command(
         }
     } else {
         match application.dispatch_command(command) {
-            Ok(CommandOutcome::StartCompaction(handle)) => match handle.join_report() {
-                // 外层 Err = join 失败（worker 崩溃）；内层 Err = 压缩自身的
-                // 失败报告。
-                Ok(Ok(report)) => {
-                    if !args.quiet {
-                        write_status(
-                            &io.error,
-                            io_state,
-                            format_args!("● {}\n", io.locale.render(&report.status_presentation())),
-                        );
-                    }
-                    ExecOutcome::Success {
-                        output: String::new(),
-                        turns: 0,
-                        usage: Usage::default(),
-                    }
-                }
-                Ok(Err(message)) => ExecOutcome::Failure((message).into()),
-                Err(error) => ExecOutcome::Failure((error.to_string()).into()),
-            },
-            Ok(CommandOutcome::StartVisionProbe(handle)) => match handle.join_report() {
-                // VP-1：headless 腿同步等判定；报告一行式打印。
-                Ok(report) => {
-                    if !args.quiet {
-                        write_status(
-                            &io.error,
-                            io_state,
-                            format_args!("● {}\n", io.locale.render(&report.status_presentation())),
-                        );
-                    }
-                    match report.outcome {
-                        crate::application::VisionProbeOutcome::Pass => ExecOutcome::Success {
-                            output: String::new(),
-                            turns: 0,
-                            usage: Usage::default(),
-                        },
-                        crate::application::VisionProbeOutcome::Rejected
-                        | crate::application::VisionProbeOutcome::SilentDrop => {
-                            ExecOutcome::Failure(report.status_presentation().into())
-                        }
-                        crate::application::VisionProbeOutcome::Inconclusive => {
-                            ExecOutcome::Failure(report.status_presentation().into())
-                        }
-                    }
-                }
-                Err(error) => ExecOutcome::Failure((error.to_string()).into()),
-            },
+            Ok(CommandOutcome::StartCompaction(handle)) => {
+                finish_command_compaction(handle, args, io, io_state)
+            }
+            Ok(CommandOutcome::StartVisionProbe(handle)) => {
+                finish_headless_probe(handle, args, io, io_state)
+            }
             Ok(CommandOutcome::ShowHelp { commands }) => write_help_view(&commands, io, io_state),
             Ok(CommandOutcome::ShowMcpStatus(status)) => write_mcp_view(status, io, io_state),
             Ok(CommandOutcome::ShowMemory(view)) => {
                 write_content_view(view.localized_text(io.locale), io, io_state)
             }
+            Ok(CommandOutcome::QueryHistory(request)) => match application
+                .history_reader()
+                .execute(request, &crate::CancelToken::new())
+            {
+                Ok(view) => write_content_view(
+                    serde_json::to_string_pretty(&view).unwrap_or_default(),
+                    io,
+                    io_state,
+                ),
+                Err(error) => ExecOutcome::Failure(error.presentation().into()),
+            },
             Ok(CommandOutcome::ShowTask(text) | CommandOutcome::ShowCapabilities(text)) => {
                 write_content_view(text, io, io_state)
             }
+            Ok(CommandOutcome::ShowJobs(value)) => write_content_view(
+                crate::background_jobs::command::display(&value, io.locale),
+                io,
+                io_state,
+            ),
+            Ok(CommandOutcome::ShowSchedules(value)) => write_content_view(
+                crate::scheduler::command::display(&value, io.locale),
+                io,
+                io_state,
+            ),
             Ok(CommandOutcome::StartTaskRun(_)) => {
                 ExecOutcome::Failure("task continuation was not routed to execution".into())
             }
@@ -1357,3 +1337,66 @@ where
 
 #[cfg(test)]
 mod tests;
+
+fn finish_command_compaction(
+    handle: crate::CompactHandle,
+    args: &ExecArgs,
+    io: &ExecIo,
+    io_state: &SharedIoState,
+) -> ExecOutcome {
+    match handle.join_report() {
+        // 外层 Err = join 失败（worker 崩溃）；内层 Err = 压缩自身的
+        // 失败报告。
+        Ok(Ok(report)) => {
+            if !args.quiet {
+                write_status(
+                    &io.error,
+                    io_state,
+                    format_args!("● {}\n", io.locale.render(&report.status_presentation())),
+                );
+            }
+            ExecOutcome::Success {
+                output: String::new(),
+                turns: 0,
+                usage: Usage::default(),
+            }
+        }
+        Ok(Err(message)) => ExecOutcome::Failure((message).into()),
+        Err(error) => ExecOutcome::Failure((error.to_string()).into()),
+    }
+}
+
+fn finish_headless_probe(
+    handle: crate::application::VisionProbeHandle,
+    args: &ExecArgs,
+    io: &ExecIo,
+    io_state: &SharedIoState,
+) -> ExecOutcome {
+    match handle.join_report() {
+        // VP-1：headless 腿同步等判定；报告一行式打印。
+        Ok(report) => {
+            if !args.quiet {
+                write_status(
+                    &io.error,
+                    io_state,
+                    format_args!("● {}\n", io.locale.render(&report.status_presentation())),
+                );
+            }
+            match report.outcome {
+                crate::application::VisionProbeOutcome::Pass => ExecOutcome::Success {
+                    output: String::new(),
+                    turns: 0,
+                    usage: Usage::default(),
+                },
+                crate::application::VisionProbeOutcome::Rejected
+                | crate::application::VisionProbeOutcome::SilentDrop => {
+                    ExecOutcome::Failure(report.status_presentation().into())
+                }
+                crate::application::VisionProbeOutcome::Inconclusive => {
+                    ExecOutcome::Failure(report.status_presentation().into())
+                }
+            }
+        }
+        Err(error) => ExecOutcome::Failure((error.to_string()).into()),
+    }
+}

@@ -174,6 +174,7 @@ fn installed_bridge_with(
         ..ModelConfig::default()
     };
     bridge.install(RunHostContext {
+        runtime: None,
         providers,
         model_config: config,
         credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
@@ -326,6 +327,7 @@ fn stop_sequences_warning_fires_once_per_run() {
     let usage_cell = Arc::new(Mutex::new(Usage::default()));
     let budget = Arc::new(Mutex::new(SamplingBudget::per_run()));
     bridge.install(RunHostContext {
+        runtime: None,
         providers: providers_with(CannedFactory {
             text: "ok",
             usage: None,
@@ -708,6 +710,7 @@ fn sampling_budget_lock_poisoning_fails_closed() {
     let bridge = PluginHostBridge::shared();
     let usage_cell = Arc::new(Mutex::new(Usage::default()));
     bridge.install(RunHostContext {
+        runtime: None,
         providers: providers_with(CountingFactory {
             text: "never",
             usage: None,
@@ -928,6 +931,7 @@ fn elicitation_asks_fields_in_order_and_assembles_content() {
 fn elicitation_size_gates_live_in_the_bridge_not_the_mcp_parser() {
     let bridge = PluginHostBridge::shared();
     bridge.install(RunHostContext {
+        runtime: None,
         providers: providers_with(CannedFactory {
             text: "never",
             usage: None,
@@ -1122,6 +1126,7 @@ fn elicitation_declined_and_cancelled_map_to_actions() {
     let cancel = CancelToken::new();
     cancel.cancel();
     bridge.install(RunHostContext {
+        runtime: None,
         providers: providers(),
         model_config: ModelConfig::default(),
         credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
@@ -1650,6 +1655,7 @@ fn allow_arriving_after_the_run_ends_makes_no_model_call() {
     }
     let bridge = PluginHostBridge::shared();
     bridge.install(RunHostContext {
+        runtime: None,
         providers: providers_with(CountingFactory {
             text: "never",
             usage: None,

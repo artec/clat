@@ -12,6 +12,7 @@ mod context;
 mod credentials;
 pub(crate) mod discovery;
 mod error;
+mod history;
 mod info;
 mod lifecycle;
 pub use lifecycle::HostManagementArgs;
@@ -97,6 +98,32 @@ impl HostClient {
         let root = crate::control_storage::sentinel::default_storage_root()?;
         let token = credentials::read_token(&root)?;
         Self::connect(port, token, &root)
+    }
+    /// Read-only CLI queries must select an already mounted project, never the
+    /// Host's bootstrap project or an implicitly trusted/newly mounted project.
+    pub fn connect_current_project(
+        port: u16,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<Self, String> {
+        let project = crate::Project::current().map_err(|e| e.to_string())?;
+        Self::connect_local(port)?.for_mounted_project(project.root(), locale)
+    }
+    pub fn for_mounted_project(
+        &self,
+        root: &Path,
+        locale: crate::i18n::LocaleContext,
+    ) -> Result<Self, String> {
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        let projects = self.call("workspace.list", &json!({}))?;
+        let id = projects["workspaces"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r["root"].as_str().is_some_and(|p| Path::new(p) == root))
+            })
+            .and_then(|r| r["id"].as_str())
+            .ok_or_else(|| locale.text("host.project_not_mounted").to_owned())?;
+        self.with_project_route(id)
     }
     pub fn connect(port: u16, token: String, expected_root: &Path) -> Result<Self, String> {
         Self::connect_checked(
@@ -209,6 +236,9 @@ impl HostClient {
             .map_err(|_| "project directory is unavailable")?;
         let opened = self.call("workspace.open", &json!({"root":root, "trust":trust}))?;
         let id = opened["id"].as_str().ok_or("host omitted project route")?;
+        self.with_project_route(id)
+    }
+    fn with_project_route(&self, id: &str) -> Result<Self, String> {
         if id != "default"
             && (id.len() != 36 || !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
         {

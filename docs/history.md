@@ -1,0 +1,13 @@
+# Session history search
+
+CLAT provides local full-text search and a read-only event inspector. Open **Search history** in the workbench sidebar, enter literal text, and inspect a result. The active conversation and unsent draft remain in place. Search defaults to this project; select **All trusted projects** to explicitly widen user searches. Searching never trusts or mounts another project.
+
+`clat history search <text>` and `/history search <text>` search the current project. Use `all <text>` instead of `search <text>` for all trusted projects. The TUI shows a result picker: use ↑/↓ and Enter to inspect a result. `events <reference JSON>` and `read <reference JSON>` accept a returned reference object containing `project`, `session`, and nullable `seq`. They do not resume or switch a session. CLI queries connect to the shared local Host.
+
+Agent tools are `session_search`, `session_event_search`, and `session_event_read`. Their project identity comes from the mounted caller; arguments cannot grant cross-project access. Session search excludes the current session; explicit event search/read of the current session stops before the current model step. Read continuation uses the returned character offset and content version. Unknown, replaced, or out-of-scope references fail explicitly.
+
+Search includes titles, visible user/assistant text, and readable tool observations. It excludes reasoning, system instructions, raw diagnostics and credential fields. Compaction retains original text that still exists in the journal; ordinary replacements hide old text, including derived fallback titles. A result is a historical observation, not evidence that the work still holds today.
+
+The Host maintains a private disposable SQLite FTS5 cache under `history-index/` in the storage root. Unicode word and trigram indexes serve normal queries; short queries use bounded literal scans. Queries are parameterized, never evaluated as FTS operators or regular expressions. Each operation has a 30-second deadline, checks cancellation, and bounds candidates/pages. The model receives fewer results than the user interface; truncation requests a narrower query. Source revisions drive incremental reconciliation of appends, truncations, deletions and external writes. Corrupt derived databases are rebuilt; source read failures remain errors, never false empty results.
+
+The inspector lists committed events with optional exact event-type filtering and pagination. JSON is redacted, bounded, and version-pinned for continuation. Reading uses a separate query-only port with no journal append, repair, model request or session selection API. Index and history errors preserve the original source files.

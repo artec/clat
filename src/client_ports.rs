@@ -3,6 +3,20 @@
 pub mod presentation {
     pub use crate::i18n::*;
 }
+pub mod jobs {
+    pub use crate::application::{JobOutput, JobView, JobsReader};
+    pub use crate::background_jobs::command::{JobUserCommand, parse_job_command};
+}
+pub mod schedules {
+    pub use crate::application::{
+        Consumption, Delivery, DeliveryPhase, Rule, RulePhase, RuleReview, ScheduleDraft, TimeRule,
+        Trigger, WorkBudget,
+    };
+    pub use crate::scheduler::command::{ScheduleCommand, parse_schedule_command};
+}
+pub mod web {
+    pub use crate::application::{FetchProvider, WebSettingsEdit, WebSettingsView};
+}
 pub use crate::session::id::SessionId;
 pub use crate::session::use_cases::SessionSummary;
 // AG-DOGFOOD-4 返工 F1（E4）：前端展示面共享 core 的单一脱敏原语
@@ -63,4 +77,13 @@ pub mod session {
 
 pub mod upgrade {
     pub use crate::upgrade::{UpgradeOutcome, UpgradeProgress, upgrade_with_progress};
+}
+
+/// Read-only history search and inspection.
+pub mod history {
+    pub use crate::application::{
+        HistoryEventRead, HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit,
+        HistoryPage, HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch,
+    };
+    pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }

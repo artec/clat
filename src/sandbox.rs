@@ -174,6 +174,20 @@ impl SandboxService {
         }
     }
 
+    pub(crate) fn detached(&self, level: SandboxLevel) -> Result<Self, String> {
+        let mode = match level {
+            SandboxLevel::ReadOnly => PermissionMode::ReadOnly,
+            SandboxLevel::WorkspaceWrite => PermissionMode::ProjectWrite,
+            SandboxLevel::FullAccess => PermissionMode::FullAccess,
+            SandboxLevel::ProjectReadTempWrite => {
+                return Err("background mode is unavailable".into());
+            }
+        };
+        Self::new(
+            self.project_root.clone(),
+            SandboxModeSource::Shared(Arc::new(RwLock::new(mode))),
+        )
+    }
     pub(crate) fn current_level(&self) -> SandboxLevel {
         self.mode.level()
     }

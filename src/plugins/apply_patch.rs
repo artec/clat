@@ -135,6 +135,10 @@ impl Tool for ApplyPatchTool {
     }
 }
 
+pub(crate) fn execution_tool(scope: WriteScopeSource) -> Arc<dyn Tool> {
+    Arc::new(ApplyPatchTool { scope })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

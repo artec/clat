@@ -208,7 +208,8 @@ impl App {
 }
 
 fn native_content(value: &Value, title: &'static str) -> Option<ContentView> {
-    if (value["kind"] == "context" || value["presentation"].is_array())
+    if (matches!(value["kind"].as_str(), Some("context" | "history"))
+        || value["presentation"].is_array())
         && HostClient::info_dialog_text(value).is_ok()
     {
         return Some(ContentView::Host {

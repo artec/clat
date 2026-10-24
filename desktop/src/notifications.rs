@@ -134,6 +134,7 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
     static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
     let title = match notice.kind.as_str() {
         "completed" => crate::localization::text(app, "desktop.notification_completed"),
+        "job_finished" => crate::localization::text(app, "job.notification"),
         "approval" => crate::localization::text(app, "desktop.notification_approval"),
         "question" => crate::localization::text(app, "desktop.notification_question"),
         _ => return,

@@ -35,6 +35,7 @@ use worker::RunWorker;
 /// The complete input needed to create a waiting run worker. Admission data is
 /// deliberately absent: spawning must happen before any durable user fact.
 pub(super) struct RunExecutionSpec {
+    pub(super) target: Option<Arc<super::target_services::TargetServices>>,
     pub(super) run_plugins: Vec<Arc<dyn Plugin>>,
     pub(super) config: ModelConfig,
     pub(super) credentials: ProviderCredentials,
@@ -169,6 +170,7 @@ impl RunSlots {
 }
 
 struct RunHostDeps {
+    runtime: Option<crate::plugins::services::RuntimeBindings>,
     providers: Arc<crate::plugins::services::ProviderRegistry>,
     config: ModelConfig,
     credentials: ProviderCredentials,
@@ -182,10 +184,12 @@ struct RunHostDeps {
 /// Stable dependencies owned by the worker for its entire lifetime. Keeping
 /// the scope and every run-local slot together makes cleanup knowledge local.
 struct RunWorkerDeps {
+    target: Option<Arc<super::target_services::TargetServices>>,
     run_scope: super::composition::MountedRunScope,
     sessions: Arc<crate::session::use_cases::SessionService>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     process_service: Arc<crate::process::ProcessService>,
+    jobs: Arc<crate::background_jobs::JobRegistry>,
     monitor: Arc<dyn crate::plugins::services::MonitorService>,
     compactor: Option<Arc<dyn crate::plugins::services::HistoryCompactor>>,
     todo_service: Option<Arc<crate::plugins::services::TodoService>>,
@@ -217,11 +221,18 @@ impl RunExecutionEngine {
             .mount_run_scope(std::mem::take(&mut spec.run_plugins))?;
         let cancel = run_scope.cancel_token();
         let sampling_usage = Arc::new(Mutex::new(Usage::default()));
-        let sampling_budget = Arc::new(Mutex::new(crate::plugin_host::SamplingBudget::per_run()));
+        let sampling_budget = Arc::new(Mutex::new(if spec.target.is_some() {
+            crate::plugin_host::SamplingBudget::automatic_work()
+        } else {
+            crate::plugin_host::SamplingBudget::per_run()
+        }));
         let busy = Arc::new(AtomicBool::new(true));
         let steering = crate::run::SteeringQueue::new();
         let handle = RunHandle::for_worker(cancel.clone(), Arc::clone(&busy), steering.clone());
-        let slots = RunSlots::from_application(application);
+        let mut slots = RunSlots::from_application(application);
+        if let Some(target) = spec.target.as_ref() {
+            slots.tool_access = target.access.clone();
+        }
         let host = RunHostDeps::from_application(
             application,
             &spec,
@@ -233,39 +244,18 @@ impl RunExecutionEngine {
         let fail_run_start_receive = take_start_receive_fault(application);
         let (receiver_closed_sender, receiver_closed_receiver) = mpsc::sync_channel(0);
         check_worker_spawn_fault(application)?;
-        let deps = RunWorkerDeps {
+        let resources = WorkerResources {
             run_scope,
-            sessions: Arc::clone(&application.sessions),
-            agent: Arc::clone(&application.agent),
-            process_service: Arc::clone(&application.process_service),
-            monitor: Arc::clone(&application.monitor),
-            compactor: application.compactor.clone(),
-            todo_service: application.todo.clone(),
-            goal_service: Arc::clone(&application.goal),
-            task_service: Arc::clone(&application.task),
-            subagent_service: Arc::clone(&application.subagents),
-            titler: application.titler.clone(),
-            title_sender: application
-                .title_worker
-                .as_ref()
-                .map(|worker| worker.sender.clone()),
-            subscribers: Arc::clone(&application.subscribers),
             slots: slots.clone(),
             sampling_usage,
             cancel,
-            approver: spec.approver,
-            permission_mode_snapshot: application
-                .permission_modes_enabled
-                .then(|| application.permission_mode()),
-            config: spec.config,
-            credentials: spec.credentials,
-            completion: spec.completion,
             steering,
             busy,
         };
+        let (deps, events) = RunWorkerDeps::from_application(application, spec, resources);
         let worker = spawn_waiting_worker(
             deps,
-            spec.events,
+            events,
             start_receiver,
             fail_run_start_receive,
             receiver_closed_sender,
@@ -312,6 +302,7 @@ impl WaitingRunExecution {
         self.slots
             .plugin_host
             .install(crate::plugin_host::RunHostContext {
+                runtime: self.host.runtime.clone(),
                 providers: Arc::clone(&self.host.providers),
                 model_config: self.host.config.clone(),
                 credentials: self.host.credentials.clone(),
@@ -456,13 +447,19 @@ impl RunHostDeps {
         sampling_budget: Arc<Mutex<crate::plugin_host::SamplingBudget>>,
     ) -> Self {
         Self {
+            runtime: spec.target.as_ref().map(|t| t.runtime.clone()),
             providers: Arc::clone(&application.providers),
             config: spec.config.clone(),
             credentials: spec.credentials.clone(),
             approver: Arc::clone(&spec.approver),
-            permission_mode: application
-                .permission_modes_enabled
-                .then(|| Arc::clone(&application.permission_mode)),
+            permission_mode: spec.target.as_ref().map_or_else(
+                || {
+                    application
+                        .permission_modes_enabled
+                        .then(|| application.permission_mode.clone())
+                },
+                |t| t.mode.clone(),
+            ),
             cancel,
             sampling_usage,
             sampling_budget,
@@ -523,4 +520,73 @@ fn check_worker_spawn_fault(
         ));
     }
     Ok(())
+}
+
+impl RunWorkerDeps {
+    fn bind_target(&mut self, target: &super::target_services::TargetServices) {
+        self.sessions = target.sessions.clone();
+        self.process_service = target.process.clone();
+        self.task_service = target.task.clone();
+        self.todo_service = Some(target.todo.clone());
+        self.goal_service = target.goal.clone();
+        self.permission_mode_snapshot = target
+            .mode
+            .as_ref()
+            .map(|m| *m.read().expect("target permission"));
+        // Automatic execution must not spend an unapproved auxiliary title call.
+        self.titler = None;
+        self.title_sender = None;
+        self.subscribers = Arc::new(Mutex::new(Vec::new()));
+    }
+}
+
+struct WorkerResources {
+    run_scope: super::composition::MountedRunScope,
+    slots: RunSlots,
+    sampling_usage: Arc<Mutex<Usage>>,
+    cancel: CancelToken,
+    steering: crate::run::SteeringQueue,
+    busy: Arc<AtomicBool>,
+}
+impl RunWorkerDeps {
+    fn from_application(
+        app: &TrustedProjectApplication,
+        spec: RunExecutionSpec,
+        resources: WorkerResources,
+    ) -> (Self, Box<dyn EventSink + Send>) {
+        let mut deps = RunWorkerDeps {
+            target: spec.target.clone(),
+            run_scope: resources.run_scope,
+            sessions: Arc::clone(&app.sessions),
+            agent: Arc::clone(&app.agent),
+            process_service: Arc::clone(&app.process_service),
+            jobs: Arc::clone(&app.jobs),
+            monitor: Arc::clone(&app.monitor),
+            compactor: app.compactor.clone(),
+            todo_service: app.todo.clone(),
+            goal_service: Arc::clone(&app.goal),
+            task_service: Arc::clone(&app.task),
+            subagent_service: Arc::clone(&app.subagents),
+            titler: app.titler.clone(),
+            title_sender: app
+                .title_worker
+                .as_ref()
+                .map(|worker| worker.sender.clone()),
+            subscribers: Arc::clone(&app.subscribers),
+            slots: resources.slots,
+            sampling_usage: resources.sampling_usage,
+            cancel: resources.cancel,
+            approver: spec.approver,
+            permission_mode_snapshot: app.permission_modes_enabled.then(|| app.permission_mode()),
+            config: spec.config,
+            credentials: spec.credentials,
+            completion: spec.completion,
+            steering: resources.steering,
+            busy: resources.busy,
+        };
+        if let Some(target) = spec.target.as_ref() {
+            deps.bind_target(target);
+        }
+        (deps, spec.events)
+    }
 }

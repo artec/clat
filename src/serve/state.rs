@@ -49,6 +49,7 @@ struct Subscriber {
 ///（§7.2-5 订阅重发源；run 终态即随 active_run 清空释放，内存由
 /// B1 花费护栏间接封顶——§7.3 的显式权衡）。
 pub(crate) struct ActiveRun {
+    pub(super) automatic: bool,
     pub rpc_id: String,
     pub started_ms: i64,
     buffer: Vec<String>,
@@ -215,6 +216,10 @@ impl ServeShared {
         self.shutting_down.load(Ordering::SeqCst)
     }
 
+    fn project_work_idle(&self) -> bool {
+        let app = self.app.lock().expect("application lock");
+        app.next_turn_queue().is_empty() && !app.has_background_jobs() && !app.has_automatic_work()
+    }
     pub(crate) fn is_idle_for_reclaim(&self) -> bool {
         let inner = self.inner.lock().expect("serve inner lock");
         let idle = inner.active_run.is_none() && inner.subscribers.is_empty();
@@ -233,12 +238,13 @@ impl ServeShared {
             && self.active_uploads.load(Ordering::Acquire) == 0
             && self.active_attachment_downloads.load(Ordering::Acquire) == 0
             && !self.drafts.has_live_drafts()
+            && self.project_work_idle()
             && self
                 .app
                 .lock()
                 .expect("application lock")
-                .next_turn_queue()
-                .is_empty()
+                .schedules()
+                .is_ok_and(|r| r.is_empty())
     }
 
     pub(crate) fn is_idle_for_takeover(&self) -> bool {
@@ -257,12 +263,7 @@ impl ServeShared {
             && self.active_uploads.load(Ordering::Acquire) == 0
             && self.active_attachment_downloads.load(Ordering::Acquire) == 0
             && !self.drafts.has_live_drafts()
-            && self
-                .app
-                .lock()
-                .expect("application lock")
-                .next_turn_queue()
-                .is_empty()
+            && self.project_work_idle()
     }
 
     pub(crate) fn selection_generation(&self) -> u64 {
@@ -362,10 +363,14 @@ impl ServeShared {
         let questions = self.questions.0.lock().expect("questions lock");
         let mut inner = self.inner.lock().expect("serve inner lock");
         let id = self.next_subscriber_id.fetch_add(1, Ordering::Relaxed);
-        let prefix = inner.active_run.as_ref().map(|run| RunReplayPrefix {
-            frames: run.buffer.clone(),
-            before_seq: run.replay_before_seq,
-        });
+        let prefix = inner
+            .active_run
+            .as_ref()
+            .filter(|run| !run.automatic)
+            .map(|run| RunReplayPrefix {
+                frames: run.buffer.clone(),
+                before_seq: run.replay_before_seq,
+            });
         for approval in pending.values() {
             if tx
                 .try_send(SseFrame {
@@ -511,6 +516,7 @@ impl ServeShared {
             return false;
         }
         inner.active_run = Some(ActiveRun {
+            automatic: false,
             rpc_id: rpc_id.to_owned(),
             started_ms,
             buffer: Vec::new(),
@@ -641,6 +647,10 @@ impl ServeShared {
     pub(crate) fn active_run_info(&self) -> Value {
         let inner = self.inner.lock().expect("serve inner lock");
         match &inner.active_run {
+            Some(run) if run.automatic => json!({
+                "prompt_rpc_id": run.rpc_id, "started": run.started_ms,
+                "automatic": true, "session_id": run.session_id,
+            }),
             Some(run) => json!({
                 "prompt_rpc_id": run.rpc_id,
                 "started": run.started_ms,
@@ -719,6 +729,12 @@ impl ServeShared {
     ///（INV-S6）。broadcast 之后再清——晚到的订阅者看到 journal 重放
     /// 而非半截 run，不会拿到 settled 却没有前文。
     fn finish_run(&self, settled_data: String) {
+        self.finish_frame("prompt.settled", settled_data);
+    }
+    pub(super) fn finish_automatic_notice(&self, data: String) {
+        self.finish_frame("notice", data);
+    }
+    fn finish_frame(&self, event: &'static str, settled_data: String) {
         // A queued steering item that was never claimed has no durable user
         // message. Restore its raw upload *before* the browser receives the
         // terminal frame, so its still-visible draft can be sent as the next
@@ -728,7 +744,7 @@ impl ServeShared {
         Self::deliver(
             &mut inner,
             SseFrame {
-                event: "prompt.settled",
+                event,
                 data: settled_data,
             },
         );
@@ -785,6 +801,9 @@ impl ServeShared {
                                 )
                             ) {
                                 shared.finish_compaction();
+                            }
+                            if let ApplicationEvent::BackgroundJobChanged { job } = &event {
+                                shared.publish_job_notification(job);
                             }
                             let ctl = super::shapes::notice_ctl(&event);
                             shared.broadcast(SseFrame {

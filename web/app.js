@@ -959,7 +959,7 @@ function onApprovalRequested(ctl) {
     actions.appendChild(button);
   }
   card.append(title, meta, args, actions, note);
-  appendTranscript(card);
+  appendHostInteraction(card, ctl.automatic_session_id);
   scrollIfNearEnd();
 }
 
@@ -1149,6 +1149,14 @@ function onNotice(ctl) {
   }
   const payload = ctl && ctl.payload;
   switch (ctl && ctl.kind) {
+    case 'background_job':
+      window.dispatchEvent(new CustomEvent('clat:job-change',{detail:payload}));
+      break;
+    case 'background_run':
+      window.dispatchEvent(new CustomEvent('clat:background-run',{detail:payload}));
+      if (payload?.phase === 'settled' && payload.session_id === state.sessionId) resubscribe();
+      if (payload?.phase !== 'event') refreshWorkbench();
+      break;
     case 'next_turn_queue':
       refreshWorkbench();
       break;
@@ -1247,7 +1255,7 @@ function onQuestionNotice(ctl) {
       resolveQuestionCard(existing, CLATI18n.msg("web.answered_or_closed_by_host_2", {}, "Answered or closed by host."));
     }
   } else if (!existing && payload.question && typeof payload.question.question === 'string') {
-    appendTranscript(createQuestionCard(payload));
+    appendHostInteraction(createQuestionCard(payload), payload.automatic_session_id);
     scrollIfNearEnd();
   }
   return true;
@@ -3812,6 +3820,10 @@ dom.prompt.addEventListener('keydown', (event) => {
   }
 });
 installNextTurn();
+installWebSettings();
+installHistoryQuery();
+installBackgroundJobs();
+installScheduledWork();
 installSelectionQuote();
 installCommandPicker();
 installConversationFind();

@@ -56,6 +56,11 @@ impl App {
 
     fn handle_application_event(&mut self, event: ApplicationEvent) {
         match event {
+            ApplicationEvent::BackgroundJobChanged { job } => {
+                if job.finished_at.is_some() {
+                    self.flash_message(UiMessage::new("job.finished").arg("id", job.id));
+                }
+            }
             ApplicationEvent::ModelsUpdated => self.refresh_model_settings(),
             ApplicationEvent::MonitorUpdated(value) => {
                 self.balance = value;

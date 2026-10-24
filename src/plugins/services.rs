@@ -39,6 +39,18 @@ pub(crate) const MEMORY_SERVICE_ID: ServiceId = ServiceId::new("core.memory");
 pub(crate) const GOAL_SERVICE_ID: ServiceId = ServiceId::new("core.goal");
 pub(crate) const SUBAGENT_SERVICE_ID: ServiceId = ServiceId::new("core.subagent");
 pub(crate) const VIEW_IMAGE_SERVICE_ID: ServiceId = ServiceId::new("core.view_image");
+pub(crate) const JOB_SERVICE_ID: ServiceId = ServiceId::new("core.jobs");
+pub(crate) const SCHEDULER_SERVICE_ID: ServiceId = ServiceId::new("core.scheduler");
+pub(crate) const SCHEDULER_SERVICE: ServiceKey<crate::scheduler::SchedulerService> =
+    ServiceKey::new(SCHEDULER_SERVICE_ID);
+pub(crate) const JOB_SERVICE: ServiceKey<crate::background_jobs::JobRegistry> =
+    ServiceKey::new(JOB_SERVICE_ID);
+pub(crate) const HISTORY_SERVICE_ID: ServiceId = ServiceId::new("core.history");
+pub(crate) const HISTORY_SERVICE: ServiceKey<crate::session_query::SessionQueryService> =
+    ServiceKey::new(HISTORY_SERVICE_ID);
+pub(crate) const WEB_SERVICE_ID: ServiceId = ServiceId::new("core.web");
+pub(crate) const WEB_SERVICE: ServiceKey<crate::web_tools::WebService> =
+    ServiceKey::new(WEB_SERVICE_ID);
 pub(crate) const UTILITY_MODEL_SERVICE_ID: ServiceId = ServiceId::new("core.utility_model");
 
 pub(crate) const SESSION_SERVICE: ServiceKey<crate::session::use_cases::SessionService> =
@@ -497,7 +509,16 @@ impl PromptLease {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct RuntimeBindings {
+    pub instructions: Option<Arc<dyn DynamicInstructions>>,
+    pub tools: Arc<crate::ToolRegistry>,
+    pub project: crate::Project,
+    pub pipeline: Arc<crate::ToolExecutionPipeline>,
+    pub permissions: Arc<dyn PermissionPolicyFactory>,
+}
 pub(crate) struct AgentRequest {
+    pub runtime: Option<RuntimeBindings>,
     pub context_manager: Option<Box<dyn crate::run::RequestContextManager>>,
     pub config: ModelConfig,
     /// B1/F-1：花费护栏共享账本（None = 无护栏——demo/测试）。

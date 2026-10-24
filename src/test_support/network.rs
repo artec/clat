@@ -60,6 +60,7 @@ impl Fixture {
             crate::plugins::network_test_factory_with_access(mode.clone(), access.clone()),
         );
         bridge.install(RunHostContext {
+            runtime: None,
             providers: Arc::new(ProviderRegistry::new()),
             model_config: ModelConfig::default(),
             credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),

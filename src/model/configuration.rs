@@ -217,6 +217,19 @@ pub struct ModelOverrides {
 }
 
 impl ModelConfig {
+    /// Effective configuration: migrate → preset defaults → explicit overrides.
+    pub(crate) fn normalized(mut self) -> Self {
+        self.migrate_legacy_overrides();
+        if let Some(preset) = self
+            .preset
+            .as_deref()
+            .and_then(crate::presets::preset_by_id)
+        {
+            preset.apply(&mut self);
+        }
+        self.apply_overrides();
+        self
+    }
     /// Provider request projection for the tri-state parallel-tools field.
     /// The legacy/effective bool remains available to UI code, while Clear
     /// must omit the wire key entirely instead of silently sending `true`.

@@ -97,6 +97,15 @@ impl ServeShared {
         }
     }
 
+    pub(super) fn publish_job_notification(&self, job: &crate::background_jobs::JobView) {
+        let Some(id) = job.notification_id.as_deref() else {
+            return;
+        };
+        let notice = self.notification("job_finished", id, Some(job.session.clone()));
+        if let Some(host) = self.host.lock().expect("host link").upgrade() {
+            host.notifications.publish(notice);
+        }
+    }
     pub(super) fn publish_notification(&self, kind: &str, key: Option<&str>) {
         let notice = {
             let mut inner = self.inner.lock().expect("serve inner lock");

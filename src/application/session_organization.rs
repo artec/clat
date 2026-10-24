@@ -10,6 +10,19 @@ impl TrustedProjectApplication {
         confirmed: bool,
     ) -> Result<(), ApplicationError> {
         self.reject_session_switch_while_busy()?;
+        if archived == Some(true)
+            && self
+                .scheduler
+                .has_session_rules(&self.schedule_project(), id)
+                .map_err(super::schedules::schedule_error)?
+        {
+            return Err(super::schedules::schedule_message("archive_blocked"));
+        }
+        if archived == Some(true) && self.jobs.has_session_work(id) {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "job.archive_blocked",
+            )));
+        }
         if archived == Some(true) && !confirmed {
             return Err(ApplicationError::new(
                 "explicit archive confirmation required",

@@ -680,6 +680,7 @@ fn install_grant_context(
     approver: std::sync::Arc<dyn PermissionApprover>,
 ) {
     bridge.install(crate::plugin_host::RunHostContext {
+        runtime: None,
         providers: fake_providers(),
         model_config: ModelConfig {
             model: "fake-model".into(),
@@ -1174,6 +1175,7 @@ fn waiting_for_the_user_does_not_burn_fuel() {
     let registry = manager.require(TOOL_SERVICE).expect("registry");
 
     bridge.install(crate::plugin_host::RunHostContext {
+        runtime: None,
         providers: fake_providers(),
         model_config: crate::model::ModelConfig {
             model: "fake-model".into(),
@@ -1574,6 +1576,7 @@ fn probe_round_trips_sampling_and_elicitation_through_the_bridge() {
         ..ModelConfig::default()
     };
     bridge.install(crate::plugin_host::RunHostContext {
+        runtime: None,
         providers,
         model_config: config,
         credentials: ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),

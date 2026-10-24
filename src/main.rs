@@ -15,8 +15,16 @@ use std::time::Duration;
 use clat::client_ports::presentation::{
     LocaleContext, UiMessage, leading_language, terminal_language,
 };
+#[path = "cli/history.rs"]
+mod history_cli;
+#[path = "cli/jobs.rs"]
+mod jobs_cli;
 #[path = "cli/language.rs"]
 mod language_cli;
+#[path = "cli/schedule.rs"]
+mod schedule_cli;
+#[path = "cli/web.rs"]
+mod web_cli;
 
 const NAME: &str = "clat";
 
@@ -74,6 +82,10 @@ where
     match args.next().as_deref() {
         None => host_cli::run_default_tui(locale),
         Some("language") => language_cli::run(args, locale, preference),
+        Some("web") => web_cli::run(args, locale),
+        Some("history") => history_cli::run(args, locale),
+        Some("jobs") => jobs_cli::run(args, locale),
+        Some("schedule") => schedule_cli::run(args, locale),
         Some("standalone" | "--standalone") => {
             if args.next().is_some() {
                 eprintln!("{}", locale.text("cli.standalone_args"));

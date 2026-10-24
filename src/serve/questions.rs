@@ -15,6 +15,7 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 pub(super) struct Questions(pub Mutex<BTreeMap<String, PendingQuestion>>);
 
 pub(super) struct PendingQuestion {
+    session: Option<String>,
     question: AskQuestion,
     sender: mpsc::Sender<AskAnswer>,
     cancel: CancelToken,
@@ -38,10 +39,11 @@ fn notice(kind: &str, payload: Value) -> SseFrame {
 
 impl PendingQuestion {
     pub(super) fn frame(&self, id: &str) -> SseFrame {
-        notice(
-            "question_requested",
-            json!({"rpc_id":id,"question":self.question}),
-        )
+        let mut data = json!({"rpc_id":id,"question":self.question});
+        if let Some(session) = &self.session {
+            data["automatic_session_id"] = json!(session);
+        }
+        notice("question_requested", data)
     }
 }
 
@@ -51,7 +53,7 @@ impl UserAsker for ServeAsker {
             return AskAnswer::Declined;
         };
         if cancel.is_cancelled()
-            || shared.subscriber_count() == 0
+            || (shared.subscriber_count() == 0 && !shared.is_automatic_run())
             || serde_json::to_vec(&question).map_or(true, |bytes| bytes.len() > MAX_TEXT_BYTES)
         {
             return AskAnswer::Declined;
@@ -65,6 +67,14 @@ impl UserAsker for ServeAsker {
                 return AskAnswer::Declined;
             }
             let entry = PendingQuestion {
+                session: shared
+                    .inner
+                    .lock()
+                    .expect("serve inner lock")
+                    .active_run
+                    .as_ref()
+                    .filter(|r| r.automatic)
+                    .and_then(|r| r.session_id.clone()),
                 question,
                 sender,
                 cancel: cancel.clone(),
@@ -81,7 +91,9 @@ impl UserAsker for ServeAsker {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return AskAnswer::Declined,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if cancel.is_cancelled() || shared.subscriber_count() == 0 || Instant::now() >= deadline
+            if cancel.is_cancelled()
+                || (shared.subscriber_count() == 0 && !shared.is_automatic_run())
+                || Instant::now() >= deadline
             {
                 let mut pending = shared.questions.0.lock().expect("questions lock");
                 if pending.remove(&id).is_some() {

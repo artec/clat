@@ -72,6 +72,7 @@ fn host_question_arbitration_rejects_invalid_expired_cancelled_and_cross_project
     shared.questions.0.lock().unwrap().insert(
         "one".into(),
         PendingQuestion {
+            session: None,
             question: question(),
             sender: tx,
             cancel: cancel.clone(),
@@ -209,6 +210,7 @@ fn host_question_concurrent_valid_answers_have_exactly_one_winner() {
     shared.questions.0.lock().unwrap().insert(
         "one".into(),
         PendingQuestion {
+            session: None,
             question: question(),
             sender: tx,
             cancel: CancelToken::new(),

@@ -610,6 +610,9 @@ fn settled_done_fields(output: &str, turns: usize, usage: &Usage) -> Vec<(&'stat
 
 pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
     match event {
+        ApplicationEvent::BackgroundJobChanged { job } => {
+            json!({"kind":"background_job","payload":job})
+        }
         ApplicationEvent::ModelsUpdated => object(vec![
             ("kind", Value::String("models".into())),
             ("payload", Value::Null),

@@ -259,6 +259,7 @@ impl std::fmt::Display for PluginHostError {
 /// 牌、sampling 记账单元与花费预算。`start_run` 装入，worker 收尾
 /// 卸载。
 pub(crate) struct RunHostContext {
+    pub(crate) runtime: Option<crate::plugins::services::RuntimeBindings>,
     pub(crate) providers: Arc<ProviderRegistry>,
     pub(crate) model_config: ModelConfig,
     pub(crate) credentials: ProviderCredentials,
@@ -329,6 +330,14 @@ pub(crate) struct SamplingBudget {
 }
 
 impl SamplingBudget {
+    pub(crate) fn automatic_work() -> Self {
+        // Automatic work authorizes one model route and its shared Run ledger.
+        // Nested plugin sampling has an independent meter, so it must not
+        // spend outside that authorization. Interactive runs retain their cap.
+        let mut budget = Self::per_run();
+        budget.requests_cap = 0;
+        budget
+    }
     pub(crate) fn per_run() -> Self {
         Self {
             requests_used: 0,
@@ -679,6 +688,7 @@ impl PluginHostBridge {
             (
                 *epoch,
                 RunHostContext {
+                    runtime: context.runtime.clone(),
                     providers: Arc::clone(&context.providers),
                     model_config: context.model_config.clone(),
                     credentials: context.credentials.clone(),
@@ -698,12 +708,7 @@ impl PluginHostBridge {
     /// deliberately absent.
     pub fn host_context(&self) -> Result<Value, PluginHostError> {
         let (epoch, context) = self.context().ok_or(PluginHostError::NoActiveRun)?;
-        let services = self
-            .project_services
-            .read()
-            .ok()
-            .and_then(|services| services.clone())
-            .ok_or(PluginHostError::NoHostServices)?;
+        let services = self.services_for(&context)?;
         let metadata = self
             .run_metadata
             .read()
@@ -749,12 +754,7 @@ impl PluginHostBridge {
         if context.cancel.is_cancelled() {
             return Err(PluginHostError::Cancelled);
         }
-        let services = self
-            .project_services
-            .read()
-            .ok()
-            .and_then(|services| services.clone())
-            .ok_or(PluginHostError::NoHostServices)?;
+        let services = self.services_for(&context)?;
         let tool = services
             .tools
             .get(name)
@@ -1103,3 +1103,24 @@ fn stop_reason_name(reason: &FinishReason) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+impl PluginHostBridge {
+    fn services_for(
+        &self,
+        context: &RunHostContext,
+    ) -> Result<HostProjectServices, PluginHostError> {
+        if let Some(runtime) = &context.runtime {
+            return Ok(HostProjectServices {
+                project: runtime.project.clone(),
+                tools: runtime.tools.clone(),
+                pipeline: runtime.pipeline.clone(),
+                permissions: runtime.permissions.clone(),
+            });
+        }
+        self.project_services
+            .read()
+            .ok()
+            .and_then(|s| s.clone())
+            .ok_or(PluginHostError::NoHostServices)
+    }
+}

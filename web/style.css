@@ -722,3 +722,24 @@ button:disabled { cursor: default; opacity: .45; }
 
 .queue-preview { padding: 8px 16px; max-height: 120px; overflow: auto; font-size: 12px; }
 .queue-item { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
+
+/* Read-only session search keeps the main workbench and draft mounted. */
+.history-dialog { width: min(940px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 24px; border-radius: 14px; color: var(--text); background: var(--surface); border: 1px solid var(--line); overflow: auto; }
+.history-dialog::backdrop { background: #0008; }
+.history-dialog-head, .history-query-form { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.history-dialog-head { justify-content: space-between; }
+.history-query-form input[type="search"] { flex: 1; min-width: 160px; }
+.history-query-form label { display: flex; align-items: center; gap: 6px; }
+.history-hit { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.history-hit small, .history-hit p { display: block; overflow-wrap: anywhere; white-space: pre-wrap; }
+.history-hit-open { font-weight: 600; }
+.history-detail { margin-top: 24px; }
+.history-events { display: grid; gap: 6px; margin: 12px 0; }
+.history-event { text-align: start; overflow-wrap: anywhere; white-space: pre-wrap; }
+.history-json { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.schedule-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+.schedule-form label { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.schedule-form textarea { min-height:100px; }
+.schedule-form [hidden] { display:none; }
+.schedule-review { padding:16px; border:1px solid var(--border); border-radius:8px; }
+#schedules-open[data-pending="true"]::after { content:' •'; color:var(--accent); }

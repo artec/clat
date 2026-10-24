@@ -4,13 +4,23 @@ mod active_compaction;
 mod agent_evidence;
 #[path = "argument_recovery_tests.rs"]
 mod argument_recovery;
+#[path = "automatic_tests.rs"]
+mod automatic_tests;
 #[path = "edit_recovery_tests.rs"]
 mod edit_recovery;
+#[path = "history_tests.rs"]
+mod history_tests;
+#[path = "job_tests.rs"]
+mod job_tests;
+#[path = "target_run_tests.rs"]
+mod target_run_tests;
 #[path = "verification_conflict_tests.rs"]
 mod verification_conflict;
 #[path = "write_guard_tests.rs"]
 mod write_guard;
 
+#[path = "native_web_tests.rs"]
+mod native_web;
 #[path = "next_turn_tests.rs"]
 mod next_turn_tests;
 
@@ -2001,6 +2011,7 @@ fn rename_facade_gates_journals_and_broadcasts() {
                 }
                 Ok(
                     ApplicationEvent::MonitorUpdated(_)
+                    | ApplicationEvent::BackgroundJobChanged { .. }
                     | ApplicationEvent::ModelsUpdated
                     | ApplicationEvent::CompactionUpdated(_)
                     | ApplicationEvent::TitleUpdated { .. }

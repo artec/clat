@@ -10,10 +10,12 @@ pub(crate) mod im;
 pub(crate) mod json_file;
 mod models;
 pub(crate) mod projcache;
+mod schedules;
 pub(crate) mod sentinel;
 mod session_flags;
 pub(crate) mod settings;
 pub(crate) mod timestamp;
+mod web;
 pub(crate) mod workspace;
 
 use crate::model::{ModelConfig, ModelProtocol, ProviderCredentials};
@@ -73,6 +75,7 @@ pub(crate) struct ControlStorage {
     root: PathBuf,
     dir: Dir,
     state: Mutex<ControlState>,
+    web_updates: Mutex<()>,
     #[cfg(test)]
     fail_next_chat_mapping_save: std::sync::atomic::AtomicBool,
 }
@@ -111,6 +114,7 @@ impl ControlStorage {
             .map_err(control_error)?;
         let projcache_file = projcache::load(&storages_dir, &storages_root);
         let storage = Self {
+            web_updates: Mutex::new(()),
             root,
             dir,
             state: Mutex::new(ControlState {
@@ -712,6 +716,15 @@ impl ControlStorage {
     }
 
     // ----- trust（trust.json；bootstrap 读走 settings 的零写面）-----
+
+    pub(crate) fn trusted_project_keys(&self) -> Vec<crate::session::key::ProjectKey> {
+        self.lock()
+            .trust
+            .projects
+            .keys()
+            .map(|cwd| crate::session::key::ProjectKey::from_cwd(cwd))
+            .collect()
+    }
 
     pub(crate) fn is_project_trusted(&self, root: &Path) -> bool {
         let key = sentinel::project_key(root);

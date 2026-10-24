@@ -88,6 +88,13 @@ do not enable it. This internal workspace surface is not a stable plugin ABI.
 
 ## Lifetimes and static composition
 
+Native Web access is owned by `web_tools::WebService`. Tools prepare a
+configuration snapshot before ordinary Network permission review, then use
+the existing HTTP/DNS authority for public-address validation, connection pins
+and bounded decoding. Credentials remain in control storage; model selection
+does not select the Web backend. Frontends use the same secret-write-only
+configuration ports. See [Native Web tools](web.md).
+
 CLAT uses a Rust-native plugin kernel for compile-time components. Explicit
 catalogs choose and order built-in plugins; there is no dynamic Rust library or
 JavaScript discovery. Configured WebAssembly components are the only extension
@@ -1404,3 +1411,28 @@ that state. A frontend connection lock serializes publication/navigation with
 open/stop and notification selection; stale notification targets cannot reattach a
 stopped or replaced instance. No lifecycle or upgrade policy is implemented by
 the web page.
+
+Session history is owned by `src/session_query/`. A Host-shared lazy SQLite connection maintains the disposable FTS5 cache, while `SessionService::query_reader` exposes only committed header/revision/visitor reads. The query service derives authority from project binding and the control-plane trust table; Agent parameters cannot supply project authority. `HistoryReader` is the cloneable client port. RPC and TUI continuations release the Application lock before indexing or inspection. Search metadata follows catalog replay classifications and title projection rules. UI presentation retains references and never selects a session implicitly.
+
+Native background commands are owned by `background_jobs::JobRegistry`, with a Host-shared capacity budget and a detached `ProcessService`/sandbox per job. The planner, permission gate and process launcher remain shared with normal command tools. The registry records `job/registered` before spawn and `job/settled` only after a real terminal observation; execution, persistence, cleanup and notification failures remain distinct. The catalog owns native job phase classification; the job projection/checkpoint and restart recovery consume it.
+
+`SessionService` keeps independent display/execution facades over a shared weak writer table keyed by the full `SessionKey`. A borrowed target uses the same coordinator, folding journal and projections as any selected facade. Acquiring a target never changes the foreground selection. Acquisition and last explicit close share a lock, including the last strong-reference release, so simultaneous detach cannot leak a writer thread or create a second owner.
+
+`scheduler::SchedulerService` owns one Host control document, frozen user grants,
+occurrence reservations and delivery settlement. `application/schedules.rs`
+exposes user management; native schedule tools can only propose drafts scoped to
+their real bound session. `serve/automatic.rs` is a Host timer/notification pump:
+it acquires the ordinary project Run slot after human work, then calls the same
+`RunExecutionEngine`. It does not implement another Agent loop. Future timers
+survive restart and do not block upgrade; unsettled deliveries and active Jobs do.
+
+`application/target_services.rs` binds session-specific tools, permissions,
+processes, Task/Todo/Goal/Plan, history query and project-instruction observation
+explicitly for an automatic Run. Its immutable tool/pipeline fork retains the
+original definitions, middleware and result transformations. Common context
+assembly stays in `run_context.rs`. A target facade never changes foreground
+selection or consumes the user's armed skill. Automatic events and interactions
+carry their original session in control notices; they cannot enter another
+conversation's live Run stream. Durable events keep their existing vocabulary.
+Recovery reads committed replay and receipts, never repairs or reruns an unknown
+committed occurrence. See [scheduled work](schedules.md).

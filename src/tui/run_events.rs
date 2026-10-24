@@ -5,6 +5,9 @@ impl App {
     pub(super) fn handle_worker_message(&mut self, message: WorkerMessage) {
         match message {
             WorkerMessage::Event(event) => self.handle_run_event(event),
+            WorkerMessage::HistoryReadCompleted(token, result) => {
+                self.history_read_completed(token, result)
+            }
             WorkerMessage::PermissionRequest {
                 request,
                 decision_tx,

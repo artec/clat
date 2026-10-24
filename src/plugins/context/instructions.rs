@@ -83,6 +83,10 @@ impl ToolObserver for InstructionObserver {
     }
 }
 
+pub(crate) fn execution_observer(service: Arc<ProjectInstructionService>) -> Arc<dyn ToolObserver> {
+    Arc::new(InstructionObserver { service })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

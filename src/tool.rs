@@ -299,6 +299,13 @@ pub trait Tool: Send + Sync {
 
     fn definition(&self) -> ToolDefinition;
 
+    fn invoke(
+        &self,
+        arguments: &Value,
+        project: &Project,
+        cancel: &CancelToken,
+    ) -> Result<Value, ToolError>;
+
     /// Registration-time public contract. Only schema annotations may be
     /// cleaned; unsafe validation data rejects publication, never changes it.
     fn public_definition(&self) -> Result<ToolDefinition, ToolError> {
@@ -308,6 +315,10 @@ pub trait Tool: Send + Sync {
     /// Optional declarations, captured once at registration; never authority.
     fn capability_metadata(&self) -> ToolCapability {
         ToolCapability::default()
+    }
+    /// Producer-observed configuration at snapshot creation; never authority or a network probe.
+    fn capability_availability(&self) -> Option<(&'static str, &'static str)> {
+        None
     }
 
     /// Native prepared command identity (actual argv/shell and working directory).
@@ -343,13 +354,6 @@ pub trait Tool: Send + Sync {
     fn result_blocks(&self, _output: &Value) -> Vec<crate::message::ContentBlock> {
         Vec::new()
     }
-
-    fn invoke(
-        &self,
-        arguments: &Value,
-        project: &Project,
-        cancel: &CancelToken,
-    ) -> Result<Value, ToolError>;
 }
 
 mod prepared;
@@ -392,7 +396,7 @@ pub(crate) trait ToolResultTransformer: Send + Sync {
     fn transform_result(&self, result: &mut ToolResult);
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ToolExecutionState {
     middleware: Vec<(u64, PluginId, Arc<dyn ToolMiddleware>)>,
     observers: Vec<(u64, PluginId, Arc<dyn ToolObserver>)>,
@@ -409,6 +413,41 @@ pub(crate) struct ToolExecutionPipeline {
 }
 
 impl ToolExecutionPipeline {
+    pub(crate) fn for_session(
+        &self,
+        task: Arc<dyn ToolMiddleware>,
+        instructions: Arc<dyn ToolObserver>,
+    ) -> Result<Arc<Self>, String> {
+        let mut state = self
+            .inner
+            .read()
+            .map_err(|_| "tool pipeline poisoned")?
+            .clone();
+        let matches: Vec<_> = state
+            .middleware
+            .iter_mut()
+            .filter(|(_, owner, _)| *owner == PluginId::new("builtin.task"))
+            .collect();
+        if matches.len() != 1 {
+            return Err("session pipeline requires exactly one task owner".into());
+        }
+        for (_, _, middleware) in matches {
+            *middleware = task.clone();
+        }
+        let mut replaced = 0;
+        for (_, owner, observer) in &mut state.observers {
+            if *owner == PluginId::new("builtin.project_instructions") {
+                *observer = instructions.clone();
+                replaced += 1;
+            }
+        }
+        if replaced != 1 {
+            return Err("session pipeline requires exactly one instruction owner".into());
+        }
+        Ok(Arc::new(Self {
+            inner: Arc::new(RwLock::new(state)),
+        }))
+    }
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -647,6 +686,7 @@ impl fmt::Display for ToolRegistryError {
 
 impl std::error::Error for ToolRegistryError {}
 
+#[derive(Clone)]
 struct ToolEntry {
     definition: ToolDefinition,
     metadata: ToolCapability,
@@ -655,7 +695,7 @@ struct ToolEntry {
     tool: Arc<dyn Tool>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ToolRegistryState {
     by_name: HashMap<String, ToolEntry>,
     order: Vec<String>,
@@ -671,6 +711,35 @@ pub(crate) struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Replace only already registered contracts; keep each contributing owner
+    /// and immutable public schema. No new capability can be smuggled in here.
+    pub(crate) fn for_session(
+        &self,
+        replacements: Vec<Arc<dyn Tool>>,
+    ) -> Result<Arc<Self>, String> {
+        let mut state = self
+            .inner
+            .read()
+            .map_err(|_| "tool registry poisoned")?
+            .clone();
+        for tool in replacements {
+            let definition = capabilities::schema::public_contract(tool.as_ref())
+                .map_err(|_| "unsafe target tool contract")?;
+            let entry = state
+                .by_name
+                .get_mut(&definition.name)
+                .ok_or("target tool is not registered")?;
+            if definition != entry.definition {
+                return Err("target tool contract changed".into());
+            }
+            entry.tool = tool;
+        }
+        state.revision = state.revision.wrapping_add(1);
+        Ok(Arc::new(Self {
+            inner: Arc::new(RwLock::new(state)),
+            ..Self::default()
+        }))
+    }
     pub(crate) fn new() -> Self {
         Self::default()
     }

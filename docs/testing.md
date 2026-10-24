@@ -1,5 +1,14 @@
 # Development verification
 
+Native Web contracts run with `scripts/gates.sh native_web`. They cover the
+model → permission → tool → model path with an injected transport,
+configuration sharing, zero-dispatch denials/cancellation, redirect boundaries,
+response limits, secret redaction and source retention through pruning.
+`web/e2e/tests/native-web.spec.js` exercises configuration and three-language
+switching against the isolated workbench Host. The separately armed
+`CLAT_WEB_PUBLIC_PROBE=1` ignored `native_web_public_http_probe` uses anonymous
+public HTTP only; mock API results do not establish paid-provider availability.
+
 Agent-driven Rust verification may use `exec_command` with literal `argv` and
 `verification: {"format":"rust-test-summary","minimum_executed":1}`. Follow the
 returned run-owned receipt through polls until terminal; zero matches,
@@ -996,3 +1005,19 @@ that the new desktop version runs, CLI bytes remain unchanged and the cached Hos
 survives. Windows NSIS handoff/restart and macOS signed bundle permissions need
 native verification; mock commands and a temporary test bundle do not establish
 those results. Keep the real shared Host and signing credentials out of local tests.
+
+History query coverage: `scripts/gates.sh history_query` exercises real committed compressed journals, English/Simplified/Traditional text, one-character queries, literal operators, external append/truncate/delete, derived-cache corruption, project and trust fences, current-step cutoff, read continuation and source-byte preservation. `web/e2e/tests/history-query.spec.js` uses isolated mock-model Hosts for search, event inspection, language switching, draft/selection preservation and text-only untrusted snippets. The replacement/fallback-title regression is expected to fail if old hidden content is restored to title indexing.
+
+Native background job checks: `scripts/gates.sh native_job target_writer`. They exercise actual isolated child processes, Run cancellation vs Job cancellation, original-conversation facts, UTF-8/redaction, independent output cursors, timeout/overflow, registration-before-spawn, post-spawn uncertainty, panic, recovery, terminal-save and cleanup retry, G7 scope, and shared writer release. `background-jobs.spec.js` uses an isolated Host and deterministic model to check approval, new-session/reconnect survival, language switching/draft preservation and explicit stop. These do not establish native Windows/Desktop behavior or paid-model effectiveness.
+
+Automatic work: `scripts/gates.sh scheduler_ automatic_ target_run` covers frozen
+authorization/CAS, scoped drafts, budgets, unknown admission recovery, original
+session bindings and Job grants. Pure Jiff tests simulate DST gaps/folds,
+overdue intervals and clock rollback. A real isolated loopback Host is stopped
+and reopened to verify persistent rules and original-session delivery. The
+`scheduled-work.spec.js` browser test checks draft-only creation, explicit review,
+three-language switching, another conversation's Chinese draft and staged image,
+and receipt-backed completion. Native windows and paid services remain separate
+acceptance faces.
+Keep asynchronous title writers out of byte-equality fixtures, or explicitly wait
+for their completion; do not relax the byte-equality assertion to hide the race.

@@ -8,11 +8,14 @@
 
 mod active;
 mod attachments;
+mod background;
 mod folding_journal;
 mod history;
 mod lifecycle;
+pub(crate) mod query;
 mod task;
 mod utility;
+mod writers;
 use active::{ActiveSession, checkpoint_active, fold_if_behind};
 use folding_journal::ProjectionFoldJournal;
 
@@ -198,7 +201,7 @@ pub(crate) struct StagedSession {
 /// complete, but not yet published as active and with no resume seed
 /// queued. It may be closed and discarded if the workspace CAS loses.
 pub(crate) struct ArmedSession {
-    active: ActiveSession,
+    active: Arc<ActiveSession>,
     view: SessionView,
 }
 
@@ -271,9 +274,11 @@ fn committed_admission_from_projections(
 }
 
 pub(crate) struct SessionService {
+    background_lane: Arc<Mutex<()>>,
+    writers: Arc<Mutex<std::collections::HashMap<SessionKey, std::sync::Weak<ActiveSession>>>>,
     backend: Arc<JsonlBackend>,
     checkpoints: CheckpointStore,
-    active: Mutex<Option<ActiveSession>>,
+    active: Mutex<Option<Arc<ActiveSession>>>,
     #[cfg(test)]
     fail_next_plan_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -293,6 +298,8 @@ impl SessionService {
             SessionError::Io(format!("cannot open capability-held session root: {error}"))
         })?;
         Ok(Self {
+            background_lane: Arc::new(Mutex::new(())),
+            writers: Arc::new(Mutex::new(std::collections::HashMap::new())),
             backend: Arc::new(JsonlBackend::with_root(
                 Arc::clone(&root),
                 compression,
@@ -344,12 +351,15 @@ impl SessionService {
         let header = SessionHeader::new(key.id.clone(), project.header_cwd.clone(), now_ms());
         let coordinator =
             SessionCoordinator::start(Arc::clone(&self.backend), key.clone(), header.clone())?;
-        *active_slot = Some(ActiveSession::new(
+        let mut writers = self.writers.lock().expect("session writers");
+        let active = Arc::new(ActiveSession::new(
             key.clone(),
             coordinator,
             Arc::new(Mutex::new(ProjectionRegistry::clat())),
             Arc::new(Mutex::new(ResumeSink::new())),
         ));
+        writers.insert(key.clone(), Arc::downgrade(&active));
+        *active_slot = Some(active);
         Ok(SessionSummary {
             id: key.id,
             title: None,
@@ -943,8 +953,8 @@ impl SessionService {
             } else if let Err(error) = checkpoint_active(&active, &self.checkpoints) {
                 errors.push(error.to_string());
             }
-            if let Err(error) = active.coordinator.close() {
-                errors.push(format!("session writer close failed: {error}"));
+            if let Err(error) = self.release_writer(active) {
+                errors.push(error.to_string());
             }
             #[cfg(test)]
             if self.fail_next_quiesce.swap(false, Ordering::AcqRel) {

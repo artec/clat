@@ -23,6 +23,10 @@ pub(crate) enum UiEvent {
 
 pub(crate) enum WorkerMessage {
     Event(RunEvent),
+    HistoryReadCompleted(
+        String,
+        Result<serde_json::Value, clat_core::client_ports::presentation::UiMessage>,
+    ),
     PermissionRequest {
         request: PermissionRequest,
         decision_tx: Sender<PermissionDecision>,

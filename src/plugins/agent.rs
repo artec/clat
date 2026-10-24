@@ -138,6 +138,7 @@ struct DefaultAgentRuntime {
 
 impl AgentRuntime for DefaultAgentRuntime {
     fn execute(&self, mut request: AgentRequest) -> Result<crate::RunOutput, AgentFailure> {
+        let runtime = self.bindings(request.runtime.take());
         // 每次尝试经工厂构造新 Model；瞬态失败（传输/429/5xx）由
         // RetryModel 按策略重试，取消降格为正常 Cancelled 响应。
         // 循环本身无轮次预算（DSH 范式）：只被完成/取消/错误终结，
@@ -154,7 +155,9 @@ impl AgentRuntime for DefaultAgentRuntime {
         // contradicts its configured capability fails closed; CLAT never
         // retries by turning a local attachment path into model-visible text.
         let mut model = model;
-        let permissions = self.permissions.create(request.approver, &request.cancel);
+        let permissions = runtime
+            .permissions
+            .create(request.approver, &request.cancel);
         let options = ModelOptions {
             output_limit: request.config.output_limit,
             temperature: request.config.temperature,
@@ -173,24 +176,24 @@ impl AgentRuntime for DefaultAgentRuntime {
         );
         let run = Run::new(
             model.as_mut(),
-            &self.tools,
+            &runtime.tools,
             permissions.as_ref(),
-            &self.project,
+            &runtime.project,
         )
         .with_context_manager(request.context_manager)
         .with_model_options(options)
         .with_spend_ledger(request.spend_ledger.clone())
         .with_cancel_token(request.cancel)
         .with_steering(request.steering)
-        .with_tool_pipeline(&self.pipeline)
+        .with_tool_pipeline(&runtime.pipeline)
         .with_tool_access(request.tool_access)
         .with_tool_definitions(request.tool_definitions)
         // MS-1：能力快照随 config 进 run——历史图像 × 纯文本模型
         // 在发前预检明确失败，不透传厂商 400。
         .with_capabilities(request.config.capabilities.clone())
         .with_instructions(instructions);
-        let mut run = match &self.dynamic_instructions {
-            Some(source) => run.with_dynamic_instructions(Arc::clone(source)),
+        let mut run = match &runtime.instructions {
+            Some(source) => run.with_dynamic_instructions(source.clone()),
             None => run,
         };
         run.execute_with_items(
@@ -200,5 +203,20 @@ impl AgentRuntime for DefaultAgentRuntime {
             request.events.as_mut(),
         )
         .map_err(|error| AgentFailure { error })
+    }
+}
+
+impl DefaultAgentRuntime {
+    fn bindings(
+        &self,
+        runtime: Option<super::services::RuntimeBindings>,
+    ) -> super::services::RuntimeBindings {
+        runtime.unwrap_or_else(|| super::services::RuntimeBindings {
+            tools: self.tools.clone(),
+            pipeline: self.pipeline.clone(),
+            project: self.project.clone(),
+            permissions: self.permissions.clone(),
+            instructions: self.dynamic_instructions.clone(),
+        })
     }
 }

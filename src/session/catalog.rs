@@ -2,6 +2,7 @@
 //! Envelope-only means preserved without interpreting its payload. New required
 //! DSH metadata belongs here; it does not require a replay skip-list change.
 mod run_events;
+pub(crate) mod search;
 mod validation;
 use crate::session::event::SessionEvent;
 pub(crate) use run_events::run_event_seats;
@@ -23,11 +24,28 @@ pub(crate) enum ReplayKind {
 
 type PayloadValidator = fn(&SessionEvent, u32) -> Result<(), String>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JobPhase {
+    Registered,
+    Settled,
+}
+impl JobPhase {
+    pub(crate) fn event_name(self) -> &'static str {
+        EVENTS
+            .iter()
+            .find(|s| s.job_phase == Some(self))
+            .expect("job phase seat")
+            .name
+    }
+}
+
 pub(crate) struct EventSpec {
     pub name: &'static str,
     pub surface: bool,
     pub replay: ReplayKind,
     pub retired_in_v2: bool,
+    pub starts_step: bool,
+    pub job_phase: Option<JobPhase>,
     validate: Option<PayloadValidator>,
 }
 
@@ -96,11 +114,15 @@ impl EventSpec {
     }
 }
 macro_rules! vocabulary {
-    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal) ),* $(,)?) => {
+    (@job) => {None};
+    (@job $phase:ident) => {Some(JobPhase::$phase)};
+    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)?) ),* $(,)?) => {
         pub(crate) const KNOWN_EVENT_TYPES: &[&str] = &[$($name),*];
         const EVENTS: &[EventSpec] = &[$(EventSpec {
             name: $name, validate: $validate, surface: $surface,
             replay: ReplayKind::$replay, retired_in_v2: $retired,
+            starts_step: false $(|| $step)?,
+            job_phase: vocabulary!(@job $($($job)?)?),
         }),*];
     };
 }
@@ -131,8 +153,8 @@ vocabulary! {
     "hook/invoked" => (None, false, Skip, false),
     "hook/result" => (None, false, Skip, false),
     "image/offload" => (None, false, Skip, false),
-    "job/registered" => (Some(validation::job_registered), false, Skip, false),
-    "job/settled" => (Some(validation::job_settled), false, Skip, false),
+    "job/registered" => (Some(validation::job_registered), false, Skip, false, false, Registered),
+    "job/settled" => (Some(validation::job_settled), false, Skip, false, false, Settled),
     "llm/retry" => (None, false, Retry, false),
     "llm/retry-started" => (None, false, Skip, false),
     "model/selection" => (None, false, Skip, false),
@@ -147,7 +169,7 @@ vocabulary! {
     "session/title" => (Some(validation::title), false, Skip, false),
     "session/title-llm-request" => (None, false, Skip, false),
     "step/end" => (Some(validation::step), false, Skip, false),
-    "step/start" => (Some(validation::step), false, Skip, false),
+    "step/start" => (Some(validation::step), false, Skip, false, true),
     "subagent/catalog" => (None, false, Skip, false),
     "subagent/model-selection-policy" => (None, false, Skip, false),
     "subagent/descriptor" => (Some(validation::descriptor), false, Skip, false),

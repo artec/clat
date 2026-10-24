@@ -7,6 +7,7 @@ pub(super) struct Entry {
     pub owner: PluginId,
     pub registration: String,
     pub metadata: ToolCapability,
+    pub availability: Option<(&'static str, &'static str)>,
 }
 pub(crate) struct CapabilityView {
     pub(super) revision: u64,
@@ -32,6 +33,7 @@ impl CapabilityView {
                     owner: e.owner,
                     registration: e.registration.clone(),
                     metadata: e.metadata.clone(),
+                    availability: e.tool.capability_availability(),
                 })
             })
             .collect();
@@ -144,7 +146,7 @@ impl CapabilityView {
     }
     fn row(&self, e: &Entry, epoch: &str) -> Value {
         let m = &e.metadata;
-        json!({"id":format!("{}.{}.{}",self.id,e.registration,epoch),"registration":e.registration,
+        let mut result = json!({"id":format!("{}.{}.{}",self.id,e.registration,epoch),"registration":e.registration,
             "name":preview(&e.definition.name,128),"name_complete":preview(&e.definition.name,128)==e.definition.name,
             "owner":preview(e.owner.as_str(),128),"source":preview(if m.source.is_empty(){"undeclared"}else{m.source},64),"adapter":preview(&m.adapter,128),
             "description":preview(&e.definition.description,256),"description_complete":preview(&e.definition.description,256)==e.definition.description,
@@ -155,7 +157,14 @@ impl CapabilityView {
             "readiness":if !live(m){"blocked: adapter or observed channel ended"}else if m.host_available{"available: host handler only"}else{if m.source=="native" {"unknown: requested binary/dependencies unobserved"}else{"unknown: provider health unobserved"}},
             "checks":{"dependencies":"unknown","configuration":"unknown","login":"unknown","end_to_end":"unknown"},
             "missing":["end-to-end readiness, dependencies/configuration and login unobserved","approval depends on actual arguments and current policy"],
-            "limits":preview(&m.limits,256)})
+            "limits":preview(&m.limits,256)});
+        if let Some((state, reason)) = e.availability {
+            result["availability"] =
+                json!({"state":state,"reason":reason,"end_to_end":"unobserved"});
+            result["readiness"] = json!(state);
+            result["checks"]["configuration"] = json!(state);
+        }
+        result
     }
     fn detail(&self, q: &Query, epoch: &str, cancel: &CancelToken) -> Result<Value, ToolError> {
         let e = self

@@ -369,6 +369,10 @@ fn create_goal(
     }
 }
 
+pub(crate) fn execution_tool(service: Arc<GoalService>) -> Arc<dyn Tool> {
+    Arc::new(UpdateGoalTool { service })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

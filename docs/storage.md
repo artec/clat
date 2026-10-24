@@ -14,6 +14,9 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── config.json                  # control-plane version sentinel
 ├── settings.json                # active model state and named profiles
 ├── credentials.json             # remembered per-vendor API keys (0600)
+├── web.json                     # secret-free native Web provider/key-reference selection
+├── schedules.json               # authorized rules, budgets and delivery control state
+├── history-index/               # rebuildable SQLite FTS5 cache; never session authority
 ├── memory.json                  # explicit user/project knowledge (0600)
 ├── im.json                      # atomic WeChat binding, authorization and pairing authority (0600)
 ├── trust.json                   # canonical project path -> trusted timestamp
@@ -650,3 +653,21 @@ without the CLAT extension may ignore the ignorable event, but cannot enforce
 acceptance. Do not resume/write structured Tasks with a pre-acceptance binary or
 strip fields to make them readable. Keep the journal and use a compatible binary;
 no database deletion or migration of original text into machine checks is needed.
+
+`history-index/index.sqlite` (and SQLite WAL/SHM companions) is a private derived history-search cache. It is not a session fact or control-plane rule store. Source revisions reconcile changes; corruption can be rebuilt without repairing or altering journals. No export/backup correctness depends on retaining this directory. Cache directories and database files reject symlinks; new files use private permissions.
+
+Native job facts live in their original conversation journals. Retained output and live process handles are bounded Host memory, never reconstructed as running processes after a restart. Missing terminal records are conservatively settled as interrupted/unknown, without command replay. The `jobs` projection is derived and checkpointable; an unsaved terminal fact remains a separate visible error and blocks takeover until an explicit retry succeeds.
+`schedules.json` is Host-owned control state (unit `clat.scheduler`, version 1),
+independent of session journal vocabulary. It retains explicit instruction/model/
+time/budget authorization, next occurrence, bounded reservations and delivery
+records (64 rules, 1,024 deliveries, 2 MiB maximum). Credentials are resolved from
+the existing store at dispatch and never copied into this file. A bounded private
+no-follow reader and atomic writer own the file. Corruption, external revision
+changes or uncertain publication stop scheduling until explicit reload. They
+never default to an empty ruleset. Session receipts and terminal replay reconcile
+committed work; absent terminal facts retain unknown usage conservatively.
+
+Search's SQLite cache is disposable; schedules are not. Do not remove scheduler
+state during cache cleanup. Pausing/deleting future work does not falsify already
+admitted execution facts. Original-session journal ownership continues through
+the shared SessionService writer pool. See [scheduled work](schedules.md).

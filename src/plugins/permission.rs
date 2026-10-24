@@ -154,6 +154,16 @@ pub(crate) fn network_test_factory_with_access(
     })
 }
 
+pub(crate) fn execution_factory(
+    source: ModeSource,
+    access: Arc<crate::tool::ToolAccessSlot>,
+) -> Arc<dyn PermissionPolicyFactory> {
+    Arc::new(DefaultPermissionFactory {
+        source,
+        access: Some(access),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +224,7 @@ mod tests {
         );
         let approval_calls = Arc::new(AtomicUsize::new(0));
         bridge.install(RunHostContext {
+            runtime: None,
             providers: Arc::new(ProviderRegistry::new()),
             model_config: ModelConfig::default(),
             credentials: ProviderCredentials::default(),

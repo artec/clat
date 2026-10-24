@@ -12,6 +12,7 @@ pub(super) fn working_directory(event: &SessionEvent, _version: u32) -> Result<(
 }
 
 pub(super) fn job_registered(event: &SessionEvent, _version: u32) -> Result<(), String> {
+    crate::background_jobs::validate(event)?;
     for field in ["jobId", "owner", "kind", "label"] {
         require_str(&event.data, field)?;
     }

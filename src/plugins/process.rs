@@ -23,6 +23,32 @@ mod observation;
 mod one_shot;
 mod output;
 use output::{process_error_output, process_journal_output, process_output_json};
+pub(crate) fn background_plan(
+    service: &ProcessService,
+    args: &Value,
+) -> Result<crate::process::BackgroundPlan, ToolError> {
+    let invocation = verification::Invocation::parse(args)?;
+    let request = ProcessStart {
+        command: invocation.command,
+        workdir: args
+            .get("workdir")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        tty: false,
+        network: args
+            .get("network")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        sandbox: SandboxRequest::parse(args.get("sandbox").and_then(Value::as_str))
+            .map_err(ToolError::new)?,
+    };
+    service
+        .prepare_background(request, invocation.argv, invocation.verification)
+        .map_err(prepared::process_error)
+}
+pub(crate) fn background_observation(output: ProcessOutput) -> Value {
+    process_journal_output(&process_output_json(output))
+}
 #[cfg(test)]
 mod outcome_tests;
 mod prepared;
@@ -144,7 +170,7 @@ impl Plugin for ExecToolsPlugin {
     }
 }
 
-fn process_tools(service: Arc<ProcessService>) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn process_tools(service: Arc<ProcessService>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(RunCommandTool {
             service: Arc::clone(&service),

@@ -18,6 +18,9 @@ impl App {
             return true;
         }
 
+        if self.history_key(key) {
+            return true;
+        }
         if self.handle_info_dialog_key(key) {
             return true;
         }

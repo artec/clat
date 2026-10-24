@@ -1,4 +1,5 @@
 //! Author-only HTTP request authority; no transport or permission grant.
+pub mod native;
 use crate::dns_authority::Origin;
 use http::{HeaderName, HeaderValue, Method};
 use std::collections::{BTreeMap, BTreeSet};

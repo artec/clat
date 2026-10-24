@@ -61,39 +61,20 @@ impl TrustedProjectApplication {
             self.permission_modes_enabled
                 .then(|| self.permission_mode()),
         );
-        let invoked_instructions = invoked_skill
-            .as_ref()
-            .map(crate::skills::InvokedSkill::instructions);
-        let (instructions, workflow_base, workflow_instructions) = InstructionLayers::assemble(
+        ContextSources {
             base,
-            [
-                plan_instructions.as_deref(),
-                skills.instructions(),
-                invoked_instructions.as_deref(),
-                Some(&memory.instructions),
-                task.as_deref(),
-                Some(&goal.instructions),
-            ],
-        );
-        let tool_access = self.context_tool_access(config, task.is_some());
-        let capabilities = self.tools.capability_view(Some(&tool_access));
-        let tool_definitions = capabilities.definitions().into();
-
-        RunContextSnapshot {
-            tool_access,
-            tool_definitions,
-            capabilities,
-            subagents_enabled,
-            instructions,
-            workflow_base,
-            workflow_instructions,
+            plan_instructions,
             plan_header,
-            memory_header: memory.header,
-            memory_bytes: memory.bytes,
-            goal_header: goal.header,
             skills,
             invoked_skill,
+            memory,
+            goal,
+            tool_access: self.context_tool_access(config, task.is_some()),
+            task,
+            tools: self.tools.clone(),
+            subagents_enabled,
         }
+        .freeze()
     }
 
     pub(super) fn context_tool_access(
@@ -113,26 +94,7 @@ impl TrustedProjectApplication {
     }
 
     fn plan_context(&self) -> (Option<String>, Option<Value>) {
-        let state = self.plan_mode.state();
-        if state.active {
-            (
-                Some(crate::plan_mode::PLAN_POLICY.to_owned()),
-                Some(json!({ "active": true })),
-            )
-        } else if let Some(approved) = state.approved {
-            (
-                Some(crate::plan_mode::approved_plan_instructions(&approved)),
-                Some(json!({
-                    "active": false,
-                    "approved": {
-                        "digest": approved.digest,
-                        "eventSeq": approved.event_seq,
-                    }
-                })),
-            )
-        } else {
-            (None, None)
-        }
+        plan_layers(self.plan_mode.state())
     }
 
     /// The canonical `request/header` body (audit P1-14): what the model
@@ -244,6 +206,68 @@ fn route_header(config: &ModelConfig) -> serde_json::Map<String, Value> {
 }
 
 /// The two instruction views advance together through the same ordered layers.
+struct ContextSources {
+    base: String,
+    plan_instructions: Option<String>,
+    plan_header: Option<Value>,
+    skills: Arc<crate::skills::SkillCatalogSnapshot>,
+    invoked_skill: Option<crate::skills::InvokedSkill>,
+    memory: crate::memory::MemoryInjection,
+    goal: crate::goal::GoalInjection,
+    task: Option<String>,
+    tool_access: crate::tool::ToolAccessPolicy,
+    tools: Arc<crate::tool::ToolRegistry>,
+    subagents_enabled: bool,
+}
+impl ContextSources {
+    fn freeze(self) -> RunContextSnapshot {
+        let Self {
+            base,
+            plan_instructions,
+            plan_header,
+            skills,
+            invoked_skill,
+            memory,
+            goal,
+            task,
+            tool_access,
+            tools,
+            subagents_enabled,
+        } = self;
+        let invoked_instructions = invoked_skill
+            .as_ref()
+            .map(crate::skills::InvokedSkill::instructions);
+        let (instructions, workflow_base, workflow_instructions) = InstructionLayers::assemble(
+            base,
+            [
+                plan_instructions.as_deref(),
+                skills.instructions(),
+                invoked_instructions.as_deref(),
+                Some(&memory.instructions),
+                task.as_deref(),
+                Some(&goal.instructions),
+            ],
+        );
+        let capabilities = tools.capability_view(Some(&tool_access));
+        let tool_definitions = capabilities.definitions().into();
+
+        RunContextSnapshot {
+            tool_access,
+            tool_definitions,
+            capabilities,
+            subagents_enabled,
+            instructions,
+            workflow_base,
+            workflow_instructions,
+            plan_header,
+            memory_header: memory.header,
+            memory_bytes: memory.bytes,
+            goal_header: goal.header,
+            skills,
+            invoked_skill,
+        }
+    }
+}
 struct LayerAssembly {
     system: String,
     workflow: String,
@@ -364,5 +388,64 @@ impl RunContextSnapshot {
             round.reason = Some("change");
         }
         Ok(())
+    }
+}
+
+fn plan_layers(state: crate::plan_mode::PlanModeState) -> (Option<String>, Option<Value>) {
+    if state.active {
+        (
+            Some(crate::plan_mode::PLAN_POLICY.to_owned()),
+            Some(json!({ "active": true })),
+        )
+    } else if let Some(approved) = state.approved {
+        (
+            Some(crate::plan_mode::approved_plan_instructions(&approved)),
+            Some(json!({
+                "active": false,
+                "approved": {
+                    "digest": approved.digest,
+                    "eventSeq": approved.event_seq,
+                }
+            })),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+impl TrustedProjectApplication {
+    pub(super) fn target_context_snapshot(
+        &self,
+        target: &super::target_services::TargetServices,
+        config: &ModelConfig,
+        skills: Arc<crate::skills::SkillCatalogSnapshot>,
+        memory: crate::memory::MemoryInjection,
+    ) -> Result<RunContextSnapshot, ApplicationError> {
+        let state = target.plan.state();
+        let access = if state.active {
+            crate::tool::ToolAccessPolicy::plan_mode()
+        } else {
+            crate::tool::ToolAccessPolicy::all()
+        }
+        .with_view_image(config.capabilities.accepts_image_tool_results());
+        let (plan_instructions, plan_header) = plan_layers(state);
+        let mode = target
+            .mode
+            .as_ref()
+            .map(|cell| *cell.read().expect("target permission"));
+        Ok(ContextSources {
+            base: crate::plugins::services::base_model_instructions(&self.prompts, mode),
+            plan_instructions,
+            plan_header,
+            skills,
+            invoked_skill: None,
+            memory,
+            goal: target.goal.injection().map_err(ApplicationError::new)?,
+            task: None,
+            tool_access: access,
+            tools: target.runtime.tools.clone(),
+            subagents_enabled: false,
+        }
+        .freeze())
     }
 }

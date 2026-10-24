@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 const TEST_TOKEN: &str = "tok-3f9d2c7a-serve-test";
 const WAIT: Duration = Duration::from_secs(30);
 
+#[path = "schedule_tests.rs"]
+mod schedule_tests;
 #[path = "workspace_tests.rs"]
 mod workspace_tests;
 
@@ -4156,4 +4158,34 @@ fn ga3_pwa_current_command_run_mapping_has_same_core_content_and_no_model_invoca
         serde_json::from_str(result["message"].as_str().unwrap()).unwrap();
     assert_eq!(value["candidates"], serde_json::json!([]));
     cleanup(handle, &storage, &root);
+}
+
+#[test]
+#[ignore = "Playwright e2e host; requires CLAT_E2E_HOST=1"]
+fn serve_e2e_host_native_jobs() {
+    if std::env::var("CLAT_E2E_HOST").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("clat-job-e2e-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("helper.rs");
+    let helper = root.join(if cfg!(windows) {
+        "helper.exe"
+    } else {
+        "helper"
+    });
+    std::fs::write(&source, r#"fn main(){println!("background-e2e-output");std::thread::sleep(std::time::Duration::from_secs(60));}"#).unwrap();
+    crate::process::compile_rust_test_helper(&source, &helper).unwrap();
+    host_serve_for_playwright(
+        "native-jobs",
+        TestBehavior::Scripted(Arc::new(crate::test_support::ToolOnceScript {
+            call: crate::ToolCall {
+                id: "native-job-e2e-call".into(),
+                name: "job_start".into(),
+                arguments: serde_json::json!({"label":"native-job-e2e","argv":[helper],"timeout_ms":70000}),
+            },
+        })),
+        0,
+    );
+    crate::test_support::cleanup_tree(&root);
 }

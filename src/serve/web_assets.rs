@@ -49,6 +49,22 @@ pub(crate) fn asset(path: &str) -> Option<(Cow<'static, [u8]>, &'static str)> {
         "/" => Some((Cow::Borrowed(INDEX), "text/html; charset=utf-8")),
         "/plugin-market.js" => Some((Cow::Borrowed(PLUGIN_MARKET), "application/javascript")),
         "/app.js" => Some((Cow::Borrowed(APP_JS), "application/javascript")),
+        "/background-jobs.js" => Some((
+            Cow::Borrowed(include_bytes!("../../web/background-jobs.js")),
+            "application/javascript",
+        )),
+        "/scheduled-work.js" => Some((
+            Cow::Borrowed(include_bytes!("../../web/scheduled-work.js")),
+            "application/javascript",
+        )),
+        "/history-query.js" => Some((
+            Cow::Borrowed(include_bytes!("../../web/history-query.js")),
+            "application/javascript",
+        )),
+        "/web-settings.js" => Some((
+            Cow::Borrowed(include_bytes!("../../web/web-settings.js")),
+            "application/javascript",
+        )),
         "/next-turn.js" => Some((Cow::Borrowed(NEXT_TURN), "application/javascript")),
         "/composer-ux.js" => Some((Cow::Borrowed(COMPOSER_UX), "application/javascript")),
         "/command-picker.js" => Some((Cow::Borrowed(COMMAND_PICKER), "application/javascript")),

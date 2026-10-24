@@ -365,6 +365,7 @@ fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v4() {
         "no lock, checkpoint, seed, writer artifacts, and no published generation"
     );
 
+    let legacy_pin = service.for_target(&key).unwrap();
     service
         .upgrade_active()
         .expect("update publishes v4 and re-arms");
@@ -372,6 +373,16 @@ fn legacy_v2_sessions_resume_read_only_then_update_reaches_writable_v4() {
         !service.is_read_only(),
         "the same session is writable after the upgrade"
     );
+    legacy_pin.quiesce_active().unwrap();
+    let writable_pin = service.for_target(&key).unwrap();
+    assert!(
+        Arc::ptr_eq(
+            &writable_pin.journal().unwrap(),
+            &service.journal().unwrap()
+        ),
+        "retiring an old read-only generation must not erase the current writer owner"
+    );
+    writable_pin.quiesce_active().unwrap();
     let journal = service
         .journal()
         .expect("writable sessions admit a journal");
@@ -2955,4 +2966,116 @@ fn replay_suffix_failure_keeps_cache_unchanged_and_retries_are_bounded() {
         assert_eq!(sink.lock().unwrap().replay.len(), 1);
         assert_eq!(sink.lock().unwrap().replay[0].turn(), 7);
     }
+}
+
+#[test]
+fn target_writer_facades_share_one_lane_without_changing_foreground_selection() {
+    use crate::session::run_journal::NewSessionEvent;
+    let (service, root) = service("target-facade");
+    let first = service.new_session(&project()).unwrap();
+    let key = SessionKey {
+        project: project(),
+        id: first.id.clone(),
+    };
+    service
+        .journal()
+        .unwrap()
+        .append_atomic_durable(&[NewSessionEvent::new(
+            "user/message",
+            payloads::user_message("original"),
+        )
+        .append(vec![])])
+        .unwrap();
+    let target = service.for_target(&key).unwrap();
+    assert!(Arc::ptr_eq(
+        &service.journal().unwrap(),
+        &target.journal().unwrap()
+    ));
+    service.quiesce_active().unwrap();
+    let other = service.new_session(&project()).unwrap();
+    target
+        .journal()
+        .unwrap()
+        .append_atomic_durable(&[NewSessionEvent::new(
+            "user/message",
+            payloads::user_message("background target"),
+        )
+        .append(vec![])])
+        .unwrap();
+    assert_eq!(service.active_id(), Some(other.id));
+    let again = service.for_target(&key).unwrap();
+    assert!(Arc::ptr_eq(
+        &again.journal().unwrap(),
+        &target.journal().unwrap()
+    ));
+    target.quiesce_active().unwrap();
+    assert!(
+        again
+            .history_active(None, 100)
+            .unwrap()
+            .events
+            .iter()
+            .any(|i| format!("{i:?}").contains("background target"))
+    );
+    again.quiesce_active().unwrap();
+    service.quiesce_active().unwrap();
+    let view = service.resume(&key).unwrap();
+    assert_eq!(
+        view.transcript.iter().filter(|i| i.kind == "user").count(),
+        2
+    );
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn target_writer_concurrent_last_releases_close_before_reopen() {
+    use crate::session::run_journal::NewSessionEvent;
+    fn arrive(ready: &std::sync::atomic::AtomicUsize) {
+        ready.fetch_add(1, Ordering::AcqRel);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while ready.load(Ordering::Acquire) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "target release rendezvous timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    let (service, root) = service("target-release");
+    let first = service.new_session(&project()).unwrap();
+    let key = SessionKey {
+        project: project(),
+        id: first.id,
+    };
+    service
+        .journal()
+        .unwrap()
+        .append_atomic_durable(&[NewSessionEvent::new(
+            "user/message",
+            payloads::user_message("durable"),
+        )
+        .append(vec![])])
+        .unwrap();
+    for _ in 0..8 {
+        let a = service.for_target(&key).unwrap();
+        let b = service.for_target(&key).unwrap();
+        service.quiesce_active().unwrap();
+        let barrier = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let left = barrier.clone();
+        let one = std::thread::spawn(move || {
+            arrive(&left);
+            a.quiesce_active().unwrap();
+        });
+        let two = std::thread::spawn(move || {
+            arrive(&barrier);
+            b.quiesce_active().unwrap();
+        });
+        one.join().unwrap();
+        two.join().unwrap();
+        assert!(service.writers.lock().unwrap().get(&key).is_none());
+        service.resume(&key).unwrap();
+    }
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
 }

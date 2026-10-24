@@ -15,6 +15,9 @@ impl HostClient {
             "/task" | "/task show" => Some("/task"),
             "/task check" => Some("/task check"),
             "/sub" | "/subagents" => Some("/sub"),
+            _ if command.split_whitespace().next() == Some("/history") => Some("/history"),
+            _ if command.split_whitespace().next() == Some("/jobs") => Some("/jobs"),
+            _ if command.split_whitespace().next() == Some("/schedule") => Some("/schedule"),
             _ if command.split_whitespace().next() == Some("/capabilities") => {
                 Some("/capabilities")
             }
@@ -28,7 +31,7 @@ impl HostClient {
         let title = Self::info_dialog_command(command)?;
         Some((
             title,
-            if title == "/capabilities" {
+            if matches!(title, "/capabilities" | "/history" | "/jobs" | "/schedule") {
                 command.trim()
             } else {
                 title
@@ -42,6 +45,15 @@ impl HostClient {
     }
 
     pub fn info_dialog_text(value: &serde_json::Value) -> Result<String, String> {
+        if value["kind"] == "schedules" {
+            return Ok(value["schedules"].to_string());
+        }
+        if value["kind"] == "jobs" {
+            return Ok(value["jobs"].to_string());
+        }
+        if value["kind"] == "history" {
+            return Ok(serde_json::to_string_pretty(&value["history"]).unwrap_or_default());
+        }
         if value["kind"] == "context" {
             return super::context::display(&value["context"]);
         }
@@ -56,6 +68,21 @@ impl HostClient {
         value: &serde_json::Value,
         locale: crate::i18n::LocaleContext,
     ) -> Result<String, String> {
+        if value["kind"] == "schedules" {
+            return Ok(crate::scheduler::command::display(
+                &value["schedules"],
+                locale,
+            ));
+        }
+        if value["kind"] == "jobs" {
+            return Ok(crate::background_jobs::command::display(
+                &value["jobs"],
+                locale,
+            ));
+        }
+        if value["kind"] == "history" {
+            return Ok(super::history::display(&value["history"], locale));
+        }
         if value["kind"] == "context" {
             return super::context::display_localized(&value["context"], locale);
         }

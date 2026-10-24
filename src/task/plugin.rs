@@ -36,16 +36,7 @@ impl Plugin for TaskPlugin {
             .map_err(pe)?;
         let service = Arc::new(service);
         let tools = context.require(TOOL_SERVICE).map_err(pe)?;
-        let mut task_tools: Vec<Arc<dyn Tool>> = [true, false]
-            .into_iter()
-            .map(|read| {
-                Arc::new(ProgressTool {
-                    service: service.clone(),
-                    read,
-                }) as Arc<dyn Tool>
-            })
-            .collect();
-        task_tools.extend(super::acceptance::interface::tools(service.clone()));
+        let task_tools = execution_tools(service.clone());
         for tool in task_tools {
             let lease = tools.register(context.owner(), tool).map_err(pe)?;
             context.defer(move || lease.revoke().map_err(|e| DisposeError::new(e.to_string())));
@@ -75,6 +66,20 @@ impl Plugin for TaskPlugin {
         context.provide(TASK_SERVICE, service).map_err(pe)
     }
 }
+pub(crate) fn execution_tools(service: Arc<TaskService>) -> Vec<Arc<dyn Tool>> {
+    let mut task_tools: Vec<Arc<dyn Tool>> = [true, false]
+        .into_iter()
+        .map(|read| {
+            Arc::new(ProgressTool {
+                service: service.clone(),
+                read,
+            }) as Arc<dyn Tool>
+        })
+        .collect();
+    task_tools.extend(super::acceptance::interface::tools(service.clone()));
+    task_tools
+}
+
 fn pe(e: impl ToString) -> PluginError {
     PluginError::new(e.to_string())
 }

@@ -41,6 +41,7 @@ impl ProjectionRegistry {
                 Box::new(TranscriptUnit::default()),
                 Box::new(MessageOutlineUnit::default()),
                 Box::new(TitleUnit::default()),
+                Box::new(crate::background_jobs::projection::JobUnit::default()),
                 Box::new(PermissionModeUnit::default()),
                 Box::new(PlanModeUnit::default()),
                 Box::new(GoalUnit::default()),
@@ -1078,6 +1079,18 @@ fn preview_lines(text: &str, max_lines: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Query-only title folding reuses the same owner without allocating transcript history.
+#[derive(Default)]
+pub(crate) struct TitleTracker(TitleUnit);
+impl TitleTracker {
+    pub(crate) fn push(&mut self, event: &SessionEvent) -> Result<(), String> {
+        self.0.fold(event)
+    }
+    pub(crate) fn explicit_title(&self) -> Option<String> {
+        self.0.title.clone().filter(|s| !s.is_empty())
+    }
 }
 
 struct TitleUnit {

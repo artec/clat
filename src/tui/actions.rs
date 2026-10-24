@@ -815,6 +815,43 @@ impl App {
         }
     }
 
+    fn open_history_query(
+        &mut self,
+        request: clat_core::client_ports::history::HistoryCommandRequest,
+    ) {
+        self.open_history_view(serde_json::json!({"kind":"loading"}));
+        self.read_history_selection(request);
+    }
+    fn open_history_view(&mut self, value: serde_json::Value) {
+        self.content_view = Some(ContentView::Host {
+            title: "/history",
+            value: Box::new(serde_json::json!({"kind":"history","history":value})),
+        });
+        self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Remote));
+    }
+    fn show_vision_probe_started(&mut self) {
+        // VP-1：探测异步执行，判定经 VisionProbeNotice 事件回流；
+        // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
+        self.flash_message(UiMessage::new(
+            "tui.vision_probe_started_the_verdict_lands_here",
+        ));
+    }
+    fn show_host_content(&mut self, title: &'static str, value: serde_json::Value) {
+        self.content_view = Some(ContentView::Host {
+            title,
+            value: Box::new(value),
+        });
+        self.info_dialog = Some(InfoDialog::new(InfoDialogKind::Remote));
+    }
+    fn show_jobs(&mut self, value: serde_json::Value) {
+        self.show_host_content("/jobs", serde_json::json!({"kind":"jobs","jobs":value}));
+    }
+    fn show_schedules(&mut self, value: serde_json::Value) {
+        self.show_host_content(
+            "/schedule",
+            serde_json::json!({"kind":"schedules","schedules":value}),
+        );
+    }
     fn render_command_outcome(&mut self, outcome: CommandOutcome) {
         match outcome {
             CommandOutcome::Status(message) => self.flash_presented(message),
@@ -870,13 +907,10 @@ impl App {
                 // 完成/失败时结果文本）；Esc 取消。
                 self.compact_handle = Some(handle);
             }
-            CommandOutcome::StartVisionProbe(_) => {
-                // VP-1：探测异步执行，判定经 VisionProbeNotice 事件回流；
-                // TUI 无需持有句柄（fire-and-forget + 状态栏通知）。
-                self.flash_message(UiMessage::new(
-                    "tui.vision_probe_started_the_verdict_lands_here",
-                ));
-            }
+            CommandOutcome::StartVisionProbe(_) => self.show_vision_probe_started(),
+            CommandOutcome::QueryHistory(request) => self.open_history_query(request),
+            CommandOutcome::ShowJobs(jobs) => self.show_jobs(jobs),
+            CommandOutcome::ShowSchedules(value) => self.show_schedules(value),
             CommandOutcome::ShowTask(text) => self.show_command_content("/task", text),
             CommandOutcome::ShowCapabilities(text) => {
                 self.show_command_content("/capabilities", text)

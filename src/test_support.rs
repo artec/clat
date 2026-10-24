@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod tool_once;
+pub use tool_once::ToolOnceScript;
 pub mod mcp_discovery;
 pub mod netiso;
 pub mod network;

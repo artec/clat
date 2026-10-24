@@ -107,8 +107,44 @@ impl WorkspaceHost {
             shutdown,
         });
         *shared.host.lock().expect("host link") = Arc::downgrade(&host);
+        host.restore_automatic_projects();
         shared.spawn_notice_forwarder();
+        shared.spawn_automatic();
         host
+    }
+
+    fn restore_automatic_projects(self: &Arc<Self>) {
+        let mut projects = self.projects.lock().expect("host projects");
+        let default = projects
+            .routes
+            .get("default")
+            .expect("default route")
+            .clone();
+        let roots = default
+            .app
+            .lock()
+            .expect("application lock")
+            .automatic_projects();
+        match roots {
+            Ok(roots) => {
+                for root in roots {
+                    if let Err(error) = self.open(
+                        &mut projects,
+                        serde_json::json!({"root":root}).as_object().unwrap(),
+                    ) {
+                        default.automatic_notice(
+                            "error",
+                            None,
+                            Some(
+                                crate::i18n::UiMessage::new("schedule.project_unavailable")
+                                    .arg("detail", error.message),
+                            ),
+                        );
+                    }
+                }
+            }
+            Err(error) => default.automatic_notice("error", None, Some(error.presentation())),
+        }
     }
 
     pub(crate) fn route(&self, id: &str) -> Result<Arc<ServeShared>, RpcError> {
@@ -306,6 +342,7 @@ impl WorkspaceHost {
         let shared = Arc::new(shared);
         *shared.host.lock().expect("host link") = Arc::downgrade(self);
         shared.spawn_notice_forwarder();
+        shared.spawn_automatic();
         shared
     }
 

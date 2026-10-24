@@ -1,0 +1,46 @@
+[
+  {
+    "type": "job/registered",
+    "seq": 0,
+    "time": 100,
+    "data": {
+      "jobId": "00000000-0000-4000-8000-000000000001",
+      "owner": "clat/native",
+      "kind": "command",
+      "label": "golden job",
+      "startedAt": 100,
+      "native": {
+        "version": 1,
+        "scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "project": "/project",
+        "session": "session-one",
+        "state": null,
+        "observation": null
+      }
+    }
+  },
+  {
+    "type": "job/settled",
+    "seq": 1,
+    "time": 200,
+    "data": {
+      "jobId": "00000000-0000-4000-8000-000000000001",
+      "owner": "clat/native",
+      "kind": "command",
+      "label": "golden job",
+      "startedAt": 100,
+      "finishedAt": 200,
+      "status": "completed",
+      "cause": "producer",
+      "producerReported": true,
+      "native": {
+        "version": 1,
+        "scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "project": "/project",
+        "session": "session-one",
+        "state": "completed",
+        "observation": { "exit_code": 0, "running": false, "timed_out": false, "cancelled": false, "terminated": false }
+      }
+    }
+  }
+]

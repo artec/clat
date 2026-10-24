@@ -36,6 +36,7 @@ mod providers;
 mod redact;
 pub mod run;
 mod sandbox;
+mod scheduler;
 mod search;
 pub mod serve;
 mod skills;
@@ -45,14 +46,17 @@ pub mod task;
 // session facts live exclusively in these logs since the stage-5 cutover.
 // Format-documentation items (catalog constants, layout helpers) exceed the
 // current production surface; they stay as the compatibility reference.
+mod background_jobs;
 #[allow(dead_code)]
 pub(crate) mod session;
+mod session_query;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;
 mod tool;
 pub mod upgrade;
 mod view_image;
+mod web_tools;
 mod wire;
 
 pub use application::{

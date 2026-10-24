@@ -10,6 +10,7 @@ use cap_std::fs::{Dir, OpenOptions};
 use std::io::Write;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub(crate) struct CheckpointStore {
     root: Arc<SessionRootDir>,
 }

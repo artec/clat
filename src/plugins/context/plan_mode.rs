@@ -175,6 +175,10 @@ impl Tool for ExitPlanModeTool {
     }
 }
 
+pub(crate) fn execution_tool(service: Arc<PlanModeService>) -> Arc<dyn Tool> {
+    Arc::new(ExitPlanModeTool { service })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

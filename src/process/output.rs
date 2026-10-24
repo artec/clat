@@ -1,7 +1,7 @@
 //! Bounded output ownership: offsets, loss reporting and JSON-safe text budgets.
 use std::collections::VecDeque;
 
-pub(super) struct ByteRing {
+pub(crate) struct ByteRing {
     bytes: VecDeque<u8>,
     start: u64,
     end: u64,
@@ -9,7 +9,7 @@ pub(super) struct ByteRing {
 }
 
 impl ByteRing {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             bytes: VecDeque::with_capacity(capacity),
             start: 0,
@@ -18,7 +18,7 @@ impl ByteRing {
         }
     }
 
-    pub(super) fn append(&mut self, chunk: &[u8]) {
+    pub(crate) fn append(&mut self, chunk: &[u8]) {
         for byte in chunk {
             self.bytes.push_back(*byte);
             self.end = self.end.saturating_add(1);
@@ -29,7 +29,7 @@ impl ByteRing {
         }
     }
 
-    pub(super) fn read_from(&self, cursor: u64, max_bytes: usize) -> (Vec<u8>, u64, bool, bool) {
+    pub(crate) fn read_from(&self, cursor: u64, max_bytes: usize) -> (Vec<u8>, u64, bool, bool) {
         let lossy = cursor < self.start;
         let effective = cursor.max(self.start).min(self.end);
         let offset = usize::try_from(effective.saturating_sub(self.start)).unwrap_or(usize::MAX);
@@ -46,13 +46,13 @@ impl ByteRing {
         (bytes, next, lossy, next < self.end)
     }
 
-    pub(super) fn available_from(&self, cursor: u64) -> usize {
+    pub(crate) fn available_from(&self, cursor: u64) -> usize {
         let effective = cursor.max(self.start).min(self.end);
         usize::try_from(self.end.saturating_sub(effective)).unwrap_or(usize::MAX)
     }
 
     /// A retained preceding newline proves a line boundary; lost bytes cannot.
-    pub(super) fn starts_line_at(&self, cursor: u64) -> bool {
+    pub(crate) fn starts_line_at(&self, cursor: u64) -> bool {
         if cursor == 0 && self.start == 0 {
             return true;
         }
@@ -69,16 +69,16 @@ impl ByteRing {
             == Some(&b'\n')
     }
 
-    pub(super) fn snapshot(&self) -> Vec<u8> {
+    pub(crate) fn snapshot(&self) -> Vec<u8> {
         self.bytes.iter().copied().collect()
     }
 
-    pub(super) fn end_offset(&self) -> u64 {
+    pub(crate) fn end_offset(&self) -> u64 {
         self.end
     }
 }
 
-pub(super) fn decode_output(bytes: &[u8], max_encoded_bytes: usize) -> (String, bool, bool) {
+pub(crate) fn decode_output(bytes: &[u8], max_encoded_bytes: usize) -> (String, bool, bool) {
     let (mut text, lossy) = match std::str::from_utf8(bytes) {
         Ok(text) => (text.to_owned(), false),
         Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),

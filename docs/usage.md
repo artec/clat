@@ -2590,3 +2590,12 @@ validation constraints are preserved. A tool whose schema contains a recognized
 secret in a property name or other structural data is refused at registration,
 with a fixed diagnostic. Correct the producer definition and explicitly reload;
 discovery cannot supply an altered schema for such a tool.
+# Native Web, history and background work
+
+The workbench offers native Web settings, committed-session full-text search,
+background Job inspection and explicitly authorized schedules. TUI equivalents
+are `/web`, `/history`, `/jobs`, and `/schedule`; CLI equivalents are `clat web`,
+`clat history`, `clat jobs`, and `clat schedule`. Query commands select the
+current already mounted project without implicitly trusting or mounting another.
+See [Web](web.md), [History search](history.md), [Background jobs](jobs.md), and
+[Scheduled work](schedules.md) for scope, permissions, quotas and recovery.

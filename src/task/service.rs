@@ -280,3 +280,23 @@ impl TaskService {
         )))
     }
 }
+
+impl TaskService {
+    pub(crate) fn for_session(&self, sessions: Arc<SessionService>) -> Result<Arc<Self>, String> {
+        self.root.check()?;
+        let mut target = Self::new(sessions, self.project.clone())?;
+        if target.root.identity != self.root.identity {
+            return Err("target project identity changed".into());
+        }
+        target.checkers = self.checkers.clone();
+        *target
+            .query
+            .lock()
+            .map_err(|_| "task query lock poisoned")? = self
+            .query
+            .lock()
+            .map_err(|_| "task query lock poisoned")?
+            .clone();
+        Ok(Arc::new(target))
+    }
+}

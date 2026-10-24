@@ -88,3 +88,5 @@ tests/fixtures/release-index* -text
 
 # Bundled locale assets: identical bytes on all platform checkouts.
 locales/*.json text eol=lf
+# Native background-job fact/projection golden.
+tests/fixtures/native-job-state.json text eol=lf

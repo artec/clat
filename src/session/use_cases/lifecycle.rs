@@ -82,81 +82,51 @@ impl SessionService {
     fn arm_session_with_view(
         &self,
         staged: StagedSession,
-        materialize_full_view: bool,
+        full: bool,
+    ) -> Result<ArmedSession, SessionError> {
+        let mut writers = self.writers.lock().expect("session writers");
+        if let Some(active) = writers.get(&staged.key).and_then(std::sync::Weak::upgrade) {
+            // Legacy readers own no writer lease. An explicit /update may
+            // publish V4 while those readers are still pinned; never reuse
+            // their old read-only coordinator for the new generation.
+            if !active.coordinator.is_read_only()
+                || active.coordinator.header().version == staged.header.version
+            {
+                return self.shared_writer_view(active, full);
+            }
+        }
+        let armed = self.arm_cold_session(staged, full)?;
+        writers.insert(armed.active.key.clone(), Arc::downgrade(&armed.active));
+        Ok(armed)
+    }
+    fn arm_cold_session(
+        &self,
+        staged: StagedSession,
+        full: bool,
     ) -> Result<ArmedSession, SessionError> {
         let StagedSession { key, header } = staged;
-        let arm_header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 0);
-        let mut registry = ProjectionRegistry::clat();
-        let mut sink = ResumeSink::new();
-        // INV-MM1-4：单遍 visitor 顺路收集 attachment 引用 id——
-        // 会话打开时的有界 orphan 回收输入（见 arm 尾部 sweep）。
-        let mut referenced_attachments = std::collections::HashSet::new();
-        let (coordinator, visitor_applied) = SessionCoordinator::start_unseeded_with_visitor(
-            Arc::clone(&self.backend),
-            key.clone(),
-            arm_header,
-            &mut |event| {
-                collect_event_attachment_ids(event, &mut referenced_attachments);
-                sink.push(event, &mut registry)
-            },
-        )?;
-        if !visitor_applied {
-            // 撕裂尾部在 prepare 内修复：visitor 的部分输出跨过了截断
-            // 点，不可信——丢弃后从修复好的日志重读一遍（崩溃路径，
-            // R-1 允许这一遍）。
-            let mut repaired_registry = ProjectionRegistry::clat();
-            let mut repaired = ResumeSink::new();
-            if let Err(error) = self.backend.visit_from(&key, 0, &mut |event| {
-                collect_event_attachment_ids(event, &mut referenced_attachments);
-                repaired.push(event, &mut repaired_registry)
-            }) {
-                let _ = coordinator.close();
-                return Err(error);
-            }
-            registry = repaired_registry;
-            sink = repaired;
-        }
-        let projections = Arc::new(Mutex::new(registry));
-        // Catch up what arming committed behind the single pass (torn-tail
-        // repair closers): the same channel keeps feeding projections, the
-        // replay, and usage — a bounded tail read, never a full re-stream.
-        // A failure here must close the just-armed writer before
-        // propagating (dropping an armed coordinator detaches its thread).
-        let floor = sink.pushed;
-        if coordinator
-            .committed_seq()
-            .is_some_and(|committed| floor <= committed)
-        {
-            let mut guard = projections.lock().expect("projections");
-            let tail = self.backend.visit_from(&key, floor, &mut |event| {
-                collect_event_attachment_ids(event, &mut referenced_attachments);
-                sink.push(event, &mut guard)
-            });
-            drop(guard);
-            if let Err(error) = tail {
-                let _ = coordinator.close();
-                return Err(error);
-            }
-        }
-        let replay = if materialize_full_view {
+        let mut references = std::collections::HashSet::new();
+        let (coordinator, registry, sink) = self.start_folded_writer(&key, &mut references)?;
+        let replay = if full {
             sink.replay.clone()
         } else {
             Vec::new()
         };
         let usage = sink.usage.clone();
-        let replay_state = Arc::new(Mutex::new(sink));
-        let active = ActiveSession::new(
+        let projections = Arc::new(Mutex::new(registry));
+        let active = Arc::new(ActiveSession::new(
             key.clone(),
-            Arc::clone(&coordinator),
-            Arc::clone(&projections),
-            replay_state,
-        );
-        let mut view = match self.view_from(
+            coordinator.clone(),
+            projections.clone(),
+            Arc::new(Mutex::new(sink)),
+        ));
+        let view = self.view_from(
             &header,
             &projections.lock().expect("projections"),
             replay,
-            materialize_full_view,
-        ) {
+            full,
+        );
+        let mut view = match view {
             Ok(view) => view,
             Err(error) => {
                 let _ = coordinator.close();
@@ -164,37 +134,76 @@ impl SessionService {
             }
         };
         view.usage = usage;
-        // INV-MM1-4：会话打开时的有界 orphan 回收（引用集合来自上方
-        // 单遍收集；附件域不存在则跳过——全新会话无附件；失败静默：
-        // 回收是增益，不得阻塞会话打开）。
-        let attachments_root = crate::session::path_layout::session_dir(
+        if !coordinator.is_read_only() {
+            self.sweep_arm_attachments(&key, &references);
+        }
+        Ok(ArmedSession { active, view })
+    }
+    fn start_folded_writer(
+        &self,
+        key: &SessionKey,
+        references: &mut std::collections::HashSet<String>,
+    ) -> Result<(Arc<SessionCoordinator>, ProjectionRegistry, ResumeSink), SessionError> {
+        let mut registry = ProjectionRegistry::clat();
+        let mut sink = ResumeSink::new();
+        let arm_header = SessionHeader::new(key.id.clone(), key.project.header_cwd.clone(), 0);
+        let (coordinator, applied) = SessionCoordinator::start_unseeded_with_visitor(
+            self.backend.clone(),
+            key.clone(),
+            arm_header,
+            &mut |event| {
+                collect_event_attachment_ids(event, references);
+                sink.push(event, &mut registry)
+            },
+        )?;
+        if !applied {
+            registry = ProjectionRegistry::clat();
+            sink = ResumeSink::new();
+            if let Err(error) = self.backend.visit_from(key, 0, &mut |event| {
+                collect_event_attachment_ids(event, references);
+                sink.push(event, &mut registry)
+            }) {
+                let _ = coordinator.close();
+                return Err(error);
+            }
+        }
+        let floor = sink.pushed;
+        if coordinator.committed_seq().is_some_and(|seq| floor <= seq)
+            && let Err(error) = self.backend.visit_from(key, floor, &mut |event| {
+                collect_event_attachment_ids(event, references);
+                sink.push(event, &mut registry)
+            })
+        {
+            let _ = coordinator.close();
+            return Err(error);
+        }
+        Ok((coordinator, registry, sink))
+    }
+    fn sweep_arm_attachments(
+        &self,
+        key: &SessionKey,
+        references: &std::collections::HashSet<String>,
+    ) {
+        let root = crate::session::path_layout::session_dir(
             self.backend.root_path(),
             key.project.header_cwd.as_deref(),
             &key.id,
         )
         .join("attachments");
-        if !coordinator.is_read_only()
-            && let Ok(session_dir) = self.backend.open_session_dir(&key)
-            && session_dir.symlink_metadata("attachments").is_ok()
-            && let Ok(store) = crate::session::attachments::AttachmentStore::open_in_session(
-                &session_dir,
-                attachments_root,
-            )
+        if let Ok(dir) = self.backend.open_session_dir(key)
+            && dir.symlink_metadata("attachments").is_ok()
+            && let Ok(store) =
+                crate::session::attachments::AttachmentStore::open_in_session(&dir, root)
         {
-            let _ = store.sweep_orphans(&referenced_attachments, std::time::SystemTime::now());
+            let _ = store.sweep_orphans(references, std::time::SystemTime::now());
         }
-        Ok(ArmedSession { active, view })
     }
 
     /// Close a fully armed but unpublished target after a lost workspace
     /// CAS. No seed was queued, so this never grows an otherwise untouched
     /// session log.
     pub(crate) fn discard_armed(&self, armed: ArmedSession) -> Result<(), SessionError> {
-        armed
-            .active
-            .coordinator
-            .close()
-            .map_err(SessionError::Corruption)
+        self.release_writer(armed.active)
     }
 
     /// The post-CAS pointer swap is intentionally infallible: storage

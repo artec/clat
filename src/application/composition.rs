@@ -27,6 +27,9 @@ pub(super) struct CompositionInput {
     pub(super) project: Project,
     pub(super) storage_root: PathBuf,
     pub(super) control: Arc<ControlStorage>,
+    pub(super) history_index: Arc<crate::session_query::QueryIndex>,
+    pub(super) job_capacity: Arc<crate::background_jobs::JobCapacity>,
+    pub(super) scheduler: Arc<crate::scheduler::SchedulerService>,
     pub(super) sessions: Arc<SessionService>,
     pub(super) provider_plugins: Option<Vec<Arc<dyn Plugin>>>,
     pub(super) permission_modes: bool,
@@ -42,8 +45,13 @@ pub(super) struct CompositionInput {
 pub(super) struct ProjectPorts {
     pub(super) sessions: Arc<SessionService>,
     pub(super) config: Arc<dyn ConfigStore>,
+    pub(super) web: Arc<crate::web_tools::WebService>,
+    pub(super) history: Arc<crate::session_query::SessionQueryService>,
+    pub(super) jobs: Arc<crate::background_jobs::JobRegistry>,
+    pub(super) scheduler: Arc<crate::scheduler::SchedulerService>,
     pub(super) providers: Arc<ProviderRegistry>,
     pub(super) tools: Arc<crate::tool::ToolRegistry>,
+    pub(super) tool_pipeline: Arc<crate::tool::ToolExecutionPipeline>,
     pub(super) prompts: Arc<PromptRegistry>,
     pub(super) dynamic_instructions: Arc<dyn DynamicInstructions>,
     pub(super) process_service: Arc<crate::process::ProcessService>,
@@ -204,10 +212,28 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
     let mut catalog: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&input.control))),
         Arc::new(SessionPersistencePlugin::new(Arc::clone(&input.sessions))),
+        Arc::new(crate::scheduler::plugin::SchedulerPlugin {
+            scheduler: input.scheduler.clone(),
+            project: input
+                .project
+                .root()
+                .canonicalize()
+                .expect("trusted project")
+                .to_string_lossy()
+                .into_owned(),
+        }),
         Arc::new(crate::plugins::ToolRegistryPlugin),
         Arc::new(crate::tool::capabilities::DiscoveryPlugin),
         Arc::new(crate::plugins::NativeReadToolsPlugin),
+        Arc::new(crate::session_query::plugin::QueryPlugin {
+            index: input.history_index.clone(),
+            control: input.control.clone(),
+            project: input.project.clone(),
+        }),
         Arc::new(crate::plugins::SearchPlugin),
+        Arc::new(crate::web_tools::plugin::WebPlugin {
+            control: Arc::clone(&input.control),
+        }),
         Arc::new(crate::plugins::NativeWriteToolsPlugin {
             scope: write_scope(),
         }),
@@ -224,6 +250,10 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
             project: input.project.clone(),
         }),
         Arc::new(crate::plugins::ExecToolsPlugin),
+        Arc::new(crate::background_jobs::plugin::JobPlugin {
+            project: input.project.clone(),
+            capacity: input.job_capacity.clone(),
+        }),
         Arc::new(crate::plugins::NativeInteractionToolsPlugin {
             slot: Arc::clone(&input.asker_slot),
         }),
@@ -278,11 +308,16 @@ fn resolve_and_freeze(
     plugin_host.configure_host_services(
         project.clone(),
         Arc::clone(&tools),
-        tool_pipeline,
+        tool_pipeline.clone(),
         permissions,
     );
 
     Ok(ProjectPorts {
+        tool_pipeline,
+        web: required(manager, crate::plugins::services::WEB_SERVICE)?,
+        history: required(manager, crate::plugins::services::HISTORY_SERVICE)?,
+        jobs: required(manager, crate::plugins::services::JOB_SERVICE)?,
+        scheduler: required(manager, crate::plugins::services::SCHEDULER_SERVICE)?,
         sessions: required(manager, SESSION_SERVICE)?,
         config: required(manager, CONFIG_SERVICE)?,
         providers,
@@ -324,6 +359,14 @@ fn wire_project_notices(
     ports: &ProjectPorts,
     subscribers: &Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
 ) {
+    let job_subscribers = Arc::clone(subscribers);
+    ports.jobs.set_notice(Arc::new(move |job| {
+        broadcast_to(
+            &job_subscribers,
+            ApplicationEvent::BackgroundJobChanged { job: Box::new(job) },
+        )
+    }));
+    ports.task.set_query(Some(ports.jobs.clone()));
     let mcp_subscribers = Arc::clone(subscribers);
     ports.mcp_status.set_notice_sink(Arc::new(move |failures| {
         broadcast_to(

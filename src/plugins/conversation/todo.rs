@@ -143,6 +143,10 @@ fn parse_entries(arguments: &Value) -> Result<Vec<TodoEntry>, String> {
     Ok(entries)
 }
 
+pub(crate) fn execution_tool(service: Arc<TodoService>) -> Arc<dyn Tool> {
+    Arc::new(TodoWriteTool { service })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

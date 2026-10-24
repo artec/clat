@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+mod background;
 mod capture;
+pub(crate) use background::BackgroundPlan;
 mod direct;
 mod error;
 pub(crate) use error::ProcessError;
@@ -136,6 +138,7 @@ struct PipedSpawnOptions {
     stdout_capacity: usize,
     stderr_capacity: usize,
     strip_credential_env: bool,
+    background_scratch: Option<PathBuf>,
 }
 
 impl Default for PipedSpawnOptions {
@@ -146,6 +149,7 @@ impl Default for PipedSpawnOptions {
             stdout_capacity: STREAM_RING_BYTES,
             stderr_capacity: STREAM_RING_BYTES,
             strip_credential_env: false,
+            background_scratch: None,
         }
     }
 }
@@ -305,6 +309,11 @@ pub(crate) struct ProcessService {
     limits: ProcessLimits,
     state: Mutex<ServiceState>,
     notice_sink: Mutex<Option<NoticeSink>>,
+    background: bool,
+    #[cfg(test)]
+    pub(crate) fail_background_after_spawn: AtomicBool,
+    #[cfg(test)]
+    pub(crate) fail_next_cleanup: AtomicBool,
 }
 
 impl ProcessService {
@@ -331,6 +340,11 @@ impl ProcessService {
                 closed: false,
             }),
             notice_sink: Mutex::new(None),
+            background: false,
+            #[cfg(test)]
+            fail_background_after_spawn: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_cleanup: AtomicBool::new(false),
         }
     }
 
@@ -457,6 +471,7 @@ impl ProcessService {
                 stdout_capacity: MANAGED_STDOUT_RING_BYTES,
                 stderr_capacity: MANAGED_STDERR_RING_BYTES,
                 strip_credential_env: true,
+                background_scratch: None,
             },
         )?;
         let shared = Arc::new(ManagedStdioShared {
@@ -583,6 +598,11 @@ impl ProcessService {
                 PipedSpawnOptions {
                     verification,
                     limits: self.limits,
+                    background_scratch: if self.background {
+                        Some(self.sandbox.writable_roots()?.scratch().to_path_buf())
+                    } else {
+                        None
+                    },
                     ..PipedSpawnOptions::default()
                 },
             )?
@@ -764,26 +784,27 @@ impl ProcessService {
     pub(crate) fn close(&self) -> Result<(), String> {
         let entries = {
             let mut state = self.state.lock().expect("process service lock");
-            if state.closed {
-                return Ok(());
-            }
             state.closed = true;
             state.owner = None;
-            let mut entries = state
-                .entries
-                .drain()
-                .map(|(_, entry)| entry)
-                .collect::<Vec<_>>();
+            let mut entries = state.entries.values().cloned().collect::<Vec<_>>();
             entries.extend(
                 state
                     .managed
-                    .drain()
-                    .map(|(_, shared)| Arc::clone(&shared.entry)),
+                    .values()
+                    .map(|shared| Arc::clone(&shared.entry)),
             );
             entries
         };
         close_entries(entries)?;
-        self.sandbox.clear_scratch()
+        #[cfg(test)]
+        if self.fail_next_cleanup.swap(false, Ordering::AcqRel) {
+            return Err("injected scratch cleanup failure".into());
+        }
+        self.sandbox.clear_scratch()?;
+        let mut state = self.state.lock().expect("process service lock");
+        state.entries.clear();
+        state.managed.clear();
+        Ok(())
     }
 
     fn current_owner(&self) -> Result<RunOwner, String> {
@@ -864,6 +885,12 @@ fn close_entries(entries: Vec<Arc<ProcessEntry>>) -> Result<(), String> {
     } else {
         Err(errors.join("; "))
     }
+}
+
+struct ConsumedStreams {
+    bytes: [Vec<u8>; 3],
+    loss: [bool; 3],
+    more: [bool; 3],
 }
 
 struct ProcessEntry {
@@ -1164,34 +1191,74 @@ impl ProcessEntry {
         stderr_budget: usize,
         pty_budget: usize,
     ) -> ProcessOutput {
+        self.consume_limits_encoded(stdout_budget, stderr_budget, pty_budget, 1)
+    }
+
+    fn consume_limits_encoded(
+        &self,
+        stdout_budget: usize,
+        stderr_budget: usize,
+        pty_budget: usize,
+        encoding_factor: usize,
+    ) -> ProcessOutput {
         let mut state = self.state.lock().expect("process entry lock");
         // Sandbox classification must not depend on the model-facing output
         // budget. A full stdout budget can leave stderr unread in this call,
         // while the bounded transient ring still contains the OS denial.
-        let diagnostics = self.command_diagnostics(&state);
         let starts_line = [
             state.stdout.starts_line_at(state.cursors.stdout),
             state.stderr.starts_line_at(state.cursors.stderr),
             state.pty.starts_line_at(state.cursors.pty),
         ];
-        let (stdout, stdout_cursor, stdout_ring_lossy, stdout_more) =
+        let (mut stdout, mut stdout_cursor, stdout_ring_lossy, stdout_more) =
             state.stdout.read_from(state.cursors.stdout, stdout_budget);
+        if encoding_factor > 1 && state.terminal.is_none() {
+            background::complete_stream_prefix(&mut stdout, &mut stdout_cursor);
+        }
         state.cursors.stdout = stdout_cursor;
-        let (stderr, stderr_cursor, stderr_ring_lossy, stderr_more) =
+        let (mut stderr, mut stderr_cursor, stderr_ring_lossy, stderr_more) =
             state.stderr.read_from(state.cursors.stderr, stderr_budget);
+        if encoding_factor > 1 && state.terminal.is_none() {
+            background::complete_stream_prefix(&mut stderr, &mut stderr_cursor);
+        }
         state.cursors.stderr = stderr_cursor;
         let (pty, pty_cursor, pty_ring_lossy, pty_more) =
             state.pty.read_from(state.cursors.pty, pty_budget);
         state.cursors.pty = pty_cursor;
         state.last_activity = Instant::now();
+        self.project_consumed(
+            &state,
+            ConsumedStreams {
+                bytes: [stdout, stderr, pty],
+                loss: [stdout_ring_lossy, stderr_ring_lossy, pty_ring_lossy],
+                more: [stdout_more, stderr_more, pty_more],
+            },
+            [stdout_budget, stderr_budget, pty_budget],
+            encoding_factor,
+            starts_line,
+        )
+    }
+    fn project_consumed(
+        &self,
+        state: &EntryState,
+        streams: ConsumedStreams,
+        budgets: [usize; 3],
+        encoding_factor: usize,
+        starts_line: [bool; 3],
+    ) -> ProcessOutput {
         let terminal = state.terminal.clone();
+        let diagnostics = self.command_diagnostics(state);
+        let [stdout, stderr, pty] = streams.bytes;
+        let [stdout_ring_lossy, stderr_ring_lossy, pty_ring_lossy] = streams.loss;
+        let [stdout_more, stderr_more, pty_more] = streams.more;
+        let [stdout_budget, stderr_budget, pty_budget] = budgets;
         let stdout_bytes = stdout.len();
         let stderr_bytes = stderr.len();
         let pty_bytes = pty.len();
         let (stdout_text, stdout_utf8_lossy, stdout_decode_truncated) =
-            decode_output(&stdout, stdout_budget);
+            decode_output(&stdout, stdout_budget.saturating_mul(encoding_factor));
         let (stderr_text, stderr_utf8_lossy, stderr_decode_truncated) =
-            decode_output(&stderr, stderr_budget);
+            decode_output(&stderr, stderr_budget.saturating_mul(encoding_factor));
         let (pty_text, pty_utf8_lossy, pty_decode_truncated) = decode_output(&pty, pty_budget);
         let stdout_lossy = stdout_ring_lossy || stdout_utf8_lossy;
         let stderr_lossy = stderr_ring_lossy || stderr_utf8_lossy;
@@ -1321,9 +1388,9 @@ impl ProcessEntry {
         if wait_thread_finished(&handle, JOIN_GRACE) {
             handle.join().is_ok()
         } else {
-            // Dropping a JoinHandle detaches, but the process tree has already
-            // received terminate. Report the bounded join failure honestly.
-            drop(handle);
+            // Keep ownership for an explicit close retry; a timeout must not
+            // turn the next attempt into an unverified success.
+            *self.monitor.lock().expect("monitor lock") = Some(handle);
             false
         }
     }
@@ -1338,7 +1405,8 @@ fn wait_thread_finished(handle: &JoinHandle<()>, grace: Duration) -> bool {
 }
 
 mod output;
-use output::{ByteRing, decode_output};
+pub(crate) use output::ByteRing;
+use output::decode_output;
 
 #[derive(Clone, Copy)]
 enum StreamKind {
@@ -1447,6 +1515,17 @@ fn piped_command(
     process
 }
 
+fn background_piped_command(
+    planned: &crate::sandbox::PlannedCommand,
+    workdir: PathBuf,
+    options: &PipedSpawnOptions,
+) -> std::process::Command {
+    let mut command = piped_command(planned, workdir, options.strip_credential_env);
+    if let Some(scratch) = &options.background_scratch {
+        command.env("CLAT_JOB_SCRATCH", scratch);
+    }
+    command
+}
 fn spawn_piped(
     id: u64,
     owner: &RunOwner,
@@ -1456,7 +1535,7 @@ fn spawn_piped(
     notice_sink: Option<NoticeSink>,
     options: PipedSpawnOptions,
 ) -> Result<Arc<ProcessEntry>, String> {
-    let mut process = piped_command(&planned, workdir, options.strip_credential_env);
+    let mut process = background_piped_command(&planned, workdir, &options);
     let mut child = process
         .group_spawn()
         .map_err(|error| format!("process spawn failed: {error}"))?;

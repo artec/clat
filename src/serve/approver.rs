@@ -34,7 +34,9 @@ impl PermissionApprover for ServeApprover {
     fn decide(&self, request: PermissionRequest, cancel: &CancelToken) -> PermissionDecision {
         let rpc_id = uuid::Uuid::new_v4().to_string();
         let (decision_tx, decision_rx) = std::sync::mpsc::channel::<PermissionDecision>();
-        let ctl = super::shapes::approval_requested_ctl(&rpc_id, &request);
+        let ctl = self
+            .shared
+            .scope_interaction(super::shapes::approval_requested_ctl(&rpc_id, &request));
         let data = super::shapes::ctl_data(&ctl);
         {
             let mut pending = self.shared.pending.lock().expect("serve pending lock");
@@ -92,7 +94,7 @@ fn wait_for_decision(
                         reason: "run cancelled".into(),
                     };
                 }
-                if shared.subscriber_count() == 0 {
+                if shared.subscriber_count() == 0 && !shared.is_automatic_run() {
                     return PermissionDecision::Deny {
                         reason: "client disconnected".into(),
                     };

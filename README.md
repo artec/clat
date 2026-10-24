@@ -154,6 +154,10 @@ Start with the document that matches your task:
 | Configure a preset or custom model | [Model editor](docs/model-editor.md) |
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |
+| Search and retrieve public web pages | [Native Web tools](docs/web.md) |
+| Search and inspect session history | [History search](docs/history.md) |
+| [Background jobs](docs/jobs.md) | Host-owned commands, output, cancellation and recovery |
+| [Scheduled work](docs/schedules.md) | Explicit grants, bounded Job follow-up, time rules and recovery |
 | Use official DSH web search and fetch | [Web tools](docs/web.md) |
 | Install and manage plugins from the PWA or CLI | [CLAT plugins](docs/plugins.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |

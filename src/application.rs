@@ -28,6 +28,17 @@ pub(crate) fn bounded_reason(reason: &str) -> String {
 }
 
 mod bootstrap;
+mod history;
+mod jobs;
+pub use jobs::*;
+mod automatic;
+mod automatic_recovery;
+pub(crate) use automatic::AutomaticRequest;
+mod schedules;
+pub use schedules::*;
+mod web;
+pub use history::*;
+pub use web::{FetchProvider, WebSettingsEdit, WebSettingsView};
 mod capabilities;
 mod changes;
 mod compaction;
@@ -80,6 +91,8 @@ mod skills_tests;
 #[cfg(test)]
 mod subagent_tests;
 mod suggestion;
+mod target_run;
+mod target_services;
 #[cfg(test)]
 mod tests;
 mod threads;
@@ -128,6 +141,7 @@ pub use crate::control_storage::workspace::WorkspaceFile as DshWorkspaceFile;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationError {
     message: String,
+    presentation: Option<Box<crate::i18n::UiMessage>>,
     receipt: Option<Box<crate::message::AdmissionReceipt>>,
     selection_changed: bool,
 }
@@ -136,6 +150,7 @@ impl ApplicationError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            presentation: None,
             receipt: None,
             selection_changed: false,
         }
@@ -143,6 +158,19 @@ impl ApplicationError {
 
     pub(crate) fn from_message(message: impl Into<String>) -> Self {
         Self::new(message)
+    }
+    pub(crate) fn presented(message: crate::i18n::UiMessage) -> Self {
+        Self {
+            message: message.english(),
+            presentation: Some(Box::new(message)),
+            receipt: None,
+            selection_changed: false,
+        }
+    }
+    pub fn presentation(&self) -> crate::i18n::UiMessage {
+        self.presentation.as_deref().cloned().unwrap_or_else(|| {
+            crate::i18n::UiMessage::new("common.error").arg("detail", self.message.clone())
+        })
     }
 
     fn with_receipt(mut self, receipt: Option<Box<crate::message::AdmissionReceipt>>) -> Self {
@@ -210,6 +238,9 @@ pub enum CompactionStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationEvent {
+    BackgroundJobChanged {
+        job: Box<crate::background_jobs::JobView>,
+    },
     /// Root-global model settings changed. Contains no configuration or secrets.
     ModelsUpdated,
     MonitorUpdated(Option<String>),
@@ -249,6 +280,10 @@ pub enum ApplicationEvent {
 }
 
 pub struct TrustedProjectApplication {
+    web: Arc<crate::web_tools::WebService>,
+    history: Arc<crate::session_query::SessionQueryService>,
+    jobs: Arc<crate::background_jobs::JobRegistry>,
+    scheduler: Arc<crate::scheduler::SchedulerService>,
     project: Project,
     composition: composition::TrustedProjectComposition,
     sessions: Arc<SessionService>,
@@ -261,6 +296,7 @@ pub struct TrustedProjectApplication {
     /// Frozen tool registry: `request/header.tools` reads what the model
     /// actually sees (audit P1-14).
     tools: Arc<crate::tool::ToolRegistry>,
+    tool_pipeline: Arc<crate::tool::ToolExecutionPipeline>,
     /// Frozen prompt registry: `request/header.system` reads the resolved
     /// instructions (audit P1-14).
     prompts: Arc<crate::plugins::services::PromptRegistry>,

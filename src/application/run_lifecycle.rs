@@ -305,44 +305,7 @@ impl TrustedProjectApplication {
         self.task
             .ensure_start_allowed()
             .map_err(ApplicationError::new)?;
-        if let Some(previous) = self
-            .active_run
-            .as_ref()
-            .filter(|handle| !handle.is_finished())
-        {
-            // W1-04：队列已封口 = run 已判定终态、只剩收尾（steer
-            // 回退普通提交正是落在这个窗口）。有界等待收尾完成后
-            // 允许立即开新 run；未到终态的活动 run 仍然拒绝。
-            if !previous.steering().is_sealed() {
-                return Err(ApplicationError::new("another run is already active"));
-            }
-            if !wait_for_sealed_wrapup(previous) {
-                return Err(ApplicationError::new(
-                    "the previous run is still finishing; submit again in a moment",
-                ));
-            }
-        }
-        if let Some(previous) = self.active_run.take() {
-            previous.join()?;
-        }
-        if !self.fresh_session_open
-            && let Some(header) = self.sessions.last_request_header()
-        {
-            // A dynamic project-instruction change may have appended a
-            // request/header after the run started. Re-seed dedupe from the
-            // durable projection instead of the start-time snapshot.
-            self.emitted_request_header = Some(header);
-        }
-        if self
-            .active_compaction
-            .as_ref()
-            .is_some_and(|handle| !handle.is_finished())
-        {
-            return Err(ApplicationError::new("a compaction is already active"));
-        }
-        if let Some(previous) = self.active_compaction.take() {
-            previous.join()?;
-        }
+        self.prepare_execution_slot()?;
         // 模型配置检查在前：无模型时立即失败，不为 MCP 白等。
         let (config, credentials) = self.model_state()?;
         if !config.is_configured() {
@@ -384,6 +347,7 @@ impl TrustedProjectApplication {
         let waiting_execution = RunExecutionEngine::spawn(
             self,
             RunExecutionSpec {
+                target: None,
                 run_plugins,
                 config: config.clone(),
                 credentials: credentials.clone(),
@@ -463,6 +427,53 @@ impl TrustedProjectApplication {
         Ok(handle)
     }
 
+    pub(super) fn prepare_execution_slot(&mut self) -> Result<(), ApplicationError> {
+        if let Some(previous) = self
+            .active_run
+            .as_ref()
+            .filter(|handle| !handle.is_finished())
+        {
+            // W1-04：队列已封口 = run 已判定终态、只剩收尾（steer
+            // 回退普通提交正是落在这个窗口）。有界等待收尾完成后
+            // 允许立即开新 run；未到终态的活动 run 仍然拒绝。
+            if !previous.steering().is_sealed() {
+                return Err(ApplicationError::new("another run is already active"));
+            }
+            if !wait_for_sealed_wrapup(previous) {
+                return Err(ApplicationError::new(
+                    "the previous run is still finishing; submit again in a moment",
+                ));
+            }
+        }
+        if let Some(previous) = self.active_run.take() {
+            previous.join()?;
+        }
+        if !self.fresh_session_open
+            && let Some(header) = self.sessions.last_request_header()
+        {
+            // A dynamic project-instruction change may have appended a
+            // request/header after the run started. Re-seed dedupe from the
+            // durable projection instead of the start-time snapshot.
+            self.emitted_request_header = Some(header);
+        }
+        if self
+            .active_compaction
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Err(ApplicationError::new("a compaction is already active"));
+        }
+        if let Some(previous) = self.active_compaction.take() {
+            previous.join()?;
+        }
+        Ok(())
+    }
+
+    fn selected_run(&self) -> Option<&RunHandle> {
+        let handle = self.active_run.as_ref()?;
+        (handle.session_id() == self.selection.as_ref()).then_some(handle)
+    }
+
     pub fn cancel_active_run(&self) {
         if let Some(handle) = &self.active_run {
             handle.cancel();
@@ -486,7 +497,7 @@ impl TrustedProjectApplication {
                 receipt: steering_rollback_receipt(&message, "steering-admission"),
             };
         }
-        let Some(handle) = &self.active_run else {
+        let Some(handle) = self.selected_run() else {
             return SteerOutcome::NotRunning {
                 receipt: steering_rollback_receipt(&message, "steering-not-running"),
             };
@@ -589,7 +600,7 @@ impl TrustedProjectApplication {
     /// 结束、或消息已被 claim（进入 journal、不可撤回）时返回 `None`
     ///——此时前端的 ESC 应回落到取消 run。召回不触碰 journal。
     pub fn recall_pending_steering(&self) -> Option<RecalledSteering> {
-        let handle = self.active_run.as_ref()?;
+        let handle = self.selected_run()?;
         if handle.is_finished() {
             return None;
         }
@@ -653,7 +664,7 @@ pub struct ApplicationRunRequest {
 
 // The final event in the admission batch is user/message. Its assigned seq,
 // not a later journal watermark, separates historical and live presentation.
-fn commit_admission_batch(
+pub(super) fn commit_admission_batch(
     journal: &dyn RunJournal,
     batch: &[NewSessionEvent],
 ) -> Result<u64, ApplicationError> {
@@ -811,7 +822,7 @@ fn wait_for_sealed_wrapup(previous: &RunHandle) -> bool {
 }
 
 impl TrustedProjectApplication {
-    fn memory_for_message(
+    pub(super) fn memory_for_message(
         &self,
         message: &crate::message::PendingMessage,
     ) -> Result<crate::memory::MemoryInjection, ApplicationError> {

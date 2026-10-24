@@ -15,7 +15,15 @@ impl TrustedProjectApplication {
                 "capability source observation changed; requery",
             ));
         }
-        let context = format!("{:?}:{revision}", self.current_session_id());
+        let context = format!(
+            "{:?}:{revision}:{:?}",
+            self.current_session_id(),
+            self.web_settings().ok().map(|v| (
+                v.fetch_provider,
+                v.search_available,
+                v.fetch_available
+            ))
+        );
         let view = self.tools.user_capability_view(&context);
         let mut value = self
             .tools

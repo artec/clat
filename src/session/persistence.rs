@@ -7,6 +7,7 @@
 //! stages and live above this file.
 
 use crate::session::event::SessionEvent;
+mod query;
 use crate::session::header::{HeaderError, SessionHeader};
 use crate::session::key::SessionKey;
 use crate::session::recovery::interrupted_turn_closers;

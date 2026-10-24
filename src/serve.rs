@@ -21,6 +21,7 @@
 
 pub(crate) mod approver;
 mod auth;
+mod automatic;
 mod http;
 mod models;
 mod next_turn;
@@ -28,6 +29,7 @@ mod notifications;
 mod plugins;
 pub(crate) mod protocol;
 mod questions;
+mod schedules;
 pub(crate) mod shapes;
 mod sse;
 mod startup;

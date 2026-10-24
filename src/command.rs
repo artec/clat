@@ -87,6 +87,9 @@ pub enum CommandOutcome {
     ShowTask(String),
     /// Read-only capability content through the existing content view.
     ShowCapabilities(String),
+    QueryHistory(crate::session_query::command::HistoryCommandRequest),
+    ShowJobs(serde_json::Value),
+    ShowSchedules(serde_json::Value),
     StartTaskRun(crate::task::TaskResume),
     /// `/help`：携带完整命令目录，帮助表从载荷派生。
     ShowHelp {
@@ -144,6 +147,9 @@ impl fmt::Debug for CommandOutcome {
             Self::Status(_) => "Status(..)",
             Self::ShowTask(_) => "ShowTask(..)",
             Self::ShowCapabilities(_) => "ShowCapabilities(..)",
+            Self::QueryHistory(_) => "QueryHistory(..)",
+            Self::ShowJobs(_) => "ShowJobs(..)",
+            Self::ShowSchedules(_) => "ShowSchedules(..)",
             Self::StartTaskRun(_) => "StartTaskRun(..)",
             Self::ShowHelp { .. } => "ShowHelp { .. }",
             Self::ShowMcpStatus(_) => "ShowMcpStatus(..)",

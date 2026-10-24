@@ -34,6 +34,12 @@ impl RoundExecution {
     ) -> SettledRound {
         let execution = Self::begin(worker, context.header, context.reason);
         let outcome = execution.invoke(worker, context.workflow, context.error);
+        if let Some(target) = &worker.deps.target {
+            target.meter.store(
+                execution.spend_ledger.used(),
+                std::sync::atomic::Ordering::Release,
+            );
+        }
         let cancelled = outcome.cancelled;
         let result = execution.finish(worker, outcome);
         SettledRound {
@@ -158,6 +164,7 @@ impl RoundExecution {
                 self.file_capture_error.as_ref(),
             )?;
             worker.deps.agent.execute(AgentRequest {
+                runtime: worker.deps.target.as_ref().map(|t| t.runtime.clone()),
                 context_manager: self.context_manager(worker),
                 config: worker.deps.config.clone(),
                 spend_ledger: Some(Arc::clone(&self.spend_ledger)),
