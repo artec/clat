@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from 'bun:test';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { recordBackend, verifyBackend } from './backend';
 import { digest, json, withTemp, writeJson } from './common';
@@ -7,6 +7,34 @@ import { DesktopRelease } from './release';
 import { backendArtifact as artifact, backendBytes as binary, backendIdentity as identity, fixture } from './test-support';
 
 afterEach(() => mock.restore());
+test('unchanged development staging preserves resource timestamps but refreshes changed bytes', async () => {
+  await fixture(release => {
+    const target = identity.target, directory = join(release.root, 'target');
+    const source = join(directory, target, 'debug/clat');
+    mkdirSync(join(directory, target, 'debug'), { recursive: true });
+    writeFileSync(source, binary(target));
+    let builds = 0;
+    const staging = new DesktopRelease(release.root, args => {
+      if (args[1] === 'build') { builds++; return ''; }
+      if (args[1] === 'metadata') return JSON.stringify({ target_directory: directory });
+      throw new Error('unexpected command');
+    });
+    staging.stageBackend(target);
+    const backend = join(release.desktop, 'resources/clat-backend');
+    const manifest = join(release.desktop, 'resources/backend.json');
+    const old = new Date('2000-01-01T00:00:00Z');
+    for (const file of [backend, manifest]) utimesSync(file, old, old);
+    staging.stageBackend(target);
+    expect(builds).toBe(2); // Cargo must still check every source/dependency input.
+    for (const file of [backend, manifest]) expect(statSync(file).mtimeMs).toBe(old.getTime());
+    const changed = Buffer.from(binary(target));
+    changed[changed.length - 1] = changed[changed.length - 1]! ^ 1;
+    writeFileSync(source, changed); // Equal size must not masquerade as a cache hit.
+    staging.stageBackend(target);
+    expect(readFileSync(backend)).toEqual(readFileSync(source));
+    expect(json<{ sha256: string }>(manifest).sha256).toBe(digest(source));
+  });
+});
 test('CLI artifact binds source, version, platform, run, official identity and bytes', async () => {
   await withTemp('backend-contract-', folder => {
     artifact(folder); expect(verifyBackend(folder, identity)).toBe(join(folder, 'clat'));

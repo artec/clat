@@ -103,6 +103,7 @@ fn simultaneous_ui_writers_merge_independent_preferences() {
     let jobs = [
         serde_json::json!({"autoCheck":false}),
         serde_json::json!({"language":"zh-Hant"}),
+        serde_json::json!({"lastProject":"/trusted/project"}),
     ]
     .map(|patch| {
         let path = path.clone();
@@ -117,7 +118,7 @@ fn simultaneous_ui_writers_merge_independent_preferences() {
             save_ui_preferences(&path, &patch).unwrap();
         })
     });
-    for _ in 0..2 {
+    for _ in 0..3 {
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
@@ -128,9 +129,10 @@ fn simultaneous_ui_writers_merge_independent_preferences() {
     for job in jobs {
         job.join().unwrap();
     }
-    let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let value = load_ui_preferences(&path).unwrap();
     assert_eq!(value["autoCheck"], false);
     assert_eq!(value["language"], "zh-Hant");
+    assert_eq!(value["lastProject"], "/trusted/project");
     crate::test_support::cleanup_tree(&root);
 }
 

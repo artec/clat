@@ -55,6 +55,7 @@ clat upgrade --check
 
 桌面本地调试使用 `bun start`，生成本机测试安装包使用 `bun app:build`。
 桌面开发与发布脚本由 Bun 直接执行 TypeScript，无需 Python。
+桌面启动时恢复上次打开且仍受信任的项目；项目失效时回到欢迎页并显示恢复提示。
 正式发布时，推送签名标签后即可运行 `./publish`，与 CI 构建重叠进行。
 Windows 安装包复用同平台 CLI；macOS 桌面包复用 CI 后端，在本机编译、签名和公证，
 中断后可复用已完成阶段。

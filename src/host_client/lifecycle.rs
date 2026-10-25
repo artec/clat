@@ -38,24 +38,35 @@ impl HostManagementArgs {
     }
 
     pub fn execute(&self) -> Result<String, String> {
-        self.execute_presented().map(|m| m.english())
+        self.execute_presented()
+            .map(|m| m.english())
+            .map_err(|e| e.raw)
     }
-    pub fn execute_presented(&self) -> Result<crate::i18n::UiMessage, String> {
-        let client = match self.port {
+    pub fn execute_presented(&self) -> Result<crate::i18n::UiMessage, crate::i18n::PresentedText> {
+        self.execute_with(|| match self.port {
             Some(port) => {
                 let root = crate::control_storage::sentinel::default_storage_root()?;
                 HostClient::connect_for_management(
                     port,
                     super::credentials::read_token(&root)?,
                     &root,
-                )?
+                )
             }
-            None => HostClient::discover_local_for_management()?,
-        };
+            None => HostClient::discover_local_for_management(),
+        })
+    }
+
+    fn execute_with(
+        &self,
+        connect: impl FnOnce() -> Result<HostClient, crate::i18n::PresentedText>,
+    ) -> Result<UiMessage, crate::i18n::PresentedText> {
+        let client = connect()?;
         if self.stop {
-            let result = client.call("host.stop", &json!({}))?;
+            let result = client
+                .call_with_receipt("host.stop", &json!({}))
+                .map_err(|e| e.presented())?;
             if result["stopping"] != true {
-                return Err("host did not acknowledge shutdown; do not retry automatically".into());
+                return Err(UiMessage::new("host.stop_unacknowledged").into());
             }
             Ok(crate::i18n::UiMessage::new("cli.host_stopping")
                 .arg("instance", client.instance_id()))
@@ -71,6 +82,50 @@ impl HostManagementArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_management_discovery_keeps_localized_reason_without_retry() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let error = HostClient::connect_checked(
+            port,
+            "fixture-token".into(),
+            &std::env::temp_dir(),
+            None,
+            crate::host_client::BuildMatchPolicy::Ignore,
+        )
+        .err()
+        .unwrap()
+        .presented();
+        assert_eq!(error.raw, "host is offline; no operation was retried");
+        assert_eq!(error.message().key, "host.offline_no_retry");
+        let connections = std::cell::Cell::new(0);
+        let command = HostManagementArgs {
+            stop: true,
+            port: Some(port),
+        };
+        let managed = command
+            .execute_with(|| {
+                connections.set(connections.get() + 1);
+                Err(error.clone())
+            })
+            .unwrap_err();
+        assert_eq!(connections.get(), 1);
+        assert_eq!(managed, error);
+        for locale in [
+            crate::i18n::Locale::Simplified,
+            crate::i18n::Locale::Traditional,
+        ] {
+            assert_ne!(
+                error.render(crate::i18n::LocaleContext::new(locale)),
+                error.raw
+            );
+            let shown = crate::i18n::LocaleContext::new(locale)
+                .render(&UiMessage::new("common.error").arg_message("detail", managed.message()));
+            assert!(!shown.contains("host is offline"));
+        }
+    }
 
     #[test]
     fn host_management_requires_explicit_action_and_valid_port() {

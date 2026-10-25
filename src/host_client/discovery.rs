@@ -6,13 +6,19 @@ use std::path::Path;
 const FILE_NAME: &str = "host-endpoint.json";
 
 pub(super) enum DiscoveryFailure {
-    Unavailable(String),
+    Unavailable(crate::i18n::PresentedText),
     Incompatible(crate::i18n::PresentedText),
     Upgradeable { host_version: String },
 }
 
 impl From<String> for DiscoveryFailure {
     fn from(message: String) -> Self {
+        Self::Unavailable(message.into())
+    }
+}
+
+impl From<crate::i18n::PresentedText> for DiscoveryFailure {
+    fn from(message: crate::i18n::PresentedText) -> Self {
         Self::Unavailable(message)
     }
 }
@@ -29,7 +35,7 @@ impl DiscoveryFailure {
     }
     pub(super) fn presented(self) -> crate::i18n::PresentedText {
         match self {
-            Self::Unavailable(message) => message.into(),
+            Self::Unavailable(message) => message,
             Self::Incompatible(message) => message,
             Self::Upgradeable { host_version } => {
                 crate::i18n::UiMessage::new("host.upgrade_required")
@@ -87,9 +93,9 @@ impl HostClient {
         Self::discover(&root)
     }
 
-    pub(super) fn discover_local_for_management() -> Result<Self, String> {
+    pub(super) fn discover_local_for_management() -> Result<Self, crate::i18n::PresentedText> {
         let root = crate::control_storage::sentinel::default_storage_root()?;
-        Self::discover_for_management(&root)
+        Self::discover_checked(&root, BuildMatchPolicy::Ignore).map_err(DiscoveryFailure::presented)
     }
 
     /// Read-only; an absent, stale or incompatible hint never starts a writer.

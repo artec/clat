@@ -6,7 +6,8 @@ pub use text::PresentedText;
 mod template;
 mod terminal;
 pub use preferences::{
-    load_preference, save_preference, save_ui_preferences, terminal_preferences_path,
+    load_preference, load_ui_preferences, save_preference, save_ui_preferences,
+    terminal_preferences_path,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

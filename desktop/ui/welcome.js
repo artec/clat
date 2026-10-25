@@ -8,9 +8,12 @@ async function refresh() {
   refreshing = true;
   try {
     const info = await invoke('desktop_info');
+    const loading = !info.backendError && !info.connectionError
+      && (info.startupLoading || (document.body.dataset.startup === 'loading' && info.hostConnected));
+    document.body.dataset.startup = loading ? 'loading' : 'ready';
     document.getElementById('version').textContent = `CLAT ${info.desktopVersion}`;
     CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || info.backendError || CLATI18n.present(info.connectionPresentation,info.connectionError) || CLATI18n.t('desktop.welcome'));
-  } catch (error) { CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(error,String(error))); }
+  } catch (error) { document.body.dataset.startup='ready'; CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(error,String(error))); }
   finally { refreshing = false; }
 }
 document.getElementById('open').onclick = async event => {

@@ -1777,7 +1777,9 @@ range for larger files; PDF/Office/video parsing is not provided.
 
 Session menus provide **Pin**, explicit **Archive**, and **Restore**. Organization
 is saved by the core for the workspace and shared with TUI; it is not a browser
-hide preference. **Archived sessions** opens the recoverable list. Archiving
+hide preference. The **Active / Archived** tabs switch the recoverable session
+lists; arrow keys and Home/End move between tabs without changing the conversation
+or draft. The project header's arrow opens project selection. Archiving
 retains chat and leaves the selected conversation selected; the current row
 stays visible. Organization is unavailable while a run/compaction owns the
 session. TUI `/resume`: P toggles pin, A twice confirms archive, F2 switches the
@@ -2211,6 +2213,12 @@ On CLAT standalone and attached terminals, `Ctrl+Q` queues the composer text;
 item. In the PWA, use **Queue next turn** and **Recall last**; the queue above the
 composer shows each pending message. Enter during a run still sends steering to
 the next model-request boundary. The next-turn queue accepts text only.
+
+The web and desktop composer uses an arrow icon to send. While a run is active,
+a square stop icon replaces it in the same position; stopping does not clear the
+unsent draft. Queue and Enter remain available during a run as described above.
+The sidebar's schedules, background jobs and history search entries keep their
+icons when collapsed, with localized tooltips and accessible names.
 
 Each successful run dispatches one FIFO item as an ordinary new run; successive
 successful runs continue draining. Cancellation or failure pauses the queue and

@@ -1844,5 +1844,14 @@
   "serve.token_empty": "无效凭据：不能为空",
   "serve.token_long": "无效凭据：长度超过 {limit} 字节",
   "serve.token_ascii": "无效凭据：仅可使用 ASCII 字母、数字、'-'、'.'、'_' 或 '~'",
-  "desktop.unsupported_platform": "CLAT 桌面版支持 macOS 和 Windows；请在此平台使用 clat 或 PWA。"
+  "desktop.unsupported_platform": "CLAT 桌面版支持 macOS 和 Windows；请在此平台使用 clat 或 PWA。",
+  "desktop.restore_failed": "无法重新打开上次的项目：{reason} 请选择项目以继续。",
+  "desktop.restore_invalid": "桌面保存的项目记录无效，请重新选择项目。",
+  "desktop.restore_needs_trust": "上次的项目已不再受信任，请手动打开并确认信任后继续。",
+  "host.offline_no_retry": "后台未运行；未重试任何操作",
+  "host.stop_unacknowledged": "后台未确认停止；请勿自动重试",
+  "desktop.opening_workbench": "正在打开工作台…",
+  "web.active_sessions_tab": "活动",
+  "web.archived_sessions_tab": "归档",
+  "web.open_project_navigation": "打开其他项目"
 }

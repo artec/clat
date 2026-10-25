@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { cleanEnv, DESKTOP, nativeTarget, ROOT, run, type Runner } from './common';
+import { cleanEnv, DESKTOP, nativeTarget, ROOT, run, type Environment, type Runner } from './common';
 import type { DesktopRelease } from './release';
 
 export function ensureTools(execute: Runner = run): void {
@@ -13,11 +13,11 @@ export function startArgs(release: DesktopRelease, target: string): string[] {
     '--config', JSON.stringify({ version: release.version() }), '--', '--locked'];
 }
 export interface AppProcess { exited: Promise<number>; kill(signal: 'SIGTERM'): void }
-export type Launcher = (args: string[], cwd: string) => AppProcess;
-export const launch: Launcher = (args, cwd) => Bun.spawn(args, { cwd, env: cleanEnv(), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
+export type Launcher = (args: string[], cwd: string, env: Environment) => AppProcess;
+export const launch: Launcher = (args, cwd, env) => Bun.spawn(args, { cwd, env: cleanEnv(env), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
 export async function start(release: DesktopRelease, launchApp: Launcher = launch): Promise<number> {
   const target = nativeTarget(); release.stageBackend(target);
-  const child = launchApp(startArgs(release, target), release.desktop);
+  const child = launchApp(startArgs(release, target), release.desktop, release.buildEnv(target));
   const terminate = () => child.kill('SIGTERM');
   process.once('SIGINT', terminate); process.once('SIGTERM', terminate);
   try { return await child.exited; } finally { process.off('SIGINT', terminate); process.off('SIGTERM', terminate); }

@@ -23,12 +23,31 @@ pub(super) fn request_with_type(
     body: &[u8],
     content_type: &'static str,
 ) -> Result<Response, String> {
+    request_with_type_presented(client, method, path, body, content_type).map_err(|e| e.raw)
+}
+
+pub(super) fn request_presented(
+    client: &HostClient,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<Response, crate::i18n::PresentedText> {
+    request_with_type_presented(client, method, path, body, "application/json")
+}
+
+fn request_with_type_presented(
+    client: &HostClient,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    content_type: &'static str,
+) -> Result<Response, crate::i18n::PresentedText> {
     if body.len() > MAX_BYTES {
         return Err("host request is too large".into());
     }
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), client.port);
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))
-        .map_err(|_| "host is offline; no operation was retried")?;
+        .map_err(|_| crate::i18n::UiMessage::new("host.offline_no_retry"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|_| "cannot configure host connection")?;

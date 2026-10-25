@@ -11,6 +11,12 @@ pub struct HostCallError {
 }
 
 impl HostCallError {
+    pub fn presented(&self) -> crate::i18n::PresentedText {
+        crate::i18n::PresentedText {
+            raw: self.message.clone(),
+            presentation: self.presentation.clone(),
+        }
+    }
     pub fn presentation_or_fallback(&self) -> crate::i18n::UiMessage {
         self.presentation.as_deref().cloned().unwrap_or_else(|| {
             crate::i18n::UiMessage::new("common.diagnostic").arg("detail", self.message.clone())
@@ -20,6 +26,17 @@ impl HostCallError {
         self.receipt
             .as_ref()
             .is_some_and(|receipt| receipt.state == AdmissionState::Committed)
+    }
+}
+
+impl From<crate::i18n::PresentedText> for HostCallError {
+    fn from(message: crate::i18n::PresentedText) -> Self {
+        Self {
+            message: message.raw,
+            presentation: message.presentation,
+            code: None,
+            receipt: None,
+        }
     }
 }
 

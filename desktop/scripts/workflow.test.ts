@@ -29,7 +29,10 @@ test('start preserves local origins and locked Cargo runner', async () => {
   if (['darwin', 'win32'].includes(process.platform)) await fixture(async release => {
     const events: string[] = [];
     spyOn(release, 'stageBackend').mockImplementation(() => { events.push('stage'); });
-    const result = await start(release, () => { events.push('launch'); return { exited: Promise.resolve(0), kill() {} }; });
+    const result = await start(release, (_args, _cwd, env) => {
+      expect(env).toEqual(release.buildEnv(nativeTarget()));
+      events.push('launch'); return { exited: Promise.resolve(0), kill() {} };
+    });
     expect(result).toBe(0); expect(events).toEqual(['stage', 'launch']);
   });
 });

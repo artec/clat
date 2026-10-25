@@ -40,7 +40,7 @@ pub async fn desktop_info(
         let update = state.updates.lock().map_err(|_| UiMessage::new("desktop.update_state_unavailable"))?;
         let connection_error = state.connection_error.lock().map_err(|_| UiMessage::new("desktop.state_unavailable"))?.clone();
         Ok(json!({"desktopVersion":env!("CARGO_PKG_VERSION"),"backendVersion":env!("CARGO_PKG_VERSION"),
-            "hostVersion":host_version,"hostConnected":host_connected,"backendError":state.backend_error,"connectionError":connection_error.as_ref().map(|e|&e.raw),"connectionPresentation":connection_error.as_ref().map(|e|e.message()),
+            "hostVersion":host_version,"hostConnected":host_connected,"startupLoading":state.startup.loading(),"backendError":state.backend_error,"connectionError":connection_error.as_ref().map(|e|&e.raw),"connectionPresentation":connection_error.as_ref().map(|e|e.message()),
             "hostStatus":host_status,"backendPending":backend_pending,
             "autoCheck":update.auto_check,"updateStatus":update.status.as_ref().map(|m|crate::localization::context(&app).render(m)),"updatePresentation":update.status,"updateAvailable":update.pending.is_some(),
             "downloaded":update.bytes.is_some(),"updateBusy":update.busy(),"updatePhase":update.phase.id(),"updateCancellable":update.cancellable(),
@@ -91,11 +91,13 @@ pub async fn desktop_open_project(
                 .connection
                 .lock()
                 .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+            state.startup.cancel();
             let backend = state
                 .backend
                 .as_ref()
                 .ok_or_else(|| UiMessage::new("desktop.backend_reinstall"))?;
             let client = backend.open_project_presented(&path, trust)?;
+            crate::startup::save_project(&app, &client)?;
             crate::app::connected(&app, client).map_err(Into::into)
         },
     )
@@ -198,6 +200,7 @@ pub async fn desktop_stop_host(
             .connection
             .lock()
             .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+        state.startup.cancel();
         state
             .backend
             .as_ref()

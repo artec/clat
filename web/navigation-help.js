@@ -23,8 +23,10 @@ function observePageNotification(kind, ctl) {
 function installNavigationHelp() {
   const trigger = el('button', 'ghost', () => (CLATI18n.msg("web.help", {}, "Help"))); trigger.type = 'button'; trigger.id = 'help-open';
   document.getElementById('review-open').after(trigger);
-  const project = el('button', 'ghost', () => (CLATI18n.msg("web.open_another_project", {}, "Open another project ↗"))); project.type = 'button'; project.id = 'project-navigation';
-  document.getElementById('project-name').after(project); project.addEventListener('click', () => { closeMobileSidebar(); openSettings('projects'); });
+  const project = el('button', 'icon-button'); project.type = 'button'; project.id = 'project-navigation';
+  project.append(svgIcon('open'));
+  for (const name of ['title','aria-label']) CLATI18n.attribute(project,name,()=>CLATI18n.msg('web.open_project_navigation'));
+  document.querySelector('.project-heading').append(project); project.addEventListener('click', () => { closeMobileSidebar(); openSettings('projects'); });
   const latest = el('button', 'ghost back-to-latest hidden', () => (CLATI18n.msg("web.latest_messages",{},"↓ Latest messages"))); latest.id = 'back-to-latest'; latest.type = 'button';
   document.getElementById('transcript-scroll').after(latest);
   const viewport = document.getElementById('transcript-scroll');

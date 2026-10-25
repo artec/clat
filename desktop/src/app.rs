@@ -13,6 +13,7 @@ pub struct Desktop {
     pub connection_error: Mutex<Option<clat_core::client_ports::presentation::PresentedText>>,
     // Publish navigation and Host state in the same order as lifecycle operations.
     pub connection: Mutex<()>,
+    pub startup: crate::startup::Startup,
     pub host: Mutex<Option<HostClient>>,
     pub updates: Mutex<crate::update::Updates>,
     pub language: Mutex<clat_core::client_ports::presentation::LanguagePreference>,
@@ -101,6 +102,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         backend_error,
         connection_error: Mutex::new(None),
         connection: Mutex::new(()),
+        startup: crate::startup::Startup::default(),
         host: Mutex::new(None),
         updates: Mutex::new(crate::update::Updates::new(auto_check)),
         language: Mutex::new(crate::localization::load(app.handle())),
@@ -131,6 +133,22 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
         .disable_drag_drop_handler()
         .initialization_script(clat_core::client_ports::presentation::browser_runtime())
         .initialization_script(include_str!("../ui/bridge.js"))
+        .on_page_load(|window, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished
+                && payload.url().host_str() == Some("127.0.0.1")
+            {
+                let app = window.app_handle().clone();
+                let address = payload.url().to_string();
+                std::thread::spawn(move || {
+                    if let Err(error) = crate::startup::remember(&app, &address) {
+                        *app.state::<Desktop>()
+                            .connection_error
+                            .lock()
+                            .expect("connection state") = Some(error);
+                    }
+                });
+            }
+        })
         .on_new_window(move |url, _| {
             if matches!(url.scheme(), "http" | "https")
                 && !crate::policy::permitted_page(url.as_str())

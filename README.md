@@ -61,6 +61,8 @@ to suppress the browser handoff.
 CLAT desktop installers accompany the CLI archives in desktop-enabled releases.
 For local desktop development, use `bun start`; `bun app:build` creates a native
 test installer. Desktop tooling runs directly on Bun/TypeScript.
+Desktop reopens its last trusted project on launch; unavailable projects return
+to the welcome page with a recovery message.
 For formal releases, push the signed tag and run `./publish` while CI builds.
 Windows installers reuse their platform's CLI; macOS desktop packages reuse CI
 backends and build/sign locally, preserving completed stages after interruptions.

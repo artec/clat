@@ -1,8 +1,7 @@
 /* Read-only history UI. The composer and active session are never modified. */
 function installHistoryQuery() {
   const msg = (key) => CLATI18n.msg(`history.${key}`);
-  const trigger = el('button', 'sidebar-footer-button', () => msg('open'));
-  trigger.id = 'history-open'; trigger.type = 'button';
+  const trigger = sidebarToolButton('history-open', 'history', () => msg('open'));
   document.querySelector('.sidebar-footer').prepend(trigger);
   const dialog = el('dialog', 'history-dialog'); dialog.id = 'history-dialog';
   const heading = el('h2', '', () => msg('title'));

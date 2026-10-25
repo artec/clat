@@ -18,7 +18,7 @@ fn check_regular(path: &Path) -> Result<(), String> {
         Err(e) => Err(e.to_string()),
     }
 }
-fn read(path: &Path) -> Result<Value, String> {
+pub fn load_ui_preferences(path: &Path) -> Result<Value, String> {
     check_regular(path)?;
     let file = match read_options().open(path) {
         Ok(file) => file,
@@ -42,7 +42,7 @@ fn read(path: &Path) -> Result<Value, String> {
     Ok(value)
 }
 pub fn load_preference(path: &Path) -> Result<LanguagePreference, String> {
-    let value = read(path)?;
+    let value = load_ui_preferences(path)?;
     match value.get("language") {
         None => Ok(LanguagePreference::System),
         Some(value) => value
@@ -81,7 +81,7 @@ pub fn save_ui_preferences(path: &Path, patch: &Value) -> Result<(), String> {
     }
     let lock = options.open(lock_path).map_err(|e| e.to_string())?;
     lock.lock().map_err(|e| e.to_string())?;
-    let mut value = read(path)?;
+    let mut value = load_ui_preferences(path)?;
     for (key, entry) in patch.as_object().ok_or("invalid UI preference patch")? {
         value[key] = entry.clone();
     }

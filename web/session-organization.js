@@ -5,12 +5,20 @@ async function organizeSession(session, flags) {
   await refreshSessions();
 }
 function installSessionOrganization() {
-  const toggle = el('button', 'ghost', () => (CLATI18n.msg("web.archived_sessions", {}, "Archived sessions"))); toggle.type = 'button'; toggle.id = 'archived-sessions'; toggle.setAttribute('aria-pressed', 'false');
-  toggle.classList.add('sidebar-expanded-only');
-  document.getElementById('session-search').closest('label').after(toggle);
-  toggle.addEventListener('click', () => {
-    showArchivedSessions = !showArchivedSessions;
-    toggle.setAttribute('aria-pressed', String(showArchivedSessions));
-    CLATI18n.bind(toggle, "textContent", () => showArchivedSessions ? CLATI18n.msg("web.back_to_active_list", {}, "Back to active list") : CLATI18n.msg("web.archived_sessions", {}, "Archived sessions")); renderSessions();
+  const tabs = ['active-sessions','archived-sessions'].map(id=>document.getElementById(id));
+  const select = index => {
+    showArchivedSessions = index === 1;
+    tabs.forEach((tab,i)=>{tab.setAttribute('aria-selected',String(i===index));tab.tabIndex=i===index?0:-1;});
+    document.getElementById('session-panel').setAttribute('aria-labelledby',tabs[index].id);
+    renderSessions();
+  };
+  tabs.forEach((tab,index)=>{
+    tab.addEventListener('click',()=>select(index));
+    tab.addEventListener('keydown',event=>{
+      if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+      event.preventDefault();
+      const next=event.key==='Home'?0:event.key==='End'?1:1-index;
+      select(next);tabs[next].focus();
+    });
   });
 }

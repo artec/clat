@@ -7,22 +7,27 @@
   Object.defineProperty(window, 'CLATDesktop', { value: Object.freeze({ version: 1, showSettings }) });
   const createPanel = () => {
     const host = document.createElement('div'); host.id = 'clat-desktop-controls';
-    const sheet = document.createElement('style');
-    sheet.textContent = '#clat-desktop-controls{font:13px ui-sans-serif,system-ui;position:fixed;right:18px;bottom:12px;z-index:10000}#clat-desktop-controls button{font:inherit;cursor:pointer;border:1px solid #78877360;border-radius:6px;padding:7px 12px;color:inherit;background:Canvas}#clat-desktop-controls dialog{color:CanvasText;background:Canvas;border:1px solid #78877360;border-radius:12px;padding:26px;width:min(520px,90vw);max-height:85vh;overflow:auto}#clat-desktop-controls dialog::backdrop{background:#10181070}#clat-desktop-controls button:disabled{opacity:.45;cursor:not-allowed}#clat-desktop-controls button:focus-visible{outline:2px solid #78ad81;outline-offset:3px}#clat-desktop-controls h2{font-size:20px;margin:0 0 22px}#clat-desktop-controls p{line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}#clat-desktop-controls .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}#clat-desktop-controls .secondary{color:#74836e}#clat-desktop-controls .danger{color:#ba554c}';
-    host.append(sheet);
     const launch = document.createElement('button'); launch.onclick = showSettings;
     const footer = document.querySelector('.sidebar-footer');
     const launchLabel = document.createElement('span'); launchLabel.className = 'sidebar-expanded-only';
     if (footer) {
       launch.className = 'sidebar-footer-button'; launch.setAttribute('aria-label', 'CLAT');
-      const glyph = document.createElement('span'); glyph.textContent = '▣'; glyph.setAttribute('aria-hidden', 'true');
+      const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      for (const [name, value] of Object.entries({viewBox:'0 0 24 24','aria-hidden':'true',fill:'none',stroke:'currentColor','stroke-width':'1.7','stroke-linejoin':'round'})) glyph.setAttribute(name,value);
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d','M4 5h16v14H4zM8 5v14'); glyph.append(path);
       launch.replaceChildren(glyph, launchLabel);
     }
     const dialog = document.createElement('dialog'); dialog.id = 'clat-desktop-settings';
-    dialog.innerHTML = '<h2>CLAT</h2><p id="clat-desktop-versions"></p><label><input id="clat-desktop-auto" type="checkbox"><span data-i18n="desktop.updates"></span></label><p id="clat-desktop-update" role="status" aria-live="polite"></p><progress id="clat-desktop-progress" hidden></progress><p class="secondary" data-i18n="desktop.update_hint"></p><div class="actions"><button data-action="open" data-i18n="desktop.open"></button><button data-action="check" data-i18n="desktop.check"></button><button data-action="download" data-i18n="desktop.download"></button><button data-action="install" data-i18n="desktop.install"></button><button data-action="cancel" data-i18n="desktop.cancel_wait"></button></div><p><a data-update-manual href="https://github.com/artec/clat/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="desktop.manual_update"></a></p><div class="actions"><button data-action="stop" class="danger" data-i18n="desktop.stop"></button><button data-action="quit" data-i18n="desktop.quit"></button><button data-action="close" data-i18n="common.close"></button></div><p class="secondary" data-i18n="desktop.background_hint"></p>';
+    dialog.innerHTML = '<button class="desktop-dialog-close" data-action="close" type="button" aria-label="Close" data-i18n-aria-label="common.close" title="Close" data-i18n-title="common.close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><h2>CLAT</h2><p id="clat-desktop-versions"></p><label><input id="clat-desktop-auto" type="checkbox"><span data-i18n="desktop.updates"></span></label><p id="clat-desktop-update" role="status" aria-live="polite"></p><progress id="clat-desktop-progress" hidden></progress><p class="secondary" data-i18n="desktop.update_hint"></p><div class="actions"><button data-action="open" data-i18n="desktop.open"></button><button data-action="check" data-i18n="desktop.check"></button><button data-action="download" data-i18n="desktop.download"></button><button data-action="install" data-i18n="desktop.install"></button><button data-action="cancel" data-i18n="desktop.cancel_wait"></button></div><p><a data-update-manual href="https://github.com/artec/clat/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="desktop.manual_update"></a></p><div class="actions"><button data-action="stop" class="danger" data-i18n="desktop.stop"></button><button data-action="quit" data-i18n="desktop.quit"></button></div><p class="secondary" data-i18n="desktop.background_hint"></p>';
 
     host.append(launch, dialog); document.body.append(host);
-    const language = document.createElement('div'); dialog.prepend(language); CLATI18n.selector(language);
+    // Critical native-shell placement must also work with a Host's older stylesheet.
+    Object.assign(dialog.querySelector('[data-action="close"]').style, {
+      position:'absolute',top:'12px',right:'12px',width:'32px',height:'32px',padding:'0',
+      display:'flex',alignItems:'center',justifyContent:'center',border:'0',background:'transparent',
+    });
+    const language = document.createElement('div'); language.className='desktop-language'; dialog.prepend(language); CLATI18n.selector(language);
     if (footer) footer.prepend(launch);
     const status = dialog.querySelector('#clat-desktop-update');
     return {dialog,status,launch,footer,launchLabel};

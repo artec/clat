@@ -31,10 +31,29 @@ subsequent releases use the new built-in update path.
 Choose **打开项目** (Open project), select a directory and explicitly approve
 project trust when requested. Model configuration, permissions, tools, sessions
 and tasks use the existing workbench and the Host's normal policies.
+On later launches, CLAT reopens the last project viewed in the desktop workbench
+and starts its packaged backend if no Host is running. It rechecks directory
+availability and trust; saved UI preferences never grant trust. If recovery
+fails, the welcome page keeps the reason and lets you choose a project manually.
+This is a single startup attempt: disconnection or **Stop shared background**
+does not automatically restart the Host. Opening a project restores its normal
+Host-owned session state without sending a prompt or restarting prior work.
+The initial window shows a CLAT logo while discovery, project restoration and
+workbench navigation are pending. It reveals project selection only when needed
+or when an error requires recovery, rather than flashing that page on every launch.
+Project memory is desktop-only and shares the locked UI preference file with
+language and update preferences; it does not change TUI's current-directory rule.
 Windows has native window controls and no application menu bar. Desktop actions
 live in the page's **桌面** panel. macOS retains standard system editing/window
 menus. Completion and pending approval/question notifications contain no
 conversation text; clicking one opens its project and admitted session.
+
+Desktop controls use the page's external stylesheets on both the welcome page
+and Host workbench. They do not require inline styles or relaxed Host CSP.
+The desktop panel closes with the top-right × button, which has a localized
+tooltip and accessible name; closing the panel does not stop the shared Host.
+Its corner positioning is owned by the native bridge and remains correct when
+connected to a compatible Host whose stylesheet predates that button.
 The current Windows notification plugin only reports clicks while the banner is
 on screen. Historical Action Center clicks and cold-start activation are not
 supported yet; restore the app through its tray when the banner has expired.
@@ -159,6 +178,16 @@ release-mode test installer with the current icons in `dist-desktop/`, or
 `bun app:test` for packaging/release-tool contract tests. The target architecture
 and workspace version are automatic. Development builds keep strict backend
 identity checks; they never terminate a busy Host to make a test start.
+
+`bun start` uses Cargo's debug/incremental cache in the workspace target directory;
+it does not build a release installer. Both backend and GUI use the same native
+target and build environment. Cargo still checks source freshness on every start,
+but unchanged development backend resources and their manifest retain their
+timestamps, avoiding needless resource rebuilds. Release packaging still stages
+its resources afresh. The first build, dependency/toolchain changes, and changes
+to embedded `web/` assets can require Rust recompilation. CLI-only builds without
+an explicit target and test/release builds have distinct cache entries; they do
+not guarantee a warm desktop development build.
 
 Local test bundles have not completed production signing/notarization. Formal
 publication continues to use the owner's existing signed-tag/CI/`./publish`

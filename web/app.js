@@ -231,6 +231,10 @@ function renderMarkdown(container, source) {
 }
 
 const ICON_PATHS = {
+  open: ['M7 17 17 7M7 7h10v10'],
+  schedule: ['M5 5h14v15H5zM8 3v4m8-4v4M5 10h14', 'M12 12v3l2 1'],
+  jobs: ['M3 4h18v16H3z', 'm7 9 3 3-3 3m6 0h4'],
+  history: ['M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z', 'm15 15 6 6M7 8h6m-6 4h4'],
   user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M5 21c.8-4 3.1-6 7-6s6.2 2 7 6'],
   // PU-9（2026-09-06 负责人令）：品牌像素机器人剪影（fill + evenodd 挖出面部）。
   agent: ['M6 4h12v4h4v4h-4v4h4v4h-4v-4h-4v4h-4v-4h-4v4H2v-4h4v-4H2V8h4V4z M6.2 8.2h11.6v3.8h-3.8v4H10.2v-4H6.2z'],
@@ -261,6 +265,16 @@ function svgIcon(name) {
     svg.appendChild(path);
   }
   return svg;
+}
+
+function sidebarToolButton(id, icon, label) {
+  const button = el('button', 'sidebar-footer-button');
+  button.id = id;
+  button.type = 'button';
+  button.append(svgIcon(icon), el('span', 'sidebar-expanded-only', label));
+  CLATI18n.attribute(button, 'aria-label', label);
+  CLATI18n.bind(button, 'title', label);
+  return button;
 }
 
 function renderModelIdentity(target, name, imageInput) {
@@ -771,7 +785,6 @@ function handleLive(event) {
       updateRunState(CLATI18n.msg('web.running'));
       updateRunDetail();
       syncInteractionControls();
-      show(dom.cancel);
       state.run = null;
       addUserMessage(event.prompt, event.content_blocks);
       break;
@@ -866,7 +879,6 @@ function finishRun(event) {
   const restoredDraft = restoreQueuedDraft() || restoredText;
   updateRunState(restoredDraft ? CLATI18n.msg("web.run_ended_before_steering_was_applied_draft_restored", {}, "run ended before steering was applied; draft restored") : '');
   updateRunDetail();
-  hide(dom.cancel);
   syncInteractionControls();
   if (event.type === 'run_failed') {
     // CONT-1（C4）：live 终态与 prompt.settled 是同一终点的两条腿，任一
@@ -2449,6 +2461,8 @@ function syncSuggestionControl() {
 
 function syncInteractionControls() {
   const locked = state.switching || state.compactionActive || state.desktopUpdateLocked;
+  dom.send.classList.toggle('hidden', state.runActive);
+  dom.cancel.classList.toggle('hidden', !state.runActive);
   dom.send.disabled = locked;
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked;

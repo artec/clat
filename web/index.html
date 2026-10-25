@@ -63,7 +63,7 @@
     </div>
 
     <section class="project-card sidebar-expanded-only" aria-labelledby="project-name">
-      <span class="section-kicker" data-i18n="web.project">PROJECT</span>
+      <div class="project-heading"><span class="section-kicker" data-i18n="web.project">PROJECT</span></div>
       <strong id="project-name" data-i18n="web.loading">Loading…</strong>
       <span id="project-root" class="project-root"></span>
     </section>
@@ -87,11 +87,16 @@
 
     <nav class="session-nav sidebar-expanded-only" aria-label="Sessions" data-i18n-aria-label="web.sessions">
       <div class="section-row sidebar-expanded-only">
-        <span class="section-kicker" data-i18n="web.sessions">SESSIONS</span>
+        <div class="session-tabs" role="tablist" aria-label="Sessions" data-i18n-aria-label="web.sessions">
+          <button id="active-sessions" role="tab" type="button" aria-selected="true" aria-controls="session-panel" data-i18n="web.active_sessions_tab">Active</button>
+          <button id="archived-sessions" role="tab" type="button" aria-selected="false" aria-controls="session-panel" tabindex="-1" data-i18n="web.archived_sessions_tab">Archived</button>
+        </div>
         <span id="session-count">0</span>
       </div>
-      <ul id="session-list" class="session-list"></ul>
-      <p id="session-empty" class="session-empty sidebar-expanded-only hidden" data-i18n="web.no_matching_sessions">No matching sessions.</p>
+      <div id="session-panel" role="tabpanel" aria-labelledby="active-sessions">
+        <ul id="session-list" class="session-list"></ul>
+        <p id="session-empty" class="session-empty sidebar-expanded-only hidden" data-i18n="web.no_matching_sessions">No matching sessions.</p>
+      </div>
     </nav>
 
     <div class="sidebar-footer">
@@ -203,7 +208,6 @@
             <span id="composer-permission-label" data-i18n="web.project_write">Project Write</span>
           </button>
           <div class="composer-actions">
-            <button id="cancel" class="ghost hidden" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"/></svg> <span data-i18n="web.stop">Stop</span></button>
             <div class="model-picker-seat">
               <button id="model-picker-trigger" class="model-picker-trigger" type="button"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="model-picker">
@@ -231,7 +235,10 @@
             </div>
             <button id="queue-enqueue" type="button" title="Queue text for the next turn (Ctrl+Q)" data-i18n-title="web.queue_text_for_the_next_turn_ctrl_q" aria-label="Queue next turn" data-i18n-aria-label="web.queue_next_turn" data-i18n="web.queue">Queue</button>
             <button id="queue-recall" type="button" title="Recall latest queued text (Alt+Q)" data-i18n-title="web.recall_latest_queued_text_alt_q" hidden aria-label="Recall latest next-turn item" data-i18n-aria-label="web.recall_latest_next_turn_item" data-i18n="web.recall">Recall</button>
-            <button id="send" class="send-button" type="button" aria-label="Send message" data-i18n-aria-label="web.send_message"><span data-i18n="web.send">Send</span> <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg></button>
+            <div class="composer-submit">
+              <button id="send" class="send-button" type="button" aria-label="Send message" data-i18n-aria-label="web.send_message" title="Send message" data-i18n-title="web.send_message"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
+              <button id="cancel" class="send-button hidden" type="button" aria-label="Stop" data-i18n-aria-label="web.stop" title="Stop" data-i18n-title="web.stop"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+            </div>
           </div>
         </div>
       </div>

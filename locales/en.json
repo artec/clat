@@ -1844,5 +1844,14 @@
   "serve.token_empty": "invalid token: empty",
   "serve.token_long": "invalid token: longer than {limit} bytes",
   "serve.token_ascii": "invalid token: use only ASCII letters, digits, '-', '.', '_' or '~'",
-  "desktop.unsupported_platform": "CLAT Desktop supports macOS and Windows; use clat or the PWA on this platform."
+  "desktop.unsupported_platform": "CLAT Desktop supports macOS and Windows; use clat or the PWA on this platform.",
+  "desktop.restore_failed": "Could not reopen the previous project: {reason} Choose a project to continue.",
+  "desktop.restore_invalid": "The saved desktop project is invalid. Choose a project again.",
+  "desktop.restore_needs_trust": "The previous project is no longer trusted. Open it explicitly and confirm trust to continue.",
+  "host.offline_no_retry": "host is offline; no operation was retried",
+  "host.stop_unacknowledged": "host did not acknowledge shutdown; do not retry automatically",
+  "desktop.opening_workbench": "Opening your workbench…",
+  "web.active_sessions_tab": "Active",
+  "web.archived_sessions_tab": "Archived",
+  "web.open_project_navigation": "Open another project"
 }

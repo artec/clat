@@ -162,3 +162,38 @@ fn cache_and_resources_reject_symlinks() {
     assert!(PackagedBackend::prepare(&resources, &root.join("other")).is_err());
     let _ = fs::remove_dir_all(root);
 }
+#[test]
+fn startup_resume_rechecks_trust_before_open_and_never_grants_trust() {
+    use super::resume_project_with;
+    let path = std::path::Path::new("remembered-project");
+    let error = resume_project_with::<u8>(path, |_| Ok(true), |_, _| panic!("untrusted start"))
+        .unwrap_err();
+    assert_eq!(error.message().key, "desktop.restore_needs_trust");
+    for locale in [
+        crate::i18n::Locale::Simplified,
+        crate::i18n::Locale::Traditional,
+    ] {
+        assert_ne!(
+            error.render(crate::i18n::LocaleContext::new(locale)),
+            error.raw
+        );
+    }
+    let error = resume_project_with::<u8>(
+        path,
+        |_| Err("directory missing".into()),
+        |_, _| panic!("missing start"),
+    )
+    .unwrap_err();
+    assert_eq!(error.raw, "directory missing");
+    let client = resume_project_with(
+        path,
+        |_| Ok(false),
+        |selected, trust| {
+            assert_eq!(selected, path);
+            assert!(!trust, "saved UI preferences must never authorize trust");
+            Ok(42)
+        },
+    )
+    .unwrap();
+    assert_eq!(client, 42);
+}

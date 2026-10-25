@@ -1,10 +1,10 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { makeDmg } from "./dmg";
 import { createArchive, safeExtract } from './archive';
 import { sourceCommit, verifyBackend } from './backend';
-import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, writeJson, decodeWrapper, privateWrite } from './common';
+import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, decodeWrapper, privateWrite } from './common';
 
 import { PAYLOAD, writePayload } from './release-index';
 
@@ -58,15 +58,22 @@ export class DesktopRelease {
     }
     const resources = join(this.desktop, 'resources');
     mkdirSync(resources, { recursive: true });
-    for (const name of readdirSync(resources).filter(n => n.startsWith('clat-backend'))) unlinkSync(join(resources, name));
     const staged = join(resources, target.includes('windows') ? 'clat-backend.exe' : 'clat-backend');
-    copyFileSync(source, staged);
+    const reuse = !options.release && !options.official;
+    const unchanged = reuse && existsSync(staged) && lstatSync(staged).isFile()
+      && statSync(source).size === statSync(staged).size && digest(source) === digest(staged);
+    for (const name of readdirSync(resources).filter(n => n.startsWith('clat-backend'))) {
+      if (!unchanged || join(resources, name) !== staged) unlinkSync(join(resources, name));
+    }
+    if (!unchanged) copyFileSync(source, staged);
     if (process.platform !== 'win32') chmodSync(staged, 0o755);
-    this.backendManifest(resources, target, !!options.official);
+    this.backendManifest(resources, target, !!options.official, reuse);
   }
-  backendManifest(directory: string, target: string, official: boolean): void {
+  backendManifest(directory: string, target: string, official: boolean, reuse = false): void {
     const binary = join(directory, target.includes('windows') ? 'clat-backend.exe' : 'clat-backend');
-    writeJson(join(directory, 'backend.json'), { version: this.version(), target, sha256: digest(binary), size: statSync(binary).size, official });
+    const path = join(directory, 'backend.json');
+    const contents = JSON.stringify({ version: this.version(), target, sha256: digest(binary), size: statSync(binary).size, official }, null, 2) + '\n';
+    if (!reuse || !existsSync(path) || !lstatSync(path).isFile() || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents);
   }
   async build(target: string, options: BuildOptions = {}): Promise<void> {
     this.stageBackend(target, options);

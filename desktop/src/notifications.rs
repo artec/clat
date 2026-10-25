@@ -26,6 +26,7 @@ pub fn start(app: tauri::AppHandle) {
         }
     });
     std::thread::spawn(move || {
+        crate::startup::restore(&app);
         while !app.state::<Desktop>().quitting.load(Ordering::Acquire) {
             observe_host(&app);
             std::thread::sleep(std::time::Duration::from_secs(5));
@@ -51,6 +52,9 @@ fn focus_notification(app: &tauri::AppHandle, client: HostClient, notice: HostNo
 
 fn observe_host(app: &tauri::AppHandle) {
     let state = app.state::<Desktop>();
+    if state.startup.blocked() {
+        return;
+    }
     let Some(backend) = state.backend.as_ref() else {
         return;
     };
@@ -59,8 +63,8 @@ fn observe_host(app: &tauri::AppHandle) {
     match backend.reconcile_presented(current.as_ref()) {
         Ok(BackendConnection::Connected(client)) => observe_connected(app, client),
         Ok(BackendConnection::Missing) => {
-            *state.connection_error.lock().expect("connection state") = None;
             if state.host.lock().expect("host state").take().is_some() {
+                *state.connection_error.lock().expect("connection state") = None;
                 let _ = crate::app::welcome(app);
             }
         }

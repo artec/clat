@@ -92,6 +92,16 @@ impl PackagedBackend {
     pub fn open_project(&self, path: &Path, trust: bool) -> Result<HostClient, String> {
         self.open_project_presented(path, trust).map_err(|e| e.raw)
     }
+
+    /// Startup convenience never grants or renews project trust.
+    pub fn resume_project_presented(
+        &self,
+        path: &Path,
+    ) -> Result<HostClient, crate::i18n::PresentedText> {
+        resume_project_with(path, Self::project_needs_trust_presented, |path, trust| {
+            self.open_project_presented(path, trust)
+        })
+    }
     pub fn open_project_presented(
         &self,
         path: &Path,
@@ -139,6 +149,17 @@ impl PackagedBackend {
         ))
         .map_err(Into::into)
     }
+}
+
+fn resume_project_with<T>(
+    path: &Path,
+    needs_trust: impl FnOnce(&Path) -> Result<bool, crate::i18n::PresentedText>,
+    open: impl FnOnce(&Path, bool) -> Result<T, crate::i18n::PresentedText>,
+) -> Result<T, crate::i18n::PresentedText> {
+    if needs_trust(path)? {
+        return Err(crate::i18n::UiMessage::new("desktop.restore_needs_trust").into());
+    }
+    open(path, false)
 }
 
 fn validate_manifest(m: &Manifest) -> Result<(), String> {

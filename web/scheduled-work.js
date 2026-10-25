@@ -21,7 +21,8 @@ function appendHostInteraction(card, session) {
 function installScheduledWork() {
   const msg = (key) => CLATI18n.msg(`schedule.${key}`);
   const button = (key, action) => { const b = el('button', '', () => msg(key)); b.type = 'button'; b.onclick = action; return b; };
-  const trigger = button('open', () => { previousFocus = document.activeElement; dialog.showModal(); void load(); }); trigger.id = 'schedules-open'; trigger.classList.add('sidebar-footer-button');
+  const trigger = sidebarToolButton('schedules-open', 'schedule', () => msg('open'));
+  trigger.onclick = () => { previousFocus = document.activeElement; dialog.showModal(); void load(); };
   document.querySelector('.sidebar-footer').prepend(trigger);
   const dialog = el('dialog', 'history-dialog'); dialog.id = 'schedules-dialog';
   const head = el('div', 'history-dialog-head'); head.append(el('h2', '', () => msg('title')), button('refresh', () => void load()), button('close', () => dialog.close()));

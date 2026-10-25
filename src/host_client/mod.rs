@@ -152,9 +152,9 @@ impl HostClient {
         port: u16,
         token: String,
         expected_root: &Path,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::i18n::PresentedText> {
         Self::connect_checked(port, token, expected_root, None, BuildMatchPolicy::Ignore)
-            .map_err(discovery::DiscoveryFailure::message)
+            .map_err(discovery::DiscoveryFailure::presented)
     }
 
     fn connect_checked(
@@ -184,7 +184,9 @@ impl HostClient {
             clipboard: std::sync::Arc::new(crate::draft::DraftImageStore::new(&root)),
             root,
         };
-        let description = client.call("host.describe", &json!({}))?;
+        let description = client
+            .call_with_receipt("host.describe", &json!({}))
+            .map_err(|e| discovery::DiscoveryFailure::from(e.presented()))?;
         client.instance = description["instance_id"]
             .as_str()
             .unwrap_or_default()
@@ -261,6 +263,41 @@ impl HostClient {
         Ok(client)
     }
 
+    /// Scope only to a page belonging to this verified Host; no workspace is mounted.
+    pub fn for_browser_url(&self, address: &str) -> Result<Self, crate::i18n::PresentedText> {
+        let url = url::Url::parse(address)
+            .map_err(|_| crate::i18n::UiMessage::new("desktop.host_unverified"))?;
+        let own = url::Url::parse(&self.browser_url())
+            .map_err(|_| crate::i18n::UiMessage::new("desktop.host_unverified"))?;
+        if url.origin() != own.origin()
+            || url.path() != "/"
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(crate::i18n::UiMessage::new("desktop.host_unverified").into());
+        }
+        let routes: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key == "workspace")
+            .collect();
+        match routes.as_slice() {
+            [] => {
+                let mut client = self.clone();
+                client.prefix.clear();
+                Ok(client)
+            }
+            [(_, id)] => self
+                .with_project_route(id)
+                .map_err(|raw| crate::i18n::PresentedText {
+                    raw,
+                    presentation: Some(Box::new(crate::i18n::UiMessage::new(
+                        "desktop.restore_invalid",
+                    ))),
+                }),
+            _ => Err(crate::i18n::UiMessage::new("desktop.restore_invalid").into()),
+        }
+    }
+
     pub fn call(&self, method: &str, params: &Value) -> Result<Value, String> {
         self.call_with_receipt(method, params)
             .map_err(|error| error.to_string())
@@ -276,7 +313,8 @@ impl HostClient {
             return Err("invalid host method".into());
         }
         let body = serde_json::to_vec(params).map_err(|_| "cannot encode host request")?;
-        let mut response = transport::request(self, "POST", &format!("/api/{method}"), &body)?;
+        let mut response =
+            transport::request_presented(self, "POST", &format!("/api/{method}"), &body)?;
         let bytes = transport::read_body(&mut response)?;
         let result: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid host response")?;
         error::decode_result(result)

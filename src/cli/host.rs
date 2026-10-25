@@ -75,7 +75,8 @@ pub(super) fn run_host_command(
         Err(error) => {
             eprintln!(
                 "{}",
-                locale.render(&UiMessage::new("common.error").arg("detail", error))
+                locale
+                    .render(&UiMessage::new("common.error").arg_message("detail", error.message()))
             );
             ExitCode::FAILURE
         }

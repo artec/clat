@@ -1016,6 +1016,31 @@ those results. Keep the real shared Host and signing credentials out of local te
 
 History query coverage: `scripts/gates.sh history_query` exercises real committed compressed journals, English/Simplified/Traditional text, one-character queries, literal operators, external append/truncate/delete, derived-cache corruption, project and trust fences, current-step cutoff, read continuation and source-byte preservation. `web/e2e/tests/history-query.spec.js` uses isolated mock-model Hosts for search, event inspection, language switching, draft/selection preservation and text-only untrusted snippets. The replacement/fallback-title regression is expected to fail if old hidden content is restored to title indexing.
 
+`web/e2e/tests/composer-icons.spec.js` checks sidebar tool icons in expanded and
+collapsed layouts, three-language accessible names and tooltips, dialog access,
+and the shared send/stop position through a real isolated mock-model run and
+cancellation. An unsent draft must survive cancellation and language changes.
+
+Desktop resume checks: `cargo test -p clat-desktop --bin clat-desktop startup::`
+covers first launch, an existing Host, one startup attempt, explicit-stop/manual
+open precedence, blocked failures and UI preference reload. `scripts/gates.sh
+host_client i18n` covers saved-project trust gating, verified-page project scoping
+and concurrent preference merges. All fixtures are isolated; these checks do not
+claim native GUI reopening or actual shared-Host restart acceptance.
+
+`host_client::lifecycle::tests::offline_management_discovery_keeps_localized_reason_without_retry`
+uses a closed loopback endpoint to verify the English diagnostic and three-language
+presentation survive discovery and management without retries. The desktop shell
+suite (`web/e2e/playwright.desktop.config.js`) checks the startup logo, translated
+loading state, navigation handoff and error recovery. These browser checks mock
+native commands; they do not establish WKWebView/Windows startup behavior.
+
+`web/e2e/tests/desktop-update.spec.js` also injects the native bridge as a same-origin
+test script into the real isolated Host page, retaining its production CSP. It
+checks sidebar icon/text columns, connection-status centering and desktop language
+control spacing in all three languages. This catches shell styles that work only
+on a permissive mock page while being blocked by the actual Host policy.
+
 Native background job checks: `scripts/gates.sh native_job target_writer`. They exercise actual isolated child processes, Run cancellation vs Job cancellation, original-conversation facts, UTF-8/redaction, independent output cursors, timeout/overflow, registration-before-spawn, post-spawn uncertainty, panic, recovery, terminal-save and cleanup retry, G7 scope, and shared writer release. `background-jobs.spec.js` uses an isolated Host and deterministic model to check approval, new-session/reconnect survival, language switching/draft preservation and explicit stop. These do not establish native Windows/Desktop behavior or paid-model effectiveness.
 
 When adding native tools or a projection, also run

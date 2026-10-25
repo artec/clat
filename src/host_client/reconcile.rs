@@ -11,7 +11,8 @@ pub enum BackendConnection {
 
 impl PackagedBackend {
     /// Explicitly opening Desktop authorizes an idle upgrade of an existing Host.
-    /// A missing/disconnected Host is only started by an explicit project open.
+    /// Reconciliation never starts a missing/disconnected Host. Initial desktop
+    /// resume or an explicit project open uses a separate, trust-checked entry.
     pub fn reconcile(&self, current: Option<&HostClient>) -> Result<BackendConnection, String> {
         self.reconcile_presented(current).map_err(|e| e.raw)
     }

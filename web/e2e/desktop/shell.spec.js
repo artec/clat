@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const ui = path.resolve(__dirname, '../../../desktop/ui');
 
-async function welcome(page, busy = false, withSidebar = false) {
+async function welcome(page, busy = false, withSidebar = false, loading = false) {
   await page.route('http://desktop.test/**', route => {
     const name = new URL(route.request().url()).pathname.slice(1) || 'index.html';
     if (!['index.html', 'welcome.css', 'welcome.js', 'icon.png'].includes(name)) return route.abort();
@@ -14,17 +14,17 @@ async function welcome(page, busy = false, withSidebar = false) {
     return route.fulfill({ body, contentType:types[name.split('.').pop()] });
   });
   const bridge = fs.readFileSync(path.join(ui, 'bridge.js'), 'utf8');
-  const nativeMock = ({busy, catalogs,manifest}) => {
+  const nativeMock = ({busy, catalogs,manifest,loading}) => {
     window.desktopCalls = []; window.desktopEvents = {};
     window.desktopLanguage='zh-Hans';
     const localeInfo=()=>({manifest,preference:window.desktopLanguage,locale:window.desktopLanguage==='system'?'en':window.desktopLanguage,catalogs});
-    window.desktopInfo = { desktopVersion:'2.1.2',backendVersion:'2.1.2',hostVersion:'2.1.2',hostConnected:true,autoCheck:true,
+    window.desktopInfo = { desktopVersion:'2.1.2',backendVersion:'2.1.2',hostVersion:'2.1.2',hostConnected:false,autoCheck:true,
       updateAvailable:busy,downloaded:busy,updateBusy:busy,updateStatus:busy ? '等待项目空闲' : '' };
     window.__TAURI__ = { event:{listen:async(name,callback)=>{window.desktopEvents[name]=callback;return()=>{};}}, core: { invoke:async (command, args) => {
       window.desktopCalls.push({command,args});
       if (command === 'desktop_locale') return localeInfo();
       if (command === 'desktop_preferences') { if(args?.language)window.desktopLanguage=args.language; return localeInfo(); }
-      if (command === 'desktop_info') return structuredClone(window.desktopInfo);
+      if (command === 'desktop_info') return {...structuredClone(window.desktopInfo),startupLoading:window.startupLoading ?? loading};
       if (command === 'desktop_open_project' && window.desktopOpenError) throw window.desktopOpenError;
       if (command === 'desktop_check_update') {
         if(window.deferDesktopCheck) await new Promise(resolve=>{window.finishDesktopCheck=resolve;});
@@ -45,20 +45,64 @@ async function welcome(page, busy = false, withSidebar = false) {
   // One script pins initialization order, including the native API shim.
   const runtime = fs.readFileSync(path.resolve(ui,'../../web/i18n.js'),'utf8');
   const catalogs=Object.fromEntries(['en','zh-Hans','zh-Hant'].map(id=>[id,JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales',id+'.json'),'utf8'))]));
-  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${bridge}`});
+  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,loading,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${bridge}`});
   await page.goto('http://desktop.test/index.html');
+  if (loading) return;
   await page.locator('#settings').click();
   await expect(page.locator('#clat-desktop-settings')).toBeVisible();
 }
+
+test('startup shows only the logo until restoration settles, then reveals welcome only when needed', async ({page}) => {
+  await welcome(page, false, false, true);
+  await expect(page.locator('#startup-loading')).toBeVisible();
+  await expect(page.locator('main')).toBeHidden();
+  for (const locale of ['en','zh-Hans','zh-Hant']) {
+    const label = await page.evaluate(async locale => { await CLATI18n.setLanguage(locale); return CLATI18n.t('desktop.opening_workbench'); },locale);
+    await expect(page.locator('#startup-loading')).toContainText(label);
+    await expect(page.locator('main')).toBeHidden();
+  }
+  await page.emulateMedia({colorScheme:'dark',reducedMotion:'reduce'});
+  await page.screenshot({path:'../../output/playwright/desktop-startup-logo.png'});
+  await page.waitForTimeout(2200); // Cross a status poll while restoration is still pending.
+  await expect(page.locator('main')).toBeHidden();
+  await page.evaluate(() => { window.startupLoading=false; window.desktopInfo.hostConnected=true; });
+  await page.waitForTimeout(2200);
+  await expect(page.locator('main')).toBeHidden();
+  await page.evaluate(() => { window.desktopInfo.hostConnected=false; });
+  await expect(page.locator('main')).toBeVisible();
+  await expect(page.locator('#startup-loading')).toBeHidden();
+});
+
+test('startup failure replaces the logo with a translated recovery page',async({page})=>{
+  await welcome(page,false,false,true);
+  await page.evaluate(()=>{
+    window.desktopInfo.connectionError='English diagnostic';
+    window.desktopInfo.connectionPresentation={key:'desktop.restore_needs_trust',args:{}};
+  });
+  await expect(page.locator('main')).toBeVisible();
+  await expect(page.locator('#startup-loading')).toBeHidden();
+  await expect(page.locator('#status')).toContainText('不再受信任');
+  await expect(page.locator('#open')).toBeEnabled();
+});
 
 test('language switching keeps the desktop sidebar launcher glyph and label nodes',async({page})=>{
   await welcome(page,false,true);
   const launcher=page.locator('.sidebar-footer .sidebar-footer-button');
   for(const language of ['en','zh-Hant','zh-Hans']){
     await page.locator('#clat-desktop-settings [data-language-select]').selectOption(language);
-    await expect(launcher.locator('[aria-hidden=true]')).toHaveText('▣');
+    await expect(launcher.locator('svg[aria-hidden=true]')).toHaveCount(1);
+    await expect(launcher.locator('svg path')).toHaveCount(1);
     await expect(launcher.locator('.sidebar-expanded-only')).not.toBeEmpty();
+    const close=page.locator('#clat-desktop-settings [data-action=close]');
+    const label=await page.evaluate(()=>CLATI18n.t('common.close'));
+    await expect(close).toHaveAccessibleName(label);
+    const dialog=await page.locator('#clat-desktop-settings').boundingBox();
+    const button=await close.boundingBox();
+    expect(button.y-dialog.y).toBeLessThanOrEqual(16);
+    expect(dialog.x+dialog.width-button.x-button.width).toBeLessThanOrEqual(16);
   }
+  await page.locator('#clat-desktop-settings [data-action=close]').click();
+  await expect(page.locator('#clat-desktop-settings')).toBeHidden();
 });
 
 test('Host compatibility errors retain their reason across live language changes', async ({page}) => {

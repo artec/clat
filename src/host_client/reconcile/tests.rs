@@ -18,6 +18,38 @@ struct Fixture {
 }
 
 #[test]
+fn browser_project_scope_cannot_escape_the_verified_host_or_mutate_it() {
+    let root = std::env::temp_dir();
+    let host = HostClient::fixture_for_frontend_tests(&root);
+    let id = "11111111-1111-1111-1111-111111111111";
+    let scoped = host
+        .for_browser_url(&format!("{}?workspace={id}", host.browser_url()))
+        .unwrap();
+    assert_eq!(scoped.prefix, format!("/workspace/{id}"));
+    assert!(
+        scoped
+            .for_browser_url(&host.browser_url())
+            .unwrap()
+            .prefix
+            .is_empty()
+    );
+    assert_eq!(scoped.instance, host.instance);
+    assert_eq!(scoped.root, host.root);
+    assert!(host.prefix.is_empty());
+    for url in [
+        "http://example.com/",
+        "http://127.0.0.1:2/",
+        "https://127.0.0.1:1/",
+        "http://user@127.0.0.1:1/",
+        "http://127.0.0.1:1/api/host.stop",
+        "http://127.0.0.1:1/?workspace=../escape",
+        "http://127.0.0.1:1/?workspace=default&workspace=default",
+    ] {
+        assert!(host.for_browser_url(url).is_err(), "{url}");
+    }
+}
+
+#[test]
 fn host_reconcile_preserves_build_error_presentation_without_takeover() {
     let description = json!({"build_kind":"development", "build_fingerprint":"other",
         "product_version":super::super::build_identity::product_version()});

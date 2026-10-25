@@ -1,3 +1,21 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLAT</title><link rel="stylesheet" href="welcome.css"></head>
-<body><main><div class="brand"><img src="icon.png" width="34" height="34" alt=""><span>CLAT</span></div><div class="eyebrow" data-i18n="desktop.eyebrow">LOCAL FIRST · READY WHEN YOU ARE</div><h1 data-i18n="desktop.welcome_heading">Continue your work, one project at a time.</h1><p class="intro" data-i18n="desktop.welcome_intro">Keep conversations, tools and long tasks on your machine. Open a project or connect to the running CLAT background.</p><button id="open" class="primary"><span data-i18n="desktop.open">Open project</span> <span>↗</span></button><p id="status" role="status" aria-live="polite">Checking local background…</p><footer><span id="version">CLAT</span><button id="settings" data-i18n="desktop.settings">Settings and about</button></footer></main><script src="welcome.js"></script></body></html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLAT</title><link rel="stylesheet" href="welcome.css"></head>
+<body data-startup="loading">
+  <section id="startup-loading" role="status" aria-live="polite">
+    <img src="icon.png" width="72" height="72" alt="">
+    <strong>CLAT</strong>
+    <span data-i18n="desktop.opening_workbench">Opening your workbench…</span>
+  </section>
+  <main>
+    <div class="brand"><img src="icon.png" width="34" height="34" alt=""><span>CLAT</span></div>
+    <div class="eyebrow" data-i18n="desktop.eyebrow">LOCAL FIRST · READY WHEN YOU ARE</div>
+    <h1 data-i18n="desktop.welcome_heading">Continue your work, one project at a time.</h1>
+    <p class="intro" data-i18n="desktop.welcome_intro">Keep conversations, tools and long tasks on your machine. Open a project or connect to the running CLAT background.</p>
+    <button id="open" class="primary"><span data-i18n="desktop.open">Open project</span> <span>↗</span></button>
+    <p id="status" role="status" aria-live="polite" data-i18n="desktop.checking_host">Checking local background…</p>
+    <footer><span id="version">CLAT</span><button id="settings" data-i18n="desktop.settings">Settings and about</button></footer>
+  </main>
+  <script src="welcome.js"></script>
+</body>
+</html>

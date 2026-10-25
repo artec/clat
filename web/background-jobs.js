@@ -1,7 +1,7 @@
 /* Host-owned jobs; closing this dialog never stops a command. */
 function installBackgroundJobs() {
   const msg = (key) => CLATI18n.msg(`job.${key}`);
-  const trigger = el('button', 'sidebar-footer-button', () => msg('open')); trigger.id = 'jobs-open'; trigger.type = 'button';
+  const trigger = sidebarToolButton('jobs-open', 'jobs', () => msg('open'));
   document.querySelector('.sidebar-footer').prepend(trigger);
   const dialog = el('dialog', 'history-dialog'); dialog.id = 'jobs-dialog';
   const head = el('div', 'history-dialog-head');
