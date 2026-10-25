@@ -224,7 +224,10 @@ test('three desktop languages switch without reloading or losing a draft and pen
   const language=dialog.locator('[data-language-select]');
   for(const [id,close] of [['en','Close'],['zh-Hant','關閉'],['zh-Hans','关闭']]) {
     await language.selectOption(id);
-    await expect(dialog.locator('[data-action=close]')).toHaveText(close);
+    const button=dialog.locator('[data-action=close]');
+    await expect(button).toHaveAccessibleName(close);
+    await expect(button).toHaveAttribute('title',close);
+    await expect(button.locator('svg')).toBeVisible();
     await expect(page.locator('#prompt')).toHaveValue('中文草稿 {path}');
     await expect(dialog.locator('[data-action=cancel]')).toBeEnabled();
     expect(await page.evaluate(()=>!!window.marker)).toBe(true);
