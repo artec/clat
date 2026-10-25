@@ -68,6 +68,10 @@ Windows installers reuse their platform's CLI; macOS desktop packages reuse CI
 backends and build/sign locally, preserving completed stages after interruptions.
 The desktop app shares Host data with the CLI/PWA and updates independently;
 it requires no preinstalled CLI, Node.js or Python.
+Windows currently ships through GitHub for developers and advanced users; its
+unsigned installers may trigger security warnings or be blocked by device policy.
+A Microsoft Store edition for general users, with Store-managed updates, is
+planned and not yet available. See [desktop distribution](docs/desktop.md#windows-distribution-channels).
 The optional official-iLink WeChat frontend supports explicit binding and pairing;
 it remains off unless `serve` is started with `--im wechat`.
 

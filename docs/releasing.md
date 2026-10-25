@@ -484,7 +484,23 @@ use `bun app:build` locally. Tagged Release builds still require the full formal
 asset inventory before `./publish` makes the draft public. Re-run failed jobs to
 preserve successful platform jobs when retrying the same commit.
 
-Windows initially uses per-user NSIS installers without Authenticode. All desktop
+Windows distribution has two intended audiences: Microsoft Store for general
+users, and GitHub for developers/advanced users who can verify sources and handle
+device security policies. The Store edition is planned, not currently released;
+account approval, app certification, packaging and an Actions submission workflow
+remain pending. The intended Store channel uses Store-managed updates; the
+existing GitHub updater and manual installers remain the GitHub channel's paths.
+An account approval alone does not constitute an approved Store app or delivery
+pipeline. Store integration must explicitly distinguish these update channels.
+
+GitHub Windows releases currently use per-user NSIS installers without
+Authenticode publisher signatures. SmartScreen warnings and endpoint-security
+blocks can prevent installation. Self-signed test certificates and CLAT's update
+signatures do not provide public Windows publisher trust. Report suspected false
+positives for vendor review; managed-device exceptions require administrator
+assessment, rather than instructions to disable system-wide protection.
+
+All GitHub desktop
 updates still require signatures. The updater validates a signed, version-fixed
 index, exact repository/platform URLs and signed package versions, with downgrades
 disabled. CLI `clat upgrade` only selects CLI assets and retains its existing trust

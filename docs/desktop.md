@@ -22,6 +22,27 @@ Desktop installers ship alongside CLI archives in each desktop-enabled formal
   Installation is per-user. The installer bootstraps shared Evergreen WebView2
   when needed; it does not ship a browser runtime or modify your CLI PATH.
 
+### Windows distribution channels
+
+The planned Microsoft Store edition is intended for general users, with
+installation and updates managed by the Store. It is not available yet:
+developer-account approval, app certification and the Store packaging/submission
+workflow are still pending. Do not use the GitHub updater for a future Store
+installation; that channel must use Store-managed updates when implemented.
+
+The currently available GitHub edition is intended for developers and advanced
+users who can verify the release source and handle their device's security
+prompts and policies. It uses the built-in GitHub desktop updater or manual
+installation. Its Windows installers do not currently have an Authenticode
+publisher signature. SmartScreen may warn, and endpoint security or managed-device
+policies may block installation entirely. CLAT update signatures verify update
+integrity; they do not establish Windows publisher trust or antivirus reputation.
+
+If security software blocks a download, keep the exact detection details and
+request vendor review or an administrator's assessment of that specific file.
+Do not disable system-wide protection to install CLAT. GitHub availability does
+not guarantee that a device's security policy permits installation.
+
 From v2.1.2, each macOS architecture has three files: the DMG for installation,
 an App archive for automatic updates, and a combined SHA-256 list. Windows has
 one installer/update EXE and its checksum. All signatures live in the shared
@@ -152,9 +173,10 @@ any later installation failure; reopen CLAT or use the installer to retry.
 Neither failure recovery nor cancellation stops the shared Host or clears its data.
 
 macOS release artifacts use Developer ID signing, Apple notarization and stapled
-tickets. Windows' initial release has no Authenticode publisher signature and may
-show an unknown-publisher/SmartScreen notice; desktop update signatures remain
-mandatory. See [release signing](releasing.md) for the owner-side procedure.
+tickets. The GitHub Windows edition currently has no Authenticode publisher
+signature and may be warned about or blocked as described above; desktop update
+signatures remain mandatory. See [release signing](releasing.md) for the
+owner-side procedure.
 
 External MCP programs still need their configured executables. Finder's PATH can
 differ from a terminal's PATH; configure absolute executable paths when necessary.

@@ -66,6 +66,9 @@ authority 必须持有效凭据。浏览器只保存私有 HttpOnly 会话，凭
 URL。使用 `--no-open` 可关闭自动打开浏览器。
 桌面首发起，同一 Release 同时提供 CLI 压缩包和桌面安装包。
 桌面与 CLI/PWA 共用 Host 数据，各自独立更新；无需预装 CLI、Node.js 或 Python。
+Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚无 Windows 发布者签名，
+可能出现安全提示或被设备策略阻止。面向普通用户、由商店管理更新的 Microsoft Store
+版仍在规划中，尚未上线。详见[桌面分发渠道](docs/desktop.md#windows-distribution-channels)。
 可选的微信前端只走官方 iLink；必须显式扫码绑定、配对用户，并以
 带 `--im wechat` 的 `serve` 启动，否则保持关闭。
 
