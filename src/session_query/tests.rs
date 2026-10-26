@@ -481,3 +481,41 @@ fn history_query_model_results_keep_references_under_general_pruning_limit() {
     assert_eq!(result["hits"][0]["reference"], json!(reference));
     assert_eq!(result["truncated"], true);
 }
+
+#[test]
+fn navigation_conversation_read_is_public_scoped_and_does_not_select() {
+    let fixture = Fixture::new();
+    let id = "navigation-reader";
+    fixture.write("/tmp/query-one", id, "Visible original message");
+    let before = fixture.service.reader.current();
+    let request = ConversationRequest {
+        reference: fixture.reference(id, 0),
+        trusted_projects: false,
+        after_seq: None,
+        version: None,
+        attachments_only: false,
+    };
+    let page = fixture
+        .service
+        .conversation(request.clone(), &CancelToken::new())
+        .unwrap();
+    assert_eq!(page.messages[0].text, "Visible original message");
+    assert_eq!(page.messages[0].reference.seq, Some(0));
+    assert_eq!(fixture.service.reader.current(), before);
+    let mut wrong = request.clone();
+    wrong.reference.project = Some("/tmp/not-trusted".into());
+    assert!(
+        fixture
+            .service
+            .conversation(wrong, &CancelToken::new())
+            .is_err()
+    );
+    let mut stale = request;
+    stale.version = Some("stale".into());
+    assert!(
+        fixture
+            .service
+            .conversation(stale, &CancelToken::new())
+            .is_err()
+    );
+}

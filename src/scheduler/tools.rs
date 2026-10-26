@@ -86,7 +86,7 @@ impl ScheduleTool {
         };
         let (config, _) = model::load(self.scope.config.as_ref(), draft.model_profile.as_deref())?;
         let spec = WorkSpec {
-            instruction: draft.instruction,
+            title: None, notification: None,            instruction: draft.instruction,
             trigger: Trigger::Time {
                 rule: super::schema::parse_time(draft.time)?,
             },

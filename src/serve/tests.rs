@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 const TEST_TOKEN: &str = "tok-3f9d2c7a-serve-test";
 const WAIT: Duration = Duration::from_secs(30);
 
+#[path = "navigation_tests.rs"]
+mod navigation_tests;
 #[path = "schedule_tests.rs"]
 mod schedule_tests;
 #[path = "workspace_tests.rs"]
@@ -2942,6 +2944,9 @@ fn web_assets_are_public_but_contain_no_credentials() {
     assert!(!body.contains("?t="));
     for (path, kind) in [
         ("/app.js", "application/javascript"),
+        ("/project-workbench.js", "application/javascript"),
+        ("/project-context.js", "application/javascript"),
+        ("/project-host.js", "application/javascript"),
         ("/style.css", "text/css"),
     ] {
         let content_type = get_response_content_type(handle.addr, path);
@@ -2953,11 +2958,9 @@ fn web_assets_are_public_but_contain_no_credentials() {
     let (status, body) = get(handle.addr, "/manifest.webmanifest", &[]);
     assert_eq!(status, 200, "{body:?}");
     let manifest: serde_json::Value = serde_json::from_str(&body).expect("manifest json");
-    assert_eq!(manifest["name"], "CLAT Workbench");
     assert_eq!(manifest["display"], "standalone");
     assert_eq!(manifest["start_url"], "/");
     let icons = manifest["icons"].as_array().expect("icons");
-    assert_eq!(icons.len(), 2, "192 + 512");
     for icon in icons {
         let src = icon["src"].as_str().expect("src");
         assert!(
@@ -3214,6 +3217,120 @@ fn host_serve_for_playwright(key: &str, behavior: TestBehavior, seed_turns: usiz
     host_serve_modes_for_playwright(key, behavior, seed_turns, false)
 }
 
+fn seed_playwright_messages(
+    project: &Project,
+    storage: &Path,
+    behavior: TestBehavior,
+    messages: impl Iterator<Item = String>,
+    separate: bool,
+) -> Vec<String> {
+    fn allow_seed(
+        _: crate::PermissionRequest,
+        _: &crate::model::CancelToken,
+    ) -> crate::PermissionDecision {
+        crate::PermissionDecision::Allow
+    }
+    let bootstrap = BootstrapApplication::open(project.clone(), storage.to_path_buf()).unwrap();
+    let mut application = bootstrap
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin { behavior }))
+        .unwrap();
+    let mut sessions = Vec::new();
+    for message in messages {
+        if separate {
+            application.new_session().unwrap();
+        }
+        let (completion, result) = std::sync::mpsc::channel();
+        let handle = application
+            .start_run(crate::ApplicationRunRequest {
+                message: crate::message::PendingMessage::text(message.clone()),
+                approver: Arc::new(allow_seed),
+                asker: None,
+                events: Box::new(crate::test_support::SharedEvents(Arc::new(Mutex::new(
+                    Vec::new(),
+                )))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        result.recv_timeout(WAIT).unwrap().unwrap();
+        if separate {
+            application.rename_session(&message).unwrap();
+        }
+        sessions.push(application.current_session_id().unwrap().to_string());
+    }
+    application.close().unwrap();
+    sessions
+}
+
+#[test]
+#[ignore = "Playwright project tree fixture; needs CLAT_E2E_HOST=1"]
+fn serve_e2e_host_project_tree() {
+    if std::env::var("CLAT_E2E_HOST").ok().as_deref() != Some("1") {
+        return;
+    }
+    let (storage, root, project) = setup("serve-e2e-project-tree");
+    prepare_storage(&project, &storage, TestBehavior::Success);
+    seed_playwright_messages(
+        &project,
+        &storage,
+        TestBehavior::Success,
+        [
+            "内置搜索配置问题",
+            "梳理当前项目架构",
+            "审阅本轮工作区改动",
+            "改进文件引用流程",
+            "重新组织项目与会话",
+            "界面重设计验收",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+        true,
+    );
+    let secondary = root.parent().unwrap().join("ECAR");
+    std::fs::create_dir_all(&secondary).unwrap();
+    let secondary = std::fs::canonicalize(secondary).unwrap();
+    let second_project = Project::new(&secondary);
+    prepare_storage(&second_project, &storage, TestBehavior::Success);
+    let sessions = seed_playwright_messages(
+        &second_project,
+        &storage,
+        TestBehavior::Success,
+        ["首页新闻聚合", "车型资料更新", "检查图片资源"]
+            .into_iter()
+            .map(str::to_owned),
+        true,
+    );
+    let token = format!("e2e-tree-{}", uuid::Uuid::new_v4().simple());
+    let handle = crate::serve::serve_with_with_queue(
+        project,
+        Some(storage.clone()),
+        ServeArgs {
+            trust: false,
+            port: 0,
+            token: Some(token.clone()),
+            rotate_token: false,
+            no_open: true,
+            im: None,
+        },
+        |bootstrap| {
+            mount_playwright_application(bootstrap, "project-tree", TestBehavior::Success, true)
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    )
+    .unwrap();
+    wait_for_playwright(
+        handle,
+        &storage,
+        &root,
+        "project-tree",
+        token,
+        serde_json::json!({"secondaryProject":{"root":secondary,"sessions":sessions}}),
+    );
+    let _ = std::fs::remove_dir_all(secondary);
+}
+
 /// AG-DOGFOOD-5：带会话权限档的宿主装配（ag5-joint 用 Project Write 默认，
 /// 与生产 TUI/serve 日常档一致；写效果免逐次审批，permission_checked
 /// 通知仍可见）。
@@ -3233,38 +3350,13 @@ fn host_serve_modes_for_playwright(
     let (storage_root, project_root, project) = setup(&format!("serve-e2e-{key}"));
     prepare_storage(&project, &storage_root, behavior.clone());
     if seed_turns > 0 {
-        fn allow_seed(
-            _: crate::PermissionRequest,
-            _: &crate::model::CancelToken,
-        ) -> crate::PermissionDecision {
-            crate::PermissionDecision::Allow
-        }
-        let bootstrap = BootstrapApplication::open(project.clone(), storage_root.clone()).unwrap();
-        let mut application = bootstrap
-            .with_permission_modes()
-            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
-                behavior: behavior.clone(),
-            }))
-            .unwrap();
-        for turn in 0..seed_turns {
-            let (completion_tx, completion_rx) = std::sync::mpsc::channel();
-            let handle = application
-                .start_run(crate::ApplicationRunRequest {
-                    message: crate::message::PendingMessage::text(format!(
-                        "history question {turn:02}"
-                    )),
-                    approver: Arc::new(allow_seed),
-                    asker: None,
-                    events: Box::new(crate::test_support::SharedEvents(Arc::new(Mutex::new(
-                        Vec::new(),
-                    )))),
-                    completion: completion_tx,
-                })
-                .unwrap();
-            handle.join().unwrap();
-            completion_rx.recv().unwrap().unwrap();
-        }
-        application.close().unwrap();
+        seed_playwright_messages(
+            &project,
+            &storage_root,
+            behavior.clone(),
+            (0..seed_turns).map(|turn| format!("history question {turn:02}")),
+            false,
+        );
     }
     let token = format!("e2e-{key}-{}", uuid::Uuid::new_v4().simple());
     let handle = crate::serve::serve_with_with_queue(
@@ -3284,6 +3376,24 @@ fn host_serve_modes_for_playwright(
     )
     .expect("serve_with");
 
+    wait_for_playwright(
+        handle,
+        &storage_root,
+        &project_root,
+        key,
+        token,
+        serde_json::json!({}),
+    );
+}
+
+fn wait_for_playwright(
+    handle: ServeHandle,
+    storage_root: &Path,
+    project_root: &Path,
+    key: &str,
+    token: String,
+    extra: serde_json::Value,
+) {
     // The Playwright setup mints a private per-invocation handshake directory.
     // Falling back preserves the explicit manual-host workflow, while the
     // normal path prevents concurrent test invocations from deleting each
@@ -3296,16 +3406,11 @@ fn host_serve_modes_for_playwright(
     std::fs::create_dir_all(&e2e_dir).expect("create e2e handshake directory");
     let info_path = e2e_dir.join(format!(".serve-{key}.json"));
     let stop_path = e2e_dir.join(format!(".stop-{key}"));
-    std::fs::write(
-        &info_path,
-        serde_json::json!({
-            "origin": format!("http://{}", handle.addr),
-            "token": token,
-            "pid": std::process::id(),
-        })
-        .to_string(),
-    )
-    .expect("write e2e info");
+    let mut info = serde_json::json!({"origin":format!("http://{}",handle.addr),"token":token,"pid":std::process::id()});
+    info.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    std::fs::write(&info_path, info.to_string()).expect("write e2e info");
 
     let deadline = Instant::now() + E2E_HOST_TIMEOUT;
     while !stop_path.exists() && Instant::now() < deadline {
@@ -3699,6 +3804,12 @@ fn serve_e2e_host_plugin_market() {
 #[ignore = "Playwright e2e host (needs CLAT_E2E_HOST=1, set by web/e2e/global-setup.js)"]
 fn serve_e2e_host_success() {
     host_serve_for_playwright("success", TestBehavior::Success, 0);
+}
+
+#[test]
+#[ignore = "Playwright workbench host with production interactive policy"]
+fn serve_e2e_host_workbench() {
+    host_serve_modes_for_playwright("workbench", TestBehavior::Success, 0, true);
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use super::*;
 use crate::CancelToken;
+pub use crate::session_query::{ConversationMessage, ConversationPage, ConversationRequest};
 pub use crate::session_query::{
     HistoryEventRead, HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryReadRequest,
 };
@@ -13,6 +14,26 @@ impl TrustedProjectApplication {
     }
 }
 impl HistoryReader {
+    pub fn attachment(
+        &self,
+        reference: &HistoryReference,
+        id: &str,
+        trusted_projects: bool,
+        cancel: &CancelToken,
+    ) -> Result<serde_json::Value, ApplicationError> {
+        self.0
+            .attachment(reference, id, trusted_projects, cancel)
+            .map_err(error)
+    }
+
+    pub fn conversation(
+        &self,
+        request: ConversationRequest,
+        cancel: &CancelToken,
+    ) -> Result<ConversationPage, ApplicationError> {
+        self.0.conversation(request, cancel).map_err(error)
+    }
+
     pub fn search(
         &self,
         request: HistorySearch,

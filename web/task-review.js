@@ -40,13 +40,19 @@ function installTaskReview() {
 }
 
 function focusWorkbenchTool(trigger) {
+  if (workbenchShell && [...workbenchShell.surfaces.values()]
+    .some(seat => seat.type === 'page' && seat.trigger === trigger.id)) return;
   const menu = trigger.closest('#workbench-tools');
   if (menu?.classList.contains('hidden')) document.getElementById('tools-open').focus();
   else trigger.focus();
 }
 
 function installWorkbenchTools() {
-  const trigger = el('button', 'ghost', () => (CLATI18n.msg("tui.tools", {}, "Tools"))); trigger.type = 'button'; trigger.id = 'tools-open'; trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', 'workbench-tools');
+  const trigger = el('button', 'icon-button'); trigger.type = 'button'; trigger.id = 'tools-open';
+  trigger.append(svgIcon('tools'));
+  CLATI18n.attribute(trigger, 'aria-label', () => CLATI18n.msg('tui.tools'));
+  CLATI18n.attribute(trigger, 'title', () => CLATI18n.msg('tui.tools'));
+  trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', 'workbench-tools');
   const menu = el('div', 'workbench-tools hidden'); menu.id = 'workbench-tools'; CLATI18n.attribute(menu,'aria-label',()=>CLATI18n.msg("web.workbench_tools", {}, "Workbench tools"));
   document.getElementById('review-open').before(trigger, menu);
   for (const id of ['review-open', 'turn-review-open', 'files-open', 'workflow-open', 'tasks-open', 'help-open']) {
@@ -57,5 +63,5 @@ function installWorkbenchTools() {
   trigger.addEventListener('click', () => { const opened = menu.classList.toggle('hidden'); trigger.setAttribute('aria-expanded', String(!opened)); });
   menu.addEventListener('click', (event) => { if (event.target.closest('button')) close(); });
   menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); trigger.focus(); } });
-  document.addEventListener('click', (event) => { if (!document.querySelector('dialog[open]') && !menu.contains(event.target) && event.target !== trigger) close(); });
+  document.addEventListener('click', (event) => { if (!document.querySelector('dialog[open]') && !menu.contains(event.target) && !trigger.contains(event.target)) close(); });
 }

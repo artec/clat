@@ -441,16 +441,7 @@ impl SessionService {
         let session = active
             .as_ref()
             .ok_or_else(|| SessionError::NotFound("no active session".into()))?;
-        if session.coordinator.is_read_only() {
-            return Err(SessionError::UnsupportedFormat(
-                if session.coordinator.is_legacy() {
-                    "legacy session is read-only; use /update to upgrade or /new".into()
-                } else {
-                    "this V4 session requires capabilities CLAT cannot continue; open /new".into()
-                },
-            ));
-        }
-        Ok(session.shared_journal(&self.backend))
+        session.shared_journal(&self.backend)
     }
 
     pub(crate) fn is_read_only(&self) -> bool {
@@ -626,7 +617,7 @@ impl SessionService {
             payloads::sandbox_mode(&mode),
         );
         // The shared session journal (same instance as every producer).
-        let journal = active.shared_journal(&self.backend);
+        let journal = active.shared_journal(&self.backend)?;
         journal
             .append_atomic_durable(&[event])
             .map_err(SessionError::Corruption)?;
@@ -712,7 +703,7 @@ impl SessionService {
                 serde_json::json!({ "text": approved.text, "digest": approved.digest }),
             );
         }
-        let journal = active.shared_journal(&self.backend);
+        let journal = active.shared_journal(&self.backend)?;
         let seq = journal
             .append(crate::session::run_journal::NewSessionEvent::new(
                 "plan/mode",
@@ -762,7 +753,7 @@ impl SessionService {
         let active = guard.as_ref().ok_or_else(|| {
             SessionError::Corruption("goal mutation requires an active session".into())
         })?;
-        let journal = active.shared_journal(&self.backend);
+        let journal = active.shared_journal(&self.backend)?;
         let seq = journal
             .append(crate::session::run_journal::NewSessionEvent::new(
                 "goal/change",
@@ -930,7 +921,7 @@ impl SessionService {
         };
         let event = crate::session::run_journal::NewSessionEvent::new("session/title", payload);
         // The shared session journal (same instance as every producer).
-        let journal = active.shared_journal(&self.backend);
+        let journal = active.shared_journal(&self.backend)?;
         journal.append(event).map_err(SessionError::Corruption)?;
         journal.flush().map_err(SessionError::Corruption)?;
         checkpoint_active(active, &self.checkpoints)?;

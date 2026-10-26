@@ -170,4 +170,8 @@ test('path planning guards native checks and retains cross-platform tooling with
   expect(scripts.if).toContain("contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')");
   expect(desktop.jobs['web-shell']!.if).toContain("needs.plan.outputs.web == 'true'");
   expect(desktop.jobs.tooling!.if).toContain("needs.plan.outputs.tooling == 'true'");
+  // Automatic planning needs no desktop dependencies or installer matrix.
+  for (const step of desktop.jobs.plan!.steps!.filter(s => s.id === 'assets' || s.run?.startsWith('bun install'))) {
+    expect(step.if).toBe("github.event_name == 'workflow_dispatch'");
+  }
 });

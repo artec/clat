@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-pick-directory"
+description = "Enables the desktop_pick_directory command without any pre-configured scope."
+commands.allow = ["desktop_pick_directory"]
+
+[[permission]]
+identifier = "deny-desktop-pick-directory"
+description = "Denies the desktop_pick_directory command without any pre-configured scope."
+commands.deny = ["desktop_pick_directory"]

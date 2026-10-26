@@ -93,3 +93,38 @@ fn file_symlink_and_cross_project_directory_symlink_are_rejected() {
     crate::test_support::cleanup_tree(&root);
     crate::test_support::cleanup_tree(&outside);
 }
+
+#[test]
+fn navigation_directory_listing_is_bounded_and_keeps_private_and_path_fences() {
+    let (root, browser) = fixture();
+    std::fs::create_dir(root.join("source")).unwrap();
+    std::fs::write(root.join("source/file.rs"), "actual source").unwrap();
+    std::fs::write(root.join(".env"), "secret").unwrap();
+    let listing = browser.list("").unwrap();
+    assert!(
+        listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["path"] == "source" && e["directory"] == true)
+    );
+    assert!(
+        !listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["name"] == ".env" || e["name"] == "private-db")
+    );
+    assert_eq!(
+        browser.list("source").unwrap()["entries"][0]["path"],
+        "source/file.rs"
+    );
+    assert!(browser.list("../").is_err());
+    assert!(browser.list("private-db").is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(root.join("source"), root.join("linked-source")).unwrap();
+        assert!(browser.list("linked-source").is_err());
+    }
+    crate::test_support::cleanup_tree(&root);
+}

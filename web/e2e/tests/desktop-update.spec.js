@@ -1,54 +1,30 @@
 const {test,expect}=require('@playwright/test');
 const {hostInfo,openWorkbench}=require('../helpers/workbench');
 
-test('desktop entry aligns with sidebar tools and language controls have breathing room',async({page})=>{
+test('desktop updates use the complete settings page and preserve the conversation draft',async({page},info)=>{
   const fs=require('node:fs'),path=require('node:path');
-  await page.route('**/style.css',async route=>{
-    const response=await route.fetch();
-    const css=(await response.text()).split('\n').filter(line=>!line.includes('.desktop-dialog-close')).join('\n');
-    await route.fulfill({response,body:css}); // A running Host can predate the desktop close-button styles.
-  });
   await openWorkbench(page,hostInfo('success'));
-  const catalogs=Object.fromEntries(['en','zh-Hans','zh-Hant'].map(id=>[id,JSON.parse(fs.readFileSync(path.resolve(__dirname,`../../../locales/${id}.json`),'utf8'))]));
-  await page.evaluate(catalogs=>{
-    window.__TAURI__={event:{listen:async()=>()=>{}},core:{invoke:async(command,args)=>{
-      if(command==='desktop_preferences')return {preference:args.language,locale:args.language,catalogs};
+  await page.fill('#prompt','Keep the draft while checking updates');
+  await page.evaluate(()=>{
+    window.desktopCalls=[];
+    window.__TAURI__={event:{listen:async()=>()=>{}},core:{invoke:async(command)=>{
+      window.desktopCalls.push(command);
       return {desktopVersion:'2.1.4',backendVersion:'2.1.4',hostVersion:'2.1.4',hostConnected:true,autoCheck:true};
     }}};
-  },catalogs);
+  });
   await page.route('**/desktop-bridge-fixture.js',route=>route.fulfill({contentType:'application/javascript',body:fs.readFileSync(path.resolve(__dirname,'../../../desktop/ui/bridge.js'),'utf8')}));
   await page.addScriptTag({url:hostInfo('success').origin+'/desktop-bridge-fixture.js'});
-  const launch=page.locator('.sidebar-footer > .sidebar-footer-button').first();
-  await expect(launch.locator('svg')).toBeVisible();
-  for(const language of ['en','zh-Hans','zh-Hant']){
-    await page.evaluate(language=>CLATI18n.setLanguage(language),language);
-    const positions=await page.evaluate(()=>{
-      const box=s=>document.querySelector(s).getBoundingClientRect();
-      const launch=document.querySelector('.sidebar-footer > .sidebar-footer-button');
-      const statusIcon=box('#sidebar-footnote svg'),statusText=box('#sidebar-connection');
-      return {icon:launch.querySelector('svg').getBoundingClientRect().x,text:launch.querySelector('span').getBoundingClientRect().x,
-        otherIcon:box('#jobs-open svg').x,otherText:box('#jobs-open span').x,
-        statusOffset:Math.abs(statusIcon.y+statusIcon.height/2-statusText.y-statusText.height/2)};
-    });
-    expect(positions.icon).toBeCloseTo(positions.otherIcon,0);
-    expect(positions.text).toBeCloseTo(positions.otherText,0);
-    expect(positions.statusOffset).toBeLessThanOrEqual(1);
-    await launch.click();
-    const gap=await page.locator('#clat-desktop-settings').evaluate(dialog=>{
-      const select=dialog.querySelector('[data-language-select]');
-      return select.getBoundingClientRect().left-select.previousElementSibling.getBoundingClientRect().right;
-    });
-    expect(gap).toBeGreaterThanOrEqual(10);
-    const dialogBox=await page.locator('#clat-desktop-settings').boundingBox();
-    const closeBox=await page.locator('#clat-desktop-settings [data-action=close]').boundingBox();
-    expect(closeBox.y-dialogBox.y).toBeLessThanOrEqual(16);
-    expect(dialogBox.x+dialogBox.width-closeBox.x-closeBox.width).toBeLessThanOrEqual(16);
-    await page.locator('#clat-desktop-settings [data-action=close]').click();
-  }
-  await page.evaluate(()=>{state.theme='dark';applyPresentation();});
-  await page.screenshot({path:'../../output/playwright/desktop-sidebar-alignment.png'});
-  await launch.click();
-  await page.screenshot({path:'../../output/playwright/desktop-language-spacing.png'});
+  await page.evaluate(()=>CLATDesktop.showSettings());
+  await expect(page.locator('#settings-dialog')).toBeVisible();
+  await expect(page.locator('#clat-desktop-settings')).toBeVisible();
+  await expect(page.locator('#prompt')).toBeHidden();
+  await page.locator('#clat-desktop-settings [data-action=check]').click();
+  await expect.poll(()=>page.evaluate(()=>desktopCalls.includes('desktop_check_update'))).toBe(true);
+  await expect(page.locator('#settings-dialog')).toBeVisible();
+  await expect(page.locator('#prompt')).toBeHidden();
+
+  await page.click('#nav-workbench');
+  await expect(page.locator('#prompt')).toHaveValue('Keep the draft while checking updates');
 });
 
 test('desktop installation lock protects actual workbench draft state and blocks late image selection',async({page})=>{

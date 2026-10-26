@@ -153,9 +153,6 @@ button:disabled { cursor: default; opacity: .45; }
 .project-heading .icon-button { width: 26px; height: 26px; padding: 4px; }
 .project-card strong { display: block; margin-top: 8px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .project-root { display: block; margin-top: 2px; color: var(--text-muted); font: 11px/1.4 var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.new-session { display: flex; align-items: center; gap: 10px; min-height: 40px; margin: 4px 14px 10px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); background: transparent; font-weight: 600; white-space: nowrap; }
-.new-session:hover:not(:disabled) { background: var(--ink-3); }
-.new-session svg { width: 17px; height: 17px; }
 .sessions-open { display: none; align-items: center; justify-content: center; width: 44px; height: 44px; margin: 0 auto; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); }
 .sessions-open svg { width: 20px; height: 20px; }
 .sessions-open:hover, .sessions-open:focus-visible { color: var(--text); background: var(--ink-3); }
@@ -198,8 +195,6 @@ button:disabled { cursor: default; opacity: .45; }
   .app[data-sidebar="collapsed"] .sidebar-expanded-only { display: none !important; }
   .app[data-sidebar="collapsed"] .sidebar-head { position: relative; justify-content: center; padding-inline: 10px; }
   .app[data-sidebar="collapsed"] .brand-lockup { flex: none; }
-  .app[data-sidebar="collapsed"] #sidebar-toggle { position: absolute; top: 57.5px; inset-inline: 0; width: 24px; height: 24px; padding: 0; margin-inline: auto; transform: rotate(180deg); background: var(--sidebar-bg); }
-  .app[data-sidebar="collapsed"] .new-session { justify-content: center; width: 44px; min-height: 44px; margin: 20px auto 10px; padding: 0; }
   .app[data-sidebar="collapsed"] .sessions-open { display: flex; }
   .app[data-sidebar="collapsed"] .sidebar-footer { padding-inline: 11px; }
   .app[data-sidebar="collapsed"] .sidebar-footer-button { justify-content: center; width: 44px; min-height: 44px; margin-inline: auto; padding: 0; }

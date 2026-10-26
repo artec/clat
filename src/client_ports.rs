@@ -25,6 +25,7 @@ pub use crate::session::use_cases::SessionSummary;
 // 崩溃文案等）补同一道闸，跨端一致、不另立词表。
 pub use crate::redact::redact_secrets;
 pub mod host {
+    pub use crate::application::WorkspaceDirectoryEntry;
     pub use crate::host_client::HostNotification;
     pub use crate::host_client::PackagedBackend;
     pub fn journal_format_version() -> u32 {
@@ -83,7 +84,7 @@ pub mod upgrade {
 pub mod history {
     pub use crate::application::{
         HistoryEventRead, HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit,
-        HistoryPage, HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch,
+        ConversationRequest, ConversationMessage, ConversationPage, HistoryPage, HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }

@@ -80,6 +80,11 @@ alongside the existing English fields. Unknown keys use the supplied English fal
 external text remains original. Do not recognize translations by comparing
 English error strings.
 
+Read-only conversation rejections retain a typed reason through journal acquisition,
+Plan Mode, its slash command and Application/RPC errors. Legacy conversations offer `/update` or
+`/new`; unsupported current-format context offers `/new`. A refusal to write is
+not reported as log corruption. Actual corruption diagnostics remain intact.
+
 Native Host build, version and protocol incompatibility reasons retain their
 `PresentedText` descriptor through discovery, startup and desktop reconciliation.
 Terminal entry points render it with their explicit locale. Desktop keeps both

@@ -1,6 +1,8 @@
 //! Read-only history queries over an explicitly authorized corpus.
+mod conversation;
 mod index;
 mod inspect;
+pub use conversation::{ConversationMessage, ConversationPage, ConversationRequest};
 mod query;
 mod source;
 pub use inspect::{

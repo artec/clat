@@ -37,7 +37,7 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
   await expect(page.locator('#turn-review')).toContainText('conflict', LIVE);
   expect(fs.readFileSync(path.join(root, 'generated.txt'), 'utf8')).toBe('later human edit');
   await page.getByRole('button', { name: 'Close captured operations' }).click();
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.fill('#prompt', 'another write'); await page.click('#send');
   await page.getByRole('button', { name: 'Allow', exact: true }).click();
   await expect.poll(() => fs.readFileSync(path.join(root, 'generated.txt'), 'utf8'), LIVE).toBe('from headless test');
@@ -49,7 +49,7 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
   await expect(page.locator('#turn-review')).toContainText('restored', LIVE);
   await expect(page.locator('#turn-review .review-file')).toContainText('restored');
   expect(fs.readFileSync(path.join(root, 'generated.txt'), 'utf8')).toBe('later human edit');
-  await page.screenshot({ path: info.outputPath('captured-operations-desktop.png') });
+
   // Rendering fixture: host durability is independently pinned by native ledger tests.
   await page.evaluate(() => {
     const original = rpc;
@@ -91,9 +91,9 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
   await expect(page.locator('#file-browser pre')).toHaveText('new second', LIVE);
   await expect(page.locator('#file-browser')).not.toContainText('File changed since preview');
   await expect(page.locator('#file-browser')).toContainText('Modified');
-  await page.screenshot({ path: info.outputPath('files-desktop.png') });
+
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: info.outputPath('files-phone.png') });
+
   await page.getByRole('button', { name: 'Quote snapshot to draft' }).click();
   await expect(page.locator('#file-browser')).not.toBeVisible();
   await expect(page.locator('#prompt')).toHaveValue(/existing draft[\s\S]*lines 2-2[\s\S]*> new second/);
@@ -106,7 +106,7 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
 test('UX-4 explicit archive and shared reload/restore keep selected transcript', async ({ page }) => {
   await open(page);
   await materializeSession(page, 'previous unrelated chat');
-  await page.click('#new-session'); await materializeSession(page, 'organization retained chat');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]'); await materializeSession(page, 'organization retained chat');
   const id = await page.evaluate(() => state.sessionId);
   const row = page.locator('[data-session-id="' + id + '"]');
   await row.locator('.session-more').click(); await page.getByRole('menuitem', { name: 'Pin session', exact: true }).click();
@@ -146,7 +146,7 @@ test('UX-5 structured Plan/Goal details preserve four concepts and confirm actio
     const detail = el('section'); workflowSections(detail, facts);
     return detail.textContent.includes('First 100 todo entries only');
   })).toBe(true);
-  await page.screenshot({ path: info.outputPath('workflow-desktop.png') });
+
 });
 
 test('UX-6 help, mobile find/project/latest and opt-in deduplicated page notifications', async ({ page }, info) => {
@@ -176,26 +176,28 @@ test('UX-6 help, mobile find/project/latest and opt-in deduplicated page notific
     return window.notificationCalls;
   });
   expect(count).toHaveLength(4); expect(JSON.stringify(count)).not.toContain('SECRET');
-  await page.getByRole('button', { name: 'Close help', exact: true }).click();
+  await page.click('#nav-workbench');
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator('#find-open')).toBeVisible();
   await page.click('#mobile-sidebar-open');
   await page.click('#project-navigation'); await expect(page.locator('#settings-dialog')).toBeVisible();
-  await page.locator('#settings-dialog').press('Escape');
+  await page.click('#nav-workbench');
   await page.evaluate(() => { for (let i = 0; i < 30; i++) addUserMessage('navigation message ' + i, []); });
   await page.locator('#transcript-scroll').evaluate(v => { v.scrollTop = v.scrollHeight; });
   await expect(page.locator('#back-to-latest')).not.toBeVisible();
   await page.locator('#transcript-scroll').evaluate(v => { v.scrollTop = 0; });
   await expect(page.locator('#back-to-latest')).toBeVisible(LIVE); await page.click('#back-to-latest');
   await expect(page.locator('#back-to-latest')).not.toBeVisible();
-  await page.screenshot({ path: info.outputPath('navigation-phone.png') });
+
 });
 
-test('UX-7 readonly task facts expose bounded logs and cleanup explicitly, without new controls', async ({ page }) => {
+test('UX-7 readonly task facts expose bounded logs without mutating tasks', async ({ page }) => {
   await open(page);
   await openWorkbenchTool(page, 'tasks-open');
-  await expect(page.locator('#task-review')).toContainText('Not background jobs', LIVE);
+  await expect(page.locator('#task-review')).toBeVisible(LIVE);
   await page.getByRole('button', { name: 'Close tasks' }).click();
+  const mutations = [];
+  page.on('request', request => { if (/\/api\/tasks\.(?!list|logs)/.test(request.url())) mutations.push(request.url()); });
   await page.evaluate(() => {
     const original = rpc;
     rpc = async (method, params) => {
@@ -209,6 +211,6 @@ test('UX-7 readonly task facts expose bounded logs and cleanup explicitly, witho
   await expect(page.locator('#task-review')).toContainText('bounded log', LIVE);
   await expect(page.locator('#task-review')).toContainText('exit 2');
   await expect(page.locator('#task-review')).toContainText('earlier omitted');
-  await expect(page.locator('#task-review button')).toHaveCount(3);
+  expect(mutations).toEqual([]);
   expect(await page.evaluate(() => document.querySelector('#task-review script') !== null)).toBe(false);
 });

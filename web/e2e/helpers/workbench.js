@@ -34,6 +34,9 @@ async function openWorkbench(page, entry) {
 }
 
 async function openWorkbenchTool(page, id) {
+  const pages = { 'settings-open':'nav-settings', 'market-open':'nav-extensions', 'history-open':'nav-history', 'jobs-open':'nav-tasks', 'help-open':'nav-help' };
+  if (pages[id]) return page.click('#' + pages[id]);
+  if (id === 'schedules-open') { await page.click('#nav-tasks'); return page.selectOption('#task-type','schedules'); }
   if (!await page.locator('#' + id).isVisible()) await page.click('#tools-open');
   await page.click('#' + id);
 }
@@ -53,4 +56,28 @@ async function fetchBrowserRequest(route) {
   return route.fetch({ headers });
 }
 
-module.exports = { LIVE, hostInfo, openWorkbench, openWorkbenchTool, fetchBrowserRequest };
+async function addWorkbenchProject(page, root) {
+  await page.click('#nav-settings');
+  await page.click('[data-settings-category="projects"]');
+  await page.fill('#workspace-root', root);
+  await page.check('#workspace-trust');
+  await page.click('#workspace-open');
+  await expect(page.locator('#project-root')).toHaveText(root, LIVE);
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
+  return new URL(page.url()).searchParams.get('workspace');
+}
+
+async function createWorkbenchConversation(page, title) {
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBeNull();
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', title); await page.click('#send');
+  await expect(page.locator('.msg.assistant').last()).toBeVisible(LIVE);
+  await expect(page.locator('#cancel')).toBeHidden(LIVE);
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).not.toBeNull();
+  return page.evaluate(async title => {
+    const id = state.sessionId;
+    await rpc('session.rename', { id, title }); await refreshWorkbench(); await refreshSessions(); return id;
+  }, title);
+}
+module.exports = { LIVE, hostInfo, openWorkbench, openWorkbenchTool, fetchBrowserRequest, addWorkbenchProject, createWorkbenchConversation };

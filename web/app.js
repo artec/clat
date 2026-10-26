@@ -16,7 +16,7 @@ const INSPECTOR_DRAWER_BREAKPOINT = 1180;
 const MAP_ITEM_HEIGHT = 9;
 const MAP_FULL_RENDER_LIMIT = 120;
 const MAP_OVERSCAN = 12;
-const requestedWorkspace = new URLSearchParams(location.search).get('workspace');
+const requestedWorkspace = context.route === 'default' ? null : context.route;
 const workspacePrefix = requestedWorkspace === null ? '' : '/workspace/' + (
   /^(default|[a-f0-9-]{36})$/.test(requestedWorkspace) ? requestedWorkspace : 'invalid'
 );
@@ -231,6 +231,15 @@ function renderMarkdown(container, source) {
 }
 
 const ICON_PATHS = {
+  chat: ['M4 4h16v12H9l-5 4V4Z', 'M8 8h8M8 12h5'],
+  panel: ['M3 5h18v14H3zM9 5v14'],
+  close: ['m6 6 12 12M18 6 6 18'],
+  folder: ['M3 7h7l2-3h9v16H3z'],
+  settings: ['M19.39 8.94L19.85 10.44L22.30 9.95L22.30 14.05L19.85 13.56L19.39 15.06L19.39 15.06L18.65 16.44L20.73 17.83L17.83 20.73L16.44 18.65L15.06 19.39L15.06 19.39L13.56 19.85L14.05 22.30L9.95 22.30L10.44 19.85L8.94 19.39L8.94 19.39L7.56 18.65L6.17 20.73L3.27 17.83L5.35 16.44L4.61 15.06L4.61 15.06L4.15 13.56L1.70 14.05L1.70 9.95L4.15 10.44L4.61 8.94L4.61 8.94L5.35 7.56L3.27 6.17L6.17 3.27L7.56 5.35L8.94 4.61L8.94 4.61L10.44 4.15L9.95 1.70L14.05 1.70L13.56 4.15L15.06 4.61L15.06 4.61L16.44 5.35L17.83 3.27L20.73 6.17L18.65 7.56L19.39 8.94Z', 'M15.5 12a3.5 3.5 0 1 0-7 0 3.5 3.5 0 0 0 7 0Z'],
+  plan: ['M9 18h6m-6 3h6M8 14c-5-5-2-11 4-11s9 6 4 11l-1 2H9z'],
+  help: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M9 9a3 3 0 1 1 4 3l-1 2m0 3h.01'],
+  previous: ['m14 6-6 6 6 6'], next: ['m10 6 6 6-6 6'],
+  more: ['M5 12h.01M12 12h.01M19 12h.01'],
   open: ['M7 17 17 7M7 7h10v10'],
   schedule: ['M5 5h14v15H5zM8 3v4m8-4v4M5 10h14', 'M12 12v3l2 1'],
   jobs: ['M3 4h18v16H3z', 'm7 9 3 3-3 3m6 0h4'],
@@ -239,6 +248,7 @@ const ICON_PATHS = {
   // PU-9（2026-09-06 负责人令）：品牌像素机器人剪影（fill + evenodd 挖出面部）。
   agent: ['M6 4h12v4h4v4h-4v4h4v4h-4v-4h-4v4h-4v-4h-4v4H2v-4h4v-4H2V8h4V4z M6.2 8.2h11.6v3.8h-3.8v4H10.2v-4H6.2z'],
   tool: ['m14 6 4 4-8 8-4 1 1-4z', 'm13 7 4 4'],
+  tools: ['M21 7.5a6 6 0 0 1-8.1 5.6l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8A6 6 0 0 1 16.5 3L13 6.5l4.5 4.5L21 7.5Z'],
   trace: ['M5 17 9 9l4 6 3-10 3 12', 'M4 20h16'],
   info: ['M12 8h.01M11 12h1v5h1'],
   check: ['m5 12 4 4L19 6'],
@@ -278,6 +288,8 @@ function sidebarToolButton(id, icon, label) {
 }
 
 function renderModelIdentity(target, name, imageInput) {
+  target.removeAttribute('data-i18n');
+  CLATI18n.bind(target, 'textContent', () => '');
   target.replaceChildren(el('span', 'model-name', () => (name)));
   if (!imageInput) return;
   const badge = el('span', 'vision-capability');
@@ -345,6 +357,7 @@ function savePresentationPreference() {
     theme: state.theme,
     sidebar: state.sidebar,
     inspector: state.inspector,
+    inspectorWidth: state.inspectorWidth,
     messageLayout: state.messageLayout,
     processView: state.processView,
   }));
@@ -370,6 +383,7 @@ const state = {
     ? 'closed'
     : (presentation.inspector === 'open' ? 'open' : 'closed'),
   messageLayout: presentation.messageLayout === 'column' ? 'column' : 'bubbles',
+  inspectorWidth: Number.isFinite(presentation.inspectorWidth) ? Math.max(280, Math.min(640, presentation.inspectorWidth)) : 312,
   processView: presentation.processView === 'expanded' ? 'expanded' : 'summaries',
   marketPackages: [],
   marketLoaded: false,
@@ -433,9 +447,9 @@ const state = {
 const dom = {};
 for (const id of [
   'landing', 'connect-form', 'connect-token', 'connect-error', 'app', 'sidebar',
-  'sidebar-toggle', 'mobile-sidebar-open', 'mobile-sidebar-close', 'sidebar-backdrop',
+  'mobile-sidebar-open', 'mobile-sidebar-close', 'sidebar-backdrop',
   'project-name', 'project-root', 'session-title', 'conn-status', 'sidebar-connection', 'sidebar-footnote',
-  'header-model', 'header-permission', 'new-session', 'sessions-open', 'session-search', 'session-count',
+  'header-model', 'header-permission', 'sessions-open', 'session-search', 'session-count',
   'session-list', 'session-empty', 'transcript-scroll', 'empty-state', 'transcript',
   'history-status', 'message-map', 'message-map-track', 'message-map-preview',
   'queue-enqueue', 'queue-recall', 'next-turn-queue',
@@ -464,7 +478,7 @@ for (const id of [
 // The desktop shell asks synchronously before starting an installation wait.
 // No RPC or draft mutation is performed by these display-only guards.
 window.addEventListener('clat-desktop-install-lock',event=>{
-  if(!window.__TAURI__)return;
+  if(!window.__TAURI__||event.defaultPrevented)return;
   const heldText=[...composerDrafts].some(([owner,draft])=>owner!==composerScope&&draft.text.trim());
   if(dom.prompt.value.trim()||state.draft.images.length||state.draft.sending||pendingTextSteering.size||heldText||state.switching||state.compactionActive) {event.preventDefault();return;}
   state.desktopUpdateLocked=true;syncInteractionControls();
@@ -475,12 +489,11 @@ window.addEventListener('clat-desktop-install-unlock',()=>{
 });
 
 function applyPresentation() {
-  document.documentElement.dataset.theme = state.theme;
+  if (context.isActive()) document.documentElement.dataset.theme = state.theme;
   dom.app.dataset.sidebar = state.sidebar;
   dom.app.dataset.inspector = state.inspector;
+  dom.app.style.setProperty('--inspector-width', state.inspectorWidth + 'px');
   dom.app.dataset.messageLayout = state.messageLayout;
-  dom['sidebar-toggle'].setAttribute('aria-expanded', String(state.sidebar === 'expanded'));
-  CLATI18n.attribute(dom['sidebar-toggle'],'aria-label',()=>state.sidebar === 'expanded' ? CLATI18n.msg("web.collapse_sidebar", {}, "Collapse sidebar") : CLATI18n.msg("web.expand_sidebar", {}, "Expand sidebar"));
   dom['sessions-open'].setAttribute('aria-expanded', String(state.sidebar === 'expanded'));
   dom['inspector-toggle'].setAttribute('aria-expanded', String(state.inspector === 'open'));
   const themeRadio = document.querySelector(`input[name="theme"][value="${state.theme}"]`);
@@ -505,7 +518,7 @@ async function rpc(method, params) {
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
     'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set', 'turn.restore', 'session.organize',
   ].includes(method)) {
-    params = { ...params, expected_selection_generation: state.selectionGeneration };
+    params = { ...params, expected_selection_generation: (params?.expected_selection_generation ?? state.selectionGeneration) };
   }
   const response = await fetch(workspacePrefix + '/api/' + method, {
     method: 'POST',
@@ -767,6 +780,7 @@ function handleReplay(event) {
   if (node && Number.isSafeInteger(event.seq)) {
     node.dataset.seq = String(event.seq);
     node.dataset.turn = String(event.turn || 0);
+    decorateConversationBookmarks();
     updateConversationFind();
   }
 }
@@ -1184,7 +1198,7 @@ function onNotice(ctl) {
     case 'models':
       refreshWorkbench();
       refreshUtilitySettings();
-      if (dom['settings-dialog'].open || modelPickerOpen()) refreshModelSettings();
+      if (pageIsOpen(dom['settings-dialog']) || modelPickerOpen()) refreshModelSettings();
       break;
     case 'run':
       invalidateSuggestion();
@@ -1321,7 +1335,7 @@ function createQuestionCard(payload) {
 async function submitQuestionAnswer(card, answer) {
   if (card.dataset.sending === 'true' || card.classList.contains('resolved')) return;
   const stream = state.stream;
-  const current = () => card.isConnected && state.stream === stream
+  const current = () => context.root.contains(card) && state.stream === stream
     && !card.classList.contains('resolved');
   card.dataset.sending = 'true';
   const controls = card.querySelectorAll('button, textarea');
@@ -1424,7 +1438,7 @@ async function loadTranscriptImage(img, attachment) {
     const blob = await response.blob();
     if (!['image/png', 'image/jpeg'].includes(blob.type)) throw new Error('unexpected image type');
     const url = URL.createObjectURL(blob);
-    if (!img.isConnected) {
+    if (!context.root.contains(img)) {
       URL.revokeObjectURL(url);
       return;
     }
@@ -1620,6 +1634,10 @@ function openToolCard(name, argsText, rawId, key) {
         const args = el('div', 'tool-args', () => (argsText));
         body.insertBefore(args, body.querySelector('.tool-output') || body.firstChild);
       }
+      if (decoratePlanToolCard(existing, name, argsText)) {
+        const group = existing.closest('.work-summary'); if (group) detachWorkRecord(existing, group);
+        appendTranscript(existing);
+      }
       return existing;
     }
   }
@@ -1638,6 +1656,7 @@ function openToolCard(name, argsText, rawId, key) {
   if (argsText) body.appendChild(el('div', 'tool-args', () => (argsText)));
   card.append(summary, body);
   if (key) state.toolCards.set(key, card);
+  if (decoratePlanToolCard(card, name, argsText)) return appendTranscript(card);
   return appendWorkRecord(card, name);
 }
 
@@ -1996,6 +2015,7 @@ function renderMessageMap() {
   renderMapWindow();
   bindLiveMessageSeqs(items);
   syncActiveMapItem();
+  decorateConversationBookmarks();
 }
 
 function bindLiveMessageSeqs(outline) {
@@ -2092,6 +2112,8 @@ dom['message-map-track'].addEventListener('keydown', (event) => {
   track.scrollTop += steps[event.key];
 });
 dom['transcript-scroll'].addEventListener('scroll', () => {
+  if (!context.isActive() || !dom['transcript-scroll'].clientHeight) return;
+  captureProjectReading();
   if (!state.history.replaying && dom['transcript-scroll'].scrollTop <= 512) {
     void loadOlderHistory();
   }
@@ -2159,6 +2181,8 @@ async function refreshWorkbench() {
     const info = await rpc('workbench.info', {});
     if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
     state.workbench = info;
+    decorateConversationBookmarks();
+    void reconcileFileReferences();
     renderNextTurnQueue(info.next_turn_queue || []);
     const project = info.project || {};
     const session = info.session || {};
@@ -2208,13 +2232,14 @@ async function refreshWorkbench() {
 
     renderCapabilities(info.capabilities || []);
     renderMcp(info.mcp || {});
-    selectPermissionMode(permission.mode || 'workspace-write');
+    if(!dom['permission-options'].closest('[data-settings-panel]').dataset.unsaved) selectPermissionMode(permission.mode || 'workspace-write');
     updateRunDetail(Boolean(info.active_run));
     syncInteractionControls();
     renderSessions();
   } catch (error) {
     console.warn('[clat] workbench.info failed:', error.message);
   }
+  window.dispatchEvent(new Event('clat:workbench-updated'));
 }
 
 function shortenId(id) {
@@ -2252,6 +2277,7 @@ function updateRunDetail(serverActive) {
   CLATI18n.bind(dom['detail-run'], "textContent", () => state.compactionActive
     ? CLATI18n.msg("web.compacting_short",{},"Compacting")
     : active ? CLATI18n.msg("web.running_short",{},"Running") : (state.connected ? CLATI18n.msg("web.idle", {}, "Idle") : CLATI18n.msg("web.disconnected_short",{},"Disconnected")));
+  context.changed();
 }
 
 async function refreshSessions() {
@@ -2342,6 +2368,7 @@ function renderSessions() {
   if (filtered.length === 0 && state.sessions.length > 0) show(dom['session-empty']);
   else hide(dom['session-empty']);
   restoreSessionFocus(focus);
+  context.changed();
 }
 
 let sessionMenu = null;
@@ -2470,7 +2497,8 @@ function syncInteractionControls() {
   const thinking = document.getElementById('model-thinking');
   thinking.disabled = locked || state.runActive || state.modelSelectionPending
     || thinking.dataset.adjustable !== 'true';
-  dom['new-session'].disabled = locked;
+  const fresh = dom['session-list'].closest('.project-group')?.querySelector('[data-action="new-project-session"]');
+  if (fresh) fresh.disabled = locked;
   dom['session-title'].disabled = locked || !state.sessionId;
   CLATI18n.bind(dom['compact-session'], "textContent", () => state.compactionActive
     ? CLATI18n.msg("web.cancel_compaction", {}, "Cancel compaction")
@@ -2499,7 +2527,8 @@ async function switchSession(id) {
   }
 }
 
-dom['new-session'].addEventListener('click', async () => {
+async function newSession() {
+  if (state.switching || state.compactionActive || state.desktopUpdateLocked) return;
   if (!confirmAttachmentSelection()) return;
   setSwitching(true);
   try {
@@ -2510,7 +2539,7 @@ dom['new-session'].addEventListener('click', async () => {
     setSwitching(false);
     updateRunState(CLATI18n.msg("web.line_new_session_failed_value",{value1:(error.message)},"new session failed: {value1}"));
   }
-});
+}
 
 dom['session-title'].addEventListener('click', async () => {
   if (!state.sessionId || state.switching || state.compactionActive) return;
@@ -2696,22 +2725,25 @@ function normalizeMarketCatalog(catalog) {
 
 function openMarket() {
   dom['market-search'].value = '';
-  if (!dom['market-dialog'].open) dom['market-dialog'].showModal();
+  if (!pageIsOpen(dom['market-dialog'])) presentPage(dom['market-dialog']);
   void loadMarket();
   void pluginMarket.refresh();
-  setTimeout(() => dom['market-search'].focus(), 0);
+  if (workbenchShell?.surfaces.get('market-dialog')?.type !== 'page') {
+    setTimeout(() => dom['market-search'].focus(), 0);
+  }
 }
 
 dom['market-open'].addEventListener('click', openMarket);
-dom['market-close'].addEventListener('click', () => dom['market-dialog'].close());
+
 dom['market-search'].addEventListener('input', renderMarket);
 
 function isMobile() { return window.innerWidth <= MOBILE_BREAKPOINT; }
 
 function syncPanelAccessibility() {
-  const sidebarVisible = !isMobile() || dom.app.dataset.mobileSidebar === 'open';
+  const sidebarVisible = !dom.app.dataset.page && (isMobile() ? dom.app.dataset.mobileSidebar === 'open' : state.sidebar !== 'collapsed');
   dom.sidebar.inert = !sidebarVisible;
   dom.sidebar.setAttribute('aria-hidden', String(!sidebarVisible));
+  document.getElementById('project-list-toggle')?.setAttribute('aria-expanded', String(sidebarVisible));
   const inspectorVisible = state.inspector === 'open';
   dom.inspector.inert = !inspectorVisible;
   dom.inspector.setAttribute('aria-hidden', String(!inspectorVisible));
@@ -2722,11 +2754,11 @@ function closeMobileSidebar() {
   syncPanelAccessibility();
 }
 
-dom['sidebar-toggle'].addEventListener('click', () => {
+function toggleProjectList() {
   state.sidebar = state.sidebar === 'expanded' ? 'collapsed' : 'expanded';
   applyPresentation();
   savePresentationPreference();
-});
+}
 
 dom['sessions-open'].addEventListener('click', () => {
   state.sidebar = 'expanded';
@@ -2765,7 +2797,7 @@ function selectedPermissionMode() {
 }
 
 function updateFullAccessConfirmation() {
-  const fullAccess = selectedPermissionMode() === 'danger-full-access';
+  const fullAccess = selectedPermissionMode() === 'danger-full-access' && state.workbench?.permission?.mode !== 'danger-full-access';
   if (fullAccess) show(dom['full-access-confirm-row']);
   else {
     hide(dom['full-access-confirm-row']);
@@ -2773,7 +2805,10 @@ function updateFullAccessConfirmation() {
   }
 }
 
+let currentSettingsCategory = 'appearance';
 function selectSettingsCategory(category) {
+  if(currentSettingsCategory !== category) { pageSettingsLeave(); for(const input of dom['settings-dialog'].querySelectorAll('input[type=password]')) input.value = ''; }
+  currentSettingsCategory = category;
   for (const panel of document.querySelectorAll('[data-settings-panel]')) {
     panel.hidden = panel.dataset.settingsPanel !== category;
   }
@@ -2783,14 +2818,14 @@ function selectSettingsCategory(category) {
   }
 }
 
-function openSettings(category = 'appearance') {
-  selectSettingsCategory(typeof category === 'string' ? category : 'appearance');
+function openSettings(category = currentSettingsCategory) {
+  selectSettingsCategory(typeof category === 'string' ? category : currentSettingsCategory);
   closeModelPicker();
   const mode = state.workbench && state.workbench.permission && state.workbench.permission.mode;
-  selectPermissionMode(mode || 'workspace-write');
+  if (!dom['permission-options'].closest('[data-settings-panel]').dataset.unsaved) selectPermissionMode(mode || 'workspace-write');
   CLATI18n.bind(dom['settings-error'], "textContent", () => '');
   CLATI18n.bind(dom['settings-saved'], "textContent", () => '');
-  if (!dom['settings-dialog'].open) dom['settings-dialog'].showModal();
+  if (!pageIsOpen(dom['settings-dialog'])) presentPage(dom['settings-dialog']);
   refreshWechatStatus();
   refreshWorkspaces();
   refreshModelSettings();
@@ -2823,19 +2858,19 @@ async function refreshModelSettings() {
   try {
     const view = await rpc('model.settings.get', {});
     if (generation !== modelSettingsRefresh) return;
-    CLATI18n.bind(modelField('current'), "textContent", () => CLATI18n.msg("web.line_value_key_value",{value1:((view.current.model || CLATI18n.msg("web.no_model_selected", {}, "No model selected"))),value2:((view.current.credential_set ? 'set' : CLATI18n.msg("web.not_set", {}, "not set")))},"{value1} · key {value2}"));
+    CLATI18n.bind(modelField('current'), "textContent", () => CLATI18n.msg("web.line_value_key_value",{value1:((view.current.model || CLATI18n.msg("web.no_model_selected", {}, "No model selected"))),value2:((view.current.credential_set ? CLATI18n.msg('pages.configured') : CLATI18n.msg("web.not_set", {}, "not set")))},"{value1} · key {value2}"));
     renderModelPicker(view);
     modelField('profiles').replaceChildren();
     for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
     // 表单代次围栏（与 profile 编辑器同款）：用户已动过的表单不被
     // 迟到的读取重绘——策态（#suggest 门）仍随最新数据更新。
-    if (utilityFormGenerationAtIssue === utilityFormGeneration) {
+    if (utilityFormGenerationAtIssue === utilityFormGeneration && !dom['utility-profile'].closest('[data-settings-panel]').dataset.unsaved) {
       state.utilitySettings = view.utility || null;
       renderUtilitySettings(state.utilitySettings, view.profiles || []);
     }
     syncSuggestionControl();
   } catch (error) {
-    if (dom['settings-dialog'].open) CLATI18n.bind(modelField('settings-error'), "textContent", () => error.message);
+    if (pageIsOpen(dom['settings-dialog'])) CLATI18n.bind(modelField('settings-error'), "textContent", () => error.message);
     if (modelPickerOpen()) CLATI18n.bind(dom['model-picker-error'], "textContent", () => error.message);
   }
 }
@@ -2985,7 +3020,7 @@ function renderModelProfile(name, active) {
 async function loadModelProfile(name) {
   const generation = ++modelProfileGeneration;
   const view = await rpc('model.profile.get', { name });
-  if (generation !== modelProfileGeneration || !dom['settings-dialog'].open) return;
+  if (generation !== modelProfileGeneration || !pageIsOpen(dom['settings-dialog'])) return;
   if (!view) throw CLATI18n.error(CLATI18n.msg("web.profile_no_longer_exists", {}, "Profile no longer exists"));
   modelField('profile-name').value = name;
   for (const [field, key] of [['protocol', 'protocol'], ['model', 'model'], ['endpoint', 'endpoint'], ['path', 'request_path']]) {
@@ -2998,7 +3033,7 @@ async function loadModelProfile(name) {
 }
 
 async function modelAction(button, action) {
-  button.disabled = true;
+  button.disabled = true;button.dataset.saving='true';
   CLATI18n.bind(modelField('settings-error'), "textContent", () => '');
   CLATI18n.bind(modelField('settings-saved'), "textContent", () => '');
   try {
@@ -3006,7 +3041,7 @@ async function modelAction(button, action) {
     await refreshModelSettings();
     await refreshWorkbench();
   } catch (error) { CLATI18n.bind(modelField('settings-error'), "textContent", () => error.message); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false;delete button.dataset.saving; }
 }
 
 modelField('profile-save').addEventListener('click', (event) => modelAction(event.currentTarget, async () => {
@@ -3017,17 +3052,19 @@ modelField('profile-save').addEventListener('click', (event) => modelAction(even
   if (modelField('profile-clear-key').checked) params.api_key = '';
   else if (modelField('profile-key').value) params.api_key = modelField('profile-key').value;
   modelField('profile-key').value = '';
+  const section=modelField('profile-editor').closest('[data-settings-panel]'), token=settingsSaveToken(section);
   await rpc('model.profile.save', params);
+  acknowledgeSettingsSave(section,token);
   CLATI18n.bind(modelField('settings-saved'), "textContent", () => CLATI18n.msg("web.profile_saved_choose_use_to_activate_it", {}, "Profile saved. Choose Use to activate it."));
 }));
 
-dom['settings-dialog'].addEventListener('close', () => {
+dom['settings-dialog'].addEventListener('clat:page-leave', () => {
   modelProfileGeneration++;
   modelField('profile-key').value = '';
 });
 
 async function saveUtilitySettings(button) {
-  button.disabled = true;
+  button.disabled = true;button.dataset.saving='true';
   CLATI18n.bind(dom['utility-settings-error'], "textContent", () => '');
   CLATI18n.bind(dom['utility-settings-saved'], "textContent", () => '');
   try {
@@ -3036,20 +3073,22 @@ async function saveUtilitySettings(button) {
       suggestions_enabled: dom['utility-suggestions-enabled'].checked,
       profile: dom['utility-profile'].value || null,
     };
+    const section=dom['utility-profile'].closest('[data-settings-panel]'), token=settingsSaveToken(section);
     await rpc('model.utility.set', settings);
+    const unchanged=acknowledgeSettingsSave(section,token);
     // 作废保存前的在途策态/模型设置读取：晚到的旧响应不得覆盖刚
     // 保存的策略（保存后的 models 通知会带新策略重取）。
     modelSettingsRefresh++;
     utilitySettingsRefresh++;
     state.utilitySettings = settings;
-    renderUtilitySettings(settings, [...dom['utility-profile'].options].slice(1).map((option) => option.value));
+    if(unchanged)renderUtilitySettings(settings, [...dom['utility-profile'].options].slice(1).map((option) => option.value));
     CLATI18n.bind(dom['utility-settings-saved'], "textContent", () => CLATI18n.msg("web.utility_policy_saved_for_every_connected_frontend", {}, "Utility policy saved for every connected frontend."));
     syncSuggestionControl();
     await refreshWorkbench();
   } catch (error) {
     CLATI18n.bind(dom['utility-settings-error'], "textContent", () => error.message);
   } finally {
-    button.disabled = false;
+    button.disabled = false;delete button.dataset.saving;
   }
 }
 
@@ -3065,37 +3104,44 @@ async function refreshWorkspaces() {
   const list = document.getElementById('workspace-list');
   const error = document.getElementById('workspace-error');
   try {
-    const result = await rpc('workspace.list', {});
+    const result = await rpc('workspace.directory', {});
     list.replaceChildren();
-    for (const workspace of result.workspaces) {
-      const link = el('a', 'workspace-link', () => (workspace.root));
-      link.href = '/?workspace=' + encodeURIComponent(workspace.id);
-      link.target = '_blank';
-      link.rel = 'noopener';
-      list.appendChild(link);
+    for (const workspace of result.projects) {
+      const row = el('article','project-setting-row'); const copy = el('div');
+      copy.append(el('strong','',workspace.root.split('/').filter(Boolean).pop()||workspace.root),el('small','',workspace.root));
+      copy.append(el('small','',()=>workspace.run_active?pageText('running'):workspace.root===state.workbench?.project?.root?pageText('current_project'):''));
+      const open = pageAction('switch_project',()=>void context.openProject(workspace).catch(failure=>{error.textContent=failure.message;}));
+      const link = el('a','workspace-link',()=>pageText('new_window'));link.href='/?workspace='+encodeURIComponent(workspace.route_id||'default');link.hidden=!workspace.route_id;link.target='_blank';link.rel='noopener';
+      row.append(svgIcon('folder'),copy,open,link);list.append(row);
     }
+    await context.refreshDirectory();
   } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
 }
 
 document.getElementById('workspace-open').addEventListener('click', async () => {
   const button = document.getElementById('workspace-open');
   const error = document.getElementById('workspace-error');
+  button.dataset.saving='true';
   const root = document.getElementById('workspace-root').value.trim();
   const trust = document.getElementById('workspace-trust').checked;
+  const navigationAtIssue = context.navigationToken();
+  const section=button.closest('[data-settings-panel]'), token=settingsSaveToken(section);
   button.disabled = true;
   CLATI18n.bind(error, "textContent", () => '');
   try {
     const result = await rpc('workspace.open', { root, trust });
+    acknowledgeSettingsSave(section,token);
     await refreshWorkspaces();
-    // A separate tab keeps this client's draft, stream and selection intact.
+    // Explicit alternate-window entry remains available beside same-window navigation.
     const link = el('a', 'workspace-link', () => (CLATI18n.msg("web.open_project_in_a_new_tab", {}, "Open project in a new tab")));
     link.href = '/?workspace=' + encodeURIComponent(result.id);
     link.target = '_blank';
     link.rel = 'noopener';
     error.replaceChildren(link);
     document.getElementById('workspace-trust').checked = false;
+    await context.openProject({ route_id: result.id, root }, { expectedNavigation: navigationAtIssue });
   } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false;delete button.dataset.saving; }
 });
 
 dom['settings-open'].addEventListener('click', () => openSettings());
@@ -3175,24 +3221,28 @@ dom['permission-save'].addEventListener('click', async () => {
   const mode = selectedPermissionMode();
   CLATI18n.bind(dom['settings-error'], "textContent", () => '');
   CLATI18n.bind(dom['settings-saved'], "textContent", () => '');
-  if (mode === 'danger-full-access' && !dom['full-access-confirm'].checked) {
+  if(permissionEditTarget&&(permissionEditTarget.session!==state.sessionId||permissionEditTarget.generation!==state.selectionGeneration)){CLATI18n.bind(dom['settings-error'],'textContent',()=>pageText('permission_target_changed'));return;}
+  if (mode === 'danger-full-access' && state.workbench?.permission?.mode!=='danger-full-access' && !dom['full-access-confirm'].checked) {
     CLATI18n.bind(dom['settings-error'], "textContent", () => CLATI18n.msg("web.confirm_the_full_access_warning_before_applying_it", {}, "Confirm the Full Access warning before applying it."));
     return;
   }
-  dom['permission-save'].disabled = true;
+  dom['permission-save'].disabled = true;dom['permission-save'].dataset.saving='true';
   try {
     const params = { mode };
     if (mode === 'danger-full-access') params.confirm = mode;
+    const section=dom['permission-options'].closest('[data-settings-panel]'), token=settingsSaveToken(section);
     await rpc('permission.set', params);
+    acknowledgeSettingsSave(section,token);
     await refreshWorkbench();
     CLATI18n.bind(dom['settings-saved'], "textContent", () => CLATI18n.msg("web.permission_mode_updated", {}, "Permission mode updated."));
   } catch (error) {
     CLATI18n.bind(dom['settings-error'], "textContent", () => error.message);
   } finally {
-    dom['permission-save'].disabled = false;
+    dom['permission-save'].disabled = false;delete dom['permission-save'].dataset.saving;
   }
 });
 
+let wechatSensitiveEpoch=0;
 function clearWechatQr() {
   if (state.wechatQrUrl) URL.revokeObjectURL(state.wechatQrUrl);
   state.wechatQrUrl = null;
@@ -3257,8 +3307,10 @@ dom['wechat-bind'].addEventListener('click', async () => {
   const replacing = dom['wechat-bind'].dataset.bound === 'true';
   if (replacing && !window.confirm(CLATI18n.msg("web.replace_the_current_binding_existing_user_grants_are_kept_until_the_new_qr_is_conf", {}, "Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared."))) return;
   dom['wechat-bind'].disabled = true;
+  const epoch=++wechatSensitiveEpoch;
   try {
     const value = await rpc('wechat.binding.start', { replace: replacing });
+    if(epoch!==wechatSensitiveEpoch)return;
     clearWechatQr();
     const blob = new Blob([value.qr_svg], { type: 'image/svg+xml' });
     state.wechatQrUrl = URL.createObjectURL(blob);
@@ -3287,7 +3339,9 @@ dom['wechat-verify-submit'].addEventListener('click', () => {
 dom['wechat-pair'].addEventListener('click', async () => {
   CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   try {
+    const epoch=wechatSensitiveEpoch;
     const value = await rpc('wechat.pairing.create', {});
+    if(epoch!==wechatSensitiveEpoch)return;
     CLATI18n.bind(dom['wechat-pairing-code'], "textContent", () => value.code);
     show(dom['wechat-pairing']);
   } catch (error) {
@@ -3319,9 +3373,10 @@ for (const button of document.querySelectorAll('[data-prompt]')) {
 }
 
 document.addEventListener('keydown', (event) => {
+  if (dom.app.dataset.page) return;
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
-  if (event.key === '/' && !typing && !dom['settings-dialog'].open && !dom['market-dialog'].open) {
+  if (event.key === '/' && !typing && !pageIsOpen(dom['settings-dialog']) && !pageIsOpen(dom['market-dialog'])) {
     event.preventDefault();
     if (isMobile()) dom.app.dataset.mobileSidebar = 'open';
     else if (state.sidebar === 'collapsed') {
@@ -3333,9 +3388,9 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && modelPickerOpen()) {
     event.preventDefault();
     closeModelPicker({ focus: true });
-  } else if (event.key === 'Escape' && dom['market-dialog'].open) {
-    dom['market-dialog'].close();
-  } else if (event.key === 'Escape' && !dom['settings-dialog'].open) {
+  } else if (event.key === 'Escape' && pageIsOpen(dom['market-dialog'])) {
+    leavePage(dom['market-dialog']);
+  } else if (event.key === 'Escape' && !pageIsOpen(dom['settings-dialog'])) {
     closeMobileSidebar();
     if (isMobile() && state.inspector === 'open') setInspector('closed');
   }
@@ -3344,11 +3399,7 @@ document.addEventListener('keydown', (event) => {
 window.addEventListener('resize', () => {
   renderMapWindow();
   if (!isMobile()) closeMobileSidebar();
-  if (window.innerWidth <= INSPECTOR_DRAWER_BREAKPOINT && state.inspector === 'open') {
-    setInspector('closed');
-  } else {
-    syncPanelAccessibility();
-  }
+  syncPanelAccessibility();
 });
 
 /* —— Composer ————————————————————————————————————————————— */
@@ -3681,6 +3732,7 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 }
 
 async function submitPrompt() {
+  if(borrowedConversation && borrowedConversation.session !== state.sessionId) {updateRunState(pageText('conversation_unavailable'));return;}
   if(state.desktopUpdateLocked)return;
   if (state.compactionActive || state.switching) {
     updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
@@ -3718,7 +3770,8 @@ async function submitPrompt() {
     } else if (text.startsWith('/')) {
       if (!await submitComposerCommand(submission)) return;
     } else {
-      await rpc('prompt.send', composerSubmissionParams(text, images));
+      const params=composerSubmissionParams(text,images);bindFileReferenceSubmission(owner,text,params);
+      await rpc('prompt.send', params);
       // HIST-PWA-1/T2 + B8-R1：接纳即入史（回执在 journal 入账后），但仅当
       // 提交仍归属当前会话（owner 未变）——迟到的成功回执不得把旧会话
       // 提示词写进新会话历史。失败路径不入史；steering 走
@@ -3847,6 +3900,8 @@ installConversationFind();
   installNavigationHelp();
   installTaskReview();
   installWorkbenchTools();
+  installWorkbenchShell();
+  installNavigationPages();
 
 const composerSeat = document.querySelector('.conversation');
 const composer = document.querySelector('.composer');
@@ -3856,6 +3911,8 @@ if (composerSeat && composer && typeof ResizeObserver === 'function') {
     composerSeat.style.setProperty('--composer-height', `${height}px`);
   });
   composerObserver.observe(composer);
+  const mapObserver = new ResizeObserver(renderMapWindow);
+  mapObserver.observe(dom['message-map-track']);
 }
 
 dom['attachment-open'].addEventListener('click', () => dom['attachment-input'].click());
@@ -3889,7 +3946,7 @@ dom.prompt.addEventListener('paste', async (event) => {
 });
 
 dom.cancel.addEventListener('click', async () => {
-  try { await rpc('run.cancel', {}); }
+  try { await rpc('run.cancel', borrowedConversation ? {session_id:borrowedConversation.session} : {}); }
   catch (error) { updateRunState(CLATI18n.msg("web.line_cancel_failed_value",{value1:(error.message)},"cancel failed: {value1}")); }
 });
 
@@ -3942,7 +3999,7 @@ async function boot() {
   const current = new URL(location.href);
   if (current.searchParams.has('t')) {
     current.searchParams.delete('t');
-    history.replaceState(null, '', current.pathname + current.search + current.hash);
+    history.replaceState(history.state, '', current.pathname + current.search + current.hash);
   }
   state.token = readAuthToken(); // one-time migration of pre-UX-1 installations
   try {
@@ -3968,6 +4025,7 @@ async function boot() {
     }
   }
 }
+installComposerGuard();
 boot();
 
 CLATI18n.bind(document.getElementById('connect-help'), 'textContent', () => CLATI18n.msg('web.local_connection_hint', {command:'clat serve',port:2691}));

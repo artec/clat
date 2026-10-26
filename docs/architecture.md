@@ -177,8 +177,18 @@ compaction, arbitration, drafts and remote bindings. Atomic `Arc` extraction
 fences concurrent `Weak` upgrades; reclamation drains producers and removes
 both the route and core project owner without deleting history or releasing
 the host's root lease. Routes are process-local identities;
-an expired route returns an error and never selects another project. Explicit
-`clat attach` uses the core's authenticated loopback HTTP/SSE client without
+an expired route returns an error and never selects another project.
+
+`HostApplication::workspace_directory` merges ordered registration metadata with
+lightweight mounted-project facts. It does not register, mount, authorize, probe
+project paths, load transcripts, or read model credentials. Mounted identities
+reuse the canonical path captured by the Application at mount time; transport
+adds only the current route id and API prefix. Stable registration ids remain
+separate from transient route ids, and untouched fresh projects have no stable
+id yet. Missing registered projects remain in the directory. For an unmounted
+entry, the active-session field is its saved pointer, not a newly opened session.
+
+Explicit `clat attach` uses the core's authenticated loopback HTTP/SSE client without
 mounting a second application writer. The default TUI uses spawn-or-attach;
 `--standalone` explicitly selects a process-local application. Startup treats
 an authenticated, root/instance-matched incompatible description as terminal,
@@ -984,10 +994,34 @@ reload. A run and manual compaction remain mutually exclusive at the core
 boundary.
 
 The embedded `web/` workbench is a projection client. Static assets and pairing
-shell contain no credential. Authenticated API calls carry the persistent
-`~/.clat/web-token` as Bearer; no URL or Cookie token path exists. Browser
-storage contains only UI preferences and the origin-scoped paired token, neverer
+shell contain no credential. Browsers pair through the authenticated local
+trust fence and use a private HttpOnly browser session; raw API clients can use
+Bearer credentials. New raw tokens are never persisted in browser storage or
+placed in URLs. Browser persistence contains presentation preferences, not
 conversation facts.
+
+One document lazily instantiates a view context for each opened project. Each
+context owns its lexical state, fixed RPC prefix, event subscription, async
+closures and DOM root. Only the active root is attached; inactive roots remain
+in memory and continue receiving their own events. Switching changes the visible
+context, never the owner of a pending send, approval or query. Keyboard, focus
+and page navigation target the active context; project events remain local.
+The shared Host view owns the authenticated directory and query/hash routing.
+The application frame contains fixed navigation, one content host and an
+optional extension host. The conversation page owns its project/session list
+and message detail; that list is not a peer of the application content host.
+Other features replace the content page with their own views. Hidden
+conversation controls are inert, while drafts, subscriptions and reading
+anchors stay with their existing project context. Resources and conversation
+file review instantiate the same bounded file-browser component; persistence,
+path fencing and snapshot admission remain core-owned.
+Rust combines the existing embedded source modules into an ordinary factory
+function with no eval, iframe, build pipeline or new runtime dependency. The
+production factory exposes activation, deactivation and display summaries only;
+legacy fixture inspection ports are included exclusively in Rust test builds.
+All open contexts register unsaved-work readers with the native navigation
+guard. This remains page-local presentation state, not a second persistence
+owner or a replacement for core selection/admission checks.
 
 Workbench tool cards pair by call id with the same semantics as the TUI
 conversation model: one card per call, opened at `tool_requested` and settled
@@ -1334,6 +1368,24 @@ cache staging, leases, discovery, project trust and process startup. The GUI
 never constructs Application, writes shared state or spawns business processes.
 Native installation/update and window preferences are frontend-local OS concerns.
 
+The application shell has a global toolbar above navigation, content, and an
+independent right extension host. Conversation list/detail is nested only inside
+Conversations; content-page routes never zero the extension width or remove its
+accessibility. Selected review surfaces retain their project/session ownership.
+The project host owns bounded in-document navigation history, while the active
+project view supplies the toolbar location and applicable conversation actions.
+The project tree composes project/session metadata without changing core selection:
+expanded mounted groups may read session.list, while unmounted groups remain lazy.
+Only an explicit conversation/new action activates a view and waits for its
+connection, workbench state, and selection generation before using the existing
+switch/new path. A navigation token and active-view check cancel stale waits.
+The view exposes scoped navigation metadata/actions rather than application internals;
+existing active-session menu handlers and draft/approval ownership stay in that view.
+Desktop maps this same toolbar into the macOS overlay title area or a custom
+Windows title area. A curated `desktop_window` command handles only frame info,
+drag, minimize, maximize/restore, and close, with the existing native guard and
+close-to-hide lifecycle. Welcome and older Host pages retain fallback chrome.
+
 The shell loads the verified Host's existing workbench origin and uses a narrowly
 scoped native bridge. Permissions still go through the Host. Window close hides;
 GUI quit leaves the detached, leased backend alive. One Host owns one storage root
@@ -1436,3 +1488,29 @@ carry their original session in control notices; they cannot enter another
 conversation's live Run stream. Durable events keep their existing vocabulary.
 Recovery reads committed replay and receipts, never repairs or reruns an unknown
 committed occurrence. See [scheduled work](schedules.md).
+
+
+### Navigation-page data and lifecycle ports
+
+`navigation-pages.js` owns explicit page entry/leave state and unsaved presentation
+snapshots. It does not override `showModal`/`close` on navigation pages; temporary
+editors and global extension previews retain their distinct overlay behavior.
+`task-center.js`, `resource-library.js` and `conversation-reader.js` reuse scoped
+project ports. The active conversation pane may be hosted in task details, then
+returned on leave; read-only history never feeds the active replay/admission state.
+
+Public `history.conversation` and `history.attachment` ports resolve stable project,
+conversation and sequence references through the query service. Pagination checks
+source versions, excludes hidden context and verifies attachment descriptors before
+reading private blob storage. Directory enumeration uses the existing project fence.
+Library persistence is core-owned private metadata, with stable registered project
+identity, bounded atomic writes and no duplicate message/file body. A submitted file
+reference is reconciled only against its durable client-message identity and exact
+submitted snapshot; an unknown receipt is not proof of admission.
+
+Scheduler task title and notification fields are additive and omitted when absent,
+preserving existing specification digests. Edits use existing authorization revision
+rules. Manual deliveries reuse atomic reservation and settlement, with a durable
+request-derived occurrence identity; they do not advance the regular clock.
+WeChat user projection exposes authorization sources without credentials; complete
+revocation updates paired and manual grants in a single control-store transaction.

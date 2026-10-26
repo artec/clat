@@ -159,11 +159,18 @@
     select.onchange = () => setLanguage(select.value).catch(error => { select.value = preference; console.error(error); });
     container.append(label, select);
   }
-  globalThis.CLATI18n = Object.freeze({ t, msg, view, present, textNode, error, bind, attribute, ready, normalize, render, setLanguage, selector,
+  function hydrate(root) {
+    for (const node of root.querySelectorAll('[data-language-control]')) {
+      if (!node.querySelector('[data-language-select]')) selector(node);
+    }
+    for (const select of root.querySelectorAll('[data-language-select]')) select.value = preference;
+    applyStatic(root);
+  }
+  globalThis.CLATI18n = Object.freeze({ t, msg, view, present, textNode, error, bind, attribute, ready, normalize, render, setLanguage, selector, hydrate,
     onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); },
     get locale() { return locale; }, get preference() { return preference; }, refresh });
   const boot = () => ready.then(() => {
-    for (const node of document.querySelectorAll('[data-language-control]')) selector(node);
+    hydrate(document);
     refresh();
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once:true}); else boot();

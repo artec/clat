@@ -11,6 +11,8 @@ pub(crate) mod json_file;
 mod models;
 pub(crate) mod projcache;
 mod schedules;
+mod library;
+mod wechat_users;
 pub(crate) mod sentinel;
 mod session_flags;
 pub(crate) mod settings;

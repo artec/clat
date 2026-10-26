@@ -8,8 +8,8 @@ test('signed WASM search installs with exact-origin consent, invokes, and uninst
  expect(JSON.parse(catalog).packages[0].manifestVersion).toBe(2);
  await page.route('https://pi.at.cn/catalog.json',route=>route.fulfill({contentType:'application/json',body:catalog}));
  await openWorkbench(page,hostInfo('plugin-market'));
- await page.click('#market-open');
- await page.getByRole('button',{name:'Install…',exact:true}).click();
+ await page.click('#nav-extensions');
+ await page.click('[data-tab=discover]'); await page.getByRole('button',{name:'Install…',exact:true}).click();
  await expect(page.locator('.plugin-review')).toContainText('Network restricted to:',LIVE);
  await expect(page.locator('.plugin-review')).not.toContainText('Native executable');
  const install=page.locator('.plugin-review').getByRole('button',{name:'Install',exact:true});
@@ -19,9 +19,10 @@ test('signed WASM search installs with exact-origin consent, invokes, and uninst
  await page.locator('.plugin-consent input').check();
  const committed=page.waitForResponse(r=>r.url().endsWith('/api/plugin.commit'),{timeout:240000});
  await install.click();expect((await(await committed).json()).ok).toBe(true);
+ await page.click('[data-tab=installed]');
  const installed=page.locator(`.plugin-installed [data-plugin-id="${id}"]`);
  await expect(installed).toContainText('Enabled',LIVE);
- await page.click('#market-close');
+ await page.click('#nav-workbench');
  await page.fill('#prompt','perform fixture search');await page.click('#send');
  for (let approval=0;approval<3;approval++) await page.getByRole('button',{name:'Allow',exact:true}).click({timeout:60000});
  await expect(page.locator('#cancel')).toBeHidden({timeout:90000});
@@ -29,7 +30,7 @@ test('signed WASM search installs with exact-origin consent, invokes, and uninst
  await expect(page.locator('#transcript')).toContainText('CLAT PLG-2 fixture',LIVE);
  expect(await page.locator('#transcript').textContent()).not.toContain('private-fixture-key');
  expect(await page.evaluate(()=>JSON.stringify(localStorage))).not.toContain('private-fixture-key');
- await page.click('#market-open');
+ await page.click('#nav-extensions');
  await installed.getByRole('button',{name:'Uninstall',exact:true}).click();
  await expect(installed).toHaveCount(0,LIVE);
  expect((await page.evaluate(()=>rpc('plugin.list',{}))).installed).toEqual([]);

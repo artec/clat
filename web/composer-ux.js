@@ -6,6 +6,21 @@ let composerSelection = undefined;
 let composerScope = '';
 let freshComposer = 0;
 
+function installComposerGuard() {
+  if (typeof CLATWorkbenchState === 'undefined') return;
+  let composing = false;
+  document.addEventListener('compositionstart', event => { if (event.target === dom.prompt) composing = true; });
+  document.addEventListener('compositionend', event => { if (event.target === dom.prompt) composing = false; });
+  CLATWorkbenchState.register(workspacePrefix, () => ({
+    text: Boolean(dom.prompt.value.trim()) || [...composerDrafts.values()].some(draft => Boolean(draft.text.trim()))
+      || [...document.querySelectorAll('.question-card:not(.resolved) textarea')].some(input => Boolean(input.value.trim())),
+    images: state.draft.images.length > 0,
+    submitting: state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
+    composing,
+    busy: Boolean(document.querySelector('[data-unsaved=true]')) || Boolean(document.querySelector('[data-saving=true]')) || state.switching || state.compactionActive,
+  }));
+}
+
 function saveComposerText() {
   if (composerScope) composerDrafts.set(composerScope, {
     text: dom.prompt.value, generation: state.composerGeneration,
@@ -95,7 +110,8 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
   if (!images.length) pendingTextSteering.set(clientMessageId, entry);
   let value;
   try {
-    value = await rpc('steer.send', { ...composerSubmissionParams(text, images), clientMessageId });
+    const params={...composerSubmissionParams(text,images),clientMessageId};bindFileReferenceSubmission(owner,text,params);
+    value = await rpc('steer.send', params);
   } catch (error) {
     pendingTextSteering.delete(clientMessageId);
     throw error;
@@ -122,6 +138,7 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
 }
 
 async function submitComposerCommand({ text, owner }) {
+  if ((text === '/new' || text === '/clear') && borrowedConversation) {updateRunState(pageText('fixed_task_session'));return false;}
   if (text === '/new' || text === '/clear') {
     if (!confirmAttachmentSelection()) return false;
     await rpc('session.new', {});

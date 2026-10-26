@@ -124,9 +124,7 @@ impl CommandHandler for PlanCommand {
                     crate::i18n::UiMessage::new("command.plan_off").into()
                 })
             })
-            .map_err(|error| CommandError::Failed {
-                message: error.to_string(),
-            })
+            .map_err(|error| CommandError::presented(error.presentation()))
     }
 }
 

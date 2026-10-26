@@ -43,3 +43,32 @@ impl Project {
         })
     }
 }
+
+impl Project {
+    /// Bounded immediate children; every traversed component rejects symlinks.
+    pub(crate) fn directory_snapshot(&self, relative: &str) -> io::Result<Vec<(String, bool)>> {
+        let mut dir = Dir::open_ambient_dir(self.root.canonicalize()?, ambient_authority())?;
+        if !relative.is_empty() {
+            let path = Path::new(relative);
+            validate_relative_path(path)?;
+            for part in path.components() {
+                dir = crate::session::root_dir::SessionRootDir::open_child(
+                    &dir,
+                    Path::new(part.as_os_str()),
+                )?;
+            }
+        }
+        let mut entries = Vec::new();
+        for entry in dir.entries()?.take(10001) {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            if ty.is_symlink() || !ty.is_file() && !ty.is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                entries.push((name.to_owned(), ty.is_dir()));
+            }
+        }
+        Ok(entries)
+    }
+}

@@ -1622,15 +1622,61 @@ printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
 
-The settings window groups Appearance, Projects, Models, Companion,
-Permissions, and WeChat into separate categories. The composer permission
+The toolbar and fixed navigation share one application background. Rounded content
+surfaces distinguish the active page and optional right work area without frame
+divider lines. The conversation map appears only when the message column has
+enough room; opening a list or work area can hide it even in a wide window. Its
+outline and navigation remain available when space returns.
+
+The permanent global navigation opens conversations, resources, task center, history search,
+extensions, settings, and help. The project/session list can collapse within
+Conversations; global actions remain available. Settings, task center, history search, and extensions
+use full content pages. Moving between these pages preserves the current conversation,
+its reading position, and unsent text in this browser page. Back/Forward and hash routes
+return to the corresponding function page; refreshing still discards page-local drafts.
+The right work area is independent of the content page. Files, changes, or tasks
+opened there remain available while visiting resources, tasks, search, extensions,
+settings, or help. Its project/conversation scope is shown explicitly. Closing and
+reopening it preserves the selected review; quoting a file returns to the retained
+conversation draft. Narrow windows use an overlay beneath the global toolbar.
+
+Settings groups General and appearance / Projects under Workbench; Models /
+Companion / Permissions under Capabilities; WeChat / Web under Integrations; and
+Updates and about under Application. Notification preferences are in General. The composer permission
 control opens Permissions directly; Manage model profiles opens Models.
-Session rows provide a more-actions button and a right-click menu, also
-accessible with Shift+F10. The current session can be renamed from that menu.
-When the desktop sidebar is collapsed, a full 44 px **Open sessions** tile
-replaces individual session rows. Clicking it expands the named list and focuses
-search without switching sessions or clearing the draft. Three dots remain a
-separate, centered more-actions button only in the expanded list. Phone drawers
+Conversations are grouped beneath their project names. Each project can be
+collapsed independently and has a new-conversation action. Recent sessions appear
+first; Show more reveals the rest, and searching shows all matching session
+entries in expanded projects. The selected conversation stays reachable in a
+shortened list. Paths are available in project tooltips.
+
+Expanding a mounted project reads its session directory without switching the
+conversation, starting another event subscription, or loading transcript content.
+A saved project that is not mounted requires an explicit open action first.
+Clicking a conversation activates its project and uses the normal guarded session
+switch. Drafts and running work retain their original project/session ownership.
+The current project's session rows provide a more-actions button and a right-click
+menu, also accessible with Shift+F10; other projects' rows open the corresponding
+conversation so its full actions are available there. The current session can be
+renamed from that menu.
+Create conversations with the plus button beside their project. The toolbar owns
+the project-list toggle; the list header has no duplicate collapse control. The
+toolbar wrench opens the tools menu, with its name available on hover and to
+assistive technology. Tools, conversation search and the extension-area toggle
+share consistent outline icons and button sizing. Agent markers align with the first visible content row,
+including collapsed reasoning summaries.
+The first navigation button combines the CLAT brand mark with Conversations;
+it uses the supplied vector mark, with a white glyph on the official `#0c416f`
+background when selected. There is no separate logo/home button; the unselected
+mark follows the current theme. Navigation glyphs use optical sizing to balance
+their different shapes and internal whitespace, with consistent stroke weight.
+Feature-page navigation does not automatically focus a content control. Keyboard
+users retain navigation focus and can Tab into the page.
+The application toolbar shows the current
+project and content page (or conversation title), application-local Back/Forward,
+conversation actions, and the global work-area toggle. Its list button toggles the
+project/session list within Conversations; on phones it opens the drawer. Session rows keep their own
+more-actions menu. Phone drawers
 always show session titles, even if this browser last used a collapsed desktop rail.
 If a background snapshot closes a stale session menu, keyboard focus returns
 to that session's current row rather than a detached element.
@@ -1639,9 +1685,26 @@ intensities; models without adjustable thinking show a disabled control.
 Its clickable width follows the model/intensity label, bounded on narrow screens
 with an ellipsis so it stays separate from Send and Stop. On phones, the menu
 opens above the composer and scrolls within the available viewport height.
-The details sidebar offers refresh, context inspection, and model-profile
-management. Context inspection adds a read-only breakdown to the conversation
+The right work area starts closed and remembers its visibility. Its overview shows
+core Plan/Goal facts, todos, and attachments from currently loaded messages. Files,
+workspace changes, captured operations, and current run tasks open beside the
+conversation. The overview does not claim to be a complete session materials index.
+The work area can be resized on desktop; technical session/model/MCP details remain
+available under Session details. Context inspection adds a read-only breakdown to the conversation
 without sending the composer draft or making a model request.
+
+The composer **Add** menu groups image attachments, project file references,
+Plan Mode/Goal details, command/skill discovery, and extensions. Plan Mode changes
+the core policy while idle; it never sends the ordinary draft. `exit_plan_mode`
+requests render their existing plan text as an expandable card with copying and raw
+parameters. Tool completion, user approval, todos, and Goal execution retain their
+separate meanings.
+
+Pending questions and approvals appear above the composer. They can be collapsed,
+restored, or switched without losing custom answers or the ordinary draft. The origin
+action returns to the request's transcript or scheduled-task location. Scheduled
+requests also mark the task-center entry. Answering still uses the original request
+identity and first-answer-wins Host protocol; no UI action grants extra permission.
 
 The composer recalls the **current session's committed prompts** with the arrow
 keys. `↑` steps from newest to older, `↓` steps back, and the `↓` past the
@@ -1683,9 +1746,17 @@ interactive/error boundaries, including history-page boundaries; it does not
 change runtime events, permission authority or replay content. The layout and
 process-display choices are browser-only preferences, not session policy.
 
-The embedded zero-build PWA provides a session sidebar, conversation surface,
-and project/model/run/MCP inspector. On narrow screens the side surfaces
-become drawers. Browser storage is limited to presentation preferences and a
+The embedded zero-build PWA has a fixed navigation rail, a content area and an
+optional right extension area. Conversations own their project/session list and
+message detail as a nested workspace. Resources, Tasks, Search, Extensions,
+Settings and Help replace that content page; they never retain the conversation
+list beside them. The list toggle belongs to Conversations. On narrow screens
+its list and the optional right work area become drawers.
+Resources reuses bounded project-file search, preview and checked snapshot
+quoting. It also lists attachments from the currently loaded conversation
+messages, not an all-session persistent library. Quoting a file returns to the
+conversation and appends to the retained draft.
+Browser storage is limited to presentation preferences and a
 private HttpOnly session cookie; session content, run state, permission mode, model state,
 and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
@@ -2084,8 +2155,17 @@ rules, and the legacy SQLite cutover.
 
 Workbench settings includes a Projects section. Enter an absolute local project
 directory; a previously untrusted project requires the explicit trust checkbox.
-Open its link in a new tab. Projects share the host's model configuration and
+Adding a project opens it in the same window. Use the project list to return to
+another project; its conversation draft, staged images, reading position,
+function page and side workspace stay in memory. Existing project links still
+offer a separate tab. Projects share the host's model configuration and
 credentials, but keep separate sessions, permissions, drafts and event streams.
+Switching does not stop a run or transfer a submitted operation to the new
+project. Late replies reconcile with the project that issued them. Each project
+still allows one Agent Run; different projects can run independently.
+Back/forward navigation and project query links select the corresponding view.
+Refreshing reconnects to that route, but does not yet restore unsent text or
+images across a page restart.
 Closing a browser tab does not stop the host. Up to 16 projects may remain
 mounted at once. When capacity is reached, the host reclaims an idle additional
 project runtime; connected event streams, active operations and live drafts
@@ -2093,18 +2173,32 @@ prevent reclamation. Session history and trust remain on disk, and the host
 keeps its storage-root lease. If every project is active, opening another
 project fails with a capacity error rather than disrupting existing work.
 
-Authenticated clients can call `host.describe`, `workspace.list`,
+Authenticated clients can call `host.describe`, `workspace.list`, `workspace.directory`,
 `workspace.open` (`root`, optional boolean `trust`), and `host.stop`.
 `host.takeover` additionally requires the exact instance id and a strictly
 newer product version; it serves the native startup upgrade flow described
 earlier and is rejected for same-version or older clients.
 `workspace.open` returns an opaque `id` and `api_prefix`; prepend that prefix
 to the existing `/api/...` paths, including events, image uploads and image
-reads. Project identifiers are temporary; reopen the project after an idle
+reads. These route identifiers are temporary; reopen the project after an idle
 runtime is reclaimed or after a host restart. `host.describe` reports instance,
 wire, journal and additive build-fingerprint identities so native clients can
 reject incompatible or stale builds. Browser/raw HTTP clients do not present or
 compare a CLAT executable identity and continue to attach normally.
+
+`workspace.list` retains its mounted-route listing. `workspace.directory` returns
+a read-only `projects` array merging persisted registrations and mounted runtime
+summaries, in registration order with fresh mounted projects appended. Each entry
+separates the persistent `project_id` from the current `route_id`/`api_prefix`;
+an untouched project has a null persistent id, and an unmounted entry has no route.
+Entries include root/title, mounted state, active-session pointer, Agent Run and
+compaction activity. Unmounted pointers are saved metadata. Listing never mounts,
+grants trust, checks path availability, or loads session content; unavailable
+registered projects remain listed. Selecting an unmounted entry calls the
+existing open/trust flow; the directory alone does not open it. Unavailable
+projects retain their entry and report the opening error. Running and pending
+markers reflect local subscriptions and the latest directory snapshot.
+
 Automatic startup rejects a live, authenticated, identity-matched incompatible
 host or different advertised build immediately. It never stops that host or
 starts a replacement writer; stop the old host explicitly before upgrading or
@@ -2607,3 +2701,52 @@ are `/web`, `/history`, `/jobs`, and `/schedule`; CLI equivalents are `clat web`
 current already mounted project without implicitly trusting or mounting another.
 See [Web](web.md), [History search](history.md), [Background jobs](jobs.md), and
 [Scheduled work](schedules.md) for scope, permissions, quotas and recovery.
+
+
+### Navigation content pages
+
+Feature pages have explicit enter/leave lifecycles, rather than dialog close
+semantics. Use navigation or Back/Forward to change pages; Escape dismisses only
+menus and temporary editors. The global extension remains independently available.
+Unsaved ordinary settings and task edits remain in the current client session;
+password inputs, pairing codes and binding previews are cleared when leaving.
+A save acknowledgment does not clear later edits. Reload discards these local
+form drafts; cross-restart conversation text recovery is a separate feature.
+
+Resources opens bounded project directories and file search, with version-checked
+preview and fixed-text quotation. Conversation materials read the selected
+conversation's full available attachment history, not just currently loaded chat
+bubbles. Bookmarks and explicitly submitted file snapshots keep stable message
+references in core-owned private organization metadata; message and attachment
+bodies remain in the journal. Historical images are read only after proving their
+message/attachment association. Sources that are no longer accessible fail visibly.
+
+History initially shows recent conversations. Search results open public messages
+without selecting an execution target; raw event inspection remains under Advanced.
+Continuing a conversation explicitly selects the target, while obeying the single
+Run constraint. Cross-project reading does not imply permission to send there.
+
+Task center combines background jobs and scheduled work, with project/type/status
+filters. Selecting a scheduled task retains its list and shows its fixed conversation;
+selecting a process task shows actual process state and output. Reading does not
+select an execution target. Continuing explicitly selects the conversation and shares
+its existing text draft. A busy project cannot silently redirect the send to another
+running conversation. Temporary task configuration separates basic fields from
+budgets, model and notification policy. Examples fill an editor without scheduling.
+
+Task names and notification policy are persisted with the approved specification.
+Editing revokes authorization and requires review again. Copy as new task allows a
+new target; editing preserves the original conversation and job trigger. Run now is
+available for enabled time rules, checks authorization and remaining budgets in core,
+reserves normal budget and deduplicates retried requests without changing the next
+normal trigger time. Pause prevents future triggers, and deletion retains conversation
+history. Notifications are attention-only by default, optionally every completion or
+off; the online page uses core status, excludes prompt/output contents and does not
+promise delivery after the browser closes.
+
+Extensions separates Installed from Discover, preserving existing consent,
+configuration, update and rollback flows. Public previews are distinguished from
+installable packages. WeChat settings lists paired and manually authorized users;
+complete revocation removes both grant sources. Web settings separates fetch mode
+from search credentials. Configuration is not a successful connectivity check.
+Help groups getting started, workflows, keyboard navigation and troubleshooting.

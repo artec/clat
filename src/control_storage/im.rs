@@ -879,3 +879,28 @@ fn random_six_digits() -> String {
         }
     }
 }
+
+/// Public authorization metadata excludes binding credentials and pairing challenges.
+pub(super) fn users(file: &ImFile) -> serde_json::Value {
+    let identities: BTreeSet<_> = file
+        .wechat
+        .allowed_users
+        .iter()
+        .chain(file.wechat.paired_users.keys())
+        .collect();
+    serde_json::json!(
+        identities
+            .into_iter()
+            .map(|id| {
+                serde_json::json!({"user_id":id,"manual":file.wechat.allowed_users.contains(id),
+            "paired":file.wechat.paired_users.contains_key(id),
+            "sessions":file.wechat.chat_sessions.values().filter(|row| &row.user_id==id)
+                .map(|row| &row.session_id).collect::<Vec<_>>()})
+            })
+            .collect::<Vec<_>>()
+    )
+}
+pub(super) fn revoke_user(file: &mut ImFile, user: &str) -> Result<(), ControlError> {
+    set_allowed_user(file, user, false)?;
+    remove_paired_user(file, user)
+}

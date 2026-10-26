@@ -1,6 +1,7 @@
 //! Host-owned, explicitly authorized automatic work. Journal owns execution facts.
 pub(crate) mod command;
 mod dispatch;
+mod manual;
 pub(crate) mod model;
 pub(crate) mod plugin;
 mod schema;

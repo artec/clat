@@ -73,6 +73,18 @@ below was paid for by a real incident; the dates name them.
   a real bug (silent POST loss on pooled connections) wearing a flake
   label for three occurrences, and the label cost the owner two hours
   before someone chased the reply instead of the assertion.
+- **UI tests protect behavior, not presentation details (2026-10-26).**
+  Ordinary copy, colors, icon shapes, exact spacing, menu counts and DOM
+  arrangement must not become fixed CI contracts or visual goldens.
+  Copy/style/layout-only edits do not require new automated tests. Review
+  screenshots for visual quality; use stable action/test identifiers and
+  assert user-visible outcomes for interaction tests. Catalog checks protect
+  keys, parameters, references and format while allowing wording changes.
+  Preserve checks for actual user/file/tool data, protocol fields, permissions,
+  persistence and signed/byte-exact artifacts. When migrating Web/Desktop
+  tests, remove or merge brittle presentation assertions with a recorded
+  behavior-coverage mapping; do not silently lose business coverage or keep
+  low-value tests alive by repeatedly updating strings and screenshots.
 - **Test quality.** Every fix ships a test that is red on the pre-fix
   code (constitution rule above); never transcribe implementation
   behavior — assert the invariant. When touching duplicated test

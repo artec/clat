@@ -64,6 +64,7 @@ impl SessionService {
         events.extend_from_slice(tail);
         active
             .shared_journal(&self.backend)
+            .map_err(|error| error.to_string())?
             .append_atomic_durable(&events)?;
         let _ = checkpoint_active(active, &self.checkpoints);
         Ok(())

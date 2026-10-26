@@ -57,6 +57,17 @@ pub(super) fn dispatch(
             let c: Confirmation = decode(&value)?;
             json!({"rule":app.schedule_confirm(&c.id,c.revision,&c.nonce,&c.digest).map_err(app_error)?})
         }
+        "schedule.run_now" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct RunOnce {
+                id: String,
+                revision: u64,
+                request_id: String,
+            }
+            let run: RunOnce = decode(&value)?;
+            json!({"delivery":app.schedule_run_now(&run.id,run.revision,&run.request_id).map_err(app_error)?})
+        }
         "schedule.reload" if value["confirm"] == "reload" => {
             app.schedule_reload().map_err(app_error)?;
             json!({"reloaded":true})

@@ -64,9 +64,19 @@ workbench navigation are pending. It reveals project selection only when needed
 or when an error requires recovery, rather than flashing that page on every launch.
 Project memory is desktop-only and shares the locked UI preference file with
 language and update preferences; it does not change TUI's current-directory rule.
-Windows has native window controls and no application menu bar. Desktop actions
-live in the page's **桌面** panel. macOS retains standard system editing/window
-menus. Completion and pending approval/question notifications contain no
+The application toolbar uses the native title area: macOS overlays the web
+content beneath the titlebar, keeps the system traffic-light controls, and reserves
+space for them. Windows uses a custom title area with minimize, maximize/restore,
+and close controls. Drag empty toolbar space to move the window; double-click
+it to maximize/restore. Interactive controls do not start dragging. Closing still
+hides the window and leaves the shared Host running. On the welcome page or an
+older Host without the toolbar, a compact draggable title area remains available.
+Native window commands share the existing main-window, exact-origin, and verified
+Host checks; no general-purpose native window API is exposed.
+
+The toolbar and right work area remain available across content pages. Desktop
+update/about actions live under Settings → Updates and about in the redesigned
+workbench. macOS retains standard system editing/window menus. Completion and pending approval/question notifications contain no
 conversation text; clicking one opens its project and admitted session.
 
 Desktop controls use the page's external stylesheets on both the welcome page
@@ -84,6 +94,11 @@ supported yet; restore the app through its tray when the banner has expired.
 Desktop, CLI/TUI and PWA share the current storage root, normally `~/.clat`.
 There is one Host/writer, not a second desktop database. Each project's active
 session remains shared across its clients. Desktop uses one main window.
+The shared UI frame has fixed navigation, one content area and an optional right
+extension area. Only Conversations contains the project/session list and chat
+detail; Search, Tasks, Resources, Extensions, Settings and Help own their content
+pages. Returning to Conversations preserves its draft, reading position and
+panel preferences.
 
 From the v2.1.2 coexistence baseline, official CLI/Desktop versions need not match:
 authenticated Host/wire/journal contracts and native-client capabilities decide
@@ -136,9 +151,12 @@ The app checks on startup and every 24 hours; automatic checking can be disabled
 A page indicator announces available updates. Checking never downloads or installs
 without a user action. The panel exposes download progress, install and cancellation.
 
-On macOS, choose **CLAT → Check for updates** to open the update panel and check
-GitHub. On both platforms, open **Settings and about** on the welcome page or use
-the desktop button in the workbench sidebar; Windows has no application menu bar.
+On macOS, choose **CLAT → Check for updates** to open updates and check
+GitHub. In the redesigned workbench, use **Settings → Updates & about** on both
+platforms; native menu actions navigate to that same settings page. The welcome
+page retains **Settings and about**. When connected to an older Host without the
+integrated settings surface, Desktop retains its compatible standalone panel.
+Windows has no application menu bar.
 The panel identifies
 the available desktop version and shows download progress. Choose **Download
 update**, then **Install version …** after signature verification. Successful
@@ -157,7 +175,17 @@ work running; a new task racing the check keeps its original cached Host alive.
 Text drafts are currently page-local. Before updating, send or clear unsent text
 and images in every session, and finish any input-method composition. Pending
 steering that might restore a draft also blocks installation. Before opening
-another project, finish the current draft. Image drafts, approvals, queues and active
+another project through the native project picker, finish the current draft.
+The in-page project list switches projects in the same window without losing
+page-local drafts or stopping their runs. The native project picker still
+navigates the window and requires finishing those drafts first.
+The workbench bridge checks inactive projects and conversations, staged images,
+unfinished submissions, composition and custom answers before its Open project,
+Install and Quit actions. Installation preflight checks all owners before any
+project locks its input; a rejected request leaves every project editable.
+The single native update/about panel follows the active project's settings.
+Checking for updates
+preserves this work. Image drafts, approvals, queues and active
 runs also block backend takeover; the updater never clears them to make progress.
 The composer and attachment inputs stay locked while installation is waiting;
 cancelling the wait restores editing. Checking and downloading can also be cancelled.
@@ -201,6 +229,12 @@ release-mode test installer with the current icons in `dist-desktop/`, or
 and workspace version are automatic. Development builds keep strict backend
 identity checks; they never terminate a busy Host to make a test start.
 
+Appearance is reviewed manually. CSS, icon and catalog-wording edits do not
+select the Desktop native/tooling/browser jobs; language keys and parameters
+still receive a lightweight check. The browser suite protects native actions,
+update lifecycle and unsent work, without pixel or layout comparisons. See
+[verification policy](testing.md#web-and-desktop-presentation-changes).
+
 `bun start` uses Cargo's debug/incremental cache in the workspace target directory;
 it does not build a release installer. Both backend and GUI use the same native
 target and build environment. Cargo still checks source freshness on every start,
@@ -224,3 +258,19 @@ Rust programs and require none of these development tools.
 The application/Dock icon derives from `desktop/icons/clat.png`; the menu-bar
 (macOS) and tray (Windows) use the separate `desktop/icons/clat-stat.png`,
 retaining its original colors and transparency.
+
+
+### Navigation settings and directory selection
+
+The workbench integrates Updates and about into its settings page. The welcome
+window retains its own small native controls. Update stages show applicable actions;
+exiting Desktop and stopping the shared Host remain separate operations.
+`desktop_pick_directory` returns only a selected directory. It does not open a new
+page, trust the directory or mount a project: the workbench performs explicit trust
+and mounting after selection. Existing `desktop_open_project` keeps its whole-window
+welcome/open behavior. Both commands retain the verified-origin guard.
+
+Native open/install/quit checks include unsaved settings and task editors across all
+mounted project views, in addition to conversation text, attachments, composition and
+in-flight submissions. Sensitive values are not cached for navigation recovery.
+Browser bridge tests are not evidence of the native OS picker or update installer.

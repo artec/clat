@@ -8,13 +8,13 @@ const all = { native: true, tooling: true, web: true };
 test('script and webpage edits select their own checks without four native builds', () => {
   expect(checksForPaths(['desktop/scripts/release.ts', 'publish', 'desktop/bun.lock', 'package.json']))
     .toEqual({ native: false, tooling: true, web: false });
-  expect(checksForPaths(['web/app.js', 'web/e2e/desktop.spec.js']))
+  expect(checksForPaths(['web/i18n.js', 'web/e2e/desktop/shell.spec.js']))
     .toEqual({ native: false, tooling: false, web: true });
-  expect(checksForPaths(['desktop/scripts/ci-contract.test.ts', 'web/app.js']))
+  expect(checksForPaths(['desktop/scripts/ci-contract.test.ts', 'desktop/ui/bridge.js']))
     .toEqual({ native: false, tooling: true, web: true });
 });
 test('all native build inputs, shared core changes and unknown paths retain four native faces', () => {
-  for (const path of ['desktop/src/main.rs', 'desktop/ui/index.html', 'desktop/build.rs', 'desktop/icons/icon.ico',
+  for (const path of ['desktop/src/main.rs', 'desktop/build.rs',
     'desktop/Cargo.toml', 'desktop/tauri.conf.json', 'desktop/capabilities/main.json', 'desktop/assets.json',
     'src/host_client/connect.rs', 'src/application/run_execution.rs', 'crates/core/Cargo.toml',
     'sdk/wit-proposals/net-runtime/src/lib.rs', 'plugins/probe/Cargo.toml', 'Cargo.toml', 'Cargo.lock',
@@ -32,7 +32,16 @@ test('known documentation and empty diffs do not add desktop work; unavailable d
   expect(checksForPaths(undefined)).toEqual(all);
 });
 test('shared language resources select Rust, native shell and web checks together',()=>{
-  for(const path of ['locales/en.json','locales/manifest.json','src/i18n/mod.rs','scripts/i18n-check.ts'])expect(checksForPaths([path])).toEqual(all);
+  for(const path of ['locales/manifest.json','src/i18n/mod.rs','scripts/i18n-check.ts'])expect(checksForPaths([path])).toEqual(all);
+});
+test('presentation and PWA-only edits do not run unrelated Desktop bridge or native checks', () => {
+  for (const path of ['web/workbench.css', 'web/app.js', 'web/project-tree.js', 'web/index.html',
+    'web/e2e/tests/app.spec.js', 'web/e2e/manual/project-tree.spec.js', 'web/e2e/playwright.visual.config.js',
+    'desktop/ui/welcome.css', 'desktop/icons/icon.ico', 'web/icons/icon-192.png', 'locales/zh-Hans.json']) {
+    expect(checksForPaths([path])).toEqual({ native:false, tooling:false, web:false });
+  }
+  expect(checksForPaths(['desktop/ui/index.html', 'desktop/ui/window-bar.js']))
+    .toEqual({ native:false, tooling:false, web:true });
 });
 test('push spans all commits and PR spans the base to the tested merge; missing history widens', () => {
   const before = 'a'.repeat(40), base = 'b'.repeat(40), head = 'c'.repeat(40), calls: string[][] = [];

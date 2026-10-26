@@ -52,10 +52,21 @@ pub struct ApprovedModel {
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WorkSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification: Option<NotificationPolicy>,
     pub instruction: String,
     pub trigger: Trigger,
     pub budget: WorkBudget,
     pub model: ApprovedModel,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationPolicy {
+    Attention,
+    Completion,
+    Off,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +148,11 @@ impl Rule {
             || !std::path::Path::new(&self.scope.project).is_absolute()
             || self.scope.session.is_empty()
             || self.scope.session.len() > 1024
+            || self
+                .spec
+                .title
+                .as_ref()
+                .is_some_and(|title| title.len() > 256 || title.chars().any(char::is_control))
             || self.spec.instruction.trim().is_empty()
             || self.spec.instruction.len() > 16384
             || model.fingerprint.len() != 64

@@ -64,7 +64,7 @@ test('TITLE-OBS-1 capture: original TITLE-CUT-1 flow with failure-scene observat
         window.__renderWrap = 'missing';
       }
     });
-    await page.click('#new-session');
+    await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
     await expect(page.locator('#send')).toBeEnabled(LIVE);
     await page.fill('#prompt', 'narrow viewport title');
     await page.click('#send');

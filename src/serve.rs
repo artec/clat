@@ -28,6 +28,7 @@ mod next_turn;
 mod notifications;
 mod plugins;
 pub(crate) mod protocol;
+mod page_queries;
 mod questions;
 mod schedules;
 pub(crate) mod shapes;

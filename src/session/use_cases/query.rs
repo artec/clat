@@ -13,6 +13,29 @@ impl SessionService {
     }
 }
 impl QueryReader {
+    pub(crate) fn attachment(
+        &self,
+        key: &SessionKey,
+        descriptor: &crate::message::AttachmentDescriptor,
+    ) -> Result<Vec<u8>, SessionError> {
+        let dir = self.backend.open_session_dir(key)?;
+        let (bytes, length) = crate::session::attachments::AttachmentStore::read_session_blob(
+            &dir,
+            &descriptor.attachment_id,
+        )
+        .map_err(|e| SessionError::NotFound(e.to_string()))?;
+        if descriptor.bytes != length
+            || !crate::media::media_type_matches_bytes(&descriptor.media_type, &bytes)
+            || crate::media::image_dimensions_bytes(&bytes)
+                != Some((descriptor.width, descriptor.height))
+        {
+            return Err(SessionError::NotFound(
+                "Attachment metadata does not match stored bytes".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     pub(crate) fn list(
         &self,
         project: &ProjectKey,

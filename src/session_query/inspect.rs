@@ -47,7 +47,7 @@ pub struct HistoryEventRead {
     pub version: String,
 }
 impl SessionQueryService {
-    fn resolve(
+    pub(super) fn resolve(
         &self,
         reference: &HistoryReference,
         all: bool,
@@ -70,7 +70,7 @@ impl SessionQueryService {
         })
     }
     /// Scan one committed snapshot; never load/repair or select a session.
-    fn scan(
+    pub(super) fn scan(
         &self,
         key: &SessionKey,
         cancel: &CancelToken,

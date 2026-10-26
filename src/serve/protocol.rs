@@ -31,9 +31,11 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "host.stop",
     "host.takeover",
     "workspace.list",
+    "workspace.directory",
     "workspace.open",
     "workbench.info",
     "jobs.list",
+    "schedule.run_now",
     "schedule.list",
     "schedule.deliveries",
     "schedule.create",
@@ -47,6 +49,12 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "jobs.output",
     "jobs.kill",
     "jobs.retry",
+    "library.list",
+    "library.bookmark.add",
+    "library.bookmark.remove",
+    "library.reference.add",
+    "history.attachment",
+    "history.conversation",
     "history.search",
     "history.events",
     "history.event.read",
@@ -57,6 +65,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "workspace.diff",
     "turn.changes",
     "turn.restore",
+    "files.list",
     "files.search",
     "files.preview",
     "files.reference",
@@ -87,6 +96,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "wechat.binding.poll",
     "wechat.binding.unbind",
     "wechat.pairing.create",
+    "wechat.users.list",
+    "wechat.user.revoke",
     "wechat.user.allow",
     "wechat.user.remove",
     "draft.open",
@@ -550,6 +561,12 @@ fn dispatch_project(
                 "notice": "This one-time code authorizes the first WeChat user who submits it. Do not share it in an untrusted conversation.",
             }))
         }
+        "wechat.users.list" => Ok(with_app(shared, |app| json!({"users":app.wechat_authorized_users()}))),
+        "wechat.user.revoke" => {
+            let user = required_str(params, "userId")?;
+            with_app(shared, |app| app.revoke_wechat_user_access(&user)).map_err(app_error)?;
+            Ok(json!({"revoked":true}))
+        }
         "wechat.user.allow" => {
             let user_id = required_str(params, "userId")?;
             let allowed = params
@@ -733,7 +750,12 @@ fn dispatch_project(
         "steer.send" => steer_send(params, shared),
         "run.cancel" => {
             // 幂等：无 active run 也 ok（§4）。
-            with_app(shared, |app| app.cancel_active_run());
+            if let Some(session)=optional_str(params,"session_id")? {
+                if !with_app(shared,|app|app.cancel_conversation_run(&session)) {
+                    let message=crate::i18n::UiMessage::new("pages.conversation_unavailable");
+                    return Err(RpcError::busy(message.english()).with_presentation(message));
+                }
+            } else { with_app(shared, |app| app.cancel_active_run()); }
             Ok(json!({}))
         }
         "approval.respond" => approver::respond(shared, params),
@@ -1515,11 +1537,12 @@ fn dispatch_workbench_tools(
         "jobs.list" | "jobs.output" | "jobs.kill" | "jobs.retry" => {
             dispatch_jobs(shared, method, params)
         }
-        "history.search" | "history.events" | "history.event.read" => {
-            dispatch_history_query(shared, method, params)
+        "library.list" | "library.bookmark.add" | "library.bookmark.remove" | "library.reference.add" => super::page_queries::library(shared, method, params),
+        "history.attachment" | "history.conversation" | "history.search" | "history.events" | "history.event.read" => {
+            super::page_queries::history(shared, method, params)
         }
         "turn.changes" | "turn.restore" => dispatch_turn_review(shared, method, params),
-        "files.search" | "files.preview" | "files.reference" => {
+        "files.list" | "files.search" | "files.preview" | "files.reference" => {
             dispatch_files(shared, method, params)
         }
         "session.organize" => dispatch_organization(shared, params),
@@ -1576,34 +1599,6 @@ fn dispatch_jobs(
     result.map_err(|e| RpcError::internal(e.to_string()))
 }
 
-fn dispatch_history_query(
-    shared: &Arc<ServeShared>,
-    method: &str,
-    params: &Map<String, Value>,
-) -> Result<Value, RpcError> {
-    let reader = with_app(shared, |app| Ok(app.history_reader())).map_err(app_error)?;
-    let cancel = crate::CancelToken::new();
-    let value = Value::Object(params.clone());
-    fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
-        serde_json::from_value(value).map_err(|_| {
-            let message = crate::i18n::UiMessage::new("history.invalid_query").arg("detail", "");
-            RpcError::bad_request(message.english()).with_presentation(message)
-        })
-    }
-    let result = match method {
-        "history.search" => {
-            serde_json::to_value(reader.search(decode(value)?, &cancel).map_err(app_error)?)
-        }
-        "history.events" => {
-            serde_json::to_value(reader.events(decode(value)?, &cancel).map_err(app_error)?)
-        }
-        "history.event.read" => {
-            serde_json::to_value(reader.read(decode(value)?, &cancel).map_err(app_error)?)
-        }
-        _ => unreachable!(),
-    };
-    result.map_err(|e| RpcError::internal(e.to_string()))
-}
 
 fn dispatch_web_settings(
     shared: &Arc<ServeShared>,
@@ -1716,6 +1711,7 @@ fn dispatch_files(
 ) -> Result<Value, RpcError> {
     let browser = with_app(shared, |app| app.file_browser());
     let result = match method {
+        "files.list" => browser.list(&optional_str(params, "directory")?.unwrap_or_default()),
         "files.search" => browser.search(&optional_str(params, "query")?.unwrap_or_default()),
         "files.preview" | "files.reference" => {
             let path = required_str(params, "path")?;
@@ -1807,7 +1803,7 @@ fn dispatch_read_discovery(
     }
 }
 
-fn with_app<T>(
+pub(super) fn with_app<T>(
     shared: &Arc<ServeShared>,
     call: impl FnOnce(&mut crate::TrustedProjectApplication) -> T,
 ) -> T {

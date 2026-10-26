@@ -69,7 +69,7 @@ test('TITLE-OBS-1 diagnostic: attributable DOM observation across repeated mater
     const roundPage = await context.newPage();
     try {
       await openWorkbench(roundPage, entry);
-      await roundPage.click('#new-session');
+      await roundPage.click('.project-group:has(#session-list) [data-action=new-project-session]');
       await expect(roundPage.locator('#send')).toBeEnabled({ timeout: 30_000 });
       await roundPage.fill('#prompt', `title obs round ${round}`);
       await roundPage.click('#send');

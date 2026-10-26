@@ -628,10 +628,7 @@ impl TrustedProjectApplication {
         }
         if self.sessions.active_id().is_some() {
             self.plan_mode.set_pending_birth(false);
-            return self
-                .plan_mode
-                .set_durable(active)
-                .map_err(ApplicationError::new);
+            return self.plan_mode.set_durable(active).map_err(session_error);
         }
         if !self.permission_modes_enabled {
             return Err(ApplicationError::new(

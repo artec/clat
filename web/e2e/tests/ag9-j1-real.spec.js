@@ -170,7 +170,7 @@ async function bootJointEnv(page) {
   const serve = await startServe();
   await page.goto(`http://127.0.0.1:${serve.port}/`);
   await expect(page.locator('#conn-status')).toHaveText('live', { timeout: 30_000 });
-  await page.click('#settings-open');
+  await page.click('#nav-settings');
   await page.click('[data-settings-category="models"]');
   await page.click('#model-profile-new');
   await page.fill('#model-profile-name', 'j1-fake');
@@ -288,7 +288,7 @@ test('J1 recall paths: every arrow step reaches the expected history entry', asy
       await page.waitForFunction(() => !state.runActive, null, { timeout: 30_000 });
       await expect(page.locator('#send')).toBeEnabled({ timeout: 10_000 });
     };
-    await page.click('#new-session');
+    await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
     await page.waitForFunction(() => !state.runActive && document.querySelectorAll('.msg.user').length === 0, null, { timeout: 20_000 });
     await sleep(800);
     tui.send('alpha');
@@ -567,7 +567,7 @@ test('J1-REAL: recall both ways, live/replay order, Up/Down draft restore, sessi
     await sleep(500);
     tui2.send('\r');
     await expect.poll(() => userCount(page), { timeout: 30_000 }).toBe(beforeMenuRecall + 2);
-    await page.click('#new-session');
+    await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
     await page.waitForFunction(() => document.querySelectorAll('.tool-card').length === 0 && !state.runActive, null, { timeout: 20_000 });
     await page.locator('#prompt').press('ArrowUp');
     await expect(page.locator('#prompt')).toHaveValue('');
@@ -597,7 +597,7 @@ test('J1 negatives: whitespace-only input filtered client-side, suggestion overl
     // 手动建议默认关闭（生产默认）——先经真实设置 UI 启用（utility 面板）。
     // TUI 对策略的感知来自宿主快照：真实用户路径是重开 TUI（重启 attach
     // 必拉最新快照），与 calibration 的 reconnect 腿同型。
-    await page.click('#settings-open');
+    await page.click('#nav-settings');
     await page.click('[data-settings-category="utility"]');
     await page.locator('#utility-suggestions-enabled').check();
     await page.click('#utility-settings-save');

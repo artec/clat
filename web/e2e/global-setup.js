@@ -8,6 +8,8 @@ const path = require('path');
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const HOSTS = ['queue-command', 'run-command', 'long-stream', 'success', 'reasoning', 'history', 'compact-slow', 'question', 'native-write', 'ag5-joint', 'ag8-orderlive', 'ag8-hist'];
 HOSTS.push('native-jobs');
+HOSTS.push('workbench');
+HOSTS.push('project-tree');
 if (process.env.CLAT_PLG2_MARKET_URL) HOSTS.push('plugin-market');
 if (process.env.CLAT_LIVE_GLM_E2E === '1') HOSTS.push('live-glm');
 const STARTUP_TIMEOUT_MS = 300_000; // 含 cargo 增量编译

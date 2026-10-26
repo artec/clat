@@ -8,83 +8,282 @@
 
 use std::borrow::Cow;
 
-const INDEX: &[u8] = include_bytes!("../../web/index.html");
-const PLUGIN_MARKET: &[u8] = include_bytes!("../../web/plugin-market.js");
-const APP_JS: &[u8] = include_bytes!("../../web/app.js");
-const NEXT_TURN: &[u8] = include_bytes!("../../web/next-turn.js");
-const COMPOSER_UX: &[u8] = include_bytes!("../../web/composer-ux.js");
-const COMMAND_PICKER: &[u8] = include_bytes!("../../web/command-picker.js");
-const CONVERSATION_FIND: &[u8] = include_bytes!("../../web/conversation-find.js");
-const WORKSPACE_REVIEW: &[u8] = include_bytes!("../../web/workspace-review.js");
-const TURN_REVIEW: &[u8] = include_bytes!("../../web/turn-review.js");
-const FILE_BROWSER: &[u8] = include_bytes!("../../web/file-browser.js");
-const SESSION_ORGANIZATION: &[u8] = include_bytes!("../../web/session-organization.js");
-const WORKFLOW_DETAILS: &[u8] = include_bytes!("../../web/workflow-details.js");
-const NAVIGATION_HELP: &[u8] = include_bytes!("../../web/navigation-help.js");
-const TASK_REVIEW: &[u8] = include_bytes!("../../web/task-review.js");
-const STYLE_CSS: &[u8] = include_bytes!("../../web/style.css");
-const MANIFEST: &[u8] = include_bytes!("../../web/manifest.webmanifest");
-const ICON_192: &[u8] = include_bytes!("../../web/icons/icon-192.png");
-const ICON_512: &[u8] = include_bytes!("../../web/icons/icon-512.png");
+const ASSETS: &[(&str, &[u8], &str)] = &[
+    (
+        "/settings-pages.js",
+        include_bytes!("../../web/settings-pages.js"),
+        "application/javascript",
+    ),
+    (
+        "/resource-library.js",
+        include_bytes!("../../web/resource-library.js"),
+        "application/javascript",
+    ),
+    (
+        "/task-center.js",
+        include_bytes!("../../web/task-center.js"),
+        "application/javascript",
+    ),
+    (
+        "/conversation-reader.js",
+        include_bytes!("../../web/conversation-reader.js"),
+        "application/javascript",
+    ),
+    (
+        "/navigation-pages.js",
+        include_bytes!("../../web/navigation-pages.js"),
+        "application/javascript",
+    ),
+    (
+        "/icons/clat.svg",
+        include_bytes!("../../web/icons/clat.svg"),
+        "image/svg+xml",
+    ),
+    (
+        "/project-tree.js",
+        include_bytes!("../../web/project-tree.js"),
+        "application/javascript",
+    ),
+    (
+        "/application-toolbar.js",
+        include_bytes!("../../web/application-toolbar.js"),
+        "application/javascript",
+    ),
+    (
+        "/project-context.js",
+        include_bytes!("../../web/project-context.js"),
+        "application/javascript",
+    ),
+    (
+        "/project-host.js",
+        include_bytes!("../../web/project-host.js"),
+        "application/javascript",
+    ),
+    (
+        "/project-lifecycle.js",
+        include_bytes!("../../web/project-lifecycle.js"),
+        "application/javascript",
+    ),
+    (
+        "/workbench-resize.js",
+        include_bytes!("../../web/workbench-resize.js"),
+        "application/javascript",
+    ),
+    (
+        "/plan-artifact.js",
+        include_bytes!("../../web/plan-artifact.js"),
+        "application/javascript",
+    ),
+    (
+        "/interaction-dock.js",
+        include_bytes!("../../web/interaction-dock.js"),
+        "application/javascript",
+    ),
+    (
+        "/",
+        include_bytes!("../../web/index.html"),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "/app.js",
+        include_bytes!("../../web/app.js"),
+        "application/javascript",
+    ),
+    (
+        "/workbench-state.js",
+        include_bytes!("../../web/workbench-state.js"),
+        "application/javascript",
+    ),
+    (
+        "/workbench-shell.js",
+        include_bytes!("../../web/workbench-shell.js"),
+        "application/javascript",
+    ),
+    (
+        "/plugin-market.js",
+        include_bytes!("../../web/plugin-market.js"),
+        "application/javascript",
+    ),
+    (
+        "/next-turn.js",
+        include_bytes!("../../web/next-turn.js"),
+        "application/javascript",
+    ),
+    (
+        "/composer-ux.js",
+        include_bytes!("../../web/composer-ux.js"),
+        "application/javascript",
+    ),
+    (
+        "/command-picker.js",
+        include_bytes!("../../web/command-picker.js"),
+        "application/javascript",
+    ),
+    (
+        "/conversation-find.js",
+        include_bytes!("../../web/conversation-find.js"),
+        "application/javascript",
+    ),
+    (
+        "/workspace-review.js",
+        include_bytes!("../../web/workspace-review.js"),
+        "application/javascript",
+    ),
+    (
+        "/turn-review.js",
+        include_bytes!("../../web/turn-review.js"),
+        "application/javascript",
+    ),
+    (
+        "/file-browser.js",
+        include_bytes!("../../web/file-browser.js"),
+        "application/javascript",
+    ),
+    (
+        "/session-organization.js",
+        include_bytes!("../../web/session-organization.js"),
+        "application/javascript",
+    ),
+    (
+        "/workflow-details.js",
+        include_bytes!("../../web/workflow-details.js"),
+        "application/javascript",
+    ),
+    (
+        "/navigation-help.js",
+        include_bytes!("../../web/navigation-help.js"),
+        "application/javascript",
+    ),
+    (
+        "/task-review.js",
+        include_bytes!("../../web/task-review.js"),
+        "application/javascript",
+    ),
+    (
+        "/background-jobs.js",
+        include_bytes!("../../web/background-jobs.js"),
+        "application/javascript",
+    ),
+    (
+        "/scheduled-work.js",
+        include_bytes!("../../web/scheduled-work.js"),
+        "application/javascript",
+    ),
+    (
+        "/history-query.js",
+        include_bytes!("../../web/history-query.js"),
+        "application/javascript",
+    ),
+    (
+        "/web-settings.js",
+        include_bytes!("../../web/web-settings.js"),
+        "application/javascript",
+    ),
+    (
+        "/style.css",
+        include_bytes!("../../web/style.css"),
+        "text/css; charset=utf-8",
+    ),
+    (
+        "/workbench.css",
+        include_bytes!("../../web/workbench.css"),
+        "text/css; charset=utf-8",
+    ),
+    (
+        "/manifest.webmanifest",
+        include_bytes!("../../web/manifest.webmanifest"),
+        "application/manifest+json",
+    ),
+    (
+        "/icons/icon-192.png",
+        include_bytes!("../../web/icons/icon-192.png"),
+        "image/png",
+    ),
+    (
+        "/icons/icon-512.png",
+        include_bytes!("../../web/icons/icon-512.png"),
+        "image/png",
+    ),
+    (
+        "/locales/en.json",
+        include_bytes!("../../locales/en.json"),
+        "application/json",
+    ),
+    (
+        "/locales/zh-Hans.json",
+        include_bytes!("../../locales/zh-Hans.json"),
+        "application/json",
+    ),
+    (
+        "/locales/zh-Hant.json",
+        include_bytes!("../../locales/zh-Hant.json"),
+        "application/json",
+    ),
+];
 
-/// GET 资产表：`(字节, content-type)`；未知路径 `None`（404）。
+// Source modules keep their zero-build authoring surface. A normal function
+// gives each mounted project lexical ownership without eval, imports or frames.
+const PROJECT_MODULES: &[&str] = &[
+    "/navigation-pages.js",
+    "/settings-pages.js",
+    "/resource-library.js",
+    "/task-center.js",
+    "/conversation-reader.js",
+    "/composer-ux.js",
+    "/next-turn.js",
+    "/command-picker.js",
+    "/conversation-find.js",
+    "/workspace-review.js",
+    "/turn-review.js",
+    "/file-browser.js",
+    "/session-organization.js",
+    "/workflow-details.js",
+    "/navigation-help.js",
+    "/task-review.js",
+    "/plugin-market.js",
+    "/background-jobs.js",
+    "/scheduled-work.js",
+    "/history-query.js",
+    "/web-settings.js",
+    "/interaction-dock.js",
+    "/plan-artifact.js",
+    "/workbench-resize.js",
+    "/application-toolbar.js",
+    "/workbench-shell.js",
+    "/project-lifecycle.js",
+    "/app.js",
+];
+
+fn project_bundle() -> &'static [u8] {
+    static BUNDLE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        let mut bytes = b"globalThis.CLATProjectWorkbench = function(context) {\n'use strict';\nconst {document, window} = context;\n".to_vec();
+        for route in PROJECT_MODULES {
+            let (_, source, _) = ASSETS.iter().find(|(path, _, _)| path == route)
+                .expect("project source is an embedded asset");
+            bytes.extend_from_slice(source);
+            bytes.push(b'\n');
+        }
+        #[cfg(test)]
+        bytes.extend_from_slice(include_bytes!("../../web/e2e/project-test-ports.js"));
+        bytes.extend_from_slice(b"\nreturn projectLifecycle();\n};\n");
+        bytes
+    })
+}
+
+/// Public static bytes; authentication remains on the API and event routes.
 pub(crate) fn asset(path: &str) -> Option<(Cow<'static, [u8]>, &'static str)> {
-    match path {
-        "/i18n.js" => Some((
+    if path == "/project-workbench.js" {
+        return Some((Cow::Borrowed(project_bundle()), "application/javascript"));
+    }
+    if path == "/i18n.js" {
+        return Some((
             Cow::Owned(crate::i18n::browser_runtime().into_bytes()),
             "application/javascript",
-        )),
-        "/locales/en.json" => Some((
-            Cow::Borrowed(include_bytes!("../../locales/en.json")),
-            "application/json",
-        )),
-        "/locales/zh-Hans.json" => Some((
-            Cow::Borrowed(include_bytes!("../../locales/zh-Hans.json")),
-            "application/json",
-        )),
-        "/locales/zh-Hant.json" => Some((
-            Cow::Borrowed(include_bytes!("../../locales/zh-Hant.json")),
-            "application/json",
-        )),
-        "/" => Some((Cow::Borrowed(INDEX), "text/html; charset=utf-8")),
-        "/plugin-market.js" => Some((Cow::Borrowed(PLUGIN_MARKET), "application/javascript")),
-        "/app.js" => Some((Cow::Borrowed(APP_JS), "application/javascript")),
-        "/background-jobs.js" => Some((
-            Cow::Borrowed(include_bytes!("../../web/background-jobs.js")),
-            "application/javascript",
-        )),
-        "/scheduled-work.js" => Some((
-            Cow::Borrowed(include_bytes!("../../web/scheduled-work.js")),
-            "application/javascript",
-        )),
-        "/history-query.js" => Some((
-            Cow::Borrowed(include_bytes!("../../web/history-query.js")),
-            "application/javascript",
-        )),
-        "/web-settings.js" => Some((
-            Cow::Borrowed(include_bytes!("../../web/web-settings.js")),
-            "application/javascript",
-        )),
-        "/next-turn.js" => Some((Cow::Borrowed(NEXT_TURN), "application/javascript")),
-        "/composer-ux.js" => Some((Cow::Borrowed(COMPOSER_UX), "application/javascript")),
-        "/command-picker.js" => Some((Cow::Borrowed(COMMAND_PICKER), "application/javascript")),
-        "/conversation-find.js" => {
-            Some((Cow::Borrowed(CONVERSATION_FIND), "application/javascript"))
-        }
-        "/style.css" => Some((Cow::Borrowed(STYLE_CSS), "text/css; charset=utf-8")),
-        "/task-review.js" => Some((Cow::Borrowed(TASK_REVIEW), "application/javascript")),
-        "/navigation-help.js" => Some((Cow::Borrowed(NAVIGATION_HELP), "application/javascript")),
-        "/workflow-details.js" => Some((Cow::Borrowed(WORKFLOW_DETAILS), "application/javascript")),
-        "/workspace-review.js" => Some((Cow::Borrowed(WORKSPACE_REVIEW), "application/javascript")),
-        "/turn-review.js" => Some((Cow::Borrowed(TURN_REVIEW), "application/javascript")),
-        "/file-browser.js" => Some((Cow::Borrowed(FILE_BROWSER), "application/javascript")),
-        "/session-organization.js" => Some((
-            Cow::Borrowed(SESSION_ORGANIZATION),
-            "application/javascript",
-        )),
-        "/manifest.webmanifest" => Some((Cow::Borrowed(MANIFEST), "application/manifest+json")),
-        "/icons/icon-192.png" => Some((Cow::Borrowed(ICON_192), "image/png")),
-        "/icons/icon-512.png" => Some((Cow::Borrowed(ICON_512), "image/png")),
-        _ => None,
+        ));
     }
+    ASSETS
+        .iter()
+        .find(|(route, _, _)| *route == path)
+        .map(|(_, bytes, content_type)| (Cow::Borrowed(*bytes), *content_type))
 }

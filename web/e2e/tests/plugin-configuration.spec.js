@@ -14,7 +14,7 @@ test('blank updates retain configuration; optional enum and boolean distinguish 
     if (method === 'plugin.commit') { commits.push(route.request().postDataJSON()); value = { committed: true }; }
     return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, value }) });
   });
-  await openWorkbench(page, hostInfo('success')); await page.click('#market-open');
+  await openWorkbench(page, hostInfo('success')); await page.click('#nav-extensions');
   const update = page.locator('.plugin-installed').getByRole('button', { name: 'Update', exact: true });
   await expect(update).toBeVisible(LIVE); await update.click();
   await page.locator('.plugin-consent input').check();

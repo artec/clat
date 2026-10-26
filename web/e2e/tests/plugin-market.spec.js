@@ -19,14 +19,14 @@ test('PLG-2 signed compiled DSH package installs after consent, executes, and un
   await page.fill('#prompt', 'before installation'); await page.click('#send');
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
   await expect(page.locator('.msg.assistant').last()).toContainText('done', LIVE);
-  await page.click('#market-open');
+  await page.click('#nav-extensions');
   await expect(page.locator('.plugin-installed')).toContainText('No plugins installed.', LIVE);
   const preparedReply = page.waitForResponse(r => r.url().endsWith('/api/plugin.prepare'));
-  await page.getByRole('button', { name: 'Install…', exact: true }).click();
+  await page.click('[data-tab=discover]'); await page.getByRole('button', { name: 'Install…', exact: true }).click();
   const proposal = (await (await preparedReply).json()).value;
   await expect(page.locator('.plugin-review')).toContainText('Native executable', LIVE);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: '../../output/playwright/plg2-review-mobile.png', fullPage: true });
+
   await page.setViewportSize({ width: 1280, height: 720 });
   const install = page.locator('.plugin-review').getByRole('button', { name: 'Install', exact: true });
   await expect(install).toBeDisabled();
@@ -40,6 +40,7 @@ test('PLG-2 signed compiled DSH package installs after consent, executes, and un
   const committedReply = page.waitForResponse(r => r.url().endsWith('/api/plugin.commit'), { timeout: 90000 });
   await page.locator('.plugin-consent input').check(); await install.click();
   expect((await (await committedReply).json()).ok).toBe(true);
+  await page.click('[data-tab=installed]');
   const installed = page.locator('.plugin-installed [data-plugin-id="io.artec.dsh-official-web"]');
   await expect(installed).toContainText('Enabled', LIVE);
   await expect(page.locator('.plugin-review')).toBeHidden();
@@ -48,14 +49,14 @@ test('PLG-2 signed compiled DSH package installs after consent, executes, and un
   const registry = path.join(described.storage_root, 'plugin-store', 'registry.json');
   expect(fs.readFileSync(registry, 'utf8')).toContain(secret);
   if (process.platform !== 'win32') expect(fs.statSync(registry).mode & 0o777).toBe(0o600);
-  await page.screenshot({ path: '../../output/playwright/plg2-installed.png', fullPage: true });
-  await page.click('#market-close');
+
+  await page.click('#nav-workbench');
   await page.fill('#prompt', 'search with installed plugin'); await page.click('#send');
   await page.getByRole('button', { name: 'Allow', exact: true }).click();
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
   await expect(page.locator('#transcript')).toContainText('CLAT PLG-2 fixture', LIVE);
   expect(await page.locator('#transcript').textContent()).not.toContain(secret);
-  await page.click('#market-open');
+  await page.click('#nav-extensions');
   await expect(installed).toBeVisible(LIVE); await installed.getByRole('button', { name: 'Disable', exact: true }).click();
   await expect(installed).toContainText('Disabled', LIVE);
   await installed.getByRole('button', { name: 'Enable', exact: true }).click();

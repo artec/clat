@@ -7,10 +7,10 @@ const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
 
 
 /// 宿主会话在一个 Playwright invocation 内被多个测试共享；每个测试
-/// 用真实 UI（#new-session → session.new + resubscribe）回到 Fresh 会话，
+/// 用真实 UI（.project-group:has(#session-list) [data-action=new-project-session] → session.new + resubscribe）回到 Fresh 会话，
 /// 保证 run1 的形状断言（5 卡 / 2 of 4 未完成）不受前序测试累积影响。
 async function freshSession(page) {
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.waitForFunction(() => document.querySelector('#conn-status')?.textContent === 'live'
     && document.querySelectorAll('.tool-card').length === 0, null, { timeout: 15_000 });
 }

@@ -10,22 +10,22 @@ test('native background job survives a new conversation and frontend reconnect; 
   await expect.poll(()=>page.evaluate(async()=> (await rpc('jobs.list',{})).jobs.length),LIVE).toBe(1);
   const job=await page.evaluate(async()=> (await rpc('jobs.list',{})).jobs[0]);
   await expect.poll(()=>page.evaluate(async id=>(await rpc('jobs.output',{job_id:id,offset:0})).text,job.id),LIVE).toContain('background-e2e-output');
-  await page.click('#new-session'); await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]'); await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt','后台执行期间的草稿');
-  await page.click('#jobs-open'); const dialog=page.locator('#jobs-dialog');
-  await expect(dialog.locator('.history-hit')).toHaveCount(1,LIVE);
-  await dialog.getByRole('button',{name:'Read output',exact:true}).click();
-  await expect(dialog.locator(':scope > pre')).toContainText('background-e2e-output',LIVE);
-  for(const [locale,title] of [['zh-Hans','后台任务'],['zh-Hant','背景工作'],['en','Background jobs']]){
-    await page.evaluate(locale=>CLATI18n.setLanguage(locale),locale);
-    await expect(dialog.locator('h2')).toHaveText(title);
-    await expect(page.locator('#prompt')).toHaveValue('后台执行期间的草稿');
-  }
-  await dialog.getByRole('button',{name:'Close',exact:true}).click();
+  await page.click('#nav-tasks'); const dialog=page.locator('#jobs-dialog');
+  await dialog.locator('[data-task-id="'+job.id+'"]').click();
+  await expect(dialog.locator('.job-output')).toContainText('background-e2e-output',LIVE);
+  await page.click('#nav-workbench');await expect(page.locator('#prompt')).toHaveValue('后台执行期间的草稿');
   await page.reload(); await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
   expect(await page.evaluate(async id=>(await rpc('jobs.list',{})).jobs.find(j=>j.id===id).finished_at,job.id)).toBeNull();
-  await page.click('#jobs-open');page.once('dialog',d=>d.accept());
-  await dialog.getByRole('button',{name:'Stop job',exact:true}).click();
+  await page.click('#nav-tasks');page.once('dialog',d=>d.accept());
+  await dialog.locator('[data-task-id="'+job.id+'"]').click();await dialog.locator('[data-action=stop]').click();
   await expect.poll(()=>page.evaluate(async id=>(await rpc('jobs.list',{})).jobs.find(j=>j.id===id).state,job.id),LIVE).toBe('killed');
   expect(await page.evaluate(async id=>(await rpc('jobs.output',{job_id:id,offset:0})).job.session,job.id)).toEqual(job.session);
+  const rule=await page.evaluate(async job=>(await rpc('schedule.create',{session:job.session,title:'Job follow-up',instruction:'Inspect the actual result of this job.',trigger:{kind:'job',job_id:job.id},budget:{max_runs:1,max_tokens:100000,max_seconds:300,run_tokens:100000,run_seconds:300,max_paid_web_calls:0,run_paid_web_calls:0},model_profile:null})).rule,job);
+  await dialog.locator('[data-action=refresh]').first().click();await dialog.locator('[data-task-id="'+rule.id+'"]').click();await dialog.locator('[data-action=edit]').click();
+  await page.locator('#schedule-editor [name=title]').fill('Renamed job follow-up');await page.locator('#schedule-editor [data-action=save]').click();await expect(page.locator('.schedule-review')).toBeVisible(LIVE);
+  const edited=await page.evaluate(async id=>(await rpc('schedule.list',{})).rules.find(r=>r.id===id),rule.id);expect(edited.spec.trigger).toEqual({kind:'job',job_id:job.id});expect(edited.scope.session).toBe(job.session);
+  await page.locator('.schedule-review [data-action=cancel]').click();
+
 });

@@ -82,6 +82,10 @@ fn file_identity(metadata: &std::fs::Metadata) -> String {
 pub(crate) enum SessionError {
     /// Log is fine but this build cannot interpret it faithfully.
     UnsupportedFormat(String),
+    /// A readable conversation with no writable journal in this build.
+    ReadOnly {
+        legacy: bool,
+    },
     /// Stored content failed validation after a successful read.
     Corruption(String),
     NotFound(String),
@@ -94,9 +98,28 @@ pub(crate) enum SessionError {
     Io(String),
 }
 
+impl SessionError {
+    pub(crate) fn presentation(&self) -> Option<crate::i18n::UiMessage> {
+        match self {
+            Self::ReadOnly { legacy } => Some(crate::i18n::UiMessage::new(if *legacy {
+                "session.read_only_legacy"
+            } else {
+                "session.read_only_capabilities"
+            })),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ReadOnly { .. } => f.write_str(
+                &self
+                    .presentation()
+                    .expect("read-only presentation")
+                    .english(),
+            ),
             Self::UnsupportedFormat(message) => write!(f, "format unsupported: {message}"),
             Self::Corruption(message) => write!(f, "corrupt session log: {message}"),
             Self::NotFound(id) => write!(f, "session \"{id}\" not found"),

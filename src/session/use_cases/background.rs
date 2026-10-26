@@ -30,7 +30,7 @@ impl SessionService {
         let active = guard
             .as_ref()
             .ok_or_else(|| SessionError::Conflict("target session is not armed".into()))?;
-        let journal = active.shared_journal(&self.backend);
+        let journal = active.shared_journal(&self.backend)?;
         // A prior failed flush may still own pending bytes. Retry that lane
         // before checking committed facts; never append the same terminal twice.
         journal.flush().map_err(SessionError::Corruption)?;

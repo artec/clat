@@ -1,5 +1,52 @@
 # Development verification
 
+## Web and Desktop presentation changes
+
+Automated tests protect behavior, data consistency and security boundaries.
+Ordinary interface wording, colors, icon shapes, exact spacing, menu counts and
+DOM arrangement are not fixed CI contracts. Copy/style/layout-only edits do not
+require new automated tests. Review representative screenshots for visual
+quality; do not introduce full-page pixel goldens or a language × theme ×
+viewport × page test matrix.
+
+Use stable action/test identifiers and assert operation results, draft
+preservation, ownership, state transitions and permission outcomes. Localization
+checks protect keys, parameters, references and catalog format while allowing
+translation wording to improve. Assertions about actual user input, file
+contents, tool output, wire fields and signed/byte-exact artifacts remain valid.
+
+When a Web/Desktop component moves, remove or merge brittle presentation
+assertions with a recorded mapping to the behavior coverage that remains.
+Investigate whether a failure represents a product regression or an obsolete
+UI expectation before changing it; do not repeatedly refresh strings or
+screenshots merely to keep a low-value assertion green.
+
+The ordinary Web/Desktop suites do not capture review screenshots. Explicit
+manual captures live in `web/e2e/manual/` and run with
+`npx playwright test --config playwright.visual.config.js`; they do not run in CI
+and have no image-comparison baseline. Visual acceptance belongs to the owner.
+
+The October 2026 presentation cleanup removes the following checks without
+dropping their useful behavior coverage:
+
+| Removed presentation contract | Retained coverage |
+| --- | --- |
+| Shell dimensions, title ellipsis and exact reading offsets | Full user titles survive rename/reload; loading history keeps the reading message visible. |
+| Repeated language × collapsed-navigation checks and control spacing | Navigation retains drafts; live language switching retains composition, selection and pending operations. |
+| Plugin panel wheel/viewport geometry | Catalog search, local-token protection, permissions and installation/configuration outcomes. |
+| SVG presence/count/shape and composer DOM order | Send/stop call the correct action, model selection works, Escape restores focus, and native close closes its panel. |
+| Routine screenshots and repeated translated display strings | Manual screenshots for appearance; stable action identifiers/catalog keys for behavior. |
+
+Feature-page focus checks cover navigation ownership and keyboard reachability:
+opening a page must not steal focus, and Tab must still reach its actions. They
+do not assert outline colors or shapes.
+
+Keep semantic checks for message chronology and protected content. A tool result
+appearing in the wrong turn or a late response erasing a draft is a behavior
+regression, even when the symptom is visible in the interface.
+
+## Targeted verification
+
 Localization error-path regressions use `scripts/gates.sh host_client::
 model_editor::remote serve::tests::`, `bun test scripts/i18n-check.test.ts`, and
 the `i18n.spec.js` / desktop shell browser tests. These cover Host build/trust
@@ -823,8 +870,14 @@ Desktop push/PR verification covers all four native platforms in CI without a
 second set of native build jobs or installer generation. CI and Desktop use
 `desktop/scripts/check-plan.ts` to classify the complete push or PR merge diff.
 Rust/shared-core, native resources/configuration, toolchain/workflow and unknown
-changes retain native clippy/tests; scripts select tooling, pages select web
-tests, and docs-only changes add no desktop work. Multi-commit pushes, deletion,
+changes retain native clippy/tests; scripts select tooling. Native bridge
+JavaScript/HTML and its browser harness select the desktop web-shell suite;
+PWA-only source changes do not select that unrelated mock suite. Known CSS,
+icons, manual captures and catalog wording edits do not select Desktop native,
+tooling or web-shell jobs. Planning validates language keys/parameters once,
+without installing desktop dependencies or computing an installer matrix on
+automatic runs. Language runtime/manifest/checker changes still select all
+Desktop checks. Docs-only changes add no desktop jobs. Multi-commit pushes, deletion,
 rename and NUL-separated paths are covered; missing/invalid history selects all
 checks. Tooling still runs on all four native platforms when relevant; fast
 Linux tooling/type checks and browser tests stay in Desktop, and the ordinary
@@ -946,8 +999,9 @@ owner's running Host or terminal preference file.
 `bun scripts/i18n-check.ts` validates the manifest, duplicate keys, identical key
 sets, named parameters, quantity forms, templates and literal source references.
 `bun scripts/i18n-installers.ts --check` rejects stale embedded installer
-subsets. The shared CI gate runs both checks and their Bun tests; language
-resource changes also select native desktop and web checks. Windows CI parses
+subsets. The shared CI gate runs both checks and their Bun tests; changes to language
+runtime/manifest/checker code also select native desktop and web checks. Catalog
+wording alone uses structural validation rather than four native checks. Windows CI parses
 the PowerShell installer with the native parser.
 
 Use focused checks during editing:
@@ -1031,15 +1085,14 @@ claim native GUI reopening or actual shared-Host restart acceptance.
 `host_client::lifecycle::tests::offline_management_discovery_keeps_localized_reason_without_retry`
 uses a closed loopback endpoint to verify the English diagnostic and three-language
 presentation survive discovery and management without retries. The desktop shell
-suite (`web/e2e/playwright.desktop.config.js`) checks the startup logo, translated
-loading state, navigation handoff and error recovery. These browser checks mock
+suite (`web/e2e/playwright.desktop.config.js`) checks navigation handoff, live
+language changes, draft protection and error recovery. These browser checks mock
 native commands; they do not establish WKWebView/Windows startup behavior.
 
 `web/e2e/tests/desktop-update.spec.js` also injects the native bridge as a same-origin
 test script into the real isolated Host page, retaining its production CSP. It
-checks sidebar icon/text columns, connection-status centering and desktop language
-control spacing in all three languages. This catches shell styles that work only
-on a permissive mock page while being blocked by the actual Host policy.
+checks update actions and unsent-work protection under the actual Host policy.
+Sidebar icons, centering and language-control spacing are reviewed manually.
 
 Native background job checks: `scripts/gates.sh native_job target_writer`. They exercise actual isolated child processes, Run cancellation vs Job cancellation, original-conversation facts, UTF-8/redaction, independent output cursors, timeout/overflow, registration-before-spawn, post-spawn uncertainty, panic, recovery, terminal-save and cleanup retry, G7 scope, and shared writer release. `background-jobs.spec.js` uses an isolated Host and deterministic model to check approval, new-session/reconnect survival, language switching/draft preservation and explicit stop. These do not establish native Windows/Desktop behavior or paid-model effectiveness.
 
@@ -1063,3 +1116,79 @@ and receipt-backed completion. Native windows and paid services remain separate
 acceptance faces.
 Keep asynchronous title writers out of byte-equality fixtures, or explicitly wait
 for their completion; do not relax the byte-equality assertion to hide the race.
+
+### Optional PWA visual review
+
+`web/e2e/manual/visual-review.spec.js` captures representative long-form content,
+themes and narrow layouts for human review. Run it explicitly with
+`web/e2e/node_modules/.bin/playwright test --config web/e2e/playwright.visual.config.js`.
+It uses the isolated E2E Host and is outside the ordinary CI test directory.
+Screenshots are evidence for review, not pixel goldens. Font sizes, icon paths,
+exact control gaps and fixed menu/button totals are not delivery assertions.
+
+Workbench interaction tests cover navigation/draft retention, mode ownership,
+question/approval routing, and native navigation protection. A native-command
+mock verifies bridge wiring only; it does not establish macOS/Windows window,
+installer or release acceptance.
+
+`project-context.spec.js` walks same-document project switching through real
+Host RPCs: draft/image retention, late reads and committed prompt receipts,
+query/hash history, reading anchors, inactive interactions and native preflight.
+The workbench factory's legacy fixture inspection ports are embedded only in
+Rust test builds; production exports lifecycle/display summaries. Ordinary
+settings headings are not fixed strings in language tests: language isolation,
+unchanged user input and absence of unintended mutations remain the contracts.
+Content-page checks verify that conversation-only actions are unavailable in
+other features and that checked file references return to the retained draft.
+The application/page hierarchy and wide/narrow composition are reviewed through
+the optional `manual/content-architecture.spec.js` captures, without DOM-tree,
+column-count or pixel assertions.
+
+### Responsive conversation map and content canvas
+
+The rounded content frame, theme backgrounds, and responsive map visibility are
+reviewed through manual screenshots, not fixed CSS sizes, thresholds, color
+comparisons, or pixel goldens. Existing map tests continue to protect history
+loading/jump targets, hover preview continuity, user/assistant preview content,
+and bounded virtualized navigation. The former fixed scrollbar-gutter distance
+and role-color comparison were removed; their visual intent is covered by the
+manual canvas review. No behavior test was removed or replaced with wording.
+
+### Project/session tree
+
+The dedicated project-tree Playwright Host admits fixture conversations through
+core with an injected TestProvider, publishes the canonical second-project root,
+and then uses normal workspace/session routes for all browser interactions.
+Expanding folders is checked for absence of session mutations and foreign SSE;
+opening a child session and per-project new conversation are checked for correct
+selection and retained drafts. A held workbench response verifies that a newer
+project navigation cancels the earlier conversation request. Existing keyboard
+menu/focus, receipt ownership, running-project state, and native draft protection
+checks remain in use. Icon geometry, duplicate-icon counts, exact indentation,
+folder ordering, display labels, and shortened-list lengths have no fixed CI
+assertions; representative screenshots are reviewed manually.
+
+
+Navigation-page migration behavior mapping:
+
+| Migrated surface | Retained behavior coverage |
+| --- | --- |
+| Navigation sections replacing old dialogs | Task and settings edits survive page/project navigation; Escape retains the current feature page. |
+| Task lists, editor and associated conversation | Fixed delivery scope, authorization before execution, independent draft/image preservation, late-save isolation. |
+| Resource/history lists and preview | Exact snapshot content, first-message provenance, bookmark reload, read-only selection isolation and historical attachment proof. |
+| Settings row and group layout | Newer edits survive old acknowledgments; delayed pairing credentials cannot repopulate a departed page. |
+| Existing schedule/background-job captions in three languages | Catalog checks cover translation integrity; operations and actual output remain asserted. |
+
+`web/tests/navigation-data.test.cjs` checks retry identities and trigger preservation;
+`web/e2e/tests/navigation-pages.spec.js` checks the corresponding complete client
+operations. Rust `navigation_` tests protect private path fences, public history,
+attachment proof, persistent grants/bookmarks and scheduler reservations. These
+checks contain no screenshot baseline, icon geometry or fixed ordinary display copy.
+
+
+Legacy settings tests now leave through navigation and use the stable New profile
+action rather than selecting every nested summary. Plugin discovery tests explicitly
+open Discover. Read-only Host status refreshes are permitted during language changes;
+the checks still prohibit plugin activation and other writes. Model-key checks assert
+credential state and absence of echoed secrets, rather than the phrasing of status
+captions. No scenario was deleted for these migrations.

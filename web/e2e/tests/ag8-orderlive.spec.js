@@ -16,7 +16,7 @@ const RERUN_PROMPT = 'orderlive again: rerun the choreography';
 const RERUN_FINAL = 'final answer after rerun';
 
 async function freshSession(page) {
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.waitForFunction(() => document.querySelector('#conn-status')?.textContent === 'live'
     && document.querySelectorAll('.tool-card').length === 0, null, { timeout: 15_000 });
 }

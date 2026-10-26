@@ -12,6 +12,8 @@ mod policy;
 mod startup;
 #[cfg(any(target_os = "macos", windows))]
 mod update;
+#[cfg(any(target_os = "macos", windows))]
+mod window_frame;
 
 #[cfg(any(target_os = "macos", windows))]
 fn main() {

@@ -126,12 +126,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 fn create_window(app: &tauri::App) -> tauri::Result<()> {
     let opener = app.handle().clone();
     let popup = app.handle().clone();
-    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("CLAT")
         .inner_size(1280.0, 820.0)
         .min_inner_size(960.0, 640.0)
         .disable_drag_drop_handler()
         .initialization_script(clat_core::client_ports::presentation::browser_runtime())
+        .initialization_script(crate::window_frame::initialization_script())
+        .initialization_script(include_str!("../ui/window-bar.js"))
         .initialization_script(include_str!("../ui/bridge.js"))
         .on_page_load(|window, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished
@@ -172,8 +174,8 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
                 let _ = opener.opener().open_url(url.as_str(), None::<&str>);
             }
             false
-        })
-        .build()?;
+        });
+    let window = crate::window_frame::configure(builder).build()?;
     use tauri_plugin_window_state::WindowExt;
     window.restore_state(window_flags())?;
     fit_window(&window)?;
@@ -266,13 +268,15 @@ pub fn run() {
             crate::commands::desktop_info,
             crate::commands::desktop_locale,
             crate::commands::desktop_open_project,
+            crate::commands::desktop_pick_directory,
             crate::commands::desktop_check_update,
             crate::commands::desktop_download_update,
             crate::commands::desktop_install_update,
             crate::commands::desktop_cancel_update,
             crate::commands::desktop_preferences,
             crate::commands::desktop_quit,
-            crate::commands::desktop_stop_host
+            crate::commands::desktop_stop_host,
+            crate::window_frame::desktop_window
         ])
         .on_menu_event(|app, event| {
             if event.id().as_ref() == "desktop-check-update" {

@@ -35,7 +35,7 @@ function installPluginMarket() {
     const captured = generation;
     try {
       const result = await rpc('plugin.list', {});
-      if (captured !== generation || !dom['market-dialog'].open) return;
+      if (captured !== generation || !pageIsOpen(dom['market-dialog'])) return;
       packages = result.installed; renderInstalled(); renderMarket();
     } catch (error) { if (captured === generation) installedList.replaceChildren(el('p', 'error', () => (error.message))); }
   }
@@ -49,7 +49,7 @@ function installPluginMarket() {
     message(action === 'install' || action === 'update' ? CLATI18n.msg("web.downloading_and_verifying_the_signed_package", {}, "Downloading and verifying the signed package…") : CLATI18n.msg("web.reading_installed_package", {}, "Reading installed package…"));
     try {
       const result = await rpc('plugin.prepare', { id: plugin.id, action, market_generation: plugin.manifestVersion || plugin.manifest_version || 1 });
-      if (captured !== generation || !dom['market-dialog'].open) {
+      if (captured !== generation || !pageIsOpen(dom['market-dialog'])) {
         await rpc('plugin.cancel', { ticket: result.ticket }); return;
       }
       ticket = result.ticket; renderReview(result); review.scrollIntoView({ block: 'start' }); message(CLATI18n.msg("web.review_permissions_and_configuration_before_activating", {}, "Review permissions and configuration before activating."));
@@ -158,7 +158,7 @@ function installPluginMarket() {
     const consent=review.querySelector('.plugin-consent input');
     if(consent){consent.checked=false;for(const button of review.querySelectorAll('[data-requires-consent]'))button.disabled=true;}
   });
-  dom['market-dialog'].addEventListener('close', () => { generation += 1; pending = false; void cancelReview(); });
+  dom['market-dialog'].addEventListener('clat:page-leave', () => { generation += 1; pending = false; void cancelReview(); });
   return {
     refresh,
     decorate(card, plugin) {

@@ -34,9 +34,9 @@ function installNavigationHelp() {
   viewport.addEventListener('scroll', updateLatest, { passive: true });
   if (typeof ResizeObserver === 'function') new ResizeObserver(updateLatest).observe(dom.transcript);
   latest.addEventListener('click', () => { viewport.scrollTop = viewport.scrollHeight; latest.classList.add('hidden'); });
-  const dialog = el('dialog', 'workflow-details'); dialog.id = 'help-dialog'; CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.help_and_keyboard_shortcuts", {}, "Help and keyboard shortcuts"));
+  const dialog = el('section', 'help-page'); dialog.id = 'help-dialog'; CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.help_and_keyboard_shortcuts", {}, "Help and keyboard shortcuts"));
   const header = el('div', 'review-header'); const close = el('button', 'icon-button', () => ('×')); CLATI18n.attribute(close,'aria-label',()=>CLATI18n.msg("web.close_help", {}, "Close help"));
-  header.append(el('h2', '', () => (CLATI18n.msg("web.help", {}, "Help"))), close); const content = el('section', '');
+  header.append(el('h2', '', () => (CLATI18n.msg("web.help", {}, "Help")))); const content = el('section', '');
   content.append(el('h3', '', () => (CLATI18n.msg("web.keyboard_and_navigation", {}, "Keyboard and navigation"))), el('p', '', () => (CLATI18n.msg("web.enter_sends_shift_enter_adds_a_line_ctrl_f_finds_original_conversation_text_opens_", {}, "Enter sends; Shift+Enter adds a line. Ctrl/⌘ F finds original conversation text. / opens command discovery (selection fills draft, never auto-executes). Escape closes overlays. Browser Ctrl/⌘ L and IME composition remain unchanged."))),
     el('p', '', () => (CLATI18n.msg("web.find_works_on_loaded_messages_earlier_extends_the_search_latest_messages_returns_t", {}, "Find works on loaded messages; “Earlier” extends the search. Latest messages returns to the bottom. Files quotes fixed text snapshots. Captured operations is not the entire Git working tree."))));
   const notifications = el('button', 'ghost', () => (CLATI18n.msg("web.enable_online_page_notifications", {}, "Enable online page notifications"))); notifications.type = 'button'; notifications.id = 'page-notifications';
@@ -58,8 +58,17 @@ function installNavigationHelp() {
     try { localStorage.setItem('clat.page-notifications.v1', String(pageNotificationsEnabled)); } catch (_) {}
     render();
   });
-  render(); content.append(el('h3', '', () => (CLATI18n.msg("web.online_page_notifications", {}, "Online page notifications"))), notifications, status);
+  const notificationGroup = el('section', 'notification-settings');
+  render(); notificationGroup.append(el('h3', '', () => (CLATI18n.msg("web.online_page_notifications", {}, "Online page notifications"))), notifications, status);
+  document.querySelector('[data-settings-panel=appearance]').append(notificationGroup);
+  const keyboard = el('article','help-card'); while(content.firstChild) keyboard.append(content.firstChild);
+  const grid = el('div','help-grid');
+  for(const [key, target] of [['getting_started','projects'],['model_help','models'],['permission_help','permissions']]) {
+    const card=el('article','help-card');card.append(el('h3','',()=>pageText(key)),el('p','',()=>pageText(key+'_body')),pageAction('open_settings',()=>openSettings(target)));grid.append(card);
+  }
+  grid.append(keyboard);
+  const troubleshoot=el('article','help-card');troubleshoot.append(el('h3','',()=>pageText('troubleshooting')),el('p','',()=>pageText('troubleshooting_body')),pageAction('history_help',()=>document.getElementById('nav-history').click()),pageAction('tasks_help',()=>document.getElementById('nav-tasks').click()));grid.append(troubleshoot);content.append(grid);
   dialog.append(header, content); document.body.append(dialog);
-  trigger.addEventListener('click', () => dialog.showModal()); close.addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => focusWorkbenchTool(trigger));
+  trigger.addEventListener('click', () => presentPage(dialog));
+
 }

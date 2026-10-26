@@ -5,6 +5,7 @@ fn main() {
             "desktop_info",
             "desktop_locale",
             "desktop_open_project",
+            "desktop_pick_directory",
             "desktop_check_update",
             "desktop_download_update",
             "desktop_install_update",
@@ -12,6 +13,7 @@ fn main() {
             "desktop_preferences",
             "desktop_quit",
             "desktop_stop_host",
+            "desktop_window",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("desktop resource and ACL generation");

@@ -98,11 +98,11 @@ impl PlanModeService {
         self.set_pending_birth(false);
     }
 
-    pub(crate) fn set_durable(&self, active: bool) -> Result<(), String> {
-        self.sessions
-            .record_plan_mode(active, None)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    pub(crate) fn set_durable(
+        &self,
+        active: bool,
+    ) -> Result<(), crate::session::persistence::SessionError> {
+        self.sessions.record_plan_mode(active, None).map(|_| ())
     }
 
     pub(crate) fn request_review(

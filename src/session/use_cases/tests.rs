@@ -161,6 +161,44 @@ fn armed_replay_is_reused_and_only_a_committed_suffix_is_read() {
     crate::test_support::cleanup_tree(&root);
 }
 
+fn assert_read_only_mutations(service: &SessionService, key: &SessionKey, legacy: bool) {
+    let errors = [
+        service.record_plan_mode(true, None).unwrap_err(),
+        service
+            .record_permission_mode(PermissionMode::ReadOnly)
+            .unwrap_err(),
+        service
+            .set_title(
+                &key.id,
+                SetTitleExpectation::Force,
+                "must not write",
+                TitleSource::User,
+            )
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert!(matches!(error, SessionError::ReadOnly { legacy: actual } if actual == legacy));
+        let message = error.presentation().expect("structured read-only error");
+        assert_eq!(
+            message.key,
+            if legacy {
+                "session.read_only_legacy"
+            } else {
+                "session.read_only_capabilities"
+            }
+        );
+        for locale in [
+            crate::i18n::Locale::English,
+            crate::i18n::Locale::Simplified,
+            crate::i18n::Locale::Traditional,
+        ] {
+            let text = crate::i18n::LocaleContext::new(locale).render(&message);
+            assert!(text.contains("/new"));
+            assert_eq!(text.contains("/update"), legacy);
+        }
+    }
+}
+
 #[test]
 fn legacy_resume_is_read_only_without_changing_any_session_artifact() {
     let (service, root) = service("legacy-read-only");
@@ -190,6 +228,7 @@ fn legacy_resume_is_read_only_without_changing_any_session_artifact() {
         service.journal().is_err(),
         "read-only sessions cannot acquire a run journal"
     );
+    assert_read_only_mutations(&service, &key, true);
     service.quiesce_active().unwrap();
     assert_eq!(dir.read("session.jsonl.zstd").unwrap(), bytes);
     assert_eq!(
@@ -270,6 +309,7 @@ fn v4_unsupported_context_resumes_read_only_without_mutating_the_log() {
         service.resume(&key).expect("V4 context is readable");
         assert!(service.is_read_only());
         assert!(!service.is_legacy_read_only());
+        assert_read_only_mutations(&service, &key, false);
         assert!(service.journal().is_err());
         assert!(service.upgrade_active().is_err());
         service.quiesce_active().unwrap();

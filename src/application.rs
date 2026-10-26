@@ -47,6 +47,7 @@ mod content_views;
 mod context;
 mod discovery;
 mod files;
+mod library;
 mod session_organization;
 mod task_acceptance;
 #[cfg(test)]
@@ -56,6 +57,7 @@ mod task_recovery;
 mod task_recovery_tests;
 mod tasks;
 mod workflow;
+mod workspace_directory;
 pub use changes::{WorkspaceChanges, WorkspaceDiff, WorkspaceReview};
 pub use discovery::{InteractionCatalog, InteractionCommand};
 pub use files::FileBrowser;
@@ -124,6 +126,7 @@ pub use run_lifecycle::{
 pub use suggestion::{PreparedPromptSuggestion, PromptSuggestion};
 pub(crate) use threads::{EXIT_JOIN_GRACE, join_with_grace};
 pub use vision_probe::{VisionProbeHandle, VisionProbeOutcome, VisionProbeReport};
+pub use workspace_directory::WorkspaceDirectoryEntry;
 
 /// Frontend-local window metadata kept outside the stable public snapshot
 /// DTOs. Full consumers keep their existing shapes and semantics.
@@ -414,7 +417,10 @@ fn broadcast_to(
 }
 
 fn session_error(error: crate::session::persistence::SessionError) -> ApplicationError {
-    ApplicationError::new(error.to_string())
+    match error.presentation() {
+        Some(message) => ApplicationError::presented(message),
+        None => ApplicationError::new(error.to_string()),
+    }
 }
 
 fn store_error(error: StoreError) -> ApplicationError {

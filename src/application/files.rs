@@ -23,6 +23,57 @@ impl TrustedProjectApplication {
 }
 
 impl FileBrowser {
+    pub fn list(&self, directory: &str) -> Result<Value, String> {
+        if !directory.is_empty() {
+            valid_path(directory)?;
+        }
+        let private = self
+            .private_storage
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        let target = self
+            .project
+            .root()
+            .join(directory)
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        if target.starts_with(&private) {
+            return Err("Private CLAT storage is not project file context".into());
+        }
+        let children = self
+            .project
+            .directory_snapshot(directory)
+            .map_err(|e| e.to_string())?;
+        let truncated = children.len() >= 10000;
+        let mut entries = children
+            .into_iter()
+            .filter_map(|(name, is_directory)| {
+                let path = if directory.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{directory}/{name}")
+                };
+                if valid_path(&path).is_err()
+                    || self
+                        .project
+                        .root()
+                        .join(&path)
+                        .canonicalize()
+                        .is_ok_and(|p| p.starts_with(&private))
+                {
+                    return None;
+                }
+                Some((path, name, is_directory))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+        });
+        Ok(
+            json!({"entries":entries.into_iter().map(|(path,name,is_directory)|json!({"path":path,"name":name,"directory":is_directory})).collect::<Vec<_>>(),"truncated":truncated,"directory":directory}),
+        )
+    }
     pub fn search(&self, query: &str) -> Result<Value, String> {
         if query.len() > 256 {
             return Err("File query exceeds 256 bytes".into());

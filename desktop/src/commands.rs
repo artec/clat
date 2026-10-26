@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-fn guard(window: &tauri::WebviewWindow) -> Result<(), UiMessage> {
+pub(crate) fn guard(window: &tauri::WebviewWindow) -> Result<(), UiMessage> {
     let url = window.url().map_err(|e| e.to_string())?;
     if window.label() != "main" || !crate::policy::permitted_page(url.as_str()) {
         return Err(UiMessage::new("desktop.command_forbidden"));
@@ -215,4 +215,26 @@ pub async fn desktop_stop_host(
     })
     .await
     .map_err(|_| UiMessage::new("desktop.stop_worker_failed"))?
+}
+
+/// Choose a path only; the workbench still requests explicit trust and mounting.
+#[tauri::command]
+pub async fn desktop_pick_directory(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, UiMessage> {
+    guard(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|path| {
+                path.into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|_| UiMessage::new("desktop.project_worker_failed"))
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|_| UiMessage::new("desktop.project_worker_failed"))?
 }

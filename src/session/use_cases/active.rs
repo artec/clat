@@ -40,9 +40,19 @@ impl ActiveSession {
     }
 
     /// Every producer borrows the same append/flush lane; no caller assembles it.
-    pub(super) fn shared_journal(&self, backend: &Arc<JsonlBackend>) -> Arc<dyn RunJournal> {
+    pub(super) fn shared_journal(
+        &self,
+        backend: &Arc<JsonlBackend>,
+    ) -> Result<Arc<dyn RunJournal>, SessionError> {
+        if self.coordinator.is_read_only() {
+            return Err(SessionError::ReadOnly {
+                legacy: self.coordinator.is_legacy(),
+            });
+        }
         let mut slot = self.journal.lock().expect("session journal");
-        Arc::clone(slot.get_or_insert_with(|| journal_with_projection_fold(self, backend)))
+        Ok(Arc::clone(slot.get_or_insert_with(|| {
+            journal_with_projection_fold(self, backend)
+        })))
     }
 }
 

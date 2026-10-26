@@ -9,7 +9,7 @@ const { test, expect } = require('@playwright/test');
 const { LIVE, hostInfo, openWorkbench, fetchBrowserRequest } = require('../helpers/workbench');
 
 async function freshSession(page) {
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.waitForFunction(() => document.querySelector('#conn-status')?.textContent === 'live'
     && document.querySelectorAll('.tool-card').length === 0, null, { timeout: 15_000 });
 }
@@ -215,7 +215,7 @@ test('HIST-PWA-1 B8-R1: a delayed accepted response never writes the old session
   // 切新会话：等待围栏状态（不含 A 的文本）。并发套件里同一宿主被多页共
   // 享、其他测试的会话切换会广播到本页——断言只需锁定“旧会话文本不得
   // 进入当前列表/召回”。
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.waitForFunction(
     (probe) => !state.switching && !inputHistory.list.includes(probe),
     'b8 private session A prompt',
@@ -315,7 +315,7 @@ test('HIST-PWA-1 B8-R2-1: a session switch retires the old session pending histo
   await page.fill('#prompt', 'b8 private A unsent draft');
   await page.locator('#prompt').press('ArrowUp');
   await expect(page.locator('#prompt')).toHaveValue('b8 committed anchor');
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.waitForFunction(
     (probe) => !state.switching && !inputHistory.list.includes(probe)
       && !inputHistory.list.includes('b8 committed anchor'),

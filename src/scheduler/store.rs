@@ -7,7 +7,7 @@ struct Cache {
     fault: Option<ScheduleError>,
 }
 pub(crate) struct SchedulerService {
-    control: Arc<crate::control_storage::ControlStorage>,
+    pub(super) control: Arc<crate::control_storage::ControlStorage>,
     lane: Mutex<Cache>,
 }
 impl SchedulerService {
@@ -99,7 +99,7 @@ impl SchedulerService {
         }
         result
     }
-    fn transaction<T>(
+    pub(super) fn transaction<T>(
         &self,
         operation: impl FnOnce(&mut Document) -> Result<T, ScheduleError>,
     ) -> Result<T, ScheduleError> {
@@ -357,43 +357,8 @@ impl SchedulerService {
                 }
                 rule.next_at = time.after(now)?;
             }
-            let delivery_id = digest(&(&rule.id, rule.spec_digest(), scheduled_at));
-            let b = &rule.spec.budget;
-            let reservation = Consumption {
-                runs: 1,
-                tokens: b.run_tokens,
-                seconds: u64::from(b.run_seconds),
-                paid_web_calls: b.run_paid_web_calls,
-            };
-            rule.used.runs += 1;
-            rule.used.tokens += reservation.tokens;
-            rule.used.seconds += reservation.seconds;
-            rule.used.paid_web_calls += reservation.paid_web_calls;
             let rule = rule.clone();
-            if doc
-                .deliveries
-                .iter()
-                .any(|d| d.id == delivery_id || d.rule_id == id && d.unsettled())
-            {
-                return Err(ScheduleError::new("already_delivered"));
-            }
-            trim(doc)?;
-            let delivery = Delivery {
-                id: delivery_id,
-                rule_id: id.into(),
-                rule_revision: revision,
-                scope: rule.scope.clone(),
-                scheduled_at,
-                started_at: now,
-                finished_at: None,
-                phase: DeliveryPhase::Reserved,
-                reservation,
-                actual: None,
-                receipt: None,
-                diagnostic: None,
-            };
-            doc.deliveries.push(delivery.clone());
-            Ok(Claim { rule, delivery })
+            reserve_delivery(doc, rule, revision, scheduled_at, now)
         })
     }
     pub(crate) fn admitted(
@@ -459,7 +424,7 @@ fn next(revision: u64) -> Result<u64, ScheduleError> {
         .checked_add(1)
         .ok_or_else(|| ScheduleError::new("invalid_store"))
 }
-fn find<'a>(
+pub(super) fn find<'a>(
     doc: &'a mut Document,
     project: &str,
     id: &str,
@@ -485,7 +450,7 @@ fn delivery_mut<'a>(
         .find(|d| d.id == id && d.scope.project == project)
         .ok_or_else(|| ScheduleError::new("not_found"))
 }
-fn trim(doc: &mut Document) -> Result<(), ScheduleError> {
+pub(super) fn trim(doc: &mut Document) -> Result<(), ScheduleError> {
     if doc.deliveries.len() < 1024 {
         return Ok(());
     }
@@ -521,4 +486,50 @@ fn reconcile(rule: &mut Rule, reserved: &Consumption, actual: &Consumption) {
         .paid_web_calls
         .saturating_sub(reserved.paid_web_calls)
         .saturating_add(actual.paid_web_calls);
+}
+
+pub(super) fn reserve_delivery(
+    doc: &mut Document,
+    mut rule: Rule,
+    revision: u64,
+    scheduled_at: i64,
+    now: i64,
+) -> Result<Claim, ScheduleError> {
+    let delivery_id = digest(&(&rule.id, rule.spec_digest(), scheduled_at));
+    let b = &rule.spec.budget;
+    let reservation = Consumption {
+        runs: 1,
+        tokens: b.run_tokens,
+        seconds: u64::from(b.run_seconds),
+        paid_web_calls: b.run_paid_web_calls,
+    };
+    rule.used.runs += 1;
+    rule.used.tokens += reservation.tokens;
+    rule.used.seconds += reservation.seconds;
+    rule.used.paid_web_calls += reservation.paid_web_calls;
+    *find(doc, &rule.scope.project, &rule.id, revision)? = rule.clone();
+    if doc
+        .deliveries
+        .iter()
+        .any(|d| d.id == delivery_id || d.rule_id == rule.id && d.unsettled())
+    {
+        return Err(ScheduleError::new("already_delivered"));
+    }
+    trim(doc)?;
+    let delivery = Delivery {
+        id: delivery_id,
+        rule_id: rule.id.clone(),
+        rule_revision: revision,
+        scope: rule.scope.clone(),
+        scheduled_at,
+        started_at: now,
+        finished_at: None,
+        phase: DeliveryPhase::Reserved,
+        reservation,
+        actual: None,
+        receipt: None,
+        diagnostic: None,
+    };
+    doc.deliveries.push(delivery.clone());
+    Ok(Claim { rule, delivery })
 }

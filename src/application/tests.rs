@@ -35,6 +35,31 @@ mod workbench;
 mod official_web;
 
 #[test]
+fn session_read_only_presentation_preserves_error_identity() {
+    use crate::session::persistence::SessionError;
+    for (legacy, key) in [
+        (true, "session.read_only_legacy"),
+        (false, "session.read_only_capabilities"),
+    ] {
+        let error = session_error(SessionError::ReadOnly { legacy });
+        let message = error.presentation();
+        assert_eq!(message.key, key);
+        assert_ne!(
+            crate::i18n::LocaleContext::new(crate::i18n::Locale::Simplified).render(&message),
+            message.english()
+        );
+        assert_ne!(
+            crate::i18n::LocaleContext::new(crate::i18n::Locale::Traditional).render(&message),
+            message.english()
+        );
+    }
+    let diagnostic = "session is read-only; external diagnostic";
+    let error = session_error(SessionError::Corruption(diagnostic.into()));
+    assert_eq!(error.presentation().key, "common.error");
+    assert!(error.to_string().contains(diagnostic));
+}
+
+#[test]
 fn legacy_session_update_is_contextual_and_survives_reopen() {
     let (storage_root, project_root) = roots("legacy-update-command");
     std::fs::create_dir_all(&project_root).unwrap();
@@ -90,6 +115,15 @@ fn legacy_session_update_is_contextual_and_survives_reopen() {
             .any(|command| command.name == "update")
     );
     assert!(application.sessions.journal().is_err());
+    let rejected = application.set_plan_mode(true).unwrap_err();
+    assert_eq!(rejected.presentation().key, "session.read_only_legacy");
+    let rejected = application.dispatch_command("/plan on").unwrap_err();
+    assert_eq!(rejected.presentation().key, "session.read_only_legacy");
+    assert!(application.session_is_read_only());
+    assert_eq!(
+        std::fs::read(path.join("session.jsonl.zstd")).unwrap(),
+        bytes
+    );
     let (completion, _receiver) = mpsc::channel();
     let rejected = application.start_run(ApplicationRunRequest {
         message: crate::message::PendingMessage::text("must not run"),
@@ -98,7 +132,9 @@ fn legacy_session_update_is_contextual_and_survives_reopen() {
         events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
         completion,
     });
-    assert!(matches!(rejected, Err(error) if error.to_string().contains("read-only")));
+    assert!(
+        matches!(rejected, Err(error) if error.presentation().key == "session.read_only_legacy")
+    );
     application.sessions.inject_persistence_faults(FaultHooks {
         fail_upgrade_before_publish: true,
         ..Default::default()

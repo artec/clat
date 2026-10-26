@@ -196,7 +196,7 @@ test('CAP-1 real Git dirty files and external edits survive a cancelled run', as
   git('add', 'prior-user-edit.txt');
   fs.writeFileSync(path.join(root, 'prior-user-edit.txt'), 'unstaged user content\n');
   const before = fs.readFileSync(path.join(root, '.git/index'));
-  await page.click('#new-session');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'long stream');
   await page.click('#send');
@@ -213,12 +213,12 @@ test('CAP-1 real Git dirty files and external edits survive a cancelled run', as
   await expect(page.locator('#review-patch')).toContainText('+staged user content');
   await expect(page.locator('#review-patch')).toContainText('+unstaged user content');
   expect(fs.readFileSync(path.join(root, '.git/index'))).toEqual(before);
-  await page.screenshot({ path: testInfo.outputPath('workspace-review-desktop.png') });
+
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: testInfo.outputPath('workspace-review-phone.png') });
+
   await page.getByRole('button', { name: 'Close workspace review' }).click();
   await page.click('#find-open');
   await page.fill('#find-query', 'long stream');
   await expect(page.locator('#find-status')).toContainText('1/1');
-  await page.screenshot({ path: testInfo.outputPath('conversation-find-phone.png') });
+
 });

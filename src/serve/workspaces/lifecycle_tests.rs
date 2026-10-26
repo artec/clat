@@ -5,6 +5,41 @@ fn fixture(label: &str) -> (Arc<WorkspaceHost>, std::path::PathBuf, std::path::P
     fixture_with_behavior(label, TestBehavior::Success)
 }
 
+#[test]
+fn workspace_directory_keeps_fresh_identity_lazy_and_does_not_mount_projects() {
+    let (host, storage, project) = fixture("workspace-directory-fresh");
+    let before = host.dispatch("workspace.list", &json!({})).unwrap();
+    let directory = host.dispatch("workspace.directory", &json!({}));
+    let after = host.dispatch("workspace.list", &json!({})).unwrap();
+    let registered = host
+        .route("default")
+        .unwrap()
+        .app
+        .lock()
+        .unwrap()
+        .workspaces()
+        .unwrap();
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+    let directory = directory.expect("the Host must provide the read-only project directory");
+    assert_eq!(
+        before, after,
+        "reading the directory must not mount anything"
+    );
+    assert!(
+        registered.is_empty(),
+        "a fresh project must remain unregistered"
+    );
+    let rows = directory["projects"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0]["project_id"].is_null());
+    assert_eq!(rows[0]["route_id"], "default");
+    assert_eq!(rows[0]["api_prefix"], "/workspace/default");
+    assert_eq!(rows[0]["mounted"], true);
+}
+
 fn fixture_with_behavior(
     label: &str,
     behavior: TestBehavior,

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_MOUNTED_PROJECTS: usize = 16;
+mod directory;
 #[cfg(test)]
 mod lifecycle_tests;
 mod reclaim;
@@ -26,6 +27,7 @@ pub(crate) const HOST_METHODS: &[&str] = &[
     "host.stop",
     "host.takeover",
     "workspace.list",
+    "workspace.directory",
     "workspace.open",
 ];
 
@@ -209,6 +211,7 @@ impl WorkspaceHost {
                 json!({"id": id, "root": app.project().root(), "api_prefix": format!("/workspace/{id}")})
             }).collect::<Vec<_>>()}),
             ),
+            "workspace.directory" => Ok(directory::read(&projects)),
             "workspace.open" => self.open(&mut projects, params),
             _ => Err(RpcError::bad_request("unknown host method")),
         }

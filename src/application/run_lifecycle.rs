@@ -988,3 +988,23 @@ mod acceptance_cleanup_tests {
         crate::test_support::cleanup_tree(root.parent().unwrap());
     }
 }
+
+impl TrustedProjectApplication {
+    /// A task's embedded composer may cancel only the run belonging to its target.
+    pub fn cancel_conversation_run(&self, session: &str) -> bool {
+        if self
+            .selection
+            .as_ref()
+            .is_none_or(|id| id.as_str() != session)
+        {
+            return false;
+        }
+        if self.active_run.is_some() && self.selected_run().is_none() {
+            return false;
+        }
+        if let Some(run) = self.selected_run() {
+            run.cancel();
+        }
+        true
+    }
+}

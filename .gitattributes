@@ -90,3 +90,15 @@ tests/fixtures/release-index* -text
 locales/*.json text eol=lf
 # Native background-job fact/projection golden.
 tests/fixtures/native-job-state.json text eol=lf
+# Test-only project view ports are also embedded by the Rust test Host.
+web/e2e/project-test-ports.js text eol=lf
+web/icons/clat.svg text eol=lf
+desktop/ui/window-bar.js text eol=lf
+
+# Navigation source embedded byte-for-byte.
+web/navigation-pages.js text eol=lf
+web/settings-pages.js text eol=lf
+web/resource-library.js text eol=lf
+web/task-center.js text eol=lf
+web/conversation-reader.js text eol=lf
+web/tests/navigation-data.test.cjs text eol=lf

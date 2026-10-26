@@ -2,8 +2,8 @@
 use super::*;
 use crate::model::{ModelConfig, ProviderCredentials};
 pub use crate::scheduler::{
-    Consumption, Delivery, DeliveryPhase, Rule, RulePhase, RuleReview, TimeRule, Trigger,
-    WorkBudget,
+    Consumption, Delivery, DeliveryPhase, NotificationPolicy, Rule, RulePhase, RuleReview,
+    TimeRule, Trigger, WorkBudget,
 };
 use crate::scheduler::{WorkScope, WorkSpec};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduleDraft {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub notification: Option<NotificationPolicy>,
     pub session: String,
     pub instruction: String,
     pub trigger: Trigger,
@@ -146,6 +150,8 @@ impl TrustedProjectApplication {
         let (config, _) = self.automatic_model(draft.model_profile.as_deref())?;
         let model = crate::scheduler::model::approved(&config, draft.model_profile);
         Ok(WorkSpec {
+            title: draft.title,
+            notification: draft.notification,
             instruction: draft.instruction,
             trigger: draft.trigger,
             budget: draft.budget,
@@ -175,4 +181,29 @@ pub(super) fn schedule_error(error: crate::scheduler::ScheduleError) -> Applicat
 }
 pub(super) fn schedule_message(code: &str) -> ApplicationError {
     ApplicationError::presented(crate::i18n::UiMessage::new(&format!("schedule.{code}")))
+}
+
+impl TrustedProjectApplication {
+    pub fn schedule_run_now(
+        &self,
+        id: &str,
+        revision: u64,
+        request: &str,
+    ) -> Result<Delivery, ApplicationError> {
+        let rule = self.schedule_rule(id)?;
+        self.schedule_scope(&rule.scope.session)?;
+        self.resolve_automatic_model(&rule)?;
+        if self.active_run.as_ref().is_some_and(|r| !r.is_finished())
+            || self
+                .active_compaction
+                .as_ref()
+                .is_some_and(|r| !r.is_finished())
+            || !self.next_turn_queue().is_empty()
+        {
+            return Err(schedule_message("busy"));
+        }
+        self.scheduler
+            .run_now(&self.schedule_project(), id, revision, request)
+            .map_err(schedule_error)
+    }
 }

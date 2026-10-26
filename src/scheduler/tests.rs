@@ -30,6 +30,8 @@ impl Fixture {
     }
     fn spec(&self) -> WorkSpec {
         WorkSpec {
+            title: None,
+            notification: None,
             instruction: "Inspect the finished job and report its actual result".into(),
             trigger: Trigger::Job {
                 job_id: uuid::Uuid::new_v4().to_string(),
@@ -284,4 +286,92 @@ fn scheduler_edit_racing_confirmation_cannot_enable_changed_work() {
         assert_eq!(final_rule.spec.instruction, r.spec.instruction);
     }
     assert!(f.service.deliveries(&f.scope.project).unwrap().is_empty());
+}
+
+#[test]
+fn navigation_manual_delivery_is_authorized_deduplicated_budgeted_and_preserves_time() {
+    let f = Fixture::new();
+    let mut spec = f.spec();
+    spec.trigger = Trigger::Time {
+        rule: TimeRule::Interval {
+            anchor_ms: 5000,
+            every_ms: 60000,
+        },
+    };
+    spec.budget.max_runs = 2;
+    spec.budget.max_tokens *= 2;
+    spec.budget.max_seconds *= 2;
+    spec.budget.max_paid_web_calls *= 2;
+    let draft = f.service.create(f.scope.clone(), spec).unwrap();
+    let request = uuid::Uuid::new_v4().to_string();
+    assert!(
+        f.service
+            .run_now(&f.scope.project, &draft.id, draft.revision, &request)
+            .is_err()
+    );
+    let review = f
+        .service
+        .review(&f.scope.project, &draft.id, draft.revision)
+        .unwrap();
+    let rule = f
+        .service
+        .confirm(
+            &f.scope.project,
+            &draft.id,
+            draft.revision,
+            &review.nonce,
+            &review.digest,
+            1000,
+        )
+        .unwrap();
+    let delivery = f
+        .service
+        .run_now(&f.scope.project, &rule.id, rule.revision, &request)
+        .unwrap();
+    let again = f
+        .service
+        .run_now(&f.scope.project, &rule.id, rule.revision, &request)
+        .unwrap();
+    assert_eq!(delivery.id, again.id);
+    let current = f.service.list(&f.scope.project).unwrap().remove(0);
+    assert_eq!(current.used.runs, 1);
+    assert_eq!(current.next_at, rule.next_at);
+    assert!(f.service.pending_claim(&f.scope.project).unwrap().is_some());
+    let paused = f
+        .service
+        .pause(&f.scope.project, &rule.id, rule.revision)
+        .unwrap();
+    assert!(
+        f.service
+            .run_now(
+                &f.scope.project,
+                &rule.id,
+                paused.revision,
+                &uuid::Uuid::new_v4().to_string()
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn navigation_optional_task_metadata_preserves_existing_authorization_digests() {
+    let f = Fixture::new();
+    let existing = f.enabled();
+    let legacy = serde_json::to_value(&existing.spec).unwrap();
+    assert!(legacy.get("title").is_none());
+    assert!(legacy.get("notification").is_none());
+    let restored: WorkSpec = serde_json::from_value(legacy).unwrap();
+    let mut reloaded = existing.clone();
+    reloaded.spec = restored;
+    assert_eq!(reloaded.spec_digest(), existing.spec_digest());
+    assert!(reloaded.authorization_valid());
+    let mut changed = existing.spec.clone();
+    changed.title = Some("A named task".into());
+    changed.notification = Some(NotificationPolicy::Completion);
+    let edited = f
+        .service
+        .edit(&f.scope.project, &existing.id, existing.revision, changed)
+        .unwrap();
+    assert_eq!(edited.phase, RulePhase::Draft);
+    assert!(edited.authorization.is_none());
 }

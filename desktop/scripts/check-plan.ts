@@ -11,8 +11,16 @@ export function checksForPaths(paths: string[] | undefined): CheckPlan {
   if (!paths) return { native: true, tooling: true, web: true };
   let native = false, tooling = false, web = false;
   for (const path of paths) {
+    // Presentation is reviewed by the owner. Catalog structure is checked in plan.
+    if (/^(web\/[^/]+\.css|desktop\/ui\/[^/]+\.(css|png|svg|ico)|(web|desktop)\/icons\/[^/]+\.(png|svg|ico|icns))$/.test(path)
+      || path.startsWith('web/e2e/manual/') || path === 'web/e2e/playwright.visual.config.js'
+      || /^locales\/(en|zh-Hans|zh-Hant)\.json$/.test(path)) continue;
     if (path.startsWith('locales/') || path.startsWith('src/i18n/') || path.startsWith('scripts/i18n-')) { native=true;tooling=true;web=true; }
-    else if (path.startsWith('web/')) web = true;
+    // This job runs the native bridge suite, which does not load the PWA app.
+    else if (/^desktop\/ui\/[^/]+\.(js|html)$/.test(path) || path === 'web/i18n.js'
+      || path.startsWith('web/e2e/desktop/') || path === 'web/e2e/playwright.desktop.config.js'
+      || /^web\/e2e\/package(?:-lock)?\.json$/.test(path)) web = true;
+    else if (path.startsWith('web/')) continue;
     else if (path.startsWith('desktop/scripts/') || /^(desktop\/(package\.json|bun\.lock|tsconfig\.json)|package\.json|publish)$/.test(path)) tooling = true;
     else if (!/^(docs\/|\.agents\/|\.claude\/|README(?:\.[^/]+)?$|LICENSE$|\.gitignore$|\.editorconfig$)/.test(path)) native = true;
   }

@@ -19,13 +19,9 @@ impl SessionService {
         sources: &[std::path::PathBuf],
     ) -> Result<Vec<crate::message::JournalImage>, SessionError> {
         if self.is_read_only() {
-            return Err(SessionError::UnsupportedFormat(
-                if self.is_legacy_read_only() {
-                    "legacy session is read-only; use /update first".into()
-                } else {
-                    "this V4 session is read-only; use /new for attachments".into()
-                },
-            ));
+            return Err(SessionError::ReadOnly {
+                legacy: self.is_legacy_read_only(),
+            });
         }
         if sources.is_empty() {
             return Ok(Vec::new());
@@ -223,13 +219,9 @@ impl SessionService {
         &self,
     ) -> Result<crate::session::attachments::AttachmentStore, SessionError> {
         if self.is_read_only() {
-            return Err(SessionError::UnsupportedFormat(
-                if self.is_legacy_read_only() {
-                    "legacy session is read-only; use /update first".into()
-                } else {
-                    "this V4 session is read-only; use /new for attachments".into()
-                },
-            ));
+            return Err(SessionError::ReadOnly {
+                legacy: self.is_legacy_read_only(),
+            });
         }
         let active = self.active.lock().expect("active");
         let session = active
