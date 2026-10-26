@@ -232,7 +232,7 @@ fn ga3_noncoding_discovers_text_json_candidate_then_real_outputs_and_acceptance(
     assert!(!no_path.to_string().contains("available: xlsx"));
     app.close().unwrap();
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(&root, &storage, TestBehavior::Success))
+        try_mount_checked(&root, &storage, TestBehavior::Success)
     });
     assert!(
         app.capability_query(&json!({"id":old["candidates"][0]["id"]}))
@@ -298,11 +298,7 @@ fn ga3_programming_discovers_receipt_and_runs_real_rust_then_requires_explicit_r
         vec![process(invoke.clone(), true), read(), Step::Done],
     );
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(
-            &root,
-            &storage,
-            TestBehavior::Scripted(blocked.clone()),
-        ))
+        try_mount_checked(&root, &storage, TestBehavior::Scripted(blocked.clone()))
     });
     let r = task_request(&app);
     assert!(run(&mut app, r).is_err());
@@ -321,11 +317,7 @@ fn ga3_programming_discovers_receipt_and_runs_real_rust_then_requires_explicit_r
         ],
     );
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(
-            &root,
-            &storage,
-            TestBehavior::Scripted(granted.clone()),
-        ))
+        try_mount_checked(&root, &storage, TestBehavior::Scripted(granted.clone()))
     });
     let s = app.task_state().unwrap().unwrap();
     app.task_authorize_recheck(&s.id, s.revision, "unit")

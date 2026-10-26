@@ -184,7 +184,7 @@ fn read_web_token(root: &Path) -> String {
     }
 }
 
-/// 轮询读取进程产物中的 `listening on http://127.0.0.1:{port}/` 行。
+/// 轮询提取进程输出中的实际监听 URL，不依赖本地化的提示文案。
 /// BoundedProcess 已将 stdout/stderr 落盘到 root 下的 `{label}.std*` 文件。
 fn wait_for_listening_line(root: &Path, label: &str) -> u16 {
     let deadline = Instant::now() + WAIT;
@@ -196,7 +196,7 @@ fn wait_for_listening_line(root: &Path, label: &str) -> u16 {
             };
             for line in text.lines() {
                 if let Some(port) = line
-                    .split("clat serve listening on http://127.0.0.1:")
+                    .split("http://127.0.0.1:")
                     .nth(1)
                     .and_then(|rest| rest.split('/').next())
                     .and_then(|port| port.parse().ok())
@@ -275,8 +275,87 @@ fn terminal_frame(data: &str) -> bool {
     data.contains("run_failed") || data.contains("run_completed") || data.contains("turn_ended")
 }
 
+// Reconstruction can begin with an old turn's terminal frame. Observe this
+// request's live start or durable user-message marker before accepting its end.
+fn prompt_terminal(client_message_id: &str) -> impl FnMut(&str) -> bool + '_ {
+    let mut replay_turn = None;
+    let mut live = false;
+    move |data| {
+        let Ok(frame) = serde_json::from_str::<serde_json::Value>(data) else {
+            return false;
+        };
+        if let Some(event) = frame.get("event") {
+            match event["type"].as_str() {
+                Some("run_started") => {
+                    live = event["client_message_id"].as_str() == Some(client_message_id);
+                }
+                Some("run_failed" | "run_completed" | "run_cancelled") => return live,
+                _ => {}
+            }
+        }
+        if let Some(event) = frame.get("replay") {
+            match event["type"].as_str() {
+                Some("user_message")
+                    if event["client_message_id"].as_str() == Some(client_message_id) =>
+                {
+                    replay_turn = event["turn"].as_u64();
+                }
+                Some("turn_ended") => {
+                    return replay_turn.is_some() && event["turn"].as_u64() == replay_turn;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+}
+
+fn failed_terminal_frame(data: &str) -> bool {
+    let Ok(frame) = serde_json::from_str::<serde_json::Value>(data) else {
+        return false;
+    };
+    frame["event"]["type"] == "run_failed"
+        || (frame["replay"]["type"] == "turn_ended"
+            && frame["replay"]["reason"].get("error").is_some())
+}
+
+#[test]
+fn prompt_terminal_ignores_old_replay_and_waits_for_its_own_turn() {
+    let mut until = prompt_terminal("current");
+    assert!(!until(
+        r#"{"v":1,"replay":{"type":"turn_ended","turn":1,"reason":{"error":"old failure"}}}"#
+    ));
+    assert!(!until(
+        r#"{"v":1,"replay":{"type":"user_message","turn":2,"client_message_id":"current"}}"#
+    ));
+    assert!(!until(
+        r#"{"v":1,"replay":{"type":"turn_ended","turn":3,"reason":"completed"}}"#
+    ));
+    assert!(until(
+        r#"{"v":1,"replay":{"type":"turn_ended","turn":2,"reason":{"error":"current failure"}}}"#
+    ));
+}
+
+#[test]
+fn prompt_terminal_requires_its_own_live_start() {
+    let mut until = prompt_terminal("current");
+    assert!(!until(
+        r#"{"v":1,"event":{"type":"run_failed","message":"old failure"}}"#
+    ));
+    assert!(!until(
+        r#"{"v":1,"event":{"type":"run_started","client_message_id":"other"}}"#
+    ));
+    assert!(!until(r#"{"v":1,"event":{"type":"run_completed"}}"#));
+    assert!(!until(
+        r#"{"v":1,"event":{"type":"run_started","client_message_id":"current"}}"#
+    ));
+    assert!(until(
+        r#"{"v":1,"event":{"type":"run_failed","message":"current failure"}}"#
+    ));
+}
+
 /// 订阅 SSE 流并收集 data 帧文本，直到 `until` 命中或超时。
-fn sse_collect(port: u16, token: &str, until: impl Fn(&str) -> bool) -> Vec<String> {
+fn sse_collect(port: u16, token: &str, mut until: impl FnMut(&str) -> bool) -> Vec<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect sse");
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -953,21 +1032,20 @@ fn random_port_serve_child_blocks_redirect_and_proxy_escape() {
         "POST",
         "/api/prompt.send",
         Some(&token),
-        Some("{\"text\":\"try the redirecting provider\"}"),
+        Some("{\"text\":\"try the redirecting provider\",\"clientMessageId\":\"redirect-first\"}"),
     );
     assert_eq!(status, 200, "admission still succeeds: {body}");
-    let frames = sse_collect(port, &token, terminal_frame);
+    let frames = sse_collect(port, &token, prompt_terminal("redirect-first"));
     let transcript = frames.join("\n");
+    let mut finished = prompt_terminal("redirect-first");
     assert!(
-        terminal_frame(&transcript),
-        "the run must reach a terminal state (live or replay frame): {transcript}"
+        frames.iter().any(|frame| finished(frame)),
+        "this prompt must reach its own terminal state: {transcript}"
     );
     assert!(
-        terminal_frame(&transcript),
-        "the run must reach a terminal state (live or replay frame): {transcript}"
-    );
-    assert!(
-        transcript.contains("run_failed") || transcript.contains("\"error\""),
+        frames
+            .last()
+            .is_some_and(|frame| failed_terminal_frame(frame)),
         "the redirecting route must fail the run safely: {transcript}"
     );
     assert!(
@@ -1006,17 +1084,22 @@ fn random_port_serve_child_blocks_redirect_and_proxy_escape() {
         "POST",
         "/api/prompt.send",
         Some(&token),
-        Some("{\"text\":\"redirect again after cold restart\"}"),
+        Some(
+            "{\"text\":\"redirect again after cold restart\",\"clientMessageId\":\"redirect-restart\"}",
+        ),
     );
     assert_eq!(status, 200, "post-restart admission succeeds: {body}");
-    let frames = sse_collect(second_port, &token, terminal_frame);
+    let frames = sse_collect(second_port, &token, prompt_terminal("redirect-restart"));
     let transcript = frames.join("\n");
+    let mut finished = prompt_terminal("redirect-restart");
     assert!(
-        terminal_frame(&transcript),
-        "the restart run must reach a terminal state: {transcript}"
+        frames.iter().any(|frame| finished(frame)),
+        "the restarted prompt must reach its own terminal state: {transcript}"
     );
     assert!(
-        transcript.contains("run_failed") || transcript.contains("\"error\""),
+        frames
+            .last()
+            .is_some_and(|frame| failed_terminal_frame(frame)),
         "the constraint must survive the cold restart: {transcript}"
     );
     assert_eq!(

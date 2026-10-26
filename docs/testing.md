@@ -46,6 +46,14 @@ Keep semantic checks for message chronology and protected content. A tool result
 appearing in the wrong turn or a late response erasing a draft is a behavior
 regression, even when the symptom is visible in the interface.
 
+Cold-reopen fixtures pass fallible mount results to the shared bounded lease
+retry helper; wrapping a panic-producing mount in `Ok` bypasses that protection.
+Random-port Host checks correlate live or replay terminal frames with the
+submitted client message, so an older turn cannot finish a newer request's wait.
+Startup probes extract the actual listener URL without matching translated
+announcement copy. These checks retain storage exclusion and outbound-isolation
+assertions.
+
 ## Targeted verification
 
 Localization error-path regressions use `scripts/gates.sh host_client::

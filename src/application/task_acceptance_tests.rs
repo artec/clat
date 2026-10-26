@@ -251,14 +251,40 @@ pub(super) fn mount_checked(
     storage: &std::path::Path,
     behavior: TestBehavior,
 ) -> TrustedProjectApplication {
-    BootstrapApplication::open(crate::Project::new(root), storage.into())
-        .unwrap()
+    try_mount_checked(root, storage, behavior).expect("initial acceptance mount")
+}
+
+// Initial mounts fail immediately; cold reopen passes the original error to
+// the shared bounded retry owner instead of panicking before it can inspect it.
+fn try_mount_checked(
+    root: &std::path::Path,
+    storage: &std::path::Path,
+    behavior: TestBehavior,
+) -> Result<TrustedProjectApplication, ApplicationError> {
+    BootstrapApplication::open(crate::Project::new(root), storage.into())?
         .with_permission_modes()
         .authorize_and_mount_with_provider(Arc::new(crate::test_support::TestProviderPlugin {
             behavior,
         }))
-        .unwrap()
 }
+
+#[test]
+fn cold_reopen_mount_returns_held_lease_to_the_retry_owner() {
+    let (storage, root) = roots("acceptance-reopen-held");
+    std::fs::create_dir_all(&root).unwrap();
+    let app = mount_checked(&root, &storage, TestBehavior::Success);
+    let attempt = try_mount_checked(&root, &storage, TestBehavior::Success);
+    assert!(
+        matches!(attempt, Err(ref error) if error.to_string().contains(
+            "another CLAT process holds this storage root"
+        )),
+        "a held lease must reach the bounded retry owner without panicking"
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
 fn fresh(
     label: &str,
     steps: Vec<Step>,
@@ -387,7 +413,7 @@ fn ga2_records_report_rejects_complete_but_wrong_numbers_then_finishes_after_run
     assert_eq!(script.step.load(Ordering::SeqCst), 11);
     app.close().unwrap();
     let app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(&root, &storage, TestBehavior::Success))
+        try_mount_checked(&root, &storage, TestBehavior::Success)
     });
     assert_eq!(app.task_state().unwrap().unwrap(), s);
     assert_eq!(
@@ -619,7 +645,7 @@ fn ga2_programming_real_rust_harness_zero_failure_and_pass_bound_to_runtime_inpu
     );
     app.close().unwrap();
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(&root, &storage, TestBehavior::Success))
+        try_mount_checked(&root, &storage, TestBehavior::Success)
     });
     assert_eq!(app.task_state().unwrap().unwrap(), s);
     assert!(
@@ -707,11 +733,7 @@ fn ga2_same_command_recovery_replay_stays_blocked_but_explicit_single_use_rechec
         })],
     });
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(
-            &root,
-            &storage,
-            TestBehavior::Scripted(blocked.clone()),
-        ))
+        try_mount_checked(&root, &storage, TestBehavior::Scripted(blocked.clone()))
     });
     let resume = task_request(&app);
     assert!(run(&mut app, resume).is_err());
@@ -732,11 +754,7 @@ fn ga2_same_command_recovery_replay_stays_blocked_but_explicit_single_use_rechec
         ],
     });
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(
-            &root,
-            &storage,
-            TestBehavior::Scripted(script.clone()),
-        ))
+        try_mount_checked(&root, &storage, TestBehavior::Scripted(script.clone()))
     });
     let s = app.task_state().unwrap().unwrap();
     app.task_authorize_recheck(&s.id, s.revision, "unit")
@@ -846,7 +864,7 @@ fn ga2_candidate_then_changed_output_fails_final_gate_and_unrelated_run_cannot_r
     app.close().unwrap();
     std::fs::write(root.join("report.md"), REPORT).unwrap();
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(&root, &storage, TestBehavior::Success))
+        try_mount_checked(&root, &storage, TestBehavior::Success)
     });
     let (completion, rx) = mpsc::channel();
     let handle = app
@@ -1191,11 +1209,7 @@ fn ga2_rework_command_alias_cannot_bypass_recheck_grant() {
         ],
     });
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(
-            &root,
-            &storage,
-            TestBehavior::Scripted(script.clone()),
-        ))
+        try_mount_checked(&root, &storage, TestBehavior::Scripted(script.clone()))
     });
     let request = task_request(&app);
     let result = run(&mut app, request);
@@ -1311,7 +1325,7 @@ fn ga2_rework_success_cancel_and_panic_have_one_matching_durable_and_live_termin
         }
         app.close().unwrap();
         let mut reopened = crate::test_support::reopen_after_close(|| {
-            Ok::<_, ApplicationError>(mount_checked(&root, &storage, TestBehavior::Success))
+            try_mount_checked(&root, &storage, TestBehavior::Success)
         });
         assert_eq!(reopened.task_state().unwrap().unwrap(), state);
         assert_task_terminal_history(&mut reopened, &events, expected);
@@ -1417,11 +1431,7 @@ fn ga2_rework_wrappers_bidirectionally_require_one_grant_and_keep_new_runtime_ev
             steps: vec![wrapper(argv.clone(), !first_exec), read(), Step::Done],
         });
         let mut app = crate::test_support::reopen_after_close(|| {
-            Ok::<_, ApplicationError>(mount_checked(
-                &root,
-                &storage,
-                TestBehavior::Scripted(blocked.clone()),
-            ))
+            try_mount_checked(&root, &storage, TestBehavior::Scripted(blocked.clone()))
         });
         assert_eq!(app.task_state().unwrap().unwrap(), first);
         let request = task_request(&app);
@@ -1438,11 +1448,7 @@ fn ga2_rework_wrappers_bidirectionally_require_one_grant_and_keep_new_runtime_ev
             ],
         });
         let mut app = crate::test_support::reopen_after_close(|| {
-            Ok::<_, ApplicationError>(mount_checked(
-                &root,
-                &storage,
-                TestBehavior::Scripted(script.clone()),
-            ))
+            try_mount_checked(&root, &storage, TestBehavior::Scripted(script.clone()))
         });
         let s = app.task_state().unwrap().unwrap();
         app.task_authorize_recheck(&s.id, s.revision, "unit")
@@ -1471,11 +1477,7 @@ fn ga2_rework_wrappers_bidirectionally_require_one_grant_and_keep_new_runtime_ev
             steps: vec![wrapper(argv.clone(), first_exec), read(), Step::Done],
         });
         let mut app = crate::test_support::reopen_after_close(|| {
-            Ok::<_, ApplicationError>(mount_checked(
-                &root,
-                &storage,
-                TestBehavior::Scripted(replay.clone()),
-            ))
+            try_mount_checked(&root, &storage, TestBehavior::Scripted(replay.clone()))
         });
         let request = task_request(&app);
         assert!(run(&mut app, request).is_err());
@@ -1530,11 +1532,7 @@ fn ga2_rework_shell_alias_and_resolved_workdir_do_not_grant_a_new_execution() {
         ],
     });
     let mut app = crate::test_support::reopen_after_close(|| {
-        Ok::<_, ApplicationError>(mount_checked(
-            &root,
-            &storage,
-            TestBehavior::Scripted(script.clone()),
-        ))
+        try_mount_checked(&root, &storage, TestBehavior::Scripted(script.clone()))
     });
     let request = task_request(&app);
     assert!(run(&mut app, request).is_err());
