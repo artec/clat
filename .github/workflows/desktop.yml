@@ -54,10 +54,11 @@ jobs:
           bun-version: 1.3.14
       - id: changes
         run: bun desktop/scripts/check-plan.ts
+      # The catalog checker imports the pinned TypeScript parser. Clean runners
+      # need these development dependencies on pushes as well as manual runs.
+      - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
       - name: Validate language keys and parameters (wording is flexible)
         run: bun scripts/i18n-check.ts
-      - run: bun install --cwd desktop --frozen-lockfile --ignore-scripts
-        if: github.event_name == 'workflow_dispatch'
       - id: assets
         if: github.event_name == 'workflow_dispatch'
         env:

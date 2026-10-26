@@ -790,6 +790,17 @@ impl TrustedProjectApplication {
     }
 }
 
+impl TrustedProjectApplication {
+    pub fn wechat_authorized_users(&self) -> serde_json::Value {
+        self.control.wechat_users()
+    }
+    pub fn revoke_wechat_user_access(&self, id: &str) -> Result<(), ApplicationError> {
+        self.control
+            .revoke_wechat_user(id)
+            .map_err(|e| ApplicationError::new(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,16 +848,5 @@ mod tests {
         application.close().unwrap();
         crate::test_support::cleanup_tree(&storage_root);
         crate::test_support::cleanup_tree(&project_root);
-    }
-}
-
-impl TrustedProjectApplication {
-    pub fn wechat_authorized_users(&self) -> serde_json::Value {
-        self.control.wechat_users()
-    }
-    pub fn revoke_wechat_user_access(&self, id: &str) -> Result<(), ApplicationError> {
-        self.control
-            .revoke_wechat_user(id)
-            .map_err(|e| ApplicationError::new(e.to_string()))
     }
 }

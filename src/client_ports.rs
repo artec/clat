@@ -83,8 +83,9 @@ pub mod upgrade {
 /// Read-only history search and inspection.
 pub mod history {
     pub use crate::application::{
-        HistoryEventRead, HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit,
-        ConversationRequest, ConversationMessage, ConversationPage, HistoryPage, HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch,
+        ConversationMessage, ConversationPage, ConversationRequest, HistoryEventRead,
+        HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit, HistoryPage,
+        HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }

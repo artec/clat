@@ -561,7 +561,10 @@ fn dispatch_project(
                 "notice": "This one-time code authorizes the first WeChat user who submits it. Do not share it in an untrusted conversation.",
             }))
         }
-        "wechat.users.list" => Ok(with_app(shared, |app| json!({"users":app.wechat_authorized_users()}))),
+        "wechat.users.list" => Ok(with_app(
+            shared,
+            |app| json!({"users":app.wechat_authorized_users()}),
+        )),
         "wechat.user.revoke" => {
             let user = required_str(params, "userId")?;
             with_app(shared, |app| app.revoke_wechat_user_access(&user)).map_err(app_error)?;
@@ -750,12 +753,14 @@ fn dispatch_project(
         "steer.send" => steer_send(params, shared),
         "run.cancel" => {
             // 幂等：无 active run 也 ok（§4）。
-            if let Some(session)=optional_str(params,"session_id")? {
-                if !with_app(shared,|app|app.cancel_conversation_run(&session)) {
-                    let message=crate::i18n::UiMessage::new("pages.conversation_unavailable");
+            if let Some(session) = optional_str(params, "session_id")? {
+                if !with_app(shared, |app| app.cancel_conversation_run(&session)) {
+                    let message = crate::i18n::UiMessage::new("pages.conversation_unavailable");
                     return Err(RpcError::busy(message.english()).with_presentation(message));
                 }
-            } else { with_app(shared, |app| app.cancel_active_run()); }
+            } else {
+                with_app(shared, |app| app.cancel_active_run());
+            }
             Ok(json!({}))
         }
         "approval.respond" => approver::respond(shared, params),
@@ -1537,10 +1542,15 @@ fn dispatch_workbench_tools(
         "jobs.list" | "jobs.output" | "jobs.kill" | "jobs.retry" => {
             dispatch_jobs(shared, method, params)
         }
-        "library.list" | "library.bookmark.add" | "library.bookmark.remove" | "library.reference.add" => super::page_queries::library(shared, method, params),
-        "history.attachment" | "history.conversation" | "history.search" | "history.events" | "history.event.read" => {
-            super::page_queries::history(shared, method, params)
-        }
+        "library.list"
+        | "library.bookmark.add"
+        | "library.bookmark.remove"
+        | "library.reference.add" => super::page_queries::library(shared, method, params),
+        "history.attachment"
+        | "history.conversation"
+        | "history.search"
+        | "history.events"
+        | "history.event.read" => super::page_queries::history(shared, method, params),
         "turn.changes" | "turn.restore" => dispatch_turn_review(shared, method, params),
         "files.list" | "files.search" | "files.preview" | "files.reference" => {
             dispatch_files(shared, method, params)
@@ -1598,7 +1608,6 @@ fn dispatch_jobs(
     };
     result.map_err(|e| RpcError::internal(e.to_string()))
 }
-
 
 fn dispatch_web_settings(
     shared: &Arc<ServeShared>,

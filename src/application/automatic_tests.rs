@@ -4,7 +4,9 @@ use crate::scheduler::{DeliveryPhase, RulePhase, TimeRule, Trigger, WorkBudget};
 use std::time::Instant;
 fn draft(session: &SessionId, at: i64) -> crate::application::ScheduleDraft {
     crate::application::ScheduleDraft {
-        title: None, notification: None,        session: session.to_string(),
+        title: None,
+        notification: None,
+        session: session.to_string(),
         instruction: "authorized follow-up".into(),
         trigger: Trigger::Time {
             rule: TimeRule::At { at_ms: at },

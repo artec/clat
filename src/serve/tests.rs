@@ -3091,25 +3091,46 @@ fn get_response_header(addr: SocketAddr, target: &str, wanted: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Phase 4（INV-W2 边界）：`web/` 只允许公开、无凭据的市场目录出站；
-/// 所有本地事实与写操作仍只与自己的 serve 对话。
+/// Product assets reference explicit public destinations only. The release page
+/// is a user-opened recovery link; local facts and writes remain Host-owned.
 #[test]
-fn web_assets_reference_only_the_public_market_endpoint() {
+fn web_assets_reference_only_explicit_public_destinations() {
     let web_root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("web");
     let mut seen = BTreeSet::new();
     let mut offenders = Vec::new();
     scan_web_for_urls(&web_root, &mut seen, &mut offenders);
     assert!(
         offenders.is_empty(),
-        "web 资产出现非市场端点引用（INV-W2 违例）: {offenders:?}"
+        "web assets reference unexpected external destinations: {offenders:?}"
     );
-    assert_eq!(
-        seen,
-        BTreeSet::from([
-            "https://pi.at.cn".to_owned(),
-            "https://pi.at.cn/catalog.json".to_owned(),
-        ])
-    );
+}
+
+const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
+    "https://pi.at.cn",
+    "https://pi.at.cn/catalog.json",
+    "https://github.com/artec/clat/releases",
+];
+
+#[test]
+fn web_asset_url_guard_rejects_unknown_and_credential_bearing_destinations() {
+    let (root, _) = roots("web-destinations");
+    std::fs::create_dir_all(&root).unwrap();
+    let unknown = "https://example.invalid/collect";
+    let leaking = "https://github.com/artec/clat/releases?token=private";
+    let public = "https://github.com/artec/clat/releases";
+    std::fs::write(
+        root.join("fixture.js"),
+        format!("const links = ['{unknown}', '{leaking}', '{public}'];"),
+    )
+    .unwrap();
+    let mut seen = BTreeSet::new();
+    let mut offenders = Vec::new();
+    scan_web_for_urls(&root, &mut seen, &mut offenders);
+    assert!(seen.contains(public));
+    assert_eq!(offenders.len(), 2);
+    assert!(offenders.iter().any(|entry| entry.ends_with(unknown)));
+    assert!(offenders.iter().any(|entry| entry.ends_with(leaking)));
+    crate::test_support::cleanup_tree(&root);
 }
 
 fn scan_web_for_urls(dir: &Path, seen: &mut BTreeSet<String>, offenders: &mut Vec<String>) {
@@ -3132,10 +3153,7 @@ fn scan_web_for_urls(dir: &Path, seen: &mut BTreeSet<String>, offenders: &mut Ve
                         continue;
                     }
                     seen.insert(url.clone());
-                    if !matches!(
-                        url.as_str(),
-                        "https://pi.at.cn" | "https://pi.at.cn/catalog.json"
-                    ) {
+                    if !PUBLIC_WEB_DESTINATIONS.contains(&url.as_str()) {
                         offenders.push(format!("{}: {url}", path.display()));
                     }
                 }
@@ -3417,7 +3435,7 @@ fn wait_for_playwright(
         std::thread::sleep(Duration::from_millis(200));
     }
     let _ = std::fs::remove_file(&stop_path);
-    cleanup(handle, &storage_root, &project_root);
+    cleanup(handle, storage_root, project_root);
     let _ = std::fs::remove_file(&info_path);
 }
 

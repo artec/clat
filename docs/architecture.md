@@ -1061,6 +1061,12 @@ review. Model trace protocol ids are mapped to human-readable presentation
 labels while the original `RunEvent` vocabulary remains unchanged and available
 as diagnostic metadata.
 
+The Web/PWA about page offers the public GitHub releases page as an explicit
+user-opened recovery link. It opens without an opener or referrer and is not a
+Host RPC destination. Static destination checks allow that exact public URL
+alongside the catalog; they reject unknown destinations and credential-bearing
+URL variants without requiring an exact inventory of visible links.
+
 ### DSH client
 
 `dsh/` implements the HTTP/WebSocket client and host lifecycle for `clat dsh`.

@@ -36,6 +36,7 @@ dropping their useful behavior coverage:
 | Plugin panel wheel/viewport geometry | Catalog search, local-token protection, permissions and installation/configuration outcomes. |
 | SVG presence/count/shape and composer DOM order | Send/stop call the correct action, model selection works, Escape restores focus, and native close closes its panel. |
 | Routine screenshots and repeated translated display strings | Manual screenshots for appearance; stable action identifiers/catalog keys for behavior. |
+| Exact inventory of visible public links | Explicit external-destination allowlist; unknown addresses and credential-bearing URL variants remain rejected. |
 
 Feature-page focus checks cover navigation ownership and keyboard reachability:
 opening a page must not steal focus, and Tab must still reach its actions. They
@@ -809,6 +810,13 @@ native checks are `cargo test -p clat-desktop --locked` and
 Automatic native verification runs in CI's existing four macOS/Windows platform
 jobs with an explicit `--target`; the dedicated Desktop workflow retains manual
 single-target/all-target native checks and optional Windows test installers.
+
+The Desktop planning job validates language keys, parameters and references; it
+does not compare wording or appearance. Install the locked desktop development
+dependencies before invoking this checker, which uses the TypeScript JSON parser.
+Keep this ordering on automatic pushes as well as manual runs. A developer's
+existing `node_modules` directory is not evidence that a clean runner can execute
+the same check.
 
 `bun app:test` covers typed
 assets, archive fencing, version authority, signing environment isolation and

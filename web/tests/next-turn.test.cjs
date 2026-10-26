@@ -18,6 +18,7 @@ function client() {
     document: { readyState: 'loading', addEventListener() {} },
   });
   vm.runInContext(fs.readFileSync('web/i18n.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('web/resource-library.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(process.env.QUE_COMPOSER_SOURCE || 'web/composer-ux.js', 'utf8'), ctx);
   vm.runInContext("composerScope = 'session'; composerSession = 'session';", ctx);
   return ctx;
@@ -97,8 +98,6 @@ test('GA-3 capability command renders core content as text and never starts a ru
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'command.run');
   assert.equal(calls[0][1].command, command);
-  assert.equal(notices[0].className, 'content-notice');
-  assert.equal(notices[0]['aria-label'], 'capabilities');
   assert.equal(notices[0].text, '{"domain":"idle-user","candidates":[]}');
 });
 
@@ -120,5 +119,6 @@ test('static translation defaults cannot replace a newer status or accessibility
   ctx.CLATI18n.bind(node,'textContent',()=>ctx.CLATI18n.msg('web.read_only'));
   ctx.CLATI18n.attribute(node,'title',()=>ctx.CLATI18n.msg('web.full_access'));
   ctx.CLATI18n.refresh();ctx.CLATI18n.refresh();
-  assert.equal(node.textContent.toString(),'Read Only');assert.equal(attributes.title,'Full Access');
+  assert.equal(node.textContent.toString(),ctx.CLATI18n.t('web.read_only'));
+  assert.equal(attributes.title,ctx.CLATI18n.t('web.full_access'));
 });

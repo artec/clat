@@ -13,6 +13,17 @@ function pinnedBefore(steps: Step[], command: string): void {
   expect(setup).toBeGreaterThanOrEqual(0); expect(invoking).toBeGreaterThan(setup);
   expect(String(steps[setup]!.with?.['bun-version'])).toBe('1.3.14');
 }
+test('desktop language validation installs its parser dependency before use on automatic pushes', () => {
+  const steps = workflow('.github/workflows/desktop.yml').jobs.plan!.steps!;
+  const checking = steps.findIndex(step => step.run?.includes('bun scripts/i18n-check.ts'));
+  expect(checking).toBeGreaterThanOrEqual(0);
+  const installing = steps.findIndex(step => step.run?.startsWith('bun install --cwd desktop'));
+  expect(installing).toBeGreaterThanOrEqual(0);
+  expect(installing).toBeLessThan(checking);
+  expect(steps[installing]!.if).toBeUndefined();
+  expect(steps[installing]!.run).toContain('--frozen-lockfile');
+  expect(steps[installing]!.run).toContain('--ignore-scripts');
+});
 test('CI and Docker share the pinned Bun runtime before desktop tooling', () => {
   const desktop = workflow('.github/workflows/desktop.yml');
   const release = workflow('.github/workflows/release.yml');
@@ -170,8 +181,8 @@ test('path planning guards native checks and retains cross-platform tooling with
   expect(scripts.if).toContain("contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')");
   expect(desktop.jobs['web-shell']!.if).toContain("needs.plan.outputs.web == 'true'");
   expect(desktop.jobs.tooling!.if).toContain("needs.plan.outputs.tooling == 'true'");
-  // Automatic planning needs no desktop dependencies or installer matrix.
-  for (const step of desktop.jobs.plan!.steps!.filter(s => s.id === 'assets' || s.run?.startsWith('bun install'))) {
+  // Only the installer matrix is manual; catalog validation has parser dependencies.
+  for (const step of desktop.jobs.plan!.steps!.filter(s => s.id === 'assets')) {
     expect(step.if).toBe("github.event_name == 'workflow_dispatch'");
   }
 });

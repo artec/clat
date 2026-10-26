@@ -8,16 +8,16 @@
 
 pub(crate) mod im;
 pub(crate) mod json_file;
+mod library;
 mod models;
 pub(crate) mod projcache;
 mod schedules;
-mod library;
-mod wechat_users;
 pub(crate) mod sentinel;
 mod session_flags;
 pub(crate) mod settings;
 pub(crate) mod timestamp;
 mod web;
+mod wechat_users;
 pub(crate) mod workspace;
 
 use crate::model::{ModelConfig, ModelProtocol, ProviderCredentials};
