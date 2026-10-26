@@ -245,6 +245,12 @@ owns and reaps it.
 size cap. Unbounded units are omitted and rebuilt from the log. Deleting a
 checkpoint changes performance only, never semantics.
 
+Client delivery recovery scans durable journals without changing the selected
+session. If a concurrent title or write-behind commit invalidates a scan, owner
+lookup retries at most three times and discards each failed attempt's result.
+Duplicate admissions, invalid records, and persistent I/O errors still fail
+closed; pausing or deleting a scheduled task does not bypass receipt recovery.
+
 Cold resume is a single physical log pass. The recovery stream feeds
 projection folding, transcript replay, and usage restoration together. Session
 listing can use checkpoint rows and the bounded first log record instead of

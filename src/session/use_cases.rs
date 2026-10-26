@@ -7,6 +7,7 @@
 //! facade owns everything session-log-shaped.
 
 mod active;
+mod admission;
 mod attachments;
 mod background;
 mod folding_journal;
@@ -824,55 +825,6 @@ impl SessionService {
         let active = guard.as_ref()?;
         let projections = active.projections.lock().expect("projections");
         committed_admission_from_projections(&projections, client_message_id)
-    }
-
-    /// Resolve a durable client admission across every materialized session
-    /// in one project without changing the active selection. Frontend
-    /// recovery uses this when its own mapping write can lag the session
-    /// journal: zero matches means no admission committed, one identifies
-    /// its owner, and multiple matches are corruption.
-    pub(crate) fn find_committed_admission_session(
-        &self,
-        project: &ProjectKey,
-        client_message_id: &str,
-    ) -> Result<Option<(SessionId, crate::message::CommittedAdmission)>, SessionError> {
-        #[cfg(test)]
-        if self
-            .fail_next_admission_owner_scan
-            .swap(false, Ordering::AcqRel)
-        {
-            return Err(SessionError::Io(
-                "intentional admission-owner scan failure".into(),
-            ));
-        }
-        let mut found = None;
-        for summary in self.list_sessions(project)? {
-            let key = SessionKey {
-                project: project.clone(),
-                id: summary.id,
-            };
-            let mut session_admission = None;
-            self.backend.visit_from(&key, 0, &mut |event| {
-                let Some(admission) = committed_admission_from_event(event, client_message_id)
-                else {
-                    return Ok(());
-                };
-                if session_admission.replace(admission).is_some() {
-                    return Err("client delivery is committed more than once in one session".into());
-                }
-                Ok(())
-            })?;
-            let Some(admission) = session_admission else {
-                continue;
-            };
-            if found.is_some() {
-                return Err(SessionError::Corruption(
-                    "client delivery is committed in multiple project sessions".into(),
-                ));
-            }
-            found = Some((key.id, admission));
-        }
-        Ok(found)
     }
 
     /// Fold everything durably committed into the active projections and
