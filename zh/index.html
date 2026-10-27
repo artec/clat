@@ -117,6 +117,16 @@
     }
     .btn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 
+    /* 桌面版截图：hero 按钮下方、数据带上方，窗口卡片式呈现（直链 main 主干图片） */
+    .shot { margin-top: 44px; }
+    .shot img {
+      display: block;
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+    }
+
     /* 版本胶囊：直链最新 Release */
     .release-pill {
       display: inline-block;
@@ -382,7 +392,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.1.4 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.2 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -398,11 +408,14 @@
         <a class="btn" href="#install">安装</a>
         <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.1.4 实测 13.7 MiB），
+      <div class="shot">
+        <img src="https://raw.githubusercontent.com/artec/clat/main/screen.zh.png" alt="CLAT 桌面版截图" loading="lazy">
+      </div>
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.2 实测 13.8 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">13.7 MB</div>
+          <div class="stat-number">13.8 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -474,7 +487,7 @@
         <div class="feature-cell">
           <p class="feature-label">03 — 交互</p>
           <h3>问答、转向与思考流</h3>
-          <p>模型遇到该由你拍板的事会停下来提问；运行中可插入转向消息，Ctrl+Q 把消息排进下一轮队列、自动发送。思考内联为可折叠 Think 行（Ctrl+R 展开），<code>/suggest</code> 按需预览下一条消息提示，采纳才发送。</p>
+          <p>模型遇到该由你拍板的事会停下来提问；运行中可插入转向消息，Ctrl+Q 把消息排进下一轮队列、自动发送。思考内联为可折叠 Think 行（Ctrl+R 展开），每轮结束自动浮现下一步建议，采纳才发送。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — 运行</p>
