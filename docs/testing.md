@@ -50,6 +50,10 @@ Cold-reopen fixtures pass fallible mount results to the shared bounded lease
 retry helper; wrapping a panic-producing mount in `Ok` bypasses that protection.
 Random-port Host checks correlate live or replay terminal frames with the
 submitted client message, so an older turn cannot finish a newer request's wait.
+The port-independent lifecycle inventory covers the `random_port_` cases,
+while pure SSE predicate unit tests remain ordinary tests in the same binary.
+Held-lease fixture probes run on a different thread because Windows named
+mutexes permit recursive acquisition on the owner thread.
 Startup probes extract the actual listener URL without matching translated
 announcement copy. These checks retain storage exclusion and outbound-isolation
 assertions.

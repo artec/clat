@@ -108,7 +108,9 @@ class FixedPortTests(unittest.TestCase):
         import re
         source = (root / "tests/host_random_port_lifecycle.rs").read_text()
         source = source.replace("\r\n", "\n")
-        found = re.findall(r"#\[test\]\s*\nfn (\w+)\(", source)
+        # The same binary also contains pure SSE predicate unit tests. They
+        # are not Host lifecycle equivalents and must not inflate coverage.
+        found = re.findall(r"#\[test\]\s*\nfn (random_port_\w+)\(", source)
         listed = {name for name in ports.EQUIVALENT_TESTS
                   if name.startswith("random_port_")}
         self.assertEqual(set(found), listed,

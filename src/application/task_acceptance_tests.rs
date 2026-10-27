@@ -273,7 +273,17 @@ fn cold_reopen_mount_returns_held_lease_to_the_retry_owner() {
     let (storage, root) = roots("acceptance-reopen-held");
     std::fs::create_dir_all(&root).unwrap();
     let app = mount_checked(&root, &storage, TestBehavior::Success);
-    let attempt = try_mount_checked(&root, &storage, TestBehavior::Success);
+    // Windows named mutexes are reentrant on the owning thread. Probe
+    // from another thread, as the root-lease contract tests already do.
+    let attempt = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                try_mount_checked(&root, &storage, TestBehavior::Success)
+                    .map(|unexpected| unexpected.close().unwrap())
+            })
+            .join()
+            .expect("lease probe thread")
+    });
     assert!(
         matches!(attempt, Err(ref error) if error.to_string().contains(
             "another CLAT process holds this storage root"
