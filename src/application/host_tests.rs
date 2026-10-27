@@ -466,6 +466,7 @@ fn utility_settings_notify_every_attached_project() {
         a.edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: false,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .unwrap();

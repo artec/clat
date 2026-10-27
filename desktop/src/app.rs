@@ -210,16 +210,16 @@ fn fit_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
         window.set_size(size)?;
     }
     let position = window.outer_position()?;
-    window.set_position(tauri::PhysicalPosition::new(
-        position.x.clamp(
-            area.position.x,
+    if let Some((x, y)) = crate::window_frame::confined_position(
+        (position.x, position.y),
+        (area.position.x, area.position.y),
+        (
             area.position.x + width.saturating_sub(size.width) as i32,
-        ),
-        position.y.clamp(
-            area.position.y,
             area.position.y + height.saturating_sub(size.height) as i32,
         ),
-    ))?;
+    ) {
+        window.set_position(tauri::PhysicalPosition::new(x, y))?;
+    }
     Ok(())
 }
 

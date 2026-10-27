@@ -547,6 +547,7 @@ fn prompt_suggestions_enable_persist_and_generate() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .expect("enable suggestions");
@@ -611,6 +612,7 @@ fn suggestion_failure_leaves_bounded_sanitized_evidence() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .expect("enable suggestions");
@@ -692,6 +694,7 @@ fn utility_journey_title_suggestion_adoption_and_restart() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .expect("enable suggestions");
@@ -767,6 +770,7 @@ fn utility_failures_never_leak_provider_text() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .expect("enable suggestions");
@@ -801,6 +805,7 @@ fn utility_failures_never_leak_provider_text() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .expect("enable suggestions");
@@ -832,6 +837,7 @@ fn cancelled_utility_request_reports_cancelled_category() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .expect("enable suggestions");

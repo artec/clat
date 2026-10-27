@@ -102,6 +102,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "wechat.user.remove",
     "draft.open",
     "prompt.suggest",
+    "prompt.followups",
+    "conversation.stats",
     "command.run",
     "prompt.send",
     "steer.send",
@@ -370,6 +372,9 @@ pub(crate) fn dispatch(
     }
     if method == "question.respond" {
         return super::questions::respond(shared, params);
+    }
+    if matches!(method, "conversation.stats" | "prompt.followups") {
+        return super::conversation::dispatch(method, params, shared);
     }
     if method.starts_with("model.") && method != "model.overrides.set" {
         return super::models::dispatch(method, params, shared);

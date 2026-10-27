@@ -824,6 +824,13 @@ pub(crate) struct McpServerStatus {
 }
 
 pub(crate) trait MonitorService: Send + Sync {
+    fn allowance(
+        &self,
+        _config: &ModelConfig,
+        _credentials: &ProviderCredentials,
+    ) -> crate::providers::ProviderAllowance {
+        crate::providers::ProviderAllowance::state("unsupported")
+    }
     fn snapshot(
         &self,
         _config: &ModelConfig,

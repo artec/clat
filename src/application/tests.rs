@@ -588,6 +588,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
     let application = mount(&project, &storage_root, TestBehavior::Success);
     let defaults = application.utility_settings_view().unwrap();
     assert!(defaults.naming_enabled);
+    assert!(defaults.automatic_followups);
     assert!(!defaults.suggestions_enabled);
     assert_eq!(defaults.profile, None);
 
@@ -606,6 +607,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: false,
             suggestions_enabled: true,
+            automatic_followups: false,
             profile: Some("small".into()),
         })
         .unwrap();
@@ -627,6 +629,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
         crate::application::UtilitySettingsView {
             naming_enabled: false,
             suggestions_enabled: true,
+            automatic_followups: false,
             profile: Some("small".into()),
         }
     );
@@ -639,6 +642,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
             .edit_utility_settings(UtilitySettingsEdit {
                 naming_enabled: true,
                 suggestions_enabled: false,
+                automatic_followups: false,
                 profile: Some("missing".into()),
             })
             .is_err(),
@@ -663,6 +667,7 @@ fn manual_prompt_suggestion_uses_shared_utility_without_journal_writes() {
         .edit_utility_settings(crate::application::UtilitySettingsEdit {
             naming_enabled: false,
             suggestions_enabled: true,
+            automatic_followups: true,
             profile: None,
         })
         .unwrap();
@@ -6354,3 +6359,93 @@ fn core_network_application_publication_tracks_aba_session_and_failed_commit() {
 
 #[path = "export_tests.rs"]
 mod export;
+
+#[test]
+fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
+    use crate::ProviderCredentials;
+    use crate::plugins::services::{UtilityFailure, UtilityModel, UtilityOutput, UtilityTask};
+    use crate::test_support::cleanup_tree;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Utility(Arc<AtomicUsize>);
+    impl UtilityModel for Utility {
+        fn enabled(&self, _: UtilityTask) -> bool {
+            true
+        }
+        fn generate(
+            &self,
+            _: UtilityTask,
+            _: &ModelConfig,
+            _: &ProviderCredentials,
+            _: &str,
+            _: &crate::CancelToken,
+        ) -> Result<UtilityOutput, UtilityFailure> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(UtilityOutput {
+                text: r#"["first","second","third"]"#.into(),
+                provider: "test".into(),
+                model: "test".into(),
+            })
+        }
+    }
+    let (storage, project) = roots("followup-lifecycle");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut app = mount(&Project::new(&project), &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    run(&mut app, "original user input").unwrap();
+    let count = Arc::new(AtomicUsize::new(0));
+    app.set_utility_for_test(Arc::new(Utility(count.clone())));
+    app.register_followup_run("completed-1", true);
+    let before = app.committed_seq();
+    let first = app
+        .prepare_followups("completed-1", false)
+        .unwrap()
+        .unwrap();
+    assert!(
+        app.prepare_followups("completed-1", false)
+            .unwrap()
+            .is_none()
+    );
+    first.generate();
+    assert_eq!(app.followup_snapshot().items, ["first", "second", "third"]);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(app.committed_seq(), before);
+    assert!(
+        app.prepare_followups("completed-1", false)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        app.prepare_followups("different-run", false)
+            .unwrap()
+            .is_none()
+    );
+    let stats = app.conversation_stats().unwrap();
+    assert!(stats["context"]["used"].as_u64().unwrap() > 0);
+    assert!(!stats.to_string().contains("original user input"));
+    let original = app.current_session_id().unwrap();
+    app.new_session().unwrap();
+    assert!(app.followup_snapshot().run_id.is_empty());
+    app.switch_session(original).unwrap();
+    assert_eq!(app.followup_snapshot().items, ["first", "second", "third"]);
+    app.register_followup_run("completed-2", true);
+    let late = app
+        .prepare_followups("completed-2", false)
+        .unwrap()
+        .unwrap();
+    app.register_followup_run("completed-3", true);
+    late.generate();
+    assert_eq!(app.followup_snapshot().run_id, "completed-3");
+    assert!(app.followup_snapshot().items.is_empty());
+    run(&mut app, "new user input").unwrap();
+    assert!(app.followup_snapshot().items.is_empty());
+    assert!(
+        app.prepare_followups("completed-1", false)
+            .unwrap()
+            .is_none()
+    );
+    app.register_followup_run("failed-2", false);
+    assert!(app.followup_snapshot().run_id.is_empty());
+    app.close().unwrap();
+    cleanup_tree(&storage);
+    cleanup_tree(&project);
+}

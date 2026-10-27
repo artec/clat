@@ -57,3 +57,40 @@ pub fn configure<R: tauri::Runtime, M: tauri::Manager<R>>(
     let builder = builder.decorations(false);
     builder
 }
+
+/// A fitting pass must not enqueue a redundant native move: on macOS it can
+/// overwrite a saved position whose asynchronous restoration is still pending.
+pub fn confined_position(
+    current: (i32, i32),
+    minimum: (i32, i32),
+    maximum: (i32, i32),
+) -> Option<(i32, i32)> {
+    let fitted = (
+        current.0.clamp(minimum.0, maximum.0),
+        current.1.clamp(minimum.1, maximum.1),
+    );
+    (fitted != current).then_some(fitted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confined_position;
+
+    #[test]
+    fn on_screen_position_does_not_schedule_a_move_over_pending_restore() {
+        for position in [(-900, -400), (-500, -200), (0, 0), (300, 200)] {
+            assert_eq!(confined_position(position, (-900, -400), (300, 200)), None);
+        }
+    }
+
+    #[test]
+    fn disconnected_screen_position_is_still_confined_to_available_work_area() {
+        for position in [(-2000, -1000), (2000, 1000), (-2000, 1000)] {
+            let fitted = confined_position(position, (-900, -400), (300, 200))
+                .expect("an unreachable position must be corrected");
+            assert!((-900..=300).contains(&fitted.0));
+            assert!((-400..=200).contains(&fitted.1));
+            assert_eq!(confined_position(fitted, (-900, -400), (300, 200)), None);
+        }
+    }
+}

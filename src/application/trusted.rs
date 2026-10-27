@@ -186,6 +186,7 @@ impl TrustedProjectApplication {
             todo: ports.todo,
             titler: ports.titler,
             utility: ports.utility,
+            followups: Arc::new(Mutex::new(Default::default())),
             title_worker: None,
             subscribers,
             language_startup_notice,
@@ -746,6 +747,8 @@ impl TrustedProjectApplication {
                 items
                     .into_iter()
                     .map(|item| crate::application::MessageOutlineDto {
+                        renderable: item.renderable,
+                        time_ms: item.time_ms,
                         seq: item.seq,
                         turn: item.turn,
                         role: item.role,

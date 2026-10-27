@@ -10,6 +10,11 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/conversation-experience.js",
+        include_bytes!("../../web/conversation-experience.js"),
+        "application/javascript",
+    ),
+    (
         "/settings-pages.js",
         include_bytes!("../../web/settings-pages.js"),
         "application/javascript",
@@ -224,6 +229,7 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
 // Source modules keep their zero-build authoring surface. A normal function
 // gives each mounted project lexical ownership without eval, imports or frames.
 const PROJECT_MODULES: &[&str] = &[
+    "/conversation-experience.js",
     "/navigation-pages.js",
     "/settings-pages.js",
     "/resource-library.js",

@@ -38,6 +38,19 @@ function indexOfText(facts, needle, kind) {
   return facts.findIndex((entry) => entry.kind === kind && entry.text.includes(needle));
 }
 
+async function expectJournalMessageIdentity(page) {
+  const messages=await page.evaluate(()=>[...dom.transcript.querySelectorAll('.msg')].map(node=>({
+    text:node.querySelector('.body')?.textContent || '', time:Number(node.dataset.time),
+    source:state.history.outline.find(item=>String(item.seq)===node.dataset.seq),
+  })));
+  for(const message of messages) {
+    expect(message.source?.renderable).toBe(true);
+    expect(message.source.preview.length).toBeGreaterThan(0);
+    expect(message.text).toContain(message.source.preview.split('\n')[0]);
+    expect(message.time).toBe(message.source.time_ms);
+  }
+}
+
 test('ORDER-LIVE-1 live DOM: tools stay before the final answer, middle no-text step renders no bubble', async ({ page }) => {
   await openWorkbench(page, hostInfo('ag8-orderlive'));
   await freshSession(page);
@@ -70,6 +83,7 @@ test('ORDER-LIVE-1 live DOM: tools stay before the final answer, middle no-text 
     expect(card.cardState).toBe('done');
     expect(card.inSummary).toBe(true);
   }
+  await expectJournalMessageIdentity(page);
 });
 
 test('ORDER-LIVE-1 reload replay: journal replay keeps the same causal order', async ({ page }) => {

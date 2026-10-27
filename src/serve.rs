@@ -22,6 +22,7 @@
 pub(crate) mod approver;
 mod auth;
 mod automatic;
+mod conversation;
 mod http;
 mod models;
 mod next_turn;

@@ -28,8 +28,11 @@ pub(crate) fn bounded_reason(reason: &str) -> String {
 }
 
 mod bootstrap;
+mod followups;
 mod history;
+pub use followups::{FollowupReply, PreparedFollowups};
 mod jobs;
+mod telemetry;
 pub use jobs::*;
 mod automatic;
 mod automatic_recovery;
@@ -352,6 +355,7 @@ pub struct TrustedProjectApplication {
     /// 例外（2026-08-19 退出延迟修复）：进程退出路径上 join 有
     /// EXIT_JOIN_GRACE 上限，超时放弃（见 `join_with_grace`）——放弃
     /// 等价于一次失败的自动命名（INV-F 静默语义），线程随进程回收。
+    followups: Arc<Mutex<followups::FollowupStore>>,
     title_worker: Option<TitleWorker>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     /// Invalid user-level LSP configuration notice, delivered to the first

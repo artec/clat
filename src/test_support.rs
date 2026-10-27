@@ -321,6 +321,17 @@ impl Model for TestModel {
         request: ModelRequest<'_>,
         events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
+        // Auxiliary followups never consume the scripted foreground run.
+        if request.tools.is_empty()
+            && request
+                .instructions
+                .is_some_and(|text| text.starts_with("Suggest up to three distinct"))
+        {
+            return Ok(response(
+                r#"["Review the changes","Add a focused check","Explain the result"]"#,
+                FinishReason::Completed,
+            ));
+        }
         match &self.behavior {
             TestBehavior::Success => {
                 std::thread::sleep(std::time::Duration::from_millis(100));

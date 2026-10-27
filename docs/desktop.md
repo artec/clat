@@ -56,6 +56,12 @@ On later launches, CLAT reopens the last project viewed in the desktop workbench
 and starts its packaged backend if no Host is running. It rechecks directory
 availability and trust; saved UI preferences never grant trust. If recovery
 fails, the welcome page keeps the reason and lets you choose a project manually.
+Desktop remembers window size and position across a full quit and relaunch.
+Screen fitting leaves an already in-bounds position untouched, avoiding a
+redundant native move that could overwrite pending position restoration.
+The startup logo is a fixed, non-scrolling cover while restoration is pending.
+The welcome page, startup cover and desktop controls use the workbench's neutral
+grayscale surfaces and CLAT blue, including the `#0c416f` primary button color.
 This is a single startup attempt: disconnection or **Stop shared background**
 does not automatically restart the Host. Opening a project restores its normal
 Host-owned session state without sending a prompt or restarting prior work.
@@ -274,3 +280,18 @@ Native open/install/quit checks include unsaved settings and task editors across
 mounted project views, in addition to conversation text, attachments, composition and
 in-flight submissions. Sensitive values are not cached for navigation recovery.
 Browser bridge tests are not evidence of the native OS picker or update installer.
+
+
+## Reading typography
+
+The workbench uses system sans-serif text with a shared reading scale: conversation
+and historical message bodies use 14px regular text with 1.7 line height; navigation,
+forms and management-page copy use 14px, secondary information 13px, and code
+blocks and tool output 13px monospace. Live conversations, history and task
+readers share Markdown paragraph, list, table and code styles. Markdown emphasis
+keeps the regular body weight (400) to avoid dense bold patches in small text;
+document headings and table headers retain medium weight (500). Typography is reviewed visually without
+pixel, wording or DOM-layout CI baselines.
+
+The compact workbench composer, extension modules, message timestamps, automatic
+next steps and context/allowance popover are described in [Using CLAT](usage.md#webdesktop-conversation-reading-and-next-steps).

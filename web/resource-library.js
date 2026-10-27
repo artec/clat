@@ -85,6 +85,8 @@ function decorateConversationBookmarks() {
     const button=pageAction('bookmark',async()=>{
       try{await rpc('library.bookmark.add',{reference});button.setAttribute('aria-pressed','true');CLATI18n.bind(button,'textContent',()=>pageText('bookmarked'));}
       catch(error){updateRunState(error.message);}
-    });button.classList.add('message-bookmark');button.setAttribute('aria-pressed','false');node.append(button);
+    });button.classList.add('message-bookmark');button.setAttribute('aria-pressed','false');
+    let actions=node.querySelector('.message-actions');
+    if(!actions){actions=el('div','message-actions');node.append(actions);}actions.insertBefore(button,actions.querySelector('.message-time'));
   }
 }

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#1b1d1b">
+<meta name="theme-color" content="#242424">
 <title data-i18n="web.clat_local_agent_workbench">CLAT · local agent workbench</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="stylesheet" href="/workbench.css">
@@ -406,6 +406,7 @@
       <fieldset class="utility-options" aria-label="Companion utility switches" data-i18n-aria-label="web.companion_utility_switches">
         <label><input id="utility-naming-enabled" type="checkbox"><span><strong data-i18n="web.continuous_naming">Continuous naming</strong><small data-i18n="web.rename_sessions_after_eligible_turns">Rename sessions after eligible turns.</small></span></label>
         <label><input id="utility-suggestions-enabled" type="checkbox"><span><strong data-i18n="web.manual_suggestions">Manual suggestions</strong><small data-i18n="web.show_a_next_message_hint_from_the_sparkle_button">Show a next-message hint from the sparkle button.</small></span></label>
+        <label><input id="utility-followups-enabled" type="checkbox"><span><strong data-i18n="experience.auto_followups">Automatic followups</strong><small data-i18n="experience.auto_cost">After a completed run, use the utility model to suggest next steps. Provider charges may apply.</small></span></label>
       </fieldset>
       <label for="utility-profile"><span data-i18n="web.utility_model_profile">Utility model profile</span><select id="utility-profile"><option value="" data-i18n="web.use_primary_model">Use primary model</option></select></label>
       <p class="settings-note" data-i18n="web.cost_guard_naming_waits_five_turns_and_five_minutes_between_successful_attempts_ea">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>

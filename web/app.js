@@ -241,6 +241,11 @@ const ICON_PATHS = {
   previous: ['m14 6-6 6 6 6'], next: ['m10 6 6 6-6 6'],
   more: ['M5 12h.01M12 12h.01M19 12h.01'],
   open: ['M7 17 17 7M7 7h10v10'],
+  copy: ['M9 9h12v12H9z', 'M5 15H3V3h12v2'],
+  pin: ['m16 3 5 5-4 1-2 5-2 2-5-5 2-2 5-2z', 'm8 16-5 5'],
+  unpin: ['m16 3 5 5-4 1-1 3M9 9l-1 2 5 5 2-2', 'm8 16-5 5M3 3l18 18'],
+  archive: ['M3 4h18v4H3z', 'M5 8v12h14V8M10 12h4'],
+  restore: ['M3 4h18v4H3z', 'M5 8v12h14V8m-10 7 3-3 3 3m-3-3v5'],
   schedule: ['M5 5h14v15H5zM8 3v4m8-4v4M5 10h14', 'M12 12v3l2 1'],
   jobs: ['M3 4h18v16H3z', 'm7 9 3 3-3 3m6 0h4'],
   history: ['M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z', 'm15 15 6 6M7 8h6m-6 4h4'],
@@ -463,7 +468,7 @@ for (const id of [
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'reading-options', 'permission-options',
-  'utility-naming-enabled', 'utility-suggestions-enabled', 'utility-profile',
+  'utility-naming-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile',
   'utility-settings-save', 'utility-settings-error', 'utility-settings-saved',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
   'wechat-status', 'wechat-counts', 'wechat-qr', 'wechat-qr-image', 'wechat-qr-state',
@@ -779,6 +784,7 @@ function handleReplay(event) {
   }
   if (node && Number.isSafeInteger(event.seq)) {
     node.dataset.seq = String(event.seq);
+    if (node.classList.contains("msg")) messageTime(node,event.time_ms);
     node.dataset.turn = String(event.turn || 0);
     decorateConversationBookmarks();
     updateConversationFind();
@@ -789,7 +795,8 @@ function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started':
-      invalidateSuggestion();
+      liveMessageBase=state.history.outline.at(-1)?.seq ?? -1; liveMessageNodes=[];
+      invalidateSuggestion(); clearRoundFollowups();
       state.runActive = true;
       // ORDER-1/CONT-1：新 run 开工即清配对与终态去重记忆——不同 run 的
       // 同名 call_id 不误合并，旧 run 的重复完成帧不再立第二张终态卡。
@@ -800,7 +807,7 @@ function handleLive(event) {
       updateRunDetail();
       syncInteractionControls();
       state.run = null;
-      addUserMessage(event.prompt, event.content_blocks);
+      liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks));
       break;
     case 'model_requested':
       // ORDER-LIVE-1/O1：不急开回复气泡——气泡由首个正文/reasoning 增量懒
@@ -845,7 +852,7 @@ function handleLive(event) {
       addPermissionNotice(event);
       break;
     case 'permission_denied':
-      addNoticeLine(event.tool + ' — ' + (event.reason || ''), event.type);
+      addPermissionRecord(event.tool, {deny:event.reason || ''}, event.type);
       // 与 TUI 同语义：live 拒绝不带 call id，落定最近一次请求的卡。
       denyToolCard(state.lastCallId, event.reason);
       break;
@@ -867,7 +874,7 @@ function handleLive(event) {
     case 'steering_applied':
       pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
-      addUserMessage(event.text || '', event.content_blocks);
+      liveMessageNodes.push(addUserMessage(event.text || '', event.content_blocks));
       addNoticeLine('', event.type);
       break;
     case 'run_completed':
@@ -927,7 +934,8 @@ function onSubscribed(ctl) {
     state.sessionId = ctl.session_id || null;
   }
   state.history.outline = Array.isArray(ctl && ctl.message_outline) ? ctl.message_outline : [];
-  renderMessageMap();
+  renderMessageMap(); syncMessageTimes(); void refreshUsage();
+  if(!state.runActive)void loadRoundFollowups('', 'read');
   syncPlanModeBadge();
   refreshWorkbench();
   refreshUtilitySettings();
@@ -951,9 +959,9 @@ function onApprovalRequested(ctl) {
   const request = ctl.request || {};
   const card = el('div', 'approval-card');
   card.dataset.rpcId = ctl.rpc_id;
-  const title = el('div', 'title', () => (CLATI18n.msg("web.line_permission_required_value",{value1:((request.tool || CLATI18n.msg("web.unknown_tool", {}, "unknown tool")))},"Permission required — {value1}")));
+  const title = el('div', 'title', () => (CLATI18n.msg("web.line_permission_required_value",{value1:toolDisplayName(request.tool)},"Permission required — {value1}")));
   const meta = el('div', 'note', () => ((request.effect || CLATI18n.msg("web.side_effect", {}, "side effect")) + ' · ' + (request.reason || '')));
-  const args = el('div', 'args', () => (jsonText(request.arguments)));
+  const args = el('div', 'args', () => CLATI18n.msg('web.tool_action.identifier', {name:request.tool || ''}) + '\n' + jsonText(request.arguments));
   const actions = el('div', 'actions');
   const note = el('div', 'note resolution', () => (''));
   const resolve = (text) => {
@@ -991,7 +999,7 @@ function onSettled(ctl) {
   const outcome = (ctl && ctl.outcome) || {};
   if (Array.isArray(ctl && ctl.message_outline)) {
     state.history.outline = ctl.message_outline;
-    renderMessageMap();
+    renderMessageMap(); syncMessageTimes();
   }
   state.lastUsage = outcome.usage || null;
   // CONT-1（C4）/AG5-R1 F4：settled 帧双门——
@@ -1023,6 +1031,7 @@ function onSettled(ctl) {
         break;
       default: console.warn('[clat] unknown settled outcome:', outcome.type);
     }
+    if (outcome.type === 'completed' && rpcId && context.isActive() && !dom.transcript.closest('.hidden,[hidden]') && state.utilitySettings?.automatic_followups !== false) void loadRoundFollowups(rpcId);
     accountUnfinishedWork(outcome.type, rpcId ? `settled:${rpcId}` : `live:${outcome.type}`);
     const idleText = settledIdleText(outcome.type);
     if (idleText && (dom['run-state'].textContent === '' || dom['run-state'].dataset.presentation === 'web.running')) {
@@ -1030,7 +1039,7 @@ function onSettled(ctl) {
     }
   }
   refreshSessions();
-  refreshWorkbench();
+  refreshWorkbench(); void refreshUsage();
   scrollIfNearEnd();
 }
 
@@ -1203,7 +1212,7 @@ function onNotice(ctl) {
     case 'run':
       invalidateSuggestion();
       break;
-    case 'monitor': updateRunState(typeof payload === 'string' ? payload : ''); break;
+    case 'monitor': void refreshUsage(); break;
     case 'compaction':
       if (payload && payload.status === 'started') {
         state.compactionActive = true;
@@ -1364,6 +1373,47 @@ function appendTranscript(node) {
 // Group only adjacent, ordinary process records. No run/turn inference: the
 // message, interactive-card, error and history-fragment boundaries stay intact.
 // Moving neither answers nor existing nodes keeps map seqs and tool state stable.
+// Presentation only: journal identifiers, model text and tool payloads stay intact.
+const TOOL_PRESENTATION_KEYS = {
+  web_search: 'search_web', web_fetch: 'read_web', web_search_prime: 'search_web',
+  read_file: 'read_file', list_files: 'list_files', search: 'search_files',
+  edit_file: 'edit_file', write_file: 'write_file', apply_patch: 'edit_file',
+  run_command: 'run_command', view_image: 'view_image', ask_user: 'ask_user',
+  ask_user_question: 'ask_user', update_plan: 'update_plan', exit_plan_mode: 'finish_plan',
+};
+function toolDisplayName(name) {
+  const raw = String(name || '');
+  let action = Object.hasOwn(TOOL_PRESENTATION_KEYS, raw) ? TOOL_PRESENTATION_KEYS[raw] : null;
+  const external = /^(mcp_|mcp__|plugin_)/.test(raw);
+  if (!action && external) {
+    const suffix = Object.keys(TOOL_PRESENTATION_KEYS).sort((a,b) => b.length-a.length)
+      .find(candidate => raw.endsWith('_' + candidate));
+    action = TOOL_PRESENTATION_KEYS[suffix];
+  }
+  const label = CLATI18n.msg(`web.tool_action.${action || 'other'}`);
+  return external ? CLATI18n.msg('web.tool_action.external', {action: label}) : label;
+}
+function toolPreview(text) {
+  return String(text || '').replace(/\b(?:mcp_[a-zA-Z0-9_]+|plugin_[a-zA-Z0-9_]+|[a-z]+(?:_[a-z]+)+)\b/g,
+    name => TOOL_PRESENTATION_KEYS[name] || /^(mcp_|plugin_)/.test(name) ? toolDisplayName(name) : name);
+}
+function appendToolIdentity(body, name) {
+  if (!name || body.querySelector('.tool-identity')) return;
+  body.append(el('div', 'tool-identity', () => CLATI18n.msg('web.tool_action.identifier', {name})));
+}
+function permissionDisplay(decision) {
+  const kind = typeof decision === 'string' ? decision : Object.keys(decision || {})[0];
+  return CLATI18n.msg(`web.tool_action.${kind === 'allow' ? 'allowed' : ['deny', 'unavailable'].includes(kind) ? 'denied' : 'approval'}`);
+}
+function addPermissionRecord(tool, decision, eventId) {
+  const allowed = decision === 'allow' || Boolean(decision && typeof decision === 'object' && 'allow' in decision);
+  const line = el('details', 'notice-line trace-event' + (allowed ? '' : ' is-warning'));
+  line.append(el('summary', null, () => toolDisplayName(tool) + ' · ' + permissionDisplay(decision)),
+    el('pre', 'tool-identity', () => CLATI18n.msg('web.tool_action.identifier', {name:tool || ''}) + '\n' + jsonText(decision)));
+  line.dataset.event = eventId;
+  return allowed ? appendWorkRecord(line, tool) : appendTranscript(line);
+}
+
 function appendWorkRecord(node, toolName) {
   const target = state.history.replayTarget || dom.transcript;
   let group = target.lastElementChild;
@@ -1380,17 +1430,12 @@ function appendWorkRecord(node, toolName) {
   const records = Number(group.dataset.records) + 1;
   group.dataset.records = String(records);
   if (toolName) group.dataset.tool = toolName;
-  CLATI18n.bind(group.querySelector('.work-summary-label'), "textContent", () => CLATI18n.msg('web.work_records',{count:records,tool:group.dataset.tool?' · '+group.dataset.tool:''}));
+  CLATI18n.bind(group.querySelector('.work-summary-label'), "textContent", () => CLATI18n.msg('web.work_records',{count:records,tool:group.dataset.tool?' · '+toolDisplayName(group.dataset.tool):''}));
   return node;
 }
 
 function addPermissionNotice(event) {
-  const decision = event.decision;
-  const kind = typeof decision === 'string' ? decision : Object.keys(decision || {})[0];
-  const allowed = kind === 'allow';
-  const line = addNoticeLine(event.tool + ' → ' + decisionText(decision), event.type, allowed);
-  if (!allowed) line.classList.add('is-warning');
-  return line;
+  return addPermissionRecord(event.tool, event.decision, event.type);
 }
 
 function addTurnEndNotice(event) {
@@ -1563,14 +1608,14 @@ function addAssistantMessage() {
       reasoningText.appendData(text);
       reasoning.dataset.running = 'true';
       const lines = reasoningText.data.split(/\r?\n/).filter((line) => line.trim());
-      CLATI18n.bind(reasoningPreview, "textContent", () => lines.at(-1) || reasoningText.data);
+      CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(lines.at(-1) || reasoningText.data));
     },
     setReasoning(text) {
       show(reasoning);
       reasoningText.data = text;
       delete reasoning.dataset.running;
       CLATI18n.bind(reasoningRunning, "textContent", () => '');
-      CLATI18n.bind(reasoningPreview, "textContent", () => text.split(/\r?\n/).find((line) => line.trim()) || text);
+      CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(text.split(/\r?\n/).find((line) => line.trim()) || text));
     },
     setTraceKind(eventId) {
       CLATI18n.bind(reasoningTitle, "textContent", () => eventId === 'reasoning_summary_delta' ? CLATI18n.msg("web.summary_short",{},"Summary") : CLATI18n.msg("web.think_short",{},"Think"));
@@ -1580,7 +1625,7 @@ function addAssistantMessage() {
       delete reasoning.dataset.running;
       CLATI18n.bind(reasoningRunning, "textContent", () => '');
       const first = reasoningText.data.split(/\r?\n/).find((line) => line.trim());
-      if (first) CLATI18n.bind(reasoningPreview, "textContent", () => first);
+      if (first) CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(first));
     },
   };
 }
@@ -1589,6 +1634,7 @@ function ensureAssistant() {
   if (!state.run || !state.run.assistant) {
     state.run = state.run || {};
     state.run.assistant = addAssistantMessage();
+    liveMessageNodes.push(state.run.assistant.node);
   }
   return state.run.assistant;
 }
@@ -1649,10 +1695,11 @@ function openToolCard(name, argsText, rawId, key) {
   const summary = el('summary');
   summary.append(
     svgIcon('tool'),
-    el('span', null, () => (name || CLATI18n.msg("web.unknown_tool_2", {}, "Unknown tool"))),
+    el('span', null, () => toolDisplayName(name)),
     el('span', 'tool-state', () => (CLATI18n.msg("web.running_short",{},"Running"))),
   );
   const body = el('div', 'tool-body');
+  appendToolIdentity(body, name);
   if (argsText) body.appendChild(el('div', 'tool-args', () => (argsText)));
   card.append(summary, body);
   if (key) state.toolCards.set(key, card);
@@ -1670,7 +1717,7 @@ function settleToolCard(rawId, explicitKey, outputText, isError, toolName, state
     card = el('details', 'tool-card');
     card.dataset.state = 'pending';
     const summary = el('summary');
-    summary.append(svgIcon('tool'), el('span', null, () => (toolName || CLATI18n.msg("web.tool_short",{},"Tool"))), el('span', 'tool-state'));
+    summary.append(svgIcon('tool'), el('span', null, () => toolDisplayName(toolName)), el('span', 'tool-state'));
     card.append(summary, el('div', 'tool-body'));
     const nameSpan = card.querySelector('.tool-state');
     if (!isError) appendWorkRecord(card, toolName || null);
@@ -1685,6 +1732,7 @@ function settleToolCard(rawId, explicitKey, outputText, isError, toolName, state
   if (stateSpan) CLATI18n.bind(stateSpan, "textContent", () => stateText || (isError ? CLATI18n.msg("web.failed_short",{},"Failed") : CLATI18n.msg("web.done_short",{},"Done")));
   const body = card.querySelector('.tool-body');
   if (body) {
+    appendToolIdentity(body, toolName);
     let output = body.querySelector('.tool-output');
     if (!output) {
       output = el('div', 'tool-output');
@@ -1732,7 +1780,7 @@ function detachWorkRecord(card, group) {
   group.dataset.records = String(rest);
   const label = group.querySelector('.work-summary-label');
   if (label) {
-    CLATI18n.bind(label, "textContent", () => CLATI18n.msg('web.work_records',{count:rest,tool:group.dataset.tool?' · '+group.dataset.tool:''}));
+    CLATI18n.bind(label, "textContent", () => CLATI18n.msg('web.work_records',{count:rest,tool:group.dataset.tool?' · '+toolDisplayName(group.dataset.tool):''}));
   }
   if (rest === 0) group.remove();
 }
@@ -2019,26 +2067,14 @@ function renderMessageMap() {
 }
 
 function bindLiveMessageSeqs(outline) {
-  const used = new Set(
-    [...dom.transcript.querySelectorAll(':scope > .msg[data-seq]')]
-      .map((node) => node.dataset.seq),
-  );
-  for (const role of ['user', 'assistant']) {
-    const nodes = [...dom.transcript.querySelectorAll(`:scope > .msg.${role}:not([data-seq])`)];
-    if (nodes.length === 0) continue;
-    const candidates = outline
-      .filter((item) => item && item.role === role && Number.isSafeInteger(item.seq)
-        && !used.has(String(item.seq)))
-      .slice(-nodes.length);
-    const offset = nodes.length - candidates.length;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const node = nodes[offset + index];
-      const item = candidates[index];
-      node.dataset.seq = String(item.seq);
-      node.dataset.turn = String(item.turn || 0);
-      used.add(node.dataset.seq);
-    }
-  }
+  const pending=outline.filter(item=>item.seq>liveMessageBase && item.renderable);
+  // Pure tool steps have journal identities but no bubble. Never guess by role/tail.
+  if(pending.length!==liveMessageNodes.length || !pending.every((item,index)=>
+    liveMessageNodes[index].classList.contains(item.role==='user'?'user':'assistant')))return;
+  pending.forEach((item,index)=>{
+    liveMessageNodes[index].dataset.seq=String(item.seq);
+    liveMessageNodes[index].dataset.turn=String(item.turn);
+  });
 }
 
 async function jumpToMessage(seq) {
@@ -2126,16 +2162,6 @@ function jsonText(value) {
   try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
 }
 
-function decisionText(decision) {
-  if (decision === null || decision === undefined) return '?';
-  if (typeof decision === 'string') return humanEventName(decision);
-  if (typeof decision === 'object') {
-    const key = Object.keys(decision)[0];
-    return humanEventName(key) + (decision[key] ? ` (${decision[key]})` : '');
-  }
-  return String(decision);
-}
-
 function turnEndText(reason) {
   if (typeof reason === 'string') return humanEventName(reason);
   if (reason && typeof reason === 'object') {
@@ -2181,6 +2207,7 @@ async function refreshWorkbench() {
     const info = await rpc('workbench.info', {});
     if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
     state.workbench = info;
+    void refreshUsage();
     decorateConversationBookmarks();
     void reconcileFileReferences();
     renderNextTurnQueue(info.next_turn_queue || []);
@@ -2349,7 +2376,7 @@ function renderSessions() {
     more.setAttribute('aria-haspopup', 'menu');
     more.addEventListener('click', () => {
       const bounds = more.getBoundingClientRect();
-      openSessionMenu(session, bounds.right, bounds.bottom, more);
+      toggleSessionMenu(session, bounds.right, bounds.bottom, more);
     });
     button.addEventListener('contextmenu', (event) => {
       event.preventDefault();
@@ -2394,20 +2421,26 @@ function closeSessionMenu() {
   sessionMenuSource = null;
 }
 
+function toggleSessionMenu(session, x, y, source) {
+  if (sessionMenu && sessionMenuSource === source) closeSessionMenu();
+  else openSessionMenu(session, x, y, source);
+}
+
 function openSessionMenu(session, x, y, source) {
   closeSessionMenu();
   const menu = el('div', 'session-context-menu');
   menu.setAttribute('role', 'menu');
   CLATI18n.attribute(menu,'aria-label',()=>CLATI18n.msg("web.session_actions", {}, "Session actions"));
   const actions = [
-    [CLATI18n.msg("web.open_session", {}, "Open session"), () => switchSession(session.id), state.switching || state.compactionActive],
-    [CLATI18n.msg("web.rename_session", {}, "Rename session"), () => dom['session-title'].click(), session.id !== state.sessionId || state.switching || state.compactionActive],
-    [CLATI18n.msg("web.copy_session_id", {}, "Copy session ID"), () => navigator.clipboard.writeText(session.id), false],
-    [session.pinned ? CLATI18n.msg("web.unpin_session", {}, "Unpin session") : CLATI18n.msg("web.pin_session", {}, "Pin session"), () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
-    [session.archived ? CLATI18n.msg("web.restore_archived_session", {}, "Restore archived session") : CLATI18n.msg("web.archive_session", {}, "Archive session…"), () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
+    ['chat', 'web.open_session', () => switchSession(session.id), state.switching || state.compactionActive],
+    ['tool', 'web.rename_session', () => dom['session-title'].click(), session.id !== state.sessionId || state.switching || state.compactionActive],
+    ['copy', 'web.copy_session_id', () => navigator.clipboard.writeText(session.id), false],
+    [session.pinned ? 'unpin' : 'pin', session.pinned ? 'web.unpin_session' : 'web.pin_session', () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
+    [session.archived ? 'restore' : 'archive', session.archived ? 'web.restore_archived_session' : 'web.archive_session', () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
   ];
-  for (const [label, action, disabled] of actions) {
-    const button = el('button', '', () => (label));
+  for (const [icon, key, action, disabled] of actions) {
+    const button = el('button');
+    button.append(svgIcon(icon), el('span', '', () => CLATI18n.msg(key)));
     button.type = 'button';
     button.setAttribute('role', 'menuitem');
     button.disabled = disabled;
@@ -2432,13 +2465,30 @@ function openSessionMenu(session, x, y, source) {
   document.body.appendChild(menu);
   sessionMenu = menu;
   sessionMenuSource = source;
-  menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
-  menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
+  positionSessionMenu(menu, x, y, source);
   menu.querySelector('button:not(:disabled)')?.focus();
 }
 
+function positionSessionMenu(menu, x, y, source) {
+  const style = getComputedStyle(menu);
+  const inset = parseFloat(style.getPropertyValue('--menu-inset'));
+  const gap = parseFloat(style.getPropertyValue('--menu-gap'));
+  const toolbar = source.closest('.application-toolbar .header-actions');
+  const anchor = toolbar || (source.classList.contains('session-more') ? source : null);
+  if (anchor) {
+    const bounds = anchor.getBoundingClientRect();
+    x = bounds.right - menu.offsetWidth;
+    y = bounds.bottom + gap;
+    if (y + menu.offsetHeight > innerHeight - inset && bounds.top - gap - menu.offsetHeight >= inset) {
+      y = bounds.top - gap - menu.offsetHeight;
+    }
+  }
+  menu.style.left = Math.max(inset, Math.min(x, innerWidth - menu.offsetWidth - inset)) + 'px';
+  menu.style.top = Math.max(inset, Math.min(y, innerHeight - menu.offsetHeight - inset)) + 'px';
+}
+
 document.addEventListener('pointerdown', (event) => {
-  if (sessionMenu && !sessionMenu.contains(event.target)) closeSessionMenu();
+  if (sessionMenu && !sessionMenu.contains(event.target) && !sessionMenuSource?.contains(event.target)) closeSessionMenu();
 });
 window.addEventListener('resize', () => {
   const focus = rememberSessionFocus();
@@ -2469,6 +2519,7 @@ function renderSuggestion() {
     return;
   }
   CLATI18n.bind(dom['suggestion-text'], "textContent", () => state.suggestion.text);
+  dom.transcript.append(dom['suggestion-panel']);
   show(dom['suggestion-panel']);
 }
 
@@ -2985,8 +3036,10 @@ async function selectModelChoice(choice) {
 
 function renderUtilitySettings(settings, profiles = []) {
   if (!settings) return;
+  if (settings.automatic_followups === false) clearRoundFollowups();
   dom['utility-naming-enabled'].checked = settings.naming_enabled !== false;
   dom['utility-suggestions-enabled'].checked = settings.suggestions_enabled === true;
+  document.getElementById('utility-followups-enabled').checked = settings.automatic_followups !== false;
   const select = dom['utility-profile'];
   const chosen = settings.profile || '';
   select.replaceChildren(el('option', '', () => (CLATI18n.msg("web.use_primary_model", {}, "Use primary model"))));
@@ -3071,6 +3124,7 @@ async function saveUtilitySettings(button) {
     const settings = {
       naming_enabled: dom['utility-naming-enabled'].checked,
       suggestions_enabled: dom['utility-suggestions-enabled'].checked,
+      automatic_followups: document.getElementById('utility-followups-enabled').checked,
       profile: dom['utility-profile'].value || null,
     };
     const section=dom['utility-profile'].closest('[data-settings-panel]'), token=settingsSaveToken(section);
@@ -3095,7 +3149,7 @@ async function saveUtilitySettings(button) {
 dom['utility-settings-save'].addEventListener('click', (event) => saveUtilitySettings(event.currentTarget));
 // 用户动过的表单不被迟到的后台读取重绘（profile 编辑器同款围栏）：
 // uncheck/check 到 save 之间落地的旧响应不得复位勾选（2026-09-16 病历）。
-for (const field of ['utility-naming-enabled', 'utility-suggestions-enabled', 'utility-profile']) {
+for (const field of ['utility-naming-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile']) {
   dom[field].addEventListener('input', () => { utilityFormGeneration++; });
   dom[field].addEventListener('change', () => { utilityFormGeneration++; });
 }
@@ -3699,6 +3753,7 @@ async function requestSuggestion() {
     if (request !== state.suggestionRequest || sessionId !== state.sessionId
       || selectionGeneration !== state.selectionGeneration) return;
     if (result.session_id !== sessionId || result.selection_generation !== selectionGeneration) return;
+    clearRoundFollowups();
     state.suggestion = { text: String(result.text || ''), composerGeneration };
     renderSuggestion();
   } catch (error) {
@@ -4026,6 +4081,7 @@ async function boot() {
   }
 }
 installComposerGuard();
+installConversationExperience();
 boot();
 
 CLATI18n.bind(document.getElementById('connect-help'), 'textContent', () => CLATI18n.msg('web.local_connection_hint', {command:'clat serve',port:2691}));

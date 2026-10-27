@@ -92,6 +92,8 @@ pub struct SessionHistoryPage {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageOutlineItem {
+    pub renderable: bool,
+    pub time_ms: i64,
     pub seq: u64,
     pub turn: u64,
     pub role: String,

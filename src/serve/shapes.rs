@@ -568,6 +568,8 @@ pub(crate) fn with_message_outline(
                     .map(|item| {
                         object(vec![
                             ("seq", json!(item.seq)),
+                            ("time_ms", json!(item.time_ms)),
+                            ("renderable", json!(item.renderable)),
                             ("turn", json!(item.turn)),
                             ("role", Value::String(item.role.clone())),
                             ("preview", Value::String(item.preview.clone())),
@@ -1127,12 +1129,16 @@ mod tests {
                 with_prompt_rpc_id(settled_completed("done", 2, &usage), "prompt-1"),
                 &[
                     crate::MessageOutlineDto {
+                        renderable: true,
+                        time_ms: 0,
                         seq: 7,
                         turn: 2,
                         role: "user".into(),
                         preview: "question".into(),
                     },
                     crate::MessageOutlineDto {
+                        renderable: true,
+                        time_ms: 0,
                         seq: 9,
                         turn: 2,
                         role: "assistant".into(),
@@ -1141,7 +1147,7 @@ mod tests {
                 ],
             )
             .to_string(),
-            r#"{"prompt_rpc_id":"prompt-1","outcome":{"type":"completed","output":"done","turns":2,"usage":{"input_tokens":10,"output_tokens":5,"cached_input_tokens":2}},"message_outline":[{"seq":7,"turn":2,"role":"user","preview":"question"},{"seq":9,"turn":2,"role":"assistant","preview":"answer"}]}"#
+            r#"{"prompt_rpc_id":"prompt-1","outcome":{"type":"completed","output":"done","turns":2,"usage":{"input_tokens":10,"output_tokens":5,"cached_input_tokens":2}},"message_outline":[{"seq":7,"time_ms":0,"renderable":true,"turn":2,"role":"user","preview":"question"},{"seq":9,"time_ms":0,"renderable":true,"turn":2,"role":"assistant","preview":"answer"}]}"#
         );
 
         // notice kind 是开放枚举，已实现形状进入 golden。

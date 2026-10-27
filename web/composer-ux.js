@@ -41,7 +41,7 @@ function observeComposerSession(id, selection) {
   } else if (composerSession !== undefined) {
     dom.prompt.value = composerDrafts.get(scope)?.text || '';
     state.composerGeneration += 1;
-    invalidateSuggestion();
+    invalidateSuggestion(); clearRoundFollowups();
     const hadImages = state.draft.images.length > 0;
     clearDraft();
     if (hadImages) {
@@ -330,10 +330,11 @@ function copyTextButton(label, source) {
 }
 
 function addReplyActions(node, source) {
-  if (node.querySelector(':scope > .message-actions')) return;
-  const actions = el('div', 'message-actions');
-  actions.appendChild(copyTextButton(CLATI18n.msg("web.copy_reply", {}, "Copy reply"), source));
-  node.appendChild(actions);
+  if (node.querySelector('[data-action="copy-reply"]')) return;
+  let actions = node.querySelector(':scope > .message-actions');
+  if (!actions) { actions = el('div', 'message-actions'); node.appendChild(actions); }
+  const copy = copyTextButton(CLATI18n.msg("web.copy_reply", {}, "Copy reply"), source);
+  copy.dataset.action = 'copy-reply'; actions.prepend(copy);
 }
 
 function quoteSelection(text, role, seq) {

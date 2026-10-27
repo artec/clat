@@ -55,13 +55,28 @@ function installWorkbenchTools() {
   trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', 'workbench-tools');
   const menu = el('div', 'workbench-tools hidden'); menu.id = 'workbench-tools'; CLATI18n.attribute(menu,'aria-label',()=>CLATI18n.msg("web.workbench_tools", {}, "Workbench tools"));
   document.getElementById('review-open').before(trigger, menu);
-  for (const id of ['review-open', 'turn-review-open', 'files-open', 'workflow-open', 'tasks-open', 'help-open']) {
+  for (const [id,icon,key] of [
+    ['files-open','folder','experience.files'],
+    ['review-open','tool','experience.changes'],
+    ['turn-review-open','check','experience.turn'],
+    ['tasks-open','jobs','experience.tasks'],
+    ['workflow-open','plan','experience.workflow'],
+    ['help-open','help','web.help'],
+  ]) {
     const button = document.getElementById(id);
-    button.className = 'ghost'; if (id === 'review-open') CLATI18n.bind(button, "textContent", () => CLATI18n.msg("web.workspace_changes", {}, "Workspace changes")); menu.append(button);
+    button.className = 'workbench-tool-action';
+    // Retire the trigger's old text binding; translations now belong to its label.
+    CLATI18n.bind(button,'textContent',()=> '');
+    const label=()=>CLATI18n.msg(key);
+    button.append(svgIcon(icon),el('span','',label));
+    CLATI18n.attribute(button,'aria-label',label);
+    CLATI18n.attribute(button,'title',label);
+    if(id==='help-open') {const divider=el('hr','menu-separator');divider.setAttribute('aria-hidden','true');menu.append(divider);}
+    menu.append(button);
   }
   const close = () => { menu.classList.add('hidden'); trigger.setAttribute('aria-expanded', 'false'); };
   trigger.addEventListener('click', () => { const opened = menu.classList.toggle('hidden'); trigger.setAttribute('aria-expanded', String(!opened)); });
   menu.addEventListener('click', (event) => { if (event.target.closest('button')) close(); });
   menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); trigger.focus(); } });
-  document.addEventListener('click', (event) => { if (!document.querySelector('dialog[open]') && !menu.contains(event.target) && !trigger.contains(event.target)) close(); });
+  document.addEventListener('click', (event) => { if (!menu.contains(event.target) && !trigger.contains(event.target)) close(); });
 }

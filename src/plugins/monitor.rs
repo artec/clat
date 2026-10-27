@@ -8,7 +8,7 @@ use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId,
 };
-use crate::providers::{fetch_deepseek_balance, fetch_glm_quota, fetch_kimi_quota};
+use crate::providers::{ProviderAllowance, fetch_provider_allowance};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -54,7 +54,7 @@ struct CoreMonitor {
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
-type MonitorSnapshot = Arc<Mutex<Option<(ModelConfig, ProviderCredentials, Option<String>)>>>;
+type MonitorSnapshot = Arc<Mutex<Option<(ModelConfig, ProviderCredentials, ProviderAllowance)>>>;
 
 impl CoreMonitor {
     fn start() -> Result<Self, PluginError> {
@@ -93,6 +93,19 @@ impl CoreMonitor {
 }
 
 impl MonitorService for CoreMonitor {
+    fn allowance(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+    ) -> ProviderAllowance {
+        self.latest
+            .lock()
+            .expect("monitor snapshot")
+            .as_ref()
+            .filter(|(old, keys, _)| old.endpoint == config.endpoint && keys == credentials)
+            .map(|(_, _, value)| value.clone())
+            .unwrap_or_else(|| ProviderAllowance::state("loading"))
+    }
     fn snapshot(&self, config: &ModelConfig, credentials: &ProviderCredentials) -> Option<String> {
         self.latest
             .lock()
@@ -101,7 +114,7 @@ impl MonitorService for CoreMonitor {
             .filter(|(previous, keys, _)| {
                 previous.endpoint == config.endpoint && keys == credentials
             })
-            .and_then(|(_, _, value)| value.clone())
+            .and_then(|(_, _, value)| value.legacy())
     }
     fn configure(&self, config: ModelConfig, credentials: ProviderCredentials) {
         let _ = self
@@ -142,13 +155,13 @@ fn monitor_loop(receiver: Receiver<Command>, latest: MonitorSnapshot) {
             continue;
         }
         next_sweep = Instant::now() + REFRESH_INTERVAL;
-        let value = state.as_ref().and_then(fetch_value);
+        let value = state.as_ref().map(fetch_value).unwrap_or_default();
         *latest.lock().expect("monitor snapshot") = state
             .as_ref()
             .map(|(config, credentials)| (config.clone(), credentials.clone(), value.clone()));
         subscribers.retain(|sender| {
             sender
-                .send(ApplicationEvent::MonitorUpdated(value.clone()))
+                .send(ApplicationEvent::MonitorUpdated(value.legacy()))
                 .is_ok()
         });
     }
@@ -170,28 +183,11 @@ fn configure_triggers_fetch(
     }
 }
 
-fn fetch_value((config, credentials): &(ModelConfig, ProviderCredentials)) -> Option<String> {
-    let endpoint = config.endpoint.to_lowercase();
-    let api_key = credentials.value(0)?.trim();
-    if api_key.is_empty() {
-        return None;
-    }
-    if endpoint.contains("bigmodel.cn") || endpoint.contains("z.ai") {
-        fetch_glm_quota(&config.endpoint, api_key)
-    } else if endpoint.contains("deepseek.com") {
-        fetch_deepseek_balance(&config.endpoint, api_key)
-    } else if endpoint.contains("kimi.com/coding") {
-        // 额度接口与模型接口同源 UA 白名单：带上预设注入的 UA（用户
-        // 在 Extra Headers 覆盖过则以用户为准）。Qwen Token Plan 无
-        // 公开余额 API（官方只提供控制台"我的订阅"页），不在此分支。
-        let user_agent = config
-            .extra_headers
-            .get("User-Agent")
-            .and_then(serde_json::Value::as_str);
-        fetch_kimi_quota(&config.endpoint, api_key, user_agent)
-    } else {
-        None
-    }
+fn fetch_value((config, credentials): &(ModelConfig, ProviderCredentials)) -> ProviderAllowance {
+    let Some(key) = credentials.value(0).filter(|key| !key.trim().is_empty()) else {
+        return ProviderAllowance::state("unavailable");
+    };
+    fetch_provider_allowance(config, key.trim())
 }
 
 #[cfg(test)]
@@ -204,11 +200,26 @@ mod tests {
         let mut config = ModelConfig::default();
         let mut credentials = ProviderCredentials::for_protocol(config.protocol);
         credentials.set_value(0, "first-key".into());
-        *monitor.latest.lock().unwrap() =
-            Some((config.clone(), credentials.clone(), Some("87%".into())));
+        *monitor.latest.lock().unwrap() = Some((
+            config.clone(),
+            credentials.clone(),
+            ProviderAllowance {
+                status: "available".into(),
+                updated_at: Some(1),
+                items: vec![crate::providers::AllowanceItem {
+                    kind: "quota".into(),
+                    value: "87".into(),
+                    unit: Some("%".into()),
+                }],
+            },
+        ));
         assert_eq!(
             monitor.snapshot(&config, &credentials).as_deref(),
             Some("87%")
+        );
+        assert_eq!(
+            monitor.allowance(&config, &credentials).items[0].value,
+            "87"
         );
         config.model = "another model on the same account".into();
         assert_eq!(
@@ -218,8 +229,10 @@ mod tests {
         let mut other_keys = credentials.clone();
         other_keys.set_value(0, "second-key".into());
         assert!(monitor.snapshot(&config, &other_keys).is_none());
+        assert!(monitor.allowance(&config, &other_keys).items.is_empty());
         config.endpoint = "https://other.invalid".into();
         assert!(monitor.snapshot(&config, &credentials).is_none());
+        assert!(monitor.allowance(&config, &credentials).items.is_empty());
         monitor.shutdown().unwrap();
     }
 

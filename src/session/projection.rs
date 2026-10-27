@@ -993,6 +993,8 @@ impl Default for MessageOutlineUnit {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct MessageOutlineEntry {
+    renderable: bool,
+    time_ms: i64,
     seq: u64,
     turn: u64,
     role: String,
@@ -1005,7 +1007,7 @@ impl ProjectionUnit for MessageOutlineUnit {
     }
 
     fn state_version(&self) -> u64 {
-        1
+        2
     }
 
     fn as_of(&self) -> i64 {
@@ -1020,13 +1022,26 @@ impl ProjectionUnit for MessageOutlineUnit {
                 }
             }
             "user/message" => self.entries.push(MessageOutlineEntry {
+                renderable: true,
                 seq: event.seq,
+                time_ms: event.time,
                 turn: self.turn,
                 role: "user".into(),
                 preview: preview_lines(&transcript_user_text(&event.data["content"]), 1),
             }),
             "assistant/message" => self.entries.push(MessageOutlineEntry {
+                renderable: event.data["message"]["content"]
+                    .as_array()
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|block| {
+                            matches!(block["type"].as_str(), Some("text" | "reasoning"))
+                                && block["text"]
+                                    .as_str()
+                                    .is_some_and(|text| !text.trim().is_empty())
+                        })
+                    }),
                 seq: event.seq,
+                time_ms: event.time,
                 turn: event
                     .data
                     .get("turn")
@@ -1648,8 +1663,8 @@ mod tests {
         assert_eq!(
             full.snapshot(),
             json!({"entries": [
-                {"seq": 1, "turn": 7, "role": "user", "preview": "question first line"},
-                {"seq": 2, "turn": 7, "role": "assistant", "preview": "answer one\nanswer two\nanswer three"}
+                {"seq": 1,"time_ms":2,"renderable":true, "turn": 7, "role": "user", "preview": "question first line"},
+                {"seq": 2,"time_ms":3,"renderable":true, "turn": 7, "role": "assistant", "preview": "answer one\nanswer two\nanswer three"}
             ], "turn": 7})
         );
 

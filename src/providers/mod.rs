@@ -6,6 +6,12 @@ pub mod openai;
 pub mod openai_compatible;
 pub(crate) mod outbound_guard;
 
+mod allowance;
+#[cfg(test)]
+pub(crate) use allowance::AllowanceItem;
+pub use allowance::ProviderAllowance;
+pub(crate) use allowance::fetch_provider_allowance;
+
 use crate::CancelToken;
 use crate::model::{
     FinishReason, Model, ModelError, ModelErrorKind, ModelEvent, ModelEventSink, ModelRequest,
@@ -309,6 +315,7 @@ fn monitor_agent(timeout: Duration) -> Agent {
 /// 查询 DeepSeek 账户余额（`GET /user/balance`），返回可用总余额文本
 /// （如 "110.00"）。任何失败——网络错误、非 2xx、解析失败——都返回
 /// None，余额展示随之留空，不影响主流程。
+#[allow(dead_code)] // Legacy monitor adapter retained for existing clients.
 pub(crate) fn fetch_deepseek_balance(endpoint: &str, api_key: &str) -> Option<String> {
     fetch_deepseek_balance_with_timeout(endpoint, api_key, MONITOR_HTTP_TIMEOUT)
 }
@@ -348,6 +355,7 @@ fn fetch_deepseek_balance_with_timeout(
 ///
 /// 注意该监控接口的鉴权与模型接口不同：`Authorization` 头直接传
 /// token，不带 Bearer 前缀。
+#[allow(dead_code)] // Legacy monitor adapter retained for existing clients.
 pub(crate) fn fetch_glm_quota(endpoint: &str, api_key: &str) -> Option<String> {
     fetch_glm_quota_with_timeout(endpoint, api_key, MONITOR_HTTP_TIMEOUT)
 }
@@ -414,6 +422,7 @@ fn parse_glm_quota(value: &serde_json::Value) -> Option<String> {
 /// `extra_headers`），否则 403。响应 `limits[0].detail.{limit,
 /// remaining}` 是 5 小时滚动窗口，剩余百分比 = remaining/limit×100
 /// （与 GLM 的 Token 槽位同语义）；失败返回 None，不影响主流程。
+#[allow(dead_code)] // Legacy monitor adapter retained for existing clients.
 pub(crate) fn fetch_kimi_quota(
     endpoint: &str,
     api_key: &str,

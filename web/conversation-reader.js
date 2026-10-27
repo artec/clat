@@ -41,8 +41,8 @@ function createConversationReader(parent, reference, {trusted = false, editable 
   parent.append(scope, status, list, controls);
   function messageNode(message) {
     const node = el('article', 'reader-message ' + message.role); node.dataset.seq = String(message.reference.seq);
-    node.append(el('small', '', () => pageText(message.role)), el('small', 'reader-time', ()=>new Date(message.time).toLocaleString(CLATI18n.locale)));
-    const body = el('div', 'body'); renderMarkdown(body, message.text); node.append(body);
+    node.append(el('small', '', () => pageText(message.role)));
+    const body = el('div', 'body rich-text'); renderMarkdown(body, message.text); node.append(body);
     const actions = el('div', 'reader-actions');
     actions.append(pageAction('copy', () => void navigator.clipboard.writeText(message.text)), pageAction('bookmark', async () => {
       try{await rpc('library.bookmark.add', {reference: message.reference});
@@ -50,7 +50,7 @@ function createConversationReader(parent, reference, {trusted = false, editable 
     }));
     if(message.reference.project!==state.workbench?.project?.root){actions.lastChild.remove();actions.append(el('small','settings-note',()=>pageText('other_project')));}
     for(const attachment of message.attachments || []) actions.append(pageAction('view_attachment',()=>showHistoricalAttachment(message.reference,attachment,trusted)));
-    node.append(actions);
+    node.append(actions); messageTime(node,message.time);
     if (message.truncated) node.append(el('p', 'settings-note', () => pageText('bounded_message')));
     return node;
   }

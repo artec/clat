@@ -158,3 +158,20 @@ initialize a binding once; a later status/attribute binding owns that node, so a
 language refresh cannot turn an online connection into a connecting label or
 replace the current permission mode with a placeholder. CSS classes, action IDs
 and other selectors never come from translated labels.
+
+## Human-readable capability labels
+
+Primary Web/Desktop conversation labels describe actions in ordinary language,
+using the shared English, Simplified Chinese and Traditional Chinese catalogs.
+Built-in names such as `web_search` appear as a translated action; recognized
+MCP/plugin actions also identify their external origin. Unknown capabilities
+receive a generic tool label rather than an invented description.
+
+Tool cards and permission records retain technical names and original diagnostics
+in expandable details. Collapsed reasoning previews can adapt identifiers;
+expanded model text and copied model content remain unchanged. This is a
+presentation-only conversion: journals, source documents, protocol IDs, tool
+arguments/results and Agent context retain their original machine-readable data.
+New capability presentation must follow this separation. Translation keys and
+parameters are checked automatically; label wording and visual design are reviewed
+manually and must not become fixed CI expectations.

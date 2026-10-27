@@ -68,6 +68,7 @@ impl UtilityModel for DefaultUtilityModel {
         match task {
             UtilityTask::SessionTitle => settings.naming_enabled,
             UtilityTask::PromptSuggestion => settings.suggestions_enabled,
+            UtilityTask::Followups => settings.automatic_followups,
         }
     }
 
@@ -227,6 +228,9 @@ fn instructions(task: UtilityTask) -> &'static str {
              within 12 CJK characters. Output only the title text: no quotes, \
              no trailing punctuation beyond what is natural, no explanation."
         }
+        UtilityTask::Followups => {
+            "Suggest up to three distinct useful next user messages for the conversation. Use its language. Return only a JSON array of strings, no Markdown or explanation. Each string must be brief. Never claim an action was performed."
+        }
         UtilityTask::PromptSuggestion => {
             "Predict one useful next user message for the coding assistant conversation below. \
              Use the same language as the conversation. Output only the proposed user message, \
@@ -240,7 +244,7 @@ fn output_limit(task: UtilityTask) -> u32 {
         // 预算必须覆盖"低档思考 + 一行正文"：思考不可关闭的模型上，
         // 32/96 会被思考 token 耗尽（TITLE-1/SUG-1 根因）。
         UtilityTask::SessionTitle => 512,
-        UtilityTask::PromptSuggestion => 768,
+        UtilityTask::PromptSuggestion | UtilityTask::Followups => 768,
     }
 }
 

@@ -116,6 +116,8 @@ pub struct WorkbenchSessionSnapshot {
 /// Bounded, frontend-neutral navigation row for one durable chat message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageOutlineDto {
+    pub renderable: bool,
+    pub time_ms: i64,
     pub seq: u64,
     pub turn: u64,
     pub role: String,

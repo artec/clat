@@ -53,6 +53,8 @@ pub(crate) struct UtilitySettingsRow {
     pub naming_enabled: bool,
     #[serde(rename = "suggestionsEnabled")]
     pub suggestions_enabled: bool,
+    #[serde(default = "automatic_followups_default")]
+    pub automatic_followups: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
 }
@@ -68,6 +70,7 @@ impl Default for UtilitySettingsRow {
         Self {
             naming_enabled: true,
             suggestions_enabled: false,
+            automatic_followups: true,
             profile: None,
         }
     }
@@ -267,4 +270,8 @@ pub(crate) fn is_trusted_read_only(root: &Path, project_key: &str) -> Result<boo
         ));
     }
     Ok(file.projects.contains_key(project_key))
+}
+
+fn automatic_followups_default() -> bool {
+    true
 }

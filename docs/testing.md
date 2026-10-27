@@ -31,6 +31,7 @@ dropping their useful behavior coverage:
 
 | Removed presentation contract | Retained coverage |
 | --- | --- |
+| Code-block border width and Markdown header alignment | Fenced-code text, table cells, escaped pipes, safe links and rejection of raw HTML remain tested; visual treatment is manually reviewed. |
 | Shell dimensions, title ellipsis and exact reading offsets | Full user titles survive rename/reload; loading history keeps the reading message visible. |
 | Repeated language × collapsed-navigation checks and control spacing | Navigation retains drafts; live language switching retains composition, selection and pending operations. |
 | Plugin panel wheel/viewport geometry | Catalog search, local-token protection, permissions and installation/configuration outcomes. |

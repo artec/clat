@@ -15,7 +15,10 @@ test('the global extension retains an open file and can be controlled from every
     const preview = page.locator('#file-browser pre');
     await expect(preview).toHaveText('Retained global file review', LIVE);
     for (const id of ['nav-resources', 'nav-tasks', 'nav-history', 'nav-extensions', 'nav-settings', 'nav-help']) {
+      await page.click('#tools-open');
+      await expect(page.locator('#workbench-tools')).toBeVisible();
       await page.click('#' + id);
+      await expect(page.locator('#workbench-tools')).toBeHidden();
       await expect(preview).toBeVisible();
       await page.click('#inspector-toggle'); await expect(preview).toBeHidden();
       await page.click('#inspector-toggle');

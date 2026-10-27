@@ -19,7 +19,7 @@ function createApplicationToolbar(shell) {
     const session = state.sessions.find(item => item.id === state.sessionId);
     if (!session) return;
     const rect = more.getBoundingClientRect();
-    openSessionMenu(session, rect.right, rect.bottom + 4, more);
+    toggleSessionMenu(session, rect.right, rect.bottom + 4, more);
   });
   actions.prepend(more);
   document.getElementById('context-status').before(document.querySelector('.conversation-meta'));

@@ -23,6 +23,8 @@ pub struct ModelSettingsView {
 pub struct UtilitySettingsView {
     pub naming_enabled: bool,
     pub suggestions_enabled: bool,
+    #[serde(default = "automatic_followups_default")]
+    pub automatic_followups: bool,
     pub profile: Option<String>,
 }
 
@@ -31,6 +33,8 @@ pub struct UtilitySettingsView {
 pub struct UtilitySettingsEdit {
     pub naming_enabled: bool,
     pub suggestions_enabled: bool,
+    #[serde(default = "automatic_followups_default")]
+    pub automatic_followups: bool,
     pub profile: Option<String>,
 }
 
@@ -208,6 +212,7 @@ impl TrustedProjectApplication {
         Ok(UtilitySettingsView {
             naming_enabled: settings.naming_enabled,
             suggestions_enabled: settings.suggestions_enabled,
+            automatic_followups: settings.automatic_followups,
             profile: settings.profile,
         })
     }
@@ -226,9 +231,13 @@ impl TrustedProjectApplication {
             .save_utility_settings(crate::plugins::services::UtilitySettings {
                 naming_enabled: edit.naming_enabled,
                 suggestions_enabled: edit.suggestions_enabled,
+                automatic_followups: edit.automatic_followups,
                 profile,
             })
             .map_err(store_error)?;
+        if !edit.automatic_followups {
+            self.cancel_followups();
+        }
         self.host_storage.publish_model_settings();
         Ok(())
     }
@@ -432,4 +441,8 @@ fn validate_edit(edit: &ModelProfileEdit) -> Result<(), ApplicationError> {
         ));
     }
     Ok(())
+}
+
+fn automatic_followups_default() -> bool {
+    true
 }

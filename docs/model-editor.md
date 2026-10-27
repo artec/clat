@@ -57,7 +57,7 @@ upgraded in place to `deepseek-flash` (vision slot inherited), and saved
 configurations referencing the old ids simply stop resolving to a preset.
 
 Most presets also declare a companion utility model used only for automatic
-session naming and manual prompt suggestions: `deepseek-v4-pro` uses
+session naming, manual prompt suggestions and automatic Web/Desktop next steps: `deepseek-v4-pro` uses
 `deepseek-flash`, `glm-5.3` uses `glm-5.3-flash`, `qwen3.8-max` uses
 `qwen3.8-flash`, `kimi-k3` uses `kimi-for-coding`, and `hy4-preview` uses
 `hy3`; every other preset uses the primary model itself. See

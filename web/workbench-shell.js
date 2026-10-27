@@ -58,14 +58,20 @@ function createShellInspector(shell) {
   const plan = el('div', 'context-plan'); plan.id = 'context-plan';
   const resources = el('section', 'context-resources'); resources.id = 'context-resources';
   overview.append(status, plan, resources, details);
-  const tabs = el('nav', 'context-tabs');
-  for (const [id, icon, label, run] of [
-    ['context-overview-open', 'info', 'overview', () => shell.overview()],
-    ['context-files-open', 'open', 'files', () => document.getElementById('files-open').click()],
-    ['context-changes-open', 'tool', 'changes', () => dom['review-open'].click()],
-    ['context-tasks-open', 'jobs', 'run_tasks', () => document.getElementById('tasks-open').click()],
-  ]) tabs.append(shellButton(id, icon, () => shellText(label), run));
-  scroll.append(tabs, overview);
+  const back = shellButton('context-overview-open', 'previous', () => experienceText('overview'), () => shell.overview());
+  back.classList.add('extension-back'); back.hidden = true;
+  const cards = el('nav', 'extension-modules');
+  for (const [id, icon, key, trigger] of [
+    ['context-files-open','folder','files','files-open'],
+    ['context-changes-open','tool','changes','review-open'],
+    ['context-turn-open','check','turn','turn-review-open'],
+    ['context-tasks-open','jobs','tasks','tasks-open'],
+    ['context-workflow-open','plan','workflow','workflow-open'],
+  ]) {
+    const button = shellButton(id,icon,() => experienceText(key),() => document.getElementById(trigger).click());
+    button.append(el('small','',() => experienceText(key+'_hint'))); cards.append(button);
+  }
+  overview.insertBefore(cards,details); scroll.append(back,overview);
   for (const [id, trigger] of [
     ['file-browser', 'files-open'], ['workspace-review', 'review-open'], ['turn-review', 'turn-review-open'],
     ['workflow-details', 'workflow-open'], ['task-review', 'tasks-open'],
@@ -122,6 +128,7 @@ function shellShow(shell, id, updateRoute = true) {
     if (context.isActive() && updateRoute && !shell.routing) context.navigatePage(seat.route);
   } else {
     document.getElementById('context-overview').hidden = true;
+    document.getElementById('context-overview-open').hidden = false;
     setInspector('open');
   }
   seat.dialog.classList.remove('hidden');
@@ -153,6 +160,7 @@ function shellOverview(shell) {
     seat.dialog.classList.add('hidden');
   }
   document.getElementById('context-overview').hidden = false;
+  document.getElementById('context-overview-open').hidden = true;
   setInspector('open'); void refreshShellContext();
 }
 
@@ -192,6 +200,7 @@ async function refreshShellContext() {
     if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;
     shell.workflow = value;
     const status = document.getElementById('context-status');
+    status.hidden = !value.busy;
     CLATI18n.bind(status, 'textContent', () => CLATI18n.msg(value.busy ? 'web.running_short' : 'web.idle'));
     const target = document.getElementById('context-plan'); target.replaceChildren();
     const title = el('h2', '', () => shellText('plan'));
@@ -200,7 +209,7 @@ async function refreshShellContext() {
       const card = el('article', 'plan-artifact');
       card.append(el('h3', '', () => shellText('approved_plan')), el('p', 'plan-excerpt', value.approved_plan.text), open);
       target.append(title, card);
-    } else target.append(title, el('p', 'context-note', () => value.plan_mode ? shellText('planning') : shellText('no_plan')), open);
+    } else if(value.plan_mode) target.append(title,el('p','context-note',()=>shellText('planning')),open);
     if (value.todos?.length) {
       target.append(el('h2', '', () => shellText('run_tasks')));
       for (const todo of value.todos.slice(0, 8)) target.append(el('p', 'context-todo', () => todo.content));
@@ -210,14 +219,17 @@ async function refreshShellContext() {
     if (badge) badge.disabled = value.busy || shell.planPending;
     document.getElementById('add-plan').disabled = value.busy || shell.planPending;
     refreshShellResources();
-  } catch (_) { /* Existing connection/status surfaces retain diagnostics. */ }
+  } catch (_) {
+    const status=document.getElementById('context-status');status.hidden=false;
+    CLATI18n.bind(status,'textContent',()=>experienceText('unavailable'));
+  }
 }
 
 function refreshShellResources() {
   const target = document.getElementById('context-resources');
   target.replaceChildren(el('h2', '', () => shellText('resources')));
   const sources = [...dom.transcript.querySelectorAll('.message-attachment')];
-  if (!sources.length) target.append(el('p', 'context-note', () => shellText('no_loaded_attachments')));
+  target.hidden = sources.length === 0; if(!sources.length)return;
   for (const source of sources.slice(-8)) {
     const button = shellButton('', 'vision', () => source.querySelector('.message-attachment-label').textContent, () => source.click());
     target.append(button);
@@ -245,6 +257,7 @@ function createShellComposer(shell) {
   group(() => shellText('work_mode'), [
     ['add-plan', 'plan', () => shellText('plan_mode'), () => toggleShellPlan()],
     ['add-goal', 'check', () => shellText('goal'), () => document.getElementById('workflow-open').click()],
+    ['add-suggestion','trace',()=>experienceText('manual_suggestion'),()=>requestSuggestion()],
   ]);
   group(() => shellText('capabilities'), [
     ['add-skills', 'tool', () => shellText('skills'), () => { dom.prompt.focus(); dom.prompt.value += (dom.prompt.value ? '\n' : '') + '/'; state.composerGeneration++; resizePrompt(); dom.prompt.dispatchEvent(new Event('input', {bubbles:true})); }],

@@ -870,6 +870,11 @@ impl ServeShared {
                     Err(_) => settled,
                 };
                 let completed = settled["outcome"]["type"] == "completed";
+                shared
+                    .app
+                    .lock()
+                    .expect("application")
+                    .register_followup_run(&rpc_id, completed);
                 shared.finish_run(super::shapes::ctl_data(&settled));
                 let _ = handle.join();
                 if completed && !shared.is_shutting_down() {

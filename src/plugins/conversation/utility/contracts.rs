@@ -5,6 +5,7 @@ use crate::model::{CancelToken, ModelConfig, ProviderCredentials};
 pub(crate) struct UtilitySettings {
     pub(crate) naming_enabled: bool,
     pub(crate) suggestions_enabled: bool,
+    pub(crate) automatic_followups: bool,
     pub(crate) profile: Option<String>,
 }
 
@@ -12,6 +13,7 @@ pub(crate) struct UtilitySettings {
 pub(crate) enum UtilityTask {
     SessionTitle,
     PromptSuggestion,
+    Followups,
 }
 
 pub(crate) struct UtilityOutput {

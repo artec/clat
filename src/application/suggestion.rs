@@ -3,6 +3,7 @@ use super::*;
 use crate::plugins::services::{UtilityFailure, UtilityModel, UtilityTask};
 
 pub struct PreparedPromptSuggestion {
+    task: UtilityTask,
     utility: Arc<dyn UtilityModel>,
     config: crate::ModelConfig,
     credentials: crate::ProviderCredentials,
@@ -24,7 +25,7 @@ impl PreparedPromptSuggestion {
     /// 只返回预览文本——绝不自动发送、不写 journal、不触碰草稿。
     pub fn generate(self, cancel: &crate::CancelToken) -> Result<PromptSuggestion, String> {
         let outcome = self.utility.generate(
-            UtilityTask::PromptSuggestion,
+            self.task,
             &self.config,
             &self.credentials,
             &self.context,
@@ -73,6 +74,13 @@ impl TrustedProjectApplication {
     pub fn prepare_prompt_suggestion(
         &mut self,
     ) -> Result<PreparedPromptSuggestion, ApplicationError> {
+        self.prepare_suggestion(UtilityTask::PromptSuggestion)
+    }
+
+    pub(super) fn prepare_suggestion(
+        &mut self,
+        task: UtilityTask,
+    ) -> Result<PreparedPromptSuggestion, ApplicationError> {
         if self
             .active_run
             .as_ref()
@@ -87,7 +95,7 @@ impl TrustedProjectApplication {
         {
             return Err(ApplicationError::new("compaction is active"));
         }
-        if !self.utility.enabled(UtilityTask::PromptSuggestion) {
+        if !self.utility.enabled(task) {
             return Err(ApplicationError::new("prompt suggestions are disabled"));
         }
         let session_id = self
@@ -102,6 +110,7 @@ impl TrustedProjectApplication {
                 ApplicationError::new("conversation has no text for a prompt suggestion")
             })?;
         Ok(PreparedPromptSuggestion {
+            task,
             utility: Arc::clone(&self.utility),
             config,
             credentials,

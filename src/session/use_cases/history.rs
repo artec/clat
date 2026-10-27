@@ -155,6 +155,11 @@ impl SessionService {
                     .iter()
                     .filter_map(|entry| {
                         Some(MessageOutlineItem {
+                            renderable: entry
+                                .get("renderable")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            time_ms: entry.get("time_ms").and_then(Value::as_i64).unwrap_or(0),
                             seq: entry.get("seq")?.as_u64()?,
                             turn: entry.get("turn")?.as_u64()?,
                             role: entry.get("role")?.as_str()?.to_owned(),

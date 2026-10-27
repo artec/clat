@@ -1412,9 +1412,8 @@ the PWA header/sidebar ellipsize long titles visually within the available
 width; what is stored stays whole and manual renames (bounded separately at
 60 characters) always take precedence.
 Manual prompt suggestions
-are off by default. In the PWA, the sparkle button at the upper-right of the
-composer is muted and disabled until the policy, session, and idle state allow
-a request; when enabled, press it to request one next-message hint. In the TUI,
+are off by default. In Web/Desktop, use the add menu to request one next-message
+hint when the policy, session and idle state allow it. In the TUI,
 press **Ctrl+G** (Control, not Command, on macOS) or enter `/suggest`.
 This shortcut does not require configuring Option as Meta in the terminal;
 **Alt+S** remains a compatible alias. The composer border shows the faint shortcut,
@@ -1670,6 +1669,16 @@ it uses the supplied vector mark, with a white glyph on the official `#0c416f`
 background when selected. There is no separate logo/home button; the unselected
 mark follows the current theme. Navigation glyphs use optical sizing to balance
 their different shapes and internal whitespace, with consistent stroke weight.
+Conversation action menus in both the toolbar and session list share the Tools
+menu's icon-and-label rows, popup sizing and theme treatment. Toolbar popups keep
+a small inset from the content's rounded edges; list popups anchor to their own
+button and stay within the viewport.
+Click the same three-dot button again to close its menu, or click outside it.
+The workbench uses neutral grayscale surfaces, text and borders in both themes.
+CLAT's `#0c416f` brand blue anchors primary buttons and the selected brand mark;
+blue foreground accents are lighter in dark mode for readability. Green denotes
+success or added changes, rather than ordinary backgrounds or feature identity.
+The base stylesheet owns the palette so feature pages and overlays share it.
 Feature-page navigation does not automatically focus a content control. Keyboard
 users retain navigation focus and can Tab into the page.
 The application toolbar shows the current
@@ -1998,7 +2007,7 @@ Current methods are:
   `wechat.binding.unbind`, `wechat.pairing.create`, `wechat.user.allow`,
   `wechat.user.remove`
 - `draft.open`
-- `prompt.suggest`, `command.run`, `prompt.send`, `steer.send`, `run.cancel`
+- `prompt.suggest`, `prompt.followups`, `conversation.stats`, `command.run`, `prompt.send`, `steer.send`, `run.cancel`
 - `approval.respond`
 - `question.respond`
 
@@ -2750,3 +2759,45 @@ installable packages. WeChat settings lists paired and manually authorized users
 complete revocation removes both grant sources. Web settings separates fetch mode
 from search credentials. Configuration is not a successful connectivity check.
 Help groups getting started, workflows, keyboard navigation and troubleshooting.
+
+
+### Web/Desktop conversation reading and next steps
+
+The right extension area offers project files, all workspace changes, captured
+run actions, current process output, and plans/goals as separate modules. Each
+opens inside the extension area and returns to its overview. Files and run
+captures retain their original scopes; a captured action is not the whole Git
+working tree. Switching feature pages does not close the extension area.
+The toolbar Tools menu offers the same modules with compact icon-and-label rows,
+followed by Help, using the same popup treatment as conversation actions.
+It is shared by every feature page; clicking navigation or outside the menu
+closes it even while a side module remains open.
+
+Message actions reveal the journal date/time on hover or keyboard focus (available from message actions
+on touch devices). Missing timestamps are unavailable, never replaced
+by the page-load time. Bookmark precedes the timestamp in message actions.
+Scrollbars across lists, conversation panels, side modules and nested Markdown
+use transparent tracks in both themes, with theme-aware draggable thumbs.
+The compact composer retains its editor and bottom
+controls. Plan uses the bottom button's active state; pending questions,
+approvals, queued messages and recoverable status appear outside the editor.
+
+Automatic next-step suggestions are enabled by default independently of manual
+suggestions. A completed foreground run can request up to three suggestions
+from the utility model; failures/cancellation and historical replay do not
+initiate this request. This can incur provider charges. Disable it in intelligent
+assistance settings. Selecting an option appends it to the retained draft and
+never sends it. The next run clears the previous options. Duplicate requests
+from multiple windows share one generation per completed run. Results are
+non-durable and bounded in Host memory (latest result for up to 64 conversations
+per mounted project); refresh can read existing results, while a Host restart
+never regenerates old suggestions. An explicit retry is offered after failure.
+Suggestions do not enter the conversation journal or model context.
+
+The context ring beside the model opens a usage popover by hover, focus or click.
+It shows the estimated next-request input versus configured capacity, excluding
+unsent drafts, plus the session's last request and the current model route's
+cumulative input/output/cache usage. Context estimates are not cumulative spend.
+Provider allowances retain units/currencies and update times. Unsupported,
+loading, failed and zero balances are distinct. The popover reads the existing
+monitor cache; hovering never causes an additional provider balance query.

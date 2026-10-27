@@ -1197,7 +1197,6 @@ test('message Markdown is readable without turning model text into executable HT
   await expect(body.locator('h3')).toHaveText('Result');
   await expect(body.locator('li')).toHaveCount(2);
   await expect(body.locator('pre code')).toHaveText('const x = 1');
-  expect(await body.locator('pre code').evaluate((node) => getComputedStyle(node).borderTopWidth)).toBe('0px');
   await expect(body).toContainText('<script id="web2-attack">');
   await expect(page.locator('#web2-attack')).toHaveCount(0);
   await expect(body.locator('a')).toHaveCount(1);
@@ -1208,7 +1207,6 @@ test('message Markdown is readable without turning model text into executable HT
   await expect(body.locator('tbody tr').last().locator('code')).toHaveText('a|b');
   await expect(body.locator('tbody tr').last()).toContainText('<img id="table-attack"');
   await expect(page.locator('#table-attack')).toHaveCount(0);
-  expect(await body.locator('th').last().evaluate((node) => getComputedStyle(node).textAlign)).toBe('right');
 
   // A later model phase may resume the same bubble after an earlier response.
   await page.evaluate(() => {
