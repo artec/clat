@@ -69,7 +69,11 @@ function createShellInspector(shell) {
     ['context-workflow-open','plan','workflow','workflow-open'],
   ]) {
     const button = shellButton(id,icon,() => experienceText(key),() => document.getElementById(trigger).click());
-    button.append(el('small','',() => experienceText(key+'_hint'))); cards.append(button);
+    const content = el('span', 'extension-module-content');
+    const copy = el('span', 'extension-module-copy');
+    copy.append(button.querySelector('.shell-label'), el('small','',() => experienceText(key+'_hint')));
+    content.append(button.querySelector('svg'), copy);
+    button.append(content); cards.append(button);
   }
   overview.insertBefore(cards,details); scroll.append(back,overview);
   for (const [id, trigger] of [

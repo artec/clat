@@ -434,9 +434,11 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
   .transcript-scroll::-webkit-scrollbar-track, .shell-pages::-webkit-scrollbar-track,
   .inspector-scroll::-webkit-scrollbar-track { margin-block: 16px; }
 }
-.extension-modules { display: grid; gap: 10px; margin-top: 20px; }
-.extension-modules .shell-button { display: grid; grid-template-columns: 32px minmax(0,1fr); gap: 3px 10px; width: 100%; padding: 14px 12px; text-align: left; border: 1px solid var(--line); border-radius: 12px; }
-.extension-modules svg { grid-row: span 2; align-self: center; width: 22px; height: 22px; }
+.extension-modules { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+.extension-modules .shell-button { display: block; flex: none; width: 100%; height: auto; padding: 14px 12px; text-align: left; border: 1px solid var(--line); border-radius: 12px; }
+.extension-module-content { display: flex; align-items: center; gap: 10px; width: 100%; }
+.extension-modules svg { flex: 0 0 22px; width: 22px; height: 22px; }
+.extension-module-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .extension-modules .shell-label { font-weight: 400; }
 .extension-modules small { color: var(--text-muted); line-height: 1.5; font-size: var(--text-size-secondary); }
 .extension-back { margin: 4px 12px 12px; }

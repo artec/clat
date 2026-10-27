@@ -39,12 +39,11 @@ impl TrustedProjectApplication {
         }
         if completed {
             // Bound ephemeral memory independently of the durable conversation catalog.
-            if store.sessions.len() >= 64 {
-                if let Some(key) = store.sessions.keys().next().cloned() {
-                    if let Some(old) = store.sessions.remove(&key) {
-                        old.cancel.cancel();
-                    }
-                }
+            if store.sessions.len() >= 64
+                && let Some(key) = store.sessions.keys().next().cloned()
+                && let Some(old) = store.sessions.remove(&key)
+            {
+                old.cancel.cancel();
             }
             store.sessions.insert(
                 session,
