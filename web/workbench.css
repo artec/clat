@@ -102,7 +102,6 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .session-row .session-avatar { background: transparent; color: var(--text-muted); }
 .sidebar > .sidebar-footer { display: none; }
 .conversation { grid-area: conversation; grid-template-rows: minmax(0, 1fr); container: conversation / inline-size; }
-.conversation.is-finding { grid-template-rows: auto minmax(0, 1fr); }
 @container conversation (max-width: 920px) {
   .message-map { display: none; }
 }
@@ -423,16 +422,24 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .conversation, .inspector { overflow: hidden; }
 /* Cover nested Markdown, lists and dialogs as well as the outer panels. */
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-@supports selector(::-webkit-scrollbar) {
-  /* Non-auto standard properties override WebKit's custom scrollbar painting. */
-  * { scrollbar-width: auto; scrollbar-color: auto; }
+.auto-hide-scrollbars * { scrollbar-color: transparent transparent; }
+.auto-hide-scrollbars [data-scrollbar-active] { scrollbar-color: var(--line-strong) transparent; }
+@supports not (scrollbar-color: gray transparent) {
+  /* Older WebKit only: prefer native scrollbar-color painting where supported. */
   *::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
   *::-webkit-scrollbar-track, *::-webkit-scrollbar-track-piece,
   *::-webkit-scrollbar-corner { background: transparent; border: 0; box-shadow: none; }
-  *::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid transparent; background-clip: padding-box; border-radius: 20px; }
+  *::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid transparent; background-clip: padding-box; border-radius: 20px; transition: background-color 180ms ease; }
+  .auto-hide-scrollbars *::-webkit-scrollbar-thumb { background-color: transparent; }
+  .auto-hide-scrollbars [data-scrollbar-active]::-webkit-scrollbar-thumb { background-color: var(--line-strong); }
   *::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   .transcript-scroll::-webkit-scrollbar-track, .shell-pages::-webkit-scrollbar-track,
   .inspector-scroll::-webkit-scrollbar-track { margin-block: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { *::-webkit-scrollbar-thumb { transition: none; } }
+@media (forced-colors: active) {
+  .auto-hide-scrollbars *, .auto-hide-scrollbars [data-scrollbar-active] { scrollbar-color: auto; }
+  .auto-hide-scrollbars *::-webkit-scrollbar-thumb { background-color: ButtonText; }
 }
 .extension-modules { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
 .extension-modules .shell-button { display: block; flex: none; width: 100%; height: auto; padding: 14px 12px; text-align: left; border: 1px solid var(--line); border-radius: 12px; }
@@ -460,14 +467,27 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .usage-seat { position: relative; flex: none; }
 .context-ring { --usage: 0deg; display: inline-block; width: 19px; height: 19px; border-radius: 50%; background: conic-gradient(var(--text-soft) var(--usage),var(--line-strong) 0); mask: radial-gradient(transparent 48%,#000 53%); }
 .context-ring.unknown { opacity: .5; }
-.usage-popover { position: absolute; z-index: 40; bottom: calc(100% + 12px); right: -80px; width: min(350px,calc(100vw - 76px)); max-height: 65vh; overflow-y: auto; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised); box-shadow: 0 12px 35px rgb(0 0 0 / 24%); font-size: var(--text-size-ui); text-align: left; }
+.usage-trigger { position: relative; display: inline-grid; place-items: center; width: 36px; height: 36px; }
+.usage-compaction-hint { color: var(--danger); margin: 8px 0; }
+.usage-trigger.compaction-recommended { color: var(--danger); }
+.compaction-recommended .context-ring { background: conic-gradient(var(--danger) var(--usage),var(--line) 0); }
+.usage-trigger.compacting { opacity: 1; }
+.compacting .context-ring { background: conic-gradient(transparent,var(--accent)); animation: context-compacting 1s linear infinite; }
+@keyframes context-compacting { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .compacting .context-ring { animation: none; background: var(--accent); } }
+
+.composer:has(.usage-popover:not(.hidden)), .composer:has(.model-picker:not(.hidden)) { z-index: 50; }
+.usage-popover { position: fixed; z-index: 100; width: min(350px,calc(100vw - 24px)); max-height: 65vh; overflow-y: auto; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised); box-shadow: 0 12px 35px rgb(0 0 0 / 24%); font-size: var(--text-size-ui); text-align: left; }
 .usage-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding-block: 5px; font-weight: 400; }
-.usage-row > span:last-child { text-align: right; }
-.usage-popover h3 { font-size: var(--text-size-ui); font-weight: 500; margin: 14px 0 6px; }
+.usage-row > span:first-child { color: var(--text-soft); }
+.usage-row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-popover > .usage-row:first-child { color: var(--accent); padding-bottom: 8px; }
+.usage-popover > .usage-row:first-child > span:first-child { color: var(--accent); }
+.usage-popover h3 { color: var(--accent); font-size: var(--text-size-ui); font-weight: 400; margin: 16px 0 6px; padding-top: 12px; border-top: 1px solid var(--line); }
 .usage-popover small { color: var(--text-muted); font-size: var(--text-size-secondary); }
 .message-time-toggle { display: none; }
 .message-actions:has(> .message-time-toggle:only-child) { padding-top: 0; }
 .msg.time-open .message-time, .reader-message.time-open .message-time { opacity: 1; }
 @media (hover: none) { .message-time-toggle { display: inline-flex; } }
-@media (max-width: 700px) { .usage-popover { position: fixed; inset: auto 12px 90px auto; } .round-suggestions { margin-left: 0; } }
+@media (max-width: 700px) { .round-suggestions { margin-left: 0; } }
 .shell-button[hidden] { display: none !important; }

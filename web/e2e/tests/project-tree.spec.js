@@ -78,3 +78,36 @@ test('a conversation waiting for another project to connect cannot override a ne
     expect(switches).toEqual([]);
   } finally { release?.(); }
 });
+
+
+test('archive tabs classify selected conversations in both active and retained projects', async ({ page }) => {
+  const fixture = hostInfo('project-tree');
+  await openWorkbench(page, fixture);
+  const a = await conversation(page, 'Archive classification A');
+  const archive = async id => {
+    await expect.poll(() => page.evaluate(() => state.switching), LIVE).toBe(false);
+    await page.locator(`[data-session-id="${id}"] .session-more`).click();
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('menuitem', { name: 'Archive session…', exact: true }).click();
+    await expect(entry(page,id)).toBeHidden(LIVE);
+    expect(await page.evaluate(() => state.sessionId)).toBe(id);
+  };
+  await archive(a);
+  await addWorkbenchProject(page, fixture.secondaryProject.root);
+  const b = fixture.secondaryProject.sessions[1];
+  await entry(page,b).click();
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(b);
+  await page.fill('#prompt','Keep B draft when filtering');
+  await archive(b);
+  await expect(entry(page,a)).toBeHidden(LIVE);
+  await page.click('#archived-sessions');
+  await expect(entry(page,a)).toBeVisible(LIVE);
+  await expect(entry(page,b)).toBeVisible(LIVE);
+  await expect(entry(page,fixture.secondaryProject.sessions[0])).toBeHidden();
+  await page.click('#active-sessions');
+  await expect(entry(page,a)).toBeHidden(LIVE);
+  await expect(entry(page,b)).toBeHidden(LIVE);
+  await expect(entry(page,fixture.secondaryProject.sessions[0])).toBeVisible(LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('Keep B draft when filtering');
+  expect(await page.evaluate(() => state.sessionId)).toBe(b);
+});

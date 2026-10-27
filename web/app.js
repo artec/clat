@@ -2346,7 +2346,7 @@ function renderSessions() {
   closeSessionMenu();
   const query = dom['session-search'].value.trim().toLocaleLowerCase();
   const filtered = state.sessions.filter((session) => {
-    if (Boolean(session.archived) !== Boolean(showArchivedSessions) && session.id !== state.sessionId) return false;
+    if (Boolean(session.archived) !== Boolean(showArchivedSessions)) return false;
     const title = session.title || 'untitled';
     return !query || title.toLocaleLowerCase().includes(query) || session.id.toLocaleLowerCase().includes(query);
   });
@@ -2558,6 +2558,7 @@ function syncInteractionControls() {
     || !state.sessionId
     || (state.runActive && !state.compactionActive);
   syncSuggestionControl();
+  syncUsageTrigger();
   renderDraft();
 }
 
@@ -2609,7 +2610,8 @@ dom['session-title'].addEventListener('click', async () => {
 
 dom['session-search'].addEventListener('input', renderSessions);
 
-dom['compact-session'].addEventListener('click', async () => {
+async function compactCurrentSession() {
+  if (state.switching || state.desktopUpdateLocked || (state.runActive && !state.compactionActive)) return;
   const action = state.compactionActive ? 'cancel' : 'start';
   dom['compact-session'].disabled = true;
   try {
@@ -2633,7 +2635,8 @@ dom['compact-session'].addEventListener('click', async () => {
     syncInteractionControls();
     renderSessions();
   }
-});
+}
+dom['compact-session'].addEventListener('click', compactCurrentSession);
 
 /* —— Layout and settings —————————————————————————————————— */
 
@@ -2938,17 +2941,21 @@ function closeModelPicker({ focus = false } = {}) {
   if (focus) dom['model-picker-trigger'].focus();
 }
 
-async function openModelPicker() {
+async function openModelPicker({ keyboard = false } = {}) {
   if (modelPickerOpen()) {
-    closeModelPicker({ focus: true });
+    closeModelPicker({ focus: keyboard });
     return;
   }
+  const focusOrigin = document.activeElement;
   show(dom['model-picker']);
   dom['model-picker-trigger'].setAttribute('aria-expanded', 'true');
   CLATI18n.bind(dom['model-picker-error'], "textContent", () => '');
   dom['model-picker-list'].replaceChildren(el('p', 'model-picker-current', () => (CLATI18n.msg("web.loading_model_routes", {}, "Loading model routes…"))));
   await refreshModelSettings();
-  if (modelPickerOpen()) dom['model-picker-close'].focus();
+  if (keyboard && modelPickerOpen() && document.activeElement === focusOrigin) {
+    const choices = dom['model-picker-list'];
+    (choices.querySelector('[aria-checked="true"]:not(:disabled)') || choices.querySelector('button:not(:disabled)'))?.focus({ preventScroll: true });
+  }
 }
 
 function renderModelPicker(view) {
@@ -3240,8 +3247,8 @@ document.getElementById('model-thinking').addEventListener('change', async (even
   }
 });
 dom['composer-permission'].addEventListener('click', () => openSettings('permissions'));
-dom['model-picker-trigger'].addEventListener('click', openModelPicker);
-dom['model-picker-close'].addEventListener('click', () => closeModelPicker({ focus: true }));
+dom['model-picker-trigger'].addEventListener('click', event => { void openModelPicker({ keyboard: event.detail === 0 }); });
+dom['model-picker-close'].addEventListener('click', event => closeModelPicker({ focus: event.detail === 0 }));
 dom['model-picker-manage'].addEventListener('click', () => openSettings('models'));
 for (const button of document.querySelectorAll('[data-settings-category]')) {
   button.addEventListener('click', () => selectSettingsCategory(button.dataset.settingsCategory));

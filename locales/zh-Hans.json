@@ -2108,5 +2108,7 @@
   "experience.followups_busy": "当前会话状态暂不能生成后续建议。",
   "experience.cache_rate": "缓存命中率",
   "experience.capacity_unknown": "容量未知",
-  "experience.unit_unknown": "未提供单位"
+  "experience.unit_unknown": "未提供单位",
+  "experience.compact_recommended": "上下文较满，点击压缩（会调用模型）",
+  "experience.compacting": "正在压缩上下文…"
 }

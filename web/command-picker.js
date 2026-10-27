@@ -94,7 +94,7 @@ function selectCommandCandidate(index) {
   closeCommandPanel();
   if (entry.section === 'commands') {
     const dedicated = {
-      model: () => { void openModelPicker(); },
+      model: () => { void openModelPicker({ keyboard: true }); },
       perm: () => openSettings('permissions'),
       permission: () => openSettings('permissions'),
       resume: () => dom['sessions-open'].click(),

@@ -76,28 +76,86 @@ async function loadRoundFollowups(run, action = 'generate') {
     }
   } catch (_) { if (current() && action !== 'read') renderRoundFollowups({status:'failed',run,owner}); }
 }
-let usageEpoch = 0, usageValue = null;
+let usageEpoch = 0, usageValue = null, usageCompactionRequest = false, usageScope = null;
+function syncUsageTrigger() {
+  const trigger = document.getElementById('context-usage');
+  if (!trigger) return;
+  const busy = state.compactionActive || usageCompactionRequest;
+  const recommended = Boolean(usageValue?.compaction_recommended) && !state.runActive;
+  trigger.classList.toggle('compaction-recommended', recommended);
+  trigger.classList.toggle('compacting', busy);
+  trigger.setAttribute('aria-busy', String(busy));
+  trigger.disabled = busy || state.switching || state.desktopUpdateLocked;
+  const key = busy ? 'compacting' : recommended && !state.runActive ? 'compact_recommended' : 'usage';
+  CLATI18n.attribute(trigger,'aria-label',()=>experienceText(key));
+  CLATI18n.attribute(trigger,'title',()=>experienceText(key));
+}
+function paintUsageRing(ring, percent) {
+  if (ring._frame) cancelAnimationFrame(ring._frame);
+  const previous = Number(ring.dataset.percent);
+  const target = percent === null ? 0 : Math.max(0, percent);
+  const draw = value => {
+    ring.style.setProperty('--usage', `${Math.min(100,value) * 3.6}deg`);
+    ring.dataset.percent = String(value);
+  };
+  ring.classList.toggle('unknown', percent === null);
+  if (percent === null || !Number.isFinite(previous) || matchMedia('(prefers-reduced-motion: reduce)').matches) { draw(target); return; }
+  const start = performance.now();
+  const step = now => {
+    const progress = Math.min(1, (now - start) / 650);
+    draw(previous + (target - previous) * (1 - (1 - progress) ** 3));
+    if (progress < 1) ring._frame = requestAnimationFrame(step);
+  };
+  ring._frame = requestAnimationFrame(step);
+}
+function positionUsagePopover(popup, trigger) {
+  if (popup.classList.contains('hidden')) return;
+  const anchor = trigger.getBoundingClientRect(), inset = 12;
+  const center = anchor.left + anchor.width / 2;
+  const left = Math.max(inset, Math.min(center - popup.offsetWidth / 2, innerWidth - popup.offsetWidth - inset));
+  popup.style.left = `${left}px`;
+  popup.style.bottom = `${innerHeight - anchor.top + 12}px`;
+  popup.style.maxHeight = `${Math.max(0, Math.min(innerHeight * .65, anchor.top - 24))}px`;
+}
 function installUsagePopover(actions) {
   const seat = el('div', 'usage-seat');
   const trigger = el('button', 'icon-button usage-trigger'); trigger.type = 'button'; trigger.id = 'context-usage';
   trigger.setAttribute('aria-expanded','false'); trigger.setAttribute('aria-haspopup','dialog');
   CLATI18n.attribute(trigger,'aria-label',() => experienceText('usage'));
-  const ring = el('span', 'context-ring'); trigger.append(ring);
+  const ring = el('span', 'context-ring');
+  trigger.append(ring);
   const popup = el('section','usage-popover hidden'); popup.setAttribute('role','dialog');
   CLATI18n.attribute(popup,'aria-label',() => experienceText('usage'));
   seat.append(trigger,popup); actions.prepend(seat);
   let pinned = false, timer;
-  const open = () => { clearTimeout(timer); show(popup); trigger.setAttribute('aria-expanded','true'); renderUsage(popup,ring); };
+  const open = () => { clearTimeout(timer); show(popup); trigger.setAttribute('aria-expanded','true'); renderUsage(popup,ring); positionUsagePopover(popup,trigger); };
   const close = () => { hide(popup); pinned=false; trigger.setAttribute('aria-expanded','false'); };
-  trigger.onclick = () => { if (pinned) close(); else { pinned=true; open(); } };
+  trigger.onclick = async () => {
+    if (usageValue?.compaction_recommended && !state.runActive && !state.compactionActive) {
+      if (usageCompactionRequest || state.switching || state.desktopUpdateLocked) return;
+      close(); usageCompactionRequest = true; syncUsageTrigger();
+      try { await compactCurrentSession(); }
+      finally { usageCompactionRequest = false; syncUsageTrigger(); }
+    } else if (pinned) close(); else { pinned=true; open(); }
+  };
   seat.onpointerenter = open; seat.onpointerleave = () => { if(!pinned) timer=setTimeout(close,180); };
   seat.onfocusin = open; seat.onfocusout = event => { if(!pinned && !seat.contains(event.relatedTarget)) close(); };
   seat.onkeydown = event => { if(event.key==='Escape') {event.preventDefault();event.stopPropagation();trigger.focus();close();} };
   document.addEventListener('pointerdown', event => {if(!seat.contains(event.target))close();});
-  CLATI18n.onChange(()=>renderUsage(popup,ring));
+  const reposition = () => positionUsagePopover(popup,trigger);
+  const observer = new ResizeObserver(reposition);
+  observer.observe(popup); observer.observe(actions.closest('.composer-row'));
+  window.addEventListener('resize',reposition);
+  CLATI18n.onChange(()=>{ renderUsage(popup,ring); syncUsageTrigger(); });
+  syncUsageTrigger();
 }
 async function refreshUsage() {
   const epoch=++usageEpoch, session=state.sessionId, generation=state.selectionGeneration;
+  const owner = JSON.stringify([session,generation,state.workbench?.model]);
+  if (owner !== usageScope) {
+    usageScope = owner;
+    document.querySelector('.context-ring')?.removeAttribute('data-percent');
+  }
   usageValue=null;
   const pendingPopup=document.querySelector('.usage-popover'), pendingRing=document.querySelector('.context-ring');
   if(pendingPopup&&pendingRing)renderUsage(pendingPopup,pendingRing);
@@ -114,9 +172,11 @@ function renderUsage(popup,ring) {
   const row=(label,text) => { const node=el('div','usage-row');node.append(el('span','',()=>experienceText(label)),el('span','',text));popup.append(node); };
   const used=value?.context?.used, capacity=value?.context?.capacity;
   const percent=Number.isFinite(used)&&capacity>0 ? used/capacity*100 : null;
-  ring.style.setProperty('--usage',percent===null?'0deg':Math.min(100,percent)*3.6+'deg');ring.classList.toggle('unknown',percent===null);
+  if (value !== null || !ring.hasAttribute('data-percent')) paintUsageRing(ring,percent);
+  syncUsageTrigger();
   row('context', value?.context ? `${used.toLocaleString(CLATI18n.locale)} / ${capacity?.toLocaleString(CLATI18n.locale) || experienceText('capacity_unknown')}${percent===null?'':` · ${percent.toFixed(1)}%`}` : experienceText(value?.unavailable?'unavailable':'loading'));
   popup.append(el('small','',()=>experienceText('estimate')));
+  if (value?.compaction_recommended) popup.append(el('p','usage-compaction-hint',()=>experienceText('compact_recommended')));
   for(const [scope,key] of [['last_request','last_request'],['route','route']]) {
     const usage=value?.[scope];if(!usage)continue;
     popup.append(el('h3','',()=>experienceText(key)));

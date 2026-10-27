@@ -376,6 +376,22 @@ fn pressure_threshold(budget: Option<usize>) -> Option<usize> {
     budget.map(|limit| limit * 4 / 5)
 }
 
+/// Read-only pressure advice shares the runtime threshold and manual cut eligibility.
+pub(crate) fn compaction_recommended(
+    config: &ModelConfig,
+    estimated_total: u64,
+    nodes: &[CompactionNode],
+    protected_head: Option<u64>,
+) -> bool {
+    pressure_threshold(config.max_context_tokens.map(|value| value as usize))
+        .is_some_and(|limit| estimated_total > limit as u64)
+        && choose_cut(nodes, None, "", &[], config).is_some_and(|cut| {
+            nodes[..cut]
+                .iter()
+                .any(|node| protected_head.is_none_or(|head| node.seq > head))
+        })
+}
+
 /// 以 User 起始处为轮次边界切分（User, Assistant(toolcalls), ToolResult…
 /// 的序列保证不拆散 call/result 配对，INV-C3）。
 fn split_turns(items: &[ModelItem]) -> Vec<&[ModelItem]> {
@@ -667,6 +683,19 @@ mod tests {
     /// DSH thresholdRatio（0.8）：阈值 = 预算的 80%，触发与压缩目标同
     /// 源。pre-fix（阈值 = 全额预算）上：贴窗触发没有余量，两次检查
     /// 之间的单步膨胀直接撞厂商上限。
+    #[test]
+    fn compaction_advice_requires_pressure_and_compressible_history() {
+        let mut config = ModelConfig::default();
+        let nodes = nodes_from(&[user("old"), assistant("answer"), user("recent")]);
+        assert!(!compaction_recommended(&config, 900_000, &nodes, None));
+        config.max_context_tokens = Some(1_000_000);
+        assert!(!compaction_recommended(&config, 800_000, &nodes, None));
+        assert!(compaction_recommended(&config, 800_001, &nodes, None));
+        assert!(!compaction_recommended(&config, 900_000, &nodes, Some(1)));
+        assert!(!compaction_recommended(&config, 900_000, &[], None));
+        assert!(!compaction_recommended(&config, 900_000, &nodes[..2], None));
+    }
+
     #[test]
     fn pressure_threshold_leaves_headroom_below_the_window() {
         assert_eq!(pressure_threshold(None), None);

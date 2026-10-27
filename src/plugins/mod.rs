@@ -33,7 +33,7 @@ pub(crate) use apply_patch::ApplyPatchPlugin;
 #[cfg(test)]
 pub(crate) use apply_patch::ApplyPatchTool;
 pub(crate) use commands::{BuiltinCommandsPlugin, CommandsPlugin};
-pub(crate) use compaction::CompactionPlugin;
+pub(crate) use compaction::{CompactionPlugin, compaction_recommended};
 pub(crate) use context_inspector::ContextInspectorPlugin;
 pub(crate) use goal::GoalPlugin;
 pub(crate) use instructions::ProjectInstructionsPlugin;

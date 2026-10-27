@@ -114,7 +114,7 @@ test('UX-4 explicit archive and shared reload/restore keep selected transcript',
   await expect(row.locator('.session-copy strong')).toContainText('★', LIVE);
   await row.locator('.session-more').click(); page.once('dialog', d => d.accept());
   await page.getByRole('menuitem', { name: 'Archive session…' }).click();
-  await expect(row).toContainText('archived', LIVE);
+  await expect(row).toBeHidden(LIVE);
   expect(await page.evaluate(() => state.sessionId)).toBe(id);
   await page.reload(); await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
@@ -123,9 +123,18 @@ test('UX-4 explicit archive and shared reload/restore keep selected transcript',
   await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-selected','true');
   await expect(page.locator('#active-sessions')).toHaveAttribute('aria-selected','false');
   await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
+  await expect(row).toBeVisible(LIVE);
+  await page.click('#active-sessions');
+  await expect(row).toBeHidden(LIVE);
+  await expect(page.locator('#transcript')).toContainText('organization retained chat');
+  await page.click('#archived-sessions');
   await row.locator('.session-more').click();
   await page.getByRole('menuitem', { name: 'Restore archived session' }).click();
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).archived, id), LIVE).toBe(false);
+  await expect(row).toBeHidden(LIVE);
+  await page.click('#active-sessions');
+  await expect(row).toBeVisible(LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
 });
 
 test('UX-5 structured Plan/Goal details preserve four concepts and confirm actions', async ({ page }, info) => {

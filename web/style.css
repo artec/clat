@@ -450,6 +450,12 @@ button:disabled { cursor: default; opacity: .45; }
 .model-choice-mark { color: var(--signal); font: 700 12px var(--font-mono); }
 .model-picker-key { display: grid; gap: 5px; margin-top: 12px; color: var(--text-muted); font-size: var(--text-size-ui); }
 .model-picker-key input, .model-picker-key select { min-width: 0; width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface-input); font: inherit; }
+.model-thinking-field { position: relative; display: block; }
+.model-thinking-field > svg { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-muted); stroke-width: 1.65; pointer-events: none; }
+.model-thinking-field #model-thinking { appearance: none; -webkit-appearance: none; min-height: 38px; padding: 8px 36px 8px 12px; border-radius: var(--radius-sm); line-height: 1.5; cursor: pointer; }
+.model-thinking-field #model-thinking:hover:not(:disabled) { border-color: var(--line-strong); }
+.model-thinking-field #model-thinking:focus-visible { outline: 1px solid var(--signal); outline-offset: 2px; }
+.model-thinking-field #model-thinking:disabled { opacity: .5; cursor: default; }
 .model-picker-error { min-height: 1.4em; margin: 7px 0 0; font-size: var(--text-size-secondary); }
 .model-picker-manage { width: 100%; padding: 8px 9px 2px; color: var(--text-muted); font: var(--text-size-ui) var(--font-mono); text-align: left; }
 .model-picker-manage:hover { color: var(--signal); }
@@ -679,13 +685,24 @@ button:disabled { cursor: default; opacity: .45; }
 .command-option small { color: var(--text-muted); }
 .command-option[aria-selected="true"], .command-option:hover { background: var(--surface); outline: 1px solid var(--line-strong); }
 .command-option[aria-disabled="true"] { opacity: .65; cursor: not-allowed; }
-.find-bar { padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--surface); display: grid; gap: 6px; }
-.conversation.is-finding { grid-template-rows: 70px auto minmax(0, 1fr); }
-@media (max-width: 760px) { .conversation.is-finding { grid-template-rows: 62px auto minmax(0, 1fr); } }
+.find-bar { position: fixed; z-index: 100; top: 10px; right: var(--menu-inset); width: min(460px, calc(100% - 24px)); padding: 10px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); display: grid; gap: 8px; }
 .find-bar.hidden { display: none; }
 .find-controls { display: flex; gap: 6px; align-items: center; }
-.find-controls input { min-width: 0; flex: 1; }
-.find-bar small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-field { display: flex; align-items: center; flex: 1; gap: 8px; min-width: 0; padding: 7px 10px; border-radius: 8px; background: var(--surface-input); color: var(--text-muted); }
+.find-field > svg { width: 16px; height: 16px; }
+.find-field input { appearance: none; -webkit-appearance: none; min-width: 0; width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); font-size: var(--text-size-ui); }
+.find-field input::placeholder { color: var(--text-muted); }
+.find-field input:focus { outline: none; }
+.find-field:has(input:focus-visible) { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.find-controls .icon-button { width: 30px; height: 30px; flex: none; font-size: 14px; }
+.find-summary { display: flex; align-items: baseline; gap: 10px; padding: 0 3px; }
+.find-summary small { flex: 1; min-width: 0; }
+.find-bar small { color: var(--text-muted); font-size: var(--text-size-secondary); line-height: 1.6; }
+.find-summary button { flex: none; padding: 0; color: var(--accent); font-size: var(--text-size-secondary); }
+.find-summary button:disabled { color: var(--text-muted); }
+#find-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 3px; }
+#find-preview:empty { display: none; }
+#find-open[aria-expanded="true"] { color: var(--text); background: var(--surface-raised); }
 .msg.find-current { outline: 2px solid var(--accent); outline-offset: 5px; }
 .workspace-review { width: min(1100px, 94vw); max-height: 90dvh; padding: 20px; color: var(--text); background: var(--surface); }
 .review-header { display: flex; align-items: center; gap: 10px; }

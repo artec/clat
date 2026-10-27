@@ -123,7 +123,7 @@
       }
       if (!active) {
         const query = navigation.query.trim().toLocaleLowerCase();
-        const items = (source || []).filter(session => (Boolean(session.archived) === navigation.archived || session.id === summary?.selected)
+        const items = (source || []).filter(session => Boolean(session.archived) === Boolean(navigation.archived)
           && (!query || (session.title || '').toLocaleLowerCase().includes(query) || session.id.toLocaleLowerCase().includes(query)));
         const revision = JSON.stringify(items);
         if (group.list.dataset.revision !== revision) {

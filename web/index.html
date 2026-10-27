@@ -127,7 +127,7 @@
         <button id="review-open" class="icon-button" type="button" aria-label="Review workspace changes" data-i18n-aria-label="web.review_workspace_changes" title="Review workspace changes" data-i18n-title="web.review_workspace_changes">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h4M8 11h4m4 3v4m-2-2h4"/></svg>
         </button>
-        <button id="find-open" class="icon-button" type="button" aria-label="Find in conversation" data-i18n-aria-label="web.find_in_conversation" title="Find in conversation (Ctrl/⌘ F)" data-i18n-title="web.find_in_conversation_ctrl_f">
+        <button id="find-open" class="icon-button" type="button" aria-controls="find-bar" aria-expanded="false" aria-label="Find in conversation" data-i18n-aria-label="web.find_in_conversation" title="Find in conversation (Ctrl/⌘ F)" data-i18n-title="web.find_in_conversation_ctrl_f">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m15.5 15.5 5 5"/></svg>
         </button>
         <span id="header-permission" class="permission-badge hidden" data-i18n="web.project_write">Project Write</span>
@@ -139,10 +139,16 @@
     </header>
 
     <section id="find-bar" class="find-bar hidden" aria-label="Find in current conversation" data-i18n-aria-label="web.find_in_current_conversation">
-      <div class="find-controls"><input id="find-query" type="search" maxlength="256" aria-label="Find message text" data-i18n-aria-label="web.find_message_text" placeholder="Find message text" data-i18n-placeholder="web.find_message_text">
-        <button id="find-prev" type="button" aria-label="Previous match" data-i18n-aria-label="web.previous_match">↑</button><button id="find-next" type="button" aria-label="Next match" data-i18n-aria-label="web.next_match">↓</button>
-        <button id="find-earlier" type="button" data-i18n="web.load_earlier">Load earlier</button><button id="find-close" type="button" aria-label="Close conversation search" data-i18n-aria-label="web.close_conversation_search">×</button></div>
-      <small id="find-status" role="status"></small><small id="find-preview"></small>
+      <div class="find-controls">
+        <label class="find-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m15.5 15.5 5 5"/></svg>
+          <input id="find-query" type="search" maxlength="256" aria-label="Find message text" data-i18n-aria-label="web.find_message_text" placeholder="Find message text" data-i18n-placeholder="web.find_message_text">
+        </label>
+        <button id="find-prev" class="icon-button" type="button" aria-label="Previous match" data-i18n-aria-label="web.previous_match"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 11 6-6 6 6M12 5v14"/></svg></button>
+        <button id="find-next" class="icon-button" type="button" aria-label="Next match" data-i18n-aria-label="web.next_match"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 13 6 6 6-6M12 5v14"/></svg></button>
+      </div>
+      <div class="find-summary"><small id="find-status" role="status"></small><button id="find-earlier" type="button" data-i18n="web.load_earlier">Load earlier</button></div>
+      <small id="find-preview"></small>
     </section>
     <div id="transcript-scroll" class="transcript-scroll">
       <button id="history-status" class="history-status hidden" type="button" data-i18n="web.loading_earlier_messages">Loading earlier messages…</button>
@@ -216,7 +222,10 @@
                 </header>
                 <p id="model-picker-current" class="model-picker-current" role="status"></p>
                 <label class="model-picker-key"><span data-i18n="web.thinking_intensity">Thinking intensity</span>
-                  <select id="model-thinking" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled><option data-i18n="web.not_adjustable">Not adjustable</option></select>
+                  <span class="model-thinking-field">
+                    <select id="model-thinking" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled><option data-i18n="web.not_adjustable">Not adjustable</option></select>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+                  </span>
                 </label>
                 <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models" data-i18n-aria-label="web.available_models"></div>
                 <label class="model-picker-key"><span data-i18n="web.preset_api_key">Preset API key</span>

@@ -1,6 +1,61 @@
 /* One application document, lazy project views, and shared authenticated directory. */
+function installTransientScrollbars() {
+  const timers = new Map();
+  let pressed = null, movement = null;
+  const settle = node => {
+    clearTimeout(timers.get(node));
+    timers.delete(node);
+    if (pressed === node) return;
+    timers.set(node, setTimeout(() => {
+      node.removeAttribute('data-scrollbar-active'); timers.delete(node);
+    }, 1200));
+  };
+  const reveal = node => {
+    if (!(node instanceof Element)) return;
+    node.setAttribute('data-scrollbar-active', ''); settle(node);
+  };
+  const scrollOwner = target => {
+    for (let node = target instanceof Element ? target : target?.parentElement; node; node = node.parentElement) {
+      const vertical = node.scrollHeight > node.clientHeight + 1;
+      const horizontal = node.scrollWidth > node.clientWidth + 1;
+      if (!vertical && !horizontal) continue;
+      const style = getComputedStyle(node);
+      if ((vertical && /auto|scroll|overlay/.test(style.overflowY))
+          || (horizontal && /auto|scroll|overlay/.test(style.overflowX))) return node;
+    }
+    return null;
+  };
+  const release = () => {
+    const node = pressed; pressed = null;
+    if (node) settle(node);
+  };
+  document.documentElement.classList.add('auto-hide-scrollbars');
+  document.addEventListener('scroll', event => reveal(event.target), { capture: true, passive: true });
+  document.addEventListener('wheel', event => reveal(scrollOwner(event.target)), { passive: true });
+  document.addEventListener('pointermove', event => {
+    if (movement !== null) return;
+    const { target, clientX, clientY } = event;
+    movement = requestAnimationFrame(() => {
+      movement = null;
+      const node = scrollOwner(target);
+      if (!node) return;
+      const bounds = node.getBoundingClientRect();
+      if (clientX >= bounds.right - 14 || clientY >= bounds.bottom - 14) reveal(node);
+    });
+  }, { passive: true });
+  document.addEventListener('pointerdown', event => {
+    release(); pressed = scrollOwner(event.target); reveal(pressed);
+  }, { passive: true });
+  window.addEventListener('pointerup', release, { passive: true });
+  window.addEventListener('mouseup', release, { passive: true });
+  document.addEventListener('pointercancel', release, { passive: true });
+  window.addEventListener('blur', release);
+  document.addEventListener('focusin', event => reveal(scrollOwner(event.target)));
+}
+
 (() => {
   'use strict';
+  installTransientScrollbars();
   const views = new Map();
   const viewport = document.getElementById('project-view');
   const template = document.getElementById('project-template');

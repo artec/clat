@@ -23,8 +23,27 @@ function rememberFindMessage(node, role, source) {
 
 function resetConversationFind() {
   findMessages.clear(); findMatches = []; findActive = null; findRequest += 1;
-  document.getElementById('find-bar')?.classList.add('hidden');
-  document.querySelector('.conversation')?.classList.remove('is-finding');
+  setConversationFindOpen(false);
+}
+
+function setConversationFindOpen(open, keyboard = false) {
+  const bar = document.getElementById('find-bar');
+  const trigger = document.getElementById('find-open');
+  bar.classList.toggle('hidden', !open);
+  trigger.setAttribute('aria-expanded', String(open));
+  if (open) {
+    updateConversationFind();
+    positionSessionMenu(bar, 0, 0, trigger);
+    if (keyboard) {
+      const input = document.getElementById('find-query');
+      input.focus(); input.select();
+    }
+  } else {
+    findRequest += 1; findActive = null;
+    for (const message of findMessages.values()) message.node.classList.remove('find-current');
+    CLATI18n.bind(document.getElementById('find-preview'), 'textContent', () => '');
+    if (keyboard) trigger.focus({ preventScroll: true });
+  }
 }
 
 function updateConversationFind() {
@@ -47,6 +66,7 @@ function updateConversationFind() {
   for (const message of findMessages.values()) message.node.classList.toggle('find-current', message.id === findActive?.id);
   CLATI18n.bind(document.getElementById('find-status'), "textContent", () => CLATI18n.msg("web.line_value_user_agent_original_body_value",{value1:((findMatches.length ? `${index + 1}/${findMatches.length}${findMatches.length === 2000 ? '+' : ''}` : CLATI18n.t('web.no_matches'))),value2:((state.history.hasMore ? CLATI18n.msg("web.loaded_window_only_earlier_available", {}, "loaded window only; earlier available") : CLATI18n.msg("web.all_messages_loaded", {}, "all messages loaded")))},"{value1} · user/agent original body · {value2}"));
   document.getElementById('find-earlier').disabled = !state.history.hasMore || state.history.loading;
+  for (const id of ['find-prev', 'find-next']) document.getElementById(id).disabled = !findMatches.length;
 }
 
 function moveConversationFind(direction) {
@@ -56,8 +76,9 @@ function moveConversationFind(direction) {
   findActive = findMatches[(current + direction + findMatches.length) % findMatches.length];
   updateConversationFind();
   findActive.node.scrollIntoView({ block: 'center', behavior: 'auto' });
-  CLATI18n.bind(document.getElementById('find-preview'), "textContent", () => findActive.role + ': '
-    + findActive.source().slice(Math.max(0, findActive.offset - 40), findActive.offset + 160));
+  const match = findActive;
+  CLATI18n.bind(document.getElementById('find-preview'), "textContent", () => match.role + ': '
+    + match.source().slice(Math.max(0, match.offset - 40), match.offset + 160));
 }
 
 async function findEarlierMessages() {
@@ -70,27 +91,32 @@ async function findEarlierMessages() {
 function installConversationFind() {
   const bar = document.getElementById('find-bar');
   const input = document.getElementById('find-query');
-  const open = () => { show(bar); document.querySelector('.conversation').classList.add('is-finding'); updateConversationFind(); input.focus(); input.select(); };
-  const close = () => {
-    findRequest += 1; hide(bar); findActive = null;
-    document.querySelector('.conversation').classList.remove('is-finding');
-    for (const message of findMessages.values()) message.node.classList.remove('find-current');
-    dom.prompt.focus();
-  };
-  document.getElementById('find-open').addEventListener('click', open);
-  document.getElementById('find-close').addEventListener('click', close);
+  const trigger = document.getElementById('find-open');
+  window.addEventListener('resize', () => {
+    if (!bar.classList.contains('hidden')) positionSessionMenu(bar, 0, 0, trigger);
+  });
+  trigger.addEventListener('click', event => setConversationFindOpen(bar.classList.contains('hidden'), event.detail === 0));
+  document.addEventListener('pointerdown', event => {
+    if (!bar.classList.contains('hidden') && !bar.contains(event.target) && !trigger.contains(event.target)) setConversationFindOpen(false);
+  });
   document.getElementById('find-next').addEventListener('click', () => moveConversationFind(1));
   document.getElementById('find-prev').addEventListener('click', () => moveConversationFind(-1));
   document.getElementById('find-earlier').addEventListener('click', () => { void findEarlierMessages(); });
-  input.addEventListener('input', () => { findActive = null; updateConversationFind(); moveConversationFind(0); });
+  input.addEventListener('input', () => {
+    findActive = null; CLATI18n.bind(document.getElementById('find-preview'), 'textContent', () => '');
+    updateConversationFind(); moveConversationFind(0);
+  });
   input.addEventListener('keydown', (event) => {
     if (event.isComposing) return;
-    if (event.key === 'Escape') { event.preventDefault(); close(); }
     if (event.key === 'Enter') { event.preventDefault(); moveConversationFind(event.shiftKey ? -1 : 1); }
   });
   document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && !document.querySelector('dialog[open]')) {
-      event.preventDefault(); open();
+    if (event.isComposing || document.querySelector('dialog[open]')) return;
+    if (event.key === 'Escape' && !bar.classList.contains('hidden')) {
+      event.preventDefault(); setConversationFindOpen(false, true);
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && !trigger.hidden) {
+      event.preventDefault(); setConversationFindOpen(true, true);
     }
   });
 }

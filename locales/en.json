@@ -2108,5 +2108,7 @@
   "experience.followups_busy": "Next-step suggestions are unavailable for this conversation state.",
   "experience.cache_rate": "Cache hit rate",
   "experience.capacity_unknown": "Capacity unknown",
-  "experience.unit_unknown": "Unit not provided"
+  "experience.unit_unknown": "Unit not provided",
+  "experience.compact_recommended": "Context is nearly full. Click to compact using the model.",
+  "experience.compacting": "Compacting context…"
 }

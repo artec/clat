@@ -6420,6 +6420,7 @@ fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
             .is_none()
     );
     let stats = app.conversation_stats().unwrap();
+    assert_eq!(stats["compaction_recommended"], false);
     assert!(stats["context"]["used"].as_u64().unwrap() > 0);
     assert!(!stats.to_string().contains("original user input"));
     let original = app.current_session_id().unwrap();

@@ -2108,5 +2108,7 @@
   "experience.followups_busy": "目前對話狀態暫時無法產生後續建議。",
   "experience.cache_rate": "快取命中率",
   "experience.capacity_unknown": "容量未知",
-  "experience.unit_unknown": "未提供單位"
+  "experience.unit_unknown": "未提供單位",
+  "experience.compact_recommended": "上下文較滿，點擊壓縮（會呼叫模型）",
+  "experience.compacting": "正在壓縮上下文…"
 }

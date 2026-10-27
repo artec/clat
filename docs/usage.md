@@ -1639,6 +1639,12 @@ settings, or help. Its project/conversation scope is shown explicitly. Closing a
 reopening it preserves the selected review; quoting a file returns to the retained
 conversation draft. Narrow windows use an overlay beneath the global toolbar.
 
+Scrollbars in lists, conversations, the work area, and nested Markdown tables or
+code blocks appear during scrolling or pointer/keyboard interaction and hide
+after about 1.2 seconds of inactivity. Modern clients use native scrollbar colors for consistent show/hide behavior. Their space stays reserved, so hiding them
+does not move the content. Dragging keeps the scrollbar visible; high-contrast
+system modes retain visible scrollbars.
+
 Settings groups General and appearance / Projects under Workbench; Models /
 Companion / Permissions under Capabilities; WeChat / Web under Integrations; and
 Updates and about under Application. Notification preferences are in General. The composer permission
@@ -1646,8 +1652,11 @@ control opens Permissions directly; Manage model profiles opens Models.
 Conversations are grouped beneath their project names. Each project can be
 collapsed independently and has a new-conversation action. Recent sessions appear
 first; Show more reveals the rest, and searching shows all matching session
-entries in expanded projects. The selected conversation stays reachable in a
-shortened list. Paths are available in project tooltips.
+entries in expanded projects. Active and Archived tabs filter every project's rows
+strictly by archive state, including each project's selected conversation. Archiving
+or restoring a session moves its list entry to the matching tab while retaining the
+open transcript and unsent draft. Within the matching tab, the selected conversation
+stays reachable in a shortened list. Paths are available in project tooltips.
 
 Expanding a mounted project reads its session directory without switching the
 conversation, starting another event subscription, or loading transcript content.
@@ -1795,7 +1804,9 @@ the action. IME composition and pasted paths do not submit a candidate.
 
 Use the conversation's Find button or Ctrl/Cmd+F to search original user/agent
 body text. Enter/Shift+Enter and the arrow buttons visit matches; **Earlier**
-reads one older page, and Close/Esc cancels find. The scope label says whether
+reads one older page. The compact search panel closes when Find is clicked again,
+when clicking outside it, or with Escape. Clicking Find leaves focus in place;
+Ctrl/Cmd+F focuses the search field for immediate typing. The scope label says whether
 earlier messages remain unloaded. Prefix pages and streaming tokens preserve
 the selected message; the preview shows the exact source occurrence. This is
 not cross-session full-text search. Sidebar search only filters session titles
@@ -2795,6 +2806,21 @@ never regenerates old suggestions. An explicit retry is offered after failure.
 Suggestions do not enter the conversation journal or model context.
 
 The context ring beside the model opens a usage popover by hover, focus or click.
+When core estimates pressure above its 80% threshold (including output reserve)
+and there is compressible history, the ring turns red. While idle, clicking a red
+ring starts the existing model-backed compaction flow; hovering still shows usage.
+Compaction may incur model usage and can lose detail in the model summary; original
+conversation records remain intact. During compaction the ring shows an indeterminate
+animation and rejects duplicate clicks. After completion it refreshes the estimate
+and smoothly transitions the small ring to the actual new occupancy. Percentages
+remain in the usage popover rather than inside the icon; unknown capacities show no
+invented percentage. Reduced-motion preferences disable these animations.
+The popover is centered above the ring (kept within narrow windows), sits above
+conversation navigation controls, and uses theme-blue section headings to separate statistics.
+The model picker also sits above conversation navigation controls; its thinking
+intensity selector follows the shared themed form style. Mouse opening leaves
+focus in place; keyboard opening guides focus to the selected model after loading
+without stealing focus from a control the user has already entered.
 It shows the estimated next-request input versus configured capacity, excluding
 unsent drafts, plus the session's last request and the current model route's
 cumulative input/output/cache usage. Context estimates are not cumulative spend.

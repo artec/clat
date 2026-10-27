@@ -13,6 +13,8 @@ adapter may declare their own runtimes.
 The project is built by dogfooding real repository work and turning recurring
 needs into reusable, provider-neutral capabilities.
 
+![CLAT desktop workbench](screen.png)
+
 ## Quick start
 
 ```bash
