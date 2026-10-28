@@ -130,7 +130,7 @@ function installUsagePopover(actions) {
   const popup = el('section','usage-popover context-usage-popover hidden'); popup.setAttribute('role','dialog');
   CLATI18n.attribute(popup,'aria-label',() => experienceText('usage'));
   seat.append(trigger,popup); actions.prepend(seat);
-  const popover = attachComposerPopup(seat,trigger,popup,()=>renderUsage(popup,ring));
+  const popover = attachComposerPopup(seat,trigger,popup,()=>renderUsage(popup,ring),'center',{hover:true});
   trigger.onclick = popover.toggle;
   CLATI18n.onChange(()=>{ renderUsage(popup,ring); syncUsageTrigger(); });
   syncUsageTrigger();

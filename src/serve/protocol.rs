@@ -7,6 +7,9 @@
 //! 新增方法 = amend；未知方法 → `bad-request`（无 not-implemented
 //! 回退，map 只收已实现方法）。
 
+mod sessions;
+mod wechat;
+
 use super::approver;
 use super::state::ServeShared;
 use crate::application::{ApplicationRunDone, ApplicationRunFailure};
@@ -465,279 +468,18 @@ fn dispatch_project(
     if let Some(result) = dispatch_workbench_tools(shared, method, params) {
         return result;
     }
+    if let Some(result) = sessions::dispatch(method, params, shared)
+        .or_else(|| wechat::dispatch(method, params, shared))
+    {
+        return result;
+    }
     match method {
         "workbench.info" => workbench_info(shared),
         "interaction.catalog" | "workspace.changes" | "workspace.diff" => {
             dispatch_read_discovery(shared, method, params)
         }
-        "wechat.binding.status" => {
-            let status = with_app(shared, |app| app.wechat_binding())
-                .map_err(app_error)?
-                .status;
-            Ok(json!({
-                "bound": status.bound,
-                "bound_at": status.bound_at,
-                "paired_users": status.paired_users,
-                "mapped_chats": status.mapped_chats,
-                "binding_active": shared
-                    .wechat_binding
-                    .lock()
-                    .expect("wechat binding lock")
-                    .is_some(),
-            }))
-        }
-        "wechat.binding.start" => {
-            let bound = with_app(shared, |app| app.wechat_binding())
-                .map_err(app_error)?
-                .status
-                .bound;
-            let replace = params
-                .get("replace")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if bound && !replace {
-                return Err(RpcError::bad_request(
-                    "WeChat is already bound; set replace=true to start a replacement without revoking the current binding first",
-                ));
-            }
-            let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
-            if slot.is_some() {
-                return Err(RpcError::busy("a WeChat binding flow is already active"));
-            }
-            let (binding, qr_content) = crate::im::BindingSession::start()
-                .map_err(|error| RpcError::internal(error.to_string()))?;
-            let qr_svg = crate::im::qr_svg(&qr_content).map_err(RpcError::internal)?;
-            *slot = Some(binding);
-            Ok(json!({
-                "state": "waiting",
-                "qr_svg": qr_svg,
-                "notice": "Binding this bot does not authorize any WeChat user; create and enter a pairing code separately.",
-            }))
-        }
-        "wechat.binding.poll" => {
-            let verify_code = optional_str(params, "verifyCode")?;
-            if let Some(code) = verify_code.as_deref()
-                && (code.is_empty()
-                    || code.len() > 32
-                    || !code.bytes().all(|byte| byte.is_ascii_alphanumeric()))
-            {
-                return Err(RpcError::bad_request(
-                    "verifyCode must be 1..32 ASCII letters or digits",
-                ));
-            }
-            let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
-            let binding = slot
-                .as_mut()
-                .ok_or_else(|| RpcError::not_pending("no WeChat binding flow is active"))?;
-            let step = binding
-                .poll(verify_code.as_deref())
-                .map_err(|error| RpcError::internal(error.to_string()))?;
-            match step {
-                crate::im::BindingStep::Waiting => Ok(json!({ "state": "waiting" })),
-                crate::im::BindingStep::Scanned => Ok(json!({ "state": "scanned" })),
-                crate::im::BindingStep::NeedVerifyCode => {
-                    Ok(json!({ "state": "need_verify_code" }))
-                }
-                crate::im::BindingStep::VerifyCodeBlocked => {
-                    *slot = None;
-                    Ok(json!({ "state": "verify_code_blocked" }))
-                }
-                crate::im::BindingStep::Expired => {
-                    *slot = None;
-                    Ok(json!({ "state": "expired" }))
-                }
-                crate::im::BindingStep::AlreadyBound => {
-                    *slot = None;
-                    Ok(json!({ "state": "already_bound" }))
-                }
-                crate::im::BindingStep::Confirmed(credentials) => {
-                    let _outbound = shared.wechat_outbound.lock().expect("wechat outbound gate");
-                    with_app(shared, |app| app.replace_wechat_binding(&credentials))
-                        .map_err(app_error)?;
-                    *slot = None;
-                    Ok(json!({
-                        "state": "confirmed",
-                        "notice": "Bot binding is complete, but all WeChat users remain denied until paired or explicitly allowlisted.",
-                    }))
-                }
-            }
-        }
-        "wechat.binding.unbind" => {
-            if params.get("confirm").and_then(Value::as_str) != Some("unbind-wechat") {
-                return Err(RpcError::bad_request(
-                    "unbind requires confirm=unbind-wechat",
-                ));
-            }
-            // Serialize behind an in-flight long poll, then revoke storage
-            // while still owning the binding slot. Otherwise a confirmed
-            // poll could re-save credentials between the clear and slot
-            // cancellation, making an acknowledged unbind silently rebound.
-            let mut slot = shared.wechat_binding.lock().expect("wechat binding lock");
-            let _outbound = shared.wechat_outbound.lock().expect("wechat outbound gate");
-            *slot = None;
-            with_app(shared, |app| app.revoke_wechat_binding()).map_err(app_error)?;
-            Ok(json!({ "bound": false }))
-        }
-        "wechat.pairing.create" => {
-            let challenge =
-                with_app(shared, |app| app.issue_wechat_pairing_code()).map_err(app_error)?;
-            Ok(json!({
-                "code": challenge.code,
-                "expires_at_ms": challenge.expires_at_ms,
-                "notice": "This one-time code authorizes the first WeChat user who submits it. Do not share it in an untrusted conversation.",
-            }))
-        }
-        "wechat.users.list" => Ok(with_app(
-            shared,
-            |app| json!({"users":app.wechat_authorized_users()}),
-        )),
-        "wechat.user.revoke" => {
-            let user = required_str(params, "userId")?;
-            with_app(shared, |app| app.revoke_wechat_user_access(&user)).map_err(app_error)?;
-            Ok(json!({"revoked":true}))
-        }
-        "wechat.user.allow" => {
-            let user_id = required_str(params, "userId")?;
-            let allowed = params
-                .get("allowed")
-                .and_then(Value::as_bool)
-                .ok_or_else(|| RpcError::bad_request("allowed must be a boolean"))?;
-            with_app(shared, |app| app.set_wechat_allowlist(&user_id, allowed))
-                .map_err(app_error)?;
-            Ok(json!({ "allowed": allowed }))
-        }
-        "wechat.user.remove" => {
-            let user_id = required_str(params, "userId")?;
-            with_app(shared, |app| app.revoke_wechat_pairing(&user_id)).map_err(app_error)?;
-            Ok(json!({ "paired": false }))
-        }
-        "session.list" => {
-            let sessions = with_app(shared, |app| app.list_sessions()).map_err(app_error)?;
-            Ok(json!({
-                "sessions": sessions
-                    .iter()
-                    .map(super::shapes::session_summary_json)
-                    .collect::<Vec<_>>(),
-            }))
-        }
-        "session.info" => {
-            let session_id = with_app(shared, |app| app.current_session_id());
-            let title = with_app(shared, |app| app.session_title());
-            let last_seq = with_app(shared, |app| app.committed_seq());
-            Ok(json!({
-                "session_id": session_id.map(|id| id.as_str().to_owned()),
-                "title": title,
-                "last_seq": last_seq,
-                "active_run": shared.active_run_info(),
-            }))
-        }
-        "session.new" => {
-            let outcome = with_app(shared, |app| {
-                let outcome = app.new_session();
-                if outcome.is_ok()
-                    || outcome
-                        .as_ref()
-                        .is_err_and(ApplicationError::selection_changed)
-                {
-                    // Publish the frontend generation while the Application
-                    // selection lock is still held. Prompt admission takes
-                    // this same lock before reserving a draft, so no old
-                    // scope can cross a committed selection boundary.
-                    shared.advance_selection_generation();
-                }
-                outcome
-            });
-            outcome.map_err(app_error)?;
-            // 惰性会话（core 事实）：id 在首条 prompt 落 journal 时物化，
-            // 详情经 session.info 读取（对账偏差，见 worklist 交付注记）。
-            Ok(json!({}))
-        }
-        "session.switch" => {
-            let id = required_str(params, "id")?;
-            let outcome = with_app(shared, |app| {
-                let outcome = app.switch_session(SessionId::new(id));
-                if outcome.is_ok()
-                    || outcome
-                        .as_ref()
-                        .is_err_and(ApplicationError::selection_changed)
-                {
-                    shared.advance_selection_generation();
-                }
-                outcome
-            });
-            outcome.map_err(session_error)?;
-            Ok(json!({}))
-        }
-        "session.history" => dispatch_history(params, shared),
-        "session.rename" => {
-            let id = required_str(params, "id")?;
-            let title = required_str(params, "title")?;
-            let current = with_app(shared, |app| app.current_session_id());
-            if current.as_ref().map(|session| session.as_str()) != Some(id.as_str()) {
-                // core 只支持重命名活跃会话（对账偏差）；id 不匹配按
-                // 不存在处理，绝不改到别的会话头上。
-                return Err(RpcError::not_found(format!(
-                    "session {id} is not the active session"
-                )));
-            }
-            match with_app(shared, |app| app.rename_session(&title)).map_err(app_error)? {
-                crate::RenameOutcome::Renamed { .. } => Ok(json!({})),
-                crate::RenameOutcome::NoSession => Err(RpcError::not_found("no active session")),
-                crate::RenameOutcome::Invalid => Err(RpcError::bad_request(
-                    "title must be a non-empty single line",
-                )),
-            }
-        }
-        "session.compact" => {
-            let action = params
-                .get("action")
-                .and_then(Value::as_str)
-                .unwrap_or("start");
-            match action {
-                "start" => {
-                    if !shared.active_run_info().is_null() {
-                        return Err(RpcError::busy(
-                            "history cannot be compacted while a run is active",
-                        ));
-                    }
-                    if with_app(shared, |app| app.current_session_id()).is_none() {
-                        return Err(RpcError::bad_request("no conversation to compact"));
-                    }
-                    let started = shared.start_compaction().map_err(|error| match error {
-                        super::state::StartCompactionError::AlreadyActive => {
-                            RpcError::busy("a compaction is already active")
-                        }
-                        super::state::StartCompactionError::Application(error) => app_error(error),
-                    })?;
-                    Ok(json!({ "status": "started", "started": started }))
-                }
-                "cancel" => Ok(json!({
-                    "status": if shared.cancel_compaction() { "cancelling" } else { "idle" }
-                })),
-                _ => Err(RpcError::bad_request(
-                    "session.compact action must be start or cancel",
-                )),
-            }
-        }
         "model.overrides.set" => model_overrides_set(params, shared),
-        "permission.set" => {
-            let raw_mode = required_str(params, "mode")?;
-            let mode = crate::PermissionMode::from_journal_value(&raw_mode).ok_or_else(|| {
-                RpcError::bad_request(
-                    "mode must be read-only, workspace-write, or danger-full-access",
-                )
-            })?;
-            if mode == crate::PermissionMode::FullAccess
-                && params.get("confirm").and_then(Value::as_str)
-                    != Some(crate::PermissionMode::FullAccess.journal_value())
-            {
-                return Err(RpcError::bad_request(
-                    "danger-full-access requires matching `confirm`",
-                ));
-            }
-            with_app(shared, |app| app.set_permission_mode(mode)).map_err(app_error)?;
-            Ok(json!({ "mode": mode.journal_value(), "label": mode.to_string() }))
-        }
+        "permission.set" => set_permission(params, shared),
         "draft.open" => {
             let client_draft_id = required_str(params, "clientDraftId")?;
             let selection_generation = shared.selection_generation();
@@ -792,6 +534,26 @@ fn dispatch_project(
         "approval.respond" => approver::respond(shared, params),
         other => Err(RpcError::bad_request(format!("unknown method: {other}"))),
     }
+}
+
+fn set_permission(
+    params: &Map<String, Value>,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    let raw_mode = required_str(params, "mode")?;
+    let mode = crate::PermissionMode::from_journal_value(&raw_mode).ok_or_else(|| {
+        RpcError::bad_request("mode must be read-only, workspace-write, or danger-full-access")
+    })?;
+    if mode == crate::PermissionMode::FullAccess
+        && params.get("confirm").and_then(Value::as_str)
+            != Some(crate::PermissionMode::FullAccess.journal_value())
+    {
+        return Err(RpcError::bad_request(
+            "danger-full-access requires matching `confirm`",
+        ));
+    }
+    with_app(shared, |app| app.set_permission_mode(mode)).map_err(app_error)?;
+    Ok(json!({ "mode": mode.journal_value(), "label": mode.to_string() }))
 }
 
 fn dispatch_history(

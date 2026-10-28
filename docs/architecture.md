@@ -336,6 +336,24 @@ signal, and join handle, so callers do not reproduce cleanup order.
 admission commit point; execution never decides whether a user fact may be
 made durable.
 
+Manual compaction has one lifecycle owner in `application/compaction/manual.rs`.
+Application owns single-flight admission, the start timestamp, cancellation and
+worker result. TUI, headless and RPC callers observe the same operation; serve
+keeps no second compaction slot. A completion notice is presentation only and
+cannot clear a newer operation. Duplicate starts are rejected before any wait;
+requesting cancellation does not release the slot until summary work exits.
+A panicking summary service becomes a localized failure result and releases the
+slot. Starting/completing an operation does not depend on a client consuming
+notices. Concurrent handle joins wait for the same worker settlement.
+
+Manual and automatic title updates live in `application/title.rs`. A targeted
+rename validates the selected session and performs its durable write within one
+Application mutable borrow, so an intent for an earlier session cannot rename a
+later selection. Session RPC adaptation is grouped in `serve/protocol/sessions.rs`;
+its identity/title/watermark reads share one Application lock. WeChat RPC
+adaptation lives in `serve/protocol/wechat.rs`; root routing and existing
+binding/outbound locks are retained by the transport boundary.
+
 Internally, `run_execution/worker.rs` owns mutable worker progress and Goal
 continuation; `run_execution/round.rs` owns a round's bindings, shared spend
 ledger, invocation, process cleanup and durable settlement. Cleanup is explicit:

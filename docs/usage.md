@@ -641,15 +641,16 @@ cancels the run and keeps already streamed output.
 
 The Web/Desktop composer uses the pending-message and immediate-interruption
 controls described below; its Enter and Esc behavior differs from terminal steering.
-Hovering or focusing the permission icon opens a popup with the current mode and
-all three permission descriptions. Click the icon to pin the popup. Select Read
-Only or Project Write to apply it directly; Full Access requires confirming its
-warning and applying the change inside the same popup. All composer popups share
-hover previews and click-to-pin behavior. Editing inside a popup pins it, so
-moving the pointer away does not dismiss an edit. Click outside or press Esc to
-close; Esc closes the popup before stopping a running task. Model/thinking is
-centered above its trigger. Context compaction uses an explicit button inside
-the context popup when recommended.
+Clicking the permission icon opens a popup with the current mode and all three
+permission descriptions. Select Read Only or Project Write to apply it directly;
+Full Access requires confirming its warning and applying the change inside the
+same popup. Only context usage previews on hover or keyboard focus; clicking
+pins that preview. Add, permission, model/thinking and pending-message popups
+open on click or explicit keyboard activation, and remain open when the pointer
+leaves. Click the trigger again, click outside or press Esc to close; Esc closes
+the popup before stopping a running task. Model/thinking is centered above its
+trigger. Context compaction uses an explicit button inside the context popup
+when recommended.
 
 Cancellation is acknowledged immediately and actively propagated. The status
 line switches to `Cancelling…` on the keypress in both the standalone and
@@ -701,6 +702,13 @@ selected history intact; a persistence failure stops execution without repeating
 tools already executed.
 
 `/compact` manually summarizes older user turns while no run is active.
+Only one manual compaction can be active in a project. Repeating the request is
+rejected immediately; it does not wait for the first request to finish. Host
+state and cancellation are shared across clients regardless of which core entry
+started the operation. Cancellation remains pending until the summary work stops.
+A summary worker failure releases the busy state and reports an error; it does
+not silently retry or replace history with a partial result.
+
 All compaction modes use the same summary executor. It derives a low-effort
 internal text profile without changing the conversation's model settings and
 reserves generation space for reasoning as well as the summary. An empty or
@@ -2396,9 +2404,10 @@ request receives one pending message. It does not wait for the whole task to
 finish. Text, staged images and fixed file references travel together. A message
 leaves the pending list only after durable admission.
 
-The queue icon next to Send shows the pending count. Hover or focus opens the
-same popup surface as context usage; click pins it, pointer departure closes an
-unpinned popup, and outside click or Esc dismisses it. The popup aligns to the
+The queue icon next to Send shows the pending count. At zero it is disabled;
+with pending messages, click or explicit keyboard activation opens the same
+popup surface as context usage. Pointer departure does not dismiss it; click
+the trigger again, click outside or press Esc to close. The popup aligns to the
 composer's right edge, has no close button, and lists **Interrupt now**, edit,
 return-to-input and delete actions. Editing stays inside the popup and supports
 adding/removing images. Returning a message preserves the current draft; a merge
@@ -2883,8 +2892,8 @@ Suggestions do not enter the conversation journal or model context.
 
 The context ring beside the model opens a usage popover by hover, focus or click.
 When core estimates pressure above its 80% threshold (including output reserve)
-and there is compressible history, the ring turns red. While idle, clicking a red
-ring starts the existing model-backed compaction flow; hovering still shows usage.
+and there is compressible history, the ring turns red. Open the popup and use
+its explicit compaction button to start the existing model-backed compaction flow.
 Compaction may incur model usage and can lose detail in the model summary; original
 conversation records remain intact. During compaction the ring shows an indeterminate
 animation and rejects duplicate clicks. After completion it refreshes the estimate

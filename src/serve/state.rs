@@ -12,8 +12,7 @@ use crate::application::join_with_grace;
 use crate::event::RunEvent;
 use crate::permission::PermissionDecision;
 use crate::{
-    ApplicationEvent, ApplicationRunDone, ApplicationRunFailure, CompactHandle,
-    TrustedProjectApplication,
+    ApplicationEvent, ApplicationRunDone, ApplicationRunFailure, TrustedProjectApplication,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -68,16 +67,6 @@ pub(super) struct ServeInner {
     pub(super) active_run: Option<ActiveRun>,
 }
 
-struct ActiveCompaction {
-    handle: CompactHandle,
-    started_ms: i64,
-}
-
-pub(crate) enum StartCompactionError {
-    AlreadyActive,
-    Application(crate::ApplicationError),
-}
-
 /// 短命 steering 受理账本：只填补「队列 Accepted 但 HTTP 应答在浏览器
 /// 收到前丢失」的空隙。durable claim 后改由 session projection 的
 /// committed receipt 回答。带图片的记录还持有 raw upload reservation：
@@ -119,10 +108,6 @@ pub(crate) struct ServeShared {
     /// requests. An acknowledged unbind cannot be followed by a queued send
     /// using the revoked credential.
     pub(crate) wechat_outbound: Mutex<()>,
-    /// Manual compaction is a serve-owned interaction just like an active
-    /// run. Keeping the cancellable handle here makes F5/reconnect and
-    /// duplicate-start behavior frontend-neutral rather than browser-local.
-    active_compaction: Mutex<Option<ActiveCompaction>>,
     shutting_down: Arc<AtomicBool>,
     /// settler / notice 转发（关停时统一有界 join）。
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -178,7 +163,6 @@ impl ServeShared {
             questions: super::questions::Questions::default(),
             wechat_binding: Mutex::new(None),
             wechat_outbound: Mutex::new(()),
-            active_compaction: Mutex::new(None),
             shutting_down: Arc::new(AtomicBool::new(false)),
             workers: Mutex::new(Vec::new()),
             connections: Mutex::new(Vec::new()),
@@ -663,69 +647,18 @@ impl ServeShared {
     }
 
     pub(crate) fn active_compaction_info(&self) -> Value {
-        let mut active = self
-            .active_compaction
-            .lock()
-            .expect("serve compaction lock");
-        if active
-            .as_ref()
-            .is_some_and(|compaction| compaction.handle.is_finished())
-        {
-            active.take();
-        }
-        active.as_ref().map_or(
-            Value::Null,
-            |compaction| json!({ "started": compaction.started_ms }),
-        )
-    }
-
-    pub(crate) fn start_compaction(&self) -> Result<i64, StartCompactionError> {
-        let mut active = self
-            .active_compaction
-            .lock()
-            .expect("serve compaction lock");
-        if active
-            .as_ref()
-            .is_some_and(|compaction| !compaction.handle.is_finished())
-        {
-            return Err(StartCompactionError::AlreadyActive);
-        }
-        active.take();
-        let handle = self
-            .app
+        self.app
             .lock()
             .expect("application lock")
-            .compact_session()
-            .map_err(StartCompactionError::Application)?;
-        let started_ms = now_ms();
-        *active = Some(ActiveCompaction { handle, started_ms });
-        Ok(started_ms)
+            .compaction_started_at()
+            .map_or(Value::Null, |started| json!({ "started": started }))
     }
 
-    /// Idempotent cancellation: false means there was no unfinished manual
-    /// compaction. Completion still arrives through the ordinary notice lane.
     pub(crate) fn cancel_compaction(&self) -> bool {
-        let mut active = self
-            .active_compaction
+        self.app
             .lock()
-            .expect("serve compaction lock");
-        match active.as_ref() {
-            Some(compaction) if !compaction.handle.is_finished() => {
-                compaction.handle.cancel();
-                true
-            }
-            _ => {
-                active.take();
-                false
-            }
-        }
-    }
-
-    fn finish_compaction(&self) {
-        self.active_compaction
-            .lock()
-            .expect("serve compaction lock")
-            .take();
+            .expect("application lock")
+            .cancel_compaction()
     }
 
     /// settler 收尾：同一锁内广播 settled 帧（恰一）并释放 run 账目
@@ -797,14 +730,6 @@ impl ServeShared {
                             let Some(shared) = shared.upgrade() else {
                                 return;
                             };
-                            if matches!(
-                                event,
-                                ApplicationEvent::CompactionUpdated(
-                                    crate::CompactionStatus::Finished { .. }
-                                )
-                            ) {
-                                shared.finish_compaction();
-                            }
                             if let ApplicationEvent::BackgroundJobChanged { job } = &event {
                                 shared.publish_job_notification(job);
                             }

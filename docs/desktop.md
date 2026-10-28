@@ -18,8 +18,7 @@ The composer toolbar groups add, permission, plan, context usage, model/thinking
 pending messages and send/stop controls. Toolbar icons share a centered control
 size and stroke weight. Permissions are recognizable by shape and theme-aware
 color: a blue eye for read-only, a green shield with a pen for project write,
-and an amber unlocked padlock for full access. The permission popup opens on
-hover or keyboard focus and pins on click, sharing the context popup's behavior.
+and an amber unlocked padlock for full access. The permission popup opens on click or explicit keyboard activation.
 Its left edge aligns with the composer's left border, with viewport avoidance.
 It shows the current mode and three short descriptions, and switches permissions
 directly. Enabling full access requires the existing explicit warning confirmation
@@ -28,16 +27,19 @@ overlay layer, so conversation clipping and the session list cannot cover them.
 The add and model/thinking popups use that same layer, surface, padding, corner
 radius and shadow. All composer popups sit 12px above their trigger, fit their
 content and scroll within the same viewport-aware maximum height.
-The model/thinking popup is centered above its trigger. All five popups open on
-hover or keyboard focus and pin on a trigger click or interaction inside them.
-An unpinned preview closes shortly after the pointer leaves; a pinned editor
-stays open when hovering other controls. Clicking another trigger replaces it.
+The model/thinking popup is centered above its trigger. Only context usage
+previews on hover or keyboard focus; its unpinned preview closes shortly after
+the pointer leaves, and a click pins it. Add, permission, model/thinking and
+pending messages open only on click or explicit keyboard activation and stay
+open when the pointer leaves. Hovering other controls never replaces an open
+popup. Clicking another enabled trigger replaces it.
 Click the same trigger again, click outside, move keyboard focus outside, or
 press Esc to close. Only one popup is open at a time. Arrow Down enters a popup;
 Tab and Shift+Tab move between its controls and the toolbar. The model popup
 needs no close button. Context compaction is an explicit action inside its popup.
 Pending messages use the context popup's
-surface and hover/pin behavior, aligned to the composer's right edge. During a
+surface, aligned to the composer's right edge. The queue icon is disabled when
+the pending count is zero; it opens the popup only when messages are present. During a
 run, Send queues a message for the next model step; **Interrupt now** on a queued
 item stops the current execution and automatically continues in the same
 conversation. Images and fixed file references remain attached. Esc dismisses an

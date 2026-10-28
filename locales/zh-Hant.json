@@ -262,6 +262,7 @@
   "common.save": "儲存",
   "common.system": "跟隨系統",
   "compaction.cancelled": "上下文壓縮已取消。",
+  "compaction.worker_failed": "上下文壓縮執行緒異常：{error}",
   "compaction.provider_cancelled": "模型提前終止了摘要請求，原上下文未被替換。",
   "compaction.summary_too_large": "縮寫後的摘要仍需約 {tokens} tokens，上限為 {limit}，原上下文未被替換。",
   "compaction.empty_summary": "恢復嘗試後模型仍未返回摘要，原上下文未被替換。",

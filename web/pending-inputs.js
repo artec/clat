@@ -18,7 +18,7 @@ function pendingButton(key, action, icon) {
 function installPendingInputs() {
   const seat = el('div', 'usage-seat pending-input-seat');
   seat.hidden = true;
-  const trigger = pendingInputTrigger = el('button', 'icon-button pending-input-trigger'); trigger.type = 'button';
+  const trigger = pendingInputTrigger = el('button', 'icon-button pending-input-trigger'); trigger.type = 'button'; trigger.disabled = true;
   trigger.id = 'pending-input-trigger'; trigger.setAttribute('aria-haspopup', 'dialog'); trigger.setAttribute('aria-expanded', 'false');
   CLATI18n.attribute(trigger, 'aria-label', () => inputText('title'));
   const badge = el('span', 'pending-input-count'); badge.hidden = true; trigger.append(svgIcon('pending'), badge);
@@ -40,6 +40,7 @@ function installPendingInputs() {
 function renderPendingInputs(value) {
   if (!pendingInputTrigger) return;
   Object.assign(pendingInputStore, value || { items: [], paused: false, interrupting: false });
+  pendingInputTrigger.disabled = !pendingInputStore.items.length;
   pendingInputTrigger.parentElement.hidden = !supportsPendingInputs();
   if (!supportsPendingInputs()) return;
   dom['queue-enqueue'].hidden = true; dom['queue-recall'].hidden = true;

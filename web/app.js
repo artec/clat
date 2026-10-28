@@ -2946,10 +2946,10 @@ function modelPickerOpen() {
 let modelPickerPopover = null, modelPickerLoading = Promise.resolve();
 function installModelPickerPopup() {
   modelPickerPopover = attachComposerPopup(dom['model-picker-trigger'], dom['model-picker-trigger'], dom['model-picker'],
-    () => { modelPickerLoading = loadModelPicker(); }, 'center', () => {
+    () => { modelPickerLoading = loadModelPicker(); }, 'center', { onClose: () => {
       dom['model-picker-key'].value = '';
       CLATI18n.bind(dom['model-picker-error'], 'textContent', () => '');
-    });
+    } });
 }
 function closeModelPicker({ focus = false } = {}) { modelPickerPopover?.close({ focus }); }
 async function loadModelPicker() {

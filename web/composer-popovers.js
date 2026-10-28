@@ -1,4 +1,4 @@
-/* One presentation lifecycle for every composer popup. Hover never performs an action. */
+/* Composer action popups open explicitly; context usage opts into hover preview. */
 let activeComposerPopup = null, composerPopupDismissalInstalled = false;
 function installComposerPopupSurface(popup, trigger, alignment) {
   dom.app.append(popup);
@@ -33,7 +33,7 @@ function installComposerPopupDismissal() {
     event.preventDefault(); activeComposerPopup.close({ focus: true });
   }, true);
 }
-function attachComposerPopup(seat, trigger, popup, render, alignment = 'center', onClose = () => {}) {
+function attachComposerPopup(seat, trigger, popup, render, alignment = 'center', { hover = false, onClose = () => {} } = {}) {
   let pinned = false, timer;
   const position = installComposerPopupSurface(popup, trigger, alignment);
   const contains = target => target instanceof Node && (seat.contains(target) || popup.contains(target));
@@ -56,14 +56,14 @@ function attachComposerPopup(seat, trigger, popup, render, alignment = 'center',
     if (fresh) render(); position(); return true;
   };
   const controller = { open, close, position, isOpen, isPinned: () => pinned, toggle: () => pinned && isOpen() ? close() : open({ pin: true }) };
-  seat.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') open(); });
+  if (hover) seat.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') open(); });
   popup.addEventListener('pointerenter', () => clearTimeout(timer));
   popup.addEventListener('pointerdown', () => { pinned = true; });
   for (const region of [seat, popup]) {
     region.addEventListener('pointerleave', () => {
-      if (!pinned) timer = setTimeout(() => { if (!popup.contains(document.activeElement)) close(); }, 220);
+      if (hover && !pinned) timer = setTimeout(() => { if (!popup.contains(document.activeElement)) close(); }, 220);
     });
-    region.addEventListener('focusin', () => { clearTimeout(timer); if (!isOpen()) open(); });
+    region.addEventListener('focusin', () => { clearTimeout(timer); if (hover && !isOpen()) open(); });
     region.addEventListener('focusout', event => { if (event.relatedTarget && !contains(event.relatedTarget)) close(); });
     region.addEventListener('keydown', event => composerPopupKeyboard(event, controller, trigger, popup));
   }

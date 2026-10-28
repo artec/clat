@@ -32,7 +32,7 @@ function installComposerPermissions() {
   seat.append(popup);
   const view = composerPermissions = { trigger, popup, currentLabel, options, confirmation, checkbox, apply, error, status, rows: [], target: null, selected: null, saving: false };
   for (const item of COMPOSER_PERMISSIONS) addComposerPermissionOption(view, item);
-  view.popover = attachComposerPopup(seat, trigger, popup, prepareComposerPermissions, 'left', () => { view.target = null; checkbox.checked = false; });
+  view.popover = attachComposerPopup(seat, trigger, popup, prepareComposerPermissions, 'left', { onClose: () => { view.target = null; checkbox.checked = false; } });
   trigger.onclick = view.popover.toggle;
   checkbox.onchange = syncComposerPermissionControls;
   apply.onclick = () => void applyComposerPermission(view.selected);

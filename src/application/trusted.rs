@@ -7,7 +7,7 @@ use crate::presets::preset_by_id;
 use crate::session::id::SessionId;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::JsonlCompression;
-use crate::session::use_cases::{SessionService, SessionSummary, SessionView, SetTitleExpectation};
+use crate::session::use_cases::{SessionService, SessionSummary, SessionView};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -1405,45 +1405,6 @@ impl TrustedProjectApplication {
 }
 
 impl TrustedProjectApplication {
-    /// 用户改名（`/rename`）：`SetTitleExpectation::Force` +
-    /// `TitleSource::User`（catalog §2.2——用户改名不引用 provider）。
-    ///
-    /// 门槛（N4，2026-08-19 放宽）：有活动会话即可改——不再要求 LLM
-    /// 已起名。原门槛把"首轮一次性自动命名失败/早于该功能的旧会话"
-    /// 永久挡在门外（用户实测几百轮的会话被拒）；CAS 本就保证改名
-    /// 压制迟到的自动命名（N5），门槛没有额外保护价值。清洗后为空
-    /// 拒绝（`Invalid`）。成功后广播 `TitleUpdated`。
-    pub fn rename_session(&mut self, raw: &str) -> Result<RenameOutcome, ApplicationError> {
-        let Some(session_id) = self.sessions.active_id() else {
-            return Ok(RenameOutcome::NoSession);
-        };
-        let title = crate::session::projection::sanitize_user_title(raw);
-        if title.is_empty() {
-            return Ok(RenameOutcome::Invalid);
-        }
-        let applied = self
-            .sessions
-            .set_title(
-                &session_id,
-                SetTitleExpectation::Force,
-                &title,
-                crate::session::use_cases::TitleSource::User,
-            )
-            .map_err(session_error)?;
-        if applied {
-            broadcast_to(
-                &self.subscribers,
-                ApplicationEvent::TitleUpdated {
-                    title: title.clone(),
-                },
-            );
-            Ok(RenameOutcome::Renamed { title })
-        } else {
-            // set_title 的会话守卫（活动 id 漂移）——与 NoSession 同义。
-            Ok(RenameOutcome::NoSession)
-        }
-    }
-
     /// 分发一条斜杠命令（INV-C1：前端触达命令的唯一路径）。解析 →
     /// 查注册表 → 参数裁决（INV-C6）→ 处理器；outcome 由调用方渲染。
     /// dispatch 全程不构造 run/model 请求（INV-C5）、不生产 `command/*`
