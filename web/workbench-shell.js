@@ -2,12 +2,12 @@
 let workbenchShell = null;
 
 function shellText(key) { return CLATI18n.msg('workbench.' + key); }
-function shellButton(id, icon, label, action) {
+function shellButton(id, icon, label, action, tooltip = true) {
   const button = el('button', 'shell-button');
   button.id = id; button.type = 'button';
   button.append(svgIcon(icon), el('span', 'shell-label', label));
   CLATI18n.attribute(button, 'aria-label', label);
-  CLATI18n.attribute(button, 'title', label);
+  if (tooltip) CLATI18n.attribute(button, 'title', label);
   button.addEventListener('click', action);
   return button;
 }
@@ -242,16 +242,16 @@ function refreshShellResources() {
 }
 
 function createShellComposer(shell) {
-  const reveal = visible => { menu.hidden = !visible; trigger.setAttribute('aria-expanded', String(visible)); };
-  const trigger = shellButton('composer-add', 'open', () => shellText('add'), () => reveal(menu.hidden));
+  const trigger = shellButton('composer-add', 'open', () => shellText('add'), () => popover.toggle(), false);
   trigger.classList.add('composer-add');
   trigger.replaceChildren(dom['attachment-open'].querySelector('svg').cloneNode(true));
   const menu = el('section', 'composer-add-menu'); menu.id = 'composer-add-menu'; menu.hidden = true;
+  menu.setAttribute('role', 'dialog'); trigger.setAttribute('aria-haspopup', 'dialog');
   trigger.setAttribute('aria-controls', menu.id); trigger.setAttribute('aria-expanded', 'false');
   CLATI18n.attribute(menu, 'aria-label', () => shellText('add'));
   const group = (label, rows) => {
     const block = el('div', 'composer-add-group'); block.append(el('h3', '', label));
-    for (const [id, icon, text, run] of rows) block.append(shellButton(id, icon, text, () => { reveal(false); run(); }));
+    for (const [id, icon, text, run] of rows) block.append(shellButton(id, icon, text, () => { popover.close(); run(); }));
     menu.append(block);
   };
   group(() => shellText('add_content'), [
@@ -270,11 +270,8 @@ function createShellComposer(shell) {
   const plan = shellButton('composer-plan-toggle', 'plan', () => shellText('plan'), () => toggleShellPlan());
   dom['attachment-open'].classList.add('hidden');
   dom['attachment-open'].before(trigger);
-  dom['composer-permission'].after(plan); dom['composer-shell'].append(menu);
-  document.addEventListener('pointerdown', event => { if (!menu.contains(event.target) && !trigger.contains(event.target)) reveal(false); });
-  menu.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.stopPropagation(); reveal(false); trigger.focus(); }
-  });
+  (dom['composer-permission'].closest('.permission-seat') || dom['composer-permission']).after(plan);
+  const popover = attachComposerPopup(trigger, trigger, menu, () => {}, 'left');
 }
 
 async function toggleShellPlan() {

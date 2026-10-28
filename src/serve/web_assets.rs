@@ -10,6 +10,46 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/composer-popovers.js",
+        include_bytes!("../../web/composer-popovers.js"),
+        "application/javascript",
+    ),
+    (
+        "/composer-permissions.js",
+        include_bytes!("../../web/composer-permissions.js"),
+        "application/javascript",
+    ),
+    (
+        "/pending-input-editor.js",
+        include_bytes!("../../web/pending-input-editor.js"),
+        "application/javascript",
+    ),
+    (
+        "/pending-inputs.js",
+        include_bytes!("../../web/pending-inputs.js"),
+        "application/javascript",
+    ),
+    (
+        "/pending-input-actions.js",
+        include_bytes!("../../web/pending-input-actions.js"),
+        "application/javascript",
+    ),
+    (
+        "/icons/input-trash-2.svg",
+        include_bytes!("../../web/icons/input-trash-2.svg"),
+        "image/svg+xml",
+    ),
+    (
+        "/icons/input-zap.svg",
+        include_bytes!("../../web/icons/input-zap.svg"),
+        "image/svg+xml",
+    ),
+    (
+        "/icons/input-corner-up-left.svg",
+        include_bytes!("../../web/icons/input-corner-up-left.svg"),
+        "image/svg+xml",
+    ),
+    (
         "/conversation-experience.js",
         include_bytes!("../../web/conversation-experience.js"),
         "application/javascript",
@@ -229,6 +269,8 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
 // Source modules keep their zero-build authoring surface. A normal function
 // gives each mounted project lexical ownership without eval, imports or frames.
 const PROJECT_MODULES: &[&str] = &[
+    "/composer-popovers.js",
+    "/composer-permissions.js",
     "/conversation-experience.js",
     "/navigation-pages.js",
     "/settings-pages.js",
@@ -237,6 +279,9 @@ const PROJECT_MODULES: &[&str] = &[
     "/conversation-reader.js",
     "/composer-ux.js",
     "/next-turn.js",
+    "/pending-inputs.js",
+    "/pending-input-actions.js",
+    "/pending-input-editor.js",
     "/command-picker.js",
     "/conversation-find.js",
     "/workspace-review.js",

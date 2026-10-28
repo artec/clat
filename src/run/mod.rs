@@ -189,6 +189,7 @@ impl<'a> Run<'a> {
         // 在发 RunCompleted/RunFailed/RunCancelled 前主动封口；guard
         // 防的是未来 early-return 或下层 panic 绕过那些显式路径。
         let _seal_guard = SteeringSealGuard(self.steering.clone());
+        self.steering.inputs().agent_started();
         self.drive(items, message, client_message_id, events)
     }
 

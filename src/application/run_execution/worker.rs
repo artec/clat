@@ -296,21 +296,7 @@ impl RunWorker {
             }
         };
         self.clear_run_slots();
-        let sampled = self
-            .deps
-            .sampling_usage
-            .lock()
-            .map(|mut cell| std::mem::take(&mut *cell))
-            .unwrap_or_default();
-        let result = result
-            .map(|mut done| {
-                done.usage.add_assign(&sampled);
-                done
-            })
-            .map_err(|mut failure| {
-                failure.usage.add_assign(&sampled);
-                failure
-            });
+        let result = self.merge_sampling_usage(result);
         let result = if let (Some(run), Some(recorder)) =
             (self.task_run.as_deref(), self.task_terminal.take())
         {
@@ -347,8 +333,39 @@ impl RunWorker {
                 failure.receipt = self.input.receipt.clone();
                 failure
             });
+        self.settle_inputs(&result);
         self.deps.busy.store(false, Ordering::Release);
         let _ = self.deps.completion.send(result);
+    }
+}
+
+impl RunWorker {
+    fn settle_inputs(&self, result: &ApplicationRunResult) {
+        use crate::input::InputSettlement;
+        let outcome = match result {
+            Ok(done) if done.cancelled => InputSettlement::Cancelled,
+            Ok(_) => InputSettlement::Completed,
+            Err(_) => InputSettlement::Failed,
+        };
+        self.deps.steering.inputs().settled(outcome);
+    }
+
+    fn merge_sampling_usage(&self, result: ApplicationRunResult) -> ApplicationRunResult {
+        let sampled = self
+            .deps
+            .sampling_usage
+            .lock()
+            .map(|mut cell| std::mem::take(&mut *cell))
+            .unwrap_or_default();
+        result
+            .map(|mut done| {
+                done.usage.add_assign(&sampled);
+                done
+            })
+            .map_err(|mut failure| {
+                failure.usage.add_assign(&sampled);
+                failure
+            })
     }
 }
 

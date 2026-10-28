@@ -6450,3 +6450,53 @@ fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
     cleanup_tree(&storage);
     cleanup_tree(&project);
 }
+
+#[test]
+fn pending_input_postcommit_start_failure_pauses_rest_without_repeating_received_message() {
+    let (storage, root) = roots("input-postcommit-failure");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    for id in ["first", "second"] {
+        app.enqueue_input(
+            id.into(),
+            crate::message::PendingMessage::from_front_end(id, Some(id.into()), vec![]),
+            InputDraft::default(),
+        )
+        .unwrap();
+    }
+    app.fail_next_run_start_receive_for_test();
+    let (completion, _receive) = mpsc::channel();
+    let error = app
+        .start_pending_input(ApplicationRunRequest {
+            message: crate::message::PendingMessage::text(""),
+            asker: None,
+            approver: allow_all_approver(),
+            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+            completion,
+        })
+        .err()
+        .expect("injected post-commit activation failure");
+    assert_eq!(
+        error.admission_receipt().unwrap().state,
+        crate::message::AdmissionState::Committed
+    );
+    let pending = app.pending_inputs();
+    assert!(
+        pending.paused,
+        "failed execution must require explicit resume"
+    );
+    assert_eq!(pending.items.len(), 1);
+    assert_eq!(pending.items[0].id, "second");
+    assert_eq!(
+        load_events(&storage)
+            .iter()
+            .filter(|event| event.event_type == "user/message"
+                && event.data["clientMessageId"] == "first")
+            .count(),
+        1
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}

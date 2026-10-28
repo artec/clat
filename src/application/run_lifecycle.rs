@@ -20,6 +20,11 @@ impl TrustedProjectApplication {
         &mut self,
         request: ApplicationRunRequest,
     ) -> Result<RunHandle, ApplicationError> {
+        if !self.input_queue().accepts_initial(&request.message) {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "input.changed",
+            )));
+        }
         // An ordinary human prompt competes with any previously armed goal.
         // Preserve durable phase, remove only process-local continuation
         // authority, matching DSH goal-round-driver's competing prompt fence.
@@ -313,15 +318,7 @@ impl TrustedProjectApplication {
                 "model is not configured; configure a model and endpoint first",
             ));
         }
-        // MCP 后台启动落定（有界等待）后再冻结工具注册表（INV-M2/M3）：
-        // 任何 run 看到的都是完整工具集——除非等待超时（此时以现状冻结，
-        // 状态面板可见未落定 server，修复后需重启以重新挂载）。无 MCP
-        // 配置时立即返回，零等待成本。
-        let _settled = self.mcp_status.wait_until_settled(MCP_STARTUP_RUN_WAIT);
-        self.tools
-            .freeze()
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        self.prompts.freeze();
+        self.freeze_run_tools()?;
         let instruction_snapshot = self
             .dynamic_instructions
             .snapshot()
@@ -368,6 +365,7 @@ impl TrustedProjectApplication {
             }
         };
         let committed_receipt = prepared.receipt.clone();
+        self.commit_initial_input(&request_message);
         let post_commit_start_error = |error: ApplicationError, phase: &'static str| {
             let failed_receipt = committed_receipt
                 .clone()
@@ -427,6 +425,19 @@ impl TrustedProjectApplication {
         Ok(handle)
     }
 
+    fn freeze_run_tools(&self) -> Result<(), ApplicationError> {
+        // MCP 后台启动落定（有界等待）后再冻结工具注册表（INV-M2/M3）：
+        // 任何 run 看到的都是完整工具集——除非等待超时（此时以现状冻结，
+        // 状态面板可见未落定 server，修复后需重启以重新挂载）。无 MCP
+        // 配置时立即返回，零等待成本。
+        let _settled = self.mcp_status.wait_until_settled(MCP_STARTUP_RUN_WAIT);
+        self.tools
+            .freeze()
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        self.prompts.freeze();
+        Ok(())
+    }
+
     pub(super) fn prepare_execution_slot(&mut self) -> Result<(), ApplicationError> {
         if let Some(previous) = self
             .active_run
@@ -475,6 +486,7 @@ impl TrustedProjectApplication {
     }
 
     pub fn cancel_active_run(&self) {
+        self.transient_inputs.queue.pause();
         if let Some(handle) = &self.active_run {
             handle.cancel();
         }
@@ -490,7 +502,18 @@ impl TrustedProjectApplication {
     /// then the recorder makes descriptor refs reachable only when the run
     /// claims and append+flush commits the user event. A sealed/not-running
     /// queue is checked first, so rejected drafts do not create orphan work.
-    pub fn steer(&self, mut message: crate::message::PendingMessage) -> SteerOutcome {
+    pub fn steer(&self, message: crate::message::PendingMessage) -> SteerOutcome {
+        if message
+            .client_message_id
+            .as_ref()
+            .is_some_and(|id| self.input_queue().existing(id).is_some())
+        {
+            return SteerOutcome::Refused {
+                reason: crate::i18n::LocaleContext::new(crate::i18n::Locale::English)
+                    .render(&crate::i18n::UiMessage::new("input.changed")),
+                receipt: steering_rollback_receipt(&message, "steering-admission"),
+            };
+        }
         if message.content.has_images() && message.admitted_images.is_empty() {
             return SteerOutcome::Refused {
                 reason: "image content must be admitted from staged sources by core".into(),
@@ -507,62 +530,20 @@ impl TrustedProjectApplication {
                 receipt: steering_rollback_receipt(&message, "steering-not-running"),
             };
         }
-        if !message.staged_attachments.is_empty() {
-            message.freeze_request_digest();
-            let (config, _) = match self.model_state() {
-                Ok(state) => state,
-                Err(error) => {
-                    return SteerOutcome::Refused {
-                        reason: error.to_string(),
-                        receipt: steering_rollback_receipt(&message, "steering-model-state"),
-                    };
-                }
-            };
-            if !config.capabilities.accepts_image_input() {
-                return SteerOutcome::Refused {
-                    reason: format!(
-                        "this model ({}) does not accept image input; switch to a verified vision model or remove the image(s)",
-                        config.model
-                    ),
-                    receipt: steering_rollback_receipt(&message, "steering-capability"),
-                };
-            }
-            if message.staged_attachments.len() > config.image_policy.max_images {
-                return SteerOutcome::Refused {
-                    reason: format!(
-                        "this model ({}) accepts at most {} images per message; remove {} image(s) before sending",
-                        config.model,
-                        config.image_policy.max_images,
-                        message.staged_attachments.len() - config.image_policy.max_images,
-                    ),
-                    receipt: steering_rollback_receipt(&message, "steering-route-policy"),
-                };
-            }
-            let images = match self
-                .sessions
-                .import_attachments(&message.staged_attachments)
-            {
-                Ok(images) => images,
-                Err(error) => {
-                    return SteerOutcome::Refused {
-                        reason: error.to_string(),
-                        receipt: steering_rollback_receipt(&message, "steering-import"),
-                    };
-                }
-            };
-            if let Err(reason) = validate_route_images(&config, &images) {
-                return SteerOutcome::Refused {
-                    reason,
-                    receipt: steering_rollback_receipt(&message, "steering-route-policy"),
-                };
-            }
-            message.content.blocks.extend(images.iter().map(|image| {
-                crate::message::ContentBlock::Image {
-                    attachment: image.descriptor.clone(),
-                }
-            }));
-            message.admitted_images = images;
+        match self.prepare_input_message(message.clone()) {
+            Ok(prepared) => self.queue_steering_message(handle, prepared),
+            Err(error) => SteerOutcome::Refused {
+                reason: error.reason,
+                receipt: steering_rollback_receipt(&message, error.phase),
+            },
         }
+    }
+
+    fn queue_steering_message(
+        &self,
+        handle: &RunHandle,
+        message: crate::message::PendingMessage,
+    ) -> SteerOutcome {
         let reserved_receipt = message.client_message_id.clone().map(|client_message_id| {
             Box::new(crate::message::AdmissionReceipt::reserved(
                 client_message_id,
@@ -744,7 +725,7 @@ pub struct RecalledSteering {
     pub receipt: Option<Box<crate::message::AdmissionReceipt>>,
 }
 
-fn validate_route_images(
+pub(super) fn validate_route_images(
     config: &crate::model::ModelConfig,
     images: &[crate::message::JournalImage],
 ) -> Result<(), String> {
@@ -879,9 +860,7 @@ impl TrustedProjectApplication {
         if self.active_run.is_some() && self.selected_run().is_none() {
             return false;
         }
-        if let Some(run) = self.selected_run() {
-            run.cancel();
-        }
+        self.cancel_active_run();
         true
     }
 }

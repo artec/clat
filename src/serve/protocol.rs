@@ -107,6 +107,13 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "command.run",
     "prompt.send",
     "steer.send",
+    "input.submit",
+    "input.pending",
+    "input.update",
+    "input.recall",
+    "input.delete",
+    "input.interrupt",
+    "input.image",
     "queue.list",
     "queue.enqueue",
     "queue.recall",
@@ -407,6 +414,11 @@ fn dispatch_guarded_project(
     {
         // Only replay an already-produced receipt across a selection change.
         // This cannot pop input from the newly selected session.
+        if method.starts_with("input.")
+            && let Some(receipt) = super::inputs::replay(method, params, shared)
+        {
+            return receipt;
+        }
         if method == "queue.recall"
             && let Some(id) = params.get("clientMessageId").and_then(Value::as_str)
             && let Some(item) = shared
@@ -420,6 +432,15 @@ fn dispatch_guarded_project(
         return Err(RpcError::busy(
             "session selection changed; refresh before submitting",
         ));
+    }
+    if method.starts_with("input.") {
+        return super::inputs::dispatch(
+            method,
+            params
+                .as_object()
+                .ok_or_else(|| RpcError::bad_request("params must be an object"))?,
+            shared,
+        );
     }
     if matches!(method, "queue.list" | "queue.enqueue" | "queue.recall") {
         return super::next_turn::dispatch(
@@ -1661,6 +1682,8 @@ fn workbench_info(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
         RPC_METHODS,
     );
     value["next_turn_queue"] = super::next_turn::value(shared)["items"].clone();
+    value["pending_inputs"] = serde_json::to_value(with_app(shared, |app| app.pending_inputs()))
+        .map_err(|e| RpcError::internal(e.to_string()))?;
     value["selection_generation"] = json!(shared.selection_generation());
     Ok(value)
 }
@@ -2013,8 +2036,9 @@ fn project_mutation(method: &str) -> bool {
             | "run.cancel"
             | "model.overrides.set"
             | "turn.restore"
-    ) || method.starts_with("schedule.")
-        && !matches!(method, "schedule.list" | "schedule.deliveries")
+    ) || method.starts_with("input.") && !matches!(method, "input.pending" | "input.image")
+        || method.starts_with("schedule.")
+            && !matches!(method, "schedule.list" | "schedule.deliveries")
 }
 
 #[cfg(test)]

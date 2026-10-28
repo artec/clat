@@ -13,6 +13,7 @@ pub mod goal;
 mod host_client;
 mod i18n;
 pub(crate) mod im;
+mod input;
 mod interaction;
 mod language_intelligence;
 mod mcp;

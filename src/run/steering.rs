@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Default)]
 pub(crate) struct SteeringQueue {
     pending: Arc<Mutex<SteeringState>>,
+    inputs: crate::input::InputQueue,
 }
 
 #[derive(Default)]
@@ -49,6 +50,17 @@ impl Drop for SteeringSealGuard {
 }
 
 impl SteeringQueue {
+    pub(crate) fn with_inputs(inputs: crate::input::InputQueue) -> Self {
+        Self {
+            inputs,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn inputs(&self) -> &crate::input::InputQueue {
+        &self.inputs
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -91,8 +103,12 @@ impl SteeringQueue {
         let Ok(mut state) = self.pending.lock() else {
             return true;
         };
+        if self.inputs.ready() {
+            return false;
+        }
         if state.sealed || state.queue.is_empty() {
             state.sealed = true;
+            self.inputs.terminal();
             return true;
         }
         false
@@ -101,6 +117,7 @@ impl SteeringQueue {
     /// 无条件封口（fail/cancelled 等一切退出路径的兜底）：此后
     /// `try_push` 一律 `Sealed`。
     pub(crate) fn seal(&self) {
+        self.inputs.terminal();
         if let Ok(mut state) = self.pending.lock() {
             state.sealed = true;
         }

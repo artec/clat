@@ -237,6 +237,9 @@ const ICON_PATHS = {
   folder: ['M3 7h7l2-3h9v16H3z'],
   settings: ['M19.39 8.94L19.85 10.44L22.30 9.95L22.30 14.05L19.85 13.56L19.39 15.06L19.39 15.06L18.65 16.44L20.73 17.83L17.83 20.73L16.44 18.65L15.06 19.39L15.06 19.39L13.56 19.85L14.05 22.30L9.95 22.30L10.44 19.85L8.94 19.39L8.94 19.39L7.56 18.65L6.17 20.73L3.27 17.83L5.35 16.44L4.61 15.06L4.61 15.06L4.15 13.56L1.70 14.05L1.70 9.95L4.15 10.44L4.61 8.94L4.61 8.94L5.35 7.56L3.27 6.17L6.17 3.27L7.56 5.35L8.94 4.61L8.94 4.61L10.44 4.15L9.95 1.70L14.05 1.70L13.56 4.15L15.06 4.61L15.06 4.61L16.44 5.35L17.83 3.27L20.73 6.17L18.65 7.56L19.39 8.94Z', 'M15.5 12a3.5 3.5 0 1 0-7 0 3.5 3.5 0 0 0 7 0Z'],
   plan: ['M9 18h6m-6 3h6M8 14c-5-5-2-11 4-11s9 6 4 11l-1 2H9z'],
+  'permission-write': ['M12 2 20 6v6c0 5-4 8-8 10-4-2-8-5-8-10V6z', 'm9 14 1-4 5-5 3 3-5 5-4 1Zm4-7 3 3'],
+  'permission-full': ['M5 10h14v11H5z', 'M8 10V7a4 4 0 0 1 7.5-2M12 14v3'],
+  pending: ['M3 3h18v14H8l-5 4V3Z', 'M7 8h10M7 12h7'],
   help: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M9 9a3 3 0 1 1 4 3l-1 2m0 3h.01'],
   previous: ['m14 6-6 6 6 6'], next: ['m10 6 6 6-6 6'],
   more: ['M5 12h.01M12 12h.01M19 12h.01'],
@@ -459,7 +462,7 @@ for (const id of [
   'history-status', 'message-map', 'message-map-track', 'message-map-preview',
   'queue-enqueue', 'queue-recall', 'next-turn-queue',
   'prompt', 'send', 'suggest', 'cancel', 'run-state', 'composer-permission', 'composer-shell',
-  'model-picker-trigger', 'model-picker-label', 'model-picker', 'model-picker-close',
+  'model-picker-trigger', 'model-picker-label', 'model-picker',
   'model-picker-current', 'model-picker-list', 'model-picker-key', 'model-picker-error',
   'model-picker-manage',
   'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
@@ -522,6 +525,7 @@ async function rpc(method, params) {
   if (Number.isSafeInteger(state.selectionGeneration) && [
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
     'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set', 'turn.restore', 'session.organize',
+    'input.submit', 'input.update', 'input.recall', 'input.delete', 'input.interrupt',
   ].includes(method)) {
     params = { ...params, expected_selection_generation: (params?.expected_selection_generation ?? state.selectionGeneration) };
   }
@@ -872,6 +876,7 @@ function handleLive(event) {
       break;
     }
     case 'steering_applied':
+      void refreshPendingInputs();
       pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
       liveMessageNodes.push(addUserMessage(event.text || '', event.content_blocks));
@@ -1195,6 +1200,10 @@ function onNotice(ctl) {
       break;
     case 'next_turn_error':
       updateRunState(CLATI18n.msg("web.line_next_turn_paused_value",{value1:((payload?.message || CLATI18n.msg("web.startup_failed", {}, "startup failed")))},"next turn paused: {value1}"));
+      refreshWorkbench();
+      break;
+    case 'input_error':
+      updateRunState(CLATI18n.present(payload?.presentation, inputText('failed')));
       refreshWorkbench();
       break;
     case 'selection':
@@ -2223,6 +2232,7 @@ async function refreshWorkbench() {
     observeInputHistory(session.recent_inputs);
     state.runActive = Boolean(info.active_run);
     state.compactionActive = Boolean(info.active_compaction);
+    renderPendingInputs(info.pending_inputs);
     syncPlanModeBadge();
 
     CLATI18n.bind(dom['project-name'], "textContent", () => project.name || CLATI18n.msg("web.current_project", {}, "Current project"));
@@ -2237,13 +2247,14 @@ async function refreshWorkbench() {
     );
     CLATI18n.bind(dom['model-picker-label'], "textContent", () => (model.model || CLATI18n.msg("web.choose_model", {}, "Choose model"))
       + (model.thinking_level ? ' · ' + model.thinking_level : ''));
-    CLATI18n.bind(dom['model-picker-trigger'], "title", () => CLATI18n.msg("web.dynamic_model_for_next_run_value", {value1:(model.model || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Model for next run: {value1}"));
+    CLATI18n.bind(dom['model-picker-trigger'], "aria-label", () => CLATI18n.msg("web.dynamic_model_for_next_run_value", {value1:(model.model || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Model for next run: {value1}"));
     const modeLabel = (Object.hasOwn(PERMISSION_LABELS, permission.mode) && PERMISSION_LABELS[permission.mode]) || permission.label || CLATI18n.msg("web.permission_mode", {}, "Permission mode");
     CLATI18n.bind(dom['header-permission'], "textContent", () => modeLabel);
     CLATI18n.bind(dom['composer-permission-label'], "textContent", () => modeLabel);
-    // PU-8：Full Access 与 TUI 同语——权限文字转警示黄（CSS 按 data-mode 着色）。
+    renderComposerPermission(permission.mode);
     dom['header-permission'].dataset.mode = permission.mode || '';
     dom['composer-permission'].dataset.mode = permission.mode || '';
+    CLATI18n.attribute(dom['composer-permission'], 'aria-label', () => modeLabel);
 
     CLATI18n.bind(dom['detail-seq'], "textContent", () => session.committed_seq === null || session.committed_seq === undefined
       ? '—' : String(session.committed_seq));
@@ -2539,8 +2550,7 @@ function syncSuggestionControl() {
 
 function syncInteractionControls() {
   const locked = state.switching || state.compactionActive || state.desktopUpdateLocked;
-  dom.send.classList.toggle('hidden', state.runActive);
-  dom.cancel.classList.toggle('hidden', !state.runActive);
+  syncInputSubmitButtons();
   dom.send.disabled = locked;
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked;
@@ -2933,25 +2943,24 @@ function modelPickerOpen() {
   return !dom['model-picker'].classList.contains('hidden');
 }
 
-function closeModelPicker({ focus = false } = {}) {
-  hide(dom['model-picker']);
-  dom['model-picker-trigger'].setAttribute('aria-expanded', 'false');
-  dom['model-picker-key'].value = '';
-  CLATI18n.bind(dom['model-picker-error'], "textContent", () => '');
-  if (focus) dom['model-picker-trigger'].focus();
+let modelPickerPopover = null, modelPickerLoading = Promise.resolve();
+function installModelPickerPopup() {
+  modelPickerPopover = attachComposerPopup(dom['model-picker-trigger'], dom['model-picker-trigger'], dom['model-picker'],
+    () => { modelPickerLoading = loadModelPicker(); }, 'center', () => {
+      dom['model-picker-key'].value = '';
+      CLATI18n.bind(dom['model-picker-error'], 'textContent', () => '');
+    });
 }
-
-async function openModelPicker({ keyboard = false } = {}) {
-  if (modelPickerOpen()) {
-    closeModelPicker({ focus: keyboard });
-    return;
-  }
-  const focusOrigin = document.activeElement;
-  show(dom['model-picker']);
-  dom['model-picker-trigger'].setAttribute('aria-expanded', 'true');
-  CLATI18n.bind(dom['model-picker-error'], "textContent", () => '');
-  dom['model-picker-list'].replaceChildren(el('p', 'model-picker-current', () => (CLATI18n.msg("web.loading_model_routes", {}, "Loading model routes…"))));
+function closeModelPicker({ focus = false } = {}) { modelPickerPopover?.close({ focus }); }
+async function loadModelPicker() {
+  CLATI18n.bind(dom['model-picker-error'], 'textContent', () => '');
+  dom['model-picker-list'].replaceChildren(el('p', 'model-picker-current', () => CLATI18n.msg('web.loading_model_routes')));
   await refreshModelSettings();
+}
+async function openModelPicker({ keyboard = false } = {}) {
+  const focusOrigin = document.activeElement;
+  if (!modelPickerPopover?.open({ pin: true })) return;
+  await modelPickerLoading;
   if (keyboard && modelPickerOpen() && document.activeElement === focusOrigin) {
     const choices = dom['model-picker-list'];
     (choices.querySelector('[aria-checked="true"]:not(:disabled)') || choices.querySelector('button:not(:disabled)'))?.focus({ preventScroll: true });
@@ -3246,16 +3255,11 @@ document.getElementById('model-thinking').addEventListener('change', async (even
     syncInteractionControls();
   }
 });
-dom['composer-permission'].addEventListener('click', () => openSettings('permissions'));
-dom['model-picker-trigger'].addEventListener('click', event => { void openModelPicker({ keyboard: event.detail === 0 }); });
-dom['model-picker-close'].addEventListener('click', event => closeModelPicker({ focus: event.detail === 0 }));
+dom['model-picker-trigger'].addEventListener('click', () => modelPickerPopover?.toggle());
 dom['model-picker-manage'].addEventListener('click', () => openSettings('models'));
 for (const button of document.querySelectorAll('[data-settings-category]')) {
   button.addEventListener('click', () => selectSettingsCategory(button.dataset.settingsCategory));
 }
-document.addEventListener('pointerdown', (event) => {
-  if (modelPickerOpen() && !event.target.closest('.model-picker-seat')) closeModelPicker();
-});
 dom['permission-options'].addEventListener('change', updateFullAccessConfirmation);
 
 dom['theme-options'].addEventListener('change', () => {
@@ -3434,7 +3438,7 @@ for (const button of document.querySelectorAll('[data-prompt]')) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (dom.app.dataset.page) return;
+  if (event.defaultPrevented || dom.app.dataset.page) return;
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
   if (event.key === '/' && !typing && !pageIsOpen(dom['settings-dialog']) && !pageIsOpen(dom['market-dialog'])) {
@@ -3516,6 +3520,7 @@ function totalDraftBytes() {
 }
 
 function renderDraft() {
+  syncInputSubmitButtons();
   const images = state.draft.images;
   dom['attachment-rail'].replaceChildren();
   if (images.length === 0) {
@@ -3664,6 +3669,7 @@ async function uploadDraftImage(image, epoch) {
 
 async function addDraftFiles(files) {
   if(state.desktopUpdateLocked)return;
+  if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if (state.compactionActive || state.switching) {
     updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
     return;
@@ -3735,6 +3741,7 @@ function updateRunState(text) {
 }
 
 function resizePrompt() {
+  syncInputSubmitButtons();
   dom.prompt.style.height = 'auto';
   dom.prompt.style.height = Math.min(dom.prompt.scrollHeight, 220) + 'px';
 }
@@ -3794,6 +3801,7 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 }
 
 async function submitPrompt() {
+  if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if(borrowedConversation && borrowedConversation.session !== state.sessionId) {updateRunState(pageText('conversation_unavailable'));return;}
   if(state.desktopUpdateLocked)return;
   if (state.compactionActive || state.switching) {
@@ -3826,6 +3834,11 @@ async function submitPrompt() {
   renderDraft();
   const submission = { text, composerGeneration, images, draftEpoch, owner };
   try {
+    if (supportsPendingInputs() && (state.runActive || !text.startsWith('/'))) {
+      try { await submitPendingInput(submission); }
+      catch(error) { if(composerOwns(owner)) updateRunState(error.message); }
+      return;
+    }
     if (state.runActive) {
       await submitComposerSteering(submission);
       return;
@@ -4008,7 +4021,7 @@ dom.prompt.addEventListener('paste', async (event) => {
 });
 
 dom.cancel.addEventListener('click', async () => {
-  try { await rpc('run.cancel', borrowedConversation ? {session_id:borrowedConversation.session} : {}); }
+  try { await rpc('run.cancel', borrowedConversation && borrowedConversation.session !== state.sessionId ? {session_id:borrowedConversation.session} : {}); }
   catch (error) { updateRunState(CLATI18n.msg("web.line_cancel_failed_value",{value1:(error.message)},"cancel failed: {value1}")); }
 });
 

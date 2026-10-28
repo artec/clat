@@ -74,6 +74,7 @@ mod host;
 mod host_storage;
 #[cfg(test)]
 mod host_tests;
+mod inputs;
 #[cfg(test)]
 mod language_intelligence_tests;
 #[cfg(test)]
@@ -107,6 +108,7 @@ mod trusted;
 mod utility_tests;
 mod vision_probe;
 
+pub use crate::input::{InputDraft, PendingInputEdit, PendingInputView, PendingInputsView};
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};
 pub use content_views::{GoalViewDto, MemoryEntryDto, MemoryOverviewDto, SubagentStatusDto};
@@ -386,8 +388,7 @@ pub struct TrustedProjectApplication {
     /// Mount-time diagnostic (e.g. an unresolvable workspace pointer);
     /// surfaced by the frontend after it subscribes.
     startup_diagnostic: Option<String>,
-    next_turn: std::collections::VecDeque<NextTurnItem>,
-    recalled_next_turn: std::collections::VecDeque<(String, Option<NextTurnItem>)>,
+    transient_inputs: inputs::TransientInputs,
     active_run: Option<RunHandle>,
     active_compaction: Option<CompactHandle>,
     /// VP-1：进行中的视觉探针句柄（同一时刻至多一个；重启/新会话不

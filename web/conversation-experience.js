@@ -36,6 +36,8 @@ function installConversationExperience() {
   });
   observer.observe(dom['run-state'], {subtree:true,childList:true,attributes:true});
   installUsagePopover(row.querySelector('.composer-actions'));
+  installComposerPermissions();
+  installModelPickerPopup();
 }
 let roundFollowupPanel = null;
 function renderRoundFollowups(value) {
@@ -88,7 +90,6 @@ function syncUsageTrigger() {
   trigger.disabled = busy || state.switching || state.desktopUpdateLocked;
   const key = busy ? 'compacting' : recommended && !state.runActive ? 'compact_recommended' : 'usage';
   CLATI18n.attribute(trigger,'aria-label',()=>experienceText(key));
-  CLATI18n.attribute(trigger,'title',()=>experienceText(key));
 }
 function paintUsageRing(ring, percent) {
   if (ring._frame) cancelAnimationFrame(ring._frame);
@@ -108,11 +109,13 @@ function paintUsageRing(ring, percent) {
   };
   ring._frame = requestAnimationFrame(step);
 }
-function positionUsagePopover(popup, trigger) {
+function positionUsagePopover(popup, trigger, alignment = 'center') {
   if (popup.classList.contains('hidden')) return;
   const anchor = trigger.getBoundingClientRect(), inset = 12;
-  const center = anchor.left + anchor.width / 2;
-  const left = Math.max(inset, Math.min(center - popup.offsetWidth / 2, innerWidth - popup.offsetWidth - inset));
+  const bounds = dom['composer-shell'].getBoundingClientRect();
+  const desired = alignment === 'left' ? bounds.left : alignment === 'right' ? bounds.right - popup.offsetWidth
+    : anchor.left + (anchor.width - popup.offsetWidth) / 2;
+  const left = Math.max(inset, Math.min(desired, innerWidth - popup.offsetWidth - inset));
   popup.style.left = `${left}px`;
   popup.style.bottom = `${innerHeight - anchor.top + 12}px`;
   popup.style.maxHeight = `${Math.max(0, Math.min(innerHeight * .65, anchor.top - 24))}px`;
@@ -124,28 +127,11 @@ function installUsagePopover(actions) {
   CLATI18n.attribute(trigger,'aria-label',() => experienceText('usage'));
   const ring = el('span', 'context-ring');
   trigger.append(ring);
-  const popup = el('section','usage-popover hidden'); popup.setAttribute('role','dialog');
+  const popup = el('section','usage-popover context-usage-popover hidden'); popup.setAttribute('role','dialog');
   CLATI18n.attribute(popup,'aria-label',() => experienceText('usage'));
   seat.append(trigger,popup); actions.prepend(seat);
-  let pinned = false, timer;
-  const open = () => { clearTimeout(timer); show(popup); trigger.setAttribute('aria-expanded','true'); renderUsage(popup,ring); positionUsagePopover(popup,trigger); };
-  const close = () => { hide(popup); pinned=false; trigger.setAttribute('aria-expanded','false'); };
-  trigger.onclick = async () => {
-    if (usageValue?.compaction_recommended && !state.runActive && !state.compactionActive) {
-      if (usageCompactionRequest || state.switching || state.desktopUpdateLocked) return;
-      close(); usageCompactionRequest = true; syncUsageTrigger();
-      try { await compactCurrentSession(); }
-      finally { usageCompactionRequest = false; syncUsageTrigger(); }
-    } else if (pinned) close(); else { pinned=true; open(); }
-  };
-  seat.onpointerenter = open; seat.onpointerleave = () => { if(!pinned) timer=setTimeout(close,180); };
-  seat.onfocusin = open; seat.onfocusout = event => { if(!pinned && !seat.contains(event.relatedTarget)) close(); };
-  seat.onkeydown = event => { if(event.key==='Escape') {event.preventDefault();event.stopPropagation();trigger.focus();close();} };
-  document.addEventListener('pointerdown', event => {if(!seat.contains(event.target))close();});
-  const reposition = () => positionUsagePopover(popup,trigger);
-  const observer = new ResizeObserver(reposition);
-  observer.observe(popup); observer.observe(actions.closest('.composer-row'));
-  window.addEventListener('resize',reposition);
+  const popover = attachComposerPopup(seat,trigger,popup,()=>renderUsage(popup,ring));
+  trigger.onclick = popover.toggle;
   CLATI18n.onChange(()=>{ renderUsage(popup,ring); syncUsageTrigger(); });
   syncUsageTrigger();
 }
@@ -157,15 +143,21 @@ async function refreshUsage() {
     document.querySelector('.context-ring')?.removeAttribute('data-percent');
   }
   usageValue=null;
-  const pendingPopup=document.querySelector('.usage-popover'), pendingRing=document.querySelector('.context-ring');
+  const pendingPopup=document.querySelector('.context-usage-popover'), pendingRing=document.querySelector('.context-ring');
   if(pendingPopup&&pendingRing)renderUsage(pendingPopup,pendingRing);
   try {
     const value=await rpc('conversation.stats',{});
     if(epoch!==usageEpoch || session!==state.sessionId || generation!==state.selectionGeneration)return;
     usageValue=value;
   } catch (_) { if(epoch===usageEpoch)usageValue={unavailable:true}; }
-  const popup=document.querySelector('.usage-popover'),ring=document.querySelector('.context-ring');
+  const popup=document.querySelector('.context-usage-popover'),ring=document.querySelector('.context-ring');
   if(popup&&ring)renderUsage(popup,ring);
+}
+async function requestUsageCompaction() {
+  if (usageCompactionRequest || state.runActive || state.compactionActive || state.switching || state.desktopUpdateLocked) return;
+  activeComposerPopup?.close(); usageCompactionRequest = true; syncUsageTrigger();
+  try { await compactCurrentSession(); }
+  finally { usageCompactionRequest = false; syncUsageTrigger(); }
 }
 function renderUsage(popup,ring) {
   popup.replaceChildren(); const value=usageValue;
@@ -176,7 +168,12 @@ function renderUsage(popup,ring) {
   syncUsageTrigger();
   row('context', value?.context ? `${used.toLocaleString(CLATI18n.locale)} / ${capacity?.toLocaleString(CLATI18n.locale) || experienceText('capacity_unknown')}${percent===null?'':` · ${percent.toFixed(1)}%`}` : experienceText(value===null?'loading':'unavailable'));
   popup.append(el('small','',()=>experienceText('estimate')));
-  if (value?.compaction_recommended) popup.append(el('p','usage-compaction-hint',()=>experienceText('compact_recommended')));
+  if (value?.compaction_recommended) {
+    const compact = el('button', 'text-action usage-compact', () => experienceText('compact'));
+    compact.type = 'button'; compact.disabled = state.runActive || state.compactionActive || usageCompactionRequest || state.switching || state.desktopUpdateLocked;
+    compact.onclick = requestUsageCompaction;
+    popup.append(el('p','usage-compaction-hint',()=>experienceText('compact_recommended')), compact);
+  }
   for(const [scope,key] of [['last_request','last_request'],['route','route']]) {
     const usage=value?.[scope];if(!usage)continue;
     popup.append(el('h3','',()=>experienceText(key)));

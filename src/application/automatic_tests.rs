@@ -62,6 +62,34 @@ fn automatic_task_requires_exact_authorization_runs_in_origin_and_cannot_replay(
         .query_reader()
         .revision(&app.session_key(&other))
         .unwrap();
+    app.enqueue_input(
+        "manual-pending".into(),
+        crate::message::PendingMessage::from_front_end(
+            "manual work",
+            Some("manual-pending".into()),
+            vec![],
+        ),
+        crate::application::InputDraft::default(),
+    )
+    .unwrap();
+    app.input_queue().pause();
+    assert!(
+        app.automatic_candidate(crate::scheduler::now_ms())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        app.schedule_run_now(&rule.id, rule.revision, "blocked-manual")
+            .unwrap_err()
+            .presentation()
+            .key,
+        "schedule.busy"
+    );
+    assert_eq!(
+        app.new_session().unwrap_err().presentation().key,
+        "input.switch_blocked"
+    );
+    app.delete_pending_input("manual-pending", 1).unwrap();
     let claim = app
         .automatic_candidate(crate::scheduler::now_ms())
         .unwrap()

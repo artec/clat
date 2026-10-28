@@ -12,25 +12,42 @@ impl Run<'_> {
         events: &mut dyn EventSink,
     ) -> Result<(), RunError> {
         while let Some(pending) = self.steering.pop() {
-            let parts = pending.model_parts().map_err(|error| {
-                state.fail(
-                    events,
-                    &self.steering,
-                    format!("steering image projection failed: {error}"),
-                )
-            })?;
-            let request_digest = pending
-                .client_message_id
-                .as_ref()
-                .map(|_| pending.request_digest());
-            events.emit(RunEvent::SteeringApplied {
-                message: pending.content.clone(),
-                client_message_id: pending.client_message_id.clone(),
-                request_digest,
-                receipt: None,
-            });
-            state.items.push(ModelItem::User { content: parts });
+            self.apply_pending(pending, state, events)?;
         }
+        // Initial admission already supplies this request's human input.
+        // Deferred input is one-per-step; legacy steering still drains as before.
+        if state.turn > 1
+            && let Some(pending) = self.steering.inputs().claim(false)
+        {
+            self.apply_pending(pending, state, events)?;
+        }
+        Ok(())
+    }
+
+    fn apply_pending(
+        &self,
+        pending: crate::message::PendingMessage,
+        state: &mut StepState,
+        events: &mut dyn EventSink,
+    ) -> Result<(), RunError> {
+        let parts = pending.model_parts().map_err(|error| {
+            state.fail(
+                events,
+                &self.steering,
+                format!("steering image projection failed: {error}"),
+            )
+        })?;
+        let request_digest = pending
+            .client_message_id
+            .as_ref()
+            .map(|_| pending.request_digest());
+        events.emit(RunEvent::SteeringApplied {
+            message: pending.content.clone(),
+            client_message_id: pending.client_message_id.clone(),
+            request_digest,
+            receipt: None,
+        });
+        state.items.push(ModelItem::User { content: parts });
         Ok(())
     }
     pub(super) fn prepare_request(

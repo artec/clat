@@ -45,6 +45,69 @@ pub struct DraftImageStore {
 }
 
 impl DraftImageStore {
+    /// Transfer only reserved uploads into an authenticated current draft.
+    /// Capacity is checked before removing anything from the source.
+    pub(crate) fn transfer_uploads(
+        &self,
+        source: &str,
+        destination: &str,
+        authority: (u64, u64),
+        ids: &[String],
+        reserved: bool,
+        destination_ids: Option<&[String]>,
+    ) -> Result<(), String> {
+        let (selection, token) = authority;
+        if ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len() {
+            return Err("duplicate image upload id".into());
+        }
+        let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
+        if let Some(record) = state.scopes.get_mut(destination)
+            && record.scope.selection_generation == selection
+            && record.token_generation == token
+            && record.uploads.values().any(|upload| upload.reserved)
+        {
+            record.scope.expires_at = now_ms() + DRAFT_TTL.as_millis() as i64;
+        }
+        let dest = require_scope_mut(&mut state, destination, selection, token, now_ms())?;
+        let staged_bytes = dest.bytes;
+        let (dest_count, dest_bytes) = draft_selection_usage(dest, destination_ids, reserved)?;
+        let record = state
+            .scopes
+            .get(source)
+            .ok_or("source draft is no longer available")?;
+        if record.scope.selection_generation != selection || record.token_generation != token {
+            return Err("draft scope changed".into());
+        }
+        let mut bytes = 0;
+        for id in ids {
+            let upload = record
+                .uploads
+                .get(id)
+                .filter(|u| u.reserved)
+                .ok_or("input image is not reserved")?;
+            bytes += upload.bytes;
+        }
+        if dest_count + ids.len() > crate::session::attachments::MAX_IMAGES_PER_MESSAGE
+            || dest_bytes + bytes > crate::session::attachments::MAX_RAW_BATCH_BYTES
+            || (source != destination && staged_bytes + bytes > MAX_DRAFT_STAGING_BYTES)
+        {
+            return Err("combined draft images exceed the existing message limit".into());
+        }
+        for id in ids {
+            let record = state.scopes.get_mut(source).expect("checked source");
+            let mut upload = record.uploads.remove(id).expect("checked upload");
+            record.bytes -= upload.bytes;
+            upload.reserved = reserved;
+            let dest = state
+                .scopes
+                .get_mut(destination)
+                .expect("checked destination");
+            dest.bytes += upload.bytes;
+            dest.uploads.insert(id.clone(), upload);
+        }
+        Ok(())
+    }
+
     pub fn new(storage_root: &Path) -> Self {
         Self {
             storage_root: storage_root.to_path_buf(),
@@ -336,6 +399,14 @@ impl DraftImageStore {
                 crate::session::attachments::MAX_IMAGES_PER_MESSAGE
             ));
         }
+        if upload_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != upload_ids.len()
+        {
+            return Err("duplicate upload id".into());
+        }
         let now = now_ms();
         let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
         sweep_expired_locked(&self.root, &mut state, now);
@@ -598,6 +669,32 @@ fn require_scope_mut<'a>(
     Ok(record)
 }
 
+fn draft_selection_usage(
+    record: &ScopeRecord,
+    ids: Option<&[String]>,
+    reserved: bool,
+) -> Result<(usize, u64), String> {
+    let Some(ids) = ids else {
+        return Ok((record.uploads.len(), record.bytes));
+    };
+    if ids.len() > crate::session::attachments::MAX_IMAGES_PER_MESSAGE
+        || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+    {
+        return Err("invalid draft image selection".into());
+    }
+    let bytes = ids.iter().try_fold(0u64, |bytes, id| {
+        let image = record
+            .uploads
+            .get(id)
+            .filter(|image| image.reserved == reserved)
+            .ok_or("image does not belong to the current draft")?;
+        bytes
+            .checked_add(image.bytes)
+            .ok_or("draft image bytes overflow")
+    })?;
+    Ok((ids.len(), bytes))
+}
+
 fn sweep_expired_locked(root: &Path, state: &mut DraftState, now: i64) {
     let expired_clipboard = state
         .clipboard_files
@@ -621,7 +718,20 @@ fn sweep_expired_locked(root: &Path, state: &mut DraftState, now: i64) {
     let expired = state
         .scopes
         .iter()
-        .filter_map(|(id, record)| (record.scope.expires_at <= now).then_some(id.clone()))
+        .filter_map(|(id, record)| {
+            if record.scope.expires_at > now || record.uploads.values().any(|u| u.reserved) {
+                return None;
+            }
+            let source = root.join("web").join(id);
+            let referenced = state.scopes.iter().any(|(other, scope)| {
+                other != id
+                    && scope
+                        .uploads
+                        .values()
+                        .any(|upload| upload.path.starts_with(&source))
+            });
+            (!referenced).then_some(id.clone())
+        })
         .collect::<Vec<_>>();
     for id in &expired {
         state.scopes.remove(id);
@@ -743,6 +853,74 @@ fn set_private_dir(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_input_transfer_keeps_recalled_bytes_alive_after_source_scope_expiry() {
+        let root =
+            std::env::temp_dir().join(format!("clat-input-transfer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Arc::new(DraftImageStore::new(&root));
+        let target = DraftTarget::PendingSession {
+            nonce: "same-session".into(),
+        };
+        let source = store
+            .open_scope("source", 1, 1, target.clone())
+            .unwrap()
+            .draft_scope_id;
+        let dest = store
+            .open_scope("dest", 1, 1, target)
+            .unwrap()
+            .draft_scope_id;
+        let directory = store.root.join("web").join(&source);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("photo.png");
+        std::fs::write(&path, b"owned bytes").unwrap();
+        {
+            let mut state = store.state.lock().unwrap();
+            let record = state.scopes.get_mut(&source).unwrap();
+            record.scope.expires_at = 0;
+            record.bytes = 11;
+            record.uploads.insert(
+                "photo".into(),
+                UploadedImage {
+                    path: path.clone(),
+                    bytes: 11,
+                    reserved: true,
+                },
+            );
+        }
+        assert!(store.has_live_drafts(), "queued image survives source TTL");
+        assert!(
+            store
+                .transfer_uploads(&source, &dest, (2, 1), &["photo".into()], false, None)
+                .is_err()
+        );
+        assert!(
+            store
+                .transfer_uploads(
+                    &source,
+                    &dest,
+                    (1, 1),
+                    &["photo".into(), "photo".into()],
+                    false,
+                    None
+                )
+                .is_err()
+        );
+        store
+            .transfer_uploads(&source, &dest, (1, 1), &["photo".into()], false, None)
+            .unwrap();
+        assert!(store.has_live_drafts());
+        assert_eq!(std::fs::read(&path).unwrap(), b"owned bytes");
+        let paths = store
+            .reserve_uploads(&dest, 1, 1, &["photo".into()])
+            .unwrap();
+        assert_eq!(paths.as_slice(), std::slice::from_ref(&path));
+        store.commit_uploads(&dest, &["photo".into()]);
+        assert!(!path.exists());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn staging_validates_bounds_uses_private_random_path_and_cleans_up() {

@@ -199,11 +199,11 @@
         <textarea id="prompt" rows="2" placeholder="Describe the outcome you want…" data-i18n-placeholder="web.describe_the_outcome_you_want" aria-label="Message CLAT" data-i18n-aria-label="web.message_clat"></textarea>
         <div class="composer-row">
           <button id="attachment-open" class="attachment-open" type="button" aria-label="Add images" data-i18n-aria-label="web.add_images" title="Add images" data-i18n-title="web.add_images">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20"/></svg>
             <span data-i18n="web.add_images">Add images</span>
           </button>
           <span id="attachment-summary" class="attachment-summary" role="status"></span>
-          <button id="composer-permission" class="context-pill" type="button" title="Change permission mode" data-i18n-title="web.change_permission_mode">
+          <button id="composer-permission" class="context-pill" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8-8 10-4.6-2-8-5-8-10V7z"/></svg>
             <span id="composer-permission-label" data-i18n="web.project_write">Project Write</span>
           </button>
@@ -211,14 +211,13 @@
             <div class="model-picker-seat">
               <button id="model-picker-trigger" class="model-picker-trigger" type="button"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="model-picker">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 8 6-3 6 3-6 3-6-3Z"/><path d="m6 12 6 3 6-3M6 16l6 3 6-3"/></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Z"/><path d="m3 12 9 4 9-4M3 17l9 4 9-4"/></svg>
                 <span id="model-picker-label" data-i18n="web.model">Model</span>
                 <svg class="picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
               </button>
               <section id="model-picker" class="model-picker hidden" role="dialog" aria-label="Choose model" data-i18n-aria-label="web.choose_model">
                 <header>
                   <div><span class="section-kicker" data-i18n="web.next_run">NEXT RUN</span><strong data-i18n="web.choose_model">Choose model</strong></div>
-                  <button id="model-picker-close" class="icon-button" type="button" aria-label="Close model picker" data-i18n-aria-label="web.close_model_picker">×</button>
                 </header>
                 <p id="model-picker-current" class="model-picker-current" role="status"></p>
                 <label class="model-picker-key"><span data-i18n="web.thinking_intensity">Thinking intensity</span>

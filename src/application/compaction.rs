@@ -190,6 +190,8 @@ fn compact_result_status(result: &Result<CompactReport, PresentedText>) -> Compa
 /// persistence 与 frontend 故障域隔离（桌面端/第二客户端路线的地基）。
 /// 顺序不变量保持：事件按到达顺序先记账再转发（handle 单线程串行）。
 pub(super) struct RecorderHandle {
+    pub(super) inputs: crate::input::InputQueue,
+    pub(super) drafts: Arc<crate::draft::DraftImageStore>,
     pub(super) recorder: Arc<Mutex<SessionRecorder>>,
     pub(super) sink: Arc<Mutex<Box<dyn EventSink + Send>>>,
 }
@@ -212,6 +214,18 @@ impl EventSink for RecorderHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for event in forwarded {
+            if let RunEvent::SteeringApplied {
+                client_message_id: Some(id),
+                receipt: Some(receipt),
+                request_digest: Some(digest),
+                ..
+            } = &event
+                && receipt.state == crate::message::AdmissionState::Committed
+                && let Some(draft) = self.inputs.committed(id, digest)
+                && let Some(scope) = draft.draft_scope_id
+            {
+                self.drafts.commit_uploads(&scope, &draft.uploads);
+            }
             sink.emit(event);
         }
     }

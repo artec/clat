@@ -184,6 +184,7 @@ struct RunHostDeps {
 /// Stable dependencies owned by the worker for its entire lifetime. Keeping
 /// the scope and every run-local slot together makes cleanup knowledge local.
 struct RunWorkerDeps {
+    draft_images: Arc<crate::draft::DraftImageStore>,
     target: Option<Arc<super::target_services::TargetServices>>,
     run_scope: super::composition::MountedRunScope,
     sessions: Arc<crate::session::use_cases::SessionService>,
@@ -227,7 +228,12 @@ impl RunExecutionEngine {
             crate::plugin_host::SamplingBudget::per_run()
         }));
         let busy = Arc::new(AtomicBool::new(true));
-        let steering = crate::run::SteeringQueue::new();
+        let steering = if spec.target.is_none() {
+            application.transient_inputs.queue.begin_run();
+            crate::run::SteeringQueue::with_inputs(application.transient_inputs.queue.clone())
+        } else {
+            crate::run::SteeringQueue::new()
+        };
         let handle = RunHandle::for_worker(cancel.clone(), Arc::clone(&busy), steering.clone());
         let mut slots = RunSlots::from_application(application);
         if let Some(target) = spec.target.as_ref() {
@@ -555,6 +561,7 @@ impl RunWorkerDeps {
         resources: WorkerResources,
     ) -> (Self, Box<dyn EventSink + Send>) {
         let mut deps = RunWorkerDeps {
+            draft_images: Arc::clone(&app.draft_images),
             target: spec.target.clone(),
             run_scope: resources.run_scope,
             sessions: Arc::clone(&app.sessions),

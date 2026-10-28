@@ -67,6 +67,18 @@ crate-private. Frontend implementation trees are not library APIs; crate-root
 exports are limited to the Application facade and deliberately supported
 domain contracts.
 
+Pending Web/Desktop input is owned by the core input module, exposed through
+Application ports. Its versioned FIFO retains typed messages and attachment
+reservations until the recorder confirms durable admission. The runtime receives
+one pending item per model-request boundary; existing terminal steering and the
+after-run queue remain compatibility paths. A single core interruption intent
+reserves a pending item and cancels the active worker. Host completion dispatch
+continues only after the old worker has closed its scope and joined; Esc can
+revoke that continuation while cancellation is still in progress. Frontends never
+orchestrate a cancel RPC followed by a send RPC. Snapshot/reference provenance is
+recorded against the actual committed user message; no new journal event or
+rewritten model content is introduced for queue management.
+
 The product itself ships two compilation units: `clat` (public facade,
 CLI and TUI/DSH terminal client) depends on `clat-core` (runtime,
 Application and terminal-independent headless/HTTP surfaces); the repo

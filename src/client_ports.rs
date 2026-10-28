@@ -46,6 +46,11 @@ pub mod permission {
 pub mod command {
     pub use crate::command::CommandGroup;
 }
+pub mod input {
+    pub use crate::application::{
+        InputDraft, PendingInputEdit, PendingInputView, PendingInputsView,
+    };
+}
 pub mod interaction {
     pub use crate::interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
 }

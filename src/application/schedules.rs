@@ -193,13 +193,7 @@ impl TrustedProjectApplication {
         let rule = self.schedule_rule(id)?;
         self.schedule_scope(&rule.scope.session)?;
         self.resolve_automatic_model(&rule)?;
-        if self.active_run.as_ref().is_some_and(|r| !r.is_finished())
-            || self
-                .active_compaction
-                .as_ref()
-                .is_some_and(|r| !r.is_finished())
-            || !self.next_turn_queue().is_empty()
-        {
+        if self.manual_work_blocks_automatic() {
             return Err(schedule_message("busy"));
         }
         self.scheduler

@@ -152,6 +152,8 @@ impl RoundExecution {
         goal_error: Option<String>,
     ) -> std::thread::Result<Result<crate::RunOutput, AgentFailure>> {
         let recorder_sink = Box::new(RecorderHandle {
+            inputs: worker.deps.steering.inputs().clone(),
+            drafts: worker.deps.draft_images.clone(),
             recorder: Arc::clone(&self.recorder),
             sink: Arc::clone(&worker.ui_sink),
         });

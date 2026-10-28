@@ -394,7 +394,7 @@ test('unsupported thinking stays legible and details actions preserve drafts', a
   await page.click('#model-picker-trigger');
   await expect(page.locator('#model-thinking')).toBeDisabled();
   await expect(page.locator('#model-thinking option:checked')).toHaveText('Not adjustable');
-  await page.click('#model-picker-close');
+  await page.keyboard.press('Escape');
   await openDetails(page);
   await page.click('#inspector-refresh');
   await expect(page.locator('#inspector-refresh')).toBeEnabled(LIVE);
@@ -576,7 +576,7 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   await openWorkbench(page, entry);
   await page.click('#model-picker-trigger');
   await expect(page.locator('#model-picker-list .model-choice')).not.toHaveCount(0);
-  await page.click('#model-picker-close');
+  await page.keyboard.press('Escape');
   await page.click('#nav-settings');
   await page.click('[data-settings-category="models"]');
   const other = await context.newPage();

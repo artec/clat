@@ -633,11 +633,23 @@ adapter code can be forcibly killed inside the process.
 
 ### Steering, cancellation, and long runs
 
-Submitting text while a run is active queues it for the next model-request
+In terminal clients, submitting text while a run is active queues it for the next model-request
 boundary; it does not interrupt the in-flight HTTP request or tool call. The
 queued message appears immediately in the conversation. `Esc` recalls the
 newest queued message into the input. When no steering is queued, `Esc`
 cancels the run and keeps already streamed output.
+
+The Web/Desktop composer uses the pending-message and immediate-interruption
+controls described below; its Enter and Esc behavior differs from terminal steering.
+Hovering or focusing the permission icon opens a popup with the current mode and
+all three permission descriptions. Click the icon to pin the popup. Select Read
+Only or Project Write to apply it directly; Full Access requires confirming its
+warning and applying the change inside the same popup. All composer popups share
+hover previews and click-to-pin behavior. Editing inside a popup pins it, so
+moving the pointer away does not dismiss an edit. Click outside or press Esc to
+close; Esc closes the popup before stopping a running task. Model/thinking is
+centered above its trigger. Context compaction uses an explicit button inside
+the context popup when recommended.
 
 Cancellation is acknowledged immediately and actively propagated. The status
 line switches to `Cancelling…` on the keypress in both the standalone and
@@ -2348,13 +2360,13 @@ showing the TUI — while `clat standalone` keeps the traditional in-process TUI
 
 On CLAT standalone and attached terminals, `Ctrl+Q` queues the composer text;
 `Alt+Q` recalls the newest queued item. The status bar shows the count and first
-item. In the PWA, use **Queue next turn** and **Recall last**; the queue above the
-composer shows each pending message. Enter during a run still sends steering to
-the next model-request boundary. The next-turn queue accepts text only.
+item. These terminal and legacy `queue.*` operations retain their after-run,
+text-only contract. Terminal Enter still sends steering to the next model-request
+boundary. Web/Desktop uses the separate pending-input interface below.
 
 The web and desktop composer uses an arrow icon to send. While a run is active,
-a square stop icon replaces it in the same position; stopping does not clear the
-unsent draft. Queue and Enter remain available during a run as described above.
+the arrow remains available with a draft; an empty composer shows the square stop
+button instead. Stopping keeps the unsent draft.
 The sidebar's schedules, background jobs and history search entries keep their
 icons when collapsed, with localized tooltips and accessible names.
 
@@ -2375,6 +2387,46 @@ while items remain; recall them first. Opening another workspace keeps the old
 project's queue in that mounted project; it is never transferred to the new
 workspace. Non-empty queues prevent automatic host takeover and idle project
 reclamation. DSH terminals and the WeChat channel have no new queue entry point.
+
+### Web/Desktop pending messages and immediate interruption
+
+Send or Enter starts a run while idle and appends to the pending FIFO while busy.
+After the current model response and its tool calls settle, each next model
+request receives one pending message. It does not wait for the whole task to
+finish. Text, staged images and fixed file references travel together. A message
+leaves the pending list only after durable admission.
+
+The queue icon next to Send shows the pending count. Hover or focus opens the
+same popup surface as context usage; click pins it, pointer departure closes an
+unpinned popup, and outside click or Esc dismisses it. The popup aligns to the
+composer's right edge, has no close button, and lists **Interrupt now**, edit,
+return-to-input and delete actions. Editing stays inside the popup and supports
+adding/removing images. Returning a message preserves the current draft; a merge
+that exceeds the existing image limits leaves the queued message untouched.
+The recall request carries the current draft's selected upload IDs; previously
+removed staging files do not consume that message's capacity.
+
+**Interrupt now** reserves the selected pending message, requests cancellation,
+waits for the current worker and tools to stop, and automatically continues in
+the same conversation with that message first. Remaining queue order is retained.
+Only one such handoff runs at a time. UI feedback is immediate; actual stop time
+depends on provider/tool cancellation support. Completed file changes are not
+rolled back and completed tools are not automatically repeated.
+
+Outside an open popup, Esc stops execution and also cancels an outstanding
+automatic handoff. Manual stop or failure pauses the queue without discarding
+its messages. Sending again, or explicitly choosing a pending message to run,
+resumes it. Claimed messages cannot be edited or deleted; a late edit is kept
+locally for recovery instead of overwriting history. Reconnection reads the Host's
+authoritative snapshot. Pending state and operation receipts are process-local;
+they are not a persistent queue across Host restarts.
+
+The additive `input.submit`, `input.pending`, `input.update`, `input.recall`,
+`input.delete`, `input.interrupt` and `input.image` methods are advertised in
+`workbench.info.methods`. Mutations use an operation ID; pending items have stable
+IDs and versions. Selection generations fence stale mutations, and known receipt
+replays never mutate a newly selected conversation. Legacy `steer.send` and
+`queue.*` retain their previous meanings.
 
 ## Durable task progress and explicit recovery (`/task`)
 

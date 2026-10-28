@@ -49,6 +49,7 @@ function observeComposerSession(id, selection) {
     }
   }
   composerScope = scope;
+  restoreRecalledInputFiles();
   composerSession = next;
   composerSelection = selection;
   // HIST-PWA-1/W1 + B8-R2-1：会话/selection 变化是**作废**不是迁移——

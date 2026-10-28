@@ -9,7 +9,7 @@ function renderNextTurnQueue(items) {
     dom['next-turn-queue'].appendChild(row);
   }
   dom['next-turn-queue'].hidden = !items.length;
-  dom['queue-recall'].hidden = !items.length && !nextTurnRecallRetry;
+  dom['queue-recall'].hidden = supportsPendingInputs() || (!items.length && !nextTurnRecallRetry);
 }
 async function enqueueNextTurn() {
   if (nextTurnBusy || state.switching || state.compactionActive) return;
@@ -45,12 +45,13 @@ async function recallNextTurn() {
   finally { nextTurnBusy = false; }
 }
 function installNextTurn() {
+installPendingInputs();
 dom['queue-enqueue'].addEventListener('click', enqueueNextTurn);
 dom['queue-recall'].addEventListener('click', recallNextTurn);
 dom.prompt.addEventListener('keydown', (event) => {
   if (event.key.toLowerCase() !== 'q') return;
-  if (event.ctrlKey && !event.altKey) { event.preventDefault(); enqueueNextTurn(); }
-  else if (event.altKey && !event.ctrlKey) { event.preventDefault(); recallNextTurn(); }
+  if (event.ctrlKey && !event.altKey) { event.preventDefault(); if(supportsPendingInputs()) submitPrompt(); else enqueueNextTurn(); }
+  else if (event.altKey && !event.ctrlKey) { event.preventDefault(); if(supportsPendingInputs()) { const item=pendingInputStore.items.at(-1);if(item)void recallPendingInput(item); } else recallNextTurn(); }
 });
 
 }

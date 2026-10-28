@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 const TEST_TOKEN: &str = "tok-3f9d2c7a-serve-test";
 const WAIT: Duration = Duration::from_secs(30);
 
+#[path = "inputs_tests.rs"]
+mod inputs_tests;
 #[path = "navigation_tests.rs"]
 mod navigation_tests;
 #[path = "schedule_tests.rs"]

@@ -196,8 +196,7 @@ impl TrustedProjectApplication {
             fresh_session_open: true,
             emitted_request_header: None,
             startup_diagnostic: None,
-            next_turn: Default::default(),
-            recalled_next_turn: Default::default(),
+            transient_inputs: Default::default(),
             active_run: None,
             active_compaction: None,
             active_vision_probe: None,
@@ -1619,6 +1618,9 @@ impl TrustedProjectApplication {
         }
         if let Err(error) = self.jobs.close() {
             errors.push(error.presentation().english());
+        }
+        if let Err(error) = self.flush_input_references() {
+            errors.push(error.to_string());
         }
         if let Err(error) = self.sessions.quiesce_active() {
             errors.push(format!("session quiesce failed: {error}"));

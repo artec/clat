@@ -218,7 +218,10 @@ impl ServeShared {
 
     fn project_work_idle(&self) -> bool {
         let app = self.app.lock().expect("application lock");
-        app.next_turn_queue().is_empty() && !app.has_background_jobs() && !app.has_automatic_work()
+        app.next_turn_queue().is_empty()
+            && app.pending_inputs().items.is_empty()
+            && !app.has_background_jobs()
+            && !app.has_automatic_work()
     }
     pub(crate) fn is_idle_for_reclaim(&self) -> bool {
         let inner = self.inner.lock().expect("serve inner lock");
@@ -877,6 +880,7 @@ impl ServeShared {
                     .register_followup_run(&rpc_id, completed);
                 shared.finish_run(super::shapes::ctl_data(&settled));
                 let _ = handle.join();
+                super::inputs::settled(&shared);
                 if completed && !shared.is_shutting_down() {
                     super::next_turn::dispatch_next(&shared);
                 }

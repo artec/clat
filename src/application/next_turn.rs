@@ -15,7 +15,13 @@ impl TrustedProjectApplication {
     }
 
     pub(super) fn reject_next_turn_session_switch(&self) -> Result<(), ApplicationError> {
-        if !self.next_turn.is_empty() {
+        self.flush_input_references()?;
+        if !self.transient_inputs.queue.is_empty() {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "input.switch_blocked",
+            )));
+        }
+        if !self.transient_inputs.next_turn.is_empty() {
             return Err(ApplicationError::new(
                 "recall queued next-turn messages before switching sessions",
             ));
@@ -24,7 +30,7 @@ impl TrustedProjectApplication {
     }
 
     pub fn next_turn_queue(&self) -> Vec<NextTurnItem> {
-        self.next_turn.iter().cloned().collect()
+        self.transient_inputs.next_turn.iter().cloned().collect()
     }
 
     pub fn enqueue_next_turn(&mut self, id: String, text: String) -> Result<(), ApplicationError> {
@@ -33,7 +39,12 @@ impl TrustedProjectApplication {
                 "queue requires a bounded id and non-empty text",
             ));
         }
-        if let Some(existing) = self.next_turn.iter().find(|item| item.id == id) {
+        if let Some(existing) = self
+            .transient_inputs
+            .next_turn
+            .iter()
+            .find(|item| item.id == id)
+        {
             return if existing.text == text {
                 Ok(())
             } else {
@@ -63,22 +74,25 @@ impl TrustedProjectApplication {
                 "queue requires an active run; send normally while idle",
             ));
         }
-        if self.next_turn.len() >= 64 || text.len() > 64 * 1024 {
+        if self.transient_inputs.next_turn.len() >= 64 || text.len() > 64 * 1024 {
             return Err(ApplicationError::new(
                 "next-turn queue limit reached; draft retained",
             ));
         }
-        self.next_turn.push_back(NextTurnItem { id, text });
+        self.transient_inputs
+            .next_turn
+            .push_back(NextTurnItem { id, text });
         Ok(())
     }
 
     pub fn recall_next_turn(&mut self) -> Option<NextTurnItem> {
-        self.next_turn.pop_back()
+        self.transient_inputs.next_turn.pop_back()
     }
 
     /// A read-only receipt replay, including an acknowledged empty queue.
     pub fn recalled_next_turn_receipt(&self, id: &str) -> Option<Option<NextTurnItem>> {
-        self.recalled_next_turn
+        self.transient_inputs
+            .recalled_next_turn
             .iter()
             .find(|(key, _)| key == id)
             .map(|(_, item)| item.clone())
@@ -91,13 +105,20 @@ impl TrustedProjectApplication {
         if id.is_empty() || id.len() > 200 {
             return Err(ApplicationError::new("recall requires a bounded id"));
         }
-        if let Some((_, item)) = self.recalled_next_turn.iter().find(|(key, _)| key == &id) {
+        if let Some((_, item)) = self
+            .transient_inputs
+            .recalled_next_turn
+            .iter()
+            .find(|(key, _)| key == &id)
+        {
             return Ok(item.clone());
         }
         let item = self.recall_next_turn();
-        self.recalled_next_turn.push_back((id, item.clone()));
-        if self.recalled_next_turn.len() > 64 {
-            self.recalled_next_turn.pop_front();
+        self.transient_inputs
+            .recalled_next_turn
+            .push_back((id, item.clone()));
+        if self.transient_inputs.recalled_next_turn.len() > 64 {
+            self.transient_inputs.recalled_next_turn.pop_front();
         }
         Ok(item)
     }
@@ -108,6 +129,7 @@ impl TrustedProjectApplication {
         mut request: ApplicationRunRequest,
     ) -> Result<RunHandle, ApplicationError> {
         let item = self
+            .transient_inputs
             .next_turn
             .front()
             .cloned()
@@ -122,7 +144,7 @@ impl TrustedProjectApplication {
                 .and_then(|error| error.admission_receipt())
                 .is_some_and(|receipt| receipt.state == crate::message::AdmissionState::Committed)
         {
-            self.next_turn.pop_front();
+            self.transient_inputs.next_turn.pop_front();
         }
         result
     }

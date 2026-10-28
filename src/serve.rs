@@ -24,6 +24,7 @@ mod auth;
 mod automatic;
 mod conversation;
 mod http;
+mod inputs;
 mod models;
 mod next_turn;
 mod notifications;

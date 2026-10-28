@@ -12,17 +12,20 @@ pub(crate) struct AutomaticRequest {
     pub web_budget: Arc<crate::web_tools::PaidCallBudget>,
 }
 impl TrustedProjectApplication {
-    pub(crate) fn automatic_projects(&self) -> Result<Vec<String>, ApplicationError> {
-        self.scheduler.projects().map_err(schedule_error)
-    }
-    pub(crate) fn automatic_candidate(&self, now: i64) -> Result<Option<Claim>, ApplicationError> {
-        if !self.next_turn_queue().is_empty()
+    pub(super) fn manual_work_blocks_automatic(&self) -> bool {
+        !self.next_turn_queue().is_empty()
+            || !self.transient_inputs.queue.is_empty()
             || self.active_run.as_ref().is_some_and(|r| !r.is_finished())
             || self
                 .active_compaction
                 .as_ref()
                 .is_some_and(|r| !r.is_finished())
-        {
+    }
+    pub(crate) fn automatic_projects(&self) -> Result<Vec<String>, ApplicationError> {
+        self.scheduler.projects().map_err(schedule_error)
+    }
+    pub(crate) fn automatic_candidate(&self, now: i64) -> Result<Option<Claim>, ApplicationError> {
+        if self.manual_work_blocks_automatic() {
             return Ok(None);
         }
         let project = self.schedule_project();
