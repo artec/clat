@@ -1,11 +1,13 @@
 use super::*;
 use crate::plugins::services::{UtilityFailure, UtilityModel, UtilityOutput, UtilityTask};
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, mpsc};
 
 struct BlockedUtility {
     reached: mpsc::Sender<()>,
     release: Arc<(Mutex<bool>, Condvar)>,
+    finished: Arc<AtomicBool>,
 }
 
 impl UtilityModel for BlockedUtility {
@@ -28,6 +30,7 @@ impl UtilityModel for BlockedUtility {
                 !*released
             })
             .unwrap();
+        self.finished.store(true, Ordering::Release);
         if *released {
             Ok(UtilityOutput {
                 text: "next question".into(),
@@ -60,11 +63,13 @@ fn suggestion_provider_does_not_lock_other_clients_and_freezes_selection() {
     }
     let (reached, observed) = mpsc::channel();
     let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let provider_finished = Arc::new(AtomicBool::new(false));
     app.lock()
         .unwrap()
         .set_utility_for_test(Arc::new(BlockedUtility {
             reached,
             release: release.clone(),
+            finished: provider_finished.clone(),
         }));
     let generation = shared.selection_generation();
     let request = shared.clone();
@@ -85,10 +90,13 @@ fn suggestion_provider_does_not_lock_other_clients_and_freezes_selection() {
             .send(protocol::dispatch("session.new", &json!({}), &request))
             .unwrap();
     });
-    let early = result.recv_timeout(Duration::from_millis(500));
+    // This is a liveness deadline, not a disk-latency requirement. Even if the
+    // fixture watchdog fires first, completion after provider exit must fail.
+    let early = result.recv_timeout(WAIT);
+    let finished_before_release = provider_finished.load(Ordering::Acquire);
     *release.0.lock().unwrap() = true;
     release.1.notify_all();
-    let suggested = suggestion.join().unwrap().unwrap();
+    let suggested = suggestion.join().unwrap();
     other.join().unwrap();
     shared.mark_shutting_down();
     shared.drain_workers();
@@ -103,10 +111,11 @@ fn suggestion_provider_does_not_lock_other_clients_and_freezes_selection() {
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&project_root);
     assert!(
-        early.is_ok(),
+        early.is_ok() && !finished_before_release,
         "another client's session.new must finish while utility I/O is blocked"
     );
     early.unwrap().unwrap();
+    let suggested = suggested.unwrap();
     assert_eq!(
         suggested["selection_generation"], generation,
         "reply must retain the prepared selection"
