@@ -486,6 +486,8 @@ impl TrustedProjectApplication {
     }
 
     pub fn cancel_active_run(&self) {
+        self.cancel_workflow_continuation();
+        self.goal.disarm();
         self.transient_inputs.queue.pause();
         if let Some(handle) = &self.active_run {
             handle.cancel();

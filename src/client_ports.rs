@@ -94,3 +94,7 @@ pub mod history {
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }
+
+pub mod workflow {
+    pub use crate::application::{PlanDocument, WorkflowIntent, WorkflowRequest};
+}

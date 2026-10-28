@@ -1202,6 +1202,10 @@ function onNotice(ctl) {
       updateRunState(CLATI18n.msg("web.line_next_turn_paused_value",{value1:((payload?.message || CLATI18n.msg("web.startup_failed", {}, "startup failed")))},"next turn paused: {value1}"));
       refreshWorkbench();
       break;
+    case 'workflow_error':
+      updateRunState(CLATI18n.present(payload?.presentation, payload?.message));
+      refreshWorkbench();
+      break;
     case 'input_error':
       updateRunState(CLATI18n.present(payload?.presentation, inputText('failed')));
       refreshWorkbench();
@@ -1304,6 +1308,7 @@ function onQuestionNotice(ctl) {
 }
 
 function createQuestionCard(payload) {
+  if(payload.plan_review) return createPlanReviewCard(payload);
   const card = el('section', 'question-card');
   card.dataset.rpcId = payload.rpc_id;
   CLATI18n.attribute(card,'aria-label',()=>CLATI18n.msg("web.question_from_agent", {}, "Question from agent"));
@@ -2804,11 +2809,11 @@ dom['market-search'].addEventListener('input', renderMarket);
 function isMobile() { return window.innerWidth <= MOBILE_BREAKPOINT; }
 
 function syncPanelAccessibility() {
-  const sidebarVisible = !dom.app.dataset.page && (isMobile() ? dom.app.dataset.mobileSidebar === 'open' : state.sidebar !== 'collapsed');
+  const sidebarVisible = !dom.app.dataset.page && !dom.app.dataset.tool && (isMobile() ? dom.app.dataset.mobileSidebar === 'open' : state.sidebar !== 'collapsed');
   dom.sidebar.inert = !sidebarVisible;
   dom.sidebar.setAttribute('aria-hidden', String(!sidebarVisible));
   document.getElementById('project-list-toggle')?.setAttribute('aria-expanded', String(sidebarVisible));
-  const inspectorVisible = state.inspector === 'open';
+  const inspectorVisible = state.inspector === 'open' && !dom.app.dataset.tool;
   dom.inspector.inert = !inspectorVisible;
   dom.inspector.setAttribute('aria-hidden', String(!inspectorVisible));
 }
@@ -3438,7 +3443,7 @@ for (const button of document.querySelectorAll('[data-prompt]')) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.defaultPrevented || dom.app.dataset.page) return;
+  if (event.defaultPrevented || dom.app.dataset.page || dom.app.dataset.tool) return;
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
   if (event.key === '/' && !typing && !pageIsOpen(dom['settings-dialog']) && !pageIsOpen(dom['market-dialog'])) {

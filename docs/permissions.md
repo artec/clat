@@ -481,3 +481,17 @@ This ordering is an architecture contract. Moving permission behind middleware
 would let extension code observe or act on a call before the user authorizes
 it. Frontend code may change presentation, but it must continue to inject the
 approver and delegate all semantics to core.
+
+### Plan documents and workflow execution
+
+Saving a plan document is a narrowly scoped, core-owned session metadata effect:
+it creates a private Markdown projection of journaled text in that session only.
+It does not permit general project writes, command execution or external access
+in Plan Mode. The existing frozen tool-access policy continues to apply.
+
+**Approve and execute** is explicit authority to leave planning and start the
+bound goal after the planning worker settles; opening a document, switching
+views or merely saving/approving it does not grant that authority. The goal uses
+the existing injected permission approver. **Stop and enter Plan mode** waits for
+the old execution to end before the new policy takes effect; manual stop cancels
+that pending transition. Human acceptance remains a separate explicit action.

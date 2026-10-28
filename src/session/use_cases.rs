@@ -13,6 +13,7 @@ mod background;
 mod folding_journal;
 mod history;
 mod lifecycle;
+mod plans;
 pub(crate) mod query;
 mod task;
 mod utility;
@@ -751,23 +752,30 @@ impl SessionService {
     /// owns append -> flush -> projection checkpoint and never publishes a
     /// speculative in-memory state ahead of the log.
     pub(crate) fn record_goal_change(&self, data: Value) -> Result<u64, SessionError> {
+        self.record_goal_change_batch(data, &[])
+    }
+
+    pub(crate) fn record_goal_change_batch(
+        &self,
+        data: Value,
+        tail: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<u64, SessionError> {
         crate::goal::validate_change_payload(&data).map_err(SessionError::Corruption)?;
         let guard = self.active.lock().expect("active");
         let active = guard.as_ref().ok_or_else(|| {
             SessionError::Corruption("goal mutation requires an active session".into())
         })?;
-        let journal = active.shared_journal(&self.backend)?;
-        let seq = journal
-            .append(crate::session::run_journal::NewSessionEvent::new(
-                "goal/change",
-                data,
-            ))
+        let mut events = vec![crate::session::run_journal::NewSessionEvent::new(
+            "goal/change",
+            data,
+        )];
+        events.extend_from_slice(tail);
+        let seq = active
+            .shared_journal(&self.backend)?
+            .append_atomic_durable(&events)
             .map_err(SessionError::Corruption)?;
-        journal.flush().map_err(SessionError::Corruption)?;
-        // Checkpoints are disposable caches. A failure does not roll back a
-        // durable goal mutation, mirroring record_plan_mode.
         let _ = checkpoint_active(active, &self.checkpoints);
-        Ok(seq)
+        Ok(seq.start)
     }
 
     /// The model-facing history of the active session: surface nodes with

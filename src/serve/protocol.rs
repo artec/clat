@@ -73,6 +73,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "files.preview",
     "files.reference",
     "workflow.details",
+    "workflow.action",
     "tasks.list",
     "tasks.logs",
     "session.list",
@@ -435,6 +436,9 @@ fn dispatch_guarded_project(
         return Err(RpcError::busy(
             "session selection changed; refresh before submitting",
         ));
+    }
+    if method == "workflow.action" {
+        return super::workflow::action(shared, params);
     }
     if method.starts_with("input.") {
         return super::inputs::dispatch(
@@ -1798,6 +1802,7 @@ fn project_mutation(method: &str) -> bool {
             | "run.cancel"
             | "model.overrides.set"
             | "turn.restore"
+            | "workflow.action"
     ) || method.starts_with("input.") && !matches!(method, "input.pending" | "input.image")
         || method.starts_with("schedule.")
             && !matches!(method, "schedule.list" | "schedule.deliveries")

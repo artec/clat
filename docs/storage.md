@@ -462,6 +462,22 @@ Plan Mode is session state, not a separate control-plane file. DSH-compatible
 `plan/mode` events record active/inactive state; an approved plan is also bound
 to its durable event sequence and digest so the next run can consume it.
 
+Versioned plan documents additionally use the ignorable `clat/plan/change`
+extension. It records document identity/session, revision, title, full Markdown,
+digest, approval and goal linkage, plus idempotent workflow receipts. Its catalog
+validator and `plan-documents` projection admit the same transitions during live
+folding, replay and checkpoint restoration. Existing `plan/mode` and
+`goal/change` meanings do not change; there is no format-generation bump.
+
+`<session>/plans/<plan-id>-r<revision>.md` is a private, reconstructable projection
+of the recorded text, not a second fact store. Missing files can be rebuilt;
+external edits or symlinks are preserved and refused for approval. Reads/writes
+use held session/directory capabilities, no-follow file opens, bounded reads and
+private atomic publication. New goals and their plan binding commit in one
+journal batch. Execution progress never rewrites approved document text.
+Old approved `plan/mode` text remains viewable without rewriting its history;
+explicit workflow approval imports its document identity into the new projection.
+
 A run's selected skill catalog is recorded in `request/header.skills` for
 explainable live/replay parity. User skills live under `~/.clat/skills`; project
 skills live under `<project>/.clat/skills` and override the user layer. Their

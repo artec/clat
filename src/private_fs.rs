@@ -44,6 +44,39 @@ pub(crate) fn write_text_atomic_in_dir(
     Ok(())
 }
 
+/// Publish a derived immutable file without replacing a concurrent external writer.
+pub(crate) fn write_text_new_atomic_in_dir(
+    dir: &cap_std::fs::Dir,
+    name: &str,
+    text: &str,
+) -> Result<(), String> {
+    let temporary = temp_file_name(name);
+    let result = (|| {
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = dir
+            .open_with(&temporary, &options)
+            .map_err(|e| e.to_string())?;
+        file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        dir.hard_link(&temporary, dir, name)
+            .map_err(|e| e.to_string())
+    })();
+    let _ = dir.remove_file(&temporary);
+    result?;
+    #[cfg(unix)]
+    dir.open(".")
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn publish_text(dir: &cap_std::fs::Dir, name: &str, text: &str) -> Result<(), String> {
     reject_symlink(dir, name)?;
     let temp_name = temp_file_name(name);

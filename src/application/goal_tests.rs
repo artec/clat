@@ -263,7 +263,7 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
 }
 
 #[test]
-fn user_only_acceptance_rejects_model_completion_and_cas_is_strict() {
+fn user_only_acceptance_waits_for_confirmation_and_cas_is_strict() {
     let (storage_root, project_root) = roots("goal-user-acceptance");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
@@ -284,15 +284,18 @@ fn user_only_acceptance_rejects_model_completion_and_cas_is_strict() {
         )
         .unwrap();
     assert!(application.goal_pause(created.state.revision + 1).is_err());
-    assert!(
-        application
-            .goal
-            .complete_candidate(created.state.revision, "model says done")
-            .is_err()
-    );
+    application
+        .goal
+        .complete_candidate(created.state.revision, "model says done")
+        .unwrap();
     let recorded = application.goal().unwrap().unwrap();
-    assert_eq!(recorded.state.failures, 1);
-    assert_eq!(recorded.state.phase, GoalPhase::Active);
+    assert_eq!(recorded.state.failures, 0);
+    assert_eq!(recorded.state.phase, GoalPhase::Blocked);
+    assert_eq!(
+        recorded.state.blocked_reason.as_ref().unwrap().code,
+        "awaiting-user-acceptance"
+    );
+    let recorded = application.goal_resume(recorded.state.revision).unwrap();
     assert!(!recorded.armed);
     let progressed = application
         .goal

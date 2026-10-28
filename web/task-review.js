@@ -1,50 +1,55 @@
 function installTaskReview() {
   const trigger = el('button', 'ghost', () => (CLATI18n.msg("web.tasks", {}, "Tasks"))); trigger.type = 'button'; trigger.id = 'tasks-open';
   document.getElementById('review-open').after(trigger);
-  const dialog = el('dialog', 'workspace-review'); dialog.id = 'task-review'; CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.current_run_processes", {}, "Current run processes"));
+  const dialog = el('section', 'workspace-review'); dialog.id = 'task-review'; CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.current_run_processes", {}, "Current run processes"));
   const header = el('div', 'review-header'); const refresh = el('button', 'ghost', () => (CLATI18n.msg("web.refresh", {}, "Refresh")));
   const close = el('button', 'icon-button', () => ('×')); CLATI18n.attribute(close,'aria-label',()=>CLATI18n.msg("web.close_tasks", {}, "Close tasks"));
   header.append(el('h2', '', () => (CLATI18n.msg("web.current_run_processes", {}, "Current run processes"))), refresh, close);
   const status = el('p', 'picker-hint'); status.setAttribute('role', 'status');
   const body = el('div', 'review-body'); const list = el('nav', 'review-files'); const detail = el('section', 'review-patch');
   body.append(list, detail); dialog.append(header, status, body); document.body.append(dialog);
-  let generation = 0, logGeneration = 0;
-  const owner = () => [state.stream, state.selectionGeneration, workspacePrefix];
-  async function load() {
-    const request = ++generation; const captured = owner(); logGeneration += 1;
-    const current = () => dialog.open && request === generation && captured.every((v, i) => v === owner()[i]);
-    list.replaceChildren(); detail.replaceChildren(); CLATI18n.bind(status, "textContent", () => CLATI18n.msg("web.reading_host_process_facts", {}, "Reading host process facts…"));
-    try {
-      const result = await rpc('tasks.list', {}); if (!current()) return;
-      CLATI18n.bind(status, "textContent", () => CLATI18n.present(result.presentation,result.note));
-      if (!result.tasks.length) list.append(el('p', 'picker-hint', () => (CLATI18n.msg("web.no_retained_processes_for_the_selected_current_run_not_a_history_or_background_job", {}, "No retained processes for the selected current run. Not a history or background job list."))));
-      for (const task of result.tasks) {
-        const button = el('button', 'review-file'); button.type = 'button';
-        button.append(el('span', '', () => (CLATI18n.msg("web.dynamic_value_value_exit_value", {value1:(task.id),value2:(task.state),value3:(task.exit_code ?? '—')}, "#{value1} · {value2} · exit {value3}"))), el('small', '', () => (task.command)));
-        button.addEventListener('click', async () => {
-          const logRequest = ++logGeneration;
-          try {
-            const logs = await rpc('tasks.logs', { generation: result.generation, id: task.id });
-            if (!current() || logRequest !== logGeneration) return;
-            detail.replaceChildren(el('h3', '', () => (logs.command)), el('p', 'picker-hint', () => (CLATI18n.msg("web.dynamic_session_value_generation_value_value_exit_value", {value1:(logs.session),value2:(logs.generation),value3:(logs.state),value4:(logs.exit_code ?? '—')}, "Session {value1} · generation {value2} · {value3} · exit {value4}"))));
-            for (const name of ['stdout', 'stderr', 'pty']) {
-              detail.append(el('h4', '', () => (name + (logs[name].truncated ? CLATI18n.msg("web.logs_tail",{}," · bounded tail / earlier omitted") : ''))), el('pre', 'review-diff', () => (logs[name].text || CLATI18n.msg("web.empty_log"))));
-            }
-          } catch (error) { if (current() && logRequest === logGeneration) detail.replaceChildren(el('p', 'error', () => (error.message))); }
-        }); list.append(button);
-      }
-    } catch (error) { if (current()) CLATI18n.bind(status, "textContent", () => error.message); }
+  let generation=0,logGeneration=0,selected=null;
+  const owner=()=>[state.stream,state.selectionGeneration,workspacePrefix];
+  const owns=captured=>captured.every((v,i)=>v===owner()[i]);
+  async function logs(task,batch,captured){
+    const request=++logGeneration;selected=task.id;
+    for(const button of list.querySelectorAll('.review-file'))button.classList.toggle('is-selected',button.dataset.task===String(task.id));
+    try{
+      const value=await rpc('tasks.logs',{generation:batch,id:task.id});
+      if(!toolViewIsOpen(dialog)||request!==logGeneration||!owns(captured))return;
+      detail.replaceChildren(el('h3','',()=>value.command),el('p','picker-hint',()=>CLATI18n.msg('web.dynamic_session_value_generation_value_value_exit_value',{value1:value.session,value2:value.generation,value3:value.state,value4:value.exit_code??'—'})));
+      for(const name of ['stdout','stderr','pty'])detail.append(el('h4','',()=>name+(value[name].truncated?CLATI18n.msg('web.logs_tail'):'')),el('pre','review-diff',()=>value[name].text||CLATI18n.msg('web.empty_log')));
+    }catch(error){if(toolViewIsOpen(dialog)&&request===logGeneration&&owns(captured))detail.replaceChildren(el('p','error',()=>error.message));}
   }
-  trigger.addEventListener('click', () => { dialog.showModal(); void load(); }); refresh.addEventListener('click', () => { void load(); });
-  close.addEventListener('click', () => dialog.close()); dialog.addEventListener('close', () => { generation += 1; logGeneration += 1; focusWorkbenchTool(trigger); });
+  async function load(){
+    const request=++generation,captured=owner(),top=list.scrollTop,read=detail.scrollTop;logGeneration++;
+    list.replaceChildren();detail.replaceChildren();
+    CLATI18n.bind(status,'textContent',()=>CLATI18n.msg('web.reading_host_process_facts'));
+    try{
+      const result=await rpc('tasks.list',{});
+      if(!toolViewIsOpen(dialog)||request!==generation||!owns(captured))return;
+      CLATI18n.bind(status,'textContent',()=>CLATI18n.present(result.presentation,result.note));
+      if(!result.tasks.length)list.append(el('p','picker-hint',()=>CLATI18n.msg('web.no_retained_processes_for_the_selected_current_run_not_a_history_or_background_job')));
+      for(const task of result.tasks){
+        const button=el('button','review-file');button.type='button';button.dataset.task=String(task.id);
+        button.append(el('span','',()=>CLATI18n.msg('web.dynamic_value_value_exit_value',{value1:task.id,value2:task.state,value3:task.exit_code??'—'})),el('small','',()=>task.command));
+        button.classList.toggle('is-selected',task.id===selected);
+        button.onclick=()=>void logs(task,result.generation,captured);list.append(button);
+      }
+      const prior=result.tasks.find(task=>task.id===selected);if(prior)await logs(prior,result.generation,captured);
+      if(toolViewIsOpen(dialog)&&request===generation&&owns(captured)){list.scrollTop=top;detail.scrollTop=read;}
+    }catch(error){if(toolViewIsOpen(dialog)&&request===generation&&owns(captured))CLATI18n.bind(status,'textContent',()=>error.message);}
+  }
+  trigger.onclick=()=>openWorkbenchTool(dialog);refresh.onclick=()=>void load();close.onclick=()=>closeWorkbenchTool();
+  dialog.addEventListener('clat:tool-enter',()=>void load());
+  dialog.addEventListener('clat:tool-leave',()=>{generation++;logGeneration++;});
+  dialog.addEventListener('clat:tool-reset',()=>{selected=null;generation++;logGeneration++;});
 }
 
 function focusWorkbenchTool(trigger) {
-  if (workbenchShell && [...workbenchShell.surfaces.values()]
-    .some(seat => seat.type === 'page' && seat.trigger === trigger.id)) return;
-  const menu = trigger.closest('#workbench-tools');
-  if (menu?.classList.contains('hidden')) document.getElementById('tools-open').focus();
-  else trigger.focus();
+  const target = document.getElementById('workspace-chat-tab');
+  if (target?.getClientRects().length) target.focus({preventScroll:true});
+  else document.getElementById('tools-open')?.focus({preventScroll:true});
 }
 
 function installWorkbenchTools() {

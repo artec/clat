@@ -46,6 +46,41 @@ conversation. Images and fixed file references remain attached. Esc dismisses an
 open popup first, otherwise stops execution and cancels any automatic handoff.
 These visual and interaction details are manually accepted on each platform.
 
+## Conversation and contextual tools
+
+The work area has two reusable columns. **Conversation** shows the session list
+and chat/composer. Project files, workspace changes, captured turn operations,
+current tasks and plans/goals replace both columns with their own list and
+details. The right work-area overview is temporarily hidden and restored when
+returning to the conversation. File editing/saving is a separate future feature;
+this file view remains a browser with fixed-snapshot quoting.
+
+Opening a tool creates one **Conversation / current tool** tab pair. The existing
+Tools menu switches that tool; tabs do not accumulate. Conversation remains
+mounted with its draft, images, file references, reading position and list state.
+Click Conversation to return, click the tool tab to revisit, or close the tool
+for the original layout. Esc dismisses temporary UI first, then returns from a
+tool to Conversation without also stopping a run. Back/forward follow view
+changes. Narrow windows show a list, then details with a Back to list action.
+Session changes invalidate the previous tool's ownership. Runs continue while
+the user reads tools; the Conversation tab indicates activity and pending input.
+
+The former Plan lightbulb is a click-only **Work mode** menu: Normal, Plan and
+Goal. It and **Plans and goals** share one Host workflow. Plan submission first
+saves a versioned Markdown document under the session's `plans/` directory.
+**Approve and execute** binds that exact revision, finishes planning, and starts
+same-session goal execution. **Approve only** keeps the old non-executing approval
+contract; **Continue revising** retains the plan identity and creates a new draft.
+
+The plans/goals tool has a grouped list of plan revisions, the current goal and
+model-maintained to-dos. Its detail pane offers goal creation, start/continue,
+pause, human acceptance and ending the goal. A human-acceptance goal stops at
+**Awaiting acceptance** when the agent submits its result; it is completed only
+by an explicit acceptance. **Give feedback and continue** records the feedback
+and resumes the same goal. Existing machine verifiers and execution limits still
+apply. Restart restores documents and progress, never silently rearms execution.
+Visual appearance and all interaction are accepted manually on macOS/Windows.
+
 The installed display name is **CLAT**: `CLAT.app` on macOS, and CLAT in the
 Windows Start Menu and shortcuts. The desktop executable remains `clat-desktop`
 (`clat-desktop.exe` on Windows), with application identifier

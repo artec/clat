@@ -94,7 +94,24 @@ impl TrustedProjectApplication {
     }
 
     fn plan_context(&self) -> (Option<String>, Option<Value>) {
-        plan_layers(self.plan_mode.state())
+        let (mut instructions, mut header) = plan_layers(self.plan_mode.state());
+        if self.plan_mode_active()
+            && let Ok(documents) = self.sessions.plan_documents()
+            && let Some(doc) = documents.plans.iter().rev().find(|p| !p.approved)
+        {
+            instructions = Some(crate::plan_mode::compose_workflow_instructions(
+                instructions.unwrap_or_default(),
+                Some(&format!(
+                    "Current plan draft {} revision {} (digest {}):\n{}",
+                    doc.id, doc.revision, doc.digest, doc.text
+                )),
+            ));
+            if let Some(header) = header.as_mut() {
+                header["document"] =
+                    serde_json::json!({"id":doc.id,"revision":doc.revision,"digest":doc.digest});
+            }
+        }
+        (instructions, header)
     }
 
     /// The canonical `request/header` body (audit P1-14): what the model

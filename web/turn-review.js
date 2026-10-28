@@ -2,7 +2,7 @@
 function installTurnReview() {
   const trigger = el('button', 'ghost', () => (CLATI18n.msg("web.captured_operations", {}, "Captured operations"))); trigger.type = 'button'; trigger.id = 'turn-review-open';
   document.getElementById('review-open').after(trigger);
-  const dialog = el('dialog', 'workspace-review'); dialog.id = 'turn-review'; CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.captured_native_file_operations", {}, "Captured native file operations"));
+  const dialog = el('section', 'workspace-review'); dialog.id = 'turn-review'; CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.captured_native_file_operations", {}, "Captured native file operations"));
   const header = el('div', 'review-header'); const refresh = el('button', 'ghost', () => (CLATI18n.msg("web.refresh", {}, "Refresh")));
   const close = el('button', 'icon-button', () => ('×')); CLATI18n.attribute(close,'aria-label',()=>CLATI18n.msg("web.close_captured_operations", {}, "Close captured operations"));
   header.append(el('h2', '', () => (CLATI18n.msg("web.captured_operations", {}, "Captured operations"))), refresh, close);
@@ -10,7 +10,7 @@ function installTurnReview() {
   const body = el('div', 'review-body'); const list = el('nav', 'review-files'); const detail = el('section', 'review-patch');
   const restore = el('button', 'danger-button', () => (CLATI18n.msg("web.restore_captured_files", {}, "Restore captured files…"))); restore.type = 'button'; restore.disabled = true;
   body.append(list, detail); dialog.append(header, status, body, restore); document.body.append(dialog);
-  let request = 0, fileRequest = 0, snapshot = null;
+  let request = 0, fileRequest = 0, snapshot = null, selectedPath=null;
   const owner = () => [state.stream, state.selectionGeneration, workspacePrefix];
   function showFiles(result) {
     list.replaceChildren();
@@ -18,12 +18,13 @@ function installTurnReview() {
     for (const file of result.files) {
       const button = el('button', 'review-file'); button.type = 'button';
       button.append(el('span', '', () => (file.path)), el('small', '', () => (`${file.kind} · ${file.status} · ${file.disk_state}`)));
-      button.addEventListener('click', () => { void load(file.path); }); list.append(button);
+      button.addEventListener('click', () => {for(const item of list.querySelectorAll('.review-file'))item.classList.toggle('is-selected',item===button);void load(file.path);}); list.append(button);
     }
   }
   async function load(path = null) {
+    if(path)selectedPath=path;const prior=selectedPath,top=list.scrollTop,read=detail.scrollTop;
     const version = path ? request : ++request; const fileVersion = ++fileRequest; const expected = owner();
-    const current = () => dialog.open && version === request && fileVersion === fileRequest && expected.every((v, i) => v === owner()[i]);
+    const current = () => toolViewIsOpen(dialog) && (!path || version === request) && fileVersion === fileRequest && expected.every((v, i) => v === owner()[i]);
     if (!path) { list.replaceChildren(); detail.replaceChildren(); restore.disabled = true; snapshot = null; }
     CLATI18n.bind(status, "textContent", () => CLATI18n.msg("web.reading_native_operation_evidence", {}, "Reading native operation evidence…"));
     try {
@@ -34,6 +35,8 @@ function installTurnReview() {
         snapshot = result;
         restore.disabled = state.runActive || state.compactionActive || !result.files.some(f => f.disk_state === 'safe');
         showFiles(result);
+        if(prior&&result.files.some(file=>file.path===prior))await load(prior);
+        if(toolViewIsOpen(dialog)&&version===request&&expected.every((v,i)=>v===owner()[i])){list.scrollTop=top;detail.scrollTop=read;}
       } else {
         detail.replaceChildren(el('h3', '', () => (path)));
         const afterLabel = result.preview.status === 'prepared' ? CLATI18n.msg("web.expected_native_result_commit_unconfirmed", {}, "Expected native result (commit unconfirmed)") : CLATI18n.msg("web.captured_native_result_not_current_disk", {}, "Captured native result (not current disk)");
@@ -52,15 +55,17 @@ function installTurnReview() {
     const expected = owner(); const version = request; restore.disabled = true;
     try {
       const result = await rpc('turn.restore', { turn: snapshot.turn, revision: snapshot.revision, confirmed: true, expected_selection_generation: expected[1] });
-      if (!dialog.open || version !== request || !expected.every((v, i) => v === owner()[i])) return;
+      if (!toolViewIsOpen(dialog) || version !== request || !expected.every((v, i) => v === owner()[i])) return;
       detail.replaceChildren(el('h3', '', () => (CLATI18n.msg("web.recovery_results", {}, "Recovery results"))));
       for (const file of result.files) detail.append(el('p', '', () => (`${file.path}: ${file.status} ${file.note || ''}${file.recovery_path ? CLATI18n.msg("web.line_retained_value",{value1:(file.recovery_path)}," · retained: {value1}") : ''}`)));
       snapshot = result;
       showFiles(result);
       CLATI18n.bind(status, "textContent", () => CLATI18n.msg("web.dynamic_turn_value_recovery_results_inspect_individual_statuses_and_retained_material", {value1:(result.turn)}, "Turn {value1} · Recovery results; inspect individual statuses and retained material."));
-    } catch (error) { if (dialog.open && version === request && expected.every((v, i) => v === owner()[i])) CLATI18n.bind(status, "textContent", () => error.message); }
+    } catch (error) { if (toolViewIsOpen(dialog) && version === request && expected.every((v, i) => v === owner()[i])) CLATI18n.bind(status, "textContent", () => error.message); }
   });
-  trigger.addEventListener('click', () => { dialog.showModal(); void load(); });
-  refresh.addEventListener('click', () => { void load(); }); close.addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => { request += 1; fileRequest += 1; focusWorkbenchTool(trigger); });
+  trigger.addEventListener('click', () => { openWorkbenchTool(dialog); });
+  refresh.addEventListener('click', () => { void load(); }); close.addEventListener('click', () => closeWorkbenchTool());
+  dialog.addEventListener('clat:tool-enter', () => {void load();});
+  dialog.addEventListener('clat:tool-reset',()=>{selectedPath=null;snapshot=null;request++;fileRequest++;});
+  dialog.addEventListener('clat:tool-leave', () => { request += 1; fileRequest += 1; });
 }

@@ -30,7 +30,7 @@ function installPendingInputs() {
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     if (activeComposerPopup) { event.preventDefault(); activeComposerPopup.close(); return; }
-    if (!supportsPendingInputs()) return;
+    if (!supportsPendingInputs() || dom.app.dataset.tool) return;
     if ((dom.app.dataset.page && !borrowedConversation) || commandPanelOpen() || pageIsOpen(dom['settings-dialog']) || pageIsOpen(dom['market-dialog'])) return;
     if (!popup.classList.contains('hidden')) { event.preventDefault(); pendingInputPopover.close(); return; }
     if (state.runActive || pendingInputStore.interrupting) { event.preventDefault(); dom.cancel.click(); }

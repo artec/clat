@@ -10,6 +10,21 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/workflow-view.js",
+        include_bytes!("../../web/workflow-view.js"),
+        "application/javascript",
+    ),
+    (
+        "/work-mode.js",
+        include_bytes!("../../web/work-mode.js"),
+        "application/javascript",
+    ),
+    (
+        "/workspace-tools.js",
+        include_bytes!("../../web/workspace-tools.js"),
+        "application/javascript",
+    ),
+    (
         "/composer-popovers.js",
         include_bytes!("../../web/composer-popovers.js"),
         "application/javascript",
@@ -269,6 +284,7 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
 // Source modules keep their zero-build authoring surface. A normal function
 // gives each mounted project lexical ownership without eval, imports or frames.
 const PROJECT_MODULES: &[&str] = &[
+    "/workspace-tools.js",
     "/composer-popovers.js",
     "/composer-permissions.js",
     "/conversation-experience.js",
@@ -289,6 +305,8 @@ const PROJECT_MODULES: &[&str] = &[
     "/file-browser.js",
     "/session-organization.js",
     "/workflow-details.js",
+    "/workflow-view.js",
+    "/work-mode.js",
     "/navigation-help.js",
     "/task-review.js",
     "/plugin-market.js",

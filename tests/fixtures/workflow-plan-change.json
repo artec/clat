@@ -1,0 +1,20 @@
+{
+  "type": "clat/plan/change",
+  "seq": 0,
+  "time": 1,
+  "data": {
+    "version": 1,
+    "document": {
+      "id": "plan-00000000-0000-4000-8000-000000000001",
+      "session": "00000000-0000-4000-8000-000000000002",
+      "revision": 1,
+      "title": "Plan",
+      "text": "# Plan\n\nImplement the requested change.\n",
+      "digest": "1c3376405ebb9c09ff7ba202cf1b7480c479b45397a24b957dc8014665114704",
+      "approved": false,
+      "goal_id": null
+    },
+    "operation": null
+  },
+  "ignorable": true
+}

@@ -633,3 +633,10 @@ fn require_admission_metadata(data: &serde_json::Value) -> Result<(), String> {
 pub(super) fn task(event: &SessionEvent, _version: u32) -> Result<(), String> {
     crate::task::decode_change(&event.data).map(|_| ())
 }
+
+pub(super) fn plan_document(event: &SessionEvent, _version: u32) -> Result<(), String> {
+    if event.ignorable != Some(true) {
+        return Err("CLAT plan extensions must be ignorable".into());
+    }
+    crate::plan_mode::documents::decode(&event.data).map(|_| ())
+}

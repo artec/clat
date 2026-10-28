@@ -7,6 +7,7 @@ mod references;
 #[derive(Default)]
 pub(super) struct TransientInputs {
     pub(super) queue: crate::input::InputQueue,
+    pub(super) goal_after_interrupt: Mutex<Option<String>>,
     pub(super) next_turn: std::collections::VecDeque<super::next_turn::NextTurnItem>,
     pub(super) recalled_next_turn:
         std::collections::VecDeque<(String, Option<super::next_turn::NextTurnItem>)>,
@@ -64,7 +65,9 @@ impl TrustedProjectApplication {
             if idle {
                 self.input_queue().prefer_initial(initial_id);
             }
-            self.goal.disarm();
+            if idle {
+                self.goal.disarm();
+            }
         }
         result
     }
@@ -75,6 +78,18 @@ impl TrustedProjectApplication {
             .queue
             .interrupt(id, version)
             .map_err(ApplicationError::new)?;
+        self.plan_mode.revoke_handoff();
+        if let Some(goal) = self
+            .goal()
+            .map_err(|e| ApplicationError::new(e.to_string()))?
+            .filter(|g| g.armed)
+        {
+            *self
+                .transient_inputs
+                .goal_after_interrupt
+                .lock()
+                .expect("goal interruption") = Some(goal.state.id);
+        }
         self.goal.disarm();
         if let Some(run) = &self.active_run {
             run.cancel();

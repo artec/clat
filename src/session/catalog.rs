@@ -128,6 +128,7 @@ macro_rules! vocabulary {
 }
 vocabulary! {
     "agent-preset/selected" => (None, false, Skip, false),
+    "clat/plan/change" => (Some(validation::plan_document), false, Skip, false),
     "clat/budget" => (None, false, Skip, false),
     "clat/task" => (Some(validation::task), false, Skip, false),
     "clat/subagent" => (Some(validation::subagent), false, Skip, false),
@@ -240,13 +241,13 @@ mod tests {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the five released message types, including
         // the protected system head and V4 developer messages.
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 68);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 69);
         assert_eq!(
             KNOWN_EVENT_TYPES
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            68,
+            69,
             "each vocabulary seat must be unique"
         );
         assert!(is_known_type("user/message"));

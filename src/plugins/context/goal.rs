@@ -97,7 +97,7 @@ impl Tool for UpdateGoalTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "update_goal".into(),
-            description: "Update the current durable goal using revision/CAS. The model may record progress, report a blocker, or submit a completion candidate. Completion succeeds only when the pre-registered read-only verifier passes; user-only goals require /goal complete."
+            description: "Update the current durable goal using revision/CAS. The model may record progress, report a blocker, or submit a completion candidate. Completion succeeds only when the pre-registered read-only verifier passes; user-only goals stop at a completion candidate and await explicit human acceptance."
                 .into(),
             input_schema: json!({
                 "type": "object",

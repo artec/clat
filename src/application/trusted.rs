@@ -444,9 +444,14 @@ impl TrustedProjectApplication {
         expected_revision: u64,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
         self.reject_session_switch_while_busy()?;
-        self.goal
+        let result = self
+            .goal
             .pause(expected_revision)
-            .map_err(ApplicationError::new)
+            .map_err(ApplicationError::new);
+        if result.is_ok() {
+            self.cancel_workflow_continuation();
+        }
+        result
     }
 
     pub fn goal_resume(
@@ -466,16 +471,26 @@ impl TrustedProjectApplication {
         summary: &str,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
         self.reject_session_switch_while_busy()?;
-        self.goal
+        let result = self
+            .goal
             .complete_human(expected_revision, summary)
-            .map_err(ApplicationError::new)
+            .map_err(ApplicationError::new);
+        if result.is_ok() {
+            self.cancel_workflow_continuation();
+        }
+        result
     }
 
     pub fn goal_clear(&self, expected_revision: u64) -> Result<(), ApplicationError> {
         self.reject_session_switch_while_busy()?;
-        self.goal
+        let result = self
+            .goal
             .clear(expected_revision)
-            .map_err(ApplicationError::new)
+            .map_err(ApplicationError::new);
+        if result.is_ok() {
+            self.cancel_workflow_continuation();
+        }
+        result
     }
 
     pub fn subagents_enabled(&self) -> bool {

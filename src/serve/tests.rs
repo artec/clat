@@ -41,6 +41,9 @@ mod local_auth_tests;
 #[path = "suggestion_tests.rs"]
 mod suggestion_tests;
 
+#[path = "workflow_tests.rs"]
+mod workflow_tests;
+
 #[path = "workbench_tests.rs"]
 mod workbench;
 

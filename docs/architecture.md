@@ -953,9 +953,9 @@ reader for bounded I/O; quoted input is a rechecked fixed editable snapshot.
 
 `session.organize` updates workspace-owned explicit pinned/archived flags;
 TUI and PWA share them without altering session selection or deleting journal
-content. `workflow.details` composes existing Plan Mode/approved plan, TodoService
-and GoalViewDto facts; confirmed Goal command actions CAS both goal id and
-revision under the Application lock. `tasks.list` / `tasks.logs` expose the
+content. `workflow.details` composes Plan Mode, versioned plan documents,
+TodoService and GoalViewDto facts; typed `workflow.action` and legacy Goal command
+actions fence the session and CAS the target state under the Application lock. `tasks.list` / `tasks.logs` expose the
 selected current ProcessService generation with bounded, non-consuming tails;
 they introduce no process lifecycle or cancellation authority. Browser requests
 also fence late UI completions by project, selection and request generation.
@@ -1573,3 +1573,31 @@ rules. Manual deliveries reuse atomic reservation and settlement, with a durable
 request-derived occurrence identity; they do not advance the regular clock.
 WeChat user projection exposes authorization sources without credentials; complete
 revocation updates paired and manual grants in a single control-store transaction.
+
+## Contextual work area and workflow documents
+
+Web/Desktop use one contextual two-column surface owner, separate from global
+navigation. Conversation retains its sole list/chat/composer DOM and event
+subscription; one current tool supplies list and detail regions. Enter, leave,
+reset and restore invalidate request epochs and exclude hidden regions from focus.
+The tools use explicit region lifecycle rather than native dialog `open` state.
+This is presentation state and does not select sessions or affect Host execution.
+
+The Application workflow facade exposes typed `WorkflowRequest` / `WorkflowIntent`
+through client ports and additive `workflow.action` RPC; `workflow.details`
+returns document revisions, review, goal, to-dos and pending-handoff state.
+Session identity, expected workflow version, process-local authority generation,
+operation ID and goal ID/revision fence mutations. Stop/restart invalidates
+unaccepted old workflow requests so a delayed approval cannot restart execution. Mode changes and review/execution handoffs belong to the core.
+The serve adapter only supplies the usual asker/approver/event/completion ports
+and drives a ready core action after the preceding worker has joined.
+
+PlanModeService owns document mutation, shared review arbitration and exact
+revision approval. `clat/plan/change` has one catalog seat, strict admission and
+a checkpointable projection. Markdown is core-owned derived session output.
+GoalService retains execution, accounting and acceptance; creation plus new-plan
+binding use one durable journal batch. A human completion candidate records an
+awaiting-user-acceptance blocker without reporting completion or wasting retry
+allowance. Normal prompts retain their old disarming contract; typed in-run input
+preserves the explicit goal through queueing/interruption unless manually stopped.
+No frontend owns a second workflow or persists plan/run policy directly.

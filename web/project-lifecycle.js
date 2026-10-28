@@ -52,6 +52,8 @@ function projectLifecycle() {
   }
   function deactivate() {
     saveComposerText();
+    workbenchShell?.tools?.suspend();
+    activeComposerPopup?.close();
     for (const seat of navigationPages.values()) if (seat.active) {
       leavePage(seat.dialog);
     }
@@ -79,10 +81,11 @@ function projectLifecycle() {
     for (const [node, top, left] of saved.scrolls) { node.scrollTop = top; node.scrollLeft = left; }
     restoreProjectReading();
     dom.prompt.setSelectionRange(...saved.selection);
-    if (saved.focus?.isConnected) saved.focus.focus({ preventScroll: true });
+    if (saved.focus?.isConnected && saved.focus.getClientRects().length) saved.focus.focus({ preventScroll: true });
   }
   return {
     activate, deactivate, navigateConversation,
+    route:()=>dom.app.dataset.page||workbenchShell?.tools?.location()||'workbench',
     navigation: () => ({ items: state.sessions, selected: state.sessionId, ready: Boolean(ready()),
       locked: state.switching || state.compactionActive || state.desktopUpdateLocked,
       query: dom['session-search'].value, archived: showArchivedSessions }),

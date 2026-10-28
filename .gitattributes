@@ -102,3 +102,6 @@ web/resource-library.js text eol=lf
 web/task-center.js text eol=lf
 web/conversation-reader.js text eol=lf
 web/tests/navigation-data.test.cjs text eol=lf
+
+# Workflow plan extension golden is read byte-for-byte by the core.
+tests/fixtures/workflow-plan-change.json text eol=lf

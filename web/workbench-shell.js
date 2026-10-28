@@ -79,7 +79,7 @@ function createShellInspector(shell) {
   for (const [id, trigger] of [
     ['file-browser', 'files-open'], ['workspace-review', 'review-open'], ['turn-review', 'turn-review-open'],
     ['workflow-details', 'workflow-open'], ['task-review', 'tasks-open'],
-  ]) shell.mount(id, trigger, '', scroll, 'side');
+  ]) shell.tools.register(id, ({'file-browser':'files','workspace-review':'changes','turn-review':'turn','workflow-details':'workflow','task-review':'tasks'})[id]);
 }
 
 function mountShellDialog(shell, id, trigger, route, host, type) {
@@ -121,7 +121,7 @@ function shellShow(shell, id, updateRoute = true) {
     other.dialog.classList.add('hidden');
   }
   if (seat.type === 'page') {
-    captureProjectReading();
+    captureProjectReading(); shell.tools?.global();
     closeMobileSidebar();
     shell.pageHost.classList.remove('hidden');
     dom.app.dataset.page = seat.route;
@@ -154,6 +154,7 @@ function shellChat(shell, updateRoute = true) {
   syncPanelAccessibility();
   markShellNavigation('workbench');
   if (context.isActive() && updateRoute && !shell.routing) context.navigatePage('workbench');
+  shell.tools?.chat(false);
   refreshApplicationToolbar(shell);
 }
 
@@ -220,7 +221,7 @@ async function refreshShellContext() {
     }
     const badge = document.getElementById('composer-plan-toggle');
     badge?.setAttribute('aria-pressed', String(Boolean(value.plan_mode)));
-    if (badge) badge.disabled = value.busy || shell.planPending;
+    if (badge) badge.disabled = false;
     document.getElementById('add-plan').disabled = value.busy || shell.planPending;
     refreshShellResources();
   } catch (_) {
@@ -267,7 +268,8 @@ function createShellComposer(shell) {
     ['add-skills', 'tool', () => shellText('skills'), () => { dom.prompt.focus(); dom.prompt.value += (dom.prompt.value ? '\n' : '') + '/'; state.composerGeneration++; resizePrompt(); dom.prompt.dispatchEvent(new Event('input', {bubbles:true})); }],
     ['add-extensions', 'wasm', () => shellText('extensions'), () => openMarket()],
   ]);
-  const plan = shellButton('composer-plan-toggle', 'plan', () => shellText('plan'), () => toggleShellPlan());
+  const plan = shellButton('composer-plan-toggle', 'plan', () => workflowText('work_mode'), () => {}, false);
+  installWorkModeMenu(plan);
   dom['attachment-open'].classList.add('hidden');
   dom['attachment-open'].before(trigger);
   (dom['composer-permission'].closest('.permission-seat') || dom['composer-permission']).after(plan);
@@ -280,7 +282,7 @@ async function toggleShellPlan() {
   const owner = [state.selectionGeneration, state.stream];
   const current = () => owner[0] === state.selectionGeneration && owner[1] === state.stream;
   try {
-    await rpc('command.run', { command: '/plan' });
+    await sendWorkflowIntent({action:'mode',mode:'plan'});
     if (current()) { await refreshWorkbench(); await refreshShellContext(); }
   } catch (error) { if (current()) updateRunState(error.message); }
   finally { workbenchShell.planPending = false; void refreshShellContext(); }
@@ -295,6 +297,7 @@ function installWorkbenchShell() {
   shell.overview = () => shellOverview(shell);
   shell.open = id => { if(id === 'schedules-dialog') { taskCenter.openSchedules(); return; } const seat = shell.surfaces.get(id); if (seat) document.getElementById(seat.trigger)?.click(); };
   createShellRail(shell); createResourceLibrary(shell); shell.pageHost = createShellPages(shell);
+  shell.tools = installWorkspaceTools(shell);
   createShellInspector(shell); createShellComposer(shell);
   createApplicationToolbar(shell); createExtensionScope();
   installShellDesktopSettings(); installInteractionDock(); installInspectorResize(); markShellNavigation('workbench');
@@ -305,7 +308,7 @@ function installWorkbenchShell() {
     else if(path==='tasks/jobs'){taskCenter.restore(new URLSearchParams('type=jobs'));}
     else if(path==='tasks')taskCenter.restore(new URLSearchParams(raw.split('?')[1]||''));
     shell.routing = true;
-    try { if (target) shell.open(target[0]); else if(path.startsWith('tasks/'))shell.open('jobs-dialog'); else shell.chat(false); }
+    try { if (target) shell.open(target[0]); else if(path.startsWith('tasks/'))shell.open('jobs-dialog'); else { shell.chat(false); shell.tools.restore(new URLSearchParams(raw.split('?')[1] || '')); } }
     finally { shell.routing = false; }
   };
   window.addEventListener('popstate', route);

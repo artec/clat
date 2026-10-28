@@ -123,7 +123,7 @@ function installTransientScrollbars() {
   function retainActiveRoute() {
     const active = host.active;
     history.replaceState(history.state, '', projectUrl(active.route,
-      '#/' + (active.root.querySelector('#app').dataset.page || 'workbench')));
+      '#/' + (active.view?.route?.() || 'workbench')));
   }
 
   async function hostRpc(method, params = {}, prefix = '') {
@@ -153,7 +153,7 @@ function installTransientScrollbars() {
     const previous = host.active;
     if (previous?.route === route) return;
     if (previous) {
-      previous.hash = '#/' + (previous.root.querySelector('#app').dataset.page || 'workbench');
+      previous.hash = '#/' + (previous.view?.route?.() || 'workbench');
       previous.view.deactivate();
     }
     let next = views.get(route);

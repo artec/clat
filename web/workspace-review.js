@@ -5,7 +5,7 @@ let reviewSelected = null;
 
 function reviewOwner() { return [state.stream, state.selectionGeneration, workspacePrefix]; }
 function reviewStillCurrent(request, owner) {
-  return reviewDialog.open && request === reviewRequest && owner.every((v, i) => v === reviewOwner()[i]);
+  return toolViewIsOpen(reviewDialog) && request === reviewRequest && owner.every((v, i) => v === reviewOwner()[i]);
 }
 
 async function refreshWorkspaceReview() {
@@ -13,6 +13,7 @@ async function refreshWorkspaceReview() {
   const owner = reviewOwner();
   const list = document.getElementById('review-files');
   const status = document.getElementById('review-status');
+  const prior=reviewSelected,top=list.scrollTop,detailTop=document.getElementById('review-patch').scrollTop;
   list.replaceChildren(); reviewSelected = null; reviewFileRequest += 1;
   document.getElementById('review-patch').replaceChildren();
   CLATI18n.bind(status, "textContent", () => CLATI18n.msg("web.reading_current_working_tree", {}, "Reading current working tree…"));
@@ -27,9 +28,11 @@ async function refreshWorkspaceReview() {
       button.append(el('code', '', () => (file.status)), el('span', '', () => (file.path)),
         el('small', '', () => ([file.staged && CLATI18n.msg("web.file_staged"), file.unstaged && CLATI18n.msg("web.file_unstaged"), file.untracked && CLATI18n.msg("web.file_untracked")].filter(Boolean).join(' · '))));
       if (file.previous_path) CLATI18n.bind(button, "title", () => file.previous_path + ' → ' + file.path);
-      button.addEventListener('click', () => { void selectWorkspaceFile(file.path, request, owner); });
+      button.addEventListener('click', () => { void selectWorkspaceFile(file.path, reviewRequest, reviewOwner()); });
       list.appendChild(button);
     }
+    if(prior && changes.files.some(file=>file.path===prior))await selectWorkspaceFile(prior,request,owner);
+    if(reviewStillCurrent(request,owner)){list.scrollTop=top;document.getElementById('review-patch').scrollTop=detailTop;}
   } catch (error) { if (reviewStillCurrent(request, owner)) CLATI18n.bind(status, "textContent", () => CLATI18n.msg("web.line_workspace_review_unavailable_value",{value1:(error.message)},"Workspace review unavailable: {value1}")); }
 }
 
@@ -39,7 +42,7 @@ async function selectWorkspaceFile(path, request, owner) {
   const patch = document.getElementById('review-patch');
   patch.replaceChildren(el('h3', '', () => (path)), el('p', 'picker-hint', () => (CLATI18n.msg("web.reading_bounded_diff", {}, "Reading bounded diff…"))));
   const current = () => reviewStillCurrent(request, owner) && fileRequest === reviewFileRequest && reviewSelected === path;
-  for (const button of document.querySelectorAll('.review-file')) button.classList.toggle('is-selected', button.querySelector('span').textContent === path);
+  for (const button of reviewDialog.querySelectorAll('.review-file')) button.classList.toggle('is-selected', button.querySelector('span').textContent === path);
   try {
     const diff = await rpc('workspace.diff', { path });
     if (!current()) return;
@@ -58,7 +61,7 @@ async function selectWorkspaceFile(path, request, owner) {
 }
 
 function installWorkspaceReview() {
-  reviewDialog = el('dialog', 'workspace-review'); reviewDialog.id = 'workspace-review';
+  reviewDialog = el('section', 'workspace-review'); reviewDialog.id = 'workspace-review';
   CLATI18n.attribute(reviewDialog,'aria-label',()=>CLATI18n.msg("web.review_workspace_changes", {}, "Review workspace changes"));
   const header = el('div', 'review-header');
   const close = el('button', 'icon-button', () => ('×')); close.type = 'button'; CLATI18n.attribute(close,'aria-label',()=>CLATI18n.msg("web.close_workspace_review", {}, "Close workspace review"));
@@ -70,8 +73,10 @@ function installWorkspaceReview() {
   const files = el('nav', 'review-files'); files.id = 'review-files'; CLATI18n.attribute(files,'aria-label',()=>CLATI18n.msg("web.changed_files", {}, "Changed files"));
   const patch = el('section', 'review-patch'); patch.id = 'review-patch'; CLATI18n.attribute(patch,'aria-label',()=>CLATI18n.msg("web.file_diff", {}, "File diff"));
   body.append(files, patch); reviewDialog.append(header, note, status, body); document.body.appendChild(reviewDialog);
-  close.addEventListener('click', () => reviewDialog.close());
-  reviewDialog.addEventListener('close', () => { reviewRequest += 1; reviewFileRequest += 1; focusWorkbenchTool(document.getElementById('review-open')); });
+  close.addEventListener('click', () => closeWorkbenchTool());
+  reviewDialog.addEventListener('clat:tool-enter', () => { void refreshWorkspaceReview(); });
+  reviewDialog.addEventListener('clat:tool-reset', () => {reviewSelected=null;reviewRequest++;reviewFileRequest++;});
+  reviewDialog.addEventListener('clat:tool-leave', () => { reviewRequest += 1; reviewFileRequest += 1; });
   refresh.addEventListener('click', () => { void refreshWorkspaceReview(); });
-  document.getElementById('review-open').addEventListener('click', () => { reviewDialog.showModal(); void refreshWorkspaceReview(); });
+  document.getElementById('review-open').addEventListener('click', () => { openWorkbenchTool(reviewDialog); });
 }

@@ -9,20 +9,23 @@ function installFileBrowser() {
 }
 
 function createProjectFileBrowser({ id, inline = false, onClose = () => {} }) {
-  const dialog = el(inline ? 'section' : 'dialog', inline ? 'project-files' : 'workspace-review'); dialog.id = id;
+  const dialog = el('section', inline ? 'project-files' : 'workspace-review'); dialog.id = id;
   CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.project_files", {}, "Project files"));
   const header = el('div', 'review-header'); const query = el('input', ''); query.type = 'search'; CLATI18n.bind(query, "placeholder", () => CLATI18n.msg("web.find_project_file", {}, "Find project file")); CLATI18n.attribute(query,'aria-label',()=>CLATI18n.msg("web.find_project_file", {}, "Find project file"));
   const close = el('button', 'icon-button', () => ('×')); CLATI18n.attribute(close,'aria-label',()=>CLATI18n.msg("web.close_project_files", {}, "Close project files"));
-  header.append(el('h2', '', () => (CLATI18n.msg("web.files", {}, "Files"))), query, close);
+  const refresh=el('button','ghost',()=>CLATI18n.msg('web.refresh'));refresh.type='button';
+  header.append(el('h2', '', () => CLATI18n.msg('web.files')), query, refresh, close);
   const status = el('p', 'picker-hint'); status.setAttribute('role', 'status');
   const list = el('nav', 'review-files'); const detail = el('section', 'review-patch'); const body = el('div', 'review-body');
   body.append(list, detail); dialog.append(header, status, body);
   if (inline) close.remove();
   let generation = 0, fileGeneration = 0, quoted = false, active = false, directory = '', selectedPath = null;
-  const isOpen = () => inline ? active : dialog.open;
-  const finish = () => { if(inline){active=false;generation++;fileGeneration++;onClose(quoted);quoted=false;}else dialog.close(); };
+  const expanded = new Set();let refreshEpoch=0;
+  const isOpen = () => inline ? active : toolViewIsOpen(dialog);
+  const finish = () => { if(inline){active=false;generation++;fileGeneration++;onClose(quoted);quoted=false;}else { closeWorkbenchTool(); onClose(quoted); quoted = false; } };
   const owner = () => [state.stream, state.selectionGeneration, workspacePrefix, composerScope];
   const owns = (captured) => captured.every((v, i) => v === owner()[i]);
+  const tree={isOpen,owns,list,status,expanded,preview,version:()=>generation};
   async function search() {
     const request = ++generation; const captured = owner(); fileGeneration += 1;
     list.replaceChildren(); detail.replaceChildren(); CLATI18n.bind(status, "textContent", () => CLATI18n.msg("web.searching_bounded_project_scope", {}, "Searching bounded project scope…"));
@@ -34,12 +37,8 @@ function createProjectFileBrowser({ id, inline = false, onClose = () => {} }) {
       const entries = result.entries || result.paths.map(path=>({path,name:path,directory:false}));
       if (directory && !searching) list.append(pageAction('parent_folder',()=>{directory=directory.split('/').slice(0,-1).join('/');void search();}));
       if (!entries.length) list.append(el('p', 'picker-hint', () => (CLATI18n.msg("web.no_files_in_searched_scope", {}, "No files in searched scope."))));
-      for (const entry of entries) {
-        const path = entry.path;
-        const button = el('button', 'review-file', () => entry.name);
-        if(entry.directory)button.prepend(svgIcon('folder')); button.type = 'button';
-        button.addEventListener('click', () => { if(entry.directory){directory=path;query.value='';void search();}else void preview(path, captured); }); list.append(button);
-      }
+      appendProjectTree(entries, list, tree, captured);
+
     } catch (error) { if (isOpen() && request === generation && owns(captured)) CLATI18n.bind(status, "textContent", () => error.message); }
   }
   async function preview(path, captured, start = 1, end = 200) {
@@ -68,15 +67,36 @@ function createProjectFileBrowser({ id, inline = false, onClose = () => {} }) {
           dom.prompt.value += (dom.prompt.value ? '\n\n' : '') + reference.reference + '\n';
           state.composerGeneration += 1; saveComposerText(); invalidateSuggestion(); resizePrompt(); quoted = true; queueFileReference(reference); finish(); dom.prompt.focus();
         } catch (error) { if (current()) CLATI18n.bind(status, "textContent", () => error.message); }
-        finally { if (current()) quote.disabled = false; }
+        finally { quote.disabled = false; }
       });
     } catch (error) { if (current()) detail.replaceChildren(el('h3', '', () => (path)), el('p', 'error', () => (error.message))); }
   }
   query.addEventListener('input', () => { void search(); }); close.addEventListener('click', finish);
-  dialog.addEventListener('close', () => { generation += 1; fileGeneration += 1; const submitted = quoted; quoted = false; onClose(submitted); });
+  dialog.addEventListener('clat:tool-leave', () => { refreshEpoch++; generation += 1; fileGeneration += 1; });
+  dialog.addEventListener('clat:tool-reset', () => { refreshEpoch++; generation++; fileGeneration++; expanded.clear(); directory=''; selectedPath=null; });
+  async function refreshView(){const epoch=++refreshEpoch,captured=owner(),prior=selectedPath,top=list.scrollTop,read=detail.scrollTop;const current=()=>epoch===refreshEpoch&&isOpen()&&owns(captured);await search();if(prior&&current())await preview(prior.path,captured,prior.start,prior.end);if(current()){list.scrollTop=top;detail.scrollTop=read;}}
+  refresh.onclick=()=>void refreshView();
+  dialog.addEventListener('clat:tool-enter', () => {void refreshView();});
   return {
     element: dialog,
-    open: () => { if (inline) active = true; else if (!isOpen()) dialog.showModal(); if (!inline) query.focus(); const prior=selectedPath;void search().then(()=>{if(prior&&isOpen())void preview(prior.path,owner(),prior.start,prior.end);}); },
-    suspend: () => { if (inline) active = false; generation += 1; fileGeneration += 1; },
+    open: () => { if (inline) active = true; else if (!isOpen()) openWorkbenchTool(dialog); if (!inline) query.focus(); if (inline) void search(); },
+    suspend: () => { refreshEpoch++; if (inline) active = false; generation += 1; fileGeneration += 1; },
   };
+}
+
+function appendProjectTree(entries,parent,tree,captured){
+  for(const entry of entries){
+    const row=el('div','file-tree-row'),button=el('button','review-file',()=>entry.name);button.type='button';row.append(button);parent.append(row);
+    if(!entry.directory){button.onclick=()=>{for(const item of tree.list.querySelectorAll('.review-file'))item.classList.toggle('is-selected',item===button);void tree.preview(entry.path,captured);};continue;}
+    button.prepend(svgIcon('folder'));const children=el('div','file-tree-children');children.hidden=true;row.append(children);button.setAttribute('aria-expanded','false');let loading=false;
+    async function toggle(open){
+      children.hidden=!open;button.setAttribute('aria-expanded',String(open));
+      if(!open){tree.expanded.delete(entry.path);return;}tree.expanded.add(entry.path);
+      if(children.childElementCount||loading)return;loading=true;const request=tree.version();
+      try{const result=await rpc('files.list',{directory:entry.path});if(!tree.isOpen()||request!==tree.version()||!tree.owns(captured))return;appendProjectTree(result.entries||[],children,tree,captured);}
+      catch(error){if(tree.isOpen()&&tree.owns(captured))CLATI18n.bind(tree.status,'textContent',()=>error.message);}
+      finally{loading=false;}
+    }
+    button.onclick=()=>void toggle(children.hidden);if(tree.expanded.has(entry.path))void toggle(true);
+  }
 }

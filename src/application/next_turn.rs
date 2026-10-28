@@ -10,6 +10,7 @@ pub struct NextTurnItem {
 
 impl TrustedProjectApplication {
     pub(super) fn clear_session_transient_inputs(&mut self) {
+        self.cancel_workflow_continuation();
         self.invoked_skill = None;
         self.tools.clear_capabilities();
     }

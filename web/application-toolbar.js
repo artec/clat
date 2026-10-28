@@ -39,10 +39,12 @@ function refreshApplicationToolbar(shell = workbenchShell) {
   CLATI18n.bind(project, 'textContent', () => dom['project-name'].textContent);
   CLATI18n.attribute(project, 'title', () => dom['project-root'].textContent);
   const chat = route === 'workbench'; const readingConversation = chat || Boolean(borrowedConversation);
-  list.hidden = !chat; dom['session-title'].hidden = !chat; page.hidden = chat;
-  dom['mobile-sidebar-open'].hidden = !chat;
+  list.hidden = !chat || Boolean(dom.app.dataset.tool); dom['session-title'].hidden = !chat; page.hidden = chat;
+  dom['mobile-sidebar-open'].hidden = !chat || Boolean(dom.app.dataset.tool);
   more.hidden = !readingConversation; more.disabled = !state.sessionId || state.switching;
-  document.getElementById('find-open').hidden = !readingConversation;
+  document.getElementById('find-open').hidden = !readingConversation || Boolean(dom.app.dataset.tool);
+  dom['inspector-toggle'].hidden = Boolean(dom.app.dataset.tool);
+  if(dom.app.dataset.tool)more.hidden=true;
   if (!chat) closeSessionMenu();
   back.disabled = !context.history.canGo(-1); forward.disabled = !context.history.canGo(1);
   if (shell.scope) {

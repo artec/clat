@@ -805,6 +805,12 @@ impl ServeShared {
                     .register_followup_run(&rpc_id, completed);
                 shared.finish_run(super::shapes::ctl_data(&settled));
                 let _ = handle.join();
+                shared
+                    .app
+                    .lock()
+                    .expect("application")
+                    .workflow_input_settled(completed);
+                super::workflow::dispatch_ready(&shared);
                 super::inputs::settled(&shared);
                 if completed && !shared.is_shutting_down() {
                     super::next_turn::dispatch_next(&shared);

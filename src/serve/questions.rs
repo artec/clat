@@ -17,6 +17,7 @@ pub(super) struct Questions(pub Mutex<BTreeMap<String, PendingQuestion>>);
 pub(super) struct PendingQuestion {
     session: Option<String>,
     question: AskQuestion,
+    plan_review: Option<Value>,
     sender: mpsc::Sender<AskAnswer>,
     cancel: CancelToken,
     deadline: Instant,
@@ -39,7 +40,7 @@ fn notice(kind: &str, payload: Value) -> SseFrame {
 
 impl PendingQuestion {
     pub(super) fn frame(&self, id: &str) -> SseFrame {
-        let mut data = json!({"rpc_id":id,"question":self.question});
+        let mut data = json!({"rpc_id":id,"question":self.question,"plan_review":self.plan_review});
         if let Some(session) = &self.session {
             data["automatic_session_id"] = json!(session);
         }
@@ -75,6 +76,12 @@ impl UserAsker for ServeAsker {
                     .as_ref()
                     .filter(|r| r.automatic)
                     .and_then(|r| r.session_id.clone()),
+                plan_review: shared
+                    .app
+                    .lock()
+                    .expect("application")
+                    .workflow_review()
+                    .and_then(|plan| serde_json::to_value(plan).ok()),
                 question,
                 sender,
                 cancel: cancel.clone(),

@@ -209,6 +209,35 @@ impl GoalService {
         limits: GoalLimits,
         arm: bool,
     ) -> Result<GoalView, String> {
+        self.create_named(objective, acceptance, limits, arm, None)
+    }
+
+    pub(crate) fn create_for_plan(
+        &self,
+        objective: &str,
+        id: &str,
+        tail: &[NewSessionEvent],
+    ) -> Result<GoalView, String> {
+        if !valid_goal_id(id) {
+            return Err("invalid plan goal id".into());
+        }
+        self.create_named(
+            objective,
+            GoalAcceptance::User,
+            GoalLimits::default(),
+            false,
+            Some((id, tail)),
+        )
+    }
+
+    fn create_named(
+        &self,
+        objective: &str,
+        acceptance: GoalAcceptance,
+        limits: GoalLimits,
+        arm: bool,
+        binding: Option<(&str, &[NewSessionEvent])>,
+    ) -> Result<GoalView, String> {
         validate_objective(objective)?;
         limits.validate()?;
         validate_acceptance(&acceptance)?;
@@ -228,7 +257,9 @@ impl GoalService {
         }
         let now = crate::session::event::now_ms();
         let state = GoalState {
-            id: format!("goal-{}", uuid::Uuid::new_v4()),
+            id: binding
+                .map(|(id, _)| id.to_owned())
+                .unwrap_or_else(|| format!("goal-{}", uuid::Uuid::new_v4())),
             objective: objective.trim().to_owned(),
             acceptance,
             phase: GoalPhase::Active,
@@ -244,7 +275,12 @@ impl GoalService {
             last_result: None,
         };
         if let Some(session) = self.sessions.active_id() {
-            self.append_snapshot("create", &state)?;
+            self.sessions
+                .record_goal_change_batch(
+                    snapshot_payload("create", &state),
+                    binding.map_or(&[], |(_, tail)| tail),
+                )
+                .map_err(|e| e.to_string())?;
             self.set_armed(session, arm)?;
         } else {
             let mut live = self.live.lock().map_err(|_| "goal lock poisoned")?;
@@ -366,6 +402,9 @@ impl GoalService {
     ) -> Result<GoalView, String> {
         let current = self.current()?.ok_or("no current goal")?;
         require_revision(&current.state, expected_revision)?;
+        if matches!(current.state.acceptance, GoalAcceptance::User) {
+            return self.block(expected_revision, "awaiting-user-acceptance", summary);
+        }
         if let Err(error) = self.verify_acceptance(&current.state.acceptance) {
             let durable_error = error.clone();
             let recorded = self.transition(expected_revision, "progress", move |state| {
@@ -665,6 +704,12 @@ impl GoalService {
             state.failures,
             state.limits.max_failures,
         );
+        let instructions = match state.last_result.as_deref() {
+            Some(progress) => format!(
+                "{instructions}\nLatest recorded progress or explicit user feedback:\n{progress}"
+            ),
+            None => instructions,
+        };
         Ok(GoalInjection {
             instructions,
             header: json!({
@@ -1103,6 +1148,43 @@ mod tests {
         fold_goal_event(&mut current, "user/message", &message).unwrap();
         assert_eq!(current.as_ref().unwrap().rounds_started, 1);
         assert!(fold_goal_event(&mut current, "user/message", &message).is_err());
+    }
+
+    #[test]
+    fn human_completion_candidate_waits_without_claiming_success() {
+        let (root, _) = crate::test_support::roots("goal-human-candidate");
+        std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+        let sessions = Arc::new(
+            SessionService::new(
+                root.clone(),
+                crate::session::persistence::JsonlCompression::None,
+            )
+            .unwrap(),
+        );
+        let service = GoalService::new(sessions, root.clone());
+        let goal = service
+            .create(
+                "deliver change",
+                GoalAcceptance::User,
+                GoalLimits::default(),
+                true,
+            )
+            .unwrap();
+        let candidate = service
+            .complete_candidate(goal.state.revision, "Ready for owner review")
+            .unwrap();
+        assert_eq!(candidate.state.phase, GoalPhase::Blocked);
+        assert_eq!(
+            candidate.state.blocked_reason.as_ref().unwrap().code,
+            "awaiting-user-acceptance"
+        );
+        assert!(!candidate.armed);
+        assert_eq!(candidate.state.failures, 0);
+        let accepted = service
+            .complete_human(candidate.state.revision, "Accepted")
+            .unwrap();
+        assert_eq!(accepted.state.phase, GoalPhase::Complete);
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]

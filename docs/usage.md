@@ -470,8 +470,11 @@ When Plan Mode is active, the next run receives a planning policy and a
 filtered tool catalog: only `Pure`/`Read` tools plus `exit_plan_mode` remain
 model-callable. The same frozen policy guards the model schema, durable
 `request/header`, direct dispatch, permission construction, and plugin-host
-tool calls. When the model submits `exit_plan_mode`, approval saves the plan and
-ends that run; implementation tools return only on the next user run. `/plan
+tool calls. `exit_plan_mode` first saves a versioned session-local Markdown
+plan and then requests review. Legacy approval saves the approved plan and
+ends that run; implementation tools return on the next user run. In Web/Desktop,
+the explicit **Approve and execute** workflow instead starts a separate goal run
+after the planning worker has completely settled. `/plan
 off` leaves the mode at an idle boundary. Plan Mode is an agent authority guard,
 not an operating-system sandbox.
 
@@ -600,7 +603,9 @@ Each session may have one current goal:
 ```
 
 `/goal clear` is an alias of `/goal cancel`: both clear and disarm the current
-goal. `--run` and `/goal run` are the only operations that arm continuation. Restart,
+goal. In the CLI, `--run` and `/goal run` explicitly arm continuation. Web/Desktop
+also provide typed **Approve and execute**, **Create and start**, and
+**Start / continue** workflow actions. Restart,
 session switch, an ordinary user prompt, cancellation, or a terminal goal state
 removes that process-local authority. Goal state itself is durable and uses
 revision/CAS transitions. V1 is capped at 8 rounds, 1,000,000 input+output
@@ -608,7 +613,13 @@ tokens, one hour, and 3 failed rounds or rejected completion candidates;
 user-supplied limits can only narrow those caps. V1 has no monetary-price
 guard: the token cap is the effective cost boundary, and CLAT does not claim a
 micro-USD limit without provider pricing evidence. `user` acceptance can only
-be completed by `/goal complete`.
+be completed by `/goal complete` or the explicit Web/Desktop **Accept result**
+action. **Give feedback and continue** stores the feedback durably and resumes
+the same goal with that context. A model completion candidate for a human-acceptance goal stops execution
+at Awaiting acceptance; it is not counted as a failed verification. Typed pending
+input at a model boundary preserves an already-running goal. An explicit pending
+input interruption stops the old run, processes the selected message, then may
+continue the same authorized goal; a manual stop revokes that continuation.
 File acceptance is project-relative and may be proposed by the model through
 `update_goal`, but CLAT verifies it before committing completion.
 
@@ -1996,17 +2007,27 @@ The browser does not persist workflow authority in localStorage or infer it
 from command text. The command bridge adds `memory`, `goal`, and `subagent_status`
 result kinds with read-only DTOs and a text `message`; `goal_run` also includes
 its confirmation message. `workbench.info` adds `plan_mode_active` and
-`goal_armed` booleans. RunEvent and durable event vocabularies are unchanged.
+`goal_armed` booleans. RunEvent vocabulary is unchanged; versioned plan documents
+add the ignorable journal extension described in [Storage](storage.md).
 
-Click either badge or **Tools → Plan / Goal** for structured details: Plan Mode
-policy, approved plan text, model-maintained todos and durable bounded Goal are
-four distinct sections. Todo shows at most 100 entries, with a truncation label.
-Goal details include acceptance, budgets, phase and stop reason.
-Exit Plan Mode, start bounded continuation, resume state (does not
-run) and clear Goal reuse existing core commands, require confirmation and are
-disabled while busy. Goal actions check both target ID and revision; stale
-details cannot operate on a recreated goal. TUI `/help` advertises `/plan` and
-`/goal`; `/goal` includes the same budgets, acceptance and action guidance.
+The Work mode menu and **Tools → Plans and goals** open the same workflow.
+The tool uses the entire list/detail work area: plan revisions, the current goal
+and to-dos on the left; the selected document, status and actions on the right.
+To-dos remain model-maintained progress, not proof that a goal passed acceptance.
+
+Plan documents have stable IDs, immutable revision text and digests. Approval
+binds the exact latest revision; revising an approved plan preserves its old
+text and creates another draft. The primary **Approve and execute** operation
+saves approval, leaves Plan Mode, waits for the planning worker to settle and
+starts or continues a compatible goal in that session. It cannot overwrite an
+unrelated unfinished goal or start a second run. Stops cancel a pending handoff;
+failed starts keep the document and approved state for an explicit retry.
+
+Goals can be created without a plan. Their controls use typed, session-bound,
+idempotent Host operations and goal ID/revision checks. Existing TUI commands and
+legacy approval keep their contracts. Plans/goals survive restart, while the
+process-local authority to continue execution does not. See [Desktop](desktop.md)
+for workspace navigation and manual interaction acceptance.
 
 Model lifecycle and reasoning traces use human-readable labels in the visual
 surface (`Model request started`, `Reasoning summary`, and so on). Reasoning is

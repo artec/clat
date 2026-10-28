@@ -37,6 +37,7 @@ pub(crate) mod shapes;
 mod sse;
 mod startup;
 mod state;
+mod workflow;
 use startup::serve_wechat_credentials;
 #[cfg(test)]
 mod plg6_fixture;

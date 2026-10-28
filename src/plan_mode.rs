@@ -1,8 +1,13 @@
-//! Durable Plan Mode state and the user-review transition.
-//!
-//! `plan/mode` remains the DSH-compatible durable fact. This module owns the
-//! bounded CLAT extension for approved plan text plus the in-process birth
-//! state used before a fresh session is materialized.
+pub(crate) mod documents;
+pub(crate) mod projection;
+mod review;
+mod service;
+pub(crate) use service::Handoff;
+// Durable Plan Mode state and the user-review transition.
+//
+// `plan/mode` remains the DSH-compatible durable fact. This module owns the
+// bounded CLAT extension for approved plan text plus the in-process birth
+// state used before a fresh session is materialized.
 
 use crate::CancelToken;
 use crate::interaction::{AskAnswer, AskOption, AskQuestion, AskUserSlot};
@@ -11,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const MAX_PLAN_BYTES: usize = 32 * 1024;
-pub(crate) const PLAN_POLICY: &str = "Plan Mode is active. Investigate and design only. Do not write files, execute commands, access external services, or cause other side effects. Produce a concrete plan covering the goal, scope, key invariants, decisions, files/components, validation, and open questions. When the plan is ready, call exit_plan_mode for user review. If approved, end this run; implementation starts only on the next user run.";
+pub(crate) const PLAN_POLICY: &str = "Plan Mode is active. Investigate and design only. Do not write files, execute commands, access external services, or cause other side effects. Produce a concrete plan covering the goal, scope, key invariants, decisions, files/components, validation, and open questions. When the plan is ready, call exit_plan_mode to save a versioned Markdown plan document in this session and request user review. Plan documents must include goal, scope, implementation steps, invariants, validation/acceptance and unresolved questions. If approved, end this run; implementation starts only on the next user run.";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ApprovedPlan {
@@ -61,6 +66,10 @@ pub(crate) struct PlanModeService {
     sessions: Arc<SessionService>,
     asker: Arc<AskUserSlot>,
     pending_birth: Mutex<bool>,
+    document_lane: Mutex<()>,
+    review: Mutex<Option<service::Review>>,
+    pub(crate) handoff: Mutex<Option<Handoff>>,
+    authority: Mutex<String>,
 }
 
 impl PlanModeService {
@@ -69,6 +78,10 @@ impl PlanModeService {
             sessions,
             asker,
             pending_birth: Mutex::new(false),
+            document_lane: Mutex::new(()),
+            review: Mutex::new(None),
+            handoff: Mutex::new(None),
+            authority: Mutex::new(uuid::Uuid::new_v4().to_string()),
         }
     }
 
@@ -95,6 +108,7 @@ impl PlanModeService {
     }
 
     pub(crate) fn reset_for_new(&self) {
+        self.cancel_handoff();
         self.set_pending_birth(false);
     }
 
@@ -104,65 +118,7 @@ impl PlanModeService {
     ) -> Result<(), crate::session::persistence::SessionError> {
         self.sessions.record_plan_mode(active, None).map(|_| ())
     }
-
-    pub(crate) fn request_review(
-        &self,
-        plan: &str,
-        cancel: &CancelToken,
-    ) -> Result<ApprovedPlan, String> {
-        validate_plan_text(plan)?;
-        if !self.state().active {
-            return Err("exit_plan_mode is available only while Plan Mode is active".into());
-        }
-        let asker = self
-            .asker
-            .asker()
-            .ok_or_else(|| "plan review requires an interactive user asker".to_owned())?;
-        let answer = asker.ask(
-            AskQuestion {
-                question: format!("Approve this plan and leave Plan Mode?\n\n{plan}"),
-                options: vec![
-                    AskOption {
-                        label: "Approve".into(),
-                        description: Some(
-                            "Save this plan and enable execution on the next run".into(),
-                        ),
-                    },
-                    AskOption {
-                        label: "Reject".into(),
-                        description: Some("Keep Plan Mode active and revise the plan".into()),
-                    },
-                ],
-                allow_custom: true,
-            },
-            cancel,
-        );
-        match answer {
-            AskAnswer::Selected(label) if label.eq_ignore_ascii_case("approve") => {}
-            AskAnswer::Custom(feedback) => {
-                return Err(format!("plan was not approved; user feedback: {feedback}"));
-            }
-            AskAnswer::Selected(label) => {
-                return Err(format!("plan was not approved ({label})"));
-            }
-            AskAnswer::Declined => return Err("plan review was declined or cancelled".into()),
-        }
-        let digest = plan_digest(plan);
-        let event_seq = self
-            .sessions
-            .record_plan_mode(
-                false,
-                Some(crate::session::use_cases::ApprovedPlanWrite {
-                    text: plan.to_owned(),
-                    digest: digest.clone(),
-                }),
-            )
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "plan approval requires a materialized active session".to_owned())?;
-        Ok(ApprovedPlan {
-            text: plan.to_owned(),
-            digest,
-            event_seq,
-        })
-    }
 }
+
+#[cfg(test)]
+mod tests;
