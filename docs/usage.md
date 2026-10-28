@@ -677,20 +677,41 @@ evidence references, unresolved issues, and next steps. Summarization remains
 lossy; original observations are available in the journal. Images in summarized
 exchanges are represented by image notices, not re-sent to the summary model.
 
-Internal summary attempts share the run's cancellation signal and cumulative
-token budget, including retries. Missing provider usage is charged using the
-conservative request estimate and output reserve. Each request boundary allows
-at most four shrinking checkpoint passes; each pass retains the existing
-60-second deadline and eight-attempt summary limit. An exchange too large for
-that bounded summary work is left intact. If no safe reduction fits the frozen
-request budget, CLAT stops before the next provider request with an explanation.
-A summary failure leaves context intact; a persistence failure stops execution
-without repeating tools already executed.
+Internal summary attempts share the run's cancellation signal. Compaction has
+no CLAT-added time limit, cumulative token budget, request-count limit or fixed
+checkpoint-pass limit. It records token use for every attempt, including retries;
+missing provider usage uses the conservative request estimate and output reserve.
+A run's token cap does not interrupt compaction, but normal agent requests still
+honor an explicitly configured cap after maintenance. Each applied checkpoint
+must shrink the actual request. Maintenance stops when the request fits, the
+caller cancels, or no safe progress is possible. A summary failure leaves that
+selected history intact; a persistence failure stops execution without repeating
+tools already executed.
 
-`/compact` still manually summarizes older user turns while no run is active.
+`/compact` manually summarizes older user turns while no run is active.
+All compaction modes use the same summary executor. It derives a low-effort
+internal text profile without changing the conversation's model settings and
+reserves generation space for reasoning as well as the summary. An empty or
+length-limited answer can be retried once. A complete answer that exceeds the
+summary size limit can be condensed once using its full text; CLAT never clips
+an answer to make it fit. Repeated invalid answers stop the request; incomplete
+text is never accepted as the replacement summary.
+
+Only each model request must fit the model's input and output capacity. History
+that fits this capacity is summarized in one request; larger history is split
+at UTF-8 boundaries. An unknown model window uses 24,000-token chunks as a
+conservative fallback. Long histories use as many chunks and reduction requests
+as needed. Smaller windows also use shorter summaries so reduction continues
+to make progress. Splitting text does not split
+the journal's atomic replacement range.
+
 Compaction appends summary and replacement events after durable admission; it
 keeps the original journal events and human-readable transcript. Untouched live
 tool results and image blocks retain their existing model projection.
+The internal checkpoint carrier is model context, not a new user message. The
+workbench shows a compact history marker instead of a user bubble containing the
+summary. Checkpoints do not enter human input history, message navigation, or
+public conversation search; original user and assistant messages stay available.
 
 ### Attached terminal information dialogs
 
@@ -707,6 +728,9 @@ remain available after the default TUI attaches to the background host.
 Bare `/context` opens the host's one-shot context estimate, including prompt
 layers, history, image projection and visual tokens, memory budget, tools,
 skills, and diagnostics. The terminal does not recalculate these values.
+Estimates remain available when projected history exceeds the model's context
+budget; inspecting usage does not send or compact that history. Actual model
+requests still enforce the normal budget before provider I/O.
 Close and reopen for a new snapshot; malformed responses show an error rather
 than silently substituting zero estimates.
 

@@ -5,6 +5,15 @@ CLAT's attached TUI and web workbench. The installer contains its own private
 backend: installing a separate `clat` command is optional. The CLI remains a
 single-file installation with no Tauri or user-side Node/Python requirement.
 
+Scrollbar painting follows the actual native WebView. macOS WKWebView and Linux
+WebKitGTK use custom transparent WebKit tracks, even when they accept the
+standard scrollbar color property. Windows WebView2 uses standard painting when
+supported, with a custom fallback; browser workbenches use capability detection.
+All paths share the same activity-driven auto-hide behavior: entering or scrolling
+a scrollable region reveals its thumb, which hides after about 1.2 seconds of
+inactivity. Hovering or dragging a custom thumb keeps it visible. High-contrast
+mode keeps scrollbars visible. Visual appearance and interaction are manually reviewed.
+
 The installed display name is **CLAT**: `CLAT.app` on macOS, and CLAT in the
 Windows Start Menu and shortcuts. The desktop executable remains `clat-desktop`
 (`clat-desktop.exe` on Windows), with application identifier
@@ -52,6 +61,12 @@ subsequent releases use the new built-in update path.
 Choose **打开项目** (Open project), select a directory and explicitly approve
 project trust when requested. Model configuration, permissions, tools, sessions
 and tasks use the existing workbench and the Host's normal policies.
+Context usage estimation rechecks the full request during image offload only
+when an image is actually removed; text-only history entries do not trigger
+repeated full-history estimates when an older session exceeds its context budget.
+An over-budget session still reports its estimated context usage and capacity.
+If an estimate cannot be read, the usage popup shows an unavailable state instead
+of remaining in the loading state.
 On later launches, CLAT reopens the last project viewed in the desktop workbench
 and starts its packaged backend if no Host is running. It rechecks directory
 availability and trust; saved UI preferences never grant trust. If recovery
@@ -60,6 +75,10 @@ Desktop remembers window size and position across a full quit and relaunch.
 Screen fitting leaves an already in-bounds position untouched, avoiding a
 redundant native move that could overwrite pending position restoration.
 The startup logo is a fixed, non-scrolling cover while restoration is pending.
+Its CLAT wordmark uses gray lettering with a white spotlight sweeping from left
+to right; the icon stays still. Reduced-motion and forced-color preferences use
+static text, and startup proceeds as soon as restoration finishes without waiting
+for an animation cycle.
 The welcome page, startup cover and desktop controls use the workbench's neutral
 grayscale surfaces and CLAT blue, including the `#0c416f` primary button color.
 This is a single startup attempt: disconnection or **Stop shared background**
@@ -71,9 +90,10 @@ or when an error requires recovery, rather than flashing that page on every laun
 Project memory is desktop-only and shares the locked UI preference file with
 language and update preferences; it does not change TUI's current-directory rule.
 The application toolbar uses the native title area: macOS overlays the web
-content beneath the titlebar, keeps the system traffic-light controls, and reserves
-space for them. Windows uses a custom title area with minimize, maximize/restore,
-and close controls. Drag empty toolbar space to move the window; double-click
+content beneath the titlebar, keeps the system traffic-light controls vertically
+centered with the 48px toolbar, and reserves space for them. Windows uses a custom
+title area with minimize, maximize/restore, and close controls. Drag empty toolbar
+space to move the window; double-click
 it to maximize/restore. Interactive controls do not start dragging. Closing still
 hides the window and leaves the shared Host running. On the welcome page or an
 older Host without the toolbar, a compact draggable title area remains available.

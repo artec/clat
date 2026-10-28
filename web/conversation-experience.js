@@ -174,7 +174,7 @@ function renderUsage(popup,ring) {
   const percent=Number.isFinite(used)&&capacity>0 ? used/capacity*100 : null;
   if (value !== null || !ring.hasAttribute('data-percent')) paintUsageRing(ring,percent);
   syncUsageTrigger();
-  row('context', value?.context ? `${used.toLocaleString(CLATI18n.locale)} / ${capacity?.toLocaleString(CLATI18n.locale) || experienceText('capacity_unknown')}${percent===null?'':` · ${percent.toFixed(1)}%`}` : experienceText(value?.unavailable?'unavailable':'loading'));
+  row('context', value?.context ? `${used.toLocaleString(CLATI18n.locale)} / ${capacity?.toLocaleString(CLATI18n.locale) || experienceText('capacity_unknown')}${percent===null?'':` · ${percent.toFixed(1)}%`}` : experienceText(value===null?'loading':'unavailable'));
   popup.append(el('small','',()=>experienceText('estimate')));
   if (value?.compaction_recommended) popup.append(el('p','usage-compaction-hint',()=>experienceText('compact_recommended')));
   for(const [scope,key] of [['last_request','last_request'],['route','route']]) {

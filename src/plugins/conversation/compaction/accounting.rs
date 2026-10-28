@@ -25,15 +25,7 @@ impl Model for SummaryModel {
         if request.cancel.is_cancelled() {
             return Err(ModelError::request("compaction cancelled"));
         }
-        if self
-            .ledger
-            .as_ref()
-            .is_some_and(|ledger| ledger.exceeds_cap())
-        {
-            return Err(ModelError::request(
-                "run token budget exhausted during compaction",
-            ));
-        }
+        // Compaction records cost but never gates maintenance on the run spend cap.
         let estimate = Usage {
             input_tokens: crate::model::estimate_request_tokens(
                 request.instructions,

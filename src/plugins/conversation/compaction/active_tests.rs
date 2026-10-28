@@ -1,3 +1,4 @@
+use super::summary::FALLBACK_INPUT_TOKENS;
 use super::*;
 use crate::model::{ModelError, ModelEventSink, ModelResponse, RunSpendLedger};
 use crate::tool::{ToolCall, ToolResult};
@@ -53,7 +54,7 @@ fn active_compaction_selection_keeps_user_steering_and_latest_parallel_batch() {
     nodes.push(node(4, "steering must survive"));
     nodes.extend(group(5, &["c", "d"]));
     nodes.extend(group(8, &["e", "f"]));
-    let range = selection::active_range(&nodes, &[], 100_000).unwrap();
+    let range = selection::active_range(&nodes, &[]).unwrap();
     assert!(
         !nodes[range.clone()]
             .iter()
@@ -78,7 +79,7 @@ fn active_compaction_selection_requires_all_parallel_results() {
     nodes.extend(group(4, &["c", "d"]));
     nodes.pop();
     assert!(
-        selection::active_range(&nodes, &[], 100_000).is_none(),
+        selection::active_range(&nodes, &[]).is_none(),
         "the only complete batch remains protected"
     );
 }
@@ -87,10 +88,10 @@ fn active_compaction_selection_can_replace_own_checkpoint_but_not_another_user()
     let mut nodes = vec![node(0, "task"), node(100, "prior checkpoint")];
     nodes.extend(group(5, &["a"]));
     nodes.extend(group(7, &["b"]));
-    let range = selection::active_range(&nodes, &[100], 100_000).unwrap();
+    let range = selection::active_range(&nodes, &[100]).unwrap();
     assert_eq!(range.start, 1);
     assert_eq!(nodes[range.end - 1].seq, 6);
-    let protected = selection::active_range(&nodes, &[], 100_000).unwrap();
+    let protected = selection::active_range(&nodes, &[]).unwrap();
     assert_eq!(
         protected.start, 2,
         "unrecognized checkpoint/user is protected by identity"
@@ -119,7 +120,87 @@ fn active_compaction_text_chunks_preserve_utf8_tail_and_tool_error_identity() {
             && full.contains("id=last-evidence")
             && full.contains("is_error=true")
     );
-    assert!(group_summary_units(chunks, 700).is_ok());
+    assert!(chunks::groups(chunks, 700).is_ok());
+}
+
+struct SummaryTranscript(Arc<Mutex<Vec<String>>>);
+impl Model for SummaryTranscript {
+    fn provider(&self) -> &str {
+        "test"
+    }
+    fn model_id(&self) -> &str {
+        "test"
+    }
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        assert!(request.tools.is_empty());
+        let ModelItem::User { content } = &request.items[0] else {
+            panic!("summary transcript must be user content");
+        };
+        self.0.lock().unwrap().push(content_text(content));
+        Ok(crate::test_support::response(
+            "bounded summary",
+            FinishReason::Completed,
+        ))
+    }
+}
+
+#[test]
+fn history_compaction_splits_an_oversized_turn_without_losing_rendered_evidence() {
+    let mut region = vec![ModelItem::user_text("TASK_BEGIN")];
+    for index in 0..36 {
+        let id = format!("read-{index}");
+        region.push(call(&id));
+        let ModelItem::ToolResult(mut output) = result(&id) else {
+            unreachable!()
+        };
+        output.output =
+            json!({"evidence":format!("HEAD_{index}_{}TAIL_{index}", "证🙂".repeat(800))});
+        region.push(ModelItem::ToolResult(output));
+    }
+    region.push(ModelItem::assistant_text("TASK_END"));
+    let rendered = render_group(&[&region]);
+    assert!(estimate_tokens_str(&rendered) > FALLBACK_INPUT_TOKENS * 2);
+    let config = ModelConfig {
+        max_context_tokens: None,
+        ..Default::default()
+    };
+    let credentials = crate::model::ProviderCredentials::for_protocol(config.protocol);
+    let request = CompactionRequest {
+        config: &config,
+        credentials: &credentials,
+        nodes: &[],
+        active_checkpoints: None, // Manual and between-run history compaction.
+        spend_ledger: None,
+        instructions: String::new(),
+        tool_definitions: Vec::new(),
+        force: true,
+        cancel: CancelToken::new(),
+    };
+    let transcripts = Arc::new(Mutex::new(Vec::new()));
+    let mut model: Box<dyn Model> = Box::new(SummaryTranscript(transcripts.clone()));
+    let policy = summary::Policy::new(&config).unwrap();
+    let mut run = summary::SummaryRun::new(model.as_mut(), &request.cancel, policy);
+    let summary = run
+        .summarize(&region, false)
+        .expect("a large completed turn must be summarized in bounded pieces");
+    assert_eq!(summary, "bounded summary");
+    let inputs = transcripts.lock().unwrap();
+    assert!(inputs.len() >= 4);
+    assert!(
+        inputs
+            .iter()
+            .all(|text| estimate_tokens_str(text) <= FALLBACK_INPUT_TOKENS)
+    );
+    assert_eq!(
+        inputs[..inputs.len() - 1].concat(),
+        rendered,
+        "map inputs must preserve every rendered character in order"
+    );
+    assert!(inputs.last().unwrap().contains("## Part 3"));
 }
 
 struct Attempt {
@@ -235,14 +316,16 @@ fn active_compaction_failed_and_missing_usage_attempts_are_conservatively_charge
     }
 }
 #[test]
-fn active_compaction_cancel_and_exhausted_cap_prevent_provider_io() {
+fn active_compaction_observes_cancel_but_does_not_gate_on_run_spend() {
     let (mut model, calls, ledger) = accounted(None, false, Some(1));
     let cancel = CancelToken::new();
     cancel.cancel();
     assert!(invoke(&mut model, &cancel).is_err());
     assert_eq!(ledger.used(), 0);
     ledger.charge(1);
-    assert!(invoke(&mut model, &CancelToken::new()).is_err());
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert_eq!(ledger.used(), 1);
+    assert!(invoke(&mut model, &CancelToken::new()).is_ok());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let usage = model.usage.lock().unwrap();
+    assert_eq!(ledger.used(), 1 + usage.input_tokens + usage.output_tokens);
+    assert_eq!(ledger.used(), ledger.committed());
 }

@@ -141,6 +141,12 @@ fn open_database(path: &std::path::Path) -> rusqlite::Result<Connection> {
         CREATE INDEX IF NOT EXISTS document_session ON documents(session_key,seq);
         CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text,tokenize='unicode61');
         CREATE VIRTUAL TABLE IF NOT EXISTS trigrams USING fts5(text,tokenize='trigram');")?;
+    // This cache predates the distinction between human messages and context
+    // carriers. Reconcile from the unchanged journals once after upgrading.
+    let projection: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if projection < 1 {
+        connection.execute_batch("UPDATE sessions SET revision=''; PRAGMA user_version=1;")?;
+    }
     Ok(connection)
 }
 fn corrupt(error: &rusqlite::Error) -> bool {

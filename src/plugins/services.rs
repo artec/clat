@@ -870,7 +870,7 @@ pub(crate) struct CompactionRequest<'a> {
 /// 压缩结果（事件原生版）：`summary` 为 Some 表示本次产生了新摘要，
 /// Application 须把 compaction 事件族 + replace 载体经 RunJournal 原子
 /// 写入并 flush；`degraded` 为 Some 表示没有可用摘要，不追加 replace。
-/// 运行中的请求仍须通过上下文和花费预算检查。`shadowed_count`
+/// 压缩自身无累计预算；后续普通请求仍检查模型容量和显式花费上限。`shadowed_count`
 /// 是从 shadowed_start 开始的被遮蔽节点数。
 #[derive(Debug, Default)]
 pub(crate) struct CompactionOutcome {
@@ -881,11 +881,11 @@ pub(crate) struct CompactionOutcome {
     pub usage: Usage,
     /// The summary request's output limit (compaction/summary `maxTokens`).
     pub summary_output_limit: u64,
-    pub degraded: Option<String>,
+    pub degraded: Option<crate::i18n::PresentedText>,
 }
 
 pub(crate) trait HistoryCompactor: Send + Sync {
-    /// 按预算决定是否新增压缩并产出摘要文本（`force` 时尽力压缩）。
+    /// 按上下文压力决定是否压缩并产出摘要文本（`force` 时主动压缩）。
     fn compact(&self, request: CompactionRequest<'_>) -> CompactionOutcome;
 }
 

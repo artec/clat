@@ -56,7 +56,7 @@ impl TrustedProjectApplication {
         let cancel = CancelToken::new();
         let busy = Arc::new(AtomicBool::new(true));
         let join_slot = Arc::new(Mutex::new(None));
-        let report_slot: Arc<Mutex<Option<Result<CompactReport, String>>>> =
+        let report_slot: Arc<Mutex<Option<Result<CompactReport, PresentedText>>>> =
             Arc::new(Mutex::new(None));
         let handle = CompactHandle {
             cancel: cancel.clone(),
@@ -69,60 +69,19 @@ impl TrustedProjectApplication {
             ApplicationEvent::CompactionUpdated(CompactionStatus::Started),
         );
         let _ = session_id;
+        let work = ManualCompactionWork {
+            sessions,
+            journal,
+            compactor,
+            config,
+            credentials,
+            cancel: cancel.clone(),
+            turn,
+        };
         let worker = std::thread::Builder::new()
             .name("clat-compact".into())
             .spawn(move || {
-                let result = (|| -> Result<CompactReport, String> {
-                    let nodes = sessions
-                        .surface_nodes()
-                        .map_err(|error| error.to_string())?;
-                    let compaction_nodes: Vec<CompactionNode> = nodes
-                        .iter()
-                        .map(|(seq, item)| CompactionNode {
-                            seq: *seq,
-                            item: item.clone(),
-                        })
-                        .collect();
-                    let outcome = compact_history(
-                        compactor.as_ref(),
-                        &config,
-                        &credentials,
-                        &compaction_nodes,
-                        true,
-                        &cancel,
-                    );
-                    let summary = outcome.summary.as_deref().ok_or_else(|| {
-                        outcome
-                            .degraded
-                            .clone()
-                            .unwrap_or_else(|| "nothing to compact".into())
-                    })?;
-
-                    let shadowed = &compaction_nodes[..outcome.shadowed_count];
-                    // SV 最小适配行（S6 例外，docs/todo/session-v3-execution.md）：
-                    // V3 受保护 system 头不得被压缩 shadow——头之前的
-                    // 前缀节点（至多首条用户消息）从遮蔽前缀剔除。
-                    let shadowed = match sessions.last_system_head() {
-                        Some((head, _)) => {
-                            let skip = shadowed.iter().take_while(|node| node.seq <= head).count();
-                            &shadowed[skip..]
-                        }
-                        None => shadowed,
-                    };
-                    write_compaction_events(
-                        journal.as_ref(),
-                        shadowed,
-                        summary,
-                        &outcome,
-                        &config,
-                        turn,
-                    )?;
-                    let _ = sessions.sync_active();
-                    Ok(CompactReport {
-                        shadowed_count: outcome.shadowed_count,
-                        degraded: outcome.degraded,
-                    })
-                })();
+                let result = work.execute();
                 // CB1-11：结构化结果存入 handle，供 join_report 消费。
                 if let Ok(mut slot) = report_slot.lock() {
                     *slot = Some(result.clone());
@@ -142,11 +101,78 @@ impl TrustedProjectApplication {
     }
 }
 
-fn compact_result_status(result: &Result<CompactReport, String>) -> CompactionStatus {
+struct ManualCompactionWork {
+    sessions: Arc<SessionService>,
+    journal: Arc<dyn RunJournal>,
+    compactor: Arc<dyn HistoryCompactor>,
+    config: ModelConfig,
+    credentials: ProviderCredentials,
+    cancel: CancelToken,
+    turn: u64,
+}
+impl ManualCompactionWork {
+    fn execute(self) -> Result<CompactReport, PresentedText> {
+        let nodes = self
+            .sessions
+            .surface_nodes()
+            .map_err(|error| error.to_string())?;
+        let compaction_nodes: Vec<CompactionNode> = nodes
+            .iter()
+            .map(|(seq, item)| CompactionNode {
+                seq: *seq,
+                item: item.clone(),
+            })
+            .collect();
+        let outcome = compact_history(
+            self.compactor.as_ref(),
+            &self.config,
+            &self.credentials,
+            &compaction_nodes,
+            true,
+            &self.cancel,
+        );
+        if self.cancel.is_cancelled() {
+            return Err(UiMessage::new("compaction.cancelled").into());
+        }
+        let summary = outcome.summary.as_deref().ok_or_else(|| {
+            outcome
+                .degraded
+                .clone()
+                .unwrap_or_else(|| "nothing to compact".into())
+        })?;
+
+        let shadowed = &compaction_nodes[..outcome.shadowed_count];
+        // SV 最小适配行（S6 例外，docs/todo/session-v3-execution.md）：
+        // V3 受保护 system 头不得被压缩 shadow——头之前的
+        // 前缀节点（至多首条用户消息）从遮蔽前缀剔除。
+        let shadowed = match self.sessions.last_system_head() {
+            Some((head, _)) => {
+                let skip = shadowed.iter().take_while(|node| node.seq <= head).count();
+                &shadowed[skip..]
+            }
+            None => shadowed,
+        };
+        write_compaction_events(
+            self.journal.as_ref(),
+            shadowed,
+            summary,
+            &outcome,
+            &self.config,
+            self.turn,
+        )?;
+        let _ = self.sessions.sync_active();
+        Ok(CompactReport {
+            shadowed_count: outcome.shadowed_count,
+            degraded: outcome.degraded,
+        })
+    }
+}
+
+fn compact_result_status(result: &Result<CompactReport, PresentedText>) -> CompactionStatus {
     let note = match result {
         Ok(report) => report.status_presentation().into(),
         Err(error) => UiMessage::new("command.compaction_failed")
-            .arg("error", error.clone())
+            .arg_message("error", error.message())
             .into(),
     };
     CompactionStatus::Finished {
@@ -329,7 +355,7 @@ pub(super) fn run_auto_compaction(
         None => outcome.degraded.as_ref().map(|reason| {
             (
                 UiMessage::new("command.compaction_degraded")
-                    .arg("reason", reason.clone())
+                    .arg_message("reason", reason.message())
                     .into(),
                 false,
             )
@@ -344,7 +370,7 @@ pub struct CompactHandle {
     cancel: CancelToken,
     busy: Arc<AtomicBool>,
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
-    report: Arc<Mutex<Option<Result<CompactReport, String>>>>,
+    report: Arc<Mutex<Option<Result<CompactReport, PresentedText>>>>,
 }
 
 impl CompactHandle {
@@ -372,7 +398,7 @@ impl CompactHandle {
 
     /// join 后返回压缩业务结果（Ok=事件族已耐久落盘；Err=失败原因）。
     /// ApplicationEvent 只是展示通道，这里才是结构化结果。
-    pub fn join_report(&self) -> Result<Result<CompactReport, String>, ApplicationError> {
+    pub fn join_report(&self) -> Result<Result<CompactReport, PresentedText>, ApplicationError> {
         self.join()?;
         self.report
             .lock()
@@ -385,7 +411,7 @@ impl CompactHandle {
 #[derive(Clone, Debug)]
 pub struct CompactReport {
     pub shadowed_count: usize,
-    pub degraded: Option<String>,
+    pub degraded: Option<PresentedText>,
 }
 
 impl CompactReport {
@@ -394,7 +420,7 @@ impl CompactReport {
         match &self.degraded {
             Some(reason) => UiMessage::new("command.compacted_degraded")
                 .arg_message("summary", base)
-                .arg("reason", reason.clone()),
+                .arg_message("reason", reason.message()),
             None => base,
         }
     }

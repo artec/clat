@@ -20,7 +20,7 @@
 //!
 //! | journal event | ReplayEvent |
 //! |---|---|
-//! | `user/message` | `UserMessage` (incl. the compaction replace carrier — the display transcript keeps everything) |
+//! | `user/message` | `UserMessage` (excluding the internal compaction replace carrier) |
 //! | `assistant/message` | `AssistantMessage` (settled; chunks are redundant) |
 //! | `approval/asked` + `approval/decided` | `PermissionChecked` (paired by approval id); a rejected/unavailable decision additionally synthesizes the denied call's `ToolRequested` header (id+name from the asked event, arguments `Null` — not journaled for denied calls) |
 //! | `tool/call` | `ToolRequested` |
@@ -263,41 +263,9 @@ impl ReplayAdapter {
                 }
             }
             crate::session::catalog::ReplayKind::UserMessage => {
-                let text = event
-                    .data
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .map(|blocks| blocks_text(blocks))
-                    .unwrap_or_default();
-                // MM-1A：content blocks 与客户端幂等键从 journal 词汇经
-                // adapter 的统一解析产出（live 同源，逐字段相同）。
-                let content_blocks =
-                    crate::session::adapter::content_blocks(&event.data["content"]);
-                let client_message_id = event
-                    .data
-                    .get("clientMessageId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let receipt = client_message_id.clone().and_then(|client_message_id| {
-                    let message_id = event.data.get("id")?.as_str()?.to_owned();
-                    let attachment_ids =
-                        crate::message::MessageContent::from_blocks(content_blocks.clone())
-                            .attachment_ids();
-                    Some(Box::new(crate::message::AdmissionReceipt::committed(
-                        client_message_id,
-                        message_id,
-                        attachment_ids,
-                    )))
-                });
-                out.push(ReplayEvent::UserMessage {
-                    seq: event.seq,
-                    turn: self.turn,
-                    time_ms: event.time,
-                    text,
-                    content_blocks,
-                    client_message_id,
-                    receipt,
-                });
+                if let Some(message) = replay_user_message(event, self.turn) {
+                    out.push(message);
+                }
             }
             crate::session::catalog::ReplayKind::AssistantMessage => {
                 if let Some(item) = assistant_message(event) {
@@ -477,6 +445,45 @@ impl ReplayAdapter {
             content_blocks,
         })
     }
+}
+
+fn replay_user_message(event: &SessionEvent, turn: u64) -> Option<ReplayEvent> {
+    if crate::session::catalog::is_context_checkpoint(event) {
+        return None;
+    }
+    let text = event
+        .data
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| blocks_text(blocks))
+        .unwrap_or_default();
+    // MM-1A：content blocks 与客户端幂等键从 journal 词汇经
+    // adapter 的统一解析产出（live 同源，逐字段相同）。
+    let content_blocks = crate::session::adapter::content_blocks(&event.data["content"]);
+    let client_message_id = event
+        .data
+        .get("clientMessageId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let receipt = client_message_id.clone().and_then(|client_message_id| {
+        let message_id = event.data.get("id")?.as_str()?.to_owned();
+        let attachment_ids =
+            crate::message::MessageContent::from_blocks(content_blocks.clone()).attachment_ids();
+        Some(Box::new(crate::message::AdmissionReceipt::committed(
+            client_message_id,
+            message_id,
+            attachment_ids,
+        )))
+    });
+    Some(ReplayEvent::UserMessage {
+        seq: event.seq,
+        turn,
+        time_ms: event.time,
+        text,
+        content_blocks,
+        client_message_id,
+        receipt,
+    })
 }
 
 fn assistant_message(event: &SessionEvent) -> Option<ReplayEvent> {
@@ -1195,6 +1202,77 @@ mod tests {
             &mut out,
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn internal_compaction_carrier_is_not_a_human_message_but_remains_in_model_surface() {
+        let text = "the same text can also be written by a real user";
+        let original = event("user/message", 0, payloads::user_message(text)).append(vec![]);
+        let summary = event(
+            "compaction/summary",
+            1,
+            payloads::compaction_summary(
+                "cmp-display",
+                text,
+                (0, 0),
+                &[0],
+                100,
+                "p",
+                "m",
+                512,
+                json!({}),
+            ),
+        )
+        .log_only();
+        let mut carrier = event("user/message", 2, payloads::compaction_user_message(text));
+        carrier.surface_op = Some(crate::session::event::SurfaceOp::Replace { start: 0, end: 0 });
+        carrier.source_event_seqs = Some(vec![0]);
+        let genuine = event("user/message", 3, payloads::user_message(text)).append(vec![]);
+        let events = [original, summary, carrier, genuine];
+        let mut adapter = ReplayAdapter::new();
+        let mut replay = vec![];
+        for event in &events {
+            adapter.push(event, &mut replay);
+        }
+        let users: Vec<_> = replay
+            .iter()
+            .filter_map(|item| match item {
+                ReplayEvent::UserMessage { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            vec![0, 3],
+            "internal checkpoints cannot impersonate user messages"
+        );
+        assert!(
+            replay
+                .iter()
+                .any(|item| matches!(item, ReplayEvent::Compaction { .. }))
+        );
+        let mut registry = crate::session::projection::ProjectionRegistry::clat();
+        registry.fold_all(&events).unwrap();
+        let surface = registry.surface_nodes().unwrap();
+        assert!(
+            surface.iter().any(|(seq, _)| *seq == 2),
+            "the model still needs its summary"
+        );
+        for name in ["transcript", "message-outline"] {
+            let rows = registry.state_snapshot(name).unwrap();
+            let seqs: Vec<_> = rows["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["kind"] == "user" || row["role"] == "user")
+                .map(|row| row["seq"].as_u64().unwrap())
+                .collect();
+            assert_eq!(
+                seqs,
+                vec![0, 3],
+                "{name} must retain only genuine user messages"
+            );
+        }
     }
 
     #[test]

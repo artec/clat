@@ -10,17 +10,7 @@ pub(super) fn choose_range(
     definitions: &[crate::tool::ToolDefinition],
 ) -> Option<Range<usize>> {
     match request.active_checkpoints {
-        Some(checkpoints) => summary_chunk_budget(request.config)
-            .ok()
-            .and_then(|budget| {
-                // Small windows cannot merge two maximum-sized summary outputs.
-                let maps = if budget < (SUMMARY_OUTPUT_LIMIT as usize + 64) * 2 {
-                    1
-                } else {
-                    MAX_SUMMARY_REQUESTS / 2
-                };
-                active_range(request.nodes, checkpoints, budget.saturating_mul(maps))
-            }),
+        Some(checkpoints) => active_range(request.nodes, checkpoints),
         None => choose_cut(
             request.nodes,
             threshold,
@@ -32,11 +22,7 @@ pub(super) fn choose_range(
     }
 }
 
-pub(super) fn active_range(
-    nodes: &[CompactionNode],
-    checkpoints: &[u64],
-    max_tokens: usize,
-) -> Option<Range<usize>> {
+pub(super) fn active_range(nodes: &[CompactionNode], checkpoints: &[u64]) -> Option<Range<usize>> {
     let ends = exchange_ends(nodes);
     let newest = *ends.last()?;
     let mut start = 0;
@@ -53,17 +39,10 @@ pub(super) fn active_range(
         if start >= end {
             continue;
         }
-        let tokens = nodes[start..end]
+        let tokens: usize = nodes[start..end]
             .iter()
             .map(|node| estimate_item(&node.item))
             .sum();
-        if tokens > max_tokens {
-            // Skip an oversized single exchange; later complete spans can still fit.
-            if best.is_none() {
-                start = end;
-            }
-            continue;
-        }
         if tokens > best_tokens {
             best_tokens = tokens;
             best = Some(start..end);

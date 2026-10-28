@@ -1,56 +1,75 @@
 /* One application document, lazy project views, and shared authenticated directory. */
+function configureScrollbarRendering() {
+  const root = document.documentElement;
+  const webview = window.__CLAT_WEBVIEW__ || 'browser';
+  const custom = webview === 'wkwebview' || webview === 'webkitgtk'
+    || (webview === 'webview2' ? !CSS.supports('scrollbar-color', 'gray transparent')
+      : CSS.supports('selector(::-webkit-scrollbar)'));
+  root.dataset.webview = webview;
+  root.dataset.scrollbars = custom ? 'custom' : 'standard';
+  root.classList.add('auto-hide-scrollbars');
+}
+
+function scrollbarOwner(target) {
+  if (target === document) return document.scrollingElement;
+  for (let node = target instanceof Element ? target : target?.parentElement; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if ((node.scrollHeight > node.clientHeight + 1 && /auto|scroll|overlay/.test(style.overflowY))
+        || (node.scrollWidth > node.clientWidth + 1 && /auto|scroll|overlay/.test(style.overflowX))) return node;
+  }
+  return null;
+}
+
+function nearScrollbarEdge(node, x, y) {
+  const bounds = node.getBoundingClientRect();
+  if (x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom) return false;
+  return (node.scrollHeight > node.clientHeight + 1 && x >= bounds.right - 14)
+    || (node.scrollWidth > node.clientWidth + 1 && y >= bounds.bottom - 14);
+}
+
 function installTransientScrollbars() {
+  configureScrollbarRendering();
   const timers = new Map();
-  let pressed = null, movement = null;
-  const settle = node => {
-    clearTimeout(timers.get(node));
-    timers.delete(node);
-    if (pressed === node) return;
-    timers.set(node, setTimeout(() => {
-      node.removeAttribute('data-scrollbar-active'); timers.delete(node);
-    }, 1200));
+  let movement = null;
+  const hide = node => {
+    clearTimeout(timers.get(node)); timers.delete(node);
+    node.removeAttribute('data-scrollbar-active');
+    node.style.removeProperty('--clat-scrollbar-thumb');
   };
   const reveal = node => {
     if (!(node instanceof Element)) return;
-    node.setAttribute('data-scrollbar-active', ''); settle(node);
-  };
-  const scrollOwner = target => {
-    for (let node = target instanceof Element ? target : target?.parentElement; node; node = node.parentElement) {
-      const vertical = node.scrollHeight > node.clientHeight + 1;
-      const horizontal = node.scrollWidth > node.clientWidth + 1;
-      if (!vertical && !horizontal) continue;
-      const style = getComputedStyle(node);
-      if ((vertical && /auto|scroll|overlay/.test(style.overflowY))
-          || (horizontal && /auto|scroll|overlay/.test(style.overflowX))) return node;
+    if (!node.hasAttribute('data-scrollbar-active')) {
+      // Change the scroll owner's inherited paint value directly; every native
+      // renderer sees the same state, without relying on pseudo-selector invalidation.
+      node.style.setProperty('--clat-scrollbar-thumb', 'var(--line-strong)');
+      node.setAttribute('data-scrollbar-active', '');
     }
-    return null;
+    clearTimeout(timers.get(node));
+    timers.set(node, setTimeout(() => hide(node), 1200));
   };
-  const release = () => {
-    const node = pressed; pressed = null;
-    if (node) settle(node);
-  };
-  document.documentElement.classList.add('auto-hide-scrollbars');
-  document.addEventListener('scroll', event => reveal(event.target), { capture: true, passive: true });
-  document.addEventListener('wheel', event => reveal(scrollOwner(event.target)), { passive: true });
+  const revealOwner = event => reveal(scrollbarOwner(event.target));
+  const captured = { capture: true, passive: true };
+  document.addEventListener('scroll', revealOwner, captured);
+  document.addEventListener('wheel', revealOwner, captured);
+  document.addEventListener('pointerover', event => {
+    const node = scrollbarOwner(event.target);
+    if (node && (!(event.relatedTarget instanceof Node) || !node.contains(event.relatedTarget))) reveal(node);
+  }, captured);
   document.addEventListener('pointermove', event => {
     if (movement !== null) return;
     const { target, clientX, clientY } = event;
     movement = requestAnimationFrame(() => {
       movement = null;
-      const node = scrollOwner(target);
-      if (!node) return;
-      const bounds = node.getBoundingClientRect();
-      if (clientX >= bounds.right - 14 || clientY >= bounds.bottom - 14) reveal(node);
+      const node = scrollbarOwner(target);
+      if (node && nearScrollbarEdge(node, clientX, clientY)) reveal(node);
     });
-  }, { passive: true });
-  document.addEventListener('pointerdown', event => {
-    release(); pressed = scrollOwner(event.target); reveal(pressed);
-  }, { passive: true });
-  window.addEventListener('pointerup', release, { passive: true });
-  window.addEventListener('mouseup', release, { passive: true });
-  document.addEventListener('pointercancel', release, { passive: true });
-  window.addEventListener('blur', release);
-  document.addEventListener('focusin', event => reveal(scrollOwner(event.target)));
+  }, captured);
+  document.addEventListener('pointerdown', revealOwner, captured);
+  document.addEventListener('focusin', revealOwner, captured);
+  window.addEventListener('blur', () => { for (const node of timers.keys()) hide(node); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) for (const node of timers.keys()) hide(node);
+  });
 }
 
 (() => {

@@ -185,20 +185,64 @@ fn replace_oldest_image(item: &mut ModelItem) -> bool {
     true
 }
 
-/// Produce the exact model-facing item view for a run boundary. Older images
-/// are replaced in recursive provider order until all three request budgets
-/// fit. Images at and after the latest user turn are protected: if that new
-/// turn cannot fit on its own, fail before provider I/O rather than silently
-/// degrading the user's just-submitted content.
+// Re-evaluate request pressure only when image offload changes the request.
+pub(super) fn offload_older_images(
+    projected: &mut [ModelItem],
+    protected_start: usize,
+    mut over_budget: impl FnMut(&[ModelItem]) -> bool,
+) -> (u64, Option<u64>) {
+    let mut offloaded_images = 0u64;
+    let mut first_offloaded_image = None;
+
+    if over_budget(projected) {
+        'offload: for item_index in 0..protected_start {
+            while replace_oldest_image(&mut projected[item_index]) {
+                offloaded_images = offloaded_images.saturating_add(1);
+                first_offloaded_image.get_or_insert(offloaded_images);
+                if !over_budget(projected) {
+                    break 'offload;
+                }
+            }
+        }
+    }
+    (offloaded_images, first_offloaded_image)
+}
+
+/// Apply the same image preview at a run boundary and reject any remaining
+/// budget overflow before provider I/O. The latest user turn stays protected.
 pub(crate) fn project_items_for_image_budget(
     items: &[ModelItem],
     instructions: Option<&str>,
     tools: &[crate::tool::ToolDefinition],
     options: &ModelOptions,
 ) -> Result<(Vec<ModelItem>, ImageProjectionReport), String> {
+    let (projected, report) = preview_items_for_image_budget(items, instructions, tools, options);
+    if let Some(budget) = options.image_projection.as_ref()
+        && image_projection_is_over_budget(&projected, instructions, tools, options, budget)
+    {
+        let protected_start = projected
+            .iter()
+            .rposition(|item| matches!(item, ModelItem::User { .. }))
+            .unwrap_or(0);
+        let (images, bytes, _) = image_projection_totals(&projected[protected_start..]);
+        return Err(format!(
+            "the current request remains above the frozen visual/context budget after all older images were omitted (current turn: {images} images, {bytes} bytes); remove images, reduce the prompt, or choose a model with a larger context window"
+        ));
+    }
+    Ok((projected, report))
+}
+
+/// Read-only preview of image offload, including requests still over budget.
+/// Inspection must be able to report the usage that prevents a request from fitting.
+pub(crate) fn preview_items_for_image_budget(
+    items: &[ModelItem],
+    instructions: Option<&str>,
+    tools: &[crate::tool::ToolDefinition],
+    options: &ModelOptions,
+) -> (Vec<ModelItem>, ImageProjectionReport) {
     let Some(budget) = options.image_projection.as_ref() else {
         let (images, bytes, tokens) = image_projection_totals(items);
-        return Ok((
+        return (
             items.to_vec(),
             ImageProjectionReport {
                 original_images: images,
@@ -207,7 +251,7 @@ pub(crate) fn project_items_for_image_budget(
                 retained_tokens: tokens,
                 ..ImageProjectionReport::default()
             },
-        ));
+        );
     };
     let (original_images, _, _) = image_projection_totals(items);
     let mut projected = items.to_vec();
@@ -215,47 +259,13 @@ pub(crate) fn project_items_for_image_budget(
         .iter()
         .rposition(|item| matches!(item, ModelItem::User { .. }))
         .unwrap_or(0);
-    let mut offloaded_images = 0u64;
-    let mut first_offloaded_image = None;
-    let mut ordinal = 0u64;
+    let (offloaded_images, first_offloaded_image) =
+        offload_older_images(&mut projected, protected_start, |items| {
+            image_projection_is_over_budget(items, instructions, tools, options, budget)
+        });
 
-    if image_projection_is_over_budget(&projected, instructions, tools, options, budget) {
-        for item_index in 0..protected_start {
-            loop {
-                let images_before = model_item_image_parts(&projected[item_index]).count() as u64;
-                if images_before == 0 {
-                    break;
-                }
-                ordinal = ordinal.saturating_add(1);
-                if !replace_oldest_image(&mut projected[item_index]) {
-                    break;
-                }
-                first_offloaded_image.get_or_insert(ordinal);
-                offloaded_images = offloaded_images.saturating_add(1);
-                if !image_projection_is_over_budget(
-                    &projected,
-                    instructions,
-                    tools,
-                    options,
-                    budget,
-                ) {
-                    break;
-                }
-            }
-            if !image_projection_is_over_budget(&projected, instructions, tools, options, budget) {
-                break;
-            }
-        }
-    }
-
-    if image_projection_is_over_budget(&projected, instructions, tools, options, budget) {
-        let (images, bytes, _) = image_projection_totals(&projected[protected_start..]);
-        return Err(format!(
-            "the current request remains above the frozen visual/context budget after all older images were omitted (current turn: {images} images, {bytes} bytes); remove images, reduce the prompt, or choose a model with a larger context window"
-        ));
-    }
     let (retained_images, retained_bytes, retained_tokens) = image_projection_totals(&projected);
-    Ok((
+    (
         projected,
         ImageProjectionReport {
             original_images,
@@ -265,7 +275,7 @@ pub(crate) fn project_items_for_image_budget(
             offloaded_images,
             first_offloaded_image,
         },
-    ))
+    )
 }
 
 /// Frozen per-run bounds for deterministic image offload. These are distinct

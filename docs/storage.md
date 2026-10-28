@@ -156,6 +156,21 @@ Windows uses DSH's case-folded path-derived named semaphore and creates no lock
 file. Readers stay lock-free, while first materialization, append, and repair
 all require the lease. A crashed process releases it through the kernel.
 
+The read-side revision remains the DSH-compatible stat token. A leased writer
+also keeps a SHA-256 witness of the physical log bytes, collected during its
+existing sequential read and advanced after each successful batch. If only
+`ctime` changes, CLAT rechecks the full bytes and the handle/path identity before
+continuing. Metadata changes alone do not invalidate unchanged content; a
+replacement, append, truncation, or same-length rewrite still stops the writer.
+Ordinary appends do not rescan the full history. Rollback preserves the previous
+byte witness and cursor; an indeterminate outcome still requires cold recovery.
+
+Compaction's `compact-checkpoint` user-role carrier remains in the durable log
+and model-facing surface. Human transcript, message outline, input history and
+public search exclude this internal carrier, retaining the compaction marker
+and original human conversation. Derived checkpoint/search versions invalidate
+older presentation caches; this does not rewrite session journals.
+
 V4 retains model deltas inside `assistant/message.stream`; failed model requests
 are retained as `assistant/attempt` with the same embedded stream format.
 `sourceEventSeqs` ranges are expanded before projections see an event.

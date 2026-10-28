@@ -3,12 +3,25 @@
 
 body[data-startup="loading"]{overflow:hidden}
 #startup-loading{position:fixed;inset:0;z-index:9000;background:var(--bg);overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center}
-#startup-loading img{border-radius:18px;animation:startup-breathe 1.8s ease-in-out infinite}
-#startup-loading strong{font-size:22px;letter-spacing:.06em}
+#startup-loading img{border-radius:18px}
+#startup-loading strong{font-size:22px;letter-spacing:.06em;color:#808080}
+@supports (background-clip:text) or (-webkit-background-clip:text){
+  #startup-loading strong{
+    background-image:linear-gradient(110deg,#808080 42%,#bcbcbc 47%,#fff 50%,#bcbcbc 53%,#808080 58%);
+    background-size:300% 100%;background-position:100% 0;background-repeat:no-repeat;
+    background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;
+    animation:startup-spotlight 1.4s ease-in-out infinite;
+  }
+}
 #startup-loading span{font-size:13px;color:var(--muted)}
 body[data-startup="loading"] main,body[data-startup="ready"] #startup-loading{display:none}
-@keyframes startup-breathe{50%{opacity:.65;transform:translateY(-2px)}}
-@media(prefers-reduced-motion:reduce){#startup-loading img{animation:none}}
+@keyframes startup-spotlight{0%{background-position:100% 0}72%,100%{background-position:0 0}}
+@media(prefers-reduced-motion:reduce){
+  #startup-loading strong{animation:none;background:none;color:#808080;-webkit-text-fill-color:currentColor}
+}
+@media(forced-colors:active){
+  #startup-loading strong{animation:none;background:none;color:CanvasText;-webkit-text-fill-color:currentColor}
+}
 body[data-startup="loading"] #clat-desktop-controls{display:none}
 
 /* Desktop shell styles: mirror the workbench block in web/style.css. */

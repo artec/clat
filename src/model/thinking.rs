@@ -220,3 +220,22 @@ pub fn thinking_display(config: &ModelConfig) -> Option<&'static str> {
     }
     matches!(config.vendor(), ModelVendor::Tencent).then_some("Server")
 }
+
+/// Derive a one-shot text profile without changing the persisted agent configuration.
+/// Preserve unknown endpoint fields and only reduce an already-advertised effort.
+pub(crate) fn internal_text_config(config: &ModelConfig) -> ModelConfig {
+    let mut shaped = config.clone();
+    if let Some(body) = shaped.extra_body.as_object_mut() {
+        body.remove("thinking");
+        if body.contains_key("reasoning_effort") {
+            body.insert("reasoning_effort".into(), serde_json::json!("low"));
+        }
+    }
+    if shaped.thinking_level.is_some() {
+        shaped.thinking_level = Some(ThinkingLevel::Low);
+    }
+    if matches!(shaped.overrides.thinking_level, Override::Set(_)) {
+        shaped.overrides.thinking_level = Override::Set(ThinkingLevel::Low);
+    }
+    shaped
+}

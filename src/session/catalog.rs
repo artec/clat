@@ -221,6 +221,16 @@ pub(crate) fn replay_kind(event_type: &str) -> ReplayKind {
     event_spec(event_type).map_or(ReplayKind::Skip, |spec| spec.replay)
 }
 
+/// A DSH model-context replacement carrier, never a human-authored chat message.
+pub(crate) fn is_context_checkpoint(event: &crate::session::event::SessionEvent) -> bool {
+    matches!(replay_kind(&event.event_type), ReplayKind::UserMessage)
+        && event
+            .data
+            .pointer("/source/kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("compact-checkpoint")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

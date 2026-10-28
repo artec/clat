@@ -15,9 +15,11 @@ pub enum WindowAction {
 
 pub fn initialization_script() -> &'static str {
     if cfg!(target_os = "macos") {
-        "window.__CLAT_NATIVE_FRAME__ = 'macos';"
+        "window.__CLAT_NATIVE_FRAME__ = 'macos'; window.__CLAT_WEBVIEW__ = 'wkwebview';"
+    } else if cfg!(target_os = "windows") {
+        "window.__CLAT_NATIVE_FRAME__ = 'windows'; window.__CLAT_WEBVIEW__ = 'webview2';"
     } else {
-        "window.__CLAT_NATIVE_FRAME__ = 'windows';"
+        "window.__CLAT_NATIVE_FRAME__ = 'windows'; window.__CLAT_WEBVIEW__ = 'webkitgtk';"
     }
 }
 
@@ -52,7 +54,8 @@ pub fn configure<R: tauri::Runtime, M: tauri::Manager<R>>(
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(14.0, 18.0));
+        // Center the native controls in the shared 48px application/fallback bar.
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 22.0));
     #[cfg(windows)]
     let builder = builder.decorations(false);
     builder

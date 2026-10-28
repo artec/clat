@@ -432,11 +432,34 @@ held during model I/O or subscriber callbacks. A failed durable write prevents
 another model request; no completed tool is replayed.
 
 `plugins/conversation/compaction/selection.rs` selects complete exchange spans,
-protecting genuine user nodes and the newest complete exchange. Its bounded
-input allowance leaves room for map/reduce requests under the existing attempt
-cap. `chunks.rs` splits full rendered text at UTF-8 boundaries for in-run
-summaries. `accounting.rs` accounts each actual summary attempt in the shared
-run spend ledger and preserves usage when a later summary/reduction fails.
+protecting genuine user nodes and the newest complete exchange. Selection has
+no aggregate token allowance. The private `summary::SummaryJob` owns the derived
+internal text profile, per-request capacity, chunk preparation, map/reduce,
+result validation and recovery for manual, startup and in-run compaction.
+Callers supply history and its protection semantics; they do not assemble
+summary requests. `chunks.rs` splits rendered text at UTF-8 boundaries, using the
+model's configured input capacity after reserving instructions and generation.
+History that fits is summarized in one request. Longer histories use as many map
+and reduction requests as needed. Unknown model capacity uses a conservative
+24,000-token per-request size; it does not cap history size.
+Accepted summary sizes scale down for small windows so two summaries and their
+headings fit the next reduction request.
+
+The visible summary bound is separate from generation tokens, which also leave
+room for reasoning. The prompt uses a character limit compatible with the
+conservative token estimate. Only a completed, nonempty answer can become a
+replacement. An empty or length-limited answer gets at most one recovery attempt;
+a complete oversized answer can instead be summarized again in full, without
+truncating it. Repeated invalid answers stop that request. Transport retries
+apply per request rather than sharing a job-wide request cap. Compaction adds
+no per-request or whole-job deadline, cumulative token budget, or request-count
+limit. It observes the caller's cancellation signal. Provider cancellation is
+reported separately. The primary model configuration is unchanged.
+`accounting.rs` records every actual attempt, including failures, in the shared
+run spend ledger without using the ledger's cap to stop compaction. Ordinary
+agent requests still enforce an explicitly configured run cap after maintenance.
+In-run maintenance continues while each checkpoint strictly shrinks the request,
+until it fits or no safe reduction remains; it has no fixed pass limit.
 Unapplied attempts record usage on an existing log-only compaction end event;
 successful replacements record it once on the summary event. The existing
 Stats/Compaction/Surface folds and checkpoints consume both paths; there is no

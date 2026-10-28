@@ -7,6 +7,8 @@
 //! stages and live above this file.
 
 use crate::session::event::SessionEvent;
+mod append;
+mod content;
 mod query;
 use crate::session::header::{HeaderError, SessionHeader};
 use crate::session::key::SessionKey;
@@ -15,6 +17,7 @@ use crate::session::root_dir::SessionRootDir;
 use crate::session::write_lease::{self, SessionWriteLease};
 use crate::session::{compat, jsonl, path_layout};
 use cap_std::fs::Dir;
+use content::{ContentDigest, DigestReader};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -161,9 +164,9 @@ pub(crate) struct PreparedSession {
     /// lifecycle.
     lease: Option<Arc<SessionWriteLease>>,
     /// File identity at the time this handle was armed. Every append
-    /// re-verifies it: drift means an external writer touched the log and
-    /// the outcome is Unknown (audit P1-04).
+    /// re-verifies it; metadata-only drift additionally requires exact byte equality.
     revision: LogRevision,
+    digest: ContentDigest,
     /// True when this handle resumed an existing log that does not already
     /// end with `session/end-seed` (DSH: the constructor marks the seed
     /// boundary once; untouched reopens do not grow the log).
@@ -236,6 +239,7 @@ struct RawRead {
 struct StreamRead {
     header: SessionHeader,
     revision: LogRevision,
+    digest: ContentDigest,
     dir: std::sync::Arc<Dir>,
     tracker: crate::session::recovery::RecoveryTracker,
     last_event_type: Option<String>,
@@ -586,6 +590,7 @@ impl JsonlBackend {
             dir: None,
             lease: None,
             revision: LogRevision::unmaterialized(),
+            digest: ContentDigest::default(),
             needs_seed_marker: false,
         })
     }
@@ -598,249 +603,7 @@ impl JsonlBackend {
         expected_next_seq: u64,
         events: &[SessionEvent],
     ) -> Result<PreparedSession, AppendFailure> {
-        if self
-            .poisoned
-            .lock()
-            .expect("poisoned")
-            .contains(&session.key)
-        {
-            return Err(AppendFailure::Unknown {
-                error: format!(
-                    "session \"{}\" is poisoned after an indeterminate commit; cold load(repair) required",
-                    session.key.id
-                ),
-            });
-        }
-        let advanced = |session: &PreparedSession| PreparedSession {
-            next_seq: expected_next_seq + events.len() as u64,
-            materialized: true,
-            ..session.clone()
-        };
-        if events.is_empty() {
-            return Ok(session);
-        }
-        if expected_next_seq != session.next_seq {
-            // An internal invariant break, not a durability outcome.
-            return Err(AppendFailure::NotCommitted {
-                error: format!(
-                    "append seq mismatch: expected {}, got {expected_next_seq}",
-                    session.next_seq
-                ),
-                session: Box::new(session),
-            });
-        }
-        for (index, event) in events.iter().enumerate() {
-            if event.seq != expected_next_seq + index as u64 {
-                return Err(AppendFailure::NotCommitted {
-                    error: format!(
-                        "append seq mismatch: expected {} at index {index}, got {}",
-                        expected_next_seq + index as u64,
-                        event.seq
-                    ),
-                    session: Box::new(session),
-                });
-            }
-        }
-
-        if !session.materialized {
-            let (dir, lease, revision) = match self.materialize(&session, events) {
-                Ok(committed) => committed,
-                Err(MaterializeFailure::NotCommitted(error)) => {
-                    return Err(AppendFailure::NotCommitted {
-                        error,
-                        session: Box::new(session),
-                    });
-                }
-                Err(MaterializeFailure::Unknown(error)) => {
-                    // Published but durability unproven: the handle is
-                    // consumed and the session poisoned until cold repair.
-                    self.poisoned
-                        .lock()
-                        .expect("poisoned")
-                        .insert(session.key.clone());
-                    return Err(AppendFailure::Unknown { error });
-                }
-            };
-            let mut states = self.states.lock().expect("states");
-            if let Some(state) = states.get_mut(&session.key) {
-                state.materialized = true;
-                state.cursor = events.len() as u64 + expected_next_seq;
-            }
-            return Ok(PreparedSession {
-                revision,
-                dir: Some(dir),
-                lease: Some(lease),
-                ..advanced(&session)
-            });
-        }
-
-        // Append path: stat before → write → fsync; failures roll back to
-        // `before` and re-sync; a rollback failure makes the outcome Unknown.
-        // Faults are one-shot: read-and-clear so a retried batch proceeds.
-        let hooks = {
-            let mut armed = self.faults.lock().expect("faults");
-            let hooks = *armed;
-            *armed = FaultHooks::default();
-            hooks
-        };
-        let path = session.path.clone();
-        let Some(dir) = session.dir.as_ref() else {
-            return Err(AppendFailure::Unknown {
-                error: "materialized session has no capability-held directory".into(),
-            });
-        };
-        if session.lease.is_none() {
-            return Err(AppendFailure::Unknown {
-                error: "materialized session has no active cross-process write lease".into(),
-            });
-        }
-        let mut file = match open_append_no_follow(dir, compat::log_file_name(self.compression)) {
-            Ok(file) => file,
-            Err(error) => {
-                self.poisoned
-                    .lock()
-                    .expect("poisoned")
-                    .insert(session.key.clone());
-                return Err(AppendFailure::Unknown {
-                    error: format!(
-                        "cannot reopen prepared session log {}: {error}",
-                        path.display()
-                    ),
-                });
-            }
-        };
-        let metadata = match file.metadata() {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                self.poisoned
-                    .lock()
-                    .expect("poisoned")
-                    .insert(session.key.clone());
-                return Err(AppendFailure::Unknown {
-                    error: format!("cannot stat opened session log {}: {error}", path.display()),
-                });
-            }
-        };
-        let before = metadata.len();
-        // Identity re-verification on the exact handle that will be written
-        // (audit P1-04): no path stat followed by a second path open.
-        // the prepared revision must still describe this file. Drift means
-        // an external writer replaced or modified the log — refuse with an
-        // Unknown outcome (the cursor is untrustworthy) and poison.
-        let current = LogRevision::of_metadata(&metadata);
-        if current != session.revision {
-            self.poisoned
-                .lock()
-                .expect("poisoned")
-                .insert(session.key.clone());
-            return Err(AppendFailure::Unknown {
-                error: format!(
-                    "session log {} changed since this handle was prepared \
-                     (external writer?): revision drift {} -> {}",
-                    path.display(),
-                    session.revision.0,
-                    current.0
-                ),
-            });
-        }
-        let bytes = match jsonl::append_batch_bytes(events, self.compression, self.pack_chunks) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return Err(AppendFailure::NotCommitted {
-                    error: error.to_string(),
-                    session: Box::new(session),
-                });
-            }
-        };
-        let write_result = (|| -> std::io::Result<()> {
-            if hooks.fail_batch_write {
-                return Err(std::io::Error::other("injected batch write failure"));
-            }
-            file.write_all(&bytes)?;
-            if hooks.fail_batch_fsync {
-                return Err(std::io::Error::other("injected batch fsync failure"));
-            }
-            file.sync_all()?;
-            Ok(())
-        })();
-        if let Err(error) = write_result {
-            let rollback = truncate_after_failed_append(
-                &file,
-                dir,
-                compat::log_file_name(self.compression),
-                before,
-                hooks.fail_rollback_fsync,
-            );
-            return match rollback {
-                Ok(()) => {
-                    // The rollback itself touched the file (set_len + fsync
-                    // bump ctime/mtime even for a no-op truncate), so the
-                    // retryable handle must carry the post-rollback
-                    // identity — otherwise its own rollback would look
-                    // like external drift on the retry.
-                    match matching_handle_and_path_revision(
-                        &file,
-                        dir,
-                        compat::log_file_name(self.compression),
-                    ) {
-                        Ok(revision) => Err(AppendFailure::NotCommitted {
-                            error: error.to_string(),
-                            session: Box::new(PreparedSession {
-                                revision,
-                                ..session
-                            }),
-                        }),
-                        Err(stat_error) => {
-                            self.poisoned
-                                .lock()
-                                .expect("poisoned")
-                                .insert(session.key.clone());
-                            Err(AppendFailure::Unknown {
-                                error: format!(
-                                    "rolled back but cannot restat {}: {stat_error}",
-                                    path.display()
-                                ),
-                            })
-                        }
-                    }
-                }
-                Err(rollback_error) => {
-                    self.poisoned
-                        .lock()
-                        .expect("poisoned")
-                        .insert(session.key.clone());
-                    Err(AppendFailure::Unknown {
-                        error: format!(
-                            "failed to roll back append to {path:?}: {error}; rollback failed too: {rollback_error}"
-                        ),
-                    })
-                }
-            };
-        }
-        {
-            let mut states = self.states.lock().expect("states");
-            if let Some(state) = states.get_mut(&session.key) {
-                state.cursor = expected_next_seq + events.len() as u64;
-            }
-        }
-        // The advanced handle carries the post-commit identity so the next
-        // append can detect external drift against this very file.
-        match matching_handle_and_path_revision(&file, dir, compat::log_file_name(self.compression))
-        {
-            Ok(revision) => Ok(PreparedSession {
-                revision,
-                ..advanced(&session)
-            }),
-            Err(error) => {
-                self.poisoned
-                    .lock()
-                    .expect("poisoned")
-                    .insert(session.key.clone());
-                Err(AppendFailure::Unknown {
-                    error: format!("append committed but cannot restat {path:?}: {error}"),
-                })
-            }
-        }
+        append::append_batch(self, session, expected_next_seq, events)
     }
 
     /// Materialization: durable mkdir chain → temp file (O_EXCL, 0600) →
@@ -1132,6 +895,12 @@ impl JsonlBackend {
                 },
             );
         }
+        let digest = content::read_digest(
+            &read.dir,
+            compat::log_file_name(self.compression),
+            &read.revision,
+        )
+        .map_err(io)?;
         Ok(PrepareOutcome::Writable(
             PreparedSession {
                 path: read.path.clone(),
@@ -1141,6 +910,7 @@ impl JsonlBackend {
                 next_seq: read.events.len() as u64,
                 materialized: true,
                 revision: read.revision,
+                digest,
                 needs_seed_marker,
                 key: key.clone(),
             },
@@ -1200,6 +970,7 @@ impl JsonlBackend {
             dir: Some(scan.dir),
             lease: Some(lease),
             revision: scan.revision,
+            digest: scan.digest,
             needs_seed_marker: false,
         };
         let mut prepared = if closers.is_empty() {
@@ -1269,7 +1040,8 @@ impl JsonlBackend {
         ensure_supported_generation(key, &resolved)?;
         let file = open_read_no_follow(&dir, &resolved.name).map_err(io)?;
         let before = LogRevision::of_metadata(&file.metadata().map_err(io)?);
-        let (header, tracker, last_event_type, file) = match self.compression {
+        let file = DigestReader::new(file);
+        let (header, tracker, last_event_type, source) = match self.compression {
             JsonlCompression::None => {
                 let mut reader = std::io::BufReader::new(file);
                 let parsed = stream_plain_lines(&mut reader, false, key, from_seq, visitor)?;
@@ -1283,6 +1055,7 @@ impl JsonlBackend {
                 (parsed.0, parsed.1, parsed.2, decoder.finish().into_inner())
             }
         };
+        let (file, digest) = source.into_parts();
         ensure_generation_matches(&header, &resolved)?;
         let after = matching_handle_and_path_revision(&file, &dir, &resolved.name).map_err(io)?;
         if before != after {
@@ -1294,6 +1067,7 @@ impl JsonlBackend {
         Ok(StreamRead {
             header,
             revision: after,
+            digest,
             dir,
             tracker,
             last_event_type,
@@ -2566,6 +2340,91 @@ mod tests {
             backend.load(&key, false),
             Err(SessionError::Corruption(message)) if message.contains("torn JSONL")
         ));
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_only_drift_keeps_the_leased_writer_usable() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+            for reopen in [false, true] {
+                let (_, root) = backend("metadata-only");
+                let backend = JsonlBackend::new(&root, compression, true);
+                let key = key("metadata-only");
+                let prepared = backend.create(key.clone(), header(&key)).unwrap();
+                let mut prepared = backend
+                    .append_batch(prepared, 0, &turn_events(0, 1))
+                    .unwrap();
+                if reopen {
+                    drop(prepared);
+                    prepared = backend.prepare(&key).unwrap();
+                }
+                let path = backend.log_path(&key);
+                let original = std::fs::read(&path).unwrap();
+                let before = std::fs::metadata(&path).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                let after = std::fs::metadata(&path).unwrap();
+                assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+                assert_ne!(
+                    LogRevision::of_metadata(&before),
+                    LogRevision::of_metadata(&after)
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                let prepared = backend
+                    .append_batch(prepared, 4, &turn_events(4, 2))
+                    .expect("metadata changes alone must not invalidate unchanged leased content");
+                // The witness must advance with committed bytes, not remain at the first batch.
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                let prepared = backend
+                    .append_batch(prepared, 8, &turn_events(8, 3))
+                    .unwrap();
+                assert_eq!(prepared.next_seq(), 12);
+                drop(prepared);
+                assert_eq!(backend.prepare(&key).unwrap().next_seq(), 12);
+                crate::test_support::cleanup_tree(&root);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_length_rewrite_with_restored_mtime_still_poisons_the_writer() {
+        let (_, root) = backend("same-length-drift");
+        let backend = JsonlBackend::new(&root, JsonlCompression::None, true);
+        let key = key("same-length-drift");
+        let prepared = backend.create(key.clone(), header(&key)).unwrap();
+        let prepared = backend
+            .append_batch(prepared, 0, &turn_events(0, 1))
+            .unwrap();
+        let path = backend.log_path(&key);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+        let tampered = original.replace("turn 1", "evil 1");
+        assert_ne!(original, tampered);
+        assert_eq!(original.len(), tampered.len());
+        std::fs::write(&path, &tampered).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert!(matches!(
+            backend.append_batch(prepared, 4, &turn_events(4, 2)),
+            Err(AppendFailure::Unknown { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), tampered);
+        assert!(
+            backend.prepare(&key).is_err(),
+            "a proven rewrite must remain poisoned"
+        );
         crate::test_support::cleanup_tree(&root);
     }
 

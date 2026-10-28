@@ -80,13 +80,12 @@ impl TrustedProjectApplication {
         let goal_total = estimate_instructions(&run_context.instructions.with_goal);
         let system_total = estimate_instructions(&final_system);
         let model_options = context_model_options(&config);
-        let (projected_history, image_projection) = crate::model::project_items_for_image_budget(
+        let (projected_history, image_projection) = crate::model::preview_items_for_image_budget(
             &history,
             (!final_system.is_empty()).then_some(final_system.as_str()),
             tools,
             &model_options,
-        )
-        .map_err(ApplicationError::new)?;
+        );
         let with_history = crate::model::estimate_request_tokens(
             (!final_system.is_empty()).then_some(final_system.as_str()),
             &projected_history,

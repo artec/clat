@@ -94,7 +94,7 @@ impl UtilityModel for DefaultUtilityModel {
         // length 终止且无正文，标题/建议静默为空。整形为任务级形态：
         // 不发 thinking 对象（交由服务端默认）、effort 收敛到 low、预算
         // 放宽到思考后仍有正文余量。
-        let config = shape_utility_request(&config);
+        let config = crate::model::internal_text_config(&config);
         let response = request(
             &self.providers,
             task,
@@ -109,21 +109,6 @@ impl UtilityModel for DefaultUtilityModel {
             model: config.model,
         })
     }
-}
-
-/// 任务级请求整形：适用于任何路由来源（预设 companion 或自定义端点），
-/// 规则与厂商无关——不发 `thinking` 对象（GLM 官方拒绝 `disabled`，
-/// 服务端默认本就开启）；`reasoning_effort` 已存在时收敛为 low；其余
-/// extra_body 字段（stream_options 等）原样保留。
-pub(crate) fn shape_utility_request(config: &ModelConfig) -> ModelConfig {
-    let mut shaped = config.clone();
-    if let Some(body) = shaped.extra_body.as_object_mut() {
-        body.remove("thinking");
-        if body.contains_key("reasoning_effort") {
-            body.insert("reasoning_effort".into(), serde_json::json!("low"));
-        }
-    }
-    shaped
 }
 
 impl DefaultUtilityModel {

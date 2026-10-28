@@ -438,9 +438,36 @@ fn history_query_compaction_keeps_existing_body_and_ignores_private_domains() {
         json!({"compactionId":"c1","shadowedRange":{"start":0,"end":0},"summary":"private-summary-not-indexed"}),
     );
     summary.surface_op = Some(crate::session::event::SurfaceOp::Replace { start: 0, end: 0 });
-    drop(f.backend.append_batch(prepared, 1, &[summary]).unwrap());
+    let mut carrier = SessionEvent::new(
+        "user/message",
+        2,
+        44001,
+        crate::session::event::payloads::compaction_user_message("internal-checkpoint-not-indexed"),
+    );
+    carrier.surface_op = Some(crate::session::event::SurfaceOp::Replace { start: 0, end: 0 });
+    carrier.source_event_seqs = Some(vec![0]);
+    drop(
+        f.backend
+            .append_batch(prepared, 1, &[summary, carrier])
+            .unwrap(),
+    );
     assert_eq!(f.query("before-compaction-needle").hits.len(), 1);
     assert!(f.query("private-summary-not-indexed").hits.is_empty());
+    assert!(f.query("internal-checkpoint-not-indexed").hits.is_empty());
+    // An old derived index may have hidden the original user row under the
+    // synthetic replacement. Opening its previous projection version must rebuild it.
+    f.service
+        .index
+        .run(&CancelToken::new(), |connection, _, _| {
+            connection
+                .execute_batch("UPDATE documents SET visible=0 WHERE seq=0; PRAGMA user_version=0;")
+                .map_err(index::sql_error)?;
+            Ok(())
+        })
+        .unwrap();
+    f.service.index.reset_connection();
+    assert_eq!(f.query("before-compaction-needle").hits.len(), 1);
+    assert!(f.query("internal-checkpoint-not-indexed").hits.is_empty());
 }
 #[cfg(unix)]
 #[test]

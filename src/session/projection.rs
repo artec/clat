@@ -842,8 +842,8 @@ fn surface_index_event(event: &SessionEvent) -> SessionEvent {
     retained
 }
 
-/// CLAT display view: every surface event stays visible; a replace is
-/// recorded as a marker at its position without hiding anything (§11.1).
+/// CLAT display view keeps human history and a compaction marker; the internal
+/// replacement carrier remains exclusively in the model-facing surface.
 struct TranscriptUnit {
     entries: Vec<TranscriptEntry>,
     as_of: i64,
@@ -871,29 +871,34 @@ struct TranscriptEntry {
     shadowed: Option<Vec<u64>>,
 }
 
+impl TranscriptUnit {
+    fn record_user(&mut self, event: &SessionEvent) {
+        if crate::session::catalog::is_context_checkpoint(event) {
+            return;
+        }
+        self.entries.push(TranscriptEntry {
+            seq: event.seq,
+            kind: "user".into(),
+            text: transcript_user_text(&event.data["content"]),
+            is_error: false,
+            shadowed: None,
+        });
+    }
+}
+
 impl ProjectionUnit for TranscriptUnit {
     fn key(&self) -> &'static str {
         "transcript"
     }
     fn state_version(&self) -> u64 {
-        1
+        2
     }
     fn as_of(&self) -> i64 {
         self.as_of
     }
     fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
         match event.event_type.as_str() {
-            "user/message" => {
-                self.entries.push(TranscriptEntry {
-                    seq: event.seq,
-                    kind: "user".into(),
-                    // 图片 part 不进 transcript 文本（字节与 base64 都
-                    // 不适合），以占位计数标注——转录可见"这条消息带了图"。
-                    text: transcript_user_text(&event.data["content"]),
-                    is_error: false,
-                    shadowed: None,
-                });
-            }
+            "user/message" => self.record_user(event),
             "assistant/message" => {
                 let text = content_text(&event.data["message"]["content"]);
                 if !text.is_empty()
@@ -1007,7 +1012,7 @@ impl ProjectionUnit for MessageOutlineUnit {
     }
 
     fn state_version(&self) -> u64 {
-        2
+        3
     }
 
     fn as_of(&self) -> i64 {
@@ -1021,14 +1026,16 @@ impl ProjectionUnit for MessageOutlineUnit {
                     self.turn = turn;
                 }
             }
-            "user/message" => self.entries.push(MessageOutlineEntry {
-                renderable: true,
-                seq: event.seq,
-                time_ms: event.time,
-                turn: self.turn,
-                role: "user".into(),
-                preview: preview_lines(&transcript_user_text(&event.data["content"]), 1),
-            }),
+            "user/message" if !crate::session::catalog::is_context_checkpoint(event) => {
+                self.entries.push(MessageOutlineEntry {
+                    renderable: true,
+                    seq: event.seq,
+                    time_ms: event.time,
+                    turn: self.turn,
+                    role: "user".into(),
+                    preview: preview_lines(&transcript_user_text(&event.data["content"]), 1),
+                })
+            }
             "assistant/message" => self.entries.push(MessageOutlineEntry {
                 renderable: event.data["message"]["content"]
                     .as_array()

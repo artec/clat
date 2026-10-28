@@ -421,25 +421,27 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 /* Conversation experience: the rounded canvas owns all scroll clipping. */
 .conversation, .inspector { overflow: hidden; }
 /* Cover nested Markdown, lists and dialogs as well as the outer panels. */
-* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.auto-hide-scrollbars * { scrollbar-color: transparent transparent; }
-.auto-hide-scrollbars [data-scrollbar-active] { scrollbar-color: var(--line-strong) transparent; }
-@supports not (scrollbar-color: gray transparent) {
-  /* Older WebKit only: prefer native scrollbar-color painting where supported. */
-  *::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
-  *::-webkit-scrollbar-track, *::-webkit-scrollbar-track-piece,
-  *::-webkit-scrollbar-corner { background: transparent; border: 0; box-shadow: none; }
-  *::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid transparent; background-clip: padding-box; border-radius: 20px; transition: background-color 180ms ease; }
-  .auto-hide-scrollbars *::-webkit-scrollbar-thumb { background-color: transparent; }
-  .auto-hide-scrollbars [data-scrollbar-active]::-webkit-scrollbar-thumb { background-color: var(--line-strong); }
-  *::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
-  .transcript-scroll::-webkit-scrollbar-track, .shell-pages::-webkit-scrollbar-track,
-  .inspector-scroll::-webkit-scrollbar-track { margin-block: 16px; }
-}
-@media (prefers-reduced-motion: reduce) { *::-webkit-scrollbar-thumb { transition: none; } }
+* { --clat-scrollbar-thumb: var(--line-strong); scrollbar-width: thin; scrollbar-color: var(--clat-scrollbar-thumb) transparent; }
+.auto-hide-scrollbars * { --clat-scrollbar-thumb: transparent; }
+/* Standard non-auto properties override pseudo-element scrollbar painting. */
+html[data-scrollbars="custom"] * { scrollbar-width: auto; scrollbar-color: auto; }
+html[data-scrollbars="custom"] *::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+html[data-scrollbars="custom"] *::-webkit-scrollbar-track,
+html[data-scrollbars="custom"] *::-webkit-scrollbar-track-piece,
+html[data-scrollbars="custom"] *::-webkit-scrollbar-corner { background: transparent; border: 0; box-shadow: none; }
+html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb { background: var(--clat-scrollbar-thumb); border: 2px solid transparent; background-clip: padding-box; border-radius: 20px; transition: background-color 180ms ease; }
+html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb:hover,
+html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb:active { background-color: var(--line-strong); }
+html[data-scrollbars="custom"] *::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+html[data-scrollbars="custom"] .transcript-scroll::-webkit-scrollbar-track,
+html[data-scrollbars="custom"] .shell-pages::-webkit-scrollbar-track,
+html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { margin-block: 16px; }
+@media (prefers-reduced-motion: reduce) { html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb { transition: none; } }
 @media (forced-colors: active) {
-  .auto-hide-scrollbars *, .auto-hide-scrollbars [data-scrollbar-active] { scrollbar-color: auto; }
-  .auto-hide-scrollbars *::-webkit-scrollbar-thumb { background-color: ButtonText; }
+  .auto-hide-scrollbars * { scrollbar-color: auto; }
+  html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb,
+  html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb:hover,
+  html[data-scrollbars="custom"] *::-webkit-scrollbar-thumb:active { background-color: ButtonText; }
 }
 .extension-modules { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
 .extension-modules .shell-button { display: block; flex: none; width: 100%; height: auto; padding: 14px 12px; text-align: left; border: 1px solid var(--line); border-radius: 12px; }

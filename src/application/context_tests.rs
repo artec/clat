@@ -236,6 +236,38 @@ fn assert_estimate_identity(snapshot: &ContextEstimateSnapshot) {
 }
 
 #[test]
+fn context_stats_remain_numeric_when_text_history_exceeds_the_budget() {
+    let (storage, root) = roots("context-over-budget-stats");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    for _ in 0..5 {
+        run_request(&mut app, &"retained history ".repeat(240)).unwrap();
+    }
+    let (mut config, credentials) = app.model_state().unwrap();
+    config.max_context_tokens = Some(4096);
+    config.output_limit = Some(256);
+    config.overrides.max_context_tokens = crate::Override::Set(4096);
+    config.overrides.output_limit = crate::Override::Set(256);
+    config.overrides_version = Some(1);
+    app.save_model_state(&config, &credentials).unwrap();
+    let before = app.committed_seq();
+    let stats = app.conversation_stats().unwrap();
+    let snapshot = app.context_snapshot();
+    let after = app.committed_seq();
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+
+    let used = stats["context"]["used"]
+        .as_u64()
+        .expect("over-budget usage must remain measurable");
+    assert!(used > 4096);
+    assert_eq!(stats["context"]["capacity"], 4096);
+    assert_eq!(snapshot.unwrap().input_estimate, used);
+    assert_eq!(before, after, "inspection must not mutate session history");
+}
+
+#[test]
 fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
     let (storage_root, project_root) = roots("context-components");
     std::fs::create_dir_all(&storage_root).unwrap();

@@ -1361,7 +1361,7 @@ fn finish_command_compaction(
                 usage: Usage::default(),
             }
         }
-        Ok(Err(message)) => ExecOutcome::Failure((message).into()),
+        Ok(Err(message)) => ExecOutcome::Failure(message),
         Err(error) => ExecOutcome::Failure((error.to_string()).into()),
     }
 }

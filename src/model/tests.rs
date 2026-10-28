@@ -118,6 +118,41 @@ fn modality_preflight_counts_user_and_tool_result_images() {
     assert!(error.contains("1 image part"), "{error}");
 }
 
+/// Request-wide estimation must not repeat for text-only history entries.
+/// Count estimator invocations rather than relying on machine timing.
+#[test]
+fn image_projection_text_history_does_not_repeat_request_estimation() {
+    let mut items = (0..512)
+        .map(|index| ModelItem::user_text(format!("history {index}")))
+        .collect::<Vec<_>>();
+    let original = items.clone();
+    let checks = std::cell::Cell::new(0);
+    let protected_start = items.len() - 1;
+    let report = super::context::offload_older_images(&mut items, protected_start, |_| {
+        checks.set(checks.get() + 1);
+        true // Text alone exceeds the budget; removing images cannot help.
+    });
+    assert_eq!(report, (0, None));
+    assert_eq!(items, original, "text history must remain unchanged");
+    assert_eq!(
+        checks.get(),
+        1,
+        "unchanged history needs one pressure check"
+    );
+    let options = ModelOptions {
+        image_projection: Some(ImageProjectionBudget {
+            max_context_tokens: Some(4096),
+            max_request_images: 12,
+            max_request_image_bytes: 20_000_000,
+        }),
+        ..ModelOptions::default()
+    };
+    assert!(
+        project_items_for_image_budget(&items, None, &[], &options).is_err(),
+        "read-only estimates must not relax actual request admission"
+    );
+}
+
 #[test]
 fn image_projection_offloads_oldest_recursively_and_protects_latest_turn() {
     let dir = std::env::temp_dir().join(format!(

@@ -7,6 +7,9 @@ pub(crate) struct SearchDocument {
     pub text: String,
 }
 pub(crate) fn document(event: &SessionEvent) -> Option<SearchDocument> {
+    if is_context_checkpoint(event) {
+        return None;
+    }
     let (kind, blocks) = match replay_kind(&event.event_type) {
         ReplayKind::UserMessage => ("user", &event.data["content"]),
         ReplayKind::AssistantMessage => ("assistant", &event.data["message"]["content"]),
@@ -78,7 +81,7 @@ fn readable(value: &Value, out: &mut Vec<String>) {
     }
 }
 pub(crate) fn preserves_history(event: &SessionEvent) -> bool {
-    matches!(replay_kind(&event.event_type), ReplayKind::Compaction)
+    matches!(replay_kind(&event.event_type), ReplayKind::Compaction) || is_context_checkpoint(event)
 }
 pub(crate) fn begins_step(event: &SessionEvent) -> bool {
     event_spec(&event.event_type).is_some_and(|spec| spec.starts_step)

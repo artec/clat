@@ -65,9 +65,7 @@ impl RequestContextManager for ActiveContext {
                         "reason",
                         reason
                             .as_ref()
-                            .map(|reason| {
-                                UiMessage::new("common.diagnostic").arg("detail", reason.clone())
-                            })
+                            .map(|reason| reason.message())
                             .unwrap_or_else(|| UiMessage::new("command.compaction_no_range")),
                     )
                     .into(),
@@ -112,16 +110,13 @@ impl ActiveContext {
         definitions: &[ToolDefinition],
         cost: &dyn Fn(&[ModelItem]) -> u64,
         target: u64,
-    ) -> Result<(usize, Option<String>), String> {
+    ) -> Result<(usize, Option<PresentedText>), String> {
         let mut count = 0;
         let mut reason = None;
-        // Each pass must shrink the actual request. Bound network work even with many steering turns.
-        for _ in 0..4 {
+        // Each applied checkpoint must strictly shrink the request; stop on no progress.
+        loop {
             if self.cancel.is_cancelled() || cost(items) <= target {
                 break;
-            }
-            if self.ledger.exceeds_cap() {
-                return Err("run token budget exhausted during compaction".into());
             }
             let nodes = self
                 .sessions
