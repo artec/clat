@@ -82,20 +82,3 @@ function createProjectFileBrowser({ id, inline = false, navigationView = null, o
     suspend: () => { refreshEpoch++; if (inline) active = false; generation += 1; fileGeneration += 1; },
   };
 }
-
-function appendProjectTree(entries,parent,tree,captured){
-  for(const entry of entries){
-    const row=el('div','file-tree-row'),button=el('button','review-file',()=>entry.name);button.type='button';button.dataset.path=entry.path;button.dataset.directory=String(Boolean(entry.directory));row.append(button);parent.append(row);
-    if(!entry.directory){button.onclick=()=>{for(const item of tree.list.querySelectorAll('.review-file'))item.classList.toggle('is-selected',item===button);void tree.preview(entry.path,captured);};button.ondblclick=()=>tree.pin?.(entry.path);continue;}
-    button.prepend(svgIcon('folder'));const children=el('div','file-tree-children');children.hidden=true;row.append(children);button.setAttribute('aria-expanded','false');let loading=false;
-    async function toggle(open){
-      children.hidden=!open;button.setAttribute('aria-expanded',String(open));
-      if(!open){tree.expanded.delete(entry.path);return;}tree.expanded.add(entry.path);
-      if(children.childElementCount||loading)return;loading=true;const request=tree.version();
-      try{const result=await rpc('files.list',{directory:entry.path});if(!tree.isOpen()||request!==tree.version()||!tree.owns(captured))return;appendProjectTree(result.entries||[],children,tree,captured);}
-      catch(error){if(tree.isOpen()&&tree.owns(captured))CLATI18n.bind(tree.status,'textContent',()=>error.message);}
-      finally{loading=false;}
-    }
-    button.onclick=()=>void toggle(children.hidden);if(tree.expanded.has(entry.path))void toggle(true);
-  }
-}

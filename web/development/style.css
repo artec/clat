@@ -2,8 +2,6 @@
 .dev-confirm{max-width:500px;border:1px solid var(--line-strong);border-radius:16px;background:var(--surface);color:var(--text);padding:24px;box-shadow:var(--shadow)}
 .dev-confirm::backdrop{background:#0006}
 .dev-confirm .dev-actions{justify-content:flex-end;margin-top:24px}
-.dev-editor .review-patch{padding:0;overflow:hidden}
-.dev-editor-detail{display:flex;flex-direction:column;min-width:0;min-height:0}
 .dev-file-tabs{display:flex;flex:none;overflow:auto;border-bottom:1px solid var(--line)}
 .dev-file-tab{display:flex;align-items:center;flex:none;border-right:1px solid var(--line);border-bottom:2px solid transparent}
 .dev-file-tab.is-selected{border-bottom-color:var(--accent);background:var(--surface-raised)}
@@ -41,9 +39,9 @@
 .dev-terminal-preview{height:220px;max-width:720px;margin-top:20px;border:1px solid var(--line);padding:12px;background:var(--surface);overflow:hidden}
 .xterm .xterm-viewport{scrollbar-color:transparent transparent!important}.xterm .xterm-viewport[data-scrollbar-active]{scrollbar-color:var(--line-strong) transparent!important}
 @media(max-width:760px){.dev-editor-toolbar{gap:4px}.dev-setting{align-items:flex-start;flex-direction:column}.dev-setting>input,.dev-setting>select{width:100%}}
-:root{--dev-token-keyword:#c792ea;--dev-token-string:#9ccc65;--dev-token-comment:#8b949e;--dev-token-number:#f78c6c;--dev-token-function:#82aaff;--dev-token-type:#ffcb6b}
-:root[data-theme='light']{--dev-token-keyword:#6f42c1;--dev-token-string:#267f36;--dev-token-comment:#6e7781;--dev-token-number:#b35900;--dev-token-function:#0550ae;--dev-token-type:#953800}
-@media(prefers-color-scheme:light){:root[data-theme='system']{--dev-token-keyword:#6f42c1;--dev-token-string:#267f36;--dev-token-comment:#6e7781;--dev-token-number:#b35900;--dev-token-function:#0550ae;--dev-token-type:#953800}}
+:root{--dev-token-keyword:#c792ea;--dev-token-string:#9ccc65;--dev-token-comment:#8b949e;--dev-token-number:#f78c6c;--dev-token-function:#e6a070;--dev-token-type:#7dcbd8;--dev-token-property:#d9b677}
+:root[data-theme='light']{--dev-token-keyword:#6f42c1;--dev-token-string:#267f36;--dev-token-comment:#6e7781;--dev-token-number:#b35900;--dev-token-function:#0550ae;--dev-token-type:#267f99;--dev-token-property:#795e26}
+@media(prefers-color-scheme:light){:root[data-theme='system']{--dev-token-keyword:#6f42c1;--dev-token-string:#267f36;--dev-token-comment:#6e7781;--dev-token-number:#b35900;--dev-token-function:#0550ae;--dev-token-type:#267f99;--dev-token-property:#795e26}}
 /* Source control uses the shared list/detail shell; only its internal layout differs. */
 .dev-git{--git-lane-0:var(--accent);--git-lane-1:#79be8a;--git-lane-2:#c8a3da;--git-lane-3:#d9b06f}
 .dev-git .navigation-sidebar{display:flex;flex-direction:column}.dev-git .navigation-head{min-height:54px;padding-block:10px}.git-repository-heading{display:flex;align-items:center;gap:8px;padding:0 16px 12px;min-width:0;font-size:var(--text-size-ui)}

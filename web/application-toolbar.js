@@ -22,7 +22,8 @@ function createApplicationToolbar(shell) {
     toggleSessionMenu(session, rect.right, rect.bottom + 4, more);
   });
   actions.prepend(more);
-  document.getElementById('context-status').before(document.querySelector('.conversation-meta'));
+  const technical=document.querySelector('.session-technical');
+  technical.querySelector('summary').after(document.querySelector('.conversation-meta'));
   document.querySelector('.conversation-header').remove();
   bar.append(navigation, location, actions); dom.app.prepend(bar);
   shell.toolbar = { back, forward, list, page, project, more };
@@ -47,22 +48,5 @@ function refreshApplicationToolbar(shell = workbenchShell) {
   if(dom.app.dataset.tool)more.hidden=true;
   if (!chat) closeSessionMenu();
   back.disabled = !context.history.canGo(-1); forward.disabled = !context.history.canGo(1);
-  if (shell.scope) {
-    CLATI18n.bind(shell.scope.project, 'textContent', () => dom['project-name'].textContent);
-    CLATI18n.bind(shell.scope.session.querySelector('.shell-label'), 'textContent', () => dom['session-title'].textContent);
-  }
   syncPanelAccessibility();
-}
-
-function createExtensionScope() {
-  const scope = el('section', 'extension-scope'); scope.id = 'extension-scope';
-  scope.append(el('small', '', () => shellText('current_work')));
-  const project = el('strong');
-  const session = shellButton('extension-conversation', 'chat', () => dom['session-title'].textContent,
-    () => { workbenchShell.chat(); if (isMobile()) setInspector('closed'); });
-  CLATI18n.bind(project, 'textContent', () => dom['project-name'].textContent);
-  CLATI18n.attribute(project, 'title', () => dom['project-root'].textContent);
-  scope.append(project, session);
-  workbenchShell.scope = { project, session };
-  dom.inspector.querySelector('.inspector-head').after(scope);
 }

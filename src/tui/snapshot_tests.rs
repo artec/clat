@@ -679,12 +679,18 @@ impl Harness {
         second
     }
 
-    fn project(&mut self) -> String {
+    // Layout updates interaction state such as modal scroll bounds. Business
+    // scenarios need this even when visual projection/golden checks are disabled.
+    fn draw(&mut self) {
         self.app.test_render_version = Some(SNAPSHOT_VERSION);
         self.app.expire_status();
         self.terminal
             .draw(|frame| self.app.draw(frame))
             .expect("draw");
+    }
+
+    fn project(&mut self) -> String {
+        self.draw();
         let cursor = self
             .terminal
             .backend_mut()
@@ -701,6 +707,7 @@ impl Harness {
 
     fn snapshot(&mut self, name: &str) {
         if !visual_snapshots_enabled() {
+            self.draw();
             return;
         }
         let projection = self.draw_projection();

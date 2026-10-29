@@ -1,18 +1,210 @@
 [
   {
-    "name": "codemirror",
-    "version": "6.0.2",
+    "name": "@codemirror/commands",
+    "version": "6.11.1",
     "license": "MIT",
     "files": [
-      "codemirror-LICENSE"
+      "codemirror__commands-LICENSE"
     ]
   },
   {
-    "name": "@xterm/xterm",
-    "version": "5.5.0",
+    "name": "@codemirror/lang-cpp",
+    "version": "6.0.3",
     "license": "MIT",
     "files": [
-      "xterm__xterm-LICENSE"
+      "codemirror__lang-cpp-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-css",
+    "version": "6.3.1",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-css-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-go",
+    "version": "6.0.1",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-go-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-html",
+    "version": "6.4.11",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-html-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-java",
+    "version": "6.0.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-java-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-javascript",
+    "version": "6.2.4",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-javascript-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-json",
+    "version": "6.0.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-json-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-less",
+    "version": "6.0.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-less-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-markdown",
+    "version": "6.3.4",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-markdown-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-php",
+    "version": "6.0.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-php-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-python",
+    "version": "6.2.1",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-python-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-rust",
+    "version": "6.0.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-rust-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-sass",
+    "version": "6.0.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-sass-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-sql",
+    "version": "6.10.0",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-sql-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-vue",
+    "version": "0.1.3",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-vue-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-xml",
+    "version": "6.1.0",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-xml-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lang-yaml",
+    "version": "6.1.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__lang-yaml-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/language",
+    "version": "6.13.1",
+    "license": "MIT",
+    "files": [
+      "codemirror__language-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/legacy-modes",
+    "version": "6.5.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__legacy-modes-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/merge",
+    "version": "6.11.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__merge-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/search",
+    "version": "6.7.2",
+    "license": "MIT",
+    "files": [
+      "codemirror__search-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/state",
+    "version": "6.7.6",
+    "license": "MIT",
+    "files": [
+      "codemirror__state-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/view",
+    "version": "6.43.15",
+    "license": "MIT",
+    "files": [
+      "codemirror__view-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/highlight",
+    "version": "1.2.5",
+    "license": "MIT",
+    "files": [
+      "lezer__highlight-LICENSE"
+    ]
+  },
+  {
+    "name": "@replit/codemirror-lang-svelte",
+    "version": "6.0.0",
+    "license": "MIT",
+    "files": [
+      "replit__codemirror-lang-svelte-LICENSE"
     ]
   },
   {
@@ -40,227 +232,19 @@
     ]
   },
   {
-    "name": "@marijn/find-cluster-break",
-    "version": "1.0.4",
+    "name": "@xterm/xterm",
+    "version": "5.5.0",
     "license": "MIT",
     "files": [
-      "marijn__find-cluster-break-LICENSE"
+      "xterm__xterm-LICENSE"
     ]
   },
   {
-    "name": "crelt",
-    "version": "1.0.7",
-    "license": "MIT",
-    "files": [
-      "crelt-LICENSE"
-    ]
-  },
-  {
-    "name": "w3c-keyname",
-    "version": "2.2.8",
-    "license": "MIT",
-    "files": [
-      "w3c-keyname-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lint",
-    "version": "6.9.7",
-    "license": "MIT",
-    "files": [
-      "codemirror__lint-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/autocomplete",
-    "version": "6.20.4",
-    "license": "MIT",
-    "files": [
-      "codemirror__autocomplete-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/legacy-modes",
-    "version": "6.5.2",
-    "license": "MIT",
-    "files": [
-      "codemirror__legacy-modes-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/merge",
-    "version": "6.11.2",
-    "license": "MIT",
-    "files": [
-      "codemirror__merge-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/streamparser",
-    "version": "6.0.0",
-    "license": "MIT",
-    "files": [
-      "codemirror__streamparser-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-html",
-    "version": "6.4.11",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-html-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/language",
-    "version": "6.13.1",
-    "license": "MIT",
-    "files": [
-      "codemirror__language-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-rust",
+    "name": "codemirror",
     "version": "6.0.2",
     "license": "MIT",
     "files": [
-      "codemirror__lang-rust-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/state",
-    "version": "6.7.6",
-    "license": "MIT",
-    "files": [
-      "codemirror__state-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/search",
-    "version": "6.7.2",
-    "license": "MIT",
-    "files": [
-      "codemirror__search-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-markdown",
-    "version": "6.3.4",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-markdown-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-yaml",
-    "version": "6.1.2",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-yaml-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-css",
-    "version": "6.3.1",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-css-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-json",
-    "version": "6.0.2",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-json-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/view",
-    "version": "6.43.15",
-    "license": "MIT",
-    "files": [
-      "codemirror__view-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-javascript",
-    "version": "6.2.4",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-javascript-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/commands",
-    "version": "6.11.1",
-    "license": "MIT",
-    "files": [
-      "codemirror__commands-LICENSE"
-    ]
-  },
-  {
-    "name": "@codemirror/lang-python",
-    "version": "6.2.1",
-    "license": "MIT",
-    "files": [
-      "codemirror__lang-python-LICENSE"
-    ]
-  },
-  {
-    "name": "style-mod",
-    "version": "4.1.4",
-    "license": "MIT",
-    "files": [
-      "style-mod-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/python",
-    "version": "1.1.19",
-    "license": "MIT",
-    "files": [
-      "lezer__python-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/css",
-    "version": "1.3.9",
-    "license": "MIT",
-    "files": [
-      "lezer__css-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/highlight",
-    "version": "1.2.5",
-    "license": "MIT",
-    "files": [
-      "lezer__highlight-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/markdown",
-    "version": "1.8.1",
-    "license": "MIT",
-    "files": [
-      "lezer__markdown-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/rust",
-    "version": "1.0.3",
-    "license": "MIT",
-    "files": [
-      "lezer__rust-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/html",
-    "version": "1.3.13",
-    "license": "MIT",
-    "files": [
-      "lezer__html-LICENSE"
+      "codemirror-LICENSE"
     ]
   },
   {
@@ -272,19 +256,75 @@
     ]
   },
   {
+    "name": "@lezer/cpp",
+    "version": "1.1.6",
+    "license": "MIT",
+    "files": [
+      "lezer__cpp-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/autocomplete",
+    "version": "6.20.4",
+    "license": "MIT",
+    "files": [
+      "codemirror__autocomplete-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/css",
+    "version": "1.3.9",
+    "license": "MIT",
+    "files": [
+      "lezer__css-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/go",
+    "version": "1.0.1",
+    "license": "MIT",
+    "files": [
+      "lezer__go-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/html",
+    "version": "1.3.13",
+    "license": "MIT",
+    "files": [
+      "lezer__html-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/java",
+    "version": "1.1.5",
+    "license": "MIT",
+    "files": [
+      "lezer__java-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/lint",
+    "version": "6.9.7",
+    "license": "MIT",
+    "files": [
+      "codemirror__lint-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/javascript",
+    "version": "1.5.6",
+    "license": "MIT",
+    "files": [
+      "lezer__javascript-LICENSE"
+    ]
+  },
+  {
     "name": "@lezer/json",
     "version": "1.0.3",
     "license": "MIT",
     "files": [
       "lezer__json-LICENSE"
-    ]
-  },
-  {
-    "name": "@lezer/yaml",
-    "version": "1.0.4",
-    "license": "MIT",
-    "files": [
-      "lezer__yaml-LICENSE"
     ]
   },
   {
@@ -296,11 +336,99 @@
     ]
   },
   {
-    "name": "@lezer/javascript",
-    "version": "1.5.6",
+    "name": "@lezer/markdown",
+    "version": "1.8.1",
     "license": "MIT",
     "files": [
-      "lezer__javascript-LICENSE"
+      "lezer__markdown-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/php",
+    "version": "1.0.6",
+    "license": "MIT",
+    "files": [
+      "lezer__php-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/python",
+    "version": "1.1.19",
+    "license": "MIT",
+    "files": [
+      "lezer__python-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/rust",
+    "version": "1.0.3",
+    "license": "MIT",
+    "files": [
+      "lezer__rust-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/sass",
+    "version": "1.1.0",
+    "license": "MIT",
+    "files": [
+      "lezer__sass-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/xml",
+    "version": "1.0.6",
+    "license": "MIT",
+    "files": [
+      "lezer__xml-LICENSE"
+    ]
+  },
+  {
+    "name": "@lezer/yaml",
+    "version": "1.0.4",
+    "license": "MIT",
+    "files": [
+      "lezer__yaml-LICENSE"
+    ]
+  },
+  {
+    "name": "@codemirror/streamparser",
+    "version": "6.0.0",
+    "license": "MIT",
+    "files": [
+      "codemirror__streamparser-LICENSE"
+    ]
+  },
+  {
+    "name": "style-mod",
+    "version": "4.1.4",
+    "license": "MIT",
+    "files": [
+      "style-mod-LICENSE"
+    ]
+  },
+  {
+    "name": "crelt",
+    "version": "1.0.7",
+    "license": "MIT",
+    "files": [
+      "crelt-LICENSE"
+    ]
+  },
+  {
+    "name": "@marijn/find-cluster-break",
+    "version": "1.0.4",
+    "license": "MIT",
+    "files": [
+      "marijn__find-cluster-break-LICENSE"
+    ]
+  },
+  {
+    "name": "w3c-keyname",
+    "version": "2.2.8",
+    "license": "MIT",
+    "files": [
+      "w3c-keyname-LICENSE"
     ]
   }
 ]

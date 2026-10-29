@@ -2954,6 +2954,25 @@ idle interval, never automatically written to the project. A restarted window ca
 its existing buffers. A hard crash before an outstanding checkpoint completes can lose
 those newest keystrokes. Closing a modified tab offers Save, Discard or Cancel.
 
+The project file workspace uses a compact directory tree, preview/pinned tabs,
+clickable path breadcrumbs and a cursor/encoding/language status bar. Single-click
+previews a file; double-clicking or editing pins it. Folder and file menus contain
+file management, quoting and terminal actions. Search preserves the expanded tree
+when cleared. The overflow menu includes unsaved-file recovery. No Outline or
+Timeline panel is shown. All saving remains manual; this interface does not run a
+formatter or rewrite indentation on open/save.
+
+The offline format registry covers common source languages (including Rust, C/C++,
+PHP, Java, Go, C#, Kotlin, Swift, Python, Ruby and Lua), JS/TS/JSX/TSX, Vue/Svelte,
+HTML/CSS/SCSS/Less, Markdown code fences, JSON/JSONC, YAML/TOML/XML, SQL, CSV/TSV,
+shell/PowerShell/batch, configuration and engineering files. Full names such as
+Dockerfile, Makefile, Cargo.lock and Git dotfiles are recognized alongside extensions
+and executable shebangs. Unknown formats use plain text; unsupported encodings and
+large files retain the existing read-only restrictions. Legacy/lightweight modes
+provide syntax coloring without promising semantic analysis or uniform folding.
+The status-bar language selector changes highlighting only. Editors and Git diffs
+share the format registry and theme, with no downloaded fonts or runtime CDN.
+
 Git separates working changes from staged changes and provides comparison, stage/unstage,
 discard/recovery, commits, branches, history and fetch/pull/push. A commit includes only
 the approved staged snapshot. Type a message to use it unchanged, or leave it empty and
@@ -3105,3 +3124,12 @@ ignored build outputs and temporary directory trees do not consume its directory
 budget. Registered submodules and linked worktrees beneath the project are still
 listed even when their locations are ignored; outside-project worktrees are not
 added. This discovery budget is independent of the number of changed files.
+
+The conversation workspace sidebar prioritizes compact tool shortcuts. It does
+not repeat the project/session identity already shown in the application toolbar.
+When todos exist, a compact summary shows their completed count and at most two
+lines of the current unfinished item. Click the summary to expand the complete
+scrollable list; use Plan and goals to inspect the full workflow. Expansion is
+retained across updates in the same session and reset when switching sessions.
+Normal connection/model metadata stays in collapsed Session details; reconnecting
+or disconnected status still appears above the workspace tools.

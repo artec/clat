@@ -1635,6 +1635,16 @@ from the viewing device. Desktop backend
 builds verify the source/output manifest and rebuild only stale widgets with build-time
 Bun. Source and manifest inputs have LF checkout attributes. No font files are bundled.
 
+The project editor separates lazy tree presentation, document/tab ownership and
+CodeMirror views. Shared rows also serve the read-only resource browser; optional
+editor menu intents do not grant write authority. Search and directory loads reject
+stale generations. Existing editor ports own path fences, conditional saves and
+private draft persistence. No new RPC or durable event is introduced by the layout.
+One offline format registry supplies language identification, filename aliases,
+Markdown fences and file-icon metadata to editors and Git diffs. Language overrides
+are document presentation state. The widget build regenerates dependency notices;
+its source manifest includes the language/theme modules and notice generator.
+
 The Host terminal directory snapshots project-scoped developer handles before
 reading private registries outside Application locks. `terminal.create` accepts
 optional initial rows/cols, applied to PTY/ConPTY and the screen projection before
@@ -1707,3 +1717,9 @@ counting. Git's registered submodule/worktree paths are admitted separately and
 validated against the project boundary, preserving registered ignored locations.
 Resource bounds remain explicit; they count searched directories/repositories,
 not changed files. No new dependencies or persistent state are introduced.
+
+The sidebar work summary is a presentation of the existing `workflow.details`
+response; it neither edits todos nor treats todo completion as goal acceptance.
+Project/session identity is owned by the application toolbar. Existing connection
+and model DOM nodes remain subscribed inside Session details, while non-live
+connection status is also surfaced compactly outside that collapsed section.

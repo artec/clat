@@ -10,6 +10,21 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/development-editor-ui.js",
+        include_bytes!("../../web/development/editor-ui.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-editor-tree.js",
+        include_bytes!("../../web/development/editor-tree.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-editor.css",
+        include_bytes!("../../web/development/editor.css"),
+        "text/css",
+    ),
+    (
         "/plugin-review.js",
         include_bytes!("../../web/plugin-review.js"),
         "application/javascript",
@@ -394,6 +409,8 @@ const PROJECT_MODULES: &[&str] = &[
     "/development-common.js",
     "/development-appearance.js",
     "/development-settings.js",
+    "/development-editor-ui.js",
+    "/development-editor-tree.js",
     "/development-editor.js",
     "/development-file-actions.js",
     "/development-git-layout.js",

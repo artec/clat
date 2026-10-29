@@ -231,6 +231,14 @@ function renderMarkdown(container, source) {
 }
 
 const ICON_PATHS = {
+  code: ['m8 5-6 7 6 7m8-14 6 7-6 7m-3-16-2 18'],
+  document: ['M5 3h14v18H5zM8 8h8M8 12h8M8 16h5'],
+  data: ['M8 3H5v6l-2 3 2 3v6h3M16 3h3v6l2 3-2 3v6h-3'],
+  save: ['M4 3h13l4 4v14H3V3zM7 3v6h10V3M7 21v-8h10v8'],
+  'save-all': ['M8 3h10l3 3v12H7V3zM11 3v5h6V3M10 18v-6h8v6M3 7v14h14'],
+  'file-plus': ['M5 3h9l5 5v13H5zM14 3v6h5M8 14h8M12 10v8'],
+  'folder-plus': ['M3 7h7l2-3h9v16H3zM8 13h8M12 9v8'],
+  'collapse-all': ['M4 3h14v14H4zM8 21h13V8M7 10h8'],
   'activity-log': ['M3 11a9 9 0 1 1 3 8', 'M3 4v7h7', 'M12 7v5l3 2'],
   'task-list': ['M9 6h12M9 12h12M9 18h12', 'm2 6 2 2 3-4m-5 8 2 2 3-4m-5 8 2 2 3-4'],
   branch: ['M6 3v12a4 4 0 0 0 4 4h3', 'M18 7v4a4 4 0 0 1-4 4H6', 'M6 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z', 'M18 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z', 'M15 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z'],
@@ -629,6 +637,8 @@ function setConnStatus(text, stateName) {
   CLATI18n.bind(dom['conn-status'], "textContent", () => text);
   dom['conn-status'].dataset.state = stateName;
   dom['sidebar-footnote'].dataset.state = stateName;
+  const alert=document.getElementById('context-connection');
+  if(alert){alert.hidden=stateName==='live';CLATI18n.bind(alert,'textContent',()=>text);}
   CLATI18n.bind(dom['sidebar-connection'], "textContent", () => stateName === 'live'
     ? CLATI18n.msg("web.local_runtime_connected", {}, "Local runtime connected")
     : String(text).replace('…', ''));

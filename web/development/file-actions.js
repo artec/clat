@@ -1,17 +1,18 @@
 function installDevelopmentFileActions(editor,ui){
   const {node,docs}=editor;let conflictBar=null,diff=null;
+  editor.clearConflict=()=>{conflictBar?.remove();conflictBar=null;diff?.destroy();diff=null;};
   const parent=()=>{const path=ui.selectedPath();return ui.selectedDirectory()?path:path?path.split('/').slice(0,-1).join('/'):'';};
   const fail=error=>devReport(ui.status,error);
   CLATI18n.onChange(()=>diff?.setPhrases(devEditorPhrases()));
   editor.create=async directory=>{
     const name=window.prompt(devText(directory?'folder_name':'file_name'));if(!name)return;
     const path=[parent(),name].filter(Boolean).join('/');
-    try{await rpc('editor.create',{operationId:devId(),path,directory});await editor.refresh();if(!directory)await editor.openFile(path,{fixed:true});}catch(error){fail(error);}
+    try{await rpc('editor.create',{operationId:devId(),path,directory});await ui.reveal(path,directory);if(!directory)await editor.openFile(path,{fixed:true});}catch(error){fail(error);}
   };
   editor.rename=async()=>{
-    const path=ui.selectedPath();if(!path)return;const target=window.prompt(devText('rename_path'),path);if(!target||target===path)return;
+    const path=ui.selectedPath(),directory=ui.selectedDirectory();if(!path)return;const target=window.prompt(devText('rename_path'),path);if(!target||target===path)return;
     try{const snapshot=await rpc('editor.inspect',{path});await rpc('editor.rename',{operationId:devId(),path,target,version:snapshot.version});
-      for(const [key,doc]of [...docs])if(key===path||key.startsWith(path+'/')){docs.delete(key);doc.path=target+key.slice(path.length);docs.set(doc.path,doc);ui.queueDraft({...doc,path:key,dirty:false});ui.queueDraft(doc);}ui.setPath(target);ui.renderTabs();await editor.refresh();
+      for(const [key,doc]of [...docs])if(key===path||key.startsWith(path+'/')){docs.delete(key);doc.path=target+key.slice(path.length);docs.set(doc.path,doc);ui.queueDraft({...doc,path:key,dirty:false});ui.queueDraft(doc);}ui.refreshDocument();ui.setPath(target,directory);ui.renderTabs();await ui.reveal(target,directory);
     }catch(error){fail(error);}
   };
   editor.remove=async()=>{
@@ -41,7 +42,8 @@ function installDevelopmentFileActions(editor,ui){
   function appendQuote(text){dom.prompt.value+=(dom.prompt.value?'\n\n':'')+text+'\n';state.composerGeneration++;saveComposerText();invalidateSuggestion();resizePrompt();closeWorkbenchTool();dom.prompt.focus();}
   editor.terminalHere=async()=>{await developmentTerminal?.openDirectory(parent());};
   editor.showConflict=(doc,save)=>{
-    conflictBar?.remove();conflictBar=el('div','dev-conflict');conflictBar.append(el('span','',()=>devText('external_change')));
+    if(conflictBar?.dataset.path===doc.path&&conflictBar.dataset.version===(doc.disk?.version||''))return;
+    editor.clearConflict();conflictBar=el('div','dev-conflict');conflictBar.dataset.path=doc.path;conflictBar.dataset.version=doc.disk?.version||'';conflictBar.append(el('span','',()=>devText('external_change')));
     const compare=devButton('compare',()=>{
       ui.stash();const mount=node.querySelector('.dev-editor-mount');mount.replaceChildren();diff?.destroy();diff=globalThis.CLATDevelopmentWidgets.diff(mount,{left:doc.disk?.text||'',right:doc.text,path:doc.path,phrases:devEditorPhrases()});
       conflictBar.append(devButton('back_editor',()=>{diff?.destroy();diff=null;ui.activate(doc);}));

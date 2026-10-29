@@ -1239,3 +1239,10 @@ core execution and persistence. The lightweight `web/tests` data/protocol tests,
 installer/tooling checks, native builds, and locale key/parameter validation remain
 in automatic gates. Future presentation edits must not reintroduce exact UI
 wording, colors, coordinates or menu structure as CI contracts.
+
+Disabling golden comparisons must not skip the layout pass needed by mixed
+interaction scenarios. The TUI harness draws once in nonvisual snapshot calls to
+initialize modal scroll bounds; only projection serialization, repeated visual
+stability comparisons and golden-file I/O are skipped. Pure visual scenarios
+remain excluded from automatic gates. This keeps paging/input isolation behavior
+checks meaningful without restoring presentation contracts.

@@ -114,3 +114,12 @@ web/vendor/bun.lock text eol=lf
 web/vendor/dist/* text eol=lf
 web/vendor/THIRD-PARTY-NOTICES.txt text eol=lf
 web/development/git-*.js text eol=lf
+
+# Shared editor modules and syntax bundle inputs are embedded or hashed.
+web/development/editor-ui.js text eol=lf
+web/development/editor-tree.js text eol=lf
+web/development/editor.css text eol=lf
+web/vendor/languages.js text eol=lf
+web/vendor/editor-theme.js text eol=lf
+web/vendor/notices.ts text eol=lf
+web/vendor/licenses/* text eol=lf

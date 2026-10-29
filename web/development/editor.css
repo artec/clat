@@ -1,0 +1,50 @@
+/* Compact project editor, sharing the navigation/sidebar and Git tab primitives. */
+.workspace-tool.dev-editor{grid-template-rows:minmax(0,1fr)}
+.editor-sidebar{grid-area:1 / 1;position:relative;inset:auto;transform:none;box-shadow:none;display:flex;flex-direction:column;min-height:0;min-width:0;width:auto;background:var(--surface-raised);border-right:1px solid var(--line);overflow:hidden}
+.editor-head{display:flex;align-items:center;gap:6px;padding:16px 12px;min-height:60px;flex:none}
+.editor-head>strong{min-width:0;flex:1;font-size:var(--text-size-ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.editor-head-actions,.editor-tools{display:flex;gap:2px;align-items:center;flex:none}
+.editor-head-actions .icon-button,.editor-tools .icon-button{width:26px;height:28px;min-height:28px;padding:4px;display:flex;align-items:center;justify-content:center;border:0}
+.editor-head-actions svg,.editor-tools svg{width:16px;height:16px}
+.editor-sidebar .session-search{flex:none;margin:0 12px 12px;width:auto}
+.editor-project{display:flex;align-items:center;gap:7px;padding:8px 12px;text-align:start;min-width:0;flex:none}
+.editor-project strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:var(--text-size-ui)}
+.editor-project svg{width:16px;height:16px;flex:none}.editor-project[aria-expanded=false]>svg:first-child{transform:rotate(-90deg)}
+.workspace-tool.dev-editor .editor-tree{grid-area:auto;border:0;flex:1;min-height:0;overflow:auto;padding:0 6px 12px;background:transparent}
+.editor-tree[hidden]{display:none!important}
+.editor-tree .file-tree-children{margin-left:12px;padding-left:5px}
+.file-tree-row>.review-file{display:flex;align-items:center;gap:6px;padding:4px 6px;min-height:28px;border:0;border-radius:4px;font-size:var(--text-size-secondary);background:transparent;text-align:start}
+.file-tree-row>.review-file:hover,.file-tree-row>.review-file.is-selected{background:var(--ink-3)}
+.file-tree-row>.review-file svg{width:16px;height:16px;flex:none}
+.file-tree-row>.review-file .file-tree-chevron{width:12px;height:12px}
+.file-tree-chevron.is-leaf{visibility:hidden}.review-file[aria-expanded=false]>.file-tree-chevron{transform:rotate(-90deg)}
+.file-tree-copy{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1}
+.file-tree-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.file-tree-copy small{color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:var(--text-size-secondary)}
+.editor-feedback{flex:none;margin:0;padding:6px 12px;color:var(--text-muted);font-size:var(--text-size-secondary);max-height:100px;overflow:auto;overflow-wrap:anywhere}.editor-feedback:empty{display:none}
+.workspace-tool.dev-editor>.dev-editor-detail{grid-column:2;grid-row:1;display:flex;flex-direction:column;min-width:0;min-height:0;padding:0;overflow:hidden}
+.dev-editor .dev-file-tabs{min-height:35px}
+.dev-file-tab .editor-tab-label{display:flex;align-items:center;gap:7px;padding:8px 10px;font-size:var(--text-size-secondary);border:0;border-radius:0;white-space:nowrap;max-width:280px;min-width:0}
+.editor-tab-name{overflow:hidden;text-overflow:ellipsis}.editor-tab-label small{overflow:hidden;text-overflow:ellipsis;color:var(--text-muted);font-size:11px}
+.editor-tab-label svg{width:16px;height:16px;flex:none}.dev-file-tab.is-preview .editor-tab-name{font-style:italic}
+.editor-dirty{width:6px;height:6px;border-radius:50%;background:var(--text-muted);flex:none}.editor-dirty[hidden]{display:none}
+.dev-editor .dev-editor-toolbar{flex:none;flex-wrap:nowrap;gap:8px;padding:4px 10px;min-height:34px}
+.dev-editor .dev-editor-path{display:flex;align-items:center;gap:5px;flex:1;min-width:0;font-size:var(--text-size-secondary);white-space:nowrap;overflow:hidden}
+.dev-editor-path>svg{width:13px;height:13px;flex:none}.dev-editor-path button{padding:2px 0;min-height:0;color:var(--text-muted);font:inherit;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+.dev-editor-path button:hover{color:var(--text)}.editor-path-file{min-width:0;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:65%}
+.editor-statusbar{display:flex;justify-content:flex-end;align-items:center;gap:14px;flex:none;min-height:26px;padding:3px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:auto}
+.editor-statusbar:empty{display:none}.editor-statusbar select{font:inherit;color:inherit;max-width:220px;border:0;background:var(--surface);padding:0}
+.editor-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);text-align:center;gap:12px}.editor-empty>svg{width:40px;height:40px;opacity:.65}.editor-empty p{margin:0;max-width:400px;font-size:var(--text-size-ui)}.editor-empty small{font-size:var(--text-size-secondary)}
+.editor-list-back{display:none!important}
+.file-kind-icon[data-kind=rust],.file-kind-icon[data-kind=php],.file-kind-icon[data-kind=cpp],.file-kind-icon[data-kind=c]{color:var(--dev-token-function)}
+.file-kind-icon[data-kind=javascript],.file-kind-icon[data-kind=jsx],.file-kind-icon[data-kind=json],.file-kind-icon[data-kind=jsonc]{color:var(--dev-token-type)}
+.file-kind-icon[data-kind=typescript],.file-kind-icon[data-kind=tsx],.file-kind-icon[data-kind=markdown]{color:var(--accent)}
+.file-kind-icon[data-kind=vue],.file-kind-icon[data-kind=shell],.file-kind-icon[data-kind=python]{color:var(--dev-token-string)}
+@media(max-width:760px){
+  .workspace-tool.dev-editor{grid-template-columns:minmax(0,1fr)}
+  .workspace-tool.dev-editor>.dev-editor-detail{grid-column:1;display:none}
+  .workspace-tool.dev-editor[data-detail=true]>.editor-sidebar{display:none}
+  .workspace-tool.dev-editor[data-detail=true]>.dev-editor-detail{display:flex}
+  .editor-list-back{display:flex!important;flex:none}
+  .editor-statusbar{gap:10px;justify-content:flex-start}
+}

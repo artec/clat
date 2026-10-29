@@ -1,7 +1,7 @@
 /* Shared workbench navigation and view composition. Business actions use existing ports. */
 let workbenchShell = null;
 
-function shellText(key) { return CLATI18n.msg('workbench.' + key); }
+function shellText(key, args = {}) { return CLATI18n.msg('workbench.' + key, args); }
 function shellButton(id, icon, label, action, tooltip = true) {
   const button = el('button', 'shell-button');
   button.id = id; button.type = 'button';
@@ -56,10 +56,11 @@ function createShellInspector(shell) {
   details.append(el('summary', '', () => shellText('session_details')));
   while (scroll.firstChild) details.append(scroll.firstChild);
   const overview = el('section', 'context-overview'); overview.id = 'context-overview';
+  const connection = el('div', 'context-status'); connection.id = 'context-connection'; connection.hidden=true; connection.setAttribute('role','status');
   const status = el('div', 'context-status'); status.id = 'context-status';
   const plan = el('div', 'context-plan'); plan.id = 'context-plan';
   const resources = el('section', 'context-resources'); resources.id = 'context-resources';
-  overview.append(status, plan, resources, details);
+  overview.append(connection, status, plan, resources, details);
   const back = shellButton('context-overview-open', 'previous', () => experienceText('overview'), () => shell.overview());
   back.classList.add('extension-back'); back.hidden = true;
   const cards = el('nav', 'extension-modules');
@@ -71,7 +72,7 @@ function createShellInspector(shell) {
     content.append(button.querySelector('svg'), copy);
     button.append(content); cards.append(button);
   }
-  overview.insertBefore(cards,details); scroll.append(back,overview);
+  overview.insertBefore(cards,resources); scroll.append(back,overview);
   for (const {id,key} of WORKSPACE_TOOLS) shell.tools.register(id,key);
 }
 
@@ -193,6 +194,8 @@ async function refreshShellContext() {
   if (!shell || !state.connected) return;
   const generation = ++shell.contextRequest;
   const owner = [state.stream, state.selectionGeneration];
+  const summary=document.getElementById('context-plan'),session=state.sessionId||'';
+  if(summary.dataset.session!==session){summary.replaceChildren();summary.dataset.session=session;}
   try {
     const value = await rpc('workflow.details', {});
     if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;
@@ -200,27 +203,29 @@ async function refreshShellContext() {
     const status = document.getElementById('context-status');
     status.hidden = !value.busy;
     CLATI18n.bind(status, 'textContent', () => CLATI18n.msg(value.busy ? 'web.running_short' : 'web.idle'));
-    const target = document.getElementById('context-plan'); target.replaceChildren();
-    const title = el('h2', '', () => shellText('plan'));
-    const open = shellButton('context-plan-open', 'open', () => shellText('plan_details'), () => document.getElementById('workflow-open').click());
-    if (value.approved_plan) {
-      const card = el('article', 'plan-artifact');
-      card.append(el('h3', '', () => shellText('approved_plan')), el('p', 'plan-excerpt', value.approved_plan.text), open);
-      target.append(title, card);
-    } else if(value.plan_mode) target.append(title,el('p','context-note',()=>shellText('planning')),open);
-    if (value.todos?.length) {
-      target.append(el('h2', '', () => shellText('run_tasks')));
-      for (const todo of value.todos.slice(0, 8)) target.append(el('p', 'context-todo', () => todo.content));
-    }
+    renderShellWorkSummary(value);
     const badge = document.getElementById('composer-plan-toggle');
     badge?.setAttribute('aria-pressed', String(Boolean(value.plan_mode)));
     if (badge) badge.disabled = false;
     document.getElementById('add-plan').disabled = value.busy || shell.planPending;
     refreshShellResources();
   } catch (_) {
+    if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;
     const status=document.getElementById('context-status');status.hidden=false;
     CLATI18n.bind(status,'textContent',()=>experienceText('unavailable'));
   }
+}
+
+function renderShellWorkSummary(value){
+  const target=document.getElementById('context-plan'),session=state.sessionId||'',expanded=target.dataset.session===session&&target.querySelector('details')?.open;
+  target.dataset.session=session;target.replaceChildren();const todos=value.todos||[];
+  if(!todos.length&&!value.approved_plan&&!value.plan_mode)return;
+  const open=shellButton('context-plan-open','open',()=>shellText('plan_details'),()=>document.getElementById('workflow-open').click());open.classList.add('context-work-open');
+  if(!todos.length){const row=el('div','context-work-heading');row.append(svgIcon('plan'),el('span','',()=>shellText(value.approved_plan?'approved_plan':'planning')),open);target.append(row);return;}
+  const done=todos.filter(todo=>todo.status==='completed').length,details=el('details','context-work-details'),summary=el('summary','context-work-heading');details.open=Boolean(expanded);
+  summary.append(svgIcon('task-list'),el('strong','',()=>shellText('run_tasks')),el('small','',()=>shellText('todo_progress',{done,total:todos.length})));details.append(summary);
+  const current=todos.find(todo=>todo.status==='in_progress')||todos.find(todo=>todo.status!=='completed'),preview=current?el('p','context-work-preview',current.content):null;if(preview)CLATI18n.attribute(preview,'title',()=>current.content);
+  const list=el('div','context-work-list');for(const todo of todos){const row=el('div','context-work-item');row.classList.toggle('is-completed',todo.status==='completed');row.classList.toggle('is-current',todo.status==='in_progress');row.append(svgIcon(todo.status==='completed'?'check':'task-list'),el('span','',todo.content));list.append(row);}details.append(list,open);target.append(details);if(preview)target.append(preview);
 }
 
 function refreshShellResources() {
@@ -292,7 +297,7 @@ function installWorkbenchShell() {
   createShellRail(shell); createResourceLibrary(shell); shell.pageHost = createShellPages(shell);
   shell.tools = installWorkspaceTools(shell);
   createShellInspector(shell); createShellComposer(shell);
-  createApplicationToolbar(shell); createExtensionScope();
+  createApplicationToolbar(shell);
   installShellDesktopSettings(); installInteractionDock(); installInspectorResize(); markShellNavigation('workbench');
   const route = () => {
     const raw=location.hash.slice(2), path=raw.split('?')[0];
