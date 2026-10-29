@@ -2944,6 +2944,21 @@ fn web_assets_are_public_but_contain_no_credentials() {
         get_response_header(handle.addr, "/", "content-security-policy")
             .contains("connect-src 'self' https://pi.at.cn")
     );
+    let csp = get_response_header(handle.addr, "/", "content-security-policy");
+    let directives: std::collections::BTreeMap<_, _> = csp
+        .split(';')
+        .filter_map(|part| part.trim().split_once(' '))
+        .collect();
+    assert_eq!(
+        directives.get("style-src"),
+        Some(&"'self' 'unsafe-inline'"),
+        "bundled terminal/editor renderers need generated style sheets"
+    );
+    assert_eq!(
+        directives.get("script-src"),
+        Some(&"'self'"),
+        "allowing renderer styles must not admit inline scripts or eval"
+    );
     assert_eq!(
         get_response_header(handle.addr, "/", "referrer-policy"),
         "no-referrer"

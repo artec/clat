@@ -6,6 +6,13 @@ import { StringDecoder } from 'node:string_decoder';
 
 export const ROOT = resolve(import.meta.dir, '../..');
 export const DESKTOP = join(ROOT, 'desktop');
+export function developmentText(key: string): string {
+  const language = (process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || Intl.DateTimeFormat().resolvedOptions().locale).replaceAll('_', '-').split(/[.@]/)[0]!.toLowerCase();
+  const manifest = json<{ languages: { id: string; aliases: string[] }[] }>(join(ROOT, 'locales/manifest.json'));
+  const variants = [language, ...language.split('-').slice(1).map(part => language.split('-')[0] + '-' + part), language.split('-')[0]];
+  const locale = variants.map(value => manifest.languages.find(row => [row.id, ...row.aliases].some(alias => alias.toLowerCase() === value))?.id).find(Boolean) || 'en';
+  return json<Record<string, string>>(join(ROOT, 'locales', locale + '.json'))[key]!;
+}
 export type Environment = Record<string, string | undefined>;
 export interface RunOptions { cwd?: string; env?: Environment; timeout?: number; quiet?: boolean }
 export type Runner = (args: string[], options?: RunOptions) => string;

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { cleanEnv, DESKTOP, nativeTarget, ROOT, run, type Environment, type Runner } from './common';
+import { cleanEnv, DESKTOP, developmentText, nativeTarget, ROOT, run, type Environment, type Runner } from './common';
 import type { DesktopRelease } from './release';
 
 export function ensureTools(execute: Runner = run): void {
@@ -15,8 +15,21 @@ export function startArgs(release: DesktopRelease, target: string): string[] {
 export interface AppProcess { exited: Promise<number>; kill(signal: 'SIGTERM'): void }
 export type Launcher = (args: string[], cwd: string, env: Environment) => AppProcess;
 export const launch: Launcher = (args, cwd, env) => Bun.spawn(args, { cwd, env: cleanEnv(env), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
+export async function stopDevelopmentHost(release: DesktopRelease, target: string): Promise<void> {
+  const backend = join(release.desktop, 'resources', target.includes('windows') ? 'clat-backend.exe' : 'clat-backend');
+  const status = () => { try { release.execute([backend, 'host', 'status'], { cwd: release.root, quiet: true }); return true; } catch { return false; } };
+  if (!status()) return;
+  console.log(developmentText('desktop.dev_stop_host'));
+  release.execute([backend, 'host', 'stop'], { cwd: release.root });
+  const deadline = Date.now() + 30000;
+  while (status()) {
+    if (Date.now() >= deadline) throw new Error(developmentText('desktop.dev_stop_timeout'));
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
 export async function start(release: DesktopRelease, launchApp: Launcher = launch): Promise<number> {
   const target = nativeTarget(); release.stageBackend(target);
+  await stopDevelopmentHost(release, target);
   const child = launchApp(startArgs(release, target), release.desktop, release.buildEnv(target));
   const terminate = () => child.kill('SIGTERM');
   process.once('SIGINT', terminate); process.once('SIGTERM', terminate);

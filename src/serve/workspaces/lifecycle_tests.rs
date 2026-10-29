@@ -459,3 +459,53 @@ fn background_observer_receives_approval_and_question_and_run_continues() {
         outcome.unwrap();
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn human_terminal_pins_project_and_agent_stop_does_not_terminate_it() {
+    let (host, storage, project) = fixture("human-terminal-project-pin");
+    let route = host.route("default").unwrap();
+    let service = route.app.lock().unwrap().development();
+    route
+        .app
+        .lock()
+        .unwrap()
+        .set_permission_mode(crate::PermissionMode::ReadOnly)
+        .unwrap();
+    service
+        .request(
+            "editor.create",
+            json!({"operationId":"human-in-plan","path":"human.txt","directory":false}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        route.app.lock().unwrap().permission_mode(),
+        crate::PermissionMode::ReadOnly
+    );
+    assert!(route.is_idle_for_takeover());
+    service
+        .request(
+            "terminal.create",
+            json!({"operationId":"pin-shell","clientId":"owner","shell":"/bin/sh"}),
+            None,
+        )
+        .unwrap();
+    assert!(!route.is_idle_for_takeover());
+    assert!(!route.is_idle_for_reclaim());
+    route.cancel_active_run();
+    assert_eq!(
+        service.request("terminal.list", json!({}), None).unwrap()["terminals"][0]["phase"],
+        "running"
+    );
+    service
+        .request("terminal.close", json!({"id":"pin-shell"}), None)
+        .unwrap();
+    assert!(route.is_idle_for_takeover());
+    drop(service);
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}

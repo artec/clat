@@ -1651,7 +1651,9 @@ owner.
   gate; it does not add a remote listener or a `--host` option. An SSH-forwarded
   loopback connection is treated as local; only forward it to trusted users.
 - No CORS headers are emitted. The shell CSP permits the public catalog at
-  `https://pi.at.cn`; catalog requests omit credentials.
+  `https://pi.at.cn`; catalog requests omit credentials. Generated renderer styles
+  are allowed for terminal/editor layout and font application; scripts remain
+  same-origin only, with inline scripts and eval blocked.
 - The credential grants the entire API. This is a single-user boundary;
   local processes are trusted, rather than authenticated as separate users.
 
@@ -2933,3 +2935,123 @@ cumulative input/output/cache usage. Context estimates are not cumulative spend.
 Provider allowances retain units/currencies and update times. Unsupported,
 loading, failed and zero balances are distinct. The popover reads the existing
 monitor cache; hovering never causes an additional provider balance query.
+
+## Project editor, Git and terminals
+
+The Files and Workspace Changes tools reuse the workbench's list/detail area.
+Editor tabs, unsaved buffers and Git selections belong to the project and survive
+conversation switches. Returning to Conversation restores the transcript and draft.
+These are human development controls: Agent planning/read-only mode does not prevent
+your own edits or shell input, and these ports are not registered as Agent tools.
+
+The editor supports UTF-8 files up to 2 MiB, syntax highlighting, search/replace,
+independent undo histories, file/folder operations and Cmd/Ctrl+S (Shift for Save All).
+Saving preserves BOM and LF/CRLF. Mixed endings, unsupported encodings and binaries
+open read-only. External changes reload clean buffers; dirty buffers offer a comparison,
+reload or explicit overwrite. Unsaved buffers are privately checkpointed after a short
+idle interval, never automatically written to the project. A restarted window can use
+**Recover unsaved files** to recover another window's saved buffers without replacing
+its existing buffers. A hard crash before an outstanding checkpoint completes can lose
+those newest keystrokes. Closing a modified tab offers Save, Discard or Cancel.
+
+Git separates working changes from staged changes and provides comparison, stage/unstage,
+discard/recovery, commits, branches, history and fetch/pull/push. A commit includes only
+the approved staged snapshot. Type a message to use it unchanged, or leave it empty and
+click Commit to generate a description and commit automatically. Generate Message fills
+the field without committing. The message-language selector and Settings → Git share
+one project preference: System, English, Simplified Chinese or Traditional Chinese.
+System means the initiating client's OS/browser language, independently of UI language.
+Generation uses the configured utility profile, otherwise the project's current model;
+it reads staged changes, not chat history, and uses no Agent tools. Editing the message,
+changing its language or cancelling generation stops automatic continuation. Changes to
+HEAD/index invalidate approval; the generated description remains available for review.
+Retries reconcile the original operation rather than producing another commit.
+
+Git uses installed system Git and its credential helper/SSH agent, hooks, filters and
+signing. Set up missing authentication in the built-in terminal. Pull follows explicit
+repository configuration, or uses fast-forward-only when none is configured. Unsaved
+editor buffers block branch switching/pulling in the client. Advanced conflicts/rebases
+and force pushes belong in the terminal. Restore lists retained discard backups; newer
+working edits are never overwritten by recovery. File-operation snapshots and backups
+are bounded; oversized operations fail with the source intact. A project mounted below
+the repository root cannot commit staged files outside that project: open the root first.
+
+**Terminal** is a separate left-navigation page with a terminal list and selected shell.
+It supports up to eight running shells per project, resizing, interactive TUI applications,
+search, copying, clear, rename and explicit input takeover. Only one client controls a
+terminal; other clients observe it. Ctrl+C belongs to the foreground shell program, and
+Esc does not cancel an Agent run. Page/conversation switches detach the view, not the shell.
+Host restart ends the old terminal records and never re-executes their commands.
+The header omits the Shell name when it matches the terminal name. The output
+area uses equal outer margins and mirrors the scrollbar gutter on the left;
+the complete character grid is centered, including leftover space smaller than one
+column. The Shell theme's own prompt indent remains unchanged.
+The terminal page disables the outer shared-page scrollbar gutter; only the
+terminal's own viewport owns output scrolling.
+
+Settings → Terminal controls font, size, weight, line height, spacing, cursor and scrollback.
+The default text font is Menlo on macOS and Consolas on Windows, resolved on the
+viewing device. Missing system fonts visibly fall back to the system monospace
+family. No fonts are embedded; Nerd glyphs require an installed compatible font
+selected by the user. Initial defaults are
+14px, 1.15 line height, zero spacing, a non-blinking block cursor and 10,000 scrollback
+lines. Appearance belongs to the viewing device. Font changes resize the PTY without
+restarting the shell. The preview includes CJK, emoji, Powerline and Nerd symbols;
+Cmd +/-/0 on macOS and Ctrl+Shift +/-/0 elsewhere adjust terminal text size.
+
+Terminal navigation uses the same project-list and content layout as conversations.
+Both sidebar search fields share the same search icon and sizing.
+Its sidebar lists terminals across all registered projects and supports search and
+per-row action menus. Each terminal row aligns its status icon, name and centered
+action button on one line. The project plus button creates a shell in that project;
+the title plus button targets the current project. The shell menu names its target.
+Running terminals use green icons; ended terminals use gray icons and remain
+selectable for reading retained output and removing the record.
+Closing a running terminal requires confirmation and stops its process tree before
+removing the record. Ended records can be removed directly, including records left
+by a Host restart. Per-project and global cleanup remove ended terminals only.
+
+Terminal font settings provide System Default and a custom
+installed family name. Desktop offers searchable installed families and their real
+font faces (for example Light, Regular and Bold), loaded by PostScript identity.
+Selecting a face uses that actual design rather than synthesizing numeric weights;
+the numeric weight field is hidden for an explicitly selected face. Browser clients
+retain manual family input. Custom names are validated on Enter or blur, not on every
+keystroke. A failed change keeps the prior font; the effective font and any fallback
+are displayed. Valid changes update the preview and existing terminals, remeasure
+cells and resize PTYs without restarting shells. Former bundled font selections
+migrate to System Default; other saved family names remain custom choices.
+
+A new shell receives measured rows/columns before execution, avoiding the temporary
+80-column startup used previously. Terminal cursor focus is independent of hidden
+control focus outlines. CLAT leaves zsh/oh-my-zsh/Powerlevel10k configuration intact.
+Third-party notices open inside Terminal settings with scrolling and copy/retry
+controls; they no longer depend on opening a separate WebView.
+
+
+### Navigation pages
+
+Resources, Tasks, History and Extensions share the conversation/terminal sidebar
+and detail layout. Search, tabs, SVG controls, selected rows and scroll behavior
+are consistent. The inspector is hidden while these pages use the content area.
+On narrow windows select a row to read its detail, then use Back to list.
+Page switches retain queries, filters, selection and reading position; returning
+to the conversation restores its transcript and unsent draft.
+
+Resources keeps Files, Materials and Bookmarks within the current project, with
+file previews, attachment previews, source messages, snapshot references and
+bookmark removal in the detail area. Tasks keeps its project selector and existing
+type/status filters, schedule forms, execution controls and output. History starts
+with current-project conversations and preserves the opt-in cross-project search;
+reading a result does not select an active conversation unless Continue is used.
+Extensions starts on Installed; Discover has its own query and selection. Choose
+an extension to view its actions or review permissions in the detail area. Merely
+selecting an extension does not approve it; leaving a review clears credentials
+and cancels an unsubmitted ticket. Existing catalog fallback remains available.
+
+Before selecting an item, Resources shows category guidance and shortcuts;
+History offers recent conversations and read-only browsing guidance. Extensions
+shows a selection from the public pi.at.cn catalog even on the Installed tab,
+without treating catalog entries as installed packages. Catalog preview and
+availability labels remain visible; selecting a recommendation opens its details
+in Discover. Offline mode uses the existing explicitly labelled preview catalog.

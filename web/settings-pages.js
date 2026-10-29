@@ -27,9 +27,3 @@ function setupProjectPicker() {
     catch(error){CLATI18n.bind(document.getElementById('workspace-error'),'textContent',()=>CLATI18n.present(error));}
   });document.getElementById('workspace-root').after(button);
 }
-function setupPluginTabs() {
-  const panel=dom['market-dialog'].querySelector('.market-panel'),tabs=el('nav','page-tabs');let selected='installed';
-  const controls=[];const discover=['.market-toolbar','#market-status','#market-list'];
-  const choose=key=>{selected=key;panel.querySelector('.plugin-installed').hidden=key!=='installed';for(const selector of discover)panel.querySelector(selector).hidden=key!=='discover';controls.forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===key)));};
-  for(const key of ['installed','discover']){const button=pageAction(key,()=>choose(key));button.dataset.tab=key;tabs.append(button);controls.push(button);}panel.querySelector('header').after(tabs);choose(selected);
-}

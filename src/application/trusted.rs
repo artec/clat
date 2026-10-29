@@ -144,14 +144,15 @@ impl TrustedProjectApplication {
         subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
         permission_modes: bool,
     ) -> Self {
-        let canonical_root = project
-            .root()
-            .canonicalize()
-            .unwrap_or_else(|_| project.root().to_path_buf());
-        let language_startup_notice = Arc::new(Mutex::new(ports.language_startup_diagnostic));
+        let canonical_root = development::canonical_root(&project);
         let control = Arc::clone(&storage.control);
         let draft_images = Arc::new(crate::draft::DraftImageStore::new(control.root_path()));
+        let development = Arc::new(crate::development::DevelopmentService::new(
+            project.clone(),
+            control.root_path(),
+        ));
         Self {
+            development,
             project: project.clone(),
             composition,
             sessions: ports.sessions,
@@ -189,7 +190,7 @@ impl TrustedProjectApplication {
             followups: Arc::new(Mutex::new(Default::default())),
             title_worker: None,
             subscribers,
-            language_startup_notice,
+            language_startup_notice: Arc::new(Mutex::new(ports.language_startup_diagnostic)),
             canonical_root,
             workspace_id: None,
             selection: None,
@@ -1571,6 +1572,7 @@ impl TrustedProjectApplication {
     }
 
     fn close_inner(&mut self) -> Result<(), ApplicationError> {
+        self.development.close();
         let mut errors = Vec::new();
         // 先停止一切会话事件生产者（run → 压缩 → 标题 worker），再
         // flush 会话与 checkpoint——标题 worker 仍持有 SessionService，

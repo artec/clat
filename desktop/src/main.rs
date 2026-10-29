@@ -4,12 +4,16 @@ mod app;
 #[cfg(any(target_os = "macos", windows))]
 mod commands;
 #[cfg(any(target_os = "macos", windows))]
+mod fonts;
+#[cfg(any(target_os = "macos", windows))]
 mod localization;
 #[cfg(any(target_os = "macos", windows))]
 mod notifications;
 mod policy;
 #[cfg(any(target_os = "macos", windows))]
 mod startup;
+#[cfg(any(target_os = "macos", windows))]
+mod tray;
 #[cfg(any(target_os = "macos", windows))]
 mod update;
 #[cfg(any(target_os = "macos", windows))]

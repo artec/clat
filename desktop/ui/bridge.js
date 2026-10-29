@@ -1,8 +1,23 @@
 (() => {
   'use strict';
   if (window.top !== window || !window.__TAURI__) return;
+  // Cancel only the WebView default; application contextmenu listeners still run.
+  window.addEventListener('contextmenu', event => event.preventDefault(), { capture:true });
   const t = (key, args) => CLATI18n.t(key,args);
   const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
+  let recentKey=null, recentSignature=null, recentLane=Promise.resolve(), recentError=null;
+  window.addEventListener('clat-desktop-conversation',event=>{
+    const row=event.detail,key=JSON.stringify([row.root,row.session]),opened=key!==recentKey;
+    const signature=JSON.stringify(row);if(!opened&&signature===recentSignature)return;
+    recentSignature=signature;
+    recentKey=key;
+    recentLane=recentLane.catch(()=>{}).then(()=>invoke('desktop_remember_conversation',{row,opened})).catch(error=>{if(recentSignature===signature){recentSignature=null;recentKey=null;}throw error;});
+    void recentLane.catch(error=>{
+      recentError=error;
+      console.error('[CLAT] tray conversation update failed',error);
+      window.dispatchEvent(new CustomEvent('clat-desktop-tray-error',{detail:error}));
+    });
+  });
   let integratedShow = null;
   const showSettings = () => { if(integratedShow){integratedShow();return;}const panel=document.getElementById('clat-desktop-settings');if(panel&&!panel.open)panel.showModal(); };
   Object.defineProperty(window, 'CLATDesktop', { value: Object.freeze({ version: 1, showSettings }) });
@@ -46,6 +61,14 @@
     const {dialog,status,launch,footer,launchLabel}=createPanel();
     let actionError = '';
     const reportError = error => { actionError=error?.key?error:String(error); CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError)); };
+    window.addEventListener('clat-desktop-tray-error',event=>reportError(event.detail));
+    if(recentError)reportError(recentError);
+    const trayIntent=async()=>{
+      const intent=await invoke('desktop_take_tray_intent');if(!intent)return;
+      if(intent.settings)showSettings();
+      if(intent.conversation)window.dispatchEvent(new CustomEvent('clat-desktop-open-conversation',{detail:intent.conversation}));
+    };
+    window.__TAURI__.event?.listen('desktop-tray-intent',()=>void trayIntent().catch(reportError)).then(()=>trayIntent()).catch(reportError);
     let request = null, latestInfo = {};
     let composing = false;
     document.addEventListener('compositionstart',e=>{if(e.target.id==='prompt')composing=true;},true);

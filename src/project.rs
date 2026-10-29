@@ -16,6 +16,7 @@ mod browser;
 mod export;
 mod fingerprint;
 pub(crate) mod git;
+mod human_write;
 pub(crate) mod review;
 mod roots;
 mod write;

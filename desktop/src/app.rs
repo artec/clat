@@ -110,6 +110,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         notification_targets: Mutex::new(BTreeMap::new()),
         streams: Mutex::new(BTreeMap::new()),
     });
+    app.manage(crate::tray::State {
+        rows: Mutex::new(crate::tray::load(app.handle())),
+        ..Default::default()
+    });
     create_window(app)?;
     create_tray(app)?;
     #[cfg(target_os = "macos")]
@@ -225,7 +229,10 @@ fn fit_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    let tray = TrayIconBuilder::new()
+    let menu = crate::tray::menu(app.handle())?;
+    let tray = TrayIconBuilder::with_id("clat")
+        .menu(&menu)
+        .on_menu_event(|app, event| crate::tray::activate(app, event.id().as_ref()))
         .icon(tauri::include_image!("icons/clat-stat.png"))
         .icon_as_template(false)
         .tooltip("CLAT")
@@ -266,6 +273,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             crate::commands::desktop_info,
+            crate::fonts::desktop_fonts,
             crate::commands::desktop_locale,
             crate::commands::desktop_open_project,
             crate::commands::desktop_pick_directory,
@@ -276,6 +284,8 @@ pub fn run() {
             crate::commands::desktop_preferences,
             crate::commands::desktop_quit,
             crate::commands::desktop_stop_host,
+            crate::tray::desktop_remember_conversation,
+            crate::tray::desktop_take_tray_intent,
             crate::window_frame::desktop_window
         ])
         .on_menu_event(|app, event| {

@@ -28,6 +28,7 @@ pub(crate) const HOST_METHODS: &[&str] = &[
     "host.takeover",
     "workspace.list",
     "workspace.directory",
+    "terminal.directory",
     "workspace.open",
 ];
 
@@ -167,6 +168,9 @@ impl WorkspaceHost {
         method: &str,
         params: &Value,
     ) -> Result<Value, RpcError> {
+        if method == "terminal.directory" {
+            return self.terminal_directory();
+        }
         let params = params
             .as_object()
             .ok_or_else(|| RpcError::bad_request("params must be an object"))?;

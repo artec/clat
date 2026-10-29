@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-take-tray-intent"
+description = "Enables the desktop_take_tray_intent command without any pre-configured scope."
+commands.allow = ["desktop_take_tray_intent"]
+
+[[permission]]
+identifier = "deny-desktop-take-tray-intent"
+description = "Denies the desktop_take_tray_intent command without any pre-configured scope."
+commands.deny = ["desktop_take_tray_intent"]

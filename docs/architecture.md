@@ -1601,3 +1601,74 @@ awaiting-user-acceptance blocker without reporting completion or wasting retry
 allowance. Normal prompts retain their old disarming contract; typed in-run input
 preserves the explicit goal through queueing/interruption unless manually stopped.
 No frontend owns a second workflow or persists plan/run policy directly.
+
+### Human development workspace
+
+`DevelopmentService` owns three project-scoped services behind client ports and
+`editor.*`, `git.*`, `terminal.*` authenticated RPC methods. It is not a plugin service
+and adds no model-callable tools. Human authorization is established by the trusted
+client channel and explicit intent, never an `is_human` field supplied to an Agent tool.
+The services do not alter the session permission mode, planning mode or Agent RunOwner.
+Blocking filesystem/model/Git/PTY I/O occurs after releasing the Application mutex.
+
+The editor uses held directory capabilities, parent write locks, content fingerprints
+and conditional atomic publication. It deliberately does not attribute human writes to
+an Agent turn's file-recovery ledger. Git serializes CLAT writes by actual common Git
+directory, retains native Git locks/configuration and freezes a private index before
+model generation. Final HEAD/index checks and the private index prevent late external
+staging from entering the approved commit. Native hooks still have their ordinary Git
+semantics, including their own explicitly configured side effects. Commit recovery
+checks parent, approved tree and message; an uncertain outcome is not blindly replayed.
+
+Terminals share platform facilities, not Agent run lifetime. Unix PTY groups and shell
+job descendants are terminated on close; Windows creates ConPTY children suspended,
+assigns a kill-on-close Job Object, then resumes them. Live shells and Git operations
+pin their project against idle reclamation/upgrade takeover. Output uses an independent
+authenticated SSE stream, byte offsets, a bounded 2 MiB ring and a bounded VT screen
+projection for resynchronization. Slow readers are disconnected, without blocking the
+Host. Resynchronization explicitly marks lost older output; the VT projection is not a
+claim of complete historical replay or full fidelity for every terminal extension.
+
+CodeMirror/xterm widgets are pinned, built offline and checked in with notices. Cargo
+embeds the generated widget assets without a JavaScript runtime; font faces come
+from the viewing device. Desktop backend
+builds verify the source/output manifest and rebuild only stale widgets with build-time
+Bun. Source and manifest inputs have LF checkout attributes. No font files are bundled.
+
+The Host terminal directory snapshots project-scoped developer handles before
+reading private registries outside Application locks. `terminal.create` accepts
+optional initial rows/cols, applied to PTY/ConPTY and the screen projection before
+Shell execution; omitted values preserve legacy 24x80 behavior. `terminal.remove`
+and `terminal.removeEnded` serialize registry lifecycle changes and atomic removal
+receipts; `terminal.close` retains its original stop-and-retain contract.
+The device-wide appearance service owns font loading and generations; views only
+apply resolved options and serialize the resulting geometry updates.
+
+
+### Shared navigation presentation
+
+Resources, Tasks, History and Extensions use the conversation/terminal two-column
+layout. `navigation-view.js` owns the reusable page frame, SVG controls, search,
+tabs and list rows; `navigation.css` owns its geometry and scroll boundaries.
+Information glyphs use the shared `ICON_PATHS.info` rounded-square outline in
+`app.js`, including notices and empty states; pages do not define local variants.
+Terminal reuses these primitives without changing PTY ownership. Page-specific
+controllers retain their existing scoped requests, operations and permission gates.
+Each list and detail scrolls independently; the outer page reserves no scrollbar.
+The capture lifecycle saves reading positions before a page is hidden. Switching
+pages does not stop Host execution or create another conversation DOM/subscription.
+
+Resources retains current-project files/materials/bookmarks; its file browser
+mounts directly into the common list/detail slots. History keeps search scope and
+read-only admission separate from explicit conversation continuation. Tasks keeps
+project selection and existing schedule/job controls; its borrowed live conversation
+is returned on leave. Extensions separates Installed/Discover navigation from the
+plugin owner and permission-review renderer: changing selection cancels unsubmitted
+review tickets and clears credentials, while late prepare results are cancelled.
+No journal vocabulary, persistence format or public RPC changes are introduced.
+
+Default navigation content reuses `navigationOverview` and the shared SVG table.
+Recommendations are projections of the existing bounded public catalog, not new
+installation authority or synthetic installed records. Task permission interaction
+cards mount inside the detail column, outside the two-column grid: an empty
+interaction host cannot allocate an implicit row or shorten the sidebar.

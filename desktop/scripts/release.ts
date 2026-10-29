@@ -1,3 +1,4 @@
+import { ensureDevelopmentWidgets } from './development-widgets';
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -44,6 +45,7 @@ export class DesktopRelease {
       ...(target.includes('apple-darwin') ? { MACOSX_DEPLOYMENT_TARGET: '13.0' } : {}) };
   }
   stageBackend(target: string, options: BuildOptions = {}): void {
+    if (!options.backend) ensureDevelopmentWidgets(this.root, this.execute);
     this.records('desktop').find(r => r.target === target) ?? (() => { throw new Error('unsupported desktop target'); })();
     let source: string;
     if (options.backend) {

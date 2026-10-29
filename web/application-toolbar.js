@@ -34,7 +34,7 @@ function refreshApplicationToolbar(shell = workbenchShell) {
   if (!shell?.toolbar) return;
   const { back, forward, list, page, project, more } = shell.toolbar;
   const route = (dom.app.dataset.page || 'workbench').split('?')[0];
-  const labels = { workbench: 'workbench', resources: 'resources', tasks: 'tasks', history: 'history', extensions: 'extensions', settings: 'settings', help: 'help' };
+  const labels = { workbench: 'workbench', terminal:'terminal', resources: 'resources', tasks: 'tasks', history: 'history', extensions: 'extensions', settings: 'settings', help: 'help' };
   CLATI18n.bind(page, 'textContent', () => shellText(labels[route.split('/')[0]] || 'workbench'));
   CLATI18n.bind(project, 'textContent', () => dom['project-name'].textContent);
   CLATI18n.attribute(project, 'title', () => dom['project-root'].textContent);

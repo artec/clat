@@ -107,6 +107,7 @@ impl HostApplication {
                     .as_ref()
                     .is_some_and(|compact| !compact.is_finished())
                 || app.draft_images.has_live_drafts()
+                || app.development().has_live_work()
                 || app.has_background_jobs()
                 || app.has_automatic_work()
                 || !app.schedules()?.is_empty()

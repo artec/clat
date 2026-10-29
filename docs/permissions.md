@@ -168,6 +168,11 @@ stores new raw access credentials. This authentication boundary does not grant
 project trust, approve tools, or change the permission mode. See
 [local server security](usage.md#security-boundary).
 
+The workbench CSP permits generated inline styles for the bundled terminal and
+editor renderers (fonts, terminal cell dimensions, colors and cursor placement).
+Scripts remain same-origin only; inline scripts and eval stay blocked. This style
+allowance does not grant native commands, terminal input or filesystem access.
+
 `clat serve` publishes an `approval.requested` SSE frame. An authenticated
 client answers through `approval.respond`; the first answer wins and late
 answers receive `not-pending`. Cancellation, a ten-minute timeout, or losing
@@ -495,3 +500,29 @@ views or merely saving/approving it does not grant that authority. The goal uses
 the existing injected permission approver. **Stop and enter Plan mode** waits for
 the old execution to end before the new policy takes effect; manual stop cancels
 that pending transition. Human acceptance remains a separate explicit action.
+
+## Explicit human development actions
+
+The project editor, Git controls and independent terminals are trusted-client human
+operations. Their authorization is distinct from the selected Agent permission mode:
+you can edit your project while the Agent plans read-only. Core services enforce the
+project/path boundary, versions, input ownership and operation receipts. No Agent tool
+accepts a parameter that turns its call into a human action; the new human service is
+not published in the model's tool registry.
+
+Clicking Commit with an empty message explicitly authorizes description generation and
+one commit of the approved staged snapshot. Generating a description alone does not
+commit. Git configuration can run hooks, filters, signing and credential helpers during
+human writes; CLAT respects those settings and does not silently skip a failed hook.
+Destructive UI actions require explicit confirmation and use bounded recovery copies.
+No normal editor/Git operation implicitly grants the Agent broader access.
+
+A human terminal is an ordinary user shell, with the OS account's filesystem/network
+permissions, rather than an Agent sandbox. Creating it explicitly authorizes that shell;
+input requires the current client control lease. Observers must explicitly take control.
+Closing a view does not end it, while closing the terminal/Host reaps its process tree.
+Clipboard-writing terminal escape sequences are ignored; copying is a user action.
+
+Desktop font discovery is a read-only device presentation operation, guarded by
+the same main-window origin check and an explicit Tauri capability. It exposes
+font names only to the local client, never to the Host or Agent tools.

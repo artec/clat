@@ -190,7 +190,7 @@ pub(super) fn admit(
                 &[
                     (
                         "Content-Security-Policy",
-                        "default-src 'self'; img-src 'self' blob:; connect-src 'self' https://pi.at.cn; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+                        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self' https://pi.at.cn; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
                     ),
                     ("Cache-Control", "no-store"),
                     ("Referrer-Policy", "no-referrer"),

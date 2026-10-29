@@ -1,0 +1,261 @@
+//! Native client navigation history, separate from Host execution and session facts.
+use crate::app::Desktop;
+use clat_core::client_ports::presentation::{UiMessage, load_ui_preferences, save_ui_preferences};
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use tauri::{
+    Emitter, Manager,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+};
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Recent {
+    pub root: String,
+    pub session: String,
+    pub title: String,
+}
+#[derive(Default)]
+pub struct State {
+    pub rows: Mutex<Vec<Recent>>,
+    pub pending: Mutex<Option<serde_json::Value>>,
+}
+fn valid(row: &Recent) -> bool {
+    std::path::Path::new(&row.root).is_absolute()
+        && row.root.len() < 32768
+        && row.session.len() == 36
+        && row
+            .session
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b == b'-')
+        && row.title.len() <= 4096
+}
+fn remember(rows: &mut Vec<Recent>, row: Recent, opened: bool) {
+    if !opened {
+        if let Some(old) = rows
+            .iter_mut()
+            .find(|old| old.root == row.root && old.session == row.session)
+        {
+            *old = row;
+        }
+        return;
+    }
+    rows.retain(|old| old.root != row.root || old.session != row.session);
+    rows.insert(0, row);
+    rows.truncate(3);
+}
+pub fn load(app: &tauri::AppHandle) -> Vec<Recent> {
+    crate::localization::path(app)
+        .ok()
+        .and_then(|p| load_ui_preferences(&p).ok())
+        .and_then(|v| serde_json::from_value::<Vec<Recent>>(v["recentConversations"].clone()).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(valid)
+        .take(3)
+        .collect()
+}
+pub fn menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "tray-recent-label",
+        crate::localization::text(app, "desktop.tray_recent"),
+        false,
+        None::<&str>,
+    )?)?;
+    let state = app.state::<State>();
+    for row in state.rows.lock().expect("recent conversations").iter() {
+        let project = std::path::Path::new(&row.root)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let title = row.title.split_whitespace().collect::<Vec<_>>().join(" ");
+        let title: String = title.chars().take(64).collect();
+        let label = format!(
+            "{} · {project}",
+            if title.is_empty() {
+                crate::localization::text(app, "web.untitled_session")
+            } else {
+                &title
+            }
+        );
+        menu.append(&MenuItem::with_id(
+            app,
+            item_id(row),
+            label,
+            true,
+            None::<&str>,
+        )?)?;
+    }
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "tray-settings",
+        crate::localization::text(app, "desktop.tray_settings"),
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "tray-quit",
+        crate::localization::text(app, "desktop.menu_quit"),
+        true,
+        None::<&str>,
+    )?)?;
+    Ok(menu)
+}
+fn item_id(row: &Recent) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    row.root.hash(&mut hash);
+    row.session.hash(&mut hash);
+    format!("tray-recent-{:x}", hash.finish())
+}
+pub fn refresh(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(tray) = app.tray_by_id("clat") {
+        tray.set_menu(Some(menu(app)?))?;
+    }
+    Ok(())
+}
+#[tauri::command]
+pub fn desktop_remember_conversation(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    row: Recent,
+    opened: bool,
+) -> Result<(), UiMessage> {
+    crate::commands::guard(&window)?;
+    if !valid(&row) {
+        return Err(UiMessage::new("desktop.restore_invalid"));
+    }
+    let state = app.state::<State>();
+    let mut rows = state
+        .rows
+        .lock()
+        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+    let mut next = rows.clone();
+    remember(&mut next, row, opened);
+    if next == *rows {
+        return Ok(());
+    }
+    save_ui_preferences(
+        &crate::localization::path(&app)?,
+        &serde_json::json!({"recentConversations":next}),
+    )?;
+    *rows = next;
+    drop(rows);
+    refresh(&app).map_err(|e| UiMessage::new("desktop.tray_failed").arg("reason", e.to_string()))
+}
+#[tauri::command]
+pub fn desktop_take_tray_intent(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, UiMessage> {
+    crate::commands::guard(&window)?;
+    Ok(app
+        .state::<State>()
+        .pending
+        .lock()
+        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?
+        .take())
+}
+pub fn activate(app: &tauri::AppHandle, id: &str) {
+    if id == "tray-quit" {
+        app.exit(0);
+        return;
+    }
+    let intent = if id == "tray-settings" {
+        serde_json::json!({"settings":true})
+    } else {
+        let state = app.state::<State>();
+        let Some(row) = state
+            .rows
+            .lock()
+            .expect("recents")
+            .iter()
+            .find(|r| item_id(r) == id)
+            .cloned()
+        else {
+            return;
+        };
+        serde_json::json!({"conversation":row})
+    };
+    let app = app.clone();
+    std::thread::spawn(move || open(&app, intent));
+}
+fn open(app: &tauri::AppHandle, intent: serde_json::Value) {
+    let state = app.state::<Desktop>();
+    let _connection = state.connection.lock().expect("connection");
+    if state.updates.lock().expect("updates").preserve_page() {
+        crate::app::show(app);
+        return;
+    }
+    let disconnected = state.host.lock().expect("host").is_none();
+    if let Some(root) = intent["conversation"]["root"].as_str()
+        && disconnected
+    {
+        let result = state
+            .backend
+            .as_ref()
+            .ok_or_else(|| UiMessage::new("desktop.backend_missing").into())
+            .and_then(|b| b.resume_project_presented(std::path::Path::new(root)));
+        match result {
+            Ok(client) => {
+                *app.state::<State>().pending.lock().expect("tray intent") = Some(intent);
+                state.startup.cancel();
+                if let Err(error) = crate::app::connected(app, client) {
+                    app.state::<State>()
+                        .pending
+                        .lock()
+                        .expect("tray intent")
+                        .take();
+                    *state.connection_error.lock().expect("connection error") = Some(error.into());
+                }
+                crate::app::show(app);
+                return;
+            }
+            Err(error) => {
+                *state.connection_error.lock().expect("connection error") = Some(error);
+                crate::app::show(app);
+                return;
+            }
+        }
+    }
+    *app.state::<State>().pending.lock().expect("tray intent") = Some(intent);
+    crate::app::show(app);
+    let _ = app.emit_to("main", "desktop-tray-intent", ());
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn row(root: &str, session: &str) -> Recent {
+        Recent {
+            root: root.into(),
+            session: session.into(),
+            title: session.into(),
+        }
+    }
+    #[test]
+    fn recents_follow_open_order_across_projects_and_title_refresh_does_not_reorder() {
+        let mut rows = Vec::new();
+        for (root, session) in [("/a", "1"), ("/b", "2"), ("/a", "3"), ("/c", "4")] {
+            remember(&mut rows, row(root, session), true);
+        }
+        assert_eq!(
+            rows.iter().map(|r| r.session.as_str()).collect::<Vec<_>>(),
+            ["4", "3", "2"]
+        );
+        let mut changed = row("/b", "2");
+        changed.title = "renamed".into();
+        remember(&mut rows, changed, false);
+        assert_eq!(rows[0].session, "4");
+        assert_eq!(rows[2].title, "renamed");
+        remember(&mut rows, row("/b", "2"), true);
+        assert_eq!(
+            rows.iter().map(|r| r.session.as_str()).collect::<Vec<_>>(),
+            ["2", "4", "3"]
+        );
+        assert_ne!(item_id(&row("/a", "1")), item_id(&row("/b", "1")));
+    }
+}

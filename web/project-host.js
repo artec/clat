@@ -224,7 +224,19 @@ function installTransientScrollbars() {
 
   function render() {
     if (host.active) tree.render(host.active, directory, views);
+    if (window.__TAURI__ && host.active?.view) {
+      const nav=host.active.view.navigation(), root=host.active.view.summary().root;
+      const row=nav.items.find(row=>row.id===nav.selected);
+      if(nav.ready&&root&&row)window.dispatchEvent(new CustomEvent('clat-desktop-conversation',{detail:{root,session:row.id,title:row.title||''}}));
+    }
   }
+
+  window.addEventListener('clat-desktop-open-conversation',event=>{
+    const {root,session}=event.detail||{};if(!window.__TAURI__||!root||!session)return;
+    void openConversation({root},session,false).catch(error=>{
+      CLATI18n.bind(host.active.root.querySelector('#project-directory-error'),'textContent',()=>error.message);
+    });
+  });
 
   window.addEventListener('popstate', () => {
     const route = currentRoute();

@@ -204,6 +204,7 @@ impl ServeShared {
         let app = self.app.lock().expect("application lock");
         app.next_turn_queue().is_empty()
             && app.pending_inputs().items.is_empty()
+            && !app.development().has_live_work()
             && !app.has_background_jobs()
             && !app.has_automatic_work()
     }

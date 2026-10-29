@@ -1,0 +1,31 @@
+{
+  "name": "clat-development-widgets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts"
+  },
+  "dependencies": {
+    "codemirror": "6.0.2",
+    "@codemirror/lang-javascript": "6.2.4",
+    "@codemirror/lang-rust": "6.0.2",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-html": "6.4.11",
+    "@codemirror/lang-css": "6.3.1",
+    "@codemirror/lang-markdown": "6.3.4",
+    "@codemirror/lang-python": "6.2.1",
+    "@codemirror/lang-yaml": "6.1.2",
+    "@codemirror/legacy-modes": "6.5.2",
+    "@codemirror/merge": "6.11.2",
+    "@xterm/xterm": "5.5.0",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-search": "0.15.0",
+    "@xterm/addon-unicode11": "0.8.0",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/language": "6.13.1",
+    "@lezer/highlight": "1.2.5",
+    "@codemirror/search": "6.7.2"
+  }
+}

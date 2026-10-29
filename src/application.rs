@@ -48,7 +48,9 @@ mod compaction;
 mod composition;
 mod content_views;
 mod context;
+mod development;
 mod discovery;
+pub use development::{DevelopmentService, GitModel, OperationView};
 mod files;
 mod library;
 mod session_organization;
@@ -291,6 +293,7 @@ pub enum ApplicationEvent {
 }
 
 pub struct TrustedProjectApplication {
+    development: Arc<crate::development::DevelopmentService>,
     web: Arc<crate::web_tools::WebService>,
     history: Arc<crate::session_query::SessionQueryService>,
     jobs: Arc<crate::background_jobs::JobRegistry>,

@@ -90,7 +90,7 @@ function installScheduledWork() {
   async function run(rule){const key=rule.id+':'+rule.revision;if(!requests.has(key))requests.set(key,crypto.randomUUID());try{await rpc('schedule.run_now',{id:rule.id,revision:rule.revision,request_id:requests.get(key)});requests.delete(key);await taskCenter.refresh();}catch(error){taskCenter.fail(error);}}
   taskCenter.register({duplicate:rule=>{void open().then(()=>{fields.title.value=rule.spec.title||'';fields.instruction.value=rule.spec.instruction;for(const [key,value]of Object.entries(rule.spec.budget))fields[key].value=value;dialog.dataset.unsaved='true';});},create:(example)=>{void open().then(()=>{if(typeof example==='string'){fields.title.value=pageText(example);fields.instruction.value=pageText(example+'_prompt');dialog.dataset.unsaved='true';}});},edit:open,review,change,run});
   const trigger=sidebarToolButton('schedules-open','schedule',()=>CLATI18n.msg('schedule.open'));trigger.hidden=true;trigger.onclick=()=>taskCenter.openSchedules();document.querySelector('.sidebar-footer').append(trigger);
-  const interactions=el('section','schedule-interactions');taskCenter.page.prepend(interactions);
+  const interactions=el('section','schedule-interactions');taskCenter.interactionHost.prepend(interactions);
   window.addEventListener('clat:job-authorize',event=>{taskCenter.openSchedules();void open(null,event.detail);});
   form.addEventListener('input',()=>{dialog.dataset.unsaved='true';});
   form.append(pageAction('discard',()=>{drafts.delete(draftKey);delete dialog.dataset.unsaved;dialog.close();}));

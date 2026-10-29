@@ -72,8 +72,8 @@ function createConversationReader(parent, reference, {trusted = false, editable 
     }
   }
   if (editable) installReaderDraft(parent, reference, status, current);
-  void load();
-  return {dispose: () => { epoch++; }, refresh: () => load()};
+  const ready=load();
+  return {ready,dispose: () => { epoch++; }, refresh: () => load()};
 }
 function installReaderDraft(parent, reference, status, current) {
   const owner = workspacePrefix + ':' + reference.session;

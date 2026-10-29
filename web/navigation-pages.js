@@ -7,6 +7,7 @@ function presentPage(node) { workbenchShell?.show(node.id); }
 function leavePage(node) {
   const seat = navigationPages.get(node.id);
   if (!seat?.active) return;
+  node.dispatchEvent(new Event('clat:page-capture'));
   seat.scrollTop = workbenchShell?.pageHost?.scrollTop || 0;
   seat.active = false; node.classList.add('hidden'); node.hidden = true;
   node.dispatchEvent(new Event('clat:page-leave'));
@@ -56,9 +57,9 @@ function setupSettingsSections() {
   dom['settings-dialog'].addEventListener('clat:page-leave', pageSettingsLeave);
 }
 function settingsScope(category) {
-  if (category === 'appearance') return pageText('client_scope');
+  if (category === 'appearance' || category === 'terminal') return pageText('client_scope');
   if (category === 'permissions') return pageText('session_scope', {project: permissionEditTarget?.project||state.workbench?.project?.root||'', session: permissionEditTarget?.session||state.sessionId||CLATI18n.msg('web.fresh')});
-  if (category === 'projects') return pageText('project_scope');
+  if (category === 'projects' || category === 'git') return pageText('project_scope');
   if (category === 'desktop') return pageText('app_scope');
   return pageText('host_scope');
 }
@@ -69,7 +70,7 @@ function setupSettingsDirtyProtection() {
   settings.addEventListener('focusin',event=>{const section=event.target.closest('[data-settings-panel]');if(section&&!section.dataset.unsaved)capture(section);});
   settings.addEventListener('input',event=>{
     const section=event.target.closest('[data-settings-panel]');
-    if(!section||section.dataset.settingsPanel==='appearance')return;
+    if(!section||['appearance','terminal','git'].includes(section.dataset.settingsPanel))return;
     if(section.dataset.settingsPanel==='permissions'&&!permissionEditTarget)permissionEditTarget={project:state.workbench?.project?.root,session:state.sessionId,generation:state.selectionGeneration};
     section.dataset.unsaved='true';
     let bar=section.querySelector('.settings-draft-bar');
@@ -85,7 +86,7 @@ function setupSettingsDirtyProtection() {
 
 let acknowledgeSettingsSave = () => {};
 function installNavigationPages() {
-  setupWebAbout(); setupProjectPicker(); setupWechatUsers(); setupPluginTabs(); installTaskNotifications();
+  setupWebAbout(); setupProjectPicker(); setupWechatUsers(); installTaskNotifications();
   setupSettingsSections(); acknowledgeSettingsSave = setupSettingsDirtyProtection();
   const scope = el('p', 'page-scope current-permission');
   CLATI18n.bind(scope, 'textContent', () => pageText('effective_permission', {mode: state.workbench?.permission?.mode || 'workspace-write'}));

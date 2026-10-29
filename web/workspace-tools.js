@@ -6,16 +6,8 @@ function installWorkspaceTools(shell) {
   const seats = new Map(); let selected = null, active = false, owner = state.sessionId, navigating = false;
   const label = () => selected ? experienceText(seats.get(selected).key) : '';
   const host = el('section', 'workspace-tool-host hidden'); host.id = 'workspace-tool-host';
-  const tabs = el('nav', 'workspace-tabs hidden'); tabs.setAttribute('role', 'tablist');
-  CLATI18n.attribute(tabs, 'aria-label', () => CLATI18n.msg('workflow.workspace_views'));
-  const chat = shellButton('workspace-chat-tab', 'chat', () => CLATI18n.msg('web.conversation'), () => showChat());
-  const tool = shellButton('workspace-tool-tab', 'tools', () => label(), () => {activate();route();});
-  const chatStatus=el('small','workspace-chat-status');chatStatus.setAttribute('role','status');chat.append(chatStatus);
+  const {tabs,chat,tool,close,chatStatus}=createWorkspaceTabs(label,()=>showChat(),()=>{activate();route();},()=>dispose());
   let unread=false,pending=0;
-  const close = shellButton('workspace-tool-close', 'close', () => CLATI18n.msg('common.close'), () => dispose());
-  close.replaceChildren(document.createTextNode('×'));
-  for (const tab of [chat, tool]) tab.setAttribute('role', 'tab');
-  const group = el('div', 'workspace-tool-tab'); group.append(tool, close); tabs.append(chat, group);
   const content = document.getElementById('content-area'); content.prepend(tabs); content.append(host);
   const conversation = document.getElementById('conversation-page');
   function route() { if (!navigating && context.isActive()) context.navigatePage(active ? 'workbench?tool=' + seats.get(selected).key + '&session=' + encodeURIComponent(owner || '') : 'workbench'); }
@@ -48,7 +40,14 @@ function installWorkspaceTools(shell) {
     if (selected !== id) suspend();
     selected = id; activate(); route();
   }
-  function resetOwner(){ suspend();selected=null;owner=state.sessionId;unread=false;for(const seat of seats.values()){delete seat.node.dataset.loaded;delete seat.node.dataset.detail;seat.scrolls=[];seat.node.dispatchEvent(new Event('clat:tool-reset'));}sync(); }
+  function resetOwner(){
+    const projectTool=selected&&['files','changes'].includes(seats.get(selected).key);
+    if(!projectTool){suspend();selected=null;}owner=state.sessionId;unread=false;
+    for(const seat of seats.values()){
+      if(['files','changes'].includes(seat.key))continue;
+      delete seat.node.dataset.loaded;delete seat.node.dataset.detail;seat.scrolls=[];seat.node.dispatchEvent(new Event('clat:tool-reset'));
+    }sync();
+  }
   function dispose() { showChat(false); selected = null; sync(); route(); document.getElementById('tools-open')?.focus({preventScroll:true}); }
   installWorkspaceToolKeys({tabs,close,chat,tool,isActive:()=>active,showChat});
   window.addEventListener('clat:workbench-updated', () => {
@@ -72,7 +71,7 @@ function installWorkspaceTools(shell) {
     restore(params) {
       navigating = true;
       try { const seat = [...seats].find(([,value]) => value.key === params.get('tool'));
-        if (seat && (params.get('session') || '') === (state.sessionId || '')) open(seat[0]); else showChat(false);
+        if (seat && (['files','changes'].includes(seat[1].key)||(params.get('session') || '') === (state.sessionId || ''))) open(seat[0]); else showChat(false);
       } finally { navigating = false; }
     },
     global() { suspend(); tabs.classList.add('hidden'); host.classList.add('hidden'); delete dom.app.dataset.tool; },
@@ -103,4 +102,17 @@ function mountWorkspaceToolRegion(node,host,tabId){
 function updateWorkspaceConversationStatus(chat,status,pending,running,unread){
   chat.dataset.pending=String(Boolean(pending));
   CLATI18n.bind(status,'textContent',()=>pending?CLATI18n.msg('workflow.pending_count',{count:pending}):running?CLATI18n.msg('web.running_short'):unread?workflowText('updated'):'');
+}
+
+function createWorkspaceTabs(label,showChat,openTool,dispose){
+  const tabs = el('nav', 'workspace-tabs hidden'); tabs.setAttribute('role', 'tablist');
+  CLATI18n.attribute(tabs, 'aria-label', () => CLATI18n.msg('workflow.workspace_views'));
+  const chat = shellButton('workspace-chat-tab', 'chat', () => CLATI18n.msg('web.conversation'), showChat);
+  const tool = shellButton('workspace-tool-tab', 'tools', () => label(), openTool);
+  const chatStatus=el('small','workspace-chat-status');chatStatus.setAttribute('role','status');chat.append(chatStatus);
+  const close = shellButton('workspace-tool-close', 'close', () => CLATI18n.msg('common.close'), dispose);
+  close.replaceChildren(document.createTextNode('×'));
+  for (const tab of [chat, tool]) tab.setAttribute('role', 'tab');
+  const group = el('div', 'workspace-tool-tab'); group.append(tool, close); tabs.append(chat, group);
+  return {tabs,chat,tool,close,chatStatus};
 }

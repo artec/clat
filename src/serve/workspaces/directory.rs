@@ -25,3 +25,46 @@ pub(super) fn read(projects: &Projects) -> Value {
         .collect::<Vec<_>>();
     json!({"projects":entries})
 }
+
+impl super::WorkspaceHost {
+    pub(super) fn terminal_directory(&self) -> Result<Value, super::RpcError> {
+        let (sources, routes) = {
+            let projects = self.projects.lock().expect("host projects");
+            let routes = projects
+                .routes
+                .iter()
+                .map(|(id, shared)| {
+                    (
+                        shared
+                            .app
+                            .lock()
+                            .expect("application")
+                            .workspace_directory_entry()
+                            .root,
+                        id.clone(),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            (projects.application.terminal_directory_sources(), routes)
+        };
+        let rows = sources
+            .into_iter()
+            .map(|(project, service)| {
+                let mut row = json!(project);
+                row["route_id"] = json!(routes.get(&project.root));
+                match service.request("terminal.list", json!({}), None) {
+                    Ok(value) => row["terminals"] = value["terminals"].clone(),
+                    Err(error) => {
+                        row["terminals"] = json!([]);
+                        row["error"] = json!(error);
+                        row["presentation"] = json!(
+                            crate::application::DevelopmentService::error_presentation(&error)
+                        );
+                    }
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({"projects":rows}))
+    }
+}

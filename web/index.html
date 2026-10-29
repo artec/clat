@@ -10,6 +10,9 @@
 <link rel="stylesheet" href="/workbench.css">
 <link rel="icon" href="/icons/icon-192.png">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/development-vendor.css">
+<link rel="stylesheet" href="/development.css">
+<link rel="stylesheet" href="/navigation.css">
 </head>
 <body>
 <template id="project-template">
@@ -73,7 +76,6 @@
     </button>
 
     <label class="session-search sidebar-expanded-only" for="session-search">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
       <input id="session-search" type="search" placeholder="Session title or ID" data-i18n-placeholder="web.session_title_or_id" autocomplete="off"
              aria-label="Find a session by title or ID" data-i18n-aria-label="web.find_a_session_by_title_or_id">
       <kbd>/</kbd>
@@ -488,6 +490,7 @@
 
 </template>
 <div id="project-view" class="project-view"></div>
+<script src="/development-vendor.js"></script>
 <script src="/i18n.js"></script>
 <script src="/workbench-state.js"></script>
 <script src="/project-context.js"></script>

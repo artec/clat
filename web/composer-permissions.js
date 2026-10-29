@@ -18,8 +18,8 @@ function installComposerPermissions() {
   popup.setAttribute('role', 'dialog'); CLATI18n.attribute(popup, 'aria-label', () => CLATI18n.msg('web.permission_mode'));
   trigger.setAttribute('aria-haspopup', 'dialog'); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', popup.id);
   const heading = el('div', 'usage-row');
-  const currentLabel = el('span');
-  heading.append(el('span', '', () => CLATI18n.msg('web.permission_mode')), currentLabel);
+  const status = el('span', 'permission-popup-status'); status.setAttribute('role', 'status'); status.hidden = true;
+  heading.append(el('span', '', () => CLATI18n.msg('web.permission_mode')), status);
   const options = el('fieldset', 'composer-permission-options');
   CLATI18n.attribute(options, 'aria-label', () => CLATI18n.msg('web.permission_mode'));
   const confirmation = el('label', 'composer-permission-confirm'); confirmation.hidden = true;
@@ -27,10 +27,9 @@ function installComposerPermissions() {
   confirmation.append(checkbox, el('span', '', () => CLATI18n.msg('web.i_understand_that_full_access_removes_tool_approval_prompts')));
   const apply = el('button', 'primary permission-apply', () => CLATI18n.msg('web.apply_permission_mode')); apply.type = 'button'; apply.hidden = true;
   const error = el('p', 'error'); error.setAttribute('role', 'alert'); error.hidden = true;
-  const status = el('p', 'permission-popup-status'); status.setAttribute('role', 'status'); status.hidden = true;
-  popup.append(heading, el('small', '', () => CLATI18n.msg('web.this_is_a_session_property_changes_apply_at_the_next_tool_permission_check')), options, confirmation, apply, error, status);
+  popup.append(heading, el('small', '', () => CLATI18n.msg('web.this_is_a_session_property_changes_apply_at_the_next_tool_permission_check')), options, confirmation, apply, error);
   seat.append(popup);
-  const view = composerPermissions = { trigger, popup, currentLabel, options, confirmation, checkbox, apply, error, status, rows: [], target: null, selected: null, saving: false };
+  const view = composerPermissions = { trigger, popup, options, confirmation, checkbox, apply, error, status, rows: [], target: null, selected: null, saving: false };
   for (const item of COMPOSER_PERMISSIONS) addComposerPermissionOption(view, item);
   view.popover = attachComposerPopup(seat, trigger, popup, prepareComposerPermissions, 'left', { onClose: () => { view.target = null; checkbox.checked = false; } });
   trigger.onclick = view.popover.toggle;
@@ -64,8 +63,6 @@ function syncComposerPermissionControls() {
   const view = composerPermissions; if (!view) return;
   if (view.target && (view.target.session !== state.sessionId || view.target.generation !== state.selectionGeneration)) { view.popover.close(); return; }
   const current = state.workbench?.permission?.mode;
-  const item = COMPOSER_PERMISSIONS.find(option => option.mode === current);
-  CLATI18n.bind(view.currentLabel, 'textContent', () => CLATI18n.msg('web.' + (item?.label || 'permission_mode')));
   const blocked = view.saving || state.switching || state.desktopUpdateLocked || !current;
   view.options.disabled = Boolean(blocked);
   for (const { radio, label } of view.rows) {

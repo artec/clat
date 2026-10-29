@@ -81,6 +81,7 @@ pub fn save(
     }
     #[cfg(target_os = "macos")]
     menu(app).map_err(|e| e.to_string())?;
+    crate::tray::refresh(app).map_err(|e| e.to_string())?;
     Ok(payload(app))
 }
 #[cfg(target_os = "macos")]

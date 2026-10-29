@@ -110,6 +110,33 @@ pub(crate) fn verify_index_with_key(
 mod tests {
     use super::*;
     #[test]
+    fn tray_navigation_commands_are_admitted_for_the_main_workbench() {
+        let capability: Value =
+            serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+        let manifest = include_str!("../build.rs").replace("\r\n", "\n");
+        for command in [
+            "desktop_remember_conversation",
+            "desktop_take_tray_intent",
+            "desktop_fonts",
+        ] {
+            assert!(
+                manifest.contains(&format!("\"{command}\"")),
+                "{command} must be declared in the application ACL manifest"
+            );
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                permissions.iter().any(|entry| entry == &permission),
+                "the main workbench must be allowed to call {command}"
+            );
+        }
+        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["remote"]["urls"],
+            serde_json::json!(["http://127.0.0.1:2691/*"])
+        );
+    }
+    #[test]
     fn page_allowlist_has_exact_origin_and_no_userinfo() {
         for url in [
             "http://127.0.0.1:2691/",

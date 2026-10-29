@@ -10,6 +10,91 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/plugin-review.js",
+        include_bytes!("../../web/plugin-review.js"),
+        "application/javascript",
+    ),
+    (
+        "/extension-view.js",
+        include_bytes!("../../web/extension-view.js"),
+        "application/javascript",
+    ),
+    (
+        "/navigation-view.js",
+        include_bytes!("../../web/navigation-view.js"),
+        "application/javascript",
+    ),
+    (
+        "/navigation.css",
+        include_bytes!("../../web/navigation.css"),
+        "text/css",
+    ),
+    (
+        "/development-terminal-view.js",
+        include_bytes!("../../web/development/terminal-view.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-appearance.js",
+        include_bytes!("../../web/development/appearance.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-editor-drafts.js",
+        include_bytes!("../../web/development/editor-drafts.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-licenses.txt",
+        include_bytes!("../../web/vendor/THIRD-PARTY-NOTICES.txt"),
+        "text/plain; charset=utf-8",
+    ),
+    (
+        "/development-vendor.js",
+        include_bytes!("../../web/vendor/dist/entry.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-vendor.css",
+        include_bytes!("../../web/vendor/dist/entry.css"),
+        "text/css",
+    ),
+    (
+        "/development.css",
+        include_bytes!("../../web/development/style.css"),
+        "text/css",
+    ),
+    (
+        "/development-common.js",
+        include_bytes!("../../web/development/common.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-settings.js",
+        include_bytes!("../../web/development/settings.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-editor.js",
+        include_bytes!("../../web/development/editor.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-file-actions.js",
+        include_bytes!("../../web/development/file-actions.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-git.js",
+        include_bytes!("../../web/development/git.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-terminal.js",
+        include_bytes!("../../web/development/terminal.js"),
+        "application/javascript",
+    ),
+    (
         "/workflow-view.js",
         include_bytes!("../../web/workflow-view.js"),
         "application/javascript",
@@ -284,6 +369,16 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
 // Source modules keep their zero-build authoring surface. A normal function
 // gives each mounted project lexical ownership without eval, imports or frames.
 const PROJECT_MODULES: &[&str] = &[
+    "/navigation-view.js",
+    "/development-editor-drafts.js",
+    "/development-common.js",
+    "/development-appearance.js",
+    "/development-settings.js",
+    "/development-editor.js",
+    "/development-file-actions.js",
+    "/development-git.js",
+    "/development-terminal-view.js",
+    "/development-terminal.js",
     "/workspace-tools.js",
     "/composer-popovers.js",
     "/composer-permissions.js",
@@ -309,6 +404,8 @@ const PROJECT_MODULES: &[&str] = &[
     "/work-mode.js",
     "/navigation-help.js",
     "/task-review.js",
+    "/extension-view.js",
+    "/plugin-review.js",
     "/plugin-market.js",
     "/background-jobs.js",
     "/scheduled-work.js",

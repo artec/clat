@@ -231,6 +231,15 @@ function renderMarkdown(container, source) {
 }
 
 const ICON_PATHS = {
+  file: ['M5 3h9l5 5v13H5Z','M14 3v6h5'],
+  bookmark: ['M6 3h12v18l-6-4-6 4Z'],
+  search: ['M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Z', 'm16 16 5 5'],
+  plus: ["M12 5v14M5 12h14"],
+  "chevron-down": ["m6 9 6 6 6-6"],
+  refresh: ["M20 11a8 8 0 1 0-2 7M20 4v7h-7"],
+  edit: ["m16 3 5 5-12 12-6 1 1-6Z","m14 5 5 5"],
+  trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
+  terminal: ['M4 5h16v14H4z','m8 9 3 3-3 3','M13 15h4'],
   chat: ['M4 4h16v12H9l-5 4V4Z', 'M8 8h8M8 12h5'],
   panel: ['M3 5h18v14H3zM9 5v14'],
   close: ['m6 6 12 12M18 6 6 18'],
@@ -258,7 +267,7 @@ const ICON_PATHS = {
   tool: ['m14 6 4 4-8 8-4 1 1-4z', 'm13 7 4 4'],
   tools: ['M21 7.5a6 6 0 0 1-8.1 5.6l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8A6 6 0 0 1 16.5 3L13 6.5l4.5 4.5L21 7.5Z'],
   trace: ['M5 17 9 9l4 6 3-10 3 12', 'M4 20h16'],
-  info: ['M12 8h.01M11 12h1v5h1'],
+  info: ['M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z', 'M12 7h.01M10 11h2v6m-2 0h4'],
   check: ['m5 12 4 4L19 6'],
   wasm: ['M5 5h14v14H5z', 'M9 9h6v6H9z'],
   mcp: ['M4 12h5m6-5h5m-5 10h5', 'M9 12l6-5m-6 5 6 5'],
@@ -482,6 +491,7 @@ for (const id of [
 ]) {
   dom[id] = document.getElementById(id);
 }
+dom['session-search'].before(svgIcon('search'));
 
 // The desktop shell asks synchronously before starting an installation wait.
 // No RPC or draft mutation is performed by these display-only guards.
@@ -522,6 +532,9 @@ function authHeaders() {
 }
 
 async function rpc(method, params) {
+  if ((method.startsWith('editor.') || method.startsWith('terminal.')) && params?.clientId) {
+    await developmentClientSession.ready;params={...params,clientId:developmentClientSession.id};
+  }
   if (Number.isSafeInteger(state.selectionGeneration) && [
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
     'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set', 'turn.restore', 'session.organize',
@@ -548,6 +561,7 @@ async function rpc(method, params) {
   error.code = (body.error && body.error.code) || 'internal';
   error.authentication = body.error && body.error.authentication;
   error.presentation = presentation;
+  error.technical = raw;
   throw error;
 }
 
@@ -2677,12 +2691,7 @@ const MARKET_FALLBACK = [
 const pluginMarket = installPluginMarket();
 
 function renderMarket() {
-  const query = dom['market-search'].value.trim().toLocaleLowerCase();
-  const packages = state.marketPackages.filter((plugin) => {
-    const haystack = [plugin.id, plugin.name, plugin.summary, ...(plugin.tags || [])]
-      .join(' ').toLocaleLowerCase();
-    return !query || haystack.includes(query);
-  });
+  const packages=state.marketPackages;
   dom['market-list'].replaceChildren();
   for (const plugin of packages) {
     const card = el('article', 'market-item');
@@ -2709,6 +2718,7 @@ function renderMarket() {
   if (packages.length === 0) {
     dom['market-list'].appendChild(el('div', 'market-item market-empty', () => (CLATI18n.msg("web.no_matching_plugins", {}, "No matching plugins."))));
   }
+  pluginMarket.presentCatalog([...dom['market-list'].children].slice(0,packages.length),packages);
   const source = state.marketFallback ? CLATI18n.msg("web.built_in_preview_pi_at_cn_unavailable", {}, "built-in preview · pi.at.cn unavailable") : CLATI18n.msg("web.public_catalog", {}, "public catalog");
   CLATI18n.bind(dom['market-status'], "textContent", () => CLATI18n.msg("web.dynamic_value_of_value_value", {value1:(packages.length),value2:(state.marketPackages.length),value3:(source)}, "{value1} of {value2} · {value3}"));
 }
@@ -2793,7 +2803,6 @@ function normalizeMarketCatalog(catalog) {
 }
 
 function openMarket() {
-  dom['market-search'].value = '';
   if (!pageIsOpen(dom['market-dialog'])) presentPage(dom['market-dialog']);
   void loadMarket();
   void pluginMarket.refresh();
@@ -2804,7 +2813,7 @@ function openMarket() {
 
 dom['market-open'].addEventListener('click', openMarket);
 
-dom['market-search'].addEventListener('input', renderMarket);
+
 
 function isMobile() { return window.innerWidth <= MOBILE_BREAKPOINT; }
 
@@ -3975,6 +3984,7 @@ installConversationFind();
   installWorkspaceReview();
   installTurnReview();
   installFileBrowser();
+  developmentTerminal = installDevelopmentTerminal();
   installSessionOrganization();
   installWorkflowDetails();
   installNavigationHelp();
@@ -3982,6 +3992,7 @@ installConversationFind();
   installWorkbenchTools();
   installWorkbenchShell();
   installNavigationPages();
+  installDevelopmentSettings();
 
 const composerSeat = document.querySelector('.conversation');
 const composer = document.querySelector('.composer');

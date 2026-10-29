@@ -1,0 +1,54 @@
+.dev-actions,.dev-editor-toolbar,.dev-group-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dev-confirm{max-width:500px;border:1px solid var(--line-strong);border-radius:16px;background:var(--surface);color:var(--text);padding:24px;box-shadow:var(--shadow)}
+.dev-confirm::backdrop{background:#0006}
+.dev-confirm .dev-actions{justify-content:flex-end;margin-top:24px}
+.dev-editor .review-patch,.dev-git .review-patch{padding:0;overflow:hidden}
+.dev-editor-detail,.dev-git-detail{display:flex;flex-direction:column;min-width:0;min-height:0}
+.dev-file-tabs{display:flex;flex:none;overflow:auto;border-bottom:1px solid var(--line)}
+.dev-file-tab{display:flex;align-items:center;flex:none;border-right:1px solid var(--line);border-bottom:2px solid transparent}
+.dev-file-tab.is-selected{border-bottom-color:var(--accent);background:var(--surface-raised)}
+.dev-file-tab .ghost{white-space:nowrap;font-size:12px;padding:10px 12px}
+.dev-file-tab .icon-button{width:25px;height:25px;min-height:0;font-size:15px}
+.dev-editor-toolbar{padding:7px 12px;border-bottom:1px solid var(--line)}
+.dev-editor-path{flex-basis:100%;font-size:12px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev-editor-toolbar button,.dev-actions button{font-size:12px;min-height:28px;padding:4px 8px}
+.dev-editor-mount,.dev-diff-mount{flex:1;min-height:0;min-width:0;overflow:hidden;position:relative}
+.dev-editor-mount>.cm-editor,.dev-diff-mount>.cm-editor{height:100%}
+.cm-mergeView{height:100%;overflow:auto}.cm-mergeViewEditors{height:100%;min-height:0}.cm-mergeViewEditor{overflow:hidden}
+.dev-conflict{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;background:color-mix(in srgb,var(--accent) 15%,var(--surface));border-bottom:1px solid var(--line);font-size:12px}
+.dev-commit-form{display:grid;grid-template-columns:1fr auto;gap:8px;padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.dev-commit-form textarea{grid-column:1/-1;min-height:85px;resize:vertical;width:100%;font-size:13px;background:var(--surface-input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px}
+.dev-commit-form select{grid-column:1/-1}.dev-commit-form button{min-width:0;font-size:12px}
+.dev-git-result{grid-column:1/-1;font-size:12px}.dev-git-result pre{white-space:pre-wrap;overflow:auto;max-height:180px;margin-bottom:0}
+.dev-group-heading{justify-content:space-between}.dev-group-heading h3{font-size:12px;color:var(--text-muted)}
+.dev-git-file{display:flex;align-items:center;gap:5px}.dev-git-file>.review-file{flex:1;min-width:0}.dev-git-file>.ghost{font-size:11px;flex:none}
+.dev-git-detail>.dev-actions{padding:12px 16px;border-bottom:1px solid var(--line)}
+.dev-git-detail .dev-diff-mount{min-height:160px}.dev-git-detail>pre{margin:16px;overflow:auto}
+.dev-technical{padding:12px}.dev-technical pre{white-space:pre-wrap;font-size:12px}
+.dev-terminal-page.hidden{display:none!important}
+.terminal-project-list{flex:1;min-height:0;overflow:auto;padding:8px 8px 24px}
+.terminal-project-list .project-directory-row{padding:8px 4px}
+.terminal-project-list .project-group .session-list .session-item{display:grid;grid-template-columns:18px minmax(0,1fr);align-items:center;gap:10px;min-height:36px;padding:7px 36px 7px 12px}
+.terminal-project-list .session-more{display:flex;align-items:center;justify-content:center;gap:0;width:28px;height:28px;min-height:28px;padding:0}
+.terminal-project-list .session-item>svg{width:18px;height:18px;color:var(--text-muted);align-self:center}
+.terminal-project-list .session-item[data-phase="running"]>svg{color:var(--success)}
+.terminal-project-list .project-group-head>.icon-button{width:24px;min-width:24px;padding:3px;min-height:28px}
+.terminal-project-list .project-group-head>.icon-button:first-child[aria-expanded="false"] svg{transform:rotate(-90deg)}
+.terminal-state{flex:1;font-size:var(--text-size-secondary);color:var(--text-muted)}
+.dev-terminal-mount{flex:1;min-height:0;min-width:0;position:relative;overflow:hidden;margin:0 16px 12px}
+.dev-terminal-screen{position:absolute;inset:0;overflow:hidden}.dev-terminal-screen[hidden]{display:none}
+.terminal-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted)}
+.terminal-empty>svg{width:36px;height:36px}
+.app[data-page='terminal'][data-sidebar='collapsed'] .terminal-sidebar{visibility:hidden;pointer-events:none}
+.dev-licenses{margin-top:24px;max-width:720px}.dev-licenses pre{max-height:320px;overflow:auto;white-space:pre-wrap;font-size:12px;padding:16px;background:var(--surface-input);border-radius:8px}
+.dev-setting{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:12px 0;max-width:620px}.dev-setting>input,.dev-setting>select{width:240px}
+.shell-pages .settings-section>.dev-font-setting{width:100%;max-width:none;margin:0;padding:14px 0}
+.dev-font-controls{display:flex;gap:8px;width:min(540px,78%);min-width:0}
+.dev-font-controls>select{flex:1;min-width:0;width:0}
+.dev-font-controls>input{flex:1.3;min-width:0;width:0}
+.dev-terminal-preview{height:220px;max-width:720px;margin-top:20px;border:1px solid var(--line);padding:12px;background:var(--surface);overflow:hidden}
+.xterm .xterm-viewport{scrollbar-color:transparent transparent!important}.xterm .xterm-viewport[data-scrollbar-active]{scrollbar-color:var(--line-strong) transparent!important}
+@media(max-width:760px){.dev-editor-toolbar{gap:4px}.dev-setting{align-items:flex-start;flex-direction:column}.dev-setting>input,.dev-setting>select{width:100%}}
+:root{--dev-token-keyword:#c792ea;--dev-token-string:#9ccc65;--dev-token-comment:#8b949e;--dev-token-number:#f78c6c;--dev-token-function:#82aaff;--dev-token-type:#ffcb6b}
+:root[data-theme='light']{--dev-token-keyword:#6f42c1;--dev-token-string:#267f36;--dev-token-comment:#6e7781;--dev-token-number:#b35900;--dev-token-function:#0550ae;--dev-token-type:#953800}
+@media(prefers-color-scheme:light){:root[data-theme='system']{--dev-token-keyword:#6f42c1;--dev-token-string:#267f36;--dev-token-comment:#6e7781;--dev-token-number:#b35900;--dev-token-function:#0550ae;--dev-token-type:#953800}}

@@ -708,3 +708,33 @@ Search's SQLite cache is disposable; schedules are not. Do not remove scheduler
 state during cache cleanup. Pausing/deleting future work does not falsify already
 admitted execution facts. Original-session journal ownership continues through
 the shared SessionService writer pool. See [scheduled work](schedules.md).
+
+### Human development state
+
+Project developer state lives under `<storage-root>/development/<canonical-root-hash>/`:
+editor operation receipts, client-isolated draft checkpoints, private recovery copies,
+Git preferences/operation receipts/discard backups, temporary frozen indexes and terminal
+metadata. These private JSON files are not session facts, DSH events or model context.
+Human editing does not rewrite journals or add repository files for UI recovery.
+
+Receipts are written before side effects. Pending/uncertain operations are reconciled or
+reported as unknown after restart, never automatically re-executed. Temporary Git indexes
+and commit-message files are removed after normal completion/cancellation. A crash may
+leave an unreferenced private temporary file, which is not executable authority. Drafts
+remain drafts on recovery, and external edits require explicit resolution. File/folder
+trash uses no-clobber moves and preserves the source if the filesystem cannot perform the
+move; cross-filesystem folder deletion may require the terminal. Discard backups preserve
+bytes, including binaries, and restore only against the captured post-discard version.
+
+Terminal metadata survives restart as ended records; input streams, credentials and live
+process handles do not. Output history is bounded Host memory and is not a durable shell
+transcript. Font/cursor preferences are client-device presentation state. Commit-language
+preferences are project state. Third-party widget notices are embedded at
+`/development-licenses.txt` and linked from Terminal settings.
+
+The terminal registry also retains compact removal tombstones and idempotent
+removal receipts in the same atomic JSON document. Removed identifiers are never
+reused by a retried create request. Listing all projects does not create shells
+or mount projects. Ended records remain until explicit removal; output is still
+bounded Host memory, not restored as a transcript after restart. Device font
+preferences use version 2 with system/bundled/custom selection and a family name.

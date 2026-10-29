@@ -52,6 +52,7 @@ function projectLifecycle() {
   }
   function deactivate() {
     saveComposerText();
+    window.dispatchEvent(new Event('clat:development-deactivated'));
     workbenchShell?.tools?.suspend();
     activeComposerPopup?.close();
     for (const seat of navigationPages.values()) if (seat.active) {
@@ -85,6 +86,8 @@ function projectLifecycle() {
   }
   return {
     activate, deactivate, navigateConversation,
+    openTerminal: id => developmentTerminal.selectById(id),
+    createTerminal: (directory,shell) => developmentTerminal.create(directory,shell),
     route:()=>dom.app.dataset.page||workbenchShell?.tools?.location()||'workbench',
     navigation: () => ({ items: state.sessions, selected: state.sessionId, ready: Boolean(ready()),
       locked: state.switching || state.compactionActive || state.desktopUpdateLocked,

@@ -173,7 +173,11 @@ workbench. macOS retains standard system editing/window menus. Completion and pe
 conversation text; clicking one opens its project and admitted session.
 
 Desktop controls use the page's external stylesheets on both the welcome page
-and Host workbench. They do not require inline styles or relaxed Host CSP.
+and Host workbench. The bundled terminal and editor also generate runtime style
+sheets for cell metrics, fonts, syntax colors and cursors. Host CSP permits these
+styles while scripts remain restricted to same-origin assets, without inline
+scripts or eval. Terminal font selection and a custom family name share one row
+below the section heading; unavailable local font faces report an error.
 The desktop panel closes with the top-right × button, which has a localized
 tooltip and accessible name; closing the panel does not stop the shared Host.
 Its corner positioning is owned by the native bridge and remains correct when
@@ -329,7 +333,14 @@ update lifecycle and unsent work, without pixel or layout comparisons. See
 [verification policy](testing.md#web-and-desktop-presentation-changes).
 
 `bun start` uses Cargo's debug/incremental cache in the workspace target directory;
-it does not build a release installer. Both backend and GUI use the same native
+after staging the backend it uses that binary's normal `host status` / `host stop`
+management commands to stop an existing Host and waits up to 30 seconds for it to
+go offline before launching Desktop. This development-only restart ends running
+Host tasks and terminals, just like manually invoking `clat host stop`; a failed
+stop cancels startup and never force-kills the process. No discoverable Host means
+there is nothing to stop. Installed Desktop and release builds keep their normal
+Host lifetime policy.
+It does not build a release installer. Both backend and GUI use the same native
 target and build environment. Cargo still checks source freshness on every start,
 but unchanged development backend resources and their manifest retain their
 timestamps, avoiding needless resource rebuilds. Release packaging still stages
@@ -382,3 +393,47 @@ pixel, wording or DOM-layout CI baselines.
 
 The compact workbench composer, extension modules, message timestamps, automatic
 next steps and context/allowance popover are described in [Using CLAT](usage.md#webdesktop-conversation-reading-and-next-steps).
+
+## Human development tools
+
+Files and Git reuse the shared project list/detail work area; Terminal has its own
+left-navigation page. They use the same Rust client ports as the browser, with no
+Desktop-only save/Git/process implementation. Project editor state survives conversation
+switches. Unsaved text can be quoted as an explicitly unsaved snapshot without saving
+the file. Terminal appearance is configurable in Settings, with a live glyph preview and local system font selection. No font files are
+bundled. See [usage](usage.md#project-editor-git-and-terminals)
+for workflows and recovery boundaries. Native macOS/Windows font, IME, keyboard and
+interactive terminal behavior is manually accepted separately from compilation.
+
+The welcome page uses the application's system UI typeface and responsive heading
+sizes. Headings wrap to the available width rather than using translation-embedded
+line breaks; status details remain readable and the Open Project button keeps its
+label and arrow together with consistent spacing.
+
+Desktop suppresses the WebView's default context menu across the welcome page and
+workbench. Application context menus continue to receive right-click events.
+Visual focus rings are hidden; DOM focus, text carets and keyboard navigation remain.
+
+### Tray navigation
+
+On macOS and Windows, left-clicking the CLAT tray icon shows the main window;
+right-clicking opens a native menu with Recent, Settings and Quit CLAT. Recent
+contains the last three conversations opened in this desktop client across all
+projects, labeled with conversation title and project name. Opening a conversation
+moves it to the top; a title update does not change the order. The list is retained
+in private desktop preferences, independently of session modification times and
+Agent execution. Newly enabled history accumulates as conversations are opened.
+Recent is a disabled group heading; the conversation entries below it are clickable.
+The native bridge records opened conversations through explicitly permitted Tauri
+commands; bridge failures are reported in desktop settings instead of being ignored.
+
+Selecting a recent conversation uses the existing project/session navigation and
+trust checks. Settings opens the existing settings view. Quit follows normal
+desktop exit/update safeguards and does not implicitly stop a shared Host. Native
+menu labels follow the desktop language preference.
+
+Terminal settings query the viewing device font library through the guarded
+`desktop_fonts` command, backed by Core Text on macOS and DirectWrite on Windows.
+Only family, face names, PostScript identifiers and monospace metadata cross the
+bridge; no font files or filesystem paths are exposed. The selector uses local
+font faces and validates loading before updating terminal appearance.

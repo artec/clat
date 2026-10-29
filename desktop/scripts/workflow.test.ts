@@ -6,7 +6,7 @@ import { assembleIndex } from './release-index';
 import { OwnerRelease } from './owner-release';
 import { LocalMacos } from './local-macos';
 import { DesktopRelease } from './release';
-import { build, start, startArgs } from './workflow';
+import { build, start, startArgs, stopDevelopmentHost } from './workflow';
 import { fixture, fixtureIndex, generateKey, remote, sign } from './test-support';
 
 afterEach(() => mock.restore());
@@ -29,11 +29,40 @@ test('start preserves local origins and locked Cargo runner', async () => {
   if (['darwin', 'win32'].includes(process.platform)) await fixture(async release => {
     const events: string[] = [];
     spyOn(release, 'stageBackend').mockImplementation(() => { events.push('stage'); });
+    spyOn(release, 'execute').mockImplementation(() => { throw new Error('no host'); });
     const result = await start(release, (_args, _cwd, env) => {
       expect(env).toEqual(release.buildEnv(nativeTarget()));
       events.push('launch'); return { exited: Promise.resolve(0), kill() {} };
     });
     expect(result).toBe(0); expect(events).toEqual(['stage', 'launch']);
+  });
+});
+test('development start stops an existing host before launch and aborts on stop failure', async () => {
+  if (!['darwin', 'win32'].includes(process.platform)) return;
+  await fixture(async release => {
+    spyOn(console, 'log').mockImplementation(() => {});
+    const calls: string[] = []; let online = true;
+    spyOn(release, 'stageBackend').mockImplementation(() => { calls.push('stage'); });
+    const execute = spyOn(release, 'execute').mockImplementation(args => {
+      expect(args[0]).toBe(join(release.desktop, 'resources', process.platform === 'win32' ? 'clat-backend.exe' : 'clat-backend'));
+      calls.push(args[2]!);
+      if (!online) throw new Error('offline');
+      if (args[2] === 'stop') online = false;
+      return '';
+    });
+    await start(release, () => { calls.push('launch'); return { exited: Promise.resolve(0), kill() {} }; });
+    expect(calls).toEqual(['stage', 'status', 'stop', 'status', 'launch']);
+    execute.mockImplementation(args => { if (args[2] === 'stop') throw new Error('stop rejected'); return ''; });
+    let launched = false;
+    await expect(start(release, () => { launched = true; throw new Error('must not launch'); })).rejects.toThrow('stop rejected');
+    expect(launched).toBe(false);
+  });
+});
+test('development host stop skips an absent host without issuing stop', async () => {
+  await fixture(async release => {
+    const execute = spyOn(release, 'execute').mockImplementation(() => { throw new Error('offline'); });
+    await stopDevelopmentHost(release, 'x86_64-pc-windows-msvc');
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });
 test('build only makes native unsigned package', async () => {

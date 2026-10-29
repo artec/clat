@@ -98,3 +98,7 @@ pub mod history {
 pub mod workflow {
     pub use crate::application::{PlanDocument, WorkflowIntent, WorkflowRequest};
 }
+
+pub mod development {
+    pub use crate::application::{DevelopmentService, GitModel, OperationView};
+}

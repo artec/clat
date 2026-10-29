@@ -23,6 +23,7 @@ pub(crate) mod approver;
 mod auth;
 mod automatic;
 mod conversation;
+mod development;
 mod http;
 mod inputs;
 mod models;
@@ -765,6 +766,9 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
     match request.method.as_str() {
         "GET" => match request.path.as_str() {
             "/api/events" => sse::handle(&mut stream, &shared),
+            path if path.starts_with("/api/terminal/") => {
+                development::stream(&mut stream, path, &shared)
+            }
             "/api/notifications" => notifications::handle(&mut stream, &shared),
             path => {
                 let _ = write_json(

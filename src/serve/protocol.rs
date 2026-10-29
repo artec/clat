@@ -23,6 +23,39 @@ use std::sync::mpsc;
 /// `workbench.info.methods` 与实际 dispatch 的同仓能力目录。新增方法
 /// 时必须同时进本表；测试钉住全集，避免 PWA 显示不存在的控制面。
 pub(crate) const RPC_METHODS: &[&str] = &[
+    "editor.open",
+    "editor.inspect",
+    "editor.save",
+    "editor.create",
+    "editor.rename",
+    "editor.delete",
+    "editor.restore",
+    "editor.drafts",
+    "editor.drafts.recover",
+    "editor.draft.save",
+    "editor.draft.delete",
+    "git.snapshot",
+    "git.backups",
+    "git.diff",
+    "git.branches",
+    "git.history",
+    "git.commit.detail",
+    "git.settings",
+    "git.settings.set",
+    "git.operation",
+    "git.cancel",
+    "git.start",
+    "terminal.directory",
+    "terminal.remove",
+    "terminal.removeEnded",
+    "terminal.list",
+    "terminal.shells",
+    "terminal.create",
+    "terminal.rename",
+    "terminal.claim",
+    "terminal.input",
+    "terminal.resize",
+    "terminal.close",
     "plugin.list",
     "plugin.market",
     "plugin.prepare",
@@ -380,6 +413,12 @@ pub(crate) fn dispatch(
             .upgrade()
             .ok_or_else(|| RpcError::not_found("host unavailable"))?;
         return host.dispatch(method, params);
+    }
+    if method.starts_with("editor.")
+        || method.starts_with("git.")
+        || method.starts_with("terminal.")
+    {
+        return super::development::dispatch(method, params, shared);
     }
     if method == "question.respond" {
         return super::questions::respond(shared, params);

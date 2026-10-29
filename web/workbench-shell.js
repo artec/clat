@@ -20,6 +20,7 @@ function createShellRail(shell) {
   const logo = el('span', 'clat-status-icon'); logo.setAttribute('aria-hidden', 'true');
   home.querySelector('svg').replaceWith(logo); links.append(home);
   for (const [id, icon, label, run] of [
+    ['nav-terminal', 'terminal', 'terminal', () => shell.open('terminal-page')],
     ['nav-resources', 'folder', 'resources', () => shell.open('resources-dialog')],
     ['nav-tasks', 'schedule', 'tasks', () => shell.open('jobs-dialog')],
     ['nav-history', 'history', 'history', () => shell.open('history-dialog')],
@@ -43,6 +44,7 @@ function createShellPages(shell) {
     ['jobs-dialog', 'jobs-open', 'tasks'],
     ['history-dialog', 'history-open', 'history'], ['help-dialog', 'help-open', 'help'],
     ['resources-dialog', 'resources-open', 'resources'],
+    ['terminal-page', 'terminal-open', 'terminal'],
   ]) shell.mount(id, trigger, route, host, 'page');
   return host;
 }

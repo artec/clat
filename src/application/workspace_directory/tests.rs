@@ -95,3 +95,33 @@ fn workspace_directory_keeps_persistent_identity_after_unmount_and_cold_reopen()
     drop(reopened);
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn terminal_directory_sources_do_not_mount_or_create_project_sessions() {
+    let (root, mut host, _, _) = fixture("terminal-directory-lazy");
+    let missing = root.join("not-present");
+    host.storage
+        .control
+        .register_workspace(missing.to_str().unwrap(), "Missing", &[])
+        .unwrap();
+    let before = host.project_roots();
+    let sources = host.terminal_directory_sources();
+    assert_eq!(sources.len(), 2);
+    for (_, service) in &sources {
+        assert!(
+            service
+                .request("terminal.list", serde_json::json!({}), None)
+                .unwrap()["terminals"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!service.has_live_work());
+    }
+    assert!(!missing.exists());
+    assert_eq!(before, host.project_roots());
+    drop(sources);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}
