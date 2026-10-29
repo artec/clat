@@ -7,14 +7,14 @@ use crate::session::{
     use_cases::SessionService,
 };
 use std::path::PathBuf;
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
-    service: SessionQueryService,
-    backend: JsonlBackend,
-    _sessions: Arc<SessionService>,
+    pub(super) service: SessionQueryService,
+    pub(super) backend: JsonlBackend,
+    pub(super) _sessions: Arc<SessionService>,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = std::env::temp_dir().join(format!("clat-history-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         crate::control_storage::sentinel::initialize(&root).unwrap();
@@ -38,7 +38,7 @@ impl Fixture {
             _sessions: sessions,
         }
     }
-    fn write(&self, project: &str, id: &str, text: &str) -> PreparedSession {
+    pub(super) fn write(&self, project: &str, id: &str, text: &str) -> PreparedSession {
         let key = SessionKey {
             project: ProjectKey::from_cwd(project),
             id: SessionId::new(id),
@@ -61,14 +61,14 @@ impl Fixture {
             )
             .unwrap()
     }
-    fn log(&self, id: &str) -> PathBuf {
+    pub(super) fn log(&self, id: &str) -> PathBuf {
         self.root
             .join("sessions")
             .join(crate::session::path_layout::project_key("/tmp/query-one"))
             .join(id)
             .join("session.v4.jsonl.zstd")
     }
-    fn reference(&self, id: &str, seq: u64) -> HistoryReference {
+    pub(super) fn reference(&self, id: &str, seq: u64) -> HistoryReference {
         HistoryReference {
             project: Some("/tmp/query-one".into()),
             session: id.into(),

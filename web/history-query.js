@@ -9,13 +9,15 @@ function installHistoryQuery() {
   const all = el('input', ''); all.type = 'checkbox';
   const scope = el('label', ''); scope.append(all, el('span', '', () => msg('all_projects')));
   const submit = el('button', 'primary', () => msg('search')); submit.type = 'submit';
-  const form=el('form','navigation-filters');form.append(scope);const run=navigationIcon(()=>msg('search'),'search',()=>form.requestSubmit());run.type='button';form.append(run);submit.hidden=true;form.append(submit);
+  const form=el('form','navigation-filters');form.append(scope);const run=navigationIcon(()=>msg('search'),'search',()=>form.requestSubmit());run.type='button';run.hidden=true;form.append(run);submit.hidden=true;form.append(submit);
   const status = el('p', 'settings-note'); status.setAttribute('role', 'status');
   const results = el('div', 'history-results'); const detail = el('section', 'history-detail');
   const more = el('button', '', () => msg('more')); more.type = 'button'; more.hidden = true;
   const view=createNavigationPage(dialog,{title:()=>shellText('history'),query,searchLabel:()=>msg('query')});
   view.filters.append(form);view.list.append(results,more);view.body.replaceWith(detail);detail.classList.add('navigation-body');view.body=detail;status.className='navigation-status';view.sidebar.insertBefore(status,view.list);document.body.append(dialog);
   let generation=0,detailGeneration=0,cursor=null,activeQuery={trusted_projects:false},reader=null,selected=null;
+  view.actions([viewAction('search','search',()=>msg('search'),()=>form.requestSubmit(),true,()=>!submit.disabled),viewAction('recent','history',()=>viewText('recent_sessions'),()=>recent())]);
+  view.context({crumbs:()=>[{label:()=>shellText('history'),run:()=>{delete dialog.dataset.detail;}},{label:()=>activeQuery.trusted_projects?msg('all_projects'):state.workbench?.project?.root?.split(/[\\/]/).pop()},...(selected?[{label:()=>selected.project?.split(/[\\/]/).pop()},{label:()=>historyTitle||selected.session}]:[])]});let historyTitle='';
   function overview(hits=[]){
     if(selected)return;CLATI18n.bind(view.name,'textContent',()=>shellText('history'));
     detail.replaceChildren(navigationOverview({title:()=>pageText('history_intro_title'),description:()=>pageText('history_intro_description'),icon:'history',items:hits.slice(0,6).map(hit=>({title:hit.title||hit.reference.session,description:hit.excerpt||hit.reference.project,icon:'history',action:()=>void inspect(hit.reference,hit.title)}))}));
@@ -29,10 +31,10 @@ function installHistoryQuery() {
     if (workbenchShell?.surfaces.get(dialog.id)?.type !== 'page') query.focus();
   };
   async function attempt(work) {
-    const ticket = ++generation;submit.disabled=true;run.disabled=true;
+    const ticket = ++generation;submit.disabled=true;run.disabled=true;refreshViewContext();
     try { await work(ticket); }
     catch (error) { if (ticket === generation) CLATI18n.bind(status, 'textContent', () => error.message); }
-    finally { if(ticket===generation){submit.disabled=false;run.disabled=false;} }
+    finally { if(ticket===generation){submit.disabled=false;run.disabled=false;refreshViewContext();} }
   }
   function hitNode(hit) {
     const item=navigationRow({title:hit.title||hit.reference.session,meta:()=>[hit.excerpt,hit.time?new Date(hit.time).toLocaleString(CLATI18n.locale):'',hit.reference.project||''].filter(Boolean).join(' · '),icon:'history',selected:JSON.stringify(selected)===JSON.stringify(hit.reference),action:()=>void inspect(hit.reference,hit.title)});
@@ -51,6 +53,7 @@ function installHistoryQuery() {
     });
   }
   async function recent() {
+    activeQuery={trusted_projects:false};all.checked=false;refreshViewContext();
     await attempt(async ticket => {
       const value = await rpc('session.list', {}); if (ticket !== generation) return;
       results.replaceChildren(...value.sessions.map(session => hitNode({title:session.title || session.id, reference:{project:state.workbench.project.root,session:session.id,seq:null},excerpt:'',time:session.last_activity_ms})));
@@ -59,7 +62,7 @@ function installHistoryQuery() {
     });
   }
   async function inspect(reference,title) {
-    selected=reference;const ticket=++detailGeneration,trusted=activeQuery.trusted_projects,current=()=>ticket===detailGeneration&&pageIsOpen(dialog)&&context.isActive();
+    historyTitle=title;selected=reference;const ticket=++detailGeneration,trusted=activeQuery.trusted_projects,current=()=>ticket===detailGeneration&&pageIsOpen(dialog)&&context.isActive();
     view.show(title||reference.session);for(const row of results.children)row.setAttribute('aria-current',String(row.dataset.reference===JSON.stringify(reference)));reader?.dispose();detail.replaceChildren();
     reader = createConversationReader(detail, reference, {trusted,current});
     if (reference.project === state.workbench.project.root) detail.append(pageAction('continue_conversation', async()=>{

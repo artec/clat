@@ -47,6 +47,7 @@ impl Fixture {
     }
     fn repository(&self) {
         self.git(&["init", "-q", "--template="]);
+        self.git(&["config", "core.autocrlf", "false"]);
         self.git(&["config", "commit.gpgSign", "false"]);
         self.git(&["config", "core.hooksPath", ".git/hooks"]);
         self.git(&["config", "user.name", "Core Test"]);
@@ -162,6 +163,15 @@ fn development_file_rename_trash_restore_are_no_clobber() {
     fs::write(f.project.join("folder/a"), "kept").unwrap();
     fs::write(f.project.join("exists"), "foreign").unwrap();
     let stat = f.call("editor.inspect", json!({"path":"folder"})).unwrap();
+    assert!(f.call("editor.rename", json!({"operationId":"rename-conflict","path":"folder","target":"exists","version":stat["version"]})).is_err());
+    assert_eq!(
+        fs::read_to_string(f.project.join("exists")).unwrap(),
+        "foreign"
+    );
+    assert_eq!(
+        fs::read_to_string(f.project.join("folder/a")).unwrap(),
+        "kept"
+    );
     let moved=f.call("editor.rename",json!({"operationId":"rename","path":"folder","target":"renamed","version":stat["version"]})).unwrap();
     assert_eq!(moved["path"], "renamed");
     let stat = f.call("editor.inspect", json!({"path":"renamed"})).unwrap();
@@ -258,26 +268,34 @@ fn development_git_rejects_changed_worktree_even_if_porcelain_status_same() {
 }
 #[test]
 fn development_git_discard_restores_binary_and_preserves_later_edits() {
-    let f = Fixture::new();
-    f.repository();
-    fs::write(f.project.join("file.txt"), b"binary\0bytes").unwrap();
-    let row = f.operation("discard", json!({"paths":["file.txt"],"confirmed":true}));
-    assert_eq!(row["phase"], "completed", "{row}");
-    let id = row["id"].clone();
-    fs::write(f.project.join("file.txt"), "later").unwrap();
-    let failed = f.operation("restore", json!({"backupId":id,"confirmed":true}));
-    assert_eq!(failed["phase"], "failed");
-    assert_eq!(
-        fs::read_to_string(f.project.join("file.txt")).unwrap(),
-        "later"
-    );
-    fs::write(f.project.join("file.txt"), "before\n").unwrap();
-    let row = f.operation("restore", json!({"backupId":id,"confirmed":true}));
-    assert_eq!(row["phase"], "completed", "{row}");
-    assert_eq!(
-        fs::read(f.project.join("file.txt")).unwrap(),
-        b"binary\0bytes"
-    );
+    for autocrlf in [false, true] {
+        let f = Fixture::new();
+        f.repository();
+        f.git(&[
+            "config",
+            "core.autocrlf",
+            if autocrlf { "true" } else { "false" },
+        ]);
+        fs::write(f.project.join("file.txt"), b"binary\0bytes").unwrap();
+        let row = f.operation("discard", json!({"paths":["file.txt"],"confirmed":true}));
+        assert_eq!(row["phase"], "completed", "{row}");
+        let id = row["id"].clone();
+        let restored = fs::read(f.project.join("file.txt")).unwrap();
+        fs::write(f.project.join("file.txt"), "later").unwrap();
+        let failed = f.operation("restore", json!({"backupId":id,"confirmed":true}));
+        assert_eq!(failed["phase"], "failed");
+        assert_eq!(
+            fs::read_to_string(f.project.join("file.txt")).unwrap(),
+            "later"
+        );
+        fs::write(f.project.join("file.txt"), restored).unwrap();
+        let row = f.operation("restore", json!({"backupId":id,"confirmed":true}));
+        assert_eq!(row["phase"], "completed", "{row}");
+        assert_eq!(
+            fs::read(f.project.join("file.txt")).unwrap(),
+            b"binary\0bytes"
+        );
+    }
 }
 #[test]
 fn development_git_branch_history_and_local_remote_roundtrip() {
@@ -379,13 +397,32 @@ fn development_generated_commit_uses_staged_data_and_requested_languages() {
     ] {
         let f = Fixture::new();
         f.repository();
+        // Force stat-cache reuse deterministically: same byte length and
+        // timestamp, with ctime ignored. The model must still receive blobs
+        // from the staged index rather than the live worktree optimization.
+        f.git(&["config", "core.trustctime", "false"]);
+        f.git(&["config", "core.checkstat", "minimal"]);
         fs::write(f.project.join("file.txt"), "STAGED_EVIDENCE\n").unwrap();
+        let modified = std::time::SystemTime::now() - Duration::from_secs(60);
+        let times = std::fs::FileTimes::new().set_modified(modified);
+        fs::File::options()
+            .write(true)
+            .open(f.project.join("file.txt"))
+            .unwrap()
+            .set_times(times)
+            .unwrap();
         f.git(&["add", "file.txt"]);
         fs::write(f.project.join("file.txt"), "UNSTAGED_SECRET\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(f.project.join("file.txt"))
+            .unwrap()
+            .set_times(times)
+            .unwrap();
         let script: Script = Arc::new(move |request| {
             assert!(request.instructions.unwrap().contains(expected));
             let input = format!("{:?}", request.items);
-            assert!(input.contains("STAGED_EVIDENCE"));
+            assert!(input.contains("STAGED_EVIDENCE"), "{input}");
             assert!(!input.contains("UNSTAGED_SECRET"));
             "Describe approved changes".into()
         });
@@ -752,7 +789,6 @@ fn development_missing_draft_requires_explicit_recreate_and_never_clobbers() {
 #[cfg(windows)]
 #[test]
 fn development_windows_conpty_input_lease_resize_and_job_close() {
-    use base64::Engine;
     let f = Fixture::new();
     f.call(
         "terminal.create",
@@ -765,19 +801,7 @@ fn development_windows_conpty_input_lease_resize_and_job_close() {
         json!({"id":"win-native","clientId":"owner","lease":1,"rows":30,"cols":100}),
     )
     .unwrap();
-    f.call("terminal.input",json!({"id":"win-native","clientId":"owner","lease":1,"sequence":0,"data":"echo CLAT_NATIVE_PTY\r"})).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let row = f.service.terminal_output("win-native", 0).unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(row["data"].as_str().unwrap())
-            .unwrap();
-        if String::from_utf8_lossy(&bytes).contains("CLAT_NATIVE_PTY") {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    windows_terminal_probe(&f);
     let lease = f
         .call(
             "terminal.claim",
@@ -792,6 +816,45 @@ fn development_windows_conpty_input_lease_resize_and_job_close() {
         f.call("terminal.list", json!({})).unwrap()["terminals"][0]["phase"],
         "ended"
     );
+}
+
+#[cfg(windows)]
+fn windows_terminal_probe(f: &Fixture) {
+    use base64::Engine;
+    // PowerShell/PSReadLine can wait for the terminal's device-status reply
+    // before displaying its first prompt. The core stream has no renderer.
+    let (mut offset, mut sequence, mut answered) = (0, 0, 0);
+    let mut output = String::new();
+    let mut sent = false;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let row = f.service.terminal_output("win-native", offset).unwrap();
+        offset = row["offset"].as_u64().unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(row["data"].as_str().unwrap())
+            .unwrap();
+        output.push_str(&String::from_utf8_lossy(&bytes));
+        let queries = output.matches("\u{1b}[6n").count();
+        while answered < queries {
+            f.call("terminal.input",json!({"id":"win-native","clientId":"owner","lease":1,"sequence":sequence,"data":"\u{1b}[1;1R"})).unwrap();
+            sequence += 1;
+            answered += 1;
+        }
+        if !sent && output.contains("> ") {
+            // Input echo alone must not satisfy the output assertion.
+            f.call("terminal.input",json!({"id":"win-native","clientId":"owner","lease":1,"sequence":sequence,"data":"[Console]::WriteLine(('CLAT_'+'NATIVE_PTY'))\r"})).unwrap();
+            sequence += 1;
+            sent = true;
+        }
+        if output.contains("CLAT_NATIVE_PTY") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ConPTY did not execute the probe: {output:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

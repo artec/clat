@@ -1,5 +1,7 @@
 //! Native client navigation history, separate from Host execution and session facts.
 use crate::app::Desktop;
+#[cfg(target_os = "macos")]
+mod macos;
 use clat_core::client_ports::presentation::{UiMessage, load_ui_preferences, save_ui_preferences};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -63,29 +65,9 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         false,
         None::<&str>,
     )?)?;
-    let state = app.state::<State>();
-    for row in state.rows.lock().expect("recent conversations").iter() {
-        let project = std::path::Path::new(&row.root)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let title = row.title.split_whitespace().collect::<Vec<_>>().join(" ");
-        let title: String = title.chars().take(64).collect();
-        let label = format!(
-            "{} · {project}",
-            if title.is_empty() {
-                crate::localization::text(app, "web.untitled_session")
-            } else {
-                &title
-            }
-        );
-        menu.append(&MenuItem::with_id(
-            app,
-            item_id(row),
-            label,
-            true,
-            None::<&str>,
-        )?)?;
+    let rows = app.state::<State>().rows.lock().expect("recents").clone();
+    for row in &rows {
+        append_recent(app, &menu, row)?;
     }
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(
@@ -103,7 +85,47 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?)?;
+    #[cfg(target_os = "macos")]
+    macos::style(app, &menu, rows)?;
     Ok(menu)
+}
+fn recent_title(app: &tauri::AppHandle, row: &Recent) -> String {
+    let title = row.title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        crate::localization::text(app, "web.untitled_session").into()
+    } else {
+        title.chars().take(64).collect()
+    }
+}
+fn project_name(row: &Recent) -> String {
+    std::path::Path::new(&row.root)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+fn append_recent(
+    app: &tauri::AppHandle,
+    menu: &Menu<tauri::Wry>,
+    row: &Recent,
+) -> tauri::Result<()> {
+    menu.append(&MenuItem::with_id(
+        app,
+        item_id(row),
+        recent_title(app, row),
+        true,
+        None::<&str>,
+    )?)?;
+    // Windows native menus do not expose per-line typography; retain a muted second row.
+    #[cfg(windows)]
+    menu.append(&MenuItem::with_id(
+        app,
+        format!("{}-project", item_id(row)),
+        project_name(row),
+        false,
+        None::<&str>,
+    )?)?;
+    Ok(())
 }
 fn item_id(row: &Recent) -> String {
     use std::hash::{Hash, Hasher};

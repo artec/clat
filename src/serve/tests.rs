@@ -3146,11 +3146,25 @@ fn web_asset_url_guard_rejects_unknown_and_credential_bearing_destinations() {
         format!("const links = ['{unknown}', '{leaking}', '{public}'];"),
     )
     .unwrap();
+    for path in [
+        "vendor/licenses/dependency-LICENSE",
+        "vendor/THIRD-PARTY-NOTICES.txt",
+        "vendor/node_modules/dependency/index.js",
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "https://dependency.invalid/license").unwrap();
+    }
+    std::fs::write(
+        root.join("vendor/runtime.js"),
+        format!("fetch('{unknown}');"),
+    )
+    .unwrap();
     let mut seen = BTreeSet::new();
     let mut offenders = Vec::new();
     scan_web_for_urls(&root, &mut seen, &mut offenders);
     assert!(seen.contains(public));
-    assert_eq!(offenders.len(), 2);
+    assert_eq!(offenders.len(), 3);
     assert!(offenders.iter().any(|entry| entry.ends_with(unknown)));
     assert!(offenders.iter().any(|entry| entry.ends_with(leaking)));
     crate::test_support::cleanup_tree(&root);
@@ -3165,10 +3179,18 @@ fn scan_web_for_urls(dir: &Path, seen: &mut BTreeSet<String>, offenders: &mut Ve
         if path.is_dir() {
             // e2e 工具链整体不是产品资产——INV-W2 扫的是会被
             // include_bytes! 编进二进制的东西。
-            if path.file_name().is_some_and(|name| name == "e2e") {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "e2e" || name == "node_modules")
+                || path.ends_with("vendor/licenses")
+            {
                 continue;
             }
             scan_web_for_urls(&path, seen, offenders);
+        } else if path.ends_with("vendor/THIRD-PARTY-NOTICES.txt") {
+            // Legal attribution is displayed as text, never used as a network
+            // destination. Keep scanning the bundled vendor runtime itself.
+            continue;
         } else if let Ok(text) = std::fs::read_to_string(&path) {
             for line in text.lines() {
                 for url in urls_in_line(line) {

@@ -123,3 +123,15 @@ web/vendor/languages.js text eol=lf
 web/vendor/editor-theme.js text eol=lf
 web/vendor/notices.ts text eol=lf
 web/vendor/licenses/* text eol=lf
+
+# Shared view chrome and operation-record presentation.
+web/view-context.js text eol=lf
+web/application-breadcrumbs.js text eol=lf
+web/workspace-tool-view.js text eol=lf
+web/operations-capture.js text eol=lf
+
+# Shared settings presentation embedded in the app.
+web/settings-layout.js text eol=lf
+web/settings.css text eol=lf
+
+web/settings-models.js text eol=lf

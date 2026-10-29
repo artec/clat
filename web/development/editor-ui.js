@@ -11,31 +11,32 @@ function editorMenu(items,source,x,y){
   document.body.append(menu);positionSessionMenu(menu,x,y,source);
   document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))close();},{signal:listeners.signal});
   window.addEventListener('resize',close,{signal:listeners.signal});
-  document.addEventListener('clat:editor-menu-close',close,{signal:listeners.signal});
+  window.addEventListener('clat:editor-menu-close',close,{signal:listeners.signal});
   menu.onkeydown=event=>{const buttons=[...menu.querySelectorAll('button:not(:disabled)')],index=buttons.indexOf(document.activeElement);if(['Escape','Tab'].includes(event.key)){close();if(event.key==='Escape'){event.preventDefault();event.stopPropagation();source.focus();}}else if(['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();buttons[(index+(event.key==='ArrowDown'?1:buttons.length-1))%buttons.length]?.focus();}};
   menu.querySelector('button:not(:disabled)')?.focus();return close;
 }
 function editorPopup(items,source){const rect=source.getBoundingClientRect();return editorMenu(items,source,rect.left,rect.bottom);}
 function createEditorLayout(actions){
   const node=el('section','workspace-review dev-editor');node.id='file-browser';
-  const sidebar=el('aside','sidebar editor-sidebar'),head=el('header','sidebar-head editor-head');
+  const sidebar=el('aside','sidebar editor-sidebar navigation-sidebar'),head=el('header','sidebar-head navigation-head');
   head.append(el('strong','',()=>devText('files')));
   const icons=el('div','editor-head-actions');
   for(const [key,icon,run]of [['new_file','file-plus',()=>actions.create(false)],['new_folder','folder-plus',()=>actions.create(true)],['refresh','refresh',()=>actions.refresh()],['collapse_all','collapse-all',()=>actions.collapse()]])icons.append(navigationIcon(()=>devText(key),icon,run));
-  const more=navigationIcon(()=>devText('file_actions'),'more',()=>editorPopup([{key:'recover_drafts',icon:'restore',run:()=>actions.recover()}],more));icons.append(more);head.append(icons);
+  const more=navigationIcon(()=>devText('file_actions'),'more',()=>editorPopup([{key:'recover_drafts',icon:'restore',run:()=>actions.recover()}],more));icons.append(more);
   const {element:search,input:query}=navigationSearch(null,()=>devText('find_file'));
-  const root=el('button','editor-project');root.type='button';root.append(svgIcon('chevron-down'),svgIcon('folder'),el('strong','',()=>dom['project-name'].textContent));root.setAttribute('aria-expanded','true');
+  const root=el('button','editor-project');root.type='button';root.append(svgIcon('chevron-down'),svgIcon('folder'),el('strong','',editorProjectName));root.setAttribute('aria-expanded','true');
   const list=el('nav','review-files editor-tree');CLATI18n.attribute(list,'aria-label',()=>devText('files'));list.setAttribute('role','tree');
   root.onclick=()=>{list.hidden=!list.hidden;root.setAttribute('aria-expanded',String(!list.hidden));};
-  const status=el('p','editor-feedback');status.setAttribute('role','status');sidebar.append(head,search,root,list,status);
+  const status=el('p','editor-feedback');status.setAttribute('role','status');sidebar.append(head,icons,search,root,list,status);
   const detail=el('section','review-patch dev-editor-detail'),tabs=el('nav','dev-file-tabs');tabs.setAttribute('role','tablist');
   CLATI18n.attribute(tabs,'aria-label',()=>devText('open_files'));
   const bar=el('header','dev-editor-toolbar'),breadcrumb=el('nav','dev-editor-path');CLATI18n.attribute(breadcrumb,'aria-label',()=>devText('file_path'));
   const back=navigationIcon(()=>workflowText('back_to_list'),'previous',()=>{delete node.dataset.detail;});back.classList.add('editor-list-back');
   const tools=el('div','editor-tools');
-  for(const [key,icon,run]of [['save','save',()=>actions.save()],['save_all','save-all',()=>actions.saveAll()],['find','search',()=>actions.find()]])tools.append(navigationIcon(()=>devText(key),icon,run));
+  registerView(node,{sidebar,actions:()=>[viewAction('save','save',()=>devText('save'),()=>actions.save(),true,actions.canSave),viewAction('save-all','save-all',()=>devText('save_all'),()=>actions.saveAll(),true,actions.canSaveAll),viewAction('find','search',()=>devText('find'),()=>actions.find(),true,actions.canFind)]});
   const menu=navigationIcon(()=>devText('file_actions'),'more',()=>editorPopup(actions.menu(),menu));tools.append(menu);bar.append(back,breadcrumb,tools);
   const mount=el('div','dev-editor-mount'),footer=el('footer','editor-statusbar');detail.append(tabs,bar,mount,footer);node.append(sidebar,detail);
+  window.addEventListener('clat:workbench-updated',()=>{CLATI18n.bind(root.querySelector('strong'),'textContent',editorProjectName);const title=mount.querySelector('.editor-empty>strong');if(title)CLATI18n.bind(title,'textContent',editorProjectName);});
   return {node,sidebar,query,list,status,detail,tabs,toolbar:bar,mount,breadcrumb,footer,root};
 }
 function createEditorTab(doc,activate,closeDoc,render){
@@ -62,8 +63,9 @@ function editorBreadcrumb(target,doc,reveal){
   parts.forEach((part,index)=>{if(index)target.append(svgIcon('next'));if(index===parts.length-1){const name=el('span','editor-path-file',part);target.append(developmentFileIcon(doc.path),name);}else{const button=el('button','',part);button.type='button';button.onclick=()=>reveal(parts.slice(0,index+1).join('/'),true);target.append(button);}});
   CLATI18n.attribute(target,'title',()=>doc.path);
 }
+function editorProjectName(){return state.workbench?.project?.name||state.workbench?.project?.root?.split(/[\\/]/).filter(Boolean).pop()||CLATI18n.msg('web.current_project');}
 function editorEmpty(mount){
-  const empty=el('div','editor-empty');empty.append(svgIcon('code'),el('strong','',()=>dom['project-name'].textContent),el('p','',()=>devText('editor_empty')),el('small','',()=>devText('editor_shortcuts')));mount.replaceChildren(empty);
+  const empty=el('div','editor-empty');empty.append(svgIcon('code'),el('strong','',editorProjectName),el('p','',()=>devText('editor_empty')),el('small','',()=>devText('editor_shortcuts')));mount.replaceChildren(empty);
 }
 function editorStatus(footer,doc,widget,changeMode){
   footer.replaceChildren();if(!doc||!widget)return;

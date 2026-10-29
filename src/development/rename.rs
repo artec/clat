@@ -45,8 +45,11 @@ pub(super) fn rename_no_replace(
 ) -> Result<(), String> {
     use cap_std::fs::OpenOptionsExt;
     use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
+    use windows_sys::{
+        Wdk::Storage::FileSystem::{
+            FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+        },
+        Win32::{Foundation::RtlNtStatusToDosError, System::IO::IO_STATUS_BLOCK},
     };
     let mut options = cap_std::fs::OpenOptions::new();
     options
@@ -57,22 +60,29 @@ pub(super) fn rename_no_replace(
         return Err("path_denied".into());
     }
     let name: Vec<u16> = target.encode_wide().collect();
-    let length = std::mem::size_of::<FILE_RENAME_INFO>() + name.len() * 2;
+    let length = std::mem::size_of::<FILE_RENAME_INFORMATION>() + name.len() * 2;
     let mut buffer = vec![0usize; length.div_ceil(std::mem::size_of::<usize>())];
-    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
     unsafe {
         (*info).Anonymous.ReplaceIfExists = false;
         (*info).RootDirectory = to.as_raw_handle();
         (*info).FileNameLength = (name.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        if SetFileInformationByHandle(
+        // The Win32 FileRenameInfo wrapper rejects non-null RootDirectory.
+        // The native operation preserves the already-open directory boundary
+        // and atomic no-replace semantics instead of resolving ambient paths.
+        let status = NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfo,
+            &mut status_block,
             info.cast(),
             length as u32,
-        ) == 0
-        {
-            return Err(super::io(io::Error::last_os_error()));
+            FileRenameInformation,
+        );
+        if status < 0 {
+            return Err(super::io(io::Error::from_raw_os_error(
+                RtlNtStatusToDosError(status) as i32,
+            )));
         }
     }
     Ok(())

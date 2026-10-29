@@ -1612,10 +1612,15 @@ The services do not alter the session permission mode, planning mode or Agent Ru
 Blocking filesystem/model/Git/PTY I/O occurs after releasing the Application mutex.
 
 The editor uses held directory capabilities, parent write locks, content fingerprints
-and conditional atomic publication. It deliberately does not attribute human writes to
-an Agent turn's file-recovery ledger. Git serializes CLAT writes by actual common Git
+and conditional atomic publication. Windows no-replace moves use directory-relative
+`NtSetInformationFile`, retaining open-directory boundaries for rename and trash
+recovery; they never fall back to an overwrite or an ambient-path move. The editor
+deliberately does not attribute human writes to an Agent turn's file-recovery ledger. Git serializes CLAT writes by actual common Git
 directory, retains native Git locks/configuration and freezes a private index before
-model generation. Final HEAD/index checks and the private index prevent late external
+model generation. Staged patches are read with an empty private working directory
+and explicit Git directory, so Git cannot substitute stat-matching live files for
+staged blobs. Windows Git invocations enable command-local long-path support for
+private nested-repository indexes. Final HEAD/index checks and the private index prevent late external
 staging from entering the approved commit. Native hooks still have their ordinary Git
 semantics, including their own explicitly configured side effects. Commit recovery
 checks parent, approved tree and message; an uncertain outcome is not blindly replayed.
@@ -1723,3 +1728,73 @@ response; it neither edits todos nor treats todo completion as goal acceptance.
 Project/session identity is owned by the application toolbar. Existing connection
 and model DOM nodes remain subscribed inside Session details, while non-live
 connection status is also surfaced compactly outside that collapsed section.
+
+
+### View identity and contextual application chrome
+
+`view-context.js` owns a presentation registry keyed by stable page/tool IDs.
+Controllers supply breadcrumb levels, actual sidebar nodes and action descriptors;
+`application-toolbar.js` and `application-breadcrumbs.js` render them without reading
+DOM copy to infer ownership. Global pages expose their own scopes and actions.
+The menu precedes inline actions. Anchored overlays use their actual toolbar
+button, not the retired header action group. Conversation Find lives at the
+project overlay root outside the clipped content canvas, aligns its right edge
+with the canvas gutter, and closes on view changes; action descriptors carry its expanded/control relationship.
+Conversation and its five workspace tools share a switching group; only a tool's
+last breadcrumb carries the close action. The old workspace tab row and tab ARIA
+references are removed. `workspace-tools.js` still owns the single chat DOM and
+subscriptions, suspending presentation while preserving drafts, buffers and scroll.
+Editor-menu close notifications use the project-local `window` event port, matching
+the listener owner. The scoped `document` port does not expose event dispatch.
+Tool motion uses native element animations with cancellation epochs. Only the
+departing paint is temporarily overlaid and inert; navigation and lifecycle switch
+immediately. Global navigation/project deactivation cancels pending motion, and
+Reduce Motion disables it without changing lifecycle behavior.
+Device-local list preferences are keyed per view, with the legacy preference applied
+only to Conversation. Mobile list/detail navigation overrides desktop collapse.
+`workspace-tool-view.js` composes the same navigation list/detail primitives for
+operations, processes and workflows; editor tabs and Git graph remain specialized.
+The workspace host owns outer clipping/corners, and sidebar contents inherit their
+sidebar surface instead of painting a separate background. Legacy conversation
+controls stay inside one hidden container so they cannot become extra grid rows.
+
+`session_query/operations/` is the shared read-only operation query owner, exposed
+through the HistoryReader client port and `operations.list` / `operations.detail`
+RPCs. The transport captures a reader and verifies selection under the Application
+lock, then releases it before scanning committed journal facts. ReplayAdapter owns
+vocabulary adaptation; records use the recorded turn and request sequence, pairing
+results within a turn so reused wire call IDs do not cross conversations or rounds.
+An unpaired result is unknown and never evidence of a successful invocation.
+
+List cursors bind project, conversation, filters and a hashed committed prefix;
+appended facts are available on refresh without destabilizing older pages. They
+never create a writer or select an execution target. Queries enforce project trust,
+source consistency and cancellation/deadline checks. Detail serialization reuses
+history redaction and explicitly bounds previews. No durable vocabulary, checkpoint
+or storage format is introduced. Existing `turn.changes` / `turn.restore` retain their
+separate aggregate file-capture and permission contracts. Native capture remains
+bound at run entry, prepared before atomic file publication and confirmed afterward;
+run settlement clears the binding. Reading operation history cannot replay writes.
+
+### Shared settings presentation
+
+`settings-layout.js` owns category grouping, shared SVG decoration, category-name
+filtering, content headers and in-memory per-category scroll positions. It also
+provides the row/card presentation used by terminal and Web settings. Controls keep
+their stable IDs, event owners and enclosing `data-settings-panel`; presentation
+does not clone forms, issue configuration RPCs or implement save/permission policy.
+Native desktop settings keep their existing dialog/control instance when composed
+into the settings page. Repeated mounts preserve category selection and do not
+create duplicate category controls.
+
+`settings.css` owns the settings shell, rows, groups, switches and responsive
+list/detail treatment; superseded modal and per-page overrides are removed from
+the general workbench and development stylesheets. Theme tokens, system fonts,
+shared navigation search and existing scrollbar behavior remain common resources.
+Catalog labels are rebound without replacing decorated control nodes.
+
+`settings-models.js` groups the existing `model.settings.get` preset catalog and
+uses `model.preset.select` for explicit activation; it owns no vendor table, key
+store or model policy. Preset selection fields are action arguments, separate from
+the unsaved custom-profile editor. Native tray typography lives in the macOS client
+adapter; menu actions, recent identity and persisted ordering remain in `tray.rs`.

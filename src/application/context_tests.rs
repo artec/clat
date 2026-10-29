@@ -328,9 +328,14 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
     assert!(in_plan.plan_policy_estimate > 0);
     assert!(!in_plan.tool_names.contains(&"lsp".to_owned()));
     assert!(in_plan.tool_schemas_estimate < with_skills.tool_schemas_estimate);
-    assert_eq!(
-        in_plan.skill_catalog_estimate,
-        with_skills.skill_catalog_estimate
+    // Layer estimates are differences of rounded cumulative totals. Changing
+    // the preceding plan text can move the same catalog by one token.
+    assert_eq!(in_plan.skill_names, with_skills.skill_names);
+    assert!(
+        in_plan
+            .skill_catalog_estimate
+            .abs_diff(with_skills.skill_catalog_estimate)
+            <= 1
     );
 
     application

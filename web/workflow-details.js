@@ -38,20 +38,17 @@ async function actWorkflowView(view,intent){
 function installWorkflowDetails(){
   const trigger=el('button','ghost',()=>CLATI18n.msg('web.plan_goal'));trigger.id='workflow-open';trigger.type='button';document.getElementById('review-open').after(trigger);
   const page=el('section','workspace-review');page.id='workflow-details';
-  const header=el('div','review-header'),refresh=el('button','ghost',()=>CLATI18n.msg('web.refresh')),create=el('button','ghost',()=>workflowText('create_goal'));
-  header.append(el('h2','',()=>experienceText('workflow')),create,refresh);
-  const status=el('p','picker-hint'),body=el('div','review-body'),list=el('nav','review-files'),detail=el('section','review-patch');status.setAttribute('role','status');
-  body.append(list,detail);page.append(header,status,body);document.body.append(page);
+  const ui=createWorkspaceToolView(page,'workflow'),status=ui.status,list=ui.list,detail=ui.body;document.body.append(page);
   const view={page,status,list,detail,value:null,selection:null,epoch:0,acting:false,signature:'',editing:false,intent:0};
   view.act=intent=>actWorkflowView(view,intent);
-  view.select=key=>{view.intent++;view.editing=false;view.selection=key;renderWorkflowView(view);page.dataset.detail='true';};
+  view.select=key=>{view.intent++;view.editing=false;view.selection=key;ui.show(()=>key.startsWith('plan:')?workflowText('plans'):key==='goal'?workflowText('goals'):workflowText('todos'));renderWorkflowView(view);page.dataset.detail='true';};
   const open=()=>openWorkbenchTool(page),load=()=>loadWorkflowView(view);
   async function afterEnter(run){
     open();const token=++view.intent,owner=[state.sessionId,state.selectionGeneration];await load();
     if(token===view.intent&&toolViewIsOpen(page)&&owner[0]===state.sessionId&&owner[1]===state.selectionGeneration)run();
   }
   trigger.onclick=open;for(const id of ['plan-mode-badge','goal-badge'])document.getElementById(id).onclick=open;
-  refresh.onclick=()=>void load();create.onclick=()=>renderWorkflowGoalForm(view);
+  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load()),viewAction('create-goal','plus',()=>workflowText('create_goal'),()=>{page.dataset.detail='true';renderWorkflowGoalForm(view);})]});
   page.addEventListener('clat:tool-enter',()=>void load());page.addEventListener('clat:tool-leave',()=>{view.epoch++;view.intent++;});
   page.addEventListener('clat:tool-refresh',()=>{if(!view.acting)void load();});
   window.addEventListener('clat:workflow-changed',()=>{if(toolViewIsOpen(page))void load();});

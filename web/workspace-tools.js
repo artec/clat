@@ -11,22 +11,16 @@ function openWorkbenchTool(node) { workbenchShell.tools.open(node.id); }
 function closeWorkbenchTool() { workbenchShell.tools.chat(); }
 function installWorkspaceTools(shell) {
   const seats = new Map(); let selected = null, active = false, owner = state.sessionId, navigating = false;
-  const label = () => selected ? experienceText(seats.get(selected).key) : '';
   const host = el('section', 'workspace-tool-host hidden'); host.id = 'workspace-tool-host';
-  const {tabs,chat,tool,close,chatStatus}=createWorkspaceTabs(label,()=>showChat(),()=>{activate();route();},()=>dispose());
   let unread=false,pending=0;
-  const content = document.getElementById('content-area'); content.prepend(tabs); content.append(host);
+  const content = document.getElementById('content-area'); content.append(host);
   const conversation = document.getElementById('conversation-page');
+  const motion=createWorkspaceToolMotion(host,conversation,sync);
   function route() { if (!navigating && context.isActive()) context.navigatePage(active ? 'workbench?tool=' + seats.get(selected).key + '&session=' + encodeURIComponent(owner || '') : 'workbench'); }
   function sync() {
-    tabs.classList.toggle('hidden', !selected || Boolean(shell.page));
     host.classList.toggle('hidden', !active); host.inert = !active;
     conversation.classList.toggle('hidden', active || Boolean(shell.page)); conversation.inert = active || Boolean(shell.page);
     if (active) dom.app.dataset.tool = seats.get(selected).key; else delete dom.app.dataset.tool;
-    chat.setAttribute('aria-selected', String(!active)); tool.setAttribute('aria-selected', String(active));
-    chat.tabIndex = active ? -1 : 0; tool.tabIndex = active ? 0 : -1;
-    const icon = WORKSPACE_TOOLS.find(item=>item.key===seats.get(selected)?.key)?.icon || 'tools';
-    if(tool.dataset.icon!==icon){tool.querySelector('svg').replaceWith(svgIcon(icon));tool.dataset.icon=icon;}
     for (const [id, seat] of seats) { seat.node.hidden = !(active && selected === id); seat.node.inert = seat.node.hidden; }
     CLATI18n.render(); refreshApplicationToolbar(shell); syncPanelAccessibility();
   }
@@ -40,16 +34,20 @@ function installWorkspaceTools(shell) {
     else sync();
   }
   function showChat(update = true) {
+    motion.cancel();const departing=active?seats.get(selected)?.node:null;
     suspend(); unread=false; sync(); refreshStatus();restoreProjectReading(); if (update) route();
+    if(departing&&!shell.page)motion.close(departing);
   }
   function open(id) {
     if (!seats.has(id)) return;
+    motion.cancel();const changed=!active||selected!==id;
     if (shell.page) shell.chat(false);
     if (owner !== state.sessionId) resetOwner();
     if (selected !== id) suspend();
-    selected = id; activate(); route();
+    selected = id; activate(); route();if(changed)motion.open();
   }
   function resetOwner(){
+    motion.cancel();
     const projectTool=selected&&['files','changes'].includes(seats.get(selected).key);
     if(!projectTool){suspend();selected=null;}owner=state.sessionId;unread=false;
     for(const seat of seats.values()){
@@ -57,25 +55,25 @@ function installWorkspaceTools(shell) {
       delete seat.node.dataset.loaded;delete seat.node.dataset.detail;seat.scrolls=[];seat.node.dispatchEvent(new Event('clat:tool-reset'));
     }sync();
   }
-  function dispose() { showChat(false); selected = null; sync(); route(); document.getElementById('tools-open')?.focus({preventScroll:true}); }
-  installWorkspaceToolKeys({tabs,close,chat,tool,isActive:()=>active,showChat});
+  installWorkspaceToolKeys(()=>active,showChat);
   window.addEventListener('clat:workbench-updated', () => {
     if (owner !== state.sessionId) resetOwner();
     pending = document.querySelectorAll('.question-card:not(.resolved),.approval-card:not(.resolved)').length;
     refreshStatus();
-    CLATI18n.attribute(chat, 'aria-label', () => pending ? CLATI18n.msg('workflow.conversation_pending', {count:pending}) : CLATI18n.msg('web.conversation'));
     if (!active) return;
     seats.get(selected)?.node.dispatchEvent(new Event('clat:tool-refresh'));
   });
-  function refreshStatus(){updateWorkspaceConversationStatus(chat,chatStatus,pending,state.runActive||state.compactionActive,unread);}
+  function refreshStatus(){refreshApplicationToolbar(shell);}
   const changes=new MutationObserver(()=>{if(active&&context.isActive()){unread=true;refreshStatus();}});
   changes.observe(dom.transcript,{childList:true});
   const api = {
+    current:()=>active&&selected?{id:selected,...seats.get(selected)}:null,
+    status:()=>({pending,unread,running:state.runActive||state.compactionActive}),
     location:()=>active&&selected?'workbench?tool='+seats.get(selected).key+'&session='+encodeURIComponent(owner||''):'workbench',
-    open, chat: showChat, suspend: () => { suspend(); sync(); },
+    open, chat: showChat, suspend: () => { motion.cancel();suspend(); sync(); },
     isActive: id => active && selected === id && owner === state.sessionId,
     register(id, key) {
-      const node=document.getElementById(id);mountWorkspaceToolRegion(node,host,tool.id);seats.set(id,{node,key});
+      const node=document.getElementById(id);mountWorkspaceToolRegion(node,host,key);seats.set(id,{node,key});
     },
     restore(params) {
       navigating = true;
@@ -83,45 +81,44 @@ function installWorkspaceTools(shell) {
         if (seat && (['files','changes'].includes(seat[1].key)||(params.get('session') || '') === (state.sessionId || ''))) open(seat[0]); else showChat(false);
       } finally { navigating = false; }
     },
-    global() { suspend(); tabs.classList.add('hidden'); host.classList.add('hidden'); delete dom.app.dataset.tool; },
+    global() { motion.cancel();suspend();host.inert=true; host.classList.add('hidden'); delete dom.app.dataset.tool; },
   };
   return api;
 }
 
-function installWorkspaceToolKeys({tabs,close,chat,tool,isActive,showChat}){
-  tabs.addEventListener('keydown', event => {
-    if (event.target === close || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
-    event.preventDefault(); const next = event.key === 'Home' ? chat : event.key === 'End' ? tool : event.target === chat ? tool : chat;
-    next.click(); next.focus({preventScroll:true});
-  });
-  document.addEventListener('keydown', event => {
-    if (!isActive() || event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
-    if (document.querySelector('#workbench-tools:not(.hidden), dialog[open]:not(.shell-surface)')) return;
-    event.preventDefault(); event.stopImmediatePropagation(); showChat(); chat.focus({preventScroll:true});
+function installWorkspaceToolKeys(isActive,showChat){
+  document.addEventListener('keydown',event=>{
+    if(!isActive()||event.key!=='Escape'||event.defaultPrevented||event.isComposing)return;
+    if(event.target.closest('input,textarea,.cm-editor')||document.querySelector('#workbench-tools:not(.hidden),.breadcrumb-overflow[open],dialog[open]:not(.shell-surface),.session-context-menu'))return;
+    event.preventDefault();event.stopImmediatePropagation();showChat();document.getElementById('tools-open')?.focus({preventScroll:true});
   });
 }
-
-function mountWorkspaceToolRegion(node,host,tabId){
+function mountWorkspaceToolRegion(node,host,key){
   host.append(node);node.classList.add('workspace-tool');node.hidden=true;
-  const back=shellButton('','previous',()=>workflowText('back_to_list'),()=>{delete node.dataset.detail;});back.classList.add('tool-list-back');node.querySelector('.review-header')?.prepend(back);
-  node.addEventListener('click',event=>{if(event.target.closest('.review-file')&&!event.target.closest('[aria-expanded]'))node.dataset.detail='true';});
-  node.setAttribute('role','tabpanel');node.setAttribute('aria-labelledby',tabId);
+  node.setAttribute('role','region');node.removeAttribute('aria-labelledby');CLATI18n.attribute(node,'aria-label',()=>experienceText(key));
 }
 
-function updateWorkspaceConversationStatus(chat,status,pending,running,unread){
-  chat.dataset.pending=String(Boolean(pending));
-  CLATI18n.bind(status,'textContent',()=>pending?CLATI18n.msg('workflow.pending_count',{count:pending}):running?CLATI18n.msg('web.running_short'):unread?workflowText('updated'):'');
-}
-
-function createWorkspaceTabs(label,showChat,openTool,dispose){
-  const tabs = el('nav', 'workspace-tabs hidden'); tabs.setAttribute('role', 'tablist');
-  CLATI18n.attribute(tabs, 'aria-label', () => CLATI18n.msg('workflow.workspace_views'));
-  const chat = shellButton('workspace-chat-tab', 'chat', () => CLATI18n.msg('web.conversation'), showChat);
-  const tool = shellButton('workspace-tool-tab', 'tools', () => label(), openTool);
-  const chatStatus=el('small','workspace-chat-status');chatStatus.setAttribute('role','status');chat.append(chatStatus);
-  const close = shellButton('workspace-tool-close', 'close', () => CLATI18n.msg('common.close'), dispose);
-  close.replaceChildren(document.createTextNode('×'));
-  for (const tab of [chat, tool]) tab.setAttribute('role', 'tab');
-  const group = el('div', 'workspace-tool-tab'); group.append(tool, close); tabs.append(chat, group);
-  return {tabs,chat,tool,close,chatStatus};
+/* Motion owns temporary paint only; lifecycle, selection and execution switch immediately. */
+function createWorkspaceToolMotion(host,conversation,settle){
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)');let animations=[],departing=null,epoch=0;
+  function cancel(){
+    epoch++;for(const animation of animations)animation.cancel();animations=[];
+    if(departing){departing=null;host.classList.remove('workspace-tool-departing');host.removeAttribute('aria-hidden');settle();}
+  }
+  function enabled(){return context.isActive()&&!reduced.matches&&typeof host.animate==='function';}
+  function play(node,frames,duration){const animation=node.animate(frames,{duration,easing:'cubic-bezier(.2,.75,.25,1)',fill:'both'});animations.push(animation);return animation;}
+  function open(){
+    if(!enabled())return;const version=++epoch;
+    const animation=play(host,[{opacity:0,transform:'translateY(10px) scale(.992)',transformOrigin:'50% 0'},{opacity:1,transform:'none',transformOrigin:'50% 0'}],200);
+    animation.finished.then(()=>{if(version===epoch){for(const item of animations)item.cancel();animations=[];}},()=>{});
+  }
+  function close(node){
+    if(!enabled())return;const version=++epoch;departing=node;
+    host.classList.remove('hidden');host.classList.add('workspace-tool-departing');host.inert=true;host.setAttribute('aria-hidden','true');node.hidden=false;node.inert=true;
+    play(conversation,[{opacity:.55},{opacity:1}],180);
+    const animation=play(host,[{opacity:1,transform:'none',transformOrigin:'50% 0'},{opacity:0,transform:'translateY(10px) scale(.992)',transformOrigin:'50% 0'}],160);
+    animation.finished.then(()=>{if(version===epoch)cancel();},()=>{});
+  }
+  reduced.addEventListener('change',()=>{if(reduced.matches)cancel();});
+  return {open,close,cancel};
 }

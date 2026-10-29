@@ -5,6 +5,10 @@ pub use crate::session_query::{
     HistoryEventRead, HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryReadRequest,
 };
 pub use crate::session_query::{HistoryHit, HistoryPage, HistoryReference, HistorySearch};
+pub use crate::session_query::{
+    OperationDetail, OperationDetailRequest, OperationFilter, OperationRow, OperationsPage,
+    OperationsRequest,
+};
 /// A cloneable, read-only port. Heavy indexing never holds an Application lock.
 #[derive(Clone)]
 pub struct HistoryReader(Arc<crate::session_query::SessionQueryService>);
@@ -14,6 +18,20 @@ impl TrustedProjectApplication {
     }
 }
 impl HistoryReader {
+    pub fn operations(
+        &self,
+        request: OperationsRequest,
+        cancel: &CancelToken,
+    ) -> Result<OperationsPage, ApplicationError> {
+        self.0.operations(request, cancel).map_err(error)
+    }
+    pub fn operation_detail(
+        &self,
+        request: OperationDetailRequest,
+        cancel: &CancelToken,
+    ) -> Result<OperationDetail, ApplicationError> {
+        self.0.operation_detail(request, cancel).map_err(error)
+    }
     pub fn attachment(
         &self,
         reference: &HistoryReference,

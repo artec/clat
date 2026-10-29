@@ -8,7 +8,7 @@ function installDevelopmentGit(){
   const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),outputBody);ui.message.parentElement.append(output);
   const result=view=>{output.hidden=!view;outputBody.textContent=view?[view.message,view.result?.output,view.error].filter(Boolean).join('\n\n'):'';};
   const actions=createGitActions({seat,call,refresh,render:renderSubmission,report,result});
-  ui.head.append(navigationIcon(()=>devText('refresh'),'refresh',()=>void refresh()),navigationIcon(()=>devText('branches'),'branch',()=>void branches()),gitMoreMenu(actions,backups));
+  registerView(node,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>devText('refresh'),()=>refresh()),viewAction('branches','branch',()=>devText('branches'),()=>branches(),false),...['fetch','pull','push'].map(key=>viewAction(key,key==='push'?'next':'refresh',()=>devText(key),()=>actions.start(key),false,()=>!seat().operation)),viewAction('backups','restore',()=>devText('restore'),()=>backups(),false)]});
   node.addEventListener('clat:git-selection',()=>{if(seat().snapshot)renderChanges();});
   ui.generate.onclick=()=>void actions.start('generate');ui.commit.onclick=()=>void actions.start('commit');ui.cancel.onclick=()=>actions.cancel();
   ui.message.oninput=()=>{const owner=seat();owner.draft=ui.message.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}autosize();if(owner.pending?.automatic)actions.cancel();saveDraft(owner);};
@@ -40,7 +40,7 @@ function gitRepositorySeat(id){
   return {id,path:'',draft,pending,pendingKey:id==='project'?'clat.git.pending.'+context.route:key+'.pending',draftKey:key+'.draft',edit:0,language:'system',snapshot:null,tabs:new Map(),tab:null,operation:null,result:null};
 }
 function saveDraft(owner){try{localStorage.setItem(owner.draftKey,owner.draft);}catch(_){} }
-function gitMoreMenu(actions,backups){const menu=el('details','git-more-menu'),summary=el('summary');summary.append(svgIcon('more'));CLATI18n.attribute(summary,'title',()=>devText('git_actions'));CLATI18n.attribute(summary,'aria-label',()=>devText('git_actions'));menu.append(summary);const items=el('div','git-more-items');for(const key of ['fetch','pull','push'])items.append(devButton(key,()=>{menu.open=false;void actions.start(key);}));items.append(devButton('restore',()=>{menu.open=false;void backups();}));menu.append(items);let watch;menu.ontoggle=()=>{watch?.abort();if(menu.open){watch=new AbortController();document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))menu.open=false;},{signal:watch.signal});}};menu.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();menu.open=false;summary.focus();}};return menu;}
+
 function devLanguageSelect(value){const select=el('select','');for(const language of ['system','en','zh-Hans','zh-Hant']){const option=el('option','',()=>devText('language_'+language));option.value=language;select.append(option);}select.value=value;CLATI18n.attribute(select,'aria-label',()=>devText('commit_language'));return select;}
 function devGitFileStatus(file){const status=file.status||'';const kind=file.untracked?'untracked':gitConflicted(file)?'conflicted':status.includes('D')?'deleted':status.includes('R')?'renamed':status.includes('A')?'added':'modified';return devText('git_'+kind);}
 function gitConflicted(file){return file.status?.includes('U')||['AA','DD'].includes(file.status);}

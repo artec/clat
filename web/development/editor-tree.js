@@ -60,5 +60,5 @@ function installEditorTree(ui,{active,menu,openFile,recheck}){
     else if(event.key==='ArrowLeft'){if(isDirectory&&open)button.click();else button.parentElement.parentElement.closest('.file-tree-row')?.querySelector('.review-file')?.focus();}
     else rows[event.key==='Home'?0:event.key==='End'?rows.length-1:Math.max(0,Math.min(rows.length-1,index+(event.key==='ArrowDown'?1:-1)))]?.focus();
   };
-  return {refresh,reveal,select,path:()=>selected,directory:()=>directory,collapse(){expanded.clear();return refresh();},suspend(){epoch++;clearTimeout(searchTimer);document.dispatchEvent(new Event('clat:editor-menu-close'));}};
+  return {refresh,reveal,select,path:()=>selected,directory:()=>directory,collapse(){expanded.clear();return refresh();},suspend(){epoch++;clearTimeout(searchTimer);window.dispatchEvent(new Event('clat:editor-menu-close'));}};
 }

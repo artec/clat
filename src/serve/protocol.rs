@@ -92,6 +92,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "library.bookmark.remove",
     "library.reference.add",
     "history.attachment",
+    "operations.list",
+    "operations.detail",
     "history.conversation",
     "history.search",
     "history.events",
@@ -1384,6 +1386,9 @@ fn dispatch_workbench_tools(
         | "history.search"
         | "history.events"
         | "history.event.read" => super::page_queries::history(shared, method, params),
+        "operations.list" | "operations.detail" => {
+            super::page_queries::operations(shared, method, params)
+        }
         "turn.changes" | "turn.restore" => dispatch_turn_review(shared, method, params),
         "files.list" | "files.search" | "files.preview" | "files.reference" => {
             dispatch_files(shared, method, params)

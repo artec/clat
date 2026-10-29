@@ -2,7 +2,12 @@
 mod conversation;
 mod index;
 mod inspect;
+mod operations;
 pub use conversation::{ConversationMessage, ConversationPage, ConversationRequest};
+pub use operations::{
+    OperationDetail, OperationDetailRequest, OperationFilter, OperationRow, OperationsPage,
+    OperationsRequest,
+};
 mod query;
 mod source;
 pub use inspect::{

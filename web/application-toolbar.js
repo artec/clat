@@ -1,52 +1,34 @@
-/* Application chrome remains available independently of the active content page. */
-function createApplicationToolbar(shell) {
-  const bar = el('header', 'application-toolbar'); bar.id = 'application-toolbar';
-  const navigation = el('nav', 'application-navigation');
-  const back = shellButton('application-back', 'previous', () => shellText('back'), () => context.history.go(-1));
-  const forward = shellButton('application-forward', 'next', () => shellText('forward'), () => context.history.go(1));
-  const list = shellButton('project-list-toggle', 'panel', () => CLATI18n.msg('web.sessions'), () => {
-    if (isMobile()) dom['mobile-sidebar-open'].click(); else toggleProjectList();
-  });
-  list.setAttribute('aria-controls', 'sidebar');
-  list.classList.add('desktop-only');
-  navigation.append(back, forward, list, dom['mobile-sidebar-open']);
-  const location = el('div', 'application-location');
-  const project = el('span', 'application-project'); project.id = 'application-project';
-  const page = el('strong', 'application-page'); page.id = 'application-page';
-  location.append(svgIcon('folder'), project, el('span', 'application-separator', '/'), dom['session-title'], page);
-  const actions = document.querySelector('.header-actions');
-  const more = shellButton('application-session-menu', 'more', () => CLATI18n.msg('web.session_actions'), () => {
-    const session = state.sessions.find(item => item.id === state.sessionId);
-    if (!session) return;
-    const rect = more.getBoundingClientRect();
-    toggleSessionMenu(session, rect.right, rect.bottom + 4, more);
-  });
-  actions.prepend(more);
-  const technical=document.querySelector('.session-technical');
-  technical.querySelector('summary').after(document.querySelector('.conversation-meta'));
-  document.querySelector('.conversation-header').remove();
-  bar.append(navigation, location, actions); dom.app.prepend(bar);
-  shell.toolbar = { back, forward, list, page, project, more };
-  context.history.subscribe(() => refreshApplicationToolbar(shell));
-  refreshApplicationToolbar(shell);
+/* One renderer for page-owned breadcrumbs, list controls and action descriptors. */
+function createApplicationToolbar(shell){
+  const bar=el('header','application-toolbar');bar.id='application-toolbar';const navigation=el('nav','application-navigation');
+  const back=shellButton('application-back','previous',()=>shellText('back'),()=>context.history.go(-1)),forward=shellButton('application-forward','next',()=>shellText('forward'),()=>context.history.go(1));
+  const list=navigationIcon(()=>viewText('toggle_list'),'panel',()=>toggleViewList(shell));list.id='project-list-toggle';navigation.append(back,forward,list);
+  const location=el('nav','application-location');CLATI18n.attribute(location,'aria-label',()=>viewText('location'));
+  const actions=el('nav','application-actions'),menu=el('div','workbench-tools hidden');menu.id='workbench-tools';menu.setAttribute('role','menu');
+  const more=navigationIcon(()=>CLATI18n.msg('tui.tools'),'tools',()=>{menu.classList.toggle('hidden');more.setAttribute('aria-expanded',String(!menu.classList.contains('hidden')));});more.id='tools-open';more.setAttribute('aria-controls',menu.id);more.setAttribute('aria-expanded','false');
+  const technical=document.querySelector('.session-technical');technical.querySelector('summary').after(document.querySelector('.conversation-meta'));
+  const legacy=document.querySelector('.header-actions');legacy.hidden=true;legacy.id='legacy-workbench-actions';legacy.append(dom['session-title'],dom['mobile-sidebar-open']);document.getElementById('conversation-page').append(legacy);dom['session-title'].hidden=true;dom['mobile-sidebar-open'].hidden=true;
+  document.querySelector('.conversation-header').remove();bar.append(navigation,location,more,actions,menu);dom.app.prepend(bar);
+  shell.toolbar={back,forward,list,actions,more,menu,breadcrumbs:createApplicationBreadcrumbs(location,shell),signature:'',view:null};
+  const close=()=>{menu.classList.add('hidden');more.setAttribute('aria-expanded','false');};shell.toolbar.close=close;
+  document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target)&&!more.contains(event.target))close();});
+  menu.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();close();more.focus();}else if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();const rows=[...menu.querySelectorAll('button:not(:disabled)')],index=rows.indexOf(document.activeElement);rows[(index+(event.key==='ArrowDown'?1:rows.length-1))%rows.length]?.focus();}};
+  context.history.subscribe(()=>refreshApplicationToolbar(shell));CLATI18n.onChange(()=>{shell.toolbar.signature='';refreshApplicationToolbar(shell);});refreshApplicationToolbar(shell);
 }
-
-function refreshApplicationToolbar(shell = workbenchShell) {
-  if (!shell?.toolbar) return;
-  const { back, forward, list, page, project, more } = shell.toolbar;
-  const route = (dom.app.dataset.page || 'workbench').split('?')[0];
-  const labels = { workbench: 'workbench', terminal:'terminal', resources: 'resources', tasks: 'tasks', history: 'history', extensions: 'extensions', settings: 'settings', help: 'help' };
-  CLATI18n.bind(page, 'textContent', () => shellText(labels[route.split('/')[0]] || 'workbench'));
-  CLATI18n.bind(project, 'textContent', () => dom['project-name'].textContent);
-  CLATI18n.attribute(project, 'title', () => dom['project-root'].textContent);
-  const chat = route === 'workbench'; const readingConversation = chat || Boolean(borrowedConversation);
-  list.hidden = !chat || Boolean(dom.app.dataset.tool); dom['session-title'].hidden = !chat; page.hidden = chat;
-  dom['mobile-sidebar-open'].hidden = !chat || Boolean(dom.app.dataset.tool);
-  more.hidden = !readingConversation; more.disabled = !state.sessionId || state.switching;
-  document.getElementById('find-open').hidden = !readingConversation || Boolean(dom.app.dataset.tool);
-  dom['inspector-toggle'].hidden = Boolean(dom.app.dataset.tool);
-  if(dom.app.dataset.tool)more.hidden=true;
-  if (!chat) closeSessionMenu();
-  back.disabled = !context.history.canGo(-1); forward.disabled = !context.history.canGo(1);
-  syncPanelAccessibility();
+function refreshApplicationToolbar(shell=workbenchShell){
+  if(!shell?.toolbar)return;const chrome=shell.toolbar,view=activeViewContext(shell);
+  if(chrome.view!==view.id){chrome.close();chrome.breadcrumbs.close();closeSessionMenu();setConversationFindOpen(false);window.dispatchEvent(new Event('clat:editor-menu-close'));chrome.view=view.id;chrome.signature='';globalThis.CLATTerminalMenuClose?.();closeGitFileMenu?.();}
+  chrome.breadcrumbs.render(view);const expanded=syncViewList(view);chrome.list.hidden=!view.sidebar;chrome.list.setAttribute('aria-expanded',String(expanded));
+  if(view.sidebar){view.sidebar.id||=view.id+'-list';chrome.list.setAttribute('aria-controls',view.sidebar.id);}else chrome.list.removeAttribute('aria-controls');
+  renderApplicationActions(chrome,view,shell);chrome.back.disabled=!context.history.canGo(-1);chrome.forward.disabled=!context.history.canGo(1);syncPanelAccessibility();
+}
+function renderApplicationActions(chrome,view,shell){
+  const actions=(view.actions?.()||[]).filter(action=>!action.hidden?.()),primary=actions.filter(action=>action.primary).slice(0,3),secondary=actions.filter(action=>!primary.includes(action));
+  const signature=JSON.stringify([view.id,actions.map(a=>[a.id,typeof a.label==='function'?a.label():a.label,a.enabled?.()!==false,Boolean(a.busy?.())]),Boolean(view.workspace),shell.tools?.current()?.id]);
+  if(signature===chrome.signature)return;chrome.signature=signature;chrome.actions.replaceChildren();chrome.menu.replaceChildren();
+  const button=(action,inline)=>{const run=event=>{const source=inline?event.currentTarget:chrome.more;chrome.close();void Promise.resolve().then(()=>{if(activeViewContext(shell).id===view.id&&action.enabled?.()!==false)return action.run({currentTarget:source,detail:event.detail});}).catch(error=>{if(activeViewContext(shell).id===view.id)updateRunState(error.message||String(error));});};const node=inline?navigationIcon(action.label,action.icon,run):shellButton('',action.icon,action.label,run);node.dataset.action=action.id;if(action.controls)node.setAttribute('aria-controls',action.controls);if(action.expanded)node.setAttribute('aria-expanded',String(action.expanded()));node.disabled=action.enabled?.()===false||Boolean(action.busy?.());if(!inline)node.setAttribute('role','menuitem');return node;};
+  for(const action of primary)chrome.actions.append(button(action,true));
+  for(const action of secondary)chrome.menu.append(button(action,false));
+  if(view.workspace){if(secondary.length)chrome.menu.append(el('hr','menu-separator'));const group=el('div','workspace-action-group');group.setAttribute('role','group');CLATI18n.attribute(group,'aria-label',()=>viewText('workspace'));chrome.menu.append(group);for(const tool of WORKSPACE_TOOLS){const node=button(viewAction('tool-'+tool.key,tool.icon,()=>experienceText(tool.key),()=>shell.tools.open(tool.id)),false);node.setAttribute('aria-current',String(shell.tools.current()?.id===tool.id));group.append(node);}}
+  chrome.more.hidden=!chrome.menu.childElementCount;if(chrome.more.hidden)chrome.close();
 }

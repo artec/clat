@@ -1,7 +1,7 @@
 /* Project document tabs keep their own CodeMirror states and undo histories. */
 function createDevelopmentEditor(){
   const docs=new Map();let selected=null,view=null,active=false,openEpoch=0;
-  const ui=createEditorLayout({create:directory=>createFile(directory),refresh:()=>refresh(),collapse:()=>tree.collapse(),recover:()=>drafts.recover(true),save:()=>save(selected),saveAll,find:()=>view?.search(),menu:()=>fileMenu(tree.directory())});
+  const ui=createEditorLayout({create:directory=>createFile(directory),refresh:()=>refresh(),collapse:()=>tree.collapse(),recover:()=>drafts.recover(true),save:()=>save(selected),saveAll,canSave:()=>Boolean(selected?.dirty&&!selected.readonly&&!selected.saving),canSaveAll:()=>[...docs.values()].some(doc=>doc.dirty&&!doc.readonly&&!doc.saving),canFind:()=>Boolean(view),find:()=>view?.search(),menu:()=>fileMenu(tree.directory())});
   const {node,status,list,toolbar,mount,tabs,breadcrumb,footer}=ui;
   const controller={node,docs,get selected(){return selected;},openFile,save,saveAll,refresh,createFile,selection:()=>view?view.view.state.selection.main:null,flush:()=>drafts.flush()};
   const drafts=createDevelopmentDrafts({docs,status,activate});const queueDraft=drafts.queue,recover=drafts.recover;
@@ -17,12 +17,13 @@ function createDevelopmentEditor(){
   ];}
   function stash(){if(selected&&view){selected.state=view.state();selected.top=view.view.scrollDOM.scrollTop;selected.left=view.view.scrollDOM.scrollLeft;}view?.destroy();view=null;}
   function renderTabs(){
+    refreshViewContext();
     renderEditorTabs({tabs,docs,selected,activate,closeDoc,render:renderTabs});editorBreadcrumb(breadcrumb,selected,tree.reveal);
     if(!selected){footer.replaceChildren();editorEmpty(mount);}
   }
   function updateStatus(){
     if(!selected||!view)return;
-    selected.indentTab=view.indent()==='\t';editorStatus(footer,selected,view,mode=>{selected.mode=mode;view.setLanguage(mode||globalThis.CLATDevelopmentWidgets.formatFor(selected.path,selected.text).id);});
+    selected.indentTab=view.indent()==='\t';editorStatus(footer,selected,view,mode=>{selected.mode=mode;view.setLanguage(mode||globalThis.CLATDevelopmentWidgets.formatFor(selected.path,selected.text).id);});refreshViewContext();
   }
   function updatePosition(){if(!selected||!view||!footer.firstChild)return;const selection=view.view.state.selection.main,line=view.view.state.doc.lineAt(selection.head);CLATI18n.bind(footer.firstChild,'textContent',()=>devText('cursor_position',{line:line.number,column:selection.head-line.from+1}));}
   function activate(doc){
@@ -53,13 +54,13 @@ function createDevelopmentEditor(){
   }
   async function save(doc,overwrite=false){
     if(!doc||doc.readonly||!doc.dirty)return true;
-    if(doc.saving)return false;doc.saving=true;
+    if(doc.saving)return false;doc.saving=true;refreshViewContext();
     try{
       if(doc.conflict&&!overwrite){showConflict(doc);return false;}
       const version=overwrite?(doc.disk?.version==='missing'?'missing':(await rpc('editor.open',{path:doc.path})).version):doc.version;
       const text=doc.text;const result=await rpc('editor.save',{operationId:devId(),path:doc.path,version,text,bom:doc.bom,newline:doc.newline});
       doc.version=result.version;doc.baseText=text;doc.dirty=doc.text!==text;doc.conflict=false;if(doc===selected){controller.clearConflict?.();if(!view){selected=null;activate(doc);}}renderTabs();queueDraft(doc);devStatus(status,'saved');return true;
-    }catch(error){devReport(status,error);doc.conflict=true;if(doc===selected)showConflict(doc);return false;}finally{doc.saving=false;}
+    }catch(error){devReport(status,error);doc.conflict=true;if(doc===selected)showConflict(doc);return false;}finally{doc.saving=false;refreshViewContext();}
   }
   async function saveAll(){for(const doc of docs.values())if(!await save(doc))return false;return true;}
   async function closeDoc(doc){

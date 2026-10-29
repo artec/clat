@@ -1861,8 +1861,12 @@ the action. IME composition and pasted paths do not submit a candidate.
 
 Use the conversation's Find button or Ctrl/Cmd+F to search original user/agent
 body text. Enter/Shift+Enter and the arrow buttons visit matches; **Earlier**
-reads one older page. The compact search panel closes when Find is clicked again,
-when clicking outside it, or with Escape. Clicking Find leaves focus in place;
+reads one older page. The compact search panel opens beneath the toolbar,
+using the same right inset as the Tools menu, and stays within the window.
+Its toolbar gap matches the Tools menu. Bottom spacing accounts for the input
+row's own inset so the first and last lines have balanced visual breathing room. Conversation toolbar controls are ordered Tools,
+Find, and Workspace toggle. The panel closes when Find is clicked again,
+when clicking outside it, switching views, or with Escape. Clicking Find leaves focus in place;
 Ctrl/Cmd+F focuses the search field for immediate typing. The scope label says whether
 earlier messages remain unloaded. Prefix pages and streaming tokens preserve
 the selected message; the preview shows the exact source occurrence. This is
@@ -2882,15 +2886,38 @@ Help groups getting started, workflows, keyboard navigation and troubleshooting.
 
 ### Web/Desktop conversation reading and next steps
 
-The right extension area offers project files, all workspace changes, captured
-run actions, current process output, and plans/goals as separate modules. Each
-opens inside the extension area and returns to its overview. Files and run
-captures retain their original scopes; a captured action is not the whole Git
-working tree. Switching feature pages does not close the extension area.
-The toolbar Tools menu offers the same modules with compact icon-and-label rows,
-followed by Help, using the same popup treatment as conversation actions.
-It is shared by every feature page; clicking navigation or outside the menu
-closes it even while a side module remains open.
+The right workspace shortcuts and the Tools menu open Project Files, Git,
+Operation Records, Current Tasks, and Plans & Goals in a shared list/detail area.
+There is no conversation/tool tab bar. Opening a tool uses a short fade/expand
+transition; closing reverses it over the retained conversation. Rapid navigation
+interrupts motion immediately, and the system Reduce Motion preference disables it. The top breadcrumb shows the actual view
+hierarchy; only these five tools have an × beside the last level. The × or parent
+conversation name returns to the existing conversation, preserving its draft and
+reading position. Closing a tool keeps editor buffers, Git commit drafts and tool
+selection; it never stops execution. Back/Forward continues to navigate history.
+
+The top list control operates on the current view. Each page/tool remembers its
+own collapsed preference on this device; the old preference migrates to Conversation
+only. Narrow windows use list → detail → back to list, independently of that desktop
+preference. Page-specific toolbar actions replace unrelated conversation controls.
+At most three primary actions are shown, with other actions in the click menu.
+Only Conversation and its five tools offer the workspace tool switcher. Pending
+conversation interactions and updates appear beside its breadcrumb while a tool is open.
+
+Operation Records reads recorded tool requests/results for the current conversation,
+including file, command and MCP calls, grouped newest turn first. Filters and paging
+never execute or replay calls. A missing result is shown as unconfirmed; a result
+without its request is explicitly unknown. Technical details are redacted and bounded.
+Each record may expand **that turn's file captures**, which is aggregate turn evidence,
+not undo for the selected call. Recovery remains revision-checked and explicitly
+confirmed; shell, MCP and external effects have no general undo. Missing captures,
+missing history and read errors are distinct from an empty filtered call list.
+Authenticated project clients use `operations.list` with a history-style `reference`,
+optional `filter` (`turn`, `tool`, `status`) and `cursor`; `operations.detail` takes
+that reference and a returned record `id`. Both RPCs require the current
+`expected_selection_generation` and selected session. Record IDs are scoped to the
+referenced project/session. List pages freeze a committed prefix; refreshing starts
+from current facts, while older page cursors do not absorb later appends.
 
 Message actions reveal the journal date/time on hover or keyboard focus (available from message actions
 on touch devices). Missing timestamps are unavailable, never replaced
@@ -3077,7 +3104,8 @@ in Discover. Offline mode uses the existing explicitly labelled preview catalog.
 
 ### Git source control
 
-The workspace Git tool keeps its existing entry points and conversation/tool tabs.
+The workspace Git tool keeps its existing entry points and uses the shared
+breadcrumb close control to return to the conversation.
 Its sidebar combines a compact commit form, conflict/staged/working-tree groups,
 repository selection and a commit graph. Hover or focus file rows for actions;
 click a file to preview its diff, double-click to pin its comparison tab. Tabs keep
@@ -3105,8 +3133,8 @@ push, branches and backup restoration remain in the repository controls. Graph
 browsing, repository selection and page navigation perform no remote mutations.
 
 The workspace Changes entry opens the Git tool from either the tools menu or the
-right-side workspace shortcuts. Both entry points and the active tool tab use the
-same semantic icons: a branch for Git, a history arrow for captured operations,
+right-side workspace shortcuts. Both entry points and the contextual tool menu use the
+same semantic icons: a branch for Git, a history arrow for operation records,
 and a checklist for current tasks.
 
 Git file-row actions take no space until the row is hovered or keyboard-focused;
@@ -3133,3 +3161,33 @@ scrollable list; use Plan and goals to inspect the full workflow. Expansion is
 retained across updates in the same session and reset when switching sessions.
 Normal connection/model metadata stays in collapsed Session details; reconnecting
 or disconnected status still appears above the workspace tools.
+
+### Settings layout
+
+Settings uses a compact, grouped category sidebar with shared icons and the same
+search control as the other navigation pages. Search filters category names only; it does not read credential values or
+change the open panel. Press Enter to open the first matching category.
+
+The detail area has a centered reading column, section headings and grouped rows.
+Appearance separates language/theme from conversation reading; terminal settings
+group font/spacing, cursor, scrollback and the live preview. Model profiles, project
+forms, permissions, integrations, Git and desktop updates use the same card and
+control styling. Each category retains its reading position while Settings remains
+mounted. On narrow windows, open a category and use Back to list or the top list
+control to return to the categories.
+
+Changes still use their existing save behavior: device appearance and terminal
+preferences apply immediately, while settings with an Apply/Save button require
+that explicit action. Permission confirmation, unsaved form recovery and credential
+clearing continue to apply. This layout does not add new Agent capabilities.
+
+Built-in model settings show the Host catalog grouped by the same five vendors as
+the TUI picker. Choose a model, optionally supply its write-only API key, then
+Apply model to activate it across projects. A blank key retains that vendor's
+saved key. Custom profiles remain available below. Leaving Settings clears
+unsubmitted keys. The project page's alternate-tab links are browser-only; Desktop
+uses same-window project switching.
+
+Tray recents display the conversation title above its project. macOS uses the
+standard native subtitle when available (a styled second line on macOS 13); Windows
+uses a separate muted project row. Only the conversation row activates navigation.

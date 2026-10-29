@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/development.css">
 <link rel="stylesheet" href="/development-editor.css">
 <link rel="stylesheet" href="/navigation.css">
+<link rel="stylesheet" href="/settings.css">
 </head>
 <body>
 <template id="project-template">
@@ -348,25 +349,36 @@
         <h3 data-i18n="web.appearance">Appearance</h3>
         <p data-i18n="web.stored_only_in_this_browser_session_content_is_never_cached_here">Stored only in this browser. Session content is never cached here.</p>
       </div>
-      <div data-language-control></div>
+      <section class="settings-group-block">
+        <h4 data-i18n="settings_ui.interface">Interface</h4>
+        <div class="settings-card">
+          <div class="settings-row"><span class="settings-row-copy"><strong data-i18n="common.language">Language</strong><small data-i18n="settings_ui.language_hint">Choose the language used throughout the app.</small></span><div data-language-control class="settings-language-control"></div></div>
+          <div class="settings-row"><span class="settings-row-copy"><strong data-i18n="web.theme">Theme</strong><small data-i18n="settings_ui.theme_hint">Light, dark, or follow your system.</small></span>
       <fieldset id="theme-options" class="segmented" aria-label="Theme" data-i18n-aria-label="web.theme">
         <label><input type="radio" name="theme" value="system" checked><span data-i18n="web.system">System</span></label>
         <label><input type="radio" name="theme" value="light"><span data-i18n="web.light">Light</span></label>
         <label><input type="radio" name="theme" value="dark"><span data-i18n="web.dark">Dark</span></label>
-      </fieldset>
-      <div id="reading-options" class="reading-options">
+      </fieldset></div>
+        </div>
+      </section>
+      <section id="reading-options" class="settings-group-block">
+        <h4 data-i18n="settings_ui.conversation">Conversation</h4>
+        <div class="settings-card">
+        <div class="settings-row"><span class="settings-row-copy"><strong data-i18n="web.message_layout">Message layout</strong><small data-i18n="settings_ui.layout_hint">Choose how messages are arranged.</small></span>
         <fieldset class="segmented reading-choice" aria-label="Message layout" data-i18n-aria-label="web.message_layout">
           <legend data-i18n="web.message_layout">Message layout</legend>
           <label><input type="radio" name="messageLayout" value="bubbles" checked><span data-i18n="web.user_bubbles">User bubbles</span></label>
           <label><input type="radio" name="messageLayout" value="column"><span data-i18n="web.single_column">Single column</span></label>
-        </fieldset>
+        </fieldset></div>
+        <div class="settings-row"><span class="settings-row-copy"><strong data-i18n="web.process_display">Process display</strong><small data-i18n="settings_ui.process_hint">Summarize work or show every step.</small></span>
         <fieldset class="segmented reading-choice" aria-label="Process display" data-i18n-aria-label="web.process_display">
           <legend data-i18n="web.process_display">Process display</legend>
           <label><input type="radio" name="processView" value="summaries" checked><span data-i18n="web.work_summaries">Work summaries</span></label>
           <label><input type="radio" name="processView" value="expanded"><span data-i18n="web.all_steps">All steps</span></label>
-        </fieldset>
+        </fieldset></div>
+        </div>
         <p class="settings-note" data-i18n="web.compare_these_views_on_the_same_conversation_summaries_retain_every_record_approva">Compare these views on the same conversation. Summaries retain every record; approvals, questions and errors always stay visible.</p>
-      </div>
+      </section>
     </section>
 
     <section class="settings-section" data-settings-panel="projects" hidden>
@@ -374,12 +386,14 @@
         <h3 data-i18n="web.projects">Projects</h3>
         <p data-i18n="web.open_another_project_in_a_new_tab_each_project_has_its_own_session_and_permissions">Open and switch projects in this window. Each project retains its own sessions, permissions and draft. Existing project links can open another tab.</p>
       </div>
-      <div id="workspace-list"></div>
+      <section class="settings-group-block"><h4 data-i18n="settings_ui.project_list">Projects</h4><div id="workspace-list" class="settings-card"></div></section>
+      <section class="settings-group-block"><h4 data-i18n="web.add_project">Add project</h4><div class="settings-card settings-form">
       <label for="workspace-root" data-i18n="web.absolute_project_directory">Absolute project directory</label>
       <input id="workspace-root" type="text" autocomplete="off" placeholder="/path/to/project">
       <label><input id="workspace-trust" type="checkbox"> <span data-i18n="web.i_trust_this_project_and_authorize_its_tools_and_project_instructions">I trust this project and authorize its tools and project instructions.</span></label>
       <button id="workspace-open" class="primary" type="button" data-i18n="web.add_project">Add project</button>
       <p id="workspace-error" class="error" role="alert"></p>
+      </div></section>
     </section>
 
     <section class="settings-section model-settings" data-settings-panel="models" hidden>
@@ -388,9 +402,13 @@
         <p data-i18n="web.create_and_maintain_routes_here_choose_the_active_model_beside_send_in_the_compose">Create and maintain routes here. Choose the active model beside Send in the composer.</p>
       </div>
       <p id="model-current" class="mono-detail" role="status"></p>
+      <div id="model-presets" class="model-vendor-list"></div>
+      <section class="settings-group-block"><h4 data-i18n="web.saved_profiles">Saved profiles</h4><div class="settings-card settings-form">
       <div id="model-profiles" class="model-profiles" aria-label="Saved model profiles" data-i18n-aria-label="web.saved_model_profiles"></div>
       <button id="model-profile-new" class="ghost" type="button" data-i18n="web.new_profile">New profile</button>
-      <details id="model-profile-editor">
+      </div>
+      </section>
+      <details id="model-profile-editor" class="settings-card settings-form">
         <summary data-i18n="web.create_or_edit_a_custom_profile">Create or edit a custom profile</summary>
         <p class="settings-copy" data-i18n="web.keys_are_write_only_blank_keeps_a_key_only_on_an_unchanged_route_changing_the_rout">Keys are write-only. Blank keeps a key only on an unchanged route. Changing the route resets advanced settings and credentials.</p>
         <div class="model-form-grid">
@@ -414,12 +432,12 @@
         <h3><span data-i18n="web.companion_utility">Companion utility</span> <span class="section-kicker" data-i18n="web.host_wide">HOST-WIDE</span></h3>
         <p data-i18n="web.automatic_session_naming_is_enabled_by_default_suggestions_are_manual_only_and_nev">Automatic session naming is enabled by default. Suggestions are manual only and never submit or write to the journal.</p>
       </div>
-      <fieldset class="utility-options" aria-label="Companion utility switches" data-i18n-aria-label="web.companion_utility_switches">
+      <fieldset class="utility-options settings-card" aria-label="Companion utility switches" data-i18n-aria-label="web.companion_utility_switches">
         <label><input id="utility-naming-enabled" type="checkbox"><span><strong data-i18n="web.continuous_naming">Continuous naming</strong><small data-i18n="web.rename_sessions_after_eligible_turns">Rename sessions after eligible turns.</small></span></label>
         <label><input id="utility-suggestions-enabled" type="checkbox"><span><strong data-i18n="web.manual_suggestions">Manual suggestions</strong><small data-i18n="web.show_a_next_message_hint_from_the_sparkle_button">Show a next-message hint from the sparkle button.</small></span></label>
         <label><input id="utility-followups-enabled" type="checkbox"><span><strong data-i18n="experience.auto_followups">Automatic followups</strong><small data-i18n="experience.auto_cost">After a completed run, use the utility model to suggest next steps. Provider charges may apply.</small></span></label>
       </fieldset>
-      <label for="utility-profile"><span data-i18n="web.utility_model_profile">Utility model profile</span><select id="utility-profile"><option value="" data-i18n="web.use_primary_model">Use primary model</option></select></label>
+      <label for="utility-profile" class="settings-row settings-card"><span data-i18n="web.utility_model_profile">Utility model profile</span><select id="utility-profile"><option value="" data-i18n="web.use_primary_model">Use primary model</option></select></label>
       <p class="settings-note" data-i18n="web.cost_guard_naming_waits_five_turns_and_five_minutes_between_successful_attempts_ea">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>
       <p id="utility-settings-error" class="error" role="alert"></p>
       <div class="settings-actions"><span id="utility-settings-saved" role="status"></span><button id="utility-settings-save" class="primary" type="button" data-i18n="web.save_utility_policy">Save utility policy</button></div>
@@ -430,7 +448,7 @@
         <h3 data-i18n="web.permission_mode">Permission mode</h3>
         <p data-i18n="web.this_is_a_session_property_changes_apply_at_the_next_tool_permission_check">This is a session property. Changes apply at the next tool permission check.</p>
       </div>
-      <fieldset id="permission-options" class="permission-options" aria-label="Permission mode" data-i18n-aria-label="web.permission_mode">
+      <fieldset id="permission-options" class="permission-options settings-card" aria-label="Permission mode" data-i18n-aria-label="web.permission_mode">
         <label>
           <input type="radio" name="permission-mode" value="read-only">
           <span><strong data-i18n="web.read_only">Read Only</strong><small data-i18n="web.ask_before_every_side_effect">Ask before every side effect.</small></span>
@@ -460,6 +478,7 @@
         <h3 data-i18n="web.wechat_remote_control">WeChat remote control</h3>
         <p data-i18n="web.uses_the_official_ilink_api_bot_binding_and_user_authorization_are_separate_an_emp">Uses the official iLink API. Bot binding and user authorization are separate; an empty authorization set denies everyone.</p>
       </div>
+      <div class="settings-card settings-form">
       <div class="wechat-status-row">
         <strong id="wechat-status" data-i18n="web.checking">Checking…</strong>
         <span id="wechat-counts"></span>
@@ -483,6 +502,7 @@
         <button id="wechat-bind" class="secondary" type="button" data-i18n="web.bind_wechat">Bind WeChat</button>
         <button id="wechat-pair" class="secondary" type="button" data-i18n="web.create_pairing_code">Create pairing code</button>
         <button id="wechat-unbind" class="danger-button" type="button" data-i18n="web.unbind">Unbind</button>
+      </div>
       </div>
     </section>
     </div>

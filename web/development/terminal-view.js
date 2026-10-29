@@ -9,13 +9,14 @@ function terminalIcon(key,icon,action){return navigationIcon(()=>devText(key),ic
 function createTerminalPage(actions){
   const node=el('section','dev-terminal-page navigation-layout');node.id='terminal-page';
   const sidebar=el('aside','sidebar terminal-sidebar navigation-sidebar'),head=el('div','sidebar-head navigation-head'),title=el('strong','',()=>devText('terminal'));
-  head.append(title,terminalIcon('new_terminal','plus',()=>actions.create()),terminalIcon('shell_choice','chevron-down',event=>actions.shellMenu(event.currentTarget)),terminalIcon('more','more',event=>actions.more(event.currentTarget)));
+  head.append(title);
   const {element:search,input:query}=navigationSearch(null,()=>devText('terminal_search'));
   const list=el('nav','terminal-project-list');sidebar.append(head,search,list);
   const detail=el('section','dev-terminal-detail navigation-detail'),bar=el('header','terminal-toolbar navigation-toolbar'),name=el('strong',''),status=el('span','terminal-state'),mount=el('div','dev-terminal-mount'),empty=el('div','terminal-empty');
   const back=terminalIcon('back_list','previous',()=>delete node.dataset.detail);back.classList.add('navigation-back');
-  bar.append(back,name,status,terminalIcon('take_control','permission-write',()=>actions.claim()),terminalIcon('find','search',()=>actions.find()),terminalIcon('copy','copy',()=>actions.copy()),terminalIcon('clear','trash',()=>actions.clear()),terminalIcon('terminal_settings','settings',()=>{openSettings();selectSettingsCategory('terminal');}));
+  bar.append(back,name,status,terminalIcon('take_control','permission-write',()=>actions.claim()),terminalIcon('copy','copy',()=>actions.copy()),terminalIcon('clear','trash',()=>actions.clear()));
   empty.append(svgIcon('terminal'),el('p','',()=>devText('terminal_empty')),devButton('new_terminal',()=>actions.create()));mount.append(empty);detail.append(bar,mount);node.append(sidebar,detail);
+  registerView(node,{sidebar,actions:()=>[viewAction('create','plus',()=>devText('new_terminal'),()=>actions.create(),true,actions.canCreate),viewAction('find','search',()=>devText('find'),()=>actions.find(),true,actions.hasSelection),viewAction('settings','settings',()=>devText('terminal_settings'),()=>openSettings('terminal')),viewAction('shell','terminal',()=>devText('shell_choice'),event=>actions.shellMenu(event.currentTarget),false),viewAction('cleanup','trash',()=>devText('close_ended'),()=>actions.cleanup(),false)]});
   query.oninput=()=>actions.render();return {node,list,query,detail,status,mount,name,empty};
 }
 function terminalMenu(source,items){

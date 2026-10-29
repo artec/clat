@@ -8,9 +8,22 @@ use std::{
 };
 const CAP: usize = 16 * 1024 * 1024;
 pub(super) fn base(project: &Project, write: bool) -> Result<Command, String> {
-    if !write {
-        return crate::project::git::command(project);
-    }
+    let command = if write {
+        human_command(project)
+    } else {
+        crate::project::git::command(project)?
+    };
+    #[cfg(windows)]
+    let command = {
+        let mut command = command;
+        // Private indexes for nested repositories exceed MAX_PATH even when
+        // the project itself has a short name. Keep this command-local.
+        command.args(["-c", "core.longpaths=true"]);
+        command
+    };
+    Ok(command)
+}
+fn human_command(project: &Project) -> Command {
     let mut command = Command::new("git");
     command.current_dir(project.root()).args([
         "--literal-pathspecs",
@@ -27,7 +40,7 @@ pub(super) fn base(project: &Project, write: bool) -> Result<Command, String> {
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never");
-    Ok(command)
+    command
 }
 pub(super) fn run(
     project: &Project,

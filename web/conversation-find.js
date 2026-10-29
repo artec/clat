@@ -26,14 +26,23 @@ function resetConversationFind() {
   setConversationFindOpen(false);
 }
 
+function conversationFindAnchor(){return document.querySelector('.application-actions [data-action=find]')||document.getElementById('find-open');}
+function positionConversationFind(bar) {
+  const trigger = conversationFindAnchor(), toolbar = trigger.closest('.application-toolbar');
+  positionSessionMenu(bar, 0, 0, toolbar || trigger);
+  const inset = parseFloat(getComputedStyle(bar).getPropertyValue('--toolbar-menu-inset')) || 12;
+  const right = Math.min((toolbar || dom.app).getBoundingClientRect().right, innerWidth) - inset;
+  bar.style.left = Math.max(inset, right - bar.getBoundingClientRect().width) + 'px';
+}
+
 function setConversationFindOpen(open, keyboard = false) {
   const bar = document.getElementById('find-bar');
-  const trigger = document.getElementById('find-open');
+  const trigger = conversationFindAnchor();
   bar.classList.toggle('hidden', !open);
   trigger.setAttribute('aria-expanded', String(open));
   if (open) {
     updateConversationFind();
-    positionSessionMenu(bar, 0, 0, trigger);
+    positionConversationFind(bar);
     if (keyboard) {
       const input = document.getElementById('find-query');
       input.focus(); input.select();
@@ -90,14 +99,19 @@ async function findEarlierMessages() {
 
 function installConversationFind() {
   const bar = document.getElementById('find-bar');
+  // Keep viewport-positioned search outside the clipped conversation/tool canvas.
+  document.body.appendChild(bar);
   const input = document.getElementById('find-query');
   const trigger = document.getElementById('find-open');
   window.addEventListener('resize', () => {
-    if (!bar.classList.contains('hidden')) positionSessionMenu(bar, 0, 0, trigger);
+    if (!bar.classList.contains('hidden')) positionConversationFind(bar);
   });
+  new ResizeObserver(() => {
+    if (!bar.classList.contains('hidden')) positionConversationFind(bar);
+  }).observe(bar);
   trigger.addEventListener('click', event => setConversationFindOpen(bar.classList.contains('hidden'), event.detail === 0));
   document.addEventListener('pointerdown', event => {
-    if (!bar.classList.contains('hidden') && !bar.contains(event.target) && !trigger.contains(event.target)) setConversationFindOpen(false);
+    if (!bar.classList.contains('hidden') && !bar.contains(event.target) && !conversationFindAnchor().contains(event.target)) setConversationFindOpen(false);
   });
   document.getElementById('find-next').addEventListener('click', () => moveConversationFind(1));
   document.getElementById('find-prev').addEventListener('click', () => moveConversationFind(-1));
@@ -111,7 +125,7 @@ function installConversationFind() {
     if (event.key === 'Enter') { event.preventDefault(); moveConversationFind(event.shiftKey ? -1 : 1); }
   });
   document.addEventListener('keydown', (event) => {
-    if (event.isComposing || document.querySelector('dialog[open]')) return;
+    if (event.defaultPrevented || event.isComposing || dom.app.dataset.page || dom.app.dataset.tool || document.querySelector('dialog[open]')) return;
     if (event.key === 'Escape' && !bar.classList.contains('hidden')) {
       event.preventDefault(); setConversationFindOpen(false, true);
     }

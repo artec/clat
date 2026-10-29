@@ -2518,8 +2518,7 @@ function positionSessionMenu(menu, x, y, source) {
   const style = getComputedStyle(menu);
   const inset = parseFloat(style.getPropertyValue('--menu-inset'));
   const gap = parseFloat(style.getPropertyValue('--menu-gap'));
-  const toolbar = source.closest('.application-toolbar .header-actions');
-  const anchor = toolbar || (source.classList.contains('session-more') ? source : null);
+  const anchor = (source.closest('.application-toolbar') || source.classList.contains('session-more')) ? source : null;
   if (anchor) {
     const bounds = anchor.getBoundingClientRect();
     x = bounds.right - menu.offsetWidth;
@@ -2833,11 +2832,12 @@ dom['market-open'].addEventListener('click', openMarket);
 function isMobile() { return window.innerWidth <= MOBILE_BREAKPOINT; }
 
 function syncPanelAccessibility() {
-  const sidebarVisible = !dom.app.dataset.page && !dom.app.dataset.tool && (isMobile() ? dom.app.dataset.mobileSidebar === 'open' : state.sidebar !== 'collapsed');
+  const sidebarVisible = !dom.app.dataset.page && !dom.app.dataset.tool && (isMobile() ? dom.app.dataset.mobileSidebar === 'open' : !viewListPreferences.read('conversation'));
+  if(workbenchShell?.toolbar)syncViewList(activeViewContext(workbenchShell));
   dom.sidebar.inert = !sidebarVisible;
   dom.sidebar.setAttribute('aria-hidden', String(!sidebarVisible));
-  document.getElementById('project-list-toggle')?.setAttribute('aria-expanded', String(sidebarVisible));
-  const inspectorVisible = state.inspector === 'open' && !dom.app.dataset.tool;
+
+  const inspectorVisible = state.inspector === 'open' && !dom.app.dataset.tool && !dom.app.dataset.page;
   dom.inspector.inert = !inspectorVisible;
   dom.inspector.setAttribute('aria-hidden', String(!inspectorVisible));
 }
@@ -2848,13 +2848,14 @@ function closeMobileSidebar() {
 }
 
 function toggleProjectList() {
+  if(workbenchShell?.toolbar){toggleViewList(workbenchShell);return;}
   state.sidebar = state.sidebar === 'expanded' ? 'collapsed' : 'expanded';
   applyPresentation();
   savePresentationPreference();
 }
 
 dom['sessions-open'].addEventListener('click', () => {
-  state.sidebar = 'expanded';
+  state.sidebar = 'expanded';viewListPreferences.write('conversation',false);refreshViewContext();
   applyPresentation();
   savePresentationPreference();
   dom['session-search'].focus();
@@ -2901,7 +2902,8 @@ function updateFullAccessConfirmation() {
 let currentSettingsCategory = 'appearance';
 function selectSettingsCategory(category) {
   if(currentSettingsCategory !== category) { pageSettingsLeave(); for(const input of dom['settings-dialog'].querySelectorAll('input[type=password]')) input.value = ''; }
-  currentSettingsCategory = category;
+  settingsLayout?.capture(currentSettingsCategory);
+  currentSettingsCategory = category;refreshViewContext();
   for (const panel of document.querySelectorAll('[data-settings-panel]')) {
     panel.hidden = panel.dataset.settingsPanel !== category;
   }
@@ -2909,6 +2911,7 @@ function selectSettingsCategory(category) {
     if (button.dataset.settingsCategory === category) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
+  settingsLayout?.select(category);
 }
 
 function openSettings(category = currentSettingsCategory) {
@@ -2953,6 +2956,7 @@ async function refreshModelSettings() {
     if (generation !== modelSettingsRefresh) return;
     CLATI18n.bind(modelField('current'), "textContent", () => CLATI18n.msg("web.line_value_key_value",{value1:((view.current.model || CLATI18n.msg("web.no_model_selected", {}, "No model selected"))),value2:((view.current.credential_set ? CLATI18n.msg('pages.configured') : CLATI18n.msg("web.not_set", {}, "not set")))},"{value1} · key {value2}"));
     renderModelPicker(view);
+    renderSettingsPresets(view);
     modelField('profiles').replaceChildren();
     for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
     // 表单代次围栏（与 profile 编辑器同款）：用户已动过的表单不被
@@ -3211,7 +3215,7 @@ async function refreshWorkspaces() {
       copy.append(el('small','',()=>workspace.run_active?pageText('running'):workspace.root===state.workbench?.project?.root?pageText('current_project'):''));
       const open = pageAction('switch_project',()=>void context.openProject(workspace).catch(failure=>{error.textContent=failure.message;}));
       const link = el('a','workspace-link',()=>pageText('new_window'));link.href='/?workspace='+encodeURIComponent(workspace.route_id||'default');link.hidden=!workspace.route_id;link.target='_blank';link.rel='noopener';
-      row.append(svgIcon('folder'),copy,open,link);list.append(row);
+      row.append(svgIcon('folder'),copy,open);if(!window.__TAURI__)row.append(link);list.append(row);
     }
     await context.refreshDirectory();
   } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
@@ -3236,7 +3240,7 @@ document.getElementById('workspace-open').addEventListener('click', async () => 
     link.href = '/?workspace=' + encodeURIComponent(result.id);
     link.target = '_blank';
     link.rel = 'noopener';
-    error.replaceChildren(link);
+    if(!window.__TAURI__)error.replaceChildren(link);
     document.getElementById('workspace-trust').checked = false;
     await context.openProject({ route_id: result.id, root }, { expectedNavigation: navigationAtIssue });
   } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
@@ -3473,8 +3477,8 @@ document.addEventListener('keydown', (event) => {
   if (event.key === '/' && !typing && !pageIsOpen(dom['settings-dialog']) && !pageIsOpen(dom['market-dialog'])) {
     event.preventDefault();
     if (isMobile()) dom.app.dataset.mobileSidebar = 'open';
-    else if (state.sidebar === 'collapsed') {
-      state.sidebar = 'expanded';
+    else if (viewListPreferences.read('conversation')) {
+      state.sidebar = 'expanded';viewListPreferences.write('conversation',false);refreshViewContext();
       applyPresentation();
     }
     setTimeout(() => dom['session-search'].focus(), 0);
@@ -3493,7 +3497,7 @@ document.addEventListener('keydown', (event) => {
 window.addEventListener('resize', () => {
   renderMapWindow();
   if (!isMobile()) closeMobileSidebar();
-  syncPanelAccessibility();
+  refreshViewContext();syncPanelAccessibility();
 });
 
 /* —— Composer ————————————————————————————————————————————— */
@@ -4008,6 +4012,7 @@ installConversationFind();
   installWorkbenchShell();
   installNavigationPages();
   installDevelopmentSettings();
+  installSettingsLayout();
 
 const composerSeat = document.querySelector('.conversation');
 const composer = document.querySelector('.composer');

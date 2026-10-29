@@ -8,7 +8,8 @@ function createTaskCenter() {
   const query = el('input'); query.type = 'search';CLATI18n.bind(query,'placeholder',()=>pageText('search_tasks')); CLATI18n.attribute(query, 'aria-label', () => pageText('search_tasks'));
   const status = el('p', 'settings-note'); status.setAttribute('role', 'status');
   const view=createNavigationPage(page,{title:()=>shellText('tasks'),query,searchLabel:()=>pageText('search_tasks')}),list=view.list,detail=view.body,head=view.head;
-  view.head.append(navigationIcon(()=>pageText('refresh'),'refresh',()=>void refresh()));
+  const actions=()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>refresh()),...(scheduleActions?[viewAction('create','plus',()=>pageText('create_task'),()=>scheduleActions.create())]:[])];
+  view.context({actions});
   const toolbar=view.filters;toolbar.append(filter);
   const project=el('select');project.id='task-project';CLATI18n.attribute(project,'aria-label',()=>pageText('project_scope'));toolbar.prepend(project);
   project.onchange=()=>{const row=project.options[project.selectedIndex];void context.openProject({route_id:row.value,root:row.dataset.root},{hash:'#/tasks'}).then(target=>target?.root.querySelector('#nav-tasks')?.click()).catch(fail);};
@@ -61,7 +62,7 @@ function createTaskCenter() {
   const trigger = sidebarToolButton('jobs-open', 'jobs', () => shellText('tasks')); trigger.hidden = true;
   trigger.onclick = () => { presentPage(page); void refresh(); };
   document.querySelector('.sidebar-footer').append(trigger);
-  return {page, interactionHost:view.detail, refresh, fail, restore(params){filter.value=params.get('type')||'all';restoreId=params.get('task');}, register(actions) { scheduleActions = actions; head.append(navigationIcon(()=>pageText('create_task'),'plus',()=>actions.create())); }, openSchedules() { filter.value = 'schedules'; trigger.click(); }, showSchedule(rule) { show({id:rule.id, name:rule.spec.title || rule.spec.instruction, type:'schedules', value:rule}); }};
+  return {page, interactionHost:view.detail, refresh, fail, restore(params){filter.value=params.get('type')||'all';restoreId=params.get('task');}, register(actions) { scheduleActions = actions;refreshViewContext(); }, openSchedules() { filter.value = 'schedules'; trigger.click(); }, showSchedule(rule) { show({id:rule.id, name:rule.spec.title || rule.spec.instruction, type:'schedules', value:rule}); }};
 }
 
 function installTaskNotifications() {

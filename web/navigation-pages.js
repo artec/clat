@@ -38,12 +38,6 @@ function pageSettingsLeave() {
   settings.dispatchEvent(new Event('clat:settings-leave'));
 }
 function setupSettingsSections() {
-  const nav = document.querySelector('.settings-nav');
-  for (const [key, categories] of [['workbench', ['appearance', 'projects']], ['capabilities', ['models', 'utility', 'permissions']], ['integrations', ['wechat', 'web']], ['application', ['desktop']]]) {
-    const label = el('small', 'settings-group', () => pageText(key));
-    const first = nav.querySelector(`[data-settings-category="${categories[0]}"]`);
-    if (first) first.before(label);
-  }
   const general = document.querySelector('[data-settings-panel=appearance]');
   general.append(document.getElementById('page-notifications')?.closest('.notification-settings') || el('span'));
   for (const section of document.querySelectorAll('[data-settings-panel]')) {
@@ -70,7 +64,7 @@ function setupSettingsDirtyProtection() {
   settings.addEventListener('focusin',event=>{const section=event.target.closest('[data-settings-panel]');if(section&&!section.dataset.unsaved)capture(section);});
   settings.addEventListener('input',event=>{
     const section=event.target.closest('[data-settings-panel]');
-    if(!section||['appearance','terminal','git'].includes(section.dataset.settingsPanel))return;
+    if(!section||event.target.closest('.model-vendor')||['appearance','terminal','git'].includes(section.dataset.settingsPanel))return;
     if(section.dataset.settingsPanel==='permissions'&&!permissionEditTarget)permissionEditTarget={project:state.workbench?.project?.root,session:state.sessionId,generation:state.selectionGeneration};
     section.dataset.unsaved='true';
     let bar=section.querySelector('.settings-draft-bar');

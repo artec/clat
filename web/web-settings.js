@@ -9,14 +9,15 @@ function installWebSettings() {
   const source=el('select');for(const key of ['independent','model']){const option=el('option','',()=>pageText('key_'+key));option.value=key;source.append(option);}
   const key=el('input');key.type='password';key.autocomplete='new-password';key.maxLength=4096;
   const clear=el('input');clear.type='checkbox';
-  const row=(label,input)=>{const node=el('label','form-row');node.append(el('span','',label),input);return node;};
+  const row=(label,input)=>settingsControlRow(label,input);
   const status=el('p','settings-note');status.setAttribute('role','status');
   const fetchState=el('p','settings-note'),searchState=el('p','settings-note');
   const save=el('button','primary',()=>msg('save'));save.type='button';
-  const fetch=el('section','settings-subsection'),search=el('section','settings-subsection');
-  fetch.append(el('h4','',()=>pageText('fetch_heading')),row(()=>msg('fetch_provider'),provider),fetchState);
-  search.append(el('h4','',()=>pageText('search_heading')),row(()=>pageText('key_source'),source),row(()=>msg('key'),key),row(()=>msg('clear_key'),clear),searchState);
-  panel.append(el('h3','',()=>msg('title')),el('p','settings-note',()=>msg('description')),fetch,search,status,save);nav.append(tab);content.append(panel);
+  panel.append(el('h3','',()=>msg('title')),el('p','settings-note',()=>msg('description')));
+  const fetch=settingsGroup(panel,()=>pageText('fetch_heading')),search=settingsGroup(panel,()=>pageText('search_heading'));
+  fetch.append(row(()=>msg('fetch_provider'),provider),fetchState);
+  search.append(row(()=>pageText('key_source'),source),row(()=>msg('key'),key),row(()=>msg('clear_key'),clear),searchState);
+  const actions=el('div','settings-action-bar');actions.append(save,status);panel.append(actions);nav.append(tab);content.append(panel);
   let generation=0,dirty=false;
   const visibility=()=>{key.closest('label').hidden=source.value==='model';clear.closest('label').hidden=source.value==='model';};source.onchange=visibility;visibility();
   panel.addEventListener('input',()=>{dirty=true;generation++;});

@@ -3,7 +3,7 @@
 .navigation-layout.hidden,.navigation-layout[hidden]{display:none!important}
 .navigation-sidebar{position:relative;inset:auto;width:auto;transform:none;box-shadow:none;border-radius:0;min-height:0;min-width:0;overflow:hidden}
 .navigation-head{display:flex;align-items:center;gap:2px;padding:16px 12px 16px 20px;flex:none}
-.navigation-head>strong{flex:1;min-width:0;font-size:18px;color:var(--text)}
+.navigation-head>strong{flex:1;min-width:0;font-size:18px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .navigation-head .icon-button{width:28px;min-width:28px;height:32px;min-height:32px;padding:5px}
 .navigation-layout .icon-button{display:inline-flex;align-items:center;justify-content:center;gap:0}
 .navigation-layout .icon-button>.shell-label{display:none}
@@ -26,11 +26,8 @@
 .navigation-body:empty{display:none}
 .navigation-body>h3:first-child{margin-top:0}.navigation-body pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .navigation-back{display:none!important}
-.navigation-layout .session-search input{min-height:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;font:inherit!important}
-.app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions']){--current-inspector:0px}
 .app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions']) #inspector{display:none}
 .app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions']) .shell-pages{overflow:hidden;scrollbar-gutter:auto}
-.app[data-sidebar='collapsed'] .navigation-sidebar{visibility:hidden;pointer-events:none}
 .navigation-layout .picker-hint,.navigation-layout .settings-note{overflow-wrap:anywhere}
 .navigation-status{margin:0 14px 8px;font-size:var(--text-size-secondary);color:var(--text-muted)}
 .navigation-status:empty{display:none}
@@ -52,7 +49,6 @@
  .navigation-layout[data-detail='true']>.navigation-sidebar{display:none}
  .navigation-layout[data-detail='true']>.navigation-detail{display:flex}
  .navigation-layout[data-detail='true'] .navigation-back{display:inline-flex!important}
- .app[data-sidebar='collapsed'] .navigation-sidebar{visibility:visible;pointer-events:auto}
 }
 
 .navigation-filters select{width:100%;min-width:0}.navigation-filters label{display:flex;align-items:center;gap:8px}.navigation-filters input[type=checkbox]{flex:none}

@@ -8,6 +8,7 @@ fn nested(f: &Fixture) -> (PathBuf, String) {
         vec!["config", "user.name", "Nested"],
         vec!["config", "user.email", "nested@invalid"],
         vec!["config", "commit.gpgSign", "false"],
+        vec!["config", "core.autocrlf", "false"],
     ] {
         assert!(
             Command::new("git")
@@ -317,7 +318,20 @@ fn development_git_nested_generation_cancels_only_its_repository() {
         .unwrap();
     let end = Instant::now() + Duration::from_secs(15);
     while !entered.load(Ordering::SeqCst) {
-        assert!(Instant::now() < end);
+        let row = f
+            .call(
+                "git.operation",
+                json!({"repositoryId":id,"operationId":operation}),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                row["phase"].as_str(),
+                Some("pending" | "running" | "generating")
+            ),
+            "generation stopped before entering model: {row}"
+        );
+        assert!(Instant::now() < end, "model not entered: {row}");
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(

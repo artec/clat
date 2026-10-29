@@ -10,6 +10,41 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/settings-models.js",
+        include_bytes!("../../web/settings-models.js"),
+        "application/javascript",
+    ),
+    (
+        "/settings-layout.js",
+        include_bytes!("../../web/settings-layout.js"),
+        "application/javascript",
+    ),
+    (
+        "/settings.css",
+        include_bytes!("../../web/settings.css"),
+        "text/css",
+    ),
+    (
+        "/view-context.js",
+        include_bytes!("../../web/view-context.js"),
+        "application/javascript",
+    ),
+    (
+        "/application-breadcrumbs.js",
+        include_bytes!("../../web/application-breadcrumbs.js"),
+        "application/javascript",
+    ),
+    (
+        "/workspace-tool-view.js",
+        include_bytes!("../../web/workspace-tool-view.js"),
+        "application/javascript",
+    ),
+    (
+        "/operations-capture.js",
+        include_bytes!("../../web/operations-capture.js"),
+        "application/javascript",
+    ),
+    (
         "/development-editor-ui.js",
         include_bytes!("../../web/development/editor-ui.js"),
         "application/javascript",
@@ -404,6 +439,12 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
 // Source modules keep their zero-build authoring surface. A normal function
 // gives each mounted project lexical ownership without eval, imports or frames.
 const PROJECT_MODULES: &[&str] = &[
+    "/settings-layout.js",
+    "/settings-models.js",
+    "/view-context.js",
+    "/application-breadcrumbs.js",
+    "/workspace-tool-view.js",
+    "/operations-capture.js",
     "/navigation-view.js",
     "/development-editor-drafts.js",
     "/development-common.js",

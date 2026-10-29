@@ -33,3 +33,9 @@ tauri-build = { version = "=2.7.4", features = [] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dev-dependencies]
 tauri = { version = "=2.12.5", features = ["test"] }
+
+# Native attributed menu titles reuse the Objective-C crates already used by Tauri.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSAttributedString", "NSColor", "NSFont", "NSMenu", "NSMenuItem"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSAttributedString", "NSRange", "NSString"] }

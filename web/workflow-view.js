@@ -5,15 +5,13 @@ function renderWorkflowView(view) {
   const top=list.scrollTop,read=detail.scrollTop;list.replaceChildren();detail.replaceChildren();
   list.append(el('h3','',()=>workflowText('plans')));
   for(const doc of [...value.documents].reverse()){
-    const key='plan:'+doc.id+':'+doc.revision,item=el('button','review-file');item.type='button';
-    item.append(el('span','',()=>doc.title),el('small','',()=>CLATI18n.msg('workflow.plan_revision',{revision:doc.revision,status:workflowText(doc.approved?'approved':'draft')})));
-    item.classList.toggle('is-selected',view.selection===key);item.onclick=()=>view.select(key);list.append(item);
+    const key='plan:'+doc.id+':'+doc.revision;list.append(navigationRow({title:doc.title,meta:()=>CLATI18n.msg('workflow.plan_revision',{revision:doc.revision,status:workflowText(doc.approved?'approved':'draft')}),icon:'plan',selected:view.selection===key,action:()=>view.select(key)}));
   }
   if(!value.documents.length)list.append(el('p','picker-hint',()=>workflowText('no_plans')));
-  list.append(el('h3','',()=>workflowText('goals')),workflowViewButton(view,'current_goal',()=>view.select('goal')));
+  list.append(el('h3','',()=>workflowText('goals')),navigationRow({title:()=>value.goal?.goal?.objective||workflowText('no_goal'),meta:()=>workflowText(workflowGoalStatus(value)),icon:'check',selected:view.selection==='goal',action:()=>view.select('goal')}));
   list.append(el('h3','',()=>workflowText('todos')));
   for(const [index,todo]of value.todos.entries()){
-    const item=el('button','review-file',()=>todo.content);item.type='button';item.onclick=()=>view.select('todo:'+index);list.append(item);
+    list.append(navigationRow({title:todo.content,meta:()=>workflowText('todo_'+todo.status),icon:'task-list',selected:view.selection==='todo:'+index,action:()=>view.select('todo:'+index)}));
   }
   if(view.selection.startsWith('plan:'))renderWorkflowPlan(view,value.documents.find(doc=>view.selection==='plan:'+doc.id+':'+doc.revision));
   else if(view.selection.startsWith('todo:')){

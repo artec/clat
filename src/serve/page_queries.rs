@@ -78,3 +78,49 @@ pub(super) fn library(
     })
     .map_err(app_error)
 }
+
+/// Capture the reader under the application lock; scan the journal after releasing it.
+pub(super) fn operations(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, RpcError> {
+    let reader = with_app(shared, |app| {
+        let expected = params
+            .get("expected_selection_generation")
+            .and_then(Value::as_u64);
+        let session = params
+            .get("reference")
+            .and_then(|v| v.get("session"))
+            .and_then(Value::as_str);
+        if expected != Some(shared.selection_generation())
+            || app.current_session_id().as_ref().map(|id| id.as_str()) != session
+        {
+            let message = crate::i18n::UiMessage::new("history.scope_changed").arg("detail", "");
+            return Err(RpcError::busy(message.english()).with_presentation(message));
+        }
+        Ok(app.history_reader())
+    })?;
+    let mut value = params.clone();
+    value.remove("expected_selection_generation");
+    let cancel = crate::CancelToken::new();
+    let result = if method == "operations.list" {
+        let request =
+            serde_json::from_value(Value::Object(value)).map_err(|_| invalid_operations_query())?;
+        serde_json::to_value(reader.operations(request, &cancel).map_err(app_error)?)
+    } else {
+        let request =
+            serde_json::from_value(Value::Object(value)).map_err(|_| invalid_operations_query())?;
+        serde_json::to_value(
+            reader
+                .operation_detail(request, &cancel)
+                .map_err(app_error)?,
+        )
+    };
+    result.map_err(|e| RpcError::internal(e.to_string()))
+}
+
+fn invalid_operations_query() -> RpcError {
+    let message = crate::i18n::UiMessage::new("history.invalid_query").arg("detail", "");
+    RpcError::bad_request(message.english()).with_presentation(message)
+}

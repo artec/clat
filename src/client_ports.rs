@@ -90,7 +90,8 @@ pub mod history {
     pub use crate::application::{
         ConversationMessage, ConversationPage, ConversationRequest, HistoryEventRead,
         HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit, HistoryPage,
-        HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch,
+        HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch, OperationDetail,
+        OperationDetailRequest, OperationFilter, OperationRow, OperationsPage, OperationsRequest,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }

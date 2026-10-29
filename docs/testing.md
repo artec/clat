@@ -1246,3 +1246,24 @@ initialize modal scroll bounds; only projection serialization, repeated visual
 stability comparisons and golden-file I/O are skipped. Pure visual scenarios
 remain excluded from automatic gates. This keeps paging/input isolation behavior
 checks meaningful without restoring presentation contracts.
+
+### Development workspace regression fixtures
+
+Human Git fixtures explicitly pin local `core.autocrlf=false`; byte-preserving
+backup assertions compare against the bytes Git actually restored, including
+explicit LF and CRLF checkout cases, not the runner's global checkout policy.
+Commit-generation fixtures deliberately reuse size/mtime with ctime checking
+disabled; staged evidence must reach the model while unstaged text never does. Native hooks and filter tests still exercise
+explicit repository configuration. Core ConPTY probes consume output by offset
+and answer cursor-position queries before sending PowerShell input, as a terminal
+client would; echoed input alone does not prove command execution. Native Windows
+execution remains required after local cross-compilation.
+
+The public-destination source guard scans CLAT and bundled vendor runtime code,
+including vendor JavaScript. It excludes build-only `node_modules` and literal
+third-party license/notice text; attribution URLs are not network requests.
+Unknown executable destinations and credential-bearing links remain rejected.
+Context component estimates preserve exact additivity, while comparison of an
+unchanged layer across different preceding text permits the estimator's single
+token rounding boundary. Catalog vocabulary counts remain owned by catalog tests;
+admission checks resolve every catalog seat instead of duplicating its size.

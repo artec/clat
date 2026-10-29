@@ -218,7 +218,7 @@ impl SessionQueryService {
 fn source_error(e: impl ToString) -> QueryError {
     QueryError::new("source_unavailable").detail(e)
 }
-fn redact_value(value: &Value) -> Value {
+pub(super) fn redact_value(value: &Value) -> Value {
     match value {
         Value::String(s) => Value::String(crate::redact::redact_secrets(s)),
         Value::Object(o) => Value::Object(

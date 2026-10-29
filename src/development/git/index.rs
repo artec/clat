@@ -105,7 +105,21 @@ impl GitService {
         Ok(())
     }
     pub(super) fn staged_diff(&self, index: &FrozenIndex) -> Result<String, String> {
+        let worktree = DiffWorktree::new(&self.store)?;
         let mut command = command::base(&self.project, false)?;
+        let git_dir = String::from_utf8(command::query(
+            &self.project,
+            &["rev-parse", "--absolute-git-dir"],
+        )?)
+        .map_err(|_| "git_encoding")?;
+        // Git may reuse a stat-matching worktree file even for --cached.
+        // A copied index has a new timestamp, which invalidates Git's racy
+        // timestamp protection. Give diff an empty private worktree so its
+        // patch must come from the frozen index's blobs, never live files.
+        command
+            .current_dir(&worktree.path)
+            .arg(format!("--git-dir={}", git_dir.trim()))
+            .arg(format!("--work-tree={}", worktree.path.display()));
         command.env("GIT_INDEX_FILE", index.path()).args([
             "diff",
             "--cached",
@@ -123,5 +137,28 @@ impl GitService {
             return Err("git_failed".into());
         }
         String::from_utf8(result.stdout).map_err(|_| "git_encoding".into())
+    }
+}
+
+struct DiffWorktree {
+    dir: cap_std::fs::Dir,
+    name: String,
+    path: PathBuf,
+}
+impl DiffWorktree {
+    fn new(store: &store::Store) -> Result<Self, String> {
+        let dir = store.dir()?;
+        let name = format!("diff-worktree-{}", uuid::Uuid::new_v4());
+        dir.create_dir(&name).map_err(io)?;
+        Ok(Self {
+            path: store.path(&name),
+            dir,
+            name,
+        })
+    }
+}
+impl Drop for DiffWorktree {
+    fn drop(&mut self) {
+        let _ = self.dir.remove_dir(&self.name);
     }
 }

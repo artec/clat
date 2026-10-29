@@ -176,11 +176,12 @@ function installShellDesktopSettings() {
     const category = document.querySelector('[data-settings-category="desktop"]') || el('button', '', () => shellText('updates_about'));
     category.type = 'button'; category.dataset.settingsCategory = 'desktop';
     category.onclick = () => selectSettingsCategory('desktop');
-    document.querySelector('.settings-nav').append(category);
+    const nav=document.querySelector('.settings-nav');if(!nav.contains(category))nav.append(category);
     const section = document.querySelector('[data-settings-panel="desktop"]') || el('section', 'settings-section desktop-settings-section');
-    section.dataset.settingsPanel = 'desktop'; section.hidden = true;
+    section.dataset.settingsPanel = 'desktop'; section.hidden = currentSettingsCategory !== 'desktop';
     section.replaceChildren(panel); document.querySelector('.settings-content').append(section);
     panel.classList.add('desktop-settings-integrated');
+    decorateDesktopSettings(section,panel);
     panel.querySelector('[data-action="close"]').hidden = true;
     panel.querySelector('.desktop-language').hidden = true;
     if (!panel.open) panel.show();
@@ -297,7 +298,7 @@ function installWorkbenchShell() {
   createShellRail(shell); createResourceLibrary(shell); shell.pageHost = createShellPages(shell);
   shell.tools = installWorkspaceTools(shell);
   createShellInspector(shell); createShellComposer(shell);
-  createApplicationToolbar(shell);
+  registerGlobalViewContexts(shell);createApplicationToolbar(shell);
   installShellDesktopSettings(); installInteractionDock(); installInspectorResize(); markShellNavigation('workbench');
   const route = () => {
     const raw=location.hash.slice(2), path=raw.split('?')[0];
