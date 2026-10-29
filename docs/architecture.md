@@ -326,9 +326,28 @@ runs without a cap. Tool failures and
 permission denials become structured `ToolResult` errors so the model can
 adapt without aborting the whole run.
 
-`application/run_execution.rs` owns this two-phase worker boundary. Its
-crate-private `WaitingRunExecution` can only be aborted before admission or
-activated with committed input. The execution worker owns the mounted Run
+`application/run_admission.rs` owns the shared durable transaction for selected
+human/Goal runs and targeted Job/Schedule runs. It constructs the message identity,
+opaque submission digest, birth/turn/user batch, replay cursor and committed
+receipt together. An admitted batch carries its witness through fallible
+application projections and history reconstruction; only then can it produce
+the worker's `PreparedRun`. Its private construction seal prevents other
+application modules from manufacturing uncommitted worker input. Selected-session
+birth and registration policy stays inside `run_admission/selected.rs`; targeted
+admission does not mutate the foreground selection.
+
+`run_context/start.rs` owns the context transition around that commit. It captures
+project instructions, Skills and Memory before admission, then freezes workflow
+facts, tool visibility and the request header after Fresh birth events are durable.
+Selected runs, targeted runs and `/context` use one surface-plus-runtime-Todo
+history composer in `application/context.rs`; the Todo item remains non-durable.
+
+`application/run_execution.rs` owns the two-phase worker boundary. Its
+crate-private `WaitingRunExecution::start` accepts an admission closure and owns
+abort/join on admission failure and activation/slot cleanup on channel failure.
+Both callers receive committed, non-retryable receipts with the failure phase
+when startup fails after admission; neither reconstructs that policy.
+The execution worker owns the mounted Run
 Scope handle returned by project composition, plus the start channel,
 process/subagent/todo bindings, terminal merge, plugin-host slots, completion
 signal, and join handle, so callers do not reproduce cleanup order.
@@ -1146,6 +1165,8 @@ preserves global, trust, selection, modal and composer priority explicitly.
 | `src/application.rs`, `src/application/` | client-neutral use-case facade, DTOs, run/session lifecycle |
 | `src/application/composition.rs` | Trusted Project catalog, typed port resolution, freeze/wiring, Run children, and teardown |
 | `src/application/run_context.rs` | request-bound workflow composition, tool view, and durable request-header assembly |
+| `src/application/run_context/start.rs` | pre-admission input capture and post-admission context/header freezing |
+| `src/application/run_admission.rs`, `src/application/run_admission/` | atomic run admission, committed witness, and selected-session birth/projection policy |
 | `src/application/run_execution.rs`, `src/application/run_execution/` | two-phase activation, worker progress, round settlement, and explicit run-resource cleanup |
 | `src/application/remote_control.rs` | remote binding/pairing/delivery use cases and durable chat-to-session recovery orchestration |
 | `src/run/` | agent-step orchestration, request preparation, response settlement, serial tool calls, and atomically sealed steering |
@@ -1617,9 +1638,12 @@ and conditional atomic publication. Windows no-replace moves use directory-relat
 recovery; they never fall back to an overwrite or an ambient-path move. The editor
 deliberately does not attribute human writes to an Agent turn's file-recovery ledger. Git serializes CLAT writes by actual common Git
 directory, retains native Git locks/configuration and freezes a private index before
-model generation. Staged patches are read with an empty private working directory
-and explicit Git directory, so Git cannot substitute stat-matching live files for
-staged blobs. Windows Git invocations enable command-local long-path support for
+model generation. Staged patches use an explicit Git directory and an empty private
+worktree plus an empty process working directory, so Git cannot substitute
+stat-matching live files for staged blobs. The empty directory lives at the
+validated private ancestor rather than inside `repositories/<id>`, keeping nested
+repository IDs out of Windows' process-working-directory length limit. No repository
+configuration is changed. Windows Git invocations enable command-local long-path support for
 private nested-repository indexes. Final HEAD/index checks and the private index prevent late external
 staging from entering the approved commit. Native hooks still have their ordinary Git
 semantics, including their own explicitly configured side effects. Commit recovery

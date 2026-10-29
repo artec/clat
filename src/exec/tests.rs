@@ -183,6 +183,27 @@ fn command_help_lists_registry_catalog_on_stdout() {
     fs::remove_dir_all(project_root).ok();
 }
 
+// Only retry a rejected open after our own close; no command ran and no I/O
+// was consumed. Other failures remain observable, and real holders time out.
+fn command_after_close(
+    project: &Project,
+    storage: &std::path::Path,
+    command: &str,
+) -> (ExecOutcome, CapturedOutput) {
+    crate::test_support::reopen_after_close(|| {
+        let mut options = args(None);
+        options.command = Some(command.into());
+        let (io, captured) = ExecIo::capture(&[]);
+        let outcome = exec(project, storage, TestBehavior::Success, options, io);
+        if let ExecOutcome::Failure(message) = &outcome
+            && message.to_string() == "another CLAT process holds this storage root; close it first"
+        {
+            return Err(message.clone());
+        }
+        Ok((outcome, captured))
+    })
+}
+
 /// SC-2 双入口等价：`--command /skill` 在 headless 输出列表文本（与
 /// TUI 弹窗同一 `ShowSkills` DTO 的另一呈现）；`/skill <name>` 武装
 /// 经 Status 提示确认。快照含 bundled 层标记与 grill-me（SC-1）。
@@ -190,10 +211,7 @@ fn command_help_lists_registry_catalog_on_stdout() {
 fn command_skill_lists_catalog_and_arms_via_status_headless() {
     let (storage_root, project_root, project) = setup("exec-command-skill");
     prepare_storage(&project, &storage_root, TestBehavior::Success);
-    let mut options = args(None);
-    options.command = Some("/skill".into());
-    let (io, captured) = ExecIo::capture(&[]);
-    let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+    let (outcome, captured) = command_after_close(&project, &storage_root, "/skill");
     match outcome {
         ExecOutcome::Success { output, turns, .. } => {
             assert_eq!(turns, 0);
@@ -203,10 +221,7 @@ fn command_skill_lists_catalog_and_arms_via_status_headless() {
         }
         other => panic!("expected success, got {other:?}"),
     }
-    let mut options = args(None);
-    options.command = Some("/skill grill-me".into());
-    let (io, _captured) = ExecIo::capture(&[]);
-    let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+    let (outcome, _) = command_after_close(&project, &storage_root, "/skill grill-me");
     match outcome {
         ExecOutcome::Success { .. } => {}
         other => panic!("arming via /skill <name> must succeed headless, got {other:?}"),

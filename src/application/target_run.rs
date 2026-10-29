@@ -1,14 +1,13 @@
 //! Targeted admission into the normal RunExecutionEngine. No selection mutation.
 use super::*;
 use super::{
+    run_admission::{AdmissionOrigin, PreparedRun, RunAdmission},
     run_execution::{RunExecutionEngine, RunExecutionSpec, RunExecutionStart},
-    run_lifecycle::{PreparedRun, commit_admission_batch},
 };
 use crate::{
     CancelToken,
     model::{ModelConfig, ProviderCredentials},
     plugins::services::DynamicInstructions,
-    session::{event::payloads, run_journal::NewSessionEvent},
 };
 use std::{
     sync::{Arc, mpsc},
@@ -143,25 +142,18 @@ impl TrustedProjectApplication {
                 completion: request.completion,
             },
         )?;
-        let prepared = match prepare_target(&target, &request.message, &request.source) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                waiting.abort()?;
-                return Err(error);
-            }
-        };
-        let receipt = prepared.receipt.clone();
-        waiting
-            .activate(
-                RunExecutionStart {
+        waiting.start(
+            || {
+                let prepared = prepare_target(&target, &request.message, &request.source)?;
+                Ok(RunExecutionStart {
                     prepared,
                     request_header: header,
                     header_reason: Some("resume"),
                     context,
-                },
-                request.asker,
-            )
-            .map_err(|failure| failure.error.with_receipt(receipt))
+                })
+            },
+            request.asker,
+        )
     }
 }
 #[derive(Clone, Debug)]
@@ -205,54 +197,16 @@ fn prepare_target(
         .map_err(session_error)?
         .saturating_add(1);
     let journal = target.sessions.journal().map_err(session_error)?;
-    let message_id = uuid::Uuid::new_v4().to_string();
-    let digest = message.request_digest();
-    let mut user = payloads::admitted_user_message(
-        &message_id,
-        &message.content.plain_text(),
+    let admitted = RunAdmission::new(session_id, turn, journal).commit(
+        message,
         &[],
-        message.client_message_id.as_deref(),
-        Some(&digest),
-    );
-    user["source"] = source.value();
-    let batch = [
-        NewSessionEvent::new("turn/start", payloads::turn_start(turn)),
-        NewSessionEvent::new("user/message", user).append(vec![]),
-    ];
-    let replay_before_seq = commit_admission_batch(journal.as_ref(), &batch)?;
-    let receipt = message.client_message_id.clone().map(|id| {
-        Box::new(crate::message::AdmissionReceipt::committed(
-            id,
-            message_id,
-            vec![],
-        ))
-    });
-    let mut history = target
-        .sessions
-        .surface_nodes()
-        .map_err(|e| session_error(e).with_receipt(receipt.clone()))?
-        .into_iter()
-        .map(|(_, item)| item)
-        .collect::<Vec<_>>();
-    if let Some(todo) = target.todo.model_context() {
-        history.insert(
-            0,
-            crate::ModelItem::user_text(format!(
-                "CLAT runtime context (not a new user command):\n{todo}"
-            )),
-        );
-    }
-    Ok(PreparedRun {
-        replay_before_seq,
-        session_id,
-        turn,
-        history,
-        journal,
-        goal_round_started: None,
-        message: message.content.clone(),
-        client_message_id: message.client_message_id.clone(),
-        receipt,
-    })
+        Vec::new(),
+        AdmissionOrigin::Automatic(source.value()),
+    )?;
+    admitted.finish(super::context::model_history(
+        &target.sessions,
+        Some(&target.todo),
+    ))
 }
 fn target_cleanup(
     mut error: ApplicationError,

@@ -662,6 +662,18 @@ or autonomous task success rates with a real provider.
 
 ## Durable task recovery (GA-1)
 
+Shared run-admission changes use `scripts/gates.sh
+application::tests::target_run_tests:: application::tests::mm2_w7_
+application::context_tests:: application::goal_tests::` (on one shell line).
+These scenarios cover foreground isolation, committed receipts, request context,
+image projection and Goal continuation. The target activation-failure regression
+injects a closed worker-start channel after durable admission: it requires a
+committed/non-retryable receipt with `worker-start-send`, cold-reopens the original
+target, rejects a duplicate client key, checks that the user event exists once,
+and starts another target run. A foreground prompt must still work after cleanup.
+The tests use temporary storage and scripted Providers; they do not operate the
+live Host or establish native-platform/real-provider acceptance.
+
 Use `scripts/gates.sh task:: application::task_recovery_tests::` for task state,
 admission/CAS, full-fold/checkpoint parity, capability-relative artifact checks,
 conservative intent/result crash windows, explicit human resolution and reserved
@@ -1254,10 +1266,20 @@ backup assertions compare against the bytes Git actually restored, including
 explicit LF and CRLF checkout cases, not the runner's global checkout policy.
 Commit-generation fixtures deliberately reuse size/mtime with ctime checking
 disabled; staged evidence must reach the model while unstaged text never does. Native hooks and filter tests still exercise
-explicit repository configuration. Core ConPTY probes consume output by offset
-and answer cursor-position queries before sending PowerShell input, as a terminal
-client would; echoed input alone does not prove command execution. Native Windows
+explicit repository configuration. Core ConPTY transport probes explicitly choose
+Windows' system command interpreter, queue input without assuming prompt text,
+consume output by offset and answer cursor-position queries. The input marker is
+escaped so input echo alone cannot prove execution. This transport regression does
+not validate a user's PowerShell profile or PSReadLine presentation; native Windows
 execution remains required after local cross-compilation.
+
+The headless skill command's close/reopen sequence uses the shared one-second
+cold-reopen helper only for the exact storage-root-held rejection. No command has
+executed at that point; all other failures remain visible and a persistently held
+root still fails. CI incident: run 40900345745, Linux `command_skill_lists_catalog_and_arms_via_status_headless`.
+The same run's Windows nested Git generation failed at process startup with error
+267, and its default-PowerShell ConPTY probe timed out before sending input. These
+are recorded failures, not blanket flaky-test exemptions.
 
 The public-destination source guard scans CLAT and bundled vendor runtime code,
 including vendor JavaScript. It excludes build-only `node_modules` and literal

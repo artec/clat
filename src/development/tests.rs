@@ -790,9 +790,23 @@ fn development_missing_draft_requires_explicit_recreate_and_never_clobbers() {
 #[test]
 fn development_windows_conpty_input_lease_resize_and_job_close() {
     let f = Fixture::new();
+    // Exercise the PTY transport with the system command interpreter. User
+    // PowerShell profiles/PSReadLine prompts are not part of this invariant.
+    let choices = f.call("terminal.shells", json!({})).unwrap();
+    let shell = choices["shells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|shell| {
+            Path::new(shell)
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe"))
+        })
+        .expect("Windows system command interpreter");
     f.call(
         "terminal.create",
-        json!({"operationId":"win-native","clientId":"owner"}),
+        json!({"operationId":"win-native","clientId":"owner","shell":shell}),
     )
     .unwrap();
     assert!(f.service.has_live_work());
@@ -821,11 +835,12 @@ fn development_windows_conpty_input_lease_resize_and_job_close() {
 #[cfg(windows)]
 fn windows_terminal_probe(f: &Fixture) {
     use base64::Engine;
-    // PowerShell/PSReadLine can wait for the terminal's device-status reply
-    // before displaying its first prompt. The core stream has no renderer.
-    let (mut offset, mut sequence, mut answered) = (0, 0, 0);
+    // Queue input without guessing prompt text; keep responding to terminal
+    // queries while consuming output. The caret prevents input echo from
+    // containing the marker, so only executed output satisfies the assertion.
+    f.call("terminal.input",json!({"id":"win-native","clientId":"owner","lease":1,"sequence":0,"data":"echo CLAT_NA^TIVE_PTY\r"})).unwrap();
+    let (mut offset, mut sequence, mut answered) = (0, 1, 0);
     let mut output = String::new();
-    let mut sent = false;
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let row = f.service.terminal_output("win-native", offset).unwrap();
@@ -839,12 +854,6 @@ fn windows_terminal_probe(f: &Fixture) {
             f.call("terminal.input",json!({"id":"win-native","clientId":"owner","lease":1,"sequence":sequence,"data":"\u{1b}[1;1R"})).unwrap();
             sequence += 1;
             answered += 1;
-        }
-        if !sent && output.contains("> ") {
-            // Input echo alone must not satisfy the output assertion.
-            f.call("terminal.input",json!({"id":"win-native","clientId":"owner","lease":1,"sequence":sequence,"data":"[Console]::WriteLine(('CLAT_'+'NATIVE_PTY'))\r"})).unwrap();
-            sequence += 1;
-            sent = true;
         }
         if output.contains("CLAT_NATIVE_PTY") {
             break;

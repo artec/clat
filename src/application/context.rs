@@ -1,4 +1,5 @@
-use super::{ApplicationError, TrustedProjectApplication};
+use super::{ApplicationError, TrustedProjectApplication, session_error};
+use crate::ModelItem;
 
 /// Shared catalog-diagnostics projection for `/context` and `/skill` (SC-2).
 pub(super) fn skill_diagnostics_dto(
@@ -20,25 +21,7 @@ impl TrustedProjectApplication {
     pub(super) fn current_model_history(
         &self,
     ) -> Result<Vec<crate::model::ModelItem>, ApplicationError> {
-        let history_nodes = self
-            .sessions
-            .surface_nodes()
-            .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let mut history = history_nodes
-            .into_iter()
-            .map(|(_, item)| item)
-            .collect::<Vec<_>>();
-        if let Some(todo_service) = &self.todo
-            && let Some(context) = todo_service.model_context()
-        {
-            history.insert(
-                0,
-                crate::model::ModelItem::user_text(format!(
-                    "CLAT runtime context (not a new user command):\n{context}"
-                )),
-            );
-        }
-        Ok(history)
+        model_history(&self.sessions, self.todo.as_deref())
     }
 
     pub fn context_snapshot(&self) -> Result<super::ContextEstimateSnapshot, ApplicationError> {
@@ -148,4 +131,26 @@ fn context_model_options(config: &crate::model::ModelConfig) -> crate::model::Mo
         image_projection: Some(crate::model::ImageProjectionBudget::for_config(config)),
         ..crate::model::ModelOptions::default()
     }
+}
+
+/// Shared history for selected/targeted requests and read-only inspection.
+pub(super) fn model_history(
+    sessions: &crate::session::use_cases::SessionService,
+    todo: Option<&crate::plugins::services::TodoService>,
+) -> Result<Vec<ModelItem>, ApplicationError> {
+    let mut history = sessions
+        .surface_nodes()
+        .map_err(session_error)?
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect::<Vec<_>>();
+    if let Some(context) = todo.and_then(|todo| todo.model_context()) {
+        history.insert(
+            0,
+            ModelItem::user_text(format!(
+                "CLAT runtime context (not a new user command):\n{context}"
+            )),
+        );
+    }
+    Ok(history)
 }

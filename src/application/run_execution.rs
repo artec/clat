@@ -6,10 +6,9 @@
 //! all rounds, and release run-scoped resources in reverse order.
 
 use super::compaction::{RecorderHandle, run_auto_compaction};
+use super::run_admission::{PreparedRun, committed_error};
 use super::run_context::RunContextSnapshot;
-use super::run_lifecycle::{
-    ApplicationRunDone, ApplicationRunFailure, ApplicationRunResult, PreparedRun,
-};
+use super::run_lifecycle::{ApplicationRunDone, ApplicationRunFailure, ApplicationRunResult};
 use super::title::AutotitleJob;
 mod round;
 mod terminal;
@@ -118,11 +117,6 @@ impl RunHandle {
     pub(super) fn steering(&self) -> &crate::run::SteeringQueue {
         &self.steering
     }
-}
-
-pub(super) struct RunActivationError {
-    pub(super) error: ApplicationError,
-    pub(super) phase: &'static str,
 }
 
 /// One-shot typestate: after spawn the caller must either abort before commit
@@ -283,16 +277,36 @@ impl RunExecutionEngine {
 }
 
 impl WaitingRunExecution {
-    pub(super) fn abort(mut self) -> Result<(), ApplicationError> {
+    /// Own the waiting → admitted → active transition and every failure pair.
+    /// The closure performs application admission; the execution owner alone
+    /// revokes an unused worker or attaches its committed activation witness.
+    pub(super) fn start(
+        self,
+        admit: impl FnOnce() -> Result<RunExecutionStart, ApplicationError>,
+        asker: Option<Arc<dyn crate::interaction::UserAsker>>,
+    ) -> Result<RunHandle, ApplicationError> {
+        match admit() {
+            Ok(start) => self.activate(start, asker),
+            Err(error) => {
+                self.abort().map_err(|cleanup| {
+                    committed_error(cleanup, error.admission_receipt(), "worker-start-cleanup")
+                })?;
+                Err(error)
+            }
+        }
+    }
+
+    fn abort(mut self) -> Result<(), ApplicationError> {
         drop(self.start_sender.take());
         self.handle.join()
     }
 
-    pub(super) fn activate(
+    fn activate(
         mut self,
         start: RunExecutionStart,
         asker: Option<Arc<dyn crate::interaction::UserAsker>>,
-    ) -> Result<RunHandle, RunActivationError> {
+    ) -> Result<RunHandle, ApplicationError> {
+        let receipt = start.prepared.receipt.clone();
         self.handle.replay_before_seq = Some(start.prepared.replay_before_seq);
         self.handle.session_id = Some(start.prepared.session_id.clone());
         self.slots
@@ -325,14 +339,14 @@ impl WaitingRunExecution {
             .expect("waiting execution owns one start sender");
         if sender.send(start).is_err() {
             self.slots.clear();
-            self.handle.join().map_err(|error| RunActivationError {
-                error,
-                phase: "worker-start-cleanup",
+            self.handle.join().map_err(|error| {
+                committed_error(error, receipt.as_deref(), "worker-start-cleanup")
             })?;
-            return Err(RunActivationError {
-                error: ApplicationError::new("run worker stopped before execution started"),
-                phase: "worker-start-send",
-            });
+            return Err(committed_error(
+                ApplicationError::new("run worker stopped before execution started"),
+                receipt.as_deref(),
+                "worker-start-send",
+            ));
         }
         Ok(self.handle)
     }

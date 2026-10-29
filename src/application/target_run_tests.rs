@@ -177,6 +177,82 @@ fn target_run_uses_original_session_tools_permissions_and_receipt_without_select
     }
 }
 
+#[test]
+fn target_run_activation_failure_preserves_committed_phase_and_foreground() {
+    let (storage, root) = roots("target-activation-failure");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = Project::new(&root);
+    let mut app = mount(&project, &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    run(&mut app, "origin").unwrap();
+    let origin = app.current_session_id().unwrap();
+    app.new_session().unwrap();
+    run(&mut app, "foreground").unwrap();
+    let foreground = app.current_session_id().unwrap();
+    app.fail_next_run_start_receive_for_test();
+    let client = "target-activation-once";
+    let (request, _) = target_request(&app, origin.clone(), client, allow_all_approver());
+    let error = app
+        .start_target_run(request)
+        .err()
+        .expect("activation fails");
+    let receipt = error.admission_receipt().expect("committed witness");
+    assert_eq!(receipt.state, crate::message::AdmissionState::Committed);
+    assert!(!receipt.retryable);
+    assert_eq!(receipt.failure_phase.as_deref(), Some("worker-start-send"));
+    let committed_id = receipt.committed_message_id.clone();
+    assert_eq!(app.current_session_id(), Some(foreground.clone()));
+    assert!(app.plugin_host.context().is_none());
+    assert!(app.skill_catalog.snapshot().is_none());
+    run(&mut app, "foreground still usable").unwrap();
+    app.close().unwrap();
+
+    let mut app = mount(&project, &storage, TestBehavior::Success);
+    assert_eq!(app.current_session_id(), Some(foreground));
+    let (_, admitted) = app
+        .find_committed_admission_session(client)
+        .unwrap()
+        .unwrap();
+    assert_eq!(admitted.receipt.committed_message_id, committed_id);
+    let (request, _) = target_request(&app, origin.clone(), client, allow_all_approver());
+    assert!(
+        app.start_target_run(request)
+            .err()
+            .unwrap()
+            .admission_receipt()
+            .is_some()
+    );
+    let backend = crate::session::persistence::JsonlBackend::new(
+        storage.join("sessions"),
+        crate::session::persistence::JsonlCompression::Zstd,
+        false,
+    );
+    assert_eq!(
+        backend
+            .load(&app.session_key(&origin), false)
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| {
+                event.event_type == "user/message" && event.data["clientMessageId"] == client
+            })
+            .count(),
+        1,
+    );
+    let (request, receive) =
+        target_request(&app, origin, "target-after-failure", allow_all_approver());
+    app.start_target_run(request).unwrap().join().unwrap();
+    assert!(
+        receive
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_ok()
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
 struct HoldingTargetScript(Mutex<Option<mpsc::Sender<()>>>);
 impl TestModelScript for HoldingTargetScript {
     fn stream(

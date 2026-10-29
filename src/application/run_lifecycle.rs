@@ -4,15 +4,11 @@ use crate::model::Usage;
 use crate::permission::PermissionApprover;
 use crate::plugin::Plugin;
 use crate::plugins::run_catalog;
-use crate::session::event::payloads;
-use crate::session::id::SessionId;
-use crate::session::run_journal::{NewSessionEvent, RunJournal};
-use serde_json::json;
 use std::sync::{Arc, mpsc};
 
 use super::*;
 
-use super::run_execution::{RunExecutionEngine, RunExecutionSpec, RunExecutionStart, RunHandle};
+use super::run_execution::{RunExecutionEngine, RunExecutionSpec, RunHandle};
 use super::threads::MCP_STARTUP_RUN_WAIT;
 
 impl TrustedProjectApplication {
@@ -77,230 +73,6 @@ impl TrustedProjectApplication {
         }
     }
 
-    /// The durable prelude of a run: ensure a session with a live writer,
-    /// then atomically append `turn/start` + `user/message` and flush —
-    /// the model is only called after the durable batch committed. For a
-    /// fresh session the fact lands FIRST (MP-1 §4.3); workspace
-    /// registration and the selection pointer follow as projections, so a
-    /// crash between them is healed by mount-time reconciliation.
-    ///
-    /// MM-1A：typed 消息在这里完成接纳——附件导入（复制 + 元数据实
-    /// 测）、`admitted_user_message` 载荷（descriptor 元数据 + 幂等键 +
-    /// digest 随事件耐久）、committed 回执构造。commit point 即
-    /// append+flush：此后的一切失败都带着 `Committed` 回执返回
-    ///（INV-M1A-4）。
-    fn prepare_run(
-        &mut self,
-        message: &crate::message::PendingMessage,
-        goal_round: Option<&crate::goal::GoalRound>,
-    ) -> Result<PreparedRun, ApplicationError> {
-        let prompt = message.content.plain_text();
-        let attachments = &message.staged_attachments;
-        // INV-MM2-2（MM-2 W1 attach 门）：模型能力不收图 → 整轮拒绝，
-        // 且必须发生在任何会话物化/journal 写入**之前**（零痕迹）。
-        // 错误可行动：点名「换视觉模型（如 GLM 5.3 Flash）/移除图片」。
-        // 能力快照来自 model_state（preset stamp 或 custom 持久值），
-        // unverified 的视觉声明（仅厂商文档）同样拒绝——无第一方
-        // 证据不开图。
-        if !attachments.is_empty() {
-            let (config, _) = self.model_state()?;
-            if !config.capabilities.accepts_image_input() {
-                let names = attachments
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(ApplicationError::new(format!(
-                    "this model ({}) does not accept image input; switch to a vision model (e.g. GLM 5.3 Flash) or remove the image(s): {names}",
-                    config.model
-                )));
-            }
-            if attachments.len() > config.image_policy.max_images {
-                return Err(ApplicationError::new(format!(
-                    "this model ({}) accepts at most {} images per message; remove {} image(s) before sending",
-                    config.model,
-                    config.image_policy.max_images,
-                    attachments.len() - config.image_policy.max_images,
-                )));
-            }
-        }
-        let pending_goal_birth = self
-            .goal
-            .pending_birth_event()
-            .map_err(ApplicationError::new)?;
-        let mut materialized: Option<SessionId> = None;
-        match self.selection.clone() {
-            None => {
-                // `new_session` no longer self-quiesces (the /new flow
-                // persists the pointer first); the run path detaches
-                // whatever is still active.
-                self.sessions.quiesce_active().map_err(session_error)?;
-                let summary = self
-                    .sessions
-                    .new_session(&self.project_key())
-                    .map_err(session_error)?;
-                materialized = Some(summary.id);
-            }
-            Some(id) => {
-                if self.sessions.active_id().as_ref() != Some(&id) {
-                    // Mounted but not attached (e.g. after a failed load):
-                    // attach now or fail loudly.
-                    self.sessions.quiesce_active().map_err(session_error)?;
-                    self.sessions
-                        .resume(&self.session_key(&id))
-                        .map_err(session_error)?;
-                    // 换了活跃会话：档位 cell 对齐到它自己的 fold（PS1）。
-                    self.reseed_permission_mode_from_session();
-                    self.fresh_session_open = true;
-                    self.emitted_request_header = self.sessions.last_request_header();
-                }
-            }
-        }
-        let id = self
-            .sessions
-            .active_id()
-            .ok_or_else(|| ApplicationError::new("no active session for the run"))?;
-        // Fresh 刚物化的新会话：TodoService 挂靠该会话（空清单起步）。
-        // resume/switch 路径在挂载时已从投影恢复。
-        if let Some(todo_service) = &self.todo
-            && todo_service.session().as_ref() != Some(&id)
-        {
-            todo_service.restore(Some(id.clone()), &[]);
-        }
-        let turn = self.sessions.active_turns().map_err(session_error)? + 1;
-        let journal = self.sessions.journal().map_err(session_error)?;
-        // 附件导入（M4；MM-1A 元数据化）：会话目录已物化，先复制、后
-        // 落盘——journal 拿到的是会话附件目录内的绝对引用 + descriptor
-        // 元数据。校验失败（不存在/类型/超大）发生在任何 journal 写入
-        // 之前，本轮不留任何痕迹。
-        let images = self
-            .sessions
-            .import_attachments(attachments)
-            .map_err(session_error)?;
-        if !images.is_empty() {
-            let (config, _) = self.model_state()?;
-            validate_route_images(&config, &images).map_err(ApplicationError::new)?;
-        }
-        // 首个耐久批：出生档（仅新物化的会话）→ turn/start →
-        // user/message。DSH pinInitialPermission 在会话创建期 pin 档位，
-        // 对应物即出生事件排在首个 turn 之前（PS2）——回放从第一条
-        // 事件起就有确定的档位。Classic（exec）不落此事件（PS4）。
-        let plan_birth = materialized.is_some() && self.plan_mode.pending_birth();
-        let mut first_batch = Vec::new();
-        if materialized.is_some() && self.permission_modes_enabled {
-            first_batch.push(NewSessionEvent::new(
-                "sandbox/mode",
-                payloads::sandbox_mode(&self.permission_mode()),
-            ));
-        }
-        if plan_birth {
-            first_batch.push(NewSessionEvent::new("plan/mode", json!({ "active": true })));
-        }
-        if materialized.is_some()
-            && let Some(event) = pending_goal_birth
-        {
-            first_batch.push(event);
-        }
-        first_batch.push(NewSessionEvent::new(
-            "turn/start",
-            payloads::turn_start(turn),
-        ));
-        // MM-1A：普通消息走 admitted 载荷（幂等键 + 提交 digest + 图块
-        // 元数据；message id 由回执持有）。digest 是**提交幂等**身份
-        //（文本 + staged 引用），不掺导入后重铸的 attachmentId——
-        // 崩溃重试不得翻案。goal 轮是 core 合成消息，沿用 GoalRound
-        // 预构造载荷（无客户端键）。
-        let message_id = uuid::Uuid::new_v4().to_string();
-        let request_digest = message
-            .client_message_id
-            .as_ref()
-            .map(|_| message.request_digest());
-        let user_payload = match goal_round {
-            Some(round) => round.message.clone(),
-            None => payloads::admitted_user_message(
-                &message_id,
-                prompt.as_str(),
-                &images,
-                message.client_message_id.as_deref(),
-                request_digest.as_deref(),
-            ),
-        };
-        first_batch.push(NewSessionEvent::new("user/message", user_payload).append(Vec::new()));
-        let replay_before_seq = commit_admission_batch(journal.as_ref(), &first_batch)?;
-
-        // The append+flush above is the sole admission commit point. Build
-        // the receipt immediately: every fallible projection below must
-        // preserve this committed fact instead of returning an ambiguous
-        // plain startup error.
-        let mut admitted_blocks = message.content.blocks.clone();
-        admitted_blocks.extend(
-            images
-                .iter()
-                .map(|image| crate::message::ContentBlock::Image {
-                    attachment: image.descriptor.clone(),
-                }),
-        );
-        let admitted = crate::message::MessageContent::from_blocks(admitted_blocks);
-        let receipt = message.client_message_id.clone().map(|client_message_id| {
-            Box::new(crate::message::AdmissionReceipt::committed(
-                client_message_id,
-                message_id,
-                images
-                    .iter()
-                    .map(|image| image.descriptor.attachment_id.clone())
-                    .collect(),
-            ))
-        });
-        let post_commit_error = |error: ApplicationError, phase: &'static str| {
-            let failed_receipt = receipt
-                .clone()
-                .map(|receipt| Box::new((*receipt).with_failure_phase(phase)));
-            error.with_receipt(failed_receipt)
-        };
-        if plan_birth {
-            self.plan_mode.materialized();
-        }
-        if materialized.is_some() {
-            self.goal
-                .materialized(&id)
-                .map_err(ApplicationError::new)
-                .map_err(|error| post_commit_error(error, "goal-materialize"))?;
-            self.subagents.materialized(&id);
-        }
-        // 事实已耐久：投影随后（注册工作区 + 账本 + 指针）。两者之间的
-        // 崩溃由挂载期对账收编自愈（会话日志永远赢）。
-        if let Some(id) = materialized {
-            self.ensure_registered()
-                .map_err(|error| post_commit_error(error, "workspace-register"))?;
-            if let Some(workspace_id) = self.workspace_id.clone() {
-                self.control
-                    .append_session_to_workspace(&workspace_id, id.as_str())
-                    .map_err(|error| ApplicationError::new(error.to_string()))
-                    .map_err(|error| post_commit_error(error, "workspace-ledger"))?;
-            }
-            self.selection = Some(id.clone());
-            self.persist_selection(Some(&id))
-                .map_err(|error| post_commit_error(error, "selection-pointer"))?;
-        }
-        // The model-facing history is shared with `/context`: compaction surface
-        // plus the same non-durable todo runtime item, so inspection cannot drift
-        // from the next real request.
-        let history = self
-            .current_model_history()
-            .map_err(|error| post_commit_error(error, "history-rebuild"))?;
-        Ok(PreparedRun {
-            replay_before_seq,
-            session_id: id,
-            turn,
-            history,
-            journal,
-            goal_round_started: goal_round.map(|round| round.started_at),
-            message: admitted,
-            client_message_id: message.client_message_id.clone(),
-            receipt,
-        })
-    }
-
     fn start_run_with_catalog(
         &mut self,
         request: ApplicationRunRequest,
@@ -319,13 +91,7 @@ impl TrustedProjectApplication {
             ));
         }
         self.freeze_run_tools()?;
-        let instruction_snapshot = self
-            .dynamic_instructions
-            .snapshot()
-            .map_err(ApplicationError::new)?;
-        let skill_snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
-        let invoked_skill = self.take_invoked_skill(&skill_snapshot)?;
-        let memory_injection = self.memory_for_message(&request.message)?;
+        let pending_context = self.prepare_run_context(config.clone(), &request.message)?;
         let ApplicationRunRequest {
             message: request_message,
             approver,
@@ -354,64 +120,20 @@ impl TrustedProjectApplication {
             },
         )?;
 
-        // 预备（CAS + 首批耐久批）发生在 worker 就位之后。Fresh Plan
-        // birth 已在这里 append+flush；只有此后才冻结本 run 的工作流视图，
-        // 因而 request/header、模型工具目录与宿主硬门消费同一状态事实。
-        let prepared = match self.prepare_run(&request_message, goal_round.as_ref()) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                waiting_execution.abort()?;
-                return Err(error);
-            }
-        };
-        let committed_receipt = prepared.receipt.clone();
-        self.commit_initial_input(&request_message);
-        let post_commit_start_error = |error: ApplicationError, phase: &'static str| {
-            let failed_receipt = committed_receipt
-                .clone()
-                .map(|receipt| Box::new((*receipt).with_failure_phase(phase)));
-            error.with_receipt(failed_receipt)
-        };
-        let (goal_injection, task_injection) = match self
-            .admitted_workflow_injection(prepared.turn)
-            .map_err(ApplicationError::new)
-        {
-            Ok(injection) => injection,
-            Err(error) => {
-                waiting_execution.abort().map_err(|join_error| {
-                    post_commit_start_error(join_error, "worker-start-cleanup")
-                })?;
-                return Err(post_commit_start_error(error, "workflow-injection"));
-            }
-        };
-        let context = self.run_context_snapshot(
-            &config,
-            skill_snapshot,
-            invoked_skill,
-            memory_injection,
-            goal_injection,
-            task_injection,
-        );
-        let request_header =
-            self.request_header_data(&config, &context, instruction_snapshot.as_ref());
-        let header_reason = self.request_header_reason(&request_header.header);
-        // SV 最小适配行（S6 例外）：emitted 侧与持久投影同形（V3 剥
-        // system），否则去重比较两侧形状不一致。
-        let emitted_header_value = header_reason
-            .is_some()
-            .then(|| crate::session::recorder::persisted_request_header(&request_header.header));
-
-        let handle = waiting_execution
-            .activate(
-                RunExecutionStart {
-                    prepared,
-                    request_header,
-                    header_reason,
-                    context,
-                },
-                asker_for_host,
-            )
-            .map_err(|failure| post_commit_start_error(failure.error, failure.phase))?;
+        let mut emitted_header_value = None;
+        let handle = waiting_execution.start(
+            || {
+                // Freeze workflow context only after Fresh birth events commit.
+                let prepared = self.admit_run(&request_message, goal_round.as_ref())?;
+                self.commit_initial_input(&request_message);
+                let start = pending_context.admitted(self, prepared)?;
+                emitted_header_value = start.header_reason.is_some().then(|| {
+                    crate::session::recorder::persisted_request_header(&start.request_header.header)
+                });
+                Ok(start)
+            },
+            asker_for_host,
+        )?;
         // The run is committed to execute: only now does the header count
         // as emitted and the session stop being freshly opened. (The
         // recorder journals the header at the first dispatch; a crash in
@@ -645,35 +367,6 @@ pub struct ApplicationRunRequest {
     pub completion: mpsc::Sender<ApplicationRunResult>,
 }
 
-// The final event in the admission batch is user/message. Its assigned seq,
-// not a later journal watermark, separates historical and live presentation.
-pub(super) fn commit_admission_batch(
-    journal: &dyn RunJournal,
-    batch: &[NewSessionEvent],
-) -> Result<u64, ApplicationError> {
-    let range = journal
-        .append_atomic(batch)
-        .map_err(|error| ApplicationError::new(format!("session append failed: {error}")))?;
-    journal
-        .flush()
-        .map_err(|error| ApplicationError::new(format!("session flush failed: {error}")))?;
-    Ok(range.end_inclusive)
-}
-
-pub(super) struct PreparedRun {
-    pub(super) replay_before_seq: u64,
-    pub(super) session_id: SessionId,
-    pub(super) turn: u64,
-    pub(super) history: Vec<crate::model::ModelItem>,
-    pub(super) journal: Arc<dyn RunJournal>,
-    pub(super) goal_round_started: Option<std::time::Instant>,
-    /// MM-1A：被接纳的初始消息（descriptor 投影）与客户端幂等键——
-    /// worker 用它发 `RunStarted`，完成/失败结果携带 committed 回执。
-    pub(super) message: crate::message::MessageContent,
-    pub(super) client_message_id: Option<crate::message::ClientMessageId>,
-    pub(super) receipt: Option<Box<crate::message::AdmissionReceipt>>,
-}
-
 pub type ApplicationRunResult = Result<ApplicationRunDone, ApplicationRunFailure>;
 
 #[derive(Clone, Debug)]
@@ -823,29 +516,6 @@ impl TrustedProjectApplication {
         self.memory
             .injection(memory_query)
             .map_err(ApplicationError::new)
-    }
-}
-
-impl TrustedProjectApplication {
-    fn take_invoked_skill(
-        &mut self,
-        skill_snapshot: &crate::skills::SkillCatalogSnapshot,
-    ) -> Result<Option<crate::skills::InvokedSkill>, ApplicationError> {
-        // SC-2：消费 `/skill <name>` 武装的一次性显式调用，针对本 run 冻
-        // 结 catalog 解析。解析发生在 admission 之前——过期的武装快速失
-        // 败，不留任何耐久用户事实；武装位无论成败都在此取走（失败后重
-        // 新提交即普通 run，不会反复中毒）。
-        Ok(match self.invoked_skill.take() {
-            Some(name) => Some(self.skills.resolve_invoked(skill_snapshot, &name).map_err(
-                |error| {
-                    ApplicationError::new(format!(
-                        "invoked skill `{name}` is unavailable: {error}; \
-                             run /skill to pick another"
-                    ))
-                },
-            )?),
-            None => None,
-        })
     }
 }
 

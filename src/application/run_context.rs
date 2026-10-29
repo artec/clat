@@ -9,6 +9,8 @@ use crate::model::ModelConfig;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod start;
+
 /// The system prompt at each additive workflow boundary. The final project
 /// instruction snapshot is deliberately applied later: it can refresh between
 /// model steps, while these request-bound workflow facts stay frozen.

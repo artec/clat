@@ -101,7 +101,12 @@ fn internal_owner_violation(source: &str) -> Option<&'static str> {
         "RunContextSnapshot",
         "RunExecutionEngine",
         "WaitingRunExecution",
+        "RunAdmission",
+        "AdmittedRun",
+        "PreparedRun",
+        "PendingRunContext",
         "composition",
+        "run_admission",
         "run_context",
         "run_execution",
         "use_cases",
@@ -261,6 +266,10 @@ fn crate_root_does_not_export_internal_core_owners() {
             "RunContextSnapshot",
             "RunExecutionEngine",
             "WaitingRunExecution",
+            "RunAdmission",
+            "AdmittedRun",
+            "PreparedRun",
+            "PendingRunContext",
         ] {
             assert!(
                 !(reexports && compact.contains(owner)),

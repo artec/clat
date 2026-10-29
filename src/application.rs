@@ -94,6 +94,7 @@ pub use model_settings::{
 #[cfg(test)]
 mod plan_mode_tests;
 mod remote_control;
+mod run_admission;
 mod run_context;
 mod run_execution;
 mod run_lifecycle;

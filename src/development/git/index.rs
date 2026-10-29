@@ -112,10 +112,8 @@ impl GitService {
             &["rev-parse", "--absolute-git-dir"],
         )?)
         .map_err(|_| "git_encoding")?;
-        // Git may reuse a stat-matching worktree file even for --cached.
-        // A copied index has a new timestamp, which invalidates Git's racy
-        // timestamp protection. Give diff an empty private worktree so its
-        // patch must come from the frozen index's blobs, never live files.
+        // --cached and even --bare can reuse stat-matching live files.
+        // Both cwd and worktree must be empty so Git reads staged blobs.
         command
             .current_dir(&worktree.path)
             .arg(format!("--git-dir={}", git_dir.trim()))
@@ -147,11 +145,26 @@ struct DiffWorktree {
 }
 impl DiffWorktree {
     fn new(store: &store::Store) -> Result<Self, String> {
-        let dir = store.dir()?;
-        let name = format!("diff-worktree-{}", uuid::Uuid::new_v4());
-        dir.create_dir(&name).map_err(io)?;
+        // Validate the private storage boundary before opening its ancestor.
+        let _validated = store.dir()?;
+        let parent = store.root_ancestor();
+        let dir = cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority())
+            .map_err(io)?;
+        // Nested repository IDs make the private index path exceed MAX_PATH.
+        // Index files support long paths; CreateProcess's cwd does not. Keep
+        // this empty directory outside the repositories/<id> nesting.
+        let name = format!("dw-{}", uuid::Uuid::new_v4().simple());
+        let builder = cap_std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        let builder = {
+            use cap_std::fs::DirBuilderExt;
+            let mut builder = builder;
+            builder.mode(0o700);
+            builder
+        };
+        dir.create_dir_with(&name, &builder).map_err(io)?;
         Ok(Self {
-            path: store.path(&name),
+            path: parent.join(&name),
             dir,
             name,
         })
@@ -160,5 +173,46 @@ impl DiffWorktree {
 impl Drop for DiffWorktree {
     fn drop(&mut self) {
         let _ = self.dir.remove_dir(&self.name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn staged_diff_cwd_is_private_empty_short_and_removed_after_nested_use() {
+        let base = std::env::temp_dir().join(format!("clat-git-cwd-{}", uuid::Uuid::new_v4()));
+        let store = store::Store::new(
+            base.join("development")
+                .join("a".repeat(64))
+                .join("repositories")
+                .join("b".repeat(64)),
+        );
+        let path = {
+            let cwd = DiffWorktree::new(&store).unwrap();
+            assert!(cwd.path.starts_with(&base));
+            assert!(
+                cwd.path
+                    .as_os_str()
+                    .to_string_lossy()
+                    .encode_utf16()
+                    .count()
+                    < 248,
+                "Windows process working directory must stay below MAX_PATH: {:?}",
+                cwd.path
+            );
+            assert_eq!(std::fs::read_dir(&cwd.path).unwrap().count(), 0);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&cwd.path).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+            cwd.path.clone()
+        };
+        assert!(!path.exists());
+        crate::test_support::cleanup_tree(&base);
     }
 }
