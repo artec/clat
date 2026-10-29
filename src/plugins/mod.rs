@@ -10,6 +10,7 @@ use conversation::{compaction, pruner, title, todo, utility};
 mod agent;
 mod apply_patch;
 mod commands;
+pub(crate) mod inventory;
 mod language_intelligence;
 mod mcp;
 mod monitor;

@@ -54,6 +54,8 @@ fn footer(dialog: &PluginDialog) -> &'static str {
         dialog.locale.text("tui.plugin_config_keys")
     } else if dialog.view == View::Remove {
         dialog.locale.text("tui.plugin_confirm_keys")
+    } else if dialog.view == View::Builtins {
+        dialog.locale.text("extension.tui_browse")
     } else {
         dialog.locale.text("tui.plugin_browse_keys")
     }

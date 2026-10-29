@@ -146,18 +146,13 @@ impl TrustedProjectApplication {
     ) -> Self {
         let canonical_root = development::canonical_root(&project);
         let control = Arc::clone(&storage.control);
-        let draft_images = Arc::new(crate::draft::DraftImageStore::new(control.root_path()));
-        let development = Arc::new(crate::development::DevelopmentService::new(
-            project.clone(),
-            control.root_path(),
-        ));
         Self {
-            development,
+            development: ports.development,
             project: project.clone(),
             composition,
             sessions: ports.sessions,
             control,
-            draft_images,
+            draft_images: ports.draft_images,
             config: ports.config,
             web: ports.web,
             history: ports.history,

@@ -1,7 +1,7 @@
 use super::context::PluginContext;
 use super::effect::{DisposeError, DisposeErrors, EffectScope};
 use super::service::{ServiceError, ServiceKey, ServiceRegistry};
-use super::{Plugin, PluginError, PluginId, ScopeKind, ServiceId};
+use super::{Plugin, PluginDescriptor, PluginError, PluginId, ScopeKind, ServiceId};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -169,7 +169,7 @@ impl fmt::Display for ScopeCloseError {
 impl std::error::Error for ScopeCloseError {}
 
 struct MountedPlugin {
-    id: PluginId,
+    descriptor: &'static PluginDescriptor,
     effects: EffectScope,
 }
 
@@ -299,7 +299,7 @@ impl PluginManager {
         match result {
             Ok(()) => {
                 self.mounted.push(MountedPlugin {
-                    id: descriptor.id,
+                    descriptor,
                     effects: context.into_effects(),
                 });
                 Ok(())
@@ -319,14 +319,14 @@ impl PluginManager {
         }
         let mut errors = Vec::new();
         for index in (0..self.mounted.len()).rev() {
-            if !ids.contains(&self.mounted[index].id) {
+            if !ids.contains(&self.mounted[index].descriptor.id) {
                 continue;
             }
             let mut mounted = self.mounted.remove(index);
             if let Err(e) = mounted.effects.close() {
                 errors.extend(e.into_errors());
             }
-            if let Err(e) = self.registry.remove_owner(mounted.id) {
+            if let Err(e) = self.registry.remove_owner(mounted.descriptor.id) {
                 errors.push(DisposeError::new(e.to_string()));
             }
         }
@@ -348,7 +348,7 @@ impl PluginManager {
             .iter()
             .map(|p| p.descriptor().id)
             .collect::<Vec<_>>();
-        if self.mounted.iter().any(|p| ids.contains(&p.id)) {
+        if self.mounted.iter().any(|p| ids.contains(&p.descriptor.id)) {
             return Err(PluginManagerError::AlreadyMounted);
         }
         for index in plan(&catalog, self.scope, &self.registry)? {
@@ -365,6 +365,11 @@ impl PluginManager {
         key: ServiceKey<T>,
     ) -> Result<Arc<T>, ServiceError> {
         self.registry.require(key)
+    }
+
+    /// Only successfully mounted, not-yet-revoked entries are observable.
+    pub(crate) fn descriptors(&self) -> impl Iterator<Item = &'static PluginDescriptor> + '_ {
+        self.mounted.iter().map(|plugin| plugin.descriptor)
     }
 
     pub(crate) fn close(&mut self) -> Result<(), ScopeCloseError> {
@@ -393,7 +398,7 @@ impl PluginManager {
             if let Err(scope_errors) = mounted.effects.close() {
                 errors.extend(scope_errors.into_errors());
             }
-            if let Err(error) = self.registry.remove_owner(mounted.id) {
+            if let Err(error) = self.registry.remove_owner(mounted.descriptor.id) {
                 errors.push(DisposeError::new(error.to_string()));
             }
         }

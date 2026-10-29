@@ -1,4 +1,5 @@
 use super::*;
+use crate::ProjectAuthorization;
 use crate::application::host_tests::fixture;
 use crate::plugin::InstallKind;
 use sha2::{Digest as _, Sha256};
@@ -34,6 +35,172 @@ fn ticket(host: &mut HostApplication, id: &str, action: &str) -> String {
         .as_str()
         .unwrap()
         .to_owned()
+}
+
+#[test]
+fn builtin_inventory_tracks_real_project_mounts_and_owned_contributions() {
+    let (root, mut host, first, second) = fixture("builtin-inventory");
+    host.authorize_and_attach(second.clone(), ProjectAuthorization::grant())
+        .unwrap();
+    let inventory = host.plugin_list().unwrap();
+    let rows = inventory["builtins"]
+        .as_array()
+        .expect("built-in inventory");
+    for row in rows
+        .iter()
+        .filter(|row| row["id"].as_str().unwrap().starts_with("builtin."))
+    {
+        for field in ["name_presentation", "summary_presentation"] {
+            let key = row[field]["key"].as_str().expect("translation descriptor");
+            assert!(
+                key.starts_with("extension.builtin."),
+                "missing built-in metadata: {}",
+                row["id"]
+            );
+            for locale in [
+                crate::i18n::Locale::English,
+                crate::i18n::Locale::Simplified,
+                crate::i18n::Locale::Traditional,
+            ] {
+                let catalog: Value = serde_json::from_str(locale.catalog_json()).unwrap();
+                assert!(
+                    catalog[key].is_string(),
+                    "missing localized descriptor: {key}"
+                );
+            }
+        }
+    }
+    for id in [
+        "builtin.development",
+        "builtin.draft_images",
+        "builtin.goal",
+    ] {
+        let row = rows.iter().find(|row| row["id"] == id).expect(id);
+        assert_eq!(row["runtime"], "rust-builtin");
+        assert_eq!(row["instances"].as_array().unwrap().len(), 2);
+        assert_eq!(row["management"], "bundled");
+        for instance in row["instances"].as_array().unwrap() {
+            assert_eq!(instance["phase"], "active");
+        }
+    }
+    let goal = rows.iter().find(|row| row["id"] == "builtin.goal").unwrap();
+    assert!(
+        goal["instances"][0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "update_goal")
+    );
+    assert!(
+        goal["instances"][0]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "goal")
+    );
+    assert!(
+        goal["instances"][0]["requires"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "core.sessions")
+    );
+    assert!(inventory["installed"].as_array().unwrap().is_empty());
+    for action in ["enable", "configure", "rollback", "install", "update"] {
+        let error = host.plugin_prepare("builtin.goal", action).unwrap_err();
+        assert_eq!(error.presentation().key, "extension.read_only");
+    }
+    assert!(host.plugin_remove("builtin.goal", false).is_err());
+    assert!(host.plugin_remove("builtin.goal", true).is_err());
+    assert!(
+        host.unmount_idle(&second.root().canonicalize().unwrap())
+            .unwrap()
+    );
+    let inventory = host.plugin_list().unwrap();
+    for row in inventory["builtins"].as_array().unwrap() {
+        assert_eq!(row["instances"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            row["instances"][0]["project"],
+            first
+                .root()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+    }
+    host.close().unwrap();
+    assert!(
+        host.plugin_list().unwrap()["builtins"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn bundled_services_close_even_when_clients_keep_handles_and_uploads() {
+    use std::io::Write as _;
+    let (root, mut host, first, _) = fixture("builtin-services-close");
+    let app = host.attach(first).unwrap();
+    let (development, drafts) = {
+        let app = app.lock().unwrap();
+        (app.development(), app.draft_image_store())
+    };
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let staged = drafts.stage_png(&png).unwrap();
+    let target = crate::message::DraftTarget::PendingSession {
+        nonce: "close".into(),
+    };
+    let scope = drafts.open_scope("close", 1, 1, target.clone()).unwrap();
+    let mut upload = drafts
+        .begin_upload(
+            &scope.draft_scope_id,
+            1,
+            1,
+            png.len() as u64,
+            "image/png",
+            None,
+        )
+        .unwrap();
+    upload.write_all(&png).unwrap();
+    drop(app);
+    host.close().unwrap();
+    assert!(
+        !staged.exists(),
+        "plugin close reclaims staged sources before final Arc drop"
+    );
+    assert!(drafts.stage_png(&png).is_err());
+    assert!(drafts.open_scope("late", 1, 1, target).is_err());
+    assert!(
+        drafts
+            .begin_upload(
+                &scope.draft_scope_id,
+                1,
+                1,
+                png.len() as u64,
+                "image/png",
+                None
+            )
+            .is_err()
+    );
+    assert!(
+        upload.finish().is_err(),
+        "late uploads cannot publish after close"
+    );
+    assert_eq!(
+        development
+            .request("editor.list", json!({}), None)
+            .unwrap_err(),
+        "host_closed"
+    );
+    drop(drafts);
+    drop(development);
+    crate::test_support::cleanup_tree(&root);
 }
 
 #[test]

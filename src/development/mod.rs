@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 mod editor;
 mod errors;
 mod git;
+pub(crate) mod plugin;
 mod rename;
 mod store;
 mod terminal;

@@ -10,11 +10,14 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+pub(crate) mod plugin;
+mod staging;
 
 pub(crate) const DRAFT_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 pub(crate) const MAX_DRAFT_STAGING_BYTES: u64 = 128 * 1024 * 1024;
 
 struct DraftState {
+    closed: bool,
     scopes: HashMap<String, ScopeRecord>,
     client_scopes: HashMap<(String, u64, u64), String>,
     clipboard_files: HashMap<PathBuf, StagedClipboard>,
@@ -42,6 +45,7 @@ pub struct DraftImageStore {
     storage_root: PathBuf,
     root: PathBuf,
     state: Mutex<DraftState>,
+    creation: Mutex<()>,
 }
 
 impl DraftImageStore {
@@ -114,7 +118,9 @@ impl DraftImageStore {
             root: storage_root
                 .join("drafts")
                 .join(format!("interactive-{}", uuid::Uuid::new_v4())),
+            creation: Mutex::new(()),
             state: Mutex::new(DraftState {
+                closed: false,
                 scopes: HashMap::new(),
                 client_scopes: HashMap::new(),
                 clipboard_files: HashMap::new(),
@@ -128,7 +134,7 @@ impl DraftImageStore {
         let Ok(mut state) = self.state.lock() else {
             return true;
         };
-        sweep_expired_locked(&self.root, &mut state, now_ms());
+        sweep_expired_locked(self, &mut state, now_ms());
         !state.clipboard_files.is_empty()
             || state.scopes.values().any(|scope| !scope.uploads.is_empty())
     }
@@ -154,86 +160,6 @@ impl DraftImageStore {
         self.stage_image_bytes(bytes, format, "wechat", extension)
     }
 
-    fn stage_image_bytes(
-        &self,
-        bytes: &[u8],
-        format: image::ImageFormat,
-        label: &str,
-        extension: &str,
-    ) -> Result<PathBuf, String> {
-        if bytes.is_empty() || bytes.len() as u64 > crate::media::MAX_ATTACHMENT_BYTES {
-            return Err(format!(
-                "staged image must be 1..={} bytes (got {})",
-                crate::media::MAX_ATTACHMENT_BYTES,
-                bytes.len()
-            ));
-        }
-        let decoded = image::load_from_memory_with_format(bytes, format)
-            .map_err(|error| format!("staged image validation failed: {error}"))?;
-        let pixels = u64::from(decoded.width())
-            .checked_mul(u64::from(decoded.height()))
-            .ok_or_else(|| "staged image dimensions overflow".to_owned())?;
-        if pixels > crate::media::MAX_DECODED_PIXELS {
-            return Err(format!(
-                "staged image exceeds the {}-pixel limit",
-                crate::media::MAX_DECODED_PIXELS
-            ));
-        }
-
-        ensure_private_draft_root(&self.storage_root, &self.root)?;
-        let path = self
-            .root
-            .join(format!("{label}-{}.{}", uuid::Uuid::new_v4(), extension));
-        let now = now_ms();
-        {
-            let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
-            sweep_expired_locked(&self.root, &mut state, now);
-            let used = state
-                .clipboard_files
-                .values()
-                .try_fold(0u64, |total, file| {
-                    total
-                        .checked_add(file.bytes)
-                        .ok_or_else(|| "clipboard staging quota overflow".to_owned())
-                })?;
-            let next = used
-                .checked_add(bytes.len() as u64)
-                .ok_or_else(|| "clipboard staging quota overflow".to_owned())?;
-            if next > MAX_DRAFT_STAGING_BYTES {
-                return Err(format!(
-                    "clipboard drafts exceed the {MAX_DRAFT_STAGING_BYTES}-byte staging quota"
-                ));
-            }
-            state.clipboard_files.insert(
-                path.clone(),
-                StagedClipboard {
-                    bytes: bytes.len() as u64,
-                    created_at: now,
-                },
-            );
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&path) {
-            Ok(file) => file,
-            Err(error) => {
-                self.forget_clipboard_path(&path);
-                return Err(format!("create clipboard staging file: {error}"));
-            }
-        };
-        if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
-            let _ = std::fs::remove_file(&path);
-            self.forget_clipboard_path(&path);
-            return Err(format!("write clipboard staging file: {error}"));
-        }
-        Ok(path)
-    }
-
     /// Release only a path minted by [`Self::stage_png`] or
     /// [`Self::stage_remote_image`]. User-selected `/attach` sources may pass
     /// through the same composer, so an arbitrary path must never become
@@ -245,7 +171,7 @@ impl DraftImageStore {
         if !state.clipboard_files.contains_key(path) {
             return false;
         }
-        match std::fs::remove_file(path) {
+        match self.remove_owned_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return false,
@@ -281,7 +207,8 @@ impl DraftImageStore {
         validate_client_draft_id(client_draft_id)?;
         let now = now_ms();
         let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
-        sweep_expired_locked(&self.root, &mut state, now);
+        staging::ensure_open(&state)?;
+        sweep_expired_locked(self, &mut state, now);
         let key = (
             client_draft_id.to_owned(),
             selection_generation,
@@ -322,6 +249,7 @@ impl DraftImageStore {
         media_type: &str,
         display_name: Option<&str>,
     ) -> Result<DraftUploadWriter, String> {
+        let _creation = self.begin_creation()?;
         if expected_bytes == 0 || expected_bytes > crate::media::MAX_ATTACHMENT_BYTES {
             return Err(format!(
                 "upload must be 1..={} bytes (got {expected_bytes})",
@@ -337,7 +265,7 @@ impl DraftImageStore {
         {
             let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
             let now = now_ms();
-            sweep_expired_locked(&self.root, &mut state, now);
+            sweep_expired_locked(self, &mut state, now);
             require_scope(
                 &state,
                 scope_id,
@@ -409,7 +337,7 @@ impl DraftImageStore {
         }
         let now = now_ms();
         let mut state = self.state.lock().map_err(|_| "draft state poisoned")?;
-        sweep_expired_locked(&self.root, &mut state, now);
+        sweep_expired_locked(self, &mut state, now);
         let record = require_scope_mut(
             &mut state,
             scope_id,
@@ -472,7 +400,7 @@ impl DraftImageStore {
         }
         for path in paths {
             if let Some(directory) = path.parent() {
-                let _ = std::fs::remove_dir_all(directory);
+                let _ = self.remove_owned_directory(directory);
             }
         }
     }
@@ -542,7 +470,7 @@ impl DraftUploadWriter {
                 .state
                 .lock()
                 .map_err(|_| "draft state poisoned")?;
-            sweep_expired_locked(&self.store.root, &mut state, now);
+            sweep_expired_locked(&self.store, &mut state, now);
             let record = require_scope_mut(
                 &mut state,
                 &self.scope_id,
@@ -582,7 +510,7 @@ impl Drop for DraftUploadWriter {
         if !self.finished
             && let Some(directory) = self.path.parent()
         {
-            let _ = std::fs::remove_dir_all(directory);
+            let _ = self.store.remove_owned_directory(directory);
         }
     }
 }
@@ -636,6 +564,7 @@ fn require_scope<'a>(
     token_generation: u64,
     now: i64,
 ) -> Result<&'a ScopeRecord, String> {
+    staging::ensure_open(state)?;
     let record = state
         .scopes
         .get(scope_id)
@@ -656,6 +585,7 @@ fn require_scope_mut<'a>(
     token_generation: u64,
     now: i64,
 ) -> Result<&'a mut ScopeRecord, String> {
+    staging::ensure_open(state)?;
     let record = state
         .scopes
         .get_mut(scope_id)
@@ -695,7 +625,7 @@ fn draft_selection_usage(
     Ok((ids.len(), bytes))
 }
 
-fn sweep_expired_locked(root: &Path, state: &mut DraftState, now: i64) {
+fn sweep_expired_locked(store: &DraftImageStore, state: &mut DraftState, now: i64) {
     let expired_clipboard = state
         .clipboard_files
         .iter()
@@ -705,7 +635,7 @@ fn sweep_expired_locked(root: &Path, state: &mut DraftState, now: i64) {
         })
         .collect::<Vec<_>>();
     for path in expired_clipboard {
-        match std::fs::remove_file(&path) {
+        match store.remove_owned_file(&path) {
             Ok(()) => {
                 state.clipboard_files.remove(&path);
             }
@@ -722,7 +652,7 @@ fn sweep_expired_locked(root: &Path, state: &mut DraftState, now: i64) {
             if record.scope.expires_at > now || record.uploads.values().any(|u| u.reserved) {
                 return None;
             }
-            let source = root.join("web").join(id);
+            let source = store.root.join("web").join(id);
             let referenced = state.scopes.iter().any(|(other, scope)| {
                 other != id
                     && scope
@@ -735,7 +665,7 @@ fn sweep_expired_locked(root: &Path, state: &mut DraftState, now: i64) {
         .collect::<Vec<_>>();
     for id in &expired {
         state.scopes.remove(id);
-        let _ = std::fs::remove_dir_all(root.join("web").join(id));
+        let _ = store.remove_owned_directory(&store.root.join("web").join(id));
     }
     if !expired.is_empty() {
         state
@@ -755,7 +685,7 @@ impl Drop for DraftImageStore {
     fn drop(&mut self) {
         // This exact random directory is owned by this application instance;
         // no glob or caller-provided component participates in cleanup.
-        let _ = std::fs::remove_dir_all(&self.root);
+        let _ = self.close();
     }
 }
 
@@ -1069,10 +999,66 @@ mod tests {
             "rejected staging must not create the process directory outside storage"
         );
 
+        let victim = outside.join(store.root.file_name().unwrap());
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::write(victim.join("preserve.txt"), "outside storage").unwrap();
         drop(store);
+        assert_eq!(
+            std::fs::read_to_string(victim.join("preserve.txt")).unwrap(),
+            "outside storage",
+            "scope cleanup cannot follow a replaced draft parent outside storage"
+        );
         let _ = std::fs::remove_file(root.join("drafts"));
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_cleanup_cannot_follow_a_replaced_parent_outside_storage() {
+        use std::os::unix::fs::symlink;
+        let root =
+            std::env::temp_dir().join(format!("clat-upload-cleanup-{}", uuid::Uuid::new_v4()));
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Arc::new(DraftImageStore::new(&root));
+        let scope = store
+            .open_scope(
+                "cleanup",
+                1,
+                1,
+                DraftTarget::PendingSession {
+                    nonce: "cleanup".into(),
+                },
+            )
+            .unwrap();
+        let writer = store
+            .begin_upload(&scope.draft_scope_id, 1, 1, 1, "image/png", None)
+            .unwrap();
+        let relative = writer
+            .path
+            .parent()
+            .unwrap()
+            .strip_prefix(store.root.join("web"))
+            .unwrap();
+        let victim = outside.join(relative);
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("preserve.txt"), "outside storage").unwrap();
+        std::fs::rename(store.root.join("web"), store.root.join("web-original")).unwrap();
+        symlink(&outside, store.root.join("web")).unwrap();
+        drop(writer);
+        assert_eq!(
+            std::fs::read_to_string(victim.join("preserve.txt")).unwrap(),
+            "outside storage"
+        );
+        store.close().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(victim.join("preserve.txt")).unwrap(),
+            "outside storage"
+        );
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
     }
 
     #[cfg(unix)]

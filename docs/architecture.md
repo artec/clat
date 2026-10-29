@@ -115,6 +115,22 @@ Dynamic native libraries are deliberately not a plugin ABI: Rust's compiler ABI
 is not stable enough for a durable market contract. Rust-authored third-party
 plugins compile to the versioned WIT/WASM component boundary instead.
 
+Static plugin observability reads `PluginManager`'s successful mounts directly.
+The manager retains each mounted descriptor until removal or rollback;
+`plugins::inventory` combines it with owner-attributed tool and command
+registrations. Composition returns typed snapshots and Host aggregates their
+project instances into the additive `plugin.list.builtins` projection. Display
+metadata is separate from mount membership and never grants mutation rights.
+Frontends render this through the same client ports as external packages.
+
+The development workspace and transient draft-image stores are project plugins
+(`development::plugin`, `draft::plugin`), resolved through typed services rather
+than constructed by the Application facade. Plugin cleanup closes the services
+even while clients hold clones. Draft creation and close share a serialization
+lane; scope creation and upload publication check the closed state under the
+draft-state lock. Application still owns run shutdown and flushing pending-input
+references before project plugin teardown, preserving the admission transaction.
+
 Third-party packages of both runtime kinds are activated from one immutable
 local store. The package tree is copied and fsynced before an atomic registry
 pointer exposes it; update failure leaves the old pointer intact, and rollback
@@ -135,7 +151,7 @@ execution path.
 | Scope | Lifetime | Owns |
 |---|---|---|
 | Bootstrap | process open → trust decision | control-format classification and read-only trust lookup |
-| Trusted Project | trust accepted → project close | storage lease, sessions, providers, tools, prompts, commands, Plan/Skills/LSP/Context services, MCP/WASM adapters, monitors, compaction, titles, todos |
+| Trusted Project | trust accepted → project close | storage lease, sessions, providers, tools, prompts, commands, Plan/Skills/LSP/Context services, development workspace, transient drafts, MCP/WASM adapters, monitors, compaction, titles, todos |
 | Run | one active agent run | cancel token, permission approver, user asker, plugin-host context, model/tool worker |
 
 Bootstrap deliberately has no plugin scope. A catalog is validated before any

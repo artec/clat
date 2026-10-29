@@ -279,7 +279,15 @@ fn stable_catalog_order_and_reverse_teardown_are_deterministic() {
             make("third", THIRD_ID, THIRD_KEY),
         ])
         .expect("mount");
+    assert_eq!(
+        manager
+            .descriptors()
+            .map(|d| d.id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second", "third"]
+    );
     manager.close().expect("close");
+    assert_eq!(manager.descriptors().count(), 0);
     assert_eq!(
         *log.lock().unwrap(),
         [
@@ -337,6 +345,11 @@ fn mount_failure_rolls_back_current_then_previous_and_keeps_all_errors() {
     let PluginManagerError::Start(error) = error else {
         panic!("unexpected error");
     };
+    assert_eq!(
+        manager.descriptors().count(),
+        0,
+        "failed mounts and rollbacks have no active rows"
+    );
     assert_eq!(error.primary.to_string(), "mount failed");
     assert_eq!(error.rollback_failures.len(), 2);
     assert_eq!(*log.lock().unwrap(), ["close:failing", "close:first"]);

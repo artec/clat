@@ -177,7 +177,8 @@ fn set_rows(dialog: &mut PluginDialog, result: Result<Value, String>, market: bo
             if market {
                 dialog.market = rows
             } else {
-                dialog.installed = rows
+                dialog.installed = rows;
+                dialog.builtins = value["builtins"].as_array().cloned().unwrap_or_default();
             }
             dialog.selected = 0;
             if dialog.status.presentation.as_ref().is_some_and(|m| {

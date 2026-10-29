@@ -711,6 +711,21 @@ pub(crate) struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    pub(crate) fn contributions(&self, owner: PluginId) -> Result<Vec<String>, String> {
+        let state = self.inner.read().map_err(|_| "tool registry poisoned")?;
+        Ok(state
+            .order
+            .iter()
+            .filter(|name| {
+                state
+                    .by_name
+                    .get(*name)
+                    .is_some_and(|entry| entry.owner == owner)
+            })
+            .cloned()
+            .collect())
+    }
+
     /// Replace only already registered contracts; keep each contributing owner
     /// and immutable public schema. No new capability can be smuggled in here.
     pub(crate) fn for_session(

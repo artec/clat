@@ -40,7 +40,7 @@ pub(in crate::tui::plugins) fn plugin_lines(
                 )
             })
             .unwrap_or_default(),
-        View::Installed | View::Market => return browse_lines(dialog, width),
+        View::Installed | View::Builtins | View::Market => return browse_lines(dialog, width),
     };
     text.lines()
         .enumerate()
@@ -78,10 +78,10 @@ fn browse_lines(dialog: &PluginDialog, width: usize) -> Vec<Line<'static>> {
         &UiMessage::new("tui.plugin_browse_heading")
             .arg(
                 "heading",
-                dialog.locale.text(if dialog.view == View::Market {
-                    "tui.plugin_market_heading"
-                } else {
-                    "tui.plugin_installed_heading"
+                dialog.locale.text(match dialog.view {
+                    View::Market => "tui.plugin_market_heading",
+                    View::Builtins => "extension.builtins",
+                    _ => "tui.plugin_installed_heading",
                 }),
             )
             .arg("generation", dialog.market_generation)
@@ -103,9 +103,13 @@ fn browse_lines(dialog: &PluginDialog, width: usize) -> Vec<Line<'static>> {
     for (index, row) in rows.iter().enumerate() {
         let body = format!(
             "{} · {} · {}",
-            label(row, "id"),
+            localized_label(row, "name", dialog.locale),
             label(row, "version"),
-            label(row, "runtime")
+            if dialog.view == View::Builtins {
+                dialog.locale.text("extension.bundled").into()
+            } else {
+                label(row, "runtime")
+            }
         );
         let role = if index == dialog.selected {
             theme::Role::Selected
@@ -189,6 +193,15 @@ fn review_text(dialog: &PluginDialog) -> String {
 
 fn append_selected(dialog: &PluginDialog, width: usize, lines: &mut Vec<Line<'static>>) {
     if let Some(row) = dialog.selected() {
+        if dialog.view == View::Builtins {
+            append_builtin(dialog, &row, width, lines);
+            return;
+        }
+        lines.extend(styled_lines(
+            &label(&row, "id"),
+            width,
+            theme::style(theme::Role::Faint),
+        ));
         let state = if row["enabled"] == true {
             dialog.locale.text("tui.plugin_enabled_state")
         } else if row.get("enabled").is_some() {
@@ -223,5 +236,25 @@ fn append_selected(dialog: &PluginDialog, width: usize, lines: &mut Vec<Line<'st
             width,
             theme::style(theme::Role::Faint),
         ));
+    }
+}
+
+fn append_builtin(
+    dialog: &PluginDialog,
+    row: &Value,
+    width: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let count = row["instances"].as_array().map_or(0, Vec::len);
+    let parts = [
+        localized_label(row, "summary", dialog.locale),
+        dialog
+            .locale
+            .render(&UiMessage::new("extension.active_instances").arg("count", count)),
+        label(row, "id"),
+        dialog.locale.text("extension.read_only").into(),
+    ];
+    for part in parts {
+        lines.extend(styled_lines(&part, width, theme::style(theme::Role::Dim)));
     }
 }

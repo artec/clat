@@ -196,7 +196,7 @@ fn command_after_close(
         let (io, captured) = ExecIo::capture(&[]);
         let outcome = exec(project, storage, TestBehavior::Success, options, io);
         if let ExecOutcome::Failure(message) = &outcome
-            && message.to_string() == "another CLAT process holds this storage root; close it first"
+            && *message == "another CLAT process holds this storage root; close it first"
         {
             return Err(message.clone());
         }

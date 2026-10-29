@@ -26,7 +26,7 @@ impl App {
         if dialog.view == View::Review {
             let resized = self.plugins.review_terminal_area.replace(terminal) != Some(terminal);
             lines = review_viewport(dialog, lines, width, visible, resized);
-        } else if matches!(dialog.view, View::Installed | View::Market) {
+        } else if matches!(dialog.view, View::Installed | View::Builtins | View::Market) {
             lines = browse_viewport(dialog, width, visible);
         }
         clear_popup_with_guards(frame, layout.outer);
@@ -69,6 +69,7 @@ fn review_viewport(
 
 fn title(view: View, locale: LocaleContext) -> &'static str {
     match view {
+        View::Builtins => locale.text("extension.builtins"),
         View::Installed => locale.text("tui.plugin_installed_title"),
         View::Market => locale.text("tui.plugin_market_title"),
         View::Review => locale.text("tui.plugin_permission_title"),

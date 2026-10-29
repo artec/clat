@@ -102,10 +102,10 @@ impl App {
             KeyCode::Up => dialog.selected = dialog.selected.saturating_sub(1),
             KeyCode::Char('/') => dialog.searching = true,
             KeyCode::Tab => {
-                dialog.view = if dialog.view == View::Installed {
-                    View::Market
-                } else {
-                    View::Installed
+                dialog.view = match dialog.view {
+                    View::Installed => View::Builtins,
+                    View::Builtins => View::Market,
+                    _ => View::Installed,
                 };
                 dialog.selected = 0;
                 dialog.query.clear();

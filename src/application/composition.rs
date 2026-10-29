@@ -43,6 +43,8 @@ pub(super) struct CompositionInput {
 /// Required services cannot be omitted; only explicitly optional plugins are
 /// represented by `Option`.
 pub(super) struct ProjectPorts {
+    pub(super) development: Arc<crate::development::DevelopmentService>,
+    pub(super) draft_images: Arc<crate::draft::DraftImageStore>,
     pub(super) sessions: Arc<SessionService>,
     pub(super) config: Arc<dyn ConfigStore>,
     pub(super) web: Arc<crate::web_tools::WebService>,
@@ -87,6 +89,22 @@ pub(super) struct MountedRunScope {
 }
 
 impl TrustedProjectComposition {
+    pub(super) fn inventory(
+        &self,
+        project: &std::path::Path,
+    ) -> Result<Vec<crate::plugins::inventory::BuiltinPluginInfo>, ApplicationError> {
+        let Some(manager) = &self.manager else {
+            return Ok(Vec::new());
+        };
+        crate::plugins::inventory::snapshot(
+            manager,
+            required(manager, TOOL_SERVICE)?.as_ref(),
+            required(manager, COMMAND_SERVICE)?.as_ref(),
+            project,
+        )
+        .map_err(ApplicationError::new)
+    }
+
     pub(super) fn stop_external_plugins(&mut self) -> Result<(), ApplicationError> {
         self.manager
             .as_mut()
@@ -197,11 +215,7 @@ impl MountedRunScope {
 }
 
 fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
-    let permission_source = if input.permission_modes {
-        crate::permission::ModeSource::Shared(Arc::clone(&input.permission_mode))
-    } else {
-        crate::permission::ModeSource::Classic
-    };
+    let permission_source = input.permission_source();
     let write_scope = || {
         if input.permission_modes {
             crate::permission::WriteScopeSource::Shared(Arc::clone(&input.permission_mode))
@@ -212,6 +226,13 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
     let mut catalog: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&input.control))),
         Arc::new(SessionPersistencePlugin::new(Arc::clone(&input.sessions))),
+        Arc::new(crate::development::plugin::DevelopmentPlugin {
+            project: input.project.clone(),
+            private: input.control.root_path().to_owned(),
+        }),
+        Arc::new(crate::draft::plugin::DraftImagesPlugin {
+            private: input.control.root_path().to_owned(),
+        }),
         Arc::new(crate::scheduler::plugin::SchedulerPlugin {
             scheduler: input.scheduler.clone(),
             project: input
@@ -270,6 +291,16 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
     catalog
 }
 
+impl CompositionInput {
+    fn permission_source(&self) -> crate::permission::ModeSource {
+        if self.permission_modes {
+            crate::permission::ModeSource::Shared(Arc::clone(&self.permission_mode))
+        } else {
+            crate::permission::ModeSource::Classic
+        }
+    }
+}
+
 fn resolve_and_freeze(
     manager: &PluginManager,
     project: &Project,
@@ -313,6 +344,8 @@ fn resolve_and_freeze(
     );
 
     Ok(ProjectPorts {
+        development: required(manager, crate::development::plugin::DEVELOPMENT_SERVICE)?,
+        draft_images: required(manager, crate::draft::plugin::DRAFT_IMAGES_SERVICE)?,
         tool_pipeline,
         web: required(manager, crate::plugins::services::WEB_SERVICE)?,
         history: required(manager, crate::plugins::services::HISTORY_SERVICE)?,

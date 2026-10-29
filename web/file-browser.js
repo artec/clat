@@ -9,10 +9,12 @@ function installFileBrowser() {
 function createProjectFileBrowser({ id, inline = false, navigationView = null, onClose = () => {} }) {
   const dialog = el('section', inline ? 'project-files' : 'workspace-review'); dialog.id = id;
   CLATI18n.attribute(dialog,'aria-label',()=>CLATI18n.msg("web.project_files", {}, "Project files"));
-  const header = el('div', 'review-header'); const query = navigationView?.query||el('input', ''); query.type = 'search'; CLATI18n.bind(query, "placeholder", () => CLATI18n.msg("web.find_project_file", {}, "Find project file")); CLATI18n.attribute(query,'aria-label',()=>CLATI18n.msg("web.find_project_file", {}, "Find project file"));
+  const header = el('div', 'review-header'); const query = navigationView?.query||el('input', ''); query.type = 'search';
+  if(!navigationView){CLATI18n.attribute(query,'placeholder',()=>CLATI18n.msg('web.find_project_file'));CLATI18n.attribute(query,'aria-label',()=>CLATI18n.msg('web.find_project_file'));}
   const close = el('button', 'icon-button', () => ('×')); CLATI18n.attribute(close,'aria-label',()=>CLATI18n.msg("web.close_project_files", {}, "Close project files"));
   const refresh=el('button','ghost',()=>CLATI18n.msg('web.refresh'));refresh.type='button';
-  header.append(el('h2', '', () => CLATI18n.msg('web.files')), query, refresh, close);
+  header.append(el('h2', '', () => CLATI18n.msg('web.files')), refresh, close);
+  if(!navigationView)header.insertBefore(query,refresh);
   const status = el('p', 'picker-hint'); status.setAttribute('role', 'status');
   const list = navigationView?.list||el('nav','review-files');const detail=navigationView?.body||el('section','review-patch'); const body = el('div', 'review-body');
   if(!navigationView){body.append(list,detail);dialog.append(header,status,body);}else navigationView.status.append(status);

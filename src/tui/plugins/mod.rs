@@ -21,6 +21,7 @@ pub(super) struct PluginUi {
 #[derive(Clone, Copy, PartialEq)]
 enum View {
     Installed,
+    Builtins,
     Market,
     Review,
     Config,
@@ -31,6 +32,7 @@ pub(super) struct PluginDialog {
     locale: LocaleContext,
     view: View,
     installed: Vec<Value>,
+    builtins: Vec<Value>,
     market: Vec<Value>,
     query: InputBuffer,
     searching: bool,
@@ -57,6 +59,7 @@ impl PluginDialog {
             locale: LocaleContext::default(),
             view: View::Installed,
             installed: vec![],
+            builtins: vec![],
             market: vec![],
             query: InputBuffer::default(),
             searching: false,
@@ -79,16 +82,18 @@ impl PluginDialog {
     }
     fn rows(&self) -> Vec<&Value> {
         let query = self.query.text().to_lowercase();
-        let rows = if self.view == View::Market {
-            &self.market
-        } else {
-            &self.installed
+        let rows = match self.view {
+            View::Market => &self.market,
+            View::Builtins => &self.builtins,
+            _ => &self.installed,
         };
         rows.iter()
             .filter(|row| {
-                ["name", "id", "summary"]
-                    .iter()
-                    .any(|key| label(row, key).to_lowercase().contains(&query))
+                ["name", "id", "summary"].iter().any(|key| {
+                    localized_label(row, key, self.locale)
+                        .to_lowercase()
+                        .contains(&query)
+                })
             })
             .collect()
     }
@@ -136,6 +141,21 @@ fn label(value: &Value, key: &str) -> String {
         .filter(|c| !c.is_control())
         .take(240)
         .collect()
+}
+
+fn localized_label(value: &Value, key: &str, locale: LocaleContext) -> String {
+    value
+        .get(format!("{key}_presentation"))
+        .and_then(|value| serde_json::from_value::<UiMessage>(value.clone()).ok())
+        .map(|message| locale.render(&message))
+        .unwrap_or_else(|| {
+            let text = label(value, key);
+            if key == "name" && text.is_empty() {
+                label(value, "id")
+            } else {
+                text
+            }
+        })
 }
 
 pub(super) enum PluginReply {

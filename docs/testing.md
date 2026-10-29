@@ -660,6 +660,22 @@ still-oversized request, while a maintenance persistence error keeps precedence.
 These contracts establish execution and recovery behavior, not summary quality
 or autonomous task success rates with a real provider.
 
+## Built-in plugin inventory and project services
+
+Use `scripts/gates.sh application::plugin_control::tests:: plugin::tests::
+draft::tests:: application::host_tests::` on one shell line for manager
+membership, rollback/close, per-project contribution ownership, package-control
+isolation and transient attachment teardown. The inventory regression mounts two
+projects, checks their actual goal tools/commands/dependencies, refuses static
+plugin mutations, unmounts one and closes the Host. The retained-handle case keeps
+development and draft handles plus an unfinished upload across Host close;
+staged sources must disappear and subsequent creation/publication must fail.
+The Unix deletion regressions place protected files behind replaced draft or
+upload parents; Store and upload cleanup must preserve those outside files.
+These use temporary roots and scripted providers. Web/Desktop wording and layout
+are manually reviewed; catalog checks protect translation keys, and browser
+walkthroughs are local UI evidence, not native-platform or provider acceptance.
+
 ## Durable task recovery (GA-1)
 
 Shared run-admission changes use `scripts/gates.sh

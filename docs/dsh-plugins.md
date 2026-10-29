@@ -17,10 +17,16 @@ CLAT 把 DeepSeek Harness（DSH）作为插件协议参考实现，但不在 Rus
 `projectContent` 等工具语义和新的宿主服务（见下方收窄）；不能把
 Exa 一项通过外推成全部新版插件和配置兼容。`sessionProjections` 等
 宿主脊柱依赖仍为 `partial`。DSH Web
-设置中看到的 147 项是 preset、base bundle 与 Web patch 组装后的插件
-配置项，不等同于
+早期 Web 设置中实测的 147 项是当时 preset、base bundle 与 Web patch
+组装后的插件配置项，不是当前版本的固定数量，也不等同于
 147 个彼此独立的 npm 包。兼容目标是尽量让这些配置背后的插件原样加载，
 不是宣称它们已经全部逐个转换和验收。
+
+CLAT 的扩展管理现可查看真实挂载的 Rust 内置插件，包括职责、随二进制
+交付的版本、项目实例、服务依赖和工具/命令归属，详见
+[插件模型](plugins.md#built-in-agent-capability-plugins)。这是原生组合的
+可观测性，不表示同类 DSH 官方原包已经能够通过 adapter 运行。
+本地对 0.2.1-rc.2 源码的比较也没有改变上面的 0.2.0-rc.2 验收钉靶。
 
 ## 两层插件内核
 
@@ -41,9 +47,10 @@ Rust 内核有意去掉 Cordis 的运行时猴子补丁、原型链注入、热�
 **显式偏差（2026-09-02 记档；2026-09-06 按 0.1.3 复核仍成立）：动态
 Cordis 包子系统不映射。** DSH 的
 `packages/extensions/` 四包（`tool-cordis` + host/client runner +
-`ui-cordis`）让运行中的模型可以自主检查当前进程的插件/服务、定义动态
-Cordis 包（host 半 + 浏览器半）、运行/停止/移除，浏览器面板全程操作；
-定义只存活于进程内存。CLAT 不提供任何对位物，理由与上一段同一裁定：
+`ui-cordis`）曾提供运行中检查与动态包创作。当前对照的 DSH
+0.2.1-rc.2 已把模型创作路径改为通过 Plugin Manager 安装持久 bundle；
+Host/Client runner 仍支持程序及浏览器控制的内存定义与生命周期。
+CLAT 不提供动态定义运行时，理由与上一段同一裁定：
 内核不持有运行时动态 JS——进程内 eval 无签名、无能力门，与 CLAT 的
 权限/签名市场模型不相容。若未来出现"模型自主定义沙盒插件"的真实病历，
 CLAT 的对位路径是 WASM 宿主（fuel/epoch 沙盒、哈希绑定写授予、事务

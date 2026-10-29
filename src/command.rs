@@ -347,6 +347,21 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
+    pub(crate) fn contributions(
+        &self,
+        owner: crate::plugin::PluginId,
+    ) -> Result<Vec<String>, String> {
+        let entries = self
+            .entries
+            .read()
+            .map_err(|_| "command registry poisoned")?;
+        Ok(entries
+            .iter()
+            .filter(|(_, id, _)| *id == owner)
+            .flat_map(|(_, _, spec)| spec.names.iter().cloned())
+            .collect())
+    }
+
     pub fn new() -> Self {
         Self {
             entries: std::sync::RwLock::new(Vec::new()),

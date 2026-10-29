@@ -38,6 +38,34 @@ package. Memory, goal, subagent, and durable task recovery currently depend on C
 interfaces and durable-event gates; they may become portable only after those
 contracts have an interoperable external ABI.
 
+The **Built-in** view in Extensions exposes the static plugins actually mounted
+in this Host's trusted projects. Names and responsibilities follow the current
+interface language. Each entry shows the bundled CLAT version and project
+instances; technical details retain the original plugin id, scope, provided,
+required and optional service ids, and the tools and commands each instance
+currently owns. A mounted adapter does not imply that its external provider,
+account or language server is ready. Closed projects disappear on refresh.
+
+`builtin.development` owns the human editor, Git and persistent-terminal service.
+`builtin.draft_images` owns clipboard and browser-upload staging before message
+admission. Both enter through the same typed service and cleanup lifecycle as
+other static plugins. Closing the project stops development operations and
+reclaims transient attachments even when a client retains a service handle;
+late uploads cannot publish into the closed store. Durable attachments and
+message admission remain session-owned.
+Transient source deletion stays under a storage-root directory capability,
+including upload cancellation and expiry cleanup; a replaced parent symlink
+cannot redirect these deletions outside storage. Connection-local clipboard
+buffers in Host clients remain client-process resources, outside this Host's
+project inventory.
+
+Built-ins are updated with the CLAT binary. Their information is read-only:
+individual enable, disable, configure, update, rollback and uninstall operations
+remain package-store operations, not runtime controls for static services.
+The inventory reports project-scope mounts, not ephemeral run resources or a
+catalog of every compiled type. The standalone `clat plugin list` command
+continues to list installed external packages without mounting a project.
+
 `builtin.task` owns acceptance orchestration and explicitly mounts built-in
 process-domain checker adapters (`text`, `json`, `records`, `command`, version 1).
 The internal Rust checker seam consumes bounded declared-file snapshots and
@@ -276,7 +304,9 @@ signed index record and immutable artifact are deployed together.
 
 ## Install and manage from the PWA or TUI
 
-Run `/plugin` in the host-attached TUI, or open **Plugin Index** in the local PWA, choose an available package, review its
+Run `/plugin` in the host-attached TUI, or open **Extensions** in the local PWA
+or Desktop. Use **Built-in** for bundled services, **Installed** for local
+packages, and **Discover** for the public catalog. Choose an available package, review its
 permissions and native-process risk, enter any configuration, and select
 **Install**. The same panel lists installed packages with Configure, Disable,
 Enable, Update, Roll back and Uninstall controls. Changes become available in
@@ -319,6 +349,13 @@ configuration if a package starts unsuccessfully.
 The additive local RPC amendment adds `plugin.list`, `plugin.market`, `plugin.prepare`,
 `plugin.commit`, `plugin.cancel` and `plugin.remove`. These are host-scoped
 methods, independent of session selection, journal events and `RunEvent`.
+`plugin.list` retains its `installed` package array and adds `builtins`. Each
+built-in row carries `id`, `runtime: "rust-builtin"`, `version`,
+`management: "bundled"`, localized name/summary descriptors and `scope`.
+Its `instances` array carries the canonical `project` path, `phase: "active"`,
+`provides`, `requires`, `optional`, `tools` and `commands`. These are fresh,
+read-only manager/registry projections; no configuration or credential values
+are included. A Host with no mounted projects returns an empty array.
 `plugin.prepare` takes an id and action (`install`, `update`, `enable`,
 `rollback`, `configure`); `plugin.commit` takes the returned ticket,
 `accept_capabilities: true` and optional `configs` keyed by package id.

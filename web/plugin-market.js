@@ -16,7 +16,7 @@ function installPluginMarket() {
     try {
       const result = await rpc('plugin.list', {});
       if (captured !== generation || !pageIsOpen(dom['market-dialog'])) return;
-      packages = result.installed; renderInstalled(); renderMarket();
+      packages = result.installed; view.update('builtins',result.builtins||[],builtinPluginCards(result.builtins||[])); renderInstalled(); renderMarket();
     } catch (error) { if (captured === generation) message(error.message); }
   }
   function setPending(value) {
@@ -82,3 +82,22 @@ function installedPluginCards(packages,{button,prepare,remove}) {
     }
     return cards;
   }
+
+function extensionLabel(row,field){return row?CLATI18n.present(row[field+'_presentation'],row[field]||''):'';}
+function builtinPluginCards(rows){
+  return new Map(rows.map(plugin=>{
+    const card=el('article','market-item');card.dataset.pluginId=plugin.id;
+    card.append(el('h3','',()=>extensionLabel(plugin,'name')),el('p','market-summary',()=>extensionLabel(plugin,'summary')),
+      el('p','settings-note',()=>CLATI18n.msg('extension.bundled')+' · '+plugin.version),
+      el('p','',()=>CLATI18n.msg('extension.active_instances',{count:plugin.instances.length})),
+      el('p','settings-note',()=>CLATI18n.msg('extension.read_only')));
+    for(const instance of plugin.instances){
+      const section=el('section'),details=el('details');
+      section.append(el('h4','',()=>instance.project),el('p','settings-note',()=>CLATI18n.msg('extension.active')));
+      details.append(el('summary','',()=>CLATI18n.msg('extension.technical')),
+        el('pre','',()=>JSON.stringify({id:plugin.id,version:plugin.version,runtime:plugin.runtime,scope:plugin.scope,...instance},null,2)));
+      section.append(details);card.append(section);
+    }
+    return [plugin.id,card];
+  }));
+}

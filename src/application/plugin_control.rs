@@ -55,11 +55,45 @@ impl HostApplication {
         let packages = crate::plugin::installed_packages(self.storage.root())
             .map_err(ApplicationError::new)?;
         Ok(
-            json!({"installed": packages.into_iter().map(|p| json!({"id": p.id, "name": p.name,
+            json!({"builtins": self.builtin_plugin_inventory()?, "installed": packages.into_iter().map(|p| json!({"id": p.id, "name": p.name,
             "version": p.version, "manifest_version": p.manifest_version, "runtime": p.runtime, "enabled": p.enabled,
             "rollback_version": p.rollback_version, "trust": p.trust, "publisher": p.publisher,
             "health": p.health})).collect::<Vec<_>>()}),
         )
+    }
+
+    fn builtin_plugin_inventory(
+        &self,
+    ) -> Result<Vec<crate::plugins::inventory::BuiltinPluginInfo>, ApplicationError> {
+        let mut rows = BTreeMap::new();
+        for (project, app) in &self.projects {
+            let app = app.lock().expect("application lock");
+            for mut row in app.composition.inventory(project)? {
+                match rows.entry(row.id) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(row);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        entry.get_mut().instances.append(&mut row.instances);
+                    }
+                }
+            }
+        }
+        Ok(rows.into_values().collect())
+    }
+
+    fn reject_bundled_mutation(&self, id: &str) -> Result<(), ApplicationError> {
+        if id.starts_with("builtin.")
+            && !crate::plugin::installed_packages(self.storage.root())
+                .map_err(ApplicationError::new)?
+                .iter()
+                .any(|package| package.id == id)
+        {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "extension.read_only",
+            )));
+        }
+        Ok(())
     }
 
     pub fn plugin_prepare(&mut self, id: &str, action: &str) -> Result<Value, ApplicationError> {
@@ -82,6 +116,7 @@ impl HostApplication {
         generation: u32,
         requested: Option<&str>,
     ) -> Result<Value, ApplicationError> {
+        self.reject_bundled_mutation(id)?;
         let ticket = requested
             .map(str::to_owned)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -227,6 +262,7 @@ impl HostApplication {
     }
 
     pub fn plugin_remove(&mut self, id: &str, uninstall: bool) -> Result<Value, ApplicationError> {
+        self.reject_bundled_mutation(id)?;
         let mut store = self.plugin_store()?;
         self.with_idle_plugin_runtimes(|| {
             let mutation = if uninstall {

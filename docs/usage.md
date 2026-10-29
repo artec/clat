@@ -372,7 +372,7 @@ model → safety → extensions → experiments → meta):
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
 | `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
-| `/plugin` | manage installed plugins and browse the signed market in the host TUI; open Plugin Index in the PWA |
+| `/plugin` | inspect built-in plugins, manage installed packages and browse the signed market in the host TUI; open Extensions in the PWA |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
 | `/mem`, `/memory ...` | open a read-only memory dialog; add/edit/delete confirms in the status bar |
@@ -425,11 +425,15 @@ report a usage error in headless mode instead of inventing a selection.
 
 ### Manage plugins inside the TUI
 
-Run `/plugin` in the default host-attached TUI. The five views use the shared
+Run `/plugin` in the default host-attached TUI. The views use the shared
 yellow dialog border, muted navigation hints and content-driven height. The window uses the same host
 control plane as the PWA and shows installed versions, enabled state, runtime,
-publisher and package health. Tab switches between installed packages and the
-signed market; arrows select, `/` edits the search filter, Enter finishes search,
+publisher and package health. Tab cycles through installed packages, built-in
+plugins and the signed market. The built-in view shows localized responsibilities,
+the bundled version and how many projects have mounted the plugin. It is read-only;
+the PWA/Desktop detail view also exposes per-project service dependencies and
+owned tools/commands under technical details. Refresh rereads actual mounts.
+Arrows select, `/` edits the search filter, Enter finishes search,
 R refreshes, and V switches market manifest generation v1/v2. Browse and search
 use the host's verified index; a usable signed cache remains available offline.
 An unavailable or expired index reports an error while local management remains
@@ -3086,7 +3090,9 @@ to the conversation restores its transcript and unsent draft.
 
 Resources keeps Files, Materials and Bookmarks within the current project, with
 file previews, attachment previews, source messages, snapshot references and
-bookmark removal in the detail area. Tasks keeps its project selector and existing
+bookmark removal in the detail area. Its sidebar search retains the localized
+file/material/bookmark hint across categories, using the shared navigation field.
+Tasks keeps its project selector and existing
 type/status filters, schedule forms, execution controls and output. History starts
 with current-project conversations and preserves the opt-in cross-project search;
 reading a result does not select an active conversation unless Continue is used.
@@ -3094,6 +3100,8 @@ Extensions starts on Installed; Discover has its own query and selection. Choose
 an extension to view its actions or review permissions in the detail area. Merely
 selecting an extension does not approve it; leaving a review clears credentials
 and cancels an unsubmitted ticket. Existing catalog fallback remains available.
+The local-token notice appears below the extension cards, aligned with their
+left edge in the same content column.
 
 Before selecting an item, Resources shows category guidance and shortcuts;
 History offers recent conversations and read-only browsing guidance. Extensions
