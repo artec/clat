@@ -392,7 +392,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.2 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.4 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -406,16 +406,16 @@
       </div>
       <div class="hero-links">
         <a class="btn" href="#install">安装</a>
-        <a class="btn" href="https://github.com/artec/clat">View on GitHub</a>
+        <a class="btn" href="https://github.com/artec/clat" id="desktop-btn">View on GitHub</a>
       </div>
       <div class="shot">
         <img src="https://raw.githubusercontent.com/artec/clat/main/screen.zh.png" alt="CLAT 桌面版截图" loading="lazy">
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.2 实测 13.8 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.4 实测 13.9 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">13.8 MB</div>
+          <div class="stat-number">13.9 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -638,18 +638,58 @@
           }
         });
       });
-      // 版本胶囊：从 GitHub Releases 拉最新 tag 自动更新；
-      // 接口失败（限流/离线）时保持 HTML 里预置的兜底文案。
+      // 版本胶囊与桌面版按钮：共用一次 GitHub Releases API 请求。
+      // 桌面按钮规则——识别到 macOS / Windows 桌面访客时，把 View on
+      // GitHub 换成「体验桌面版」，直链最新版对应架构的安装包；Linux、
+      // 移动端、触屏设备（含伪装成 Mac 的 iPad）或接口失败时保持原样。
       var releasePill = document.querySelector('[data-release]');
-      if (releasePill) {
+      var desktopBtn = document.getElementById('desktop-btn');
+      var desktopSuffix = null;
+      if (desktopBtn) {
+        var ua = navigator.userAgent;
+        var touch = (navigator.maxTouchPoints || 0) > 1;
+        if (!touch) {
+          if (/Windows/i.test(ua)) {
+            var arm = /ARM64|aarch64/i.test(ua) || /ARM/i.test(navigator.platform || '');
+            desktopSuffix = arm ? '-windows-arm64-setup.exe' : '-windows-x64-setup.exe';
+          } else if (/Macintosh|Mac OS X/i.test(ua)) {
+            desktopSuffix = '-macos-arm64.dmg'; /* 默认 Apple Silicon */
+          }
+        }
+      }
+      var releaseAssets = null;
+      function applyDesktop() {
+        if (!desktopBtn || !desktopSuffix || !releaseAssets) return;
+        for (var i = 0; i < releaseAssets.length; i++) {
+          var asset = releaseAssets[i];
+          if (asset.name && asset.name.indexOf('clat-desktop-') === 0 &&
+              asset.name.slice(-desktopSuffix.length) === desktopSuffix && asset.browser_download_url) {
+            desktopBtn.textContent = '体验桌面版';
+            desktopBtn.href = asset.browser_download_url;
+            return;
+          }
+        }
+      }
+      if (releasePill || desktopSuffix) {
         fetch('https://api.github.com/repos/artec/clat/releases/latest')
           .then(function (response) { return response.ok ? response.json() : null; })
           .then(function (data) {
-            if (data && data.tag_name) {
+            if (!data) return;
+            if (releasePill && data.tag_name) {
               releasePill.textContent = data.tag_name + ' — 最新版本';
             }
+            if (data.assets) { releaseAssets = data.assets; applyDesktop(); }
           })
-          .catch(function () { /* 保持预置文案 */ });
+          .catch(function () { /* 保持预置文案与原按钮 */ });
+      }
+      // Intel Mac 精化：Chromium 系可异步取真实架构（Safari 无此 API，保持默认）。
+      if (desktopSuffix === '-macos-arm64.dmg' && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (info) {
+          if (info && info.architecture === 'x86') {
+            desktopSuffix = '-macos-x64.dmg';
+            applyDesktop();
+          }
+        }).catch(function () { /* 保持默认 */ });
       }
       // 语言切换：记录手动选择，此后英文首页的自动跳转不再覆盖。
       document.querySelectorAll('a[data-lang]').forEach(function (a) {
