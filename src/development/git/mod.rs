@@ -6,12 +6,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod actions;
 mod backups;
 mod command;
+mod history;
 mod index;
 mod model;
 mod operations;
 mod query;
 mod reconcile;
 mod recovery;
+mod repositories;
+#[cfg(test)]
+pub(super) fn test_repository_lock(project: &Project) -> Result<Arc<Mutex<()>>, String> {
+    command::repo_lock(project)
+}
 pub use model::GitModel;
 #[derive(Serialize, Deserialize, Clone)]
 struct SavedOperation {
@@ -28,6 +34,7 @@ struct Operation {
     cancel: CancelToken,
 }
 pub(super) struct GitService {
+    repositories: Mutex<BTreeMap<String, Arc<GitService>>>,
     project: Project,
     store: store::Store,
     operations: Mutex<BTreeMap<String, Arc<Operation>>>,
@@ -37,6 +44,7 @@ pub(super) struct GitService {
 impl GitService {
     pub(super) fn new(project: Project, store: store::Store) -> Self {
         Self {
+            repositories: Mutex::new(BTreeMap::new()),
             project,
             store,
             operations: Mutex::new(BTreeMap::new()),
@@ -50,12 +58,33 @@ impl GitService {
         value: &Value,
         model: Option<GitModel>,
     ) -> Result<Value, String> {
+        if method == "git.repositories" {
+            return self.repositories();
+        }
+        if let Some(id) = value.get("repositoryId") {
+            let service = self.repository(id.as_str().ok_or("git_repository_missing")?)?;
+            let mut scoped = value.clone();
+            scoped
+                .as_object_mut()
+                .ok_or("invalid_request")?
+                .remove("repositoryId");
+            return service.request_local(method, &scoped, model);
+        }
+        self.request_local(method, value, model)
+    }
+    fn request_local(
+        self: &Arc<Self>,
+        method: &str,
+        value: &Value,
+        model: Option<GitModel>,
+    ) -> Result<Value, String> {
         match method {
             "git.snapshot" => self.snapshot(),
             "git.backups" => self.backups(),
             "git.diff" => self.diff(value),
             "git.branches" => self.branches(),
             "git.history" => self.history(value),
+            "git.commit.files" => self.commit_files(value),
             "git.commit.detail" => self.commit_detail(value),
             "git.settings" | "git.settings.set" => self.settings(method, value),
             "git.operation" => self.operation(value, false),
@@ -65,19 +94,28 @@ impl GitService {
         }
     }
     pub(super) fn has_live_work(&self) -> bool {
-        self.operations
+        self.repositories
             .lock()
-            .expect("git operations")
+            .expect("repositories")
             .values()
-            .any(|op| {
-                matches!(
-                    op.saved.lock().expect("git operation").view.phase.as_str(),
-                    "pending" | "running" | "generating" | "committing"
-                )
-            })
+            .any(|s| s.has_live_work())
+            || self
+                .operations
+                .lock()
+                .expect("git operations")
+                .values()
+                .any(|op| {
+                    matches!(
+                        op.saved.lock().expect("git operation").view.phase.as_str(),
+                        "pending" | "running" | "generating" | "committing"
+                    )
+                })
     }
     pub(super) fn cancel_all(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        for service in self.repositories.lock().expect("repositories").values() {
+            service.cancel_all();
+        }
         for op in self.operations.lock().expect("git operations").values() {
             op.cancel.cancel();
         }

@@ -113,3 +113,4 @@ web/vendor/package.json text eol=lf
 web/vendor/bun.lock text eol=lf
 web/vendor/dist/* text eol=lf
 web/vendor/THIRD-PARTY-NOTICES.txt text eol=lf
+web/development/git-*.js text eol=lf

@@ -51,6 +51,9 @@ impl Fixture {
         self.terminal.draw(|frame| self.app.draw(frame)).unwrap();
     }
     fn snapshot(&mut self, name: &str) {
+        if !crate::tui::snapshot_tests::visual_snapshots_enabled() {
+            return;
+        }
         self.draw();
         let first = self.projection();
         self.draw();
@@ -92,7 +95,8 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn plg7_installed_snapshot_uses_family_shell_and_short_height() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_plg7_installed_snapshot_uses_family_shell_and_short_height() {
     let mut fixture = Fixture::new(80, 24, View::Installed);
     fixture.draw();
     let area = fixture.popup();

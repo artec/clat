@@ -3055,3 +3055,53 @@ shows a selection from the public pi.at.cn catalog even on the Installed tab,
 without treating catalog entries as installed packages. Catalog preview and
 availability labels remain visible; selecting a recommendation opens its details
 in Discover. Offline mode uses the existing explicitly labelled preview catalog.
+
+### Git source control
+
+The workspace Git tool keeps its existing entry points and conversation/tool tabs.
+Its sidebar combines a compact commit form, conflict/staged/working-tree groups,
+repository selection and a commit graph. Hover or focus file rows for actions;
+click a file to preview its diff, double-click to pin its comparison tab. Tabs keep
+independent reading positions. Comparison headers distinguish HEAD, index, working
+tree and historical versions. Small detail areas use unified diffs automatically;
+the toolbar also offers explicit layout and previous/next-change controls.
+
+Repository discovery includes the current project, initialized submodules and
+independent repositories nested beneath it. Uninitialized submodules are labelled
+and never initialized automatically. Scans are bounded and indicate partial results.
+Only one repository is selected for an operation; commit drafts, pending operations
+and comparison tabs remain attached to it when switching repositories.
+
+The graph walks the current branch or all existing local/remote references without
+fetching. Expand a commit to select its changed files. Merge commits default to the
+first parent and allow choosing another parent; root commits compare against an
+empty version. Binary, oversized, conflicted and submodule entries show a bounded
+explanation instead of an ordinary editable comparison.
+
+Commits still include staged changes only. An empty message authorizes generation
+and commit, while Generate message only fills the draft. The existing project
+language setting applies, and Cmd/Ctrl+Enter in the message field submits. Editing
+the draft or language during generation cancels automatic submission. Fetch, pull,
+push, branches and backup restoration remain in the repository controls. Graph
+browsing, repository selection and page navigation perform no remote mutations.
+
+The workspace Changes entry opens the Git tool from either the tools menu or the
+right-side workspace shortcuts. Both entry points and the active tool tab use the
+same semantic icons: a branch for Git, a history arrow for captured operations,
+and a checklist for current tasks.
+
+Git file-row actions take no space until the row is hovered or keyboard-focused;
+touch devices keep the actions visible. Filenames use the available width before
+ellipsis, with directory text yielding space first. The `U` badge means an
+untracked file; hovering it shows the localized status. These are presentation
+labels only: Git's original status data is preserved in core responses.
+
+A partial repository-discovery notice appears inside Repositories, not above the
+changed-file list. It concerns the bounded search for nested repositories only;
+it does not indicate that the current repository's changed-file list was cut off.
+
+Automatic nested-repository discovery follows local project ignore rules, so
+ignored build outputs and temporary directory trees do not consume its directory
+budget. Registered submodules and linked worktrees beneath the project are still
+listed even when their locations are ignored; outside-project worktrees are not
+added. This discovery budget is independent of the number of changed files.

@@ -34,6 +34,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "editor.drafts.recover",
     "editor.draft.save",
     "editor.draft.delete",
+    "git.repositories",
+    "git.commit.files",
     "git.snapshot",
     "git.backups",
     "git.diff",

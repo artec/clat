@@ -1025,3 +1025,6 @@ fn development_terminal_remove_rename_compete_without_resurrection() {
     assert_eq!(rows["terminals"].as_array().unwrap().len(), 1);
     assert_eq!(rows["terminals"][0]["id"], "new");
 }
+
+#[path = "git/workspace_tests.rs"]
+mod git_workspace;

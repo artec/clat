@@ -32,10 +32,10 @@ async function devChoice(message,choices){
 async function devOperation(request,onProgress=()=>{},resume=false){
   let view;
   if(!resume)view=await devStartOperation(request);
-  else try{view=await rpc('git.operation',{operationId:request.operationId});}catch(_){return {id:request.operationId,phase:'unknown',localUnknown:true};}
+  else try{view=await rpc('git.operation',{operationId:request.operationId,...(request.repositoryId?{repositoryId:request.repositoryId}:{})});}catch(_){return {id:request.operationId,phase:'unknown',localUnknown:true};}
   while(['pending','running','generating','committing'].includes(view.phase)){
     onProgress(view);await new Promise(resolve=>setTimeout(resolve,200));
-    try{view=await rpc('git.operation',{operationId:request.operationId});}
+    try{view=await rpc('git.operation',{operationId:request.operationId,...(request.repositoryId?{repositoryId:request.repositoryId}:{})});}
     catch(_){return {id:request.operationId,phase:'unknown',localUnknown:true};}
   }
   onProgress(view);return view;
@@ -44,7 +44,7 @@ async function devStartOperation(request){
   for(let attempt=0;attempt<2;attempt++){
     try{return await rpc('git.start',request);}
     catch(error){
-      try{return await rpc('git.operation',{operationId:request.operationId});}
+      try{return await rpc('git.operation',{operationId:request.operationId,...(request.repositoryId?{repositoryId:request.repositoryId}:{})});}
       catch(outcome){if(outcome.technical==='operation_missing'&&error.technical)throw error;}
     }
   }

@@ -61,11 +61,7 @@ function installWorkbenchTools() {
   const menu = el('div', 'workbench-tools hidden'); menu.id = 'workbench-tools'; CLATI18n.attribute(menu,'aria-label',()=>CLATI18n.msg("web.workbench_tools", {}, "Workbench tools"));
   document.getElementById('review-open').before(trigger, menu);
   for (const [id,icon,key] of [
-    ['files-open','folder','experience.files'],
-    ['review-open','tool','experience.changes'],
-    ['turn-review-open','check','experience.turn'],
-    ['tasks-open','jobs','experience.tasks'],
-    ['workflow-open','plan','experience.workflow'],
+    ...WORKSPACE_TOOLS.map(item=>[item.trigger,item.icon,'experience.'+item.key]),
     ['help-open','help','web.help'],
   ]) {
     const button = document.getElementById(id);

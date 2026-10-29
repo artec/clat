@@ -15,6 +15,8 @@ pub(super) fn presentation(reason: &str) -> crate::i18n::UiMessage {
         "directory_large" => "dev.directory_large",
         "terminal_limit" => "dev.terminal_limit",
         "nothing_staged" => "dev.nothing_staged",
+        "git_repository_missing" => "dev.git_repository_missing",
+        "git_output_large" => "dev.git_output_large",
         "git_scope" => "dev.git_scope",
         "git_busy" | "state_busy" | "terminal_busy" => "dev.busy",
         "state_corrupt" => "dev.state_corrupt",

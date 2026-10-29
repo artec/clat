@@ -38,6 +38,9 @@ impl GitService {
         )
     }
     pub(super) fn diff(&self, value: &Value) -> Result<Value, String> {
+        if value.get("commit").is_some() {
+            return self.historical_diff(value);
+        }
         let path = text(value, "path")?;
         relative(path)?;
         let staged = value["staged"] == true;
@@ -46,6 +49,14 @@ impl GitService {
             .as_array()
             .and_then(|rows| rows.iter().find(|row| row["path"] == path))
             .ok_or("file_missing")?;
+        let status = file["status"].as_str().unwrap_or("");
+        let indexed = query(&self.project, &["ls-files", "--stage", "--", path])?;
+        if indexed.starts_with(b"160000 ") || status.contains('U') || ["AA", "DD"].contains(&status)
+        {
+            return Ok(
+                json!({"path":path,"left":"","right":"","leftLabel":if staged {"HEAD"}else{"index"},"rightLabel":if staged {"index"}else{"worktree"},"unsupported":if indexed.starts_with(b"160000 ") {"submodule"}else{"conflicted"},"binary":false}),
+            );
+        }
         let previous = file["previousPath"].as_str().unwrap_or(path);
         let index_path = if file["status"]
             .as_str()
@@ -73,13 +84,15 @@ impl GitService {
                 .map_err(io)?
                 .unwrap_or_default()
         };
-        text_diff(
+        let mut result = text_diff(
             path,
             left,
             right,
             if staged { "HEAD" } else { "index" },
             if staged { "index" } else { "worktree" },
-        )
+        )?;
+        result["previousPath"] = json!(previous);
+        Ok(result)
     }
     fn blob(&self, object: &str) -> Result<Vec<u8>, String> {
         if query(&self.project, &["cat-file", "-e", object]).is_err() {
@@ -110,27 +123,6 @@ impl GitService {
             .collect::<Vec<_>>();
         Ok(json!({"branches":rows}))
     }
-    pub(super) fn history(&self, value: &Value) -> Result<Value, String> {
-        let skip = value["skip"].as_u64().unwrap_or(0).min(100000);
-        let next = skip + 50;
-        if query(&self.project, &["rev-parse", "--verify", "HEAD"]).is_err() {
-            return Ok(json!({"commits":[],"next":0,"hasMore":false}));
-        }
-        let skip = format!("--skip={skip}");
-        let raw = query(
-            &self.project,
-            &["log", "-n", "50", &skip, "--format=%H%x00%an%x00%aI%x00%s"],
-        )?;
-        let rows = String::from_utf8(raw)
-            .map_err(|_| "git_encoding")?
-            .lines()
-            .filter_map(|line| {
-                let p: Vec<_> = line.splitn(4, '\0').collect();
-                (p.len() == 4).then(|| json!({"id":p[0],"author":p[1],"date":p[2],"subject":p[3]}))
-            })
-            .collect::<Vec<_>>();
-        Ok(json!({"commits":rows,"next":next,"hasMore":rows.len()==50}))
-    }
     pub(super) fn commit_detail(&self, value: &Value) -> Result<Value, String> {
         let id = text(value, "commit")?;
         if id.len() != 40 && id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -151,7 +143,7 @@ impl GitService {
         Ok(json!({"id":id,"text":String::from_utf8_lossy(&raw)}))
     }
 }
-fn parse_status(bytes: &[u8], prefix: &str) -> Result<Vec<Value>, String> {
+pub(super) fn parse_status(bytes: &[u8], prefix: &str) -> Result<Vec<Value>, String> {
     let mut rows = bytes.split(|b| *b == 0).filter(|x| !x.is_empty());
     let mut result = Vec::new();
     while let Some(row) = rows.next() {
@@ -176,7 +168,7 @@ fn parse_status(bytes: &[u8], prefix: &str) -> Result<Vec<Value>, String> {
     }
     Ok(result)
 }
-fn text_diff(
+pub(super) fn text_diff(
     path: &str,
     left: Vec<u8>,
     right: Vec<u8>,

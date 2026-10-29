@@ -738,3 +738,11 @@ reused by a retried create request. Listing all projects does not create shells
 or mount projects. Ended records remain until explicit removal; output is still
 bounded Host memory, not restored as a transcript after restart. Device font
 preferences use version 2 with system/bundled/custom selection and a family name.
+
+Nested repositories use a project-private `repositories/<repository-id>` namespace
+for existing Git operation and backup records. The main project's original records
+remain in place, so old operation IDs can still be reconciled. This adds no session
+journal events. The browser retains per-project/repository commit drafts and pending
+operation IDs; operation receipts in core remain authoritative. Comparison tabs and
+graph selection survive view switches in memory. Sidebar proportions and collapsed
+sections are device preferences, independent of repository execution state.

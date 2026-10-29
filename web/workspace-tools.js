@@ -1,4 +1,11 @@
 /* One contextual workspace: conversation, or one list/detail tool. */
+const WORKSPACE_TOOLS = [
+  {id:'file-browser',trigger:'files-open',entry:'context-files-open',key:'files',icon:'folder'},
+  {id:'workspace-review',trigger:'review-open',entry:'context-changes-open',key:'changes',icon:'branch'},
+  {id:'turn-review',trigger:'turn-review-open',entry:'context-turn-open',key:'turn',icon:'activity-log'},
+  {id:'task-review',trigger:'tasks-open',entry:'context-tasks-open',key:'tasks',icon:'task-list'},
+  {id:'workflow-details',trigger:'workflow-open',entry:'context-workflow-open',key:'workflow',icon:'plan'},
+];
 function toolViewIsOpen(node) { return Boolean(workbenchShell?.tools?.isActive(node.id)); }
 function openWorkbenchTool(node) { workbenchShell.tools.open(node.id); }
 function closeWorkbenchTool() { workbenchShell.tools.chat(); }
@@ -18,6 +25,8 @@ function installWorkspaceTools(shell) {
     if (active) dom.app.dataset.tool = seats.get(selected).key; else delete dom.app.dataset.tool;
     chat.setAttribute('aria-selected', String(!active)); tool.setAttribute('aria-selected', String(active));
     chat.tabIndex = active ? -1 : 0; tool.tabIndex = active ? 0 : -1;
+    const icon = WORKSPACE_TOOLS.find(item=>item.key===seats.get(selected)?.key)?.icon || 'tools';
+    if(tool.dataset.icon!==icon){tool.querySelector('svg').replaceWith(svgIcon(icon));tool.dataset.icon=icon;}
     for (const [id, seat] of seats) { seat.node.hidden = !(active && selected === id); seat.node.inert = seat.node.hidden; }
     CLATI18n.render(); refreshApplicationToolbar(shell); syncPanelAccessibility();
   }

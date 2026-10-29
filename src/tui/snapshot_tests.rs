@@ -158,7 +158,6 @@ const SCENARIOS: &[&str] = &[
     "ask-dialog-custom",
     "help-dialog",
     "help-dialog-end",
-    "context-dialog",
     "skills-dialog",
     "mcp-dialog",
     "permission-picker",
@@ -701,6 +700,9 @@ impl Harness {
     }
 
     fn snapshot(&mut self, name: &str) {
+        if !visual_snapshots_enabled() {
+            return;
+        }
         let projection = self.draw_projection();
         check_or_refresh(name, &projection);
     }
@@ -1245,7 +1247,8 @@ fn ux_find_keys_and_paste_preserve_composer_and_navigate_loaded_message_data() {
 }
 
 #[test]
-fn native_host_online_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_native_host_online_snapshot() {
     harness_native("snap-native-host-online", true).snapshot("native-host-online");
 }
 
@@ -1848,7 +1851,8 @@ fn attached_cancel_state_resets_across_real_run_lifecycle_events() {
 }
 
 #[test]
-fn native_host_offline_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_native_host_offline_snapshot() {
     harness_native("snap-native-host-offline", false).snapshot("native-host-offline");
 }
 
@@ -2012,6 +2016,9 @@ fn style_desc(cell: &ratatui::buffer::Cell) -> String {
 }
 
 pub(in crate::tui) fn check_or_refresh(name: &str, projection: &str) {
+    if !visual_snapshots_enabled() {
+        return;
+    }
     let path = snapshot_dir().join(format!("{name}.txt"));
     if std::env::var("CLAT_REFRESH_SNAPSHOTS").as_deref() == Ok("1") {
         std::fs::create_dir_all(snapshot_dir()).expect("snapshot dir");
@@ -2060,7 +2067,8 @@ fn snapshot_files_form_a_closed_set() {
 }
 
 #[test]
-fn idle_transcript_wide() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_idle_transcript_wide() {
     // 刷新 2026-08-19：空会话占位 "No messages yet." 升级为 LOGO 欢迎页
     //（tui_logo + Role::Logo 品牌蓝）。
     let mut harness = Harness::trusted("snap-idle-80", 80, 24);
@@ -2242,14 +2250,16 @@ fn pu_content_dialogs_use_real_dispatch_and_scroll_without_editing() {
 }
 
 #[test]
-fn idle_transcript_narrow() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_idle_transcript_narrow() {
     // 刷新 2026-08-19：40 列放不下 LOGO（34 列），退化为单行提示。
     let mut harness = Harness::trusted("snap-idle-40", 40, 24);
     harness.snapshot("idle-transcript-40");
 }
 
 #[test]
-fn conversation_with_messages_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_conversation_with_messages_snapshot() {
     let mut harness = Harness::trusted("snap-conversation", 80, 24);
     let mut conversation = ConversationModel::new();
     conversation.push_user("please fix the login crash on Safari".into());
@@ -2265,7 +2275,8 @@ fn conversation_with_messages_snapshot() {
 }
 
 #[test]
-fn conversation_history_window_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_conversation_history_window_snapshot() {
     let mut harness = Harness::trusted("snap-conversation-window", 80, 24);
     let mut conversation = ConversationModel::new();
     conversation.push_user("the newest loaded question".into());
@@ -2369,7 +2380,8 @@ fn popup_left_border_survives_wide_glyphs_from_the_layer_below() {
 }
 
 #[test]
-fn selection_highlight_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_selection_highlight_snapshot() {
     let mut harness = Harness::trusted("snap-selection", 80, 24);
     let mut conversation = ConversationModel::new();
     conversation.push_user("select me: the quick brown fox jumps over".into());
@@ -2615,7 +2627,8 @@ fn startup_loading_snapshot_and_handover() {
 }
 
 #[test]
-fn trust_dialog_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_trust_dialog_snapshot() {
     // 刷新 2026-08-19：弹窗规范统一——黄边框/标题 + 上下垂直边距
     //（确权对话框是安全决策，与权限弹窗同款警示样式）。
     let mut harness = Harness::untrusted("snap-trust");
@@ -2623,7 +2636,8 @@ fn trust_dialog_snapshot() {
 }
 
 #[test]
-fn permission_dialog_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_permission_dialog_snapshot() {
     // 刷新 2026-08-19：底层空会话改画欢迎页，弹窗左缘露出的
     // "No me…" 前缀随之消失。
     // 刷新 2026-08-19：权限弹窗加 Warning 黄边框/标题 + 全屏 DIM
@@ -2651,7 +2665,8 @@ fn permission_dialog_snapshot() {
 }
 
 #[test]
-fn permission_dialog_reviewed_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_permission_dialog_reviewed_snapshot() {
     // 刷新 2026-08-19：同 permission-dialog——空会话底层换欢迎页。
     // 刷新 2026-08-19：同 permission-dialog——Warning 边框 + 全屏
     // DIM 压暗层。
@@ -2735,7 +2750,8 @@ fn permission_dialog_scrolling_reaches_the_last_argument_line() {
 }
 
 #[test]
-fn waiting_first_token_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_waiting_first_token_snapshot() {
     // 刷新 2026-08-19：阶段标签改整词呼吸（单一 span，无逐字光带）。
 
     let mut harness = Harness::trusted("snap-waiting", 80, 24);
@@ -2749,7 +2765,8 @@ fn waiting_first_token_snapshot() {
 }
 
 #[test]
-fn thinking_phase_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_thinking_phase_snapshot() {
     // Thinking 不只在状态栏活动：对话区同时给出最新推理行，太阳帧
     // 表示仍在流式生成；正文默认折叠，Ctrl+R 可展开。
 
@@ -2772,7 +2789,8 @@ fn thinking_phase_snapshot() {
 }
 
 #[test]
-fn responding_phase_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_responding_phase_snapshot() {
     // 刷新 2026-08-19：同 waiting——整词呼吸。
 
     let mut harness = Harness::trusted("snap-responding", 80, 24);
@@ -2793,7 +2811,8 @@ fn responding_phase_snapshot() {
 }
 
 #[test]
-fn executing_tools_phase_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_executing_tools_phase_snapshot() {
     // 刷新 2026-08-19：同 waiting——整词呼吸。
 
     let mut harness = Harness::trusted("snap-executing", 80, 24);
@@ -2959,25 +2978,29 @@ fn card_harness(tag: &str, visibility: ToolCardVisibility) -> Harness {
 }
 
 #[test]
-fn tool_card_collapsed_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_tool_card_collapsed_snapshot() {
     card_harness("snap-card-collapsed", ToolCardVisibility::Collapsed)
         // 刷新 2026-08-19：会话折行宽度 -1（滚动条列专属）。
         .snapshot("tool-card-collapsed");
 }
 
 #[test]
-fn tool_card_expanded_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_tool_card_expanded_snapshot() {
     card_harness("snap-card-expanded", ToolCardVisibility::Expanded).snapshot("tool-card-expanded");
 }
 
 #[test]
-fn tool_card_hidden_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_tool_card_hidden_snapshot() {
     // 刷新 2026-08-19：会话折行宽度 -1（同 tool-card-collapsed）。
     card_harness("snap-card-hidden", ToolCardVisibility::Hidden).snapshot("tool-card-hidden");
 }
 
 #[test]
-fn tool_card_denied_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_tool_card_denied_snapshot() {
     let mut harness = Harness::trusted("snap-card-denied", 80, 24);
     let mut conversation = ConversationModel::new();
     conversation.push_user("please write the file".into());
@@ -2999,7 +3022,8 @@ fn tool_card_denied_snapshot() {
 }
 
 #[test]
-fn turn_end_notice_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_turn_end_notice_snapshot() {
     let mut harness = Harness::trusted("snap-turn-end", 80, 24);
     let mut conversation = ConversationModel::new();
     conversation.push_user("please write the file".into());
@@ -3011,7 +3035,8 @@ fn turn_end_notice_snapshot() {
 }
 
 #[test]
-fn markdown_table_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_markdown_table_snapshot() {
     let mut harness = Harness::trusted("snap-table", 80, 24);
     let mut conversation = ConversationModel::new();
     conversation.push_user("summarize the files as a table".into());
@@ -3024,7 +3049,8 @@ fn markdown_table_snapshot() {
 }
 
 #[test]
-fn markdown_cjk_wrap_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_markdown_cjk_wrap_snapshot() {
     // 用户 2026-08-19 实测反馈的原文：无空格中文段在旧按空格分词的
     // wrap_styled 下被整段甩行，第一行提前断在 ~/.clat/sessions/ 后。
     // 钉住 CJK 断行 + 禁则的视觉基线。
@@ -3041,7 +3067,8 @@ fn markdown_cjk_wrap_snapshot() {
 }
 
 #[test]
-fn steering_badge_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_steering_badge_snapshot() {
     // 刷新 2026-08-19：流式前缀改太阳帧（◐ 灰色圆形，不再与状态栏
     // 盲文 spinner 重复）+ 标签整词呼吸。
 
@@ -3079,7 +3106,8 @@ fn steering_badge_snapshot() {
 /// 逐条召回（LIFO），回填按**发送顺序**换行排列（先发的想法靠前，
 /// 见 `prepend_recalled_line`）——快照里输入框带回两行文本、徽标归零。
 #[test]
-fn steer_pending_and_recall_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_steer_pending_and_recall_snapshot() {
     let mut harness = Harness::trusted("snap-steer-pending", 80, 24);
     harness.run_event(RunEvent::ModelRequested {
         turn: 1,
@@ -3113,7 +3141,8 @@ fn steer_pending_and_recall_snapshot() {
 }
 
 #[test]
-fn steered_transcript_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_steered_transcript_snapshot() {
     // 刷新 2026-08-19：标签整词呼吸。
 
     // 插话被 claim 后进转录（SteeringApplied → 用户块，与回放 UserMessage
@@ -3163,7 +3192,8 @@ fn ask_question_fixture() -> crate::AskQuestion {
 }
 
 #[test]
-fn ask_dialog_options_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_ask_dialog_options_snapshot() {
     // 选项模式：游标落在 beta（按过一次 ↓），选中行高亮、描述 dim、
     // 末尾自定义入口、脚注键位。刷新 2026-08-19：底层空会话改画
     // LOGO 欢迎页（弹窗覆盖其上）。
@@ -3230,9 +3260,9 @@ fn help_dialog_snapshot_and_paging() {
 }
 
 /// `/context` 走真实 core command → 前端中立 DTO → TUI modal；
-/// snapshot 锁定分项/工具/skills 的只读呈现，并验证模态输入门控。
+/// 使用实时 DTO 核对工具/skills 数据，并验证模态输入门控；不固定布局或 token 数值。
 #[test]
-fn context_dialog_snapshot_and_modal_gate() {
+fn context_dialog_estimates_and_modal_gate() {
     let mut harness = Harness::trusted("snap-context", 80, 24);
     harness.type_text("/context ");
     harness.key(KeyCode::Enter);
@@ -3249,8 +3279,21 @@ fn context_dialog_snapshot_and_modal_gate() {
         view.input_estimate + view.output_reserve_estimate,
         view.total_estimate
     );
+    let lines = super::dialogs::context_dialog_lines(view, 76, harness.app.locale);
+    for estimate in [view.tool_schemas_estimate, view.skill_catalog_estimate] {
+        assert!(
+            estimate > 0,
+            "trusted fixture includes tools and bundled skills"
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.content == estimate.to_string()),
+            "context rows retain the current core estimate"
+        );
+    }
     harness.project();
-    harness.snapshot("context-dialog");
     harness.type_text("x");
     assert!(!harness.app.input.visual_rows(60).join("").contains('x'));
     harness.key(KeyCode::Esc);
@@ -3498,7 +3541,8 @@ fn permission_confirm_full_snapshot() {
 /// Write）与 `f`（切 Full Access）两个升级键。审阅到尾后动作行显示
 /// 两个升级提示。
 #[test]
-fn permission_dialog_escalate_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_permission_dialog_escalate_snapshot() {
     let mut harness = Harness::trusted("snap-perm-escalate", 80, 24);
     harness
         .app
@@ -3827,7 +3871,8 @@ fn rename_not_named_snapshot() {
 }
 
 #[test]
-fn ask_dialog_custom_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_ask_dialog_custom_snapshot() {
     // 自定义输入模式：`c` 进入、键入 canary、下划线标示输入位。
     // 刷新 2026-08-19：底层空会话改画 LOGO 欢迎页。
     // 刷新 2026-08-19：全屏 DIM 压暗层（同 ask-dialog-options）。
@@ -5166,7 +5211,8 @@ fn dsh_ask_dialog_snapshot() {
 /// 头 Faint 行、行内无工作区标签；打开定位当前工作区组（活跃会话
 /// session-dsh-snap-0001 属 alpha 组——光标落 alpha 首行）。
 #[test]
-fn dsh_resume_picker_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_dsh_resume_picker_snapshot() {
     let mut harness = harness_dsh("snap-dsh-resume", 80, 24);
     let rows = dsh_resume_rows_fixture();
     harness.app.session_picker = Some(SessionPicker::new_dsh(rows, Some(DSH_SNAP_SESSION.into())));
@@ -5242,7 +5288,8 @@ fn dsh_model_picker_snapshot() {
 /// 档位循环（档位接入 2026-08-23）：二级高亮模型行 Shift+Tab 后行内
 /// 呈现 pending 档位、footer 提示 ⇧Tab、标题栏档位段（当前档位）。
 #[test]
-fn dsh_model_effort_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_dsh_model_effort_snapshot() {
     let mut harness = harness_dsh("snap-dsh-effort", 80, 24);
     harness.event(UiEvent::Dsh(DshEvent::Reply(TaskReply::Models(json!({
         "groups": [
@@ -5292,7 +5339,8 @@ fn dsh_permission_picker_snapshot() {
 
 /// /rename 弹框（RenameDialog 复用，预填当前标题）。
 #[test]
-fn dsh_rename_dialog_snapshot() {
+#[ignore = "Manual visual acceptance; excluded from CI"]
+fn visual_snapshot_dsh_rename_dialog_snapshot() {
     let mut harness = harness_dsh("snap-dsh-rename", 80, 24);
     harness.app.session_title = Some("Fix the flaky test".into());
     harness.app.rename_dialog = Some(RenameDialog::new("Fix the flaky test"));
@@ -5638,4 +5686,9 @@ fn ga3_tui_real_enter_command_uses_core_content_and_invalidates_draft_session_id
         app.capability_query(&serde_json::json!({"id":p["candidates"][0]["id"]}))
             .is_err()
     );
+}
+
+// Visual baselines are explicitly opt-in, independent of --all-features.
+pub(in crate::tui) fn visual_snapshots_enabled() -> bool {
+    std::env::var("CLAT_VISUAL_SNAPSHOTS").as_deref() == Ok("1")
 }

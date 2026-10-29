@@ -526,3 +526,11 @@ Clipboard-writing terminal escape sequences are ignored; copying is a user actio
 Desktop font discovery is a read-only device presentation operation, guarded by
 the same main-window origin check and an explicit Tauri capability. It exposes
 font names only to the local client, never to the Host or Agent tools.
+
+Git repository selection uses core-issued identities within the trusted project's
+scope. A client cannot select an arbitrary filesystem path by sending a repository
+ID. Nested repository discovery skips symbolic-link directories and Git metadata
+contents. Submodule initialization is never an implicit consequence of browsing.
+Historical version reads remain read-only with executable Git filters/drivers
+isolated; actual human mutations retain the existing hooks, signing, confirmation
+and staged-version checks. Selecting another repository does not change Agent mode.

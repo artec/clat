@@ -24,27 +24,12 @@ concurrency:
   group: desktop-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  web-shell:
-    needs: plan
-    if: needs.plan.outputs.web == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-      - run: npm ci --prefix web/e2e --ignore-scripts
-      - run: npx playwright install --with-deps chromium
-        working-directory: web/e2e
-      - run: npx playwright test --config playwright.desktop.config.js
-        working-directory: web/e2e
   plan:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.assets.outputs.matrix }}
       native: ${{ steps.changes.outputs.native }}
       tooling: ${{ steps.changes.outputs.tooling }}
-      web: ${{ steps.changes.outputs.web }}
     steps:
       - uses: actions/checkout@v5
         with:

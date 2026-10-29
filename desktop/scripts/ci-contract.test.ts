@@ -179,7 +179,7 @@ test('path planning guards native checks and retains cross-platform tooling with
   const scripts = native.find(s => s.run === 'bun test desktop/scripts --timeout 60000')!;
   expect(scripts.if).toContain("needs.desktop-plan.outputs.tooling == 'true'");
   expect(scripts.if).toContain("contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'windows')");
-  expect(desktop.jobs['web-shell']!.if).toContain("needs.plan.outputs.web == 'true'");
+  expect(desktop.jobs['web-shell']).toBeUndefined();
   expect(desktop.jobs.tooling!.if).toContain("needs.plan.outputs.tooling == 'true'");
   // Only the installer matrix is manual; catalog validation has parser dependencies.
   for (const step of desktop.jobs.plan!.steps!.filter(s => s.id === 'assets')) {

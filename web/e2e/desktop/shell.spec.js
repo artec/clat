@@ -236,7 +236,7 @@ test('three desktop languages switch without reloading or losing a draft and pen
     expect(await page.evaluate(()=>!!window.marker)).toBe(true);
   }
   const commands=await page.evaluate(()=>window.desktopCalls.map(c=>c.command));
-  expect(commands.filter(c=>!['desktop_info','desktop_locale','desktop_preferences'].includes(c))).toEqual([]);
+  expect(commands.filter(c=>!['desktop_info','desktop_locale','desktop_preferences','desktop_take_tray_intent'].includes(c))).toEqual([]);
 });
 
 test('native menu opens update panel and starts exactly one check',async({page})=>{

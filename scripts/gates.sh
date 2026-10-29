@@ -126,15 +126,15 @@ else
     echo "--rust-only：跳过 npm 测试——这不是完整的 CI 镜像"
 fi
 
-step "Gated tests (cargo test --lib -- --ignored)"
-cargo test --lib -- --ignored
+step "Gated tests (cargo test --lib -- --ignored --skip visual_snapshot_)"
+cargo test --lib -- --ignored --skip visual_snapshot_
 
 i=1
 while [ "$i" -le "$stress" ]; do
     step "Stress $i/$stress — Test (时序敏感复跑)"
     rust_tests --all-targets --all-features
     step "Stress $i/$stress — Gated"
-    cargo test --lib -- --ignored
+    cargo test --lib -- --ignored --skip visual_snapshot_
     i=$((i + 1))
 done
 

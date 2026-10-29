@@ -4,14 +4,14 @@ import { dirname, join } from 'node:path';
 import { checksForPaths, gitChangedPaths, pathsForEvent } from './check-plan';
 import { ROOT, run, withTemp } from './common';
 
-const all = { native: true, tooling: true, web: true };
+const all = { native: true, tooling: true };
 test('script and webpage edits select their own checks without four native builds', () => {
   expect(checksForPaths(['desktop/scripts/release.ts', 'publish', 'desktop/bun.lock', 'package.json']))
-    .toEqual({ native: false, tooling: true, web: false });
+    .toEqual({ native: false, tooling: true });
   expect(checksForPaths(['web/i18n.js', 'web/e2e/desktop/shell.spec.js']))
-    .toEqual({ native: false, tooling: false, web: true });
+    .toEqual({ native: false, tooling: false });
   expect(checksForPaths(['desktop/scripts/ci-contract.test.ts', 'desktop/ui/bridge.js']))
-    .toEqual({ native: false, tooling: true, web: true });
+    .toEqual({ native: false, tooling: true });
 });
 test('all native build inputs, shared core changes and unknown paths retain four native faces', () => {
   for (const path of ['desktop/src/main.rs', 'desktop/build.rs',
@@ -27,8 +27,8 @@ test('all native build inputs, shared core changes and unknown paths retain four
 });
 test('known documentation and empty diffs do not add desktop work; unavailable diffs run everything', () => {
   expect(checksForPaths(['docs/testing.md', 'README.zh.md', '.agents/skills/example/SKILL.md', 'LICENSE']))
-    .toEqual({ native: false, tooling: false, web: false });
-  expect(checksForPaths([])).toEqual({ native: false, tooling: false, web: false });
+    .toEqual({ native: false, tooling: false });
+  expect(checksForPaths([])).toEqual({ native: false, tooling: false });
   expect(checksForPaths(undefined)).toEqual(all);
 });
 test('shared language resources select Rust, native shell and web checks together',()=>{
@@ -38,10 +38,10 @@ test('presentation and PWA-only edits do not run unrelated Desktop bridge or nat
   for (const path of ['web/workbench.css', 'web/app.js', 'web/project-tree.js', 'web/index.html',
     'web/e2e/tests/app.spec.js', 'web/e2e/manual/project-tree.spec.js', 'web/e2e/playwright.visual.config.js',
     'desktop/ui/welcome.css', 'desktop/icons/icon.ico', 'web/icons/icon-192.png', 'locales/zh-Hans.json']) {
-    expect(checksForPaths([path])).toEqual({ native:false, tooling:false, web:false });
+    expect(checksForPaths([path])).toEqual({ native:false, tooling:false });
   }
   expect(checksForPaths(['desktop/ui/index.html', 'desktop/ui/window-bar.js']))
-    .toEqual({ native:false, tooling:false, web:true });
+    .toEqual({ native:false, tooling:false });
 });
 test('push spans all commits and PR spans the base to the tested merge; missing history widens', () => {
   const before = 'a'.repeat(40), base = 'b'.repeat(40), head = 'c'.repeat(40), calls: string[][] = [];
@@ -78,7 +78,7 @@ test('CLI writes bounded booleans for malformed events instead of silently skipp
     writeFileSync(event, '{ invalid json');
     run([process.execPath, join(ROOT, 'desktop/scripts/check-plan.ts')], { quiet: true,
       env: { GITHUB_EVENT_PATH: event, GITHUB_EVENT_NAME: 'push', GITHUB_SHA: 'f'.repeat(40), GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary } });
-    expect(await Bun.file(output).text()).toBe('native=true\ntooling=true\nweb=true\n');
+    expect(await Bun.file(output).text()).toBe('native=true\ntooling=true\n');
     expect(await Bun.file(summary).text()).toContain('unknown (full checks)');
   });
 });

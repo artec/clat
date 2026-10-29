@@ -891,11 +891,10 @@ Desktop push/PR verification covers all four native platforms in CI without a
 second set of native build jobs or installer generation. CI and Desktop use
 `desktop/scripts/check-plan.ts` to classify the complete push or PR merge diff.
 Rust/shared-core, native resources/configuration, toolchain/workflow and unknown
-changes retain native clippy/tests; scripts select tooling. Native bridge
-JavaScript/HTML and its browser harness select the desktop web-shell suite;
-PWA-only source changes do not select that unrelated mock suite. Known CSS,
-icons, manual captures and catalog wording edits do not select Desktop native,
-tooling or web-shell jobs. Planning validates language keys/parameters once,
+changes retain native clippy/tests; scripts select tooling. The browser
+web-shell job has been removed. Desktop UI and PWA JavaScript/HTML, CSS, icons,
+manual captures and catalog wording edits do not select Desktop native or tooling
+jobs. Planning validates language keys/parameters once,
 without installing desktop dependencies or computing an installer matrix on
 automatic runs. Language runtime/manifest/checker changes still select all
 Desktop checks. Docs-only changes add no desktop jobs. Multi-commit pushes, deletion,
@@ -1213,3 +1212,30 @@ open Discover. Read-only Host status refreshes are permitted during language cha
 the checks still prohibit plugin activation and other writes. Model-key checks assert
 credential state and absence of echoed secrets, rather than the phrasing of status
 captions. No scenario was deleted for these migrations.
+
+
+The former `context_dialog_snapshot_and_modal_gate` visual golden is retired.
+`context_dialog_estimates_and_modal_gate` retains the real `/context` dispatch,
+live core estimate values, total/reserve arithmetic, modal input blocking and Esc
+close checks. Exact token totals, coordinates and styles are not golden contracts.
+The Desktop live-language scenario still protects draft/update state and excludes
+unrelated native operations; the permitted initialization calls include reading a
+pending tray intent (`desktop_take_tray_intent`), which does not authorize project,
+Host, update or quit operations. This migration adds no UI automation scenarios.
+
+
+Automatic gates do not install or launch Playwright for the Desktop shell.
+Thirty pure TUI snapshot scenarios and one plugin appearance scenario are marked
+manual-only (`visual_snapshot_` prefix); the ignored integration-test gate also
+explicitly skips that prefix. Other ignored permission/provider/persistence cases
+are unaffected. Shared golden comparisons and plugin stable-render comparisons
+require explicit `CLAT_VISUAL_SNAPSHOTS=1`; mixed scenarios keep their nonvisual
+business assertions in ordinary runs. Existing visual baselines remain optional
+local reference material. No visual suite or full gate was run for this cleanup.
+
+Business coverage retained includes modal input blocking and close behavior,
+permissions/consent, message/attachment data, draft preservation, secret redaction,
+core execution and persistence. The lightweight `web/tests` data/protocol tests,
+installer/tooling checks, native builds, and locale key/parameter validation remain
+in automatic gates. Future presentation edits must not reintroduce exact UI
+wording, colors, coordinates or menu structure as CI contracts.

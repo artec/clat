@@ -1672,3 +1672,38 @@ Recommendations are projections of the existing bounded public catalog, not new
 installation authority or synthetic installed records. Task permission interaction
 cards mount inside the detail column, outside the two-column grid: an empty
 interaction host cannot allocate an implicit row or shorten the sidebar.
+
+### Source-control workspace
+
+`development/git` owns bounded repository discovery, opaque repository identity,
+structured commit files and historical comparisons. Nested repository services
+retain separate operation receipts and backups; writes continue to serialize on
+the canonical Git common directory, including linked worktrees. Cached repository
+admission revalidates directory components and rejects symlink substitution.
+Legacy Git calls without `repositoryId` retain their original project scope.
+
+`git.repositories` and `git.commit.files` are additive trusted-client RPCs. Git
+queries/operations accept optional `repositoryId`; `git.diff` additionally accepts
+`commit` and optional `parent`. History responses retain legacy fields and add
+parents, reference labels and a continuation cursor anchored to fixed commit IDs.
+Branch/reference labels are refreshed views; a fresh traversal observes new refs.
+No journal or Agent permission vocabulary changes are introduced.
+
+The Web source-control composition separates layout, repository-bound actions,
+comparison tabs and graph rendering. The graph draws supplied parent identities;
+it does not infer history or launch Git. The shared CodeMirror widget supports
+read-only split/unified views, content-width adaptation, chunk navigation and
+paired scrolling. Device layout settings and repository drafts never authorize
+writes; all mutations use existing core concurrency/receipt checks.
+
+`WORKSPACE_TOOLS` is the shared presentation catalog for tool regions, trigger
+identities, sidebar shortcuts and icons. Trigger owners attach their own action
+handlers; mounting a region alone does not make its entry button actionable.
+The Git review entry binds to the Git controller's `open` action explicitly.
+
+Repository discovery uses the existing `ignore` walker without following directory
+symlinks. Local project exclusions prune generated/temporary trees before directory
+counting. Git's registered submodule/worktree paths are admitted separately and
+validated against the project boundary, preserving registered ignored locations.
+Resource bounds remain explicit; they count searched directories/repositories,
+not changed files. No new dependencies or persistent state are introduced.

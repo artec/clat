@@ -1,86 +1,57 @@
-/* Git intent UI. Core owns snapshots, generation, mutation and retry receipts. */
+/* Source-control composition. Core services own repositories and all mutations. */
 function installDevelopmentGit(){
-  const node=el('section','workspace-review dev-git');node.id='workspace-review';
-  const header=el('div','review-header'),note=el('p','picker-hint',()=>devText('git_commit_scope')),status=el('p','picker-hint'),list=el('nav','review-files'),detail=el('section','review-patch dev-git-detail');
-  status.setAttribute('role','status');let snapshot=null,selected=null,diff=null,active=false,epoch=0,operation=null,language='system',page=0,mode='changes';
-  const commitForm=el('div','dev-commit-form'),message=el('textarea',''),locale=devLanguageSelect('system');CLATI18n.attribute(message,'placeholder',()=>devText('commit_placeholder'));
-  const pendingKey='clat.git.pending.'+context.route;let remembered=null;try{remembered=JSON.parse(localStorage.getItem(pendingKey)||'null');}catch(_){}
-  let draftEpoch=0;message.oninput=()=>{draftEpoch++;if(operation&&remembered?.automatic)void rpc('git.cancel',{operationId:operation});};
-  locale.onchange=()=>{language=locale.value;draftEpoch++;if(operation&&remembered?.automatic)void rpc('git.cancel',{operationId:operation});void rpc('git.settings.set',{language}).catch(error=>devReport(status,error));};
-  const commit=devButton('commit',()=>void start('commit')),generate=devButton('generate_message',()=>void start('generate')),cancel=devButton('cancel',()=>operation&&void rpc('git.cancel',{operationId:operation}));cancel.hidden=true;
-  commitForm.append(message,locale,generate,commit,cancel);list.append(commitForm);
-  const result=el('details','dev-git-result');result.hidden=true;const resultBody=el('pre','');result.append(el('summary','',()=>devText('operation_result')),resultBody);commitForm.append(result);
-  function showResult(view){const text=[view.message,view.result?.output,view.error].filter(Boolean).join('\n\n');result.hidden=!text;resultBody.textContent=text;}
-  header.append(el('h2','',()=>devText('git')),devButton('refresh',()=>void refresh()),devButton('fetch',()=>void start('fetch')),devButton('pull',()=>void start('pull')),devButton('push',()=>void start('push')));
-  header.append(devButton('restore',async()=>{try{const data=await rpc('git.backups',{});clearDetail();for(const backup of data.backups){const button=el('button','review-file',()=>backup.paths.join(', '));button.type='button';button.onclick=()=>void start('restore',{backupId:backup.id,confirmed:true});detail.append(button);}if(!data.backups.length)detail.append(el('p','picker-hint',()=>devText('no_backups')));node.dataset.detail='true';}catch(error){devReport(status,error);}}));
-  const navigation=el('div','dev-actions');for(const name of ['changes','branches','history'])navigation.append(devButton(name,()=>{mode=name;page=0;void refresh();}));
-  node.append(header,note,status,list,detail);document.body.append(node);
-  const api={node,refresh,start,get snapshot(){return snapshot;},get busy(){return Boolean(operation);},open:()=>openWorkbenchTool(node),openFile};
-  function clearDetail(){diff?.destroy();diff=null;detail.replaceChildren();}
+  const node=el('section','workspace-review dev-git');node.id='workspace-review';const ui=createGitLayout(node);document.body.append(node);
+  const seats=new Map();let repository='project',directory=[],active=false,epoch=0,graph=null;
+  function seat(){if(!seats.has(repository))seats.set(repository,gitRepositorySeat(repository));return seats.get(repository);}
+  const call=(method,value={},owner=seat())=>rpc(method,{...value,repositoryId:owner.id});
+  const report=error=>devReport(ui.status,error),tabs=createGitTabs(ui,{seat,call,report,openFile});
+  const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),outputBody);ui.message.parentElement.append(output);
+  const result=view=>{output.hidden=!view;outputBody.textContent=view?[view.message,view.result?.output,view.error].filter(Boolean).join('\n\n'):'';};
+  const actions=createGitActions({seat,call,refresh,render:renderSubmission,report,result});
+  ui.head.append(navigationIcon(()=>devText('refresh'),'refresh',()=>void refresh()),navigationIcon(()=>devText('branches'),'branch',()=>void branches()),gitMoreMenu(actions,backups));
+  node.addEventListener('clat:git-selection',()=>{if(seat().snapshot)renderChanges();});
+  ui.generate.onclick=()=>void actions.start('generate');ui.commit.onclick=()=>void actions.start('commit');ui.cancel.onclick=()=>actions.cancel();
+  ui.message.oninput=()=>{const owner=seat();owner.draft=ui.message.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}autosize();if(owner.pending?.automatic)actions.cancel();saveDraft(owner);};
+  ui.message.onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();void actions.start('commit');}};
+  ui.locale.onchange=()=>{const owner=seat();owner.language=ui.locale.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}if(owner.pending?.automatic)actions.cancel();void rpc('git.settings.set',{language:owner.language}).catch(report);};
+  function autosize(){ui.message.style.height='auto';ui.message.style.height=Math.min(140,Math.max(36,ui.message.scrollHeight))+'px';}
+  function renderSubmission(){const owner=seat();if(ui.message.value!==owner.draft)ui.message.value=owner.draft;ui.locale.value=owner.language;ui.commit.disabled=Boolean(owner.operation)||!owner.snapshot?.files.some(f=>f.staged);ui.generate.disabled=ui.commit.disabled;ui.cancel.hidden=!owner.operation;autosize();if(owner.operation)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);}
   async function refresh(){
-    const request=++epoch;try{const [next,settings]=await Promise.all([rpc('git.snapshot',{}),rpc('git.settings',{})]);if(request!==epoch)return;snapshot=next;language=settings.language;locale.value=language;CLATI18n.bind(note,'textContent',()=>[snapshot.branch||devText('detached'),devText('git_commit_scope')].join(' · '));
-      list.replaceChildren(commitForm,navigation);commit.disabled=!snapshot.files.some(file=>file.staged)||Boolean(operation);
-      if(mode==='changes')renderFiles();else if(mode==='branches')await renderBranches(request);else await renderHistory(request);
-    }catch(error){devReport(status,error);}
+    const version=++epoch,owner=seat();try{const [snapshot,settings,repositories]=await Promise.all([call('git.snapshot',{},owner).catch(error=>({error})),rpc('git.settings',{}),rpc('git.repositories',{})]);if(version!==epoch||seat()!==owner||!active)return;
+      directory=repositories.repositories;ui.repositoryStatus.hidden=!repositories.truncated;devStatus(ui.repositoryStatus,'repositories_truncated');if(snapshot.error){owner.snapshot=null;renderRepositories();renderSubmission();tabs.overview();report(snapshot.error);return;}
+      const changed=owner.snapshot&&JSON.stringify([owner.snapshot.head,owner.snapshot.index,owner.snapshot.status])!==JSON.stringify([snapshot.head,snapshot.index,snapshot.status]);owner.snapshot=snapshot;owner.language=settings.language;directory=repositories.repositories;
+      const row=directory.find(r=>r.id===repository);owner.path=row?.path||'';ui.repoName.textContent=owner.path||state.workbench?.project?.root?.split('/').pop()||'';ui.branch.textContent=snapshot.branch||devText('detached');renderSubmission();renderChanges();renderRepositories();
+      if(!owner.operation)ui.status.textContent='';
+      if(changed)await tabs.reload();else tabs.refresh();if(version!==epoch||seat()!==owner||!active)return;if(!graph)installGraph(owner);await graph.load();if(version===epoch&&seat()===owner&&active)result(owner.result);
+    }catch(error){if(version===epoch&&seat()===owner){report(error);if(!owner.tab)tabs.overview();}}
   }
-  function renderFiles(){
-    for(const staged of [false,true]){
-      const rows=snapshot.files.filter(file=>staged?file.staged:file.unstaged||file.untracked);if(!rows.length)continue;
-      const heading=el('div','dev-group-heading');heading.append(el('h3','',()=>devText(staged?'staged':'changes')),devButton(staged?'unstage_all':'stage_all',()=>void start(staged?'unstage':'stage',{paths:rows.map(file=>file.path)})));list.append(heading);
-      const tracked=rows.filter(file=>!file.untracked);if(!staged&&tracked.length)heading.append(devButton('discard_all',()=>void start('discard',{paths:tracked.map(file=>file.path),confirmed:true})));
-      for(const file of rows){
-        const row=el('div','dev-git-file'),button=el('button','review-file',()=>file.path);button.type='button';button.onclick=()=>void showFile(file,staged);button.append(el('small','',()=>devGitFileStatus(file)));
-        const action=devButton(staged?'unstage':'stage',()=>void start(staged?'unstage':'stage',{paths:[file.path]}));row.append(button,action);list.append(row);
-      }
-    }
-    if(!snapshot.files.length)list.append(el('p','picker-hint',()=>devText('clean')));
-    if(selected){const file=snapshot.files.find(file=>file.path===selected.path);if(file)void showFile(file,selected.staged);else{selected=null;clearDetail();}}
-  }
-  async function showFile(file,staged){
-    selected={path:file.path,staged};node.dataset.detail='true';const request=++epoch;clearDetail();
-    try{const value=await rpc('git.diff',{path:file.path,staged});if(request!==epoch)return;
-      const toolbar=el('div','dev-actions');toolbar.append(el('strong','',file.path),el('small','',()=>devText(value.leftLabel)+' → '+devText(value.rightLabel)),devButton('open_file',()=>void openFile(file.path)));
-      if(!staged)toolbar.append(devButton(file.untracked?'delete':'discard',()=>void start(file.untracked?'delete_untracked':'discard',{paths:[file.path],confirmed:true})));
-      detail.append(toolbar);if(value.binary){detail.append(el('p','picker-hint',()=>devText('binary_diff')));return;}
-      const mount=el('div','dev-diff-mount');detail.append(mount);diff=globalThis.CLATDevelopmentWidgets.diff(mount,{...value,phrases:devEditorPhrases()});
-    }catch(error){devReport(status,error);}
-  }
-  async function openFile(path){document.getElementById('files-open').click();await developmentEditor.openFile(path,{fixed:true});}
-  async function renderBranches(request){
-    const result=await rpc('git.branches',{});if(request!==epoch)return;list.append(devButton('new_branch',()=>{const branch=window.prompt(devText('branch_name'));if(branch)void start('branch.create',{branch});}));
-    for(const row of result.branches){const wrap=el('div','dev-git-file'),button=el('button','review-file',()=>row.name+(row.current?' ✓':''));button.type='button';button.onclick=()=>void start('branch.switch',{branch:row.name});wrap.append(button);if(!row.current&&!row.remote)wrap.append(devButton('delete',()=>void start('branch.delete',{branch:row.name,confirmed:true})));list.append(wrap);}
-  }
-  async function renderHistory(request){
-    const result=await rpc('git.history',{skip:page*50});if(request!==epoch)return;for(const row of result.commits){const button=el('button','review-file');button.type='button';button.append(el('strong','',row.subject),el('small','',row.id.slice(0,8)+' · '+row.author));button.onclick=async()=>{const selected=++epoch;try{const value=await rpc('git.commit.detail',{commit:row.id});if(selected!==epoch)return;clearDetail();detail.append(el('pre','review-diff',value.text));node.dataset.detail='true';}catch(error){devReport(status,error);}};list.append(button);}
-    const pages=el('div','dev-actions');if(page>0)pages.append(devButton('previous',()=>{page--;void refresh();}));if(result.hasMore)pages.append(devButton('next',()=>{page++;void refresh();}));list.append(pages);
-  }
-  async function start(action,extra={}){
-    if(operation||remembered){await reconcile();return;}
-    if(['discard','delete_untracked','branch.delete'].includes(action)&&!window.confirm(devText('git_destructive')))return;
-    if(['branch.switch','pull'].includes(action)&&developmentEditor?.docs&&[...developmentEditor.docs.values()].some(doc=>doc.dirty)){devStatus(status,'save_before_switch');return;}
-    if(action==='delete_untracked'){try{const path=extra.paths[0],stat=await rpc('editor.inspect',{path});await rpc('editor.delete',{operationId:devId(),path,version:stat.version,confirmed:true});await refresh();}catch(error){devReport(status,error);}return;}
-    const id=devId(),captured=draftEpoch,request={operationId:id,action,expected:snapshot,message:message.value,language,systemLanguage:navigator.language,...extra};operation=id;cancel.hidden=false;remembered={operationId:id,action,automatic:action==='generate'||action==='commit'&&!message.value.trim()};localStorage.setItem(pendingKey,JSON.stringify(remembered));
-    let uncertain=false;
-    try{const view=await devOperation(request,progress=>{devStatus(status,'phase_'+progress.phase);});uncertain=Boolean(view.localUnknown);showResult(view);
-      if(view.message&&captured===draftEpoch){message.value=view.message;}
-      if(view.phase==='completed'){if(action==='commit'&&captured===draftEpoch){message.value='';draftEpoch++;}}
-      else{CLATI18n.bind(status,'textContent',()=>CLATI18n.present(view.presentation,devText(view.phase==='unknown'?'operation_unknown':view.phase==='cancelled'?'cancelled':'failed')));if(view.error){const details=el('details','dev-technical');details.append(el('summary','',()=>devText('technical_details')),el('pre','',view.error));detail.append(details);}}
-    }catch(error){devReport(status,error);}finally{if(!uncertain){operation=null;remembered=null;localStorage.removeItem(pendingKey);}cancel.hidden=!operation;await refresh();}
-  }
-  async function reconcile(){
-    if(!remembered)return;operation=remembered.operationId;cancel.hidden=false;
-    const view=await devOperation(remembered,progress=>devStatus(status,'phase_'+progress.phase),true);
-    showResult(view);
-    if(view.message&&!message.value)message.value=view.message;
-    if(!view.localUnknown){operation=null;remembered=null;localStorage.removeItem(pendingKey);cancel.hidden=true;}
-    devStatus(status,view.phase==='unknown'?'operation_unknown':'phase_'+view.phase);
-    if(view.localUnknown&&!detail.querySelector('[data-reconcile]')){const button=devButton('reconcile',()=>void reconcile());button.dataset.reconcile='true';detail.append(button);}
-    await refresh();
-  }
-  node.addEventListener('clat:tool-enter',()=>{active=true;void refresh();if(remembered)void reconcile();});node.addEventListener('clat:tool-leave',()=>{active=false;});window.addEventListener('focus',()=>{if(active&&!operation)void refresh();});
-  CLATI18n.onChange(()=>diff?.setPhrases(devEditorPhrases()));
-  void rpc('git.settings',{}).then(value=>{language=value.language;locale.value=language;}).catch(()=>{});return api;
+  function renderChanges(){renderGitChanges(ui.changes,seat(),{open:tabs.open,start:actions.start,openFile});}
+  function renderRepositories(){ui.repos.replaceChildren();for(const row of directory){const button=navigationRow({title:row.path||ui.repoName.textContent,meta:()=>row.available?[(row.branch||devText('detached')),row.dirty?devText('git_modified'):devText('clean')].join(' · '):devText('submodule_uninitialized'),icon:'branch',selected:row.id===repository,action:()=>choose(row)});button.disabled=!row.available;ui.repos.append(button);}}
+  function installGraph(owner){graph?.invalidate();ui.history.replaceChildren();graph=createGitGraph(ui.history,{call:(m,v)=>call(m,v,owner),open:tabs.open,current:()=>seat()===owner&&active,report,showCommit:async row=>{const selection=tabs.revision;try{const value=await call('git.commit.detail',{commit:row.id},owner);if(seat()===owner&&active&&tabs.revision===selection&&owner.graph?.selected===row.id)tabs.panel(el('pre','git-commit-text',value.text));}catch(error){if(seat()===owner)report(error);}},state:owner.graph||(owner.graph={})});}
+  function choose(row){if(row.id===repository)return;seat().scroll=ui.changes.scrollTop;tabs.capture();graph?.invalidate();repository=row.id;seat().path=row.path;ui.repoName.textContent=row.path||state.workbench?.project?.root?.split('/').pop()||'';ui.branch.textContent=row.branch||devText('detached');installGraph(seat());renderSubmission();renderRepositories();if(seat().snapshot)renderChanges();else ui.changes.replaceChildren(pageEmpty('loading'));tabs.refresh();void refresh();if(seat().pending)void actions.reconcile();}
+  async function branches(){const owner=seat(),selection=tabs.revision;try{const value=await call('git.branches');if(seat()!==owner||!active||tabs.revision!==selection)return;const panel=el('section','git-panel');panel.append(devButton('new_branch',()=>{const branch=window.prompt(devText('branch_name'));if(branch)void actions.start('branch.create',{branch});}));for(const row of value.branches){const line=el('div','dev-actions');const button=el('button','ghost',row.name+(row.current?' ✓':''));button.type='button';button.onclick=()=>void actions.start('branch.switch',{branch:row.name});line.append(button);if(!row.current&&!row.remote)line.append(navigationIcon(()=>devText('delete'),'trash',()=>void actions.start('branch.delete',{branch:row.name,confirmed:true})));panel.append(line);}tabs.panel(panel);}catch(error){report(error);}}
+  async function backups(){const owner=seat(),selection=tabs.revision;try{const value=await call('git.backups');if(seat()!==owner||!active||tabs.revision!==selection)return;const panel=el('section','git-panel');for(const row of value.backups)panel.append(pageAction('restore',()=>void actions.start('restore',{backupId:row.id,confirmed:true})),el('p','',row.paths.join(', ')));if(!value.backups.length)panel.append(el('p','',()=>devText('no_backups')));tabs.panel(panel);}catch(error){report(error);}}
+  async function openFile(path){const owner=seat();document.getElementById('files-open').click();await developmentEditor.openFile([owner.path,path].filter(Boolean).join('/'),{fixed:true});}
+  node.addEventListener('clat:tool-enter',()=>{active=true;void refresh();if(seat().pending)void actions.reconcile();});node.addEventListener('clat:tool-leave',()=>{active=false;epoch++;tabs.leave();graph?.invalidate();closeGitFileMenu?.();for(const menu of ui.head.querySelectorAll('details'))menu.open=false;});window.addEventListener('focus',()=>{if(active&&!seat().operation)void refresh();});CLATI18n.onChange(()=>tabs.localize());
+  return {node,refresh,start:actions.start,openFile,get snapshot(){return seat().snapshot;},get busy(){return Boolean(seat().operation);},open:()=>openWorkbenchTool(node)};
 }
-function devLanguageSelect(value){const select=el('select','');for(const language of ['system','en','zh-Hans','zh-Hant']){const option=el('option','',()=>devText('language_'+language));option.value=language;select.append(option);}select.value=value;return select;}
-
-function devGitFileStatus(file){const status=file.status||'';const kind=file.untracked?'untracked':status.includes('U')||['AA','DD'].includes(status)?'conflicted':status.includes('D')?'deleted':status.includes('R')?'renamed':status.includes('A')?'added':'modified';return devText('git_'+kind);}
+function gitRepositorySeat(id){
+  const key='clat.git.'+context.route+'.'+id;let draft='',pending=null;try{draft=localStorage.getItem(key+'.draft')||'';pending=JSON.parse(localStorage.getItem(id==='project'?'clat.git.pending.'+context.route:key+'.pending')||'null');}catch(_){}
+  return {id,path:'',draft,pending,pendingKey:id==='project'?'clat.git.pending.'+context.route:key+'.pending',draftKey:key+'.draft',edit:0,language:'system',snapshot:null,tabs:new Map(),tab:null,operation:null,result:null};
+}
+function saveDraft(owner){try{localStorage.setItem(owner.draftKey,owner.draft);}catch(_){} }
+function gitMoreMenu(actions,backups){const menu=el('details','git-more-menu'),summary=el('summary');summary.append(svgIcon('more'));CLATI18n.attribute(summary,'title',()=>devText('git_actions'));CLATI18n.attribute(summary,'aria-label',()=>devText('git_actions'));menu.append(summary);const items=el('div','git-more-items');for(const key of ['fetch','pull','push'])items.append(devButton(key,()=>{menu.open=false;void actions.start(key);}));items.append(devButton('restore',()=>{menu.open=false;void backups();}));menu.append(items);let watch;menu.ontoggle=()=>{watch?.abort();if(menu.open){watch=new AbortController();document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))menu.open=false;},{signal:watch.signal});}};menu.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();menu.open=false;summary.focus();}};return menu;}
+function devLanguageSelect(value){const select=el('select','');for(const language of ['system','en','zh-Hans','zh-Hant']){const option=el('option','',()=>devText('language_'+language));option.value=language;select.append(option);}select.value=value;CLATI18n.attribute(select,'aria-label',()=>devText('commit_language'));return select;}
+function devGitFileStatus(file){const status=file.status||'';const kind=file.untracked?'untracked':gitConflicted(file)?'conflicted':status.includes('D')?'deleted':status.includes('R')?'renamed':status.includes('A')?'added':'modified';return devText('git_'+kind);}
+function gitConflicted(file){return file.status?.includes('U')||['AA','DD'].includes(file.status);}
+function renderGitChanges(host,owner,{open,start,openFile}){
+  const collapsed=owner.collapsed||(owner.collapsed=new Map());host.replaceChildren();
+  for(const key of ['conflicts','staged','changes']){
+    const staged=key==='staged',files=owner.snapshot.files.filter(f=>key==='conflicts'?gitConflicted(f):!gitConflicted(f)&&(staged?f.staged:f.unstaged||f.untracked));if(!files.length)continue;
+    const operations=key==='conflicts'?[]:[{label:staged?'unstage_all':'stage_all',icon:staged?'minus':'plus',run:()=>void start(staged?'unstage':'stage',{paths:files.map(f=>f.path)})}];
+    const tracked=files.filter(f=>!f.untracked);if(key==='changes'&&tracked.length)operations.push({label:'discard_all',icon:'restore',run:()=>void start('discard',{paths:tracked.map(f=>f.path),confirmed:true})});
+    const group=gitSection(key,files,operations);group.dataset.group=key;group.open=collapsed.get(key)??true;group.ontoggle=()=>collapsed.set(key,group.open);
+    for(const file of files){const data={...file,staged},actions=[{label:staged?'unstage':'stage',icon:staged?'minus':'plus',run:()=>void start(staged?'unstage':'stage',{paths:[file.path]})}];if(key==='changes')actions.push({label:file.untracked?'delete':'discard',icon:file.untracked?'trash':'restore',run:()=>void start(file.untracked?'delete_untracked':'discard',{paths:[file.path],confirmed:true})});group.append(gitFileRow(file,{selected:owner.tab?.file.path===file.path&&owner.tab.file.staged===staged,open:()=>void open(data),pin:()=>void open(data,true),actions,openFile}));}host.append(group);
+  }
+  if(!owner.snapshot.files.length)host.append(pageEmpty('git_clean'));host.scrollTop=owner.scroll||0;host.onscroll=()=>{owner.scroll=host.scrollTop;};
+}

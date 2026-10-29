@@ -63,13 +63,7 @@ function createShellInspector(shell) {
   const back = shellButton('context-overview-open', 'previous', () => experienceText('overview'), () => shell.overview());
   back.classList.add('extension-back'); back.hidden = true;
   const cards = el('nav', 'extension-modules');
-  for (const [id, icon, key, trigger] of [
-    ['context-files-open','folder','files','files-open'],
-    ['context-changes-open','tool','changes','review-open'],
-    ['context-turn-open','check','turn','turn-review-open'],
-    ['context-tasks-open','jobs','tasks','tasks-open'],
-    ['context-workflow-open','plan','workflow','workflow-open'],
-  ]) {
+  for (const {entry:id,icon,key,trigger} of WORKSPACE_TOOLS) {
     const button = shellButton(id,icon,() => experienceText(key),() => document.getElementById(trigger).click());
     const content = el('span', 'extension-module-content');
     const copy = el('span', 'extension-module-copy');
@@ -78,10 +72,7 @@ function createShellInspector(shell) {
     button.append(content); cards.append(button);
   }
   overview.insertBefore(cards,details); scroll.append(back,overview);
-  for (const [id, trigger] of [
-    ['file-browser', 'files-open'], ['workspace-review', 'review-open'], ['turn-review', 'turn-review-open'],
-    ['workflow-details', 'workflow-open'], ['task-review', 'tasks-open'],
-  ]) shell.tools.register(id, ({'file-browser':'files','workspace-review':'changes','turn-review':'turn','workflow-details':'workflow','task-review':'tasks'})[id]);
+  for (const {id,key} of WORKSPACE_TOOLS) shell.tools.register(id,key);
 }
 
 function mountShellDialog(shell, id, trigger, route, host, type) {

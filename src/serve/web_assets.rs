@@ -85,6 +85,26 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/development-git-layout.js",
+        include_bytes!("../../web/development/git-layout.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-git-graph.js",
+        include_bytes!("../../web/development/git-graph.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-git-tabs.js",
+        include_bytes!("../../web/development/git-tabs.js"),
+        "application/javascript",
+    ),
+    (
+        "/development-git-actions.js",
+        include_bytes!("../../web/development/git-actions.js"),
+        "application/javascript",
+    ),
+    (
         "/development-git.js",
         include_bytes!("../../web/development/git.js"),
         "application/javascript",
@@ -376,6 +396,10 @@ const PROJECT_MODULES: &[&str] = &[
     "/development-settings.js",
     "/development-editor.js",
     "/development-file-actions.js",
+    "/development-git-layout.js",
+    "/development-git-graph.js",
+    "/development-git-tabs.js",
+    "/development-git-actions.js",
     "/development-git.js",
     "/development-terminal-view.js",
     "/development-terminal.js",
