@@ -11,6 +11,7 @@ import {Terminal} from '@xterm/xterm';
 import {FitAddon} from '@xterm/addon-fit';
 import {SearchAddon} from '@xterm/addon-search';
 import {Unicode11Addon} from '@xterm/addon-unicode11';
+import {CanvasAddon} from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 const phraseCompartment=new Compartment();
 const accessCompartment=new Compartment(),languageCompartment=new Compartment();
@@ -38,12 +39,19 @@ function diff(parent,{left,right,path='',phrases={},mode='auto'}){
 function balancedTerminalFit(term,fit){
   const balance=()=>{const screen=term.element.querySelector('.xterm-screen');const spare=Math.max(0,parentWidth()-screen.offsetWidth);term.element.style.paddingLeft=(spare/2)+'px';};
   const parentWidth=()=>term.element.parentElement.clientWidth;
-  return {fit(){term.element.style.paddingLeft='0px';fit.fit();balance();},proposeDimensions(){term.element.style.paddingLeft='0px';const size=fit.proposeDimensions();balance();return size;}};
+  // Keep reading space inside xterm: its absolute viewport still reaches the
+  // pane edge. Reset before measuring so repeated fits cannot compound padding.
+  const reset=()=>{const inset=parseFloat(getComputedStyle(term.element).getPropertyValue('--terminal-inline-inset'))||0;term.element.style.paddingLeft=term.element.style.paddingRight=inset+'px';};
+  return {fit(){reset();fit.fit();balance();},proposeDimensions(){reset();const size=fit.proposeDimensions();balance();return size;}};
 }
 function terminal(parent,settings={}){
   // The pinned Unicode11 addon requires xterm's proposed Unicode provider API.
-  const term=new Terminal({fontFamily:'monospace',fontSize:14,lineHeight:1.15,cursorStyle:'block',cursorBlink:false,scrollback:10000,...settings,allowProposedApi:true});
+  const term=new Terminal({fontFamily:'monospace',fontSize:14,lineHeight:1.15,cursorStyle:'block',cursorBlink:false,scrollback:10000,...settings,customGlyphs:true,allowProposedApi:true});
   const fit=new FitAddon(),search=new SearchAddon(),unicode=new Unicode11Addon();term.loadAddon(fit);term.loadAddon(search);term.loadAddon(unicode);term.unicode.activeVersion='11';term.parser.registerOscHandler(52,()=>true);term.open(parent);
+  // DOM glyph side bearings can leave seams at zero letterSpacing. Canvas draws
+  // block elements and box lines to cell boundaries, independent of the font.
+  const renderer=new CanvasAddon();
+  try{term.loadAddon(renderer);}catch(error){renderer.dispose();console.warn('[CLAT] Canvas terminal renderer unavailable; using DOM rendering',error);}
   return {term,fit:balancedTerminalFit(term,fit),search,destroy:()=>term.dispose()};
 }
 globalThis.CLATDevelopmentWidgets={editor,diff,terminal,formatFor,formats:formatList};

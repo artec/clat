@@ -26,7 +26,7 @@
 .terminal-project-list .project-group-head>.icon-button{width:24px;min-width:24px;padding:3px;min-height:28px}
 .terminal-project-list .project-group-head>.icon-button:first-child[aria-expanded="false"] svg{transform:rotate(-90deg)}
 .terminal-state{flex:1;font-size:var(--text-size-secondary);color:var(--text-muted)}
-.dev-terminal-mount{flex:1;min-height:0;min-width:0;position:relative;overflow:hidden;margin:0 16px 12px}
+.dev-terminal-mount{--terminal-inline-inset:16px;flex:1;min-height:0;min-width:0;position:relative;overflow:hidden;margin:0 0 12px}
 .dev-terminal-screen{position:absolute;inset:0;overflow:hidden}.dev-terminal-screen[hidden]{display:none}
 .terminal-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted)}
 .terminal-empty>svg{width:36px;height:36px}

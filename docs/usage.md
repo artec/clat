@@ -3038,7 +3038,8 @@ Host restart ends the old terminal records and never re-executes their commands.
 On Windows, terminal input/output stays attached to ConPTY even when the Host's
 own standard streams are redirected to files, pipes or a service launcher.
 The header omits the Shell name when it matches the terminal name. The output
-area uses equal outer margins and mirrors the scrollbar gutter on the left;
+area keeps reading space inside the terminal rather than outside its scroll viewport,
+so the scrollbar reaches the pane's right edge. It mirrors the scrollbar gutter on the left;
 the complete character grid is centered, including leftover space smaller than one
 column. The Shell theme's own prompt indent remains unchanged.
 The terminal page disables the outer shared-page scrollbar gutter; only the
@@ -3203,8 +3204,14 @@ page without requiring a Host connection. Check for updates also starts the
 update check. Menu requests survive page initialization and do not wait for Host
 startup; About does not launch a separate native information window or start a Host.
 Appearance separates language/theme from conversation reading; terminal settings
-group font/spacing, cursor, scrollback and the live preview. Model profiles, project
-forms, permissions, integrations, Git and desktop updates use the same card and
+group font/spacing, cursor, scrollback and the live preview.
+Terminal block elements and box lines are drawn to character-cell boundaries by
+the shared Canvas renderer, including in the settings preview. Zero character
+spacing adds no extra spacing; it does not remove a font glyph's own side bearings.
+The Canvas glyph cache stays connected to the document while hidden so WKWebView
+can resolve locally installed fonts consistently. A selected Nerd face supplies
+its own icons; CLAT does not bundle or download fonts.
+Model profiles, project forms, permissions, integrations, Git and desktop updates use the same card and
 control styling. Each category retains its reading position while Settings remains
 mounted. On narrow windows, open a category and use Back to list or the top list
 control to return to the categories.

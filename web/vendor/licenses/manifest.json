@@ -208,6 +208,14 @@
     ]
   },
   {
+    "name": "@xterm/addon-canvas",
+    "version": "0.7.0",
+    "license": "MIT",
+    "files": [
+      "xterm__addon-canvas-LICENSE"
+    ]
+  },
+  {
     "name": "@xterm/addon-fit",
     "version": "0.10.0",
     "license": "MIT",

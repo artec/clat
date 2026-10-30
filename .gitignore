@@ -48,6 +48,7 @@ docs/research/
 docs/audit/
 docs/todo/
 docs/tui/
+docs/ppt/
 
 # Desktop generated resources and local build tools
 /desktop/node_modules/
