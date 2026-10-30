@@ -27,26 +27,32 @@ function decorateSettingsPanel(section) {
     }
     section.prepend(header);
   }
-  const scope = section.querySelector(':scope > .page-scope');
-  if (scope) header.append(scope);
-  else if (!header.querySelector('.page-scope')) header.append(el('p','page-scope',()=>settingsScope(section.dataset.settingsPanel)));
+  let line = header.querySelector('.settings-title-line');
+  if (!line) {
+    line=el('div','settings-title-line');
+    const title=header.querySelector('h2,h3');
+    title.querySelectorAll('.section-kicker').forEach(node=>node.remove());
+    line.append(title);header.prepend(line);
+  }
+  let scope=header.querySelector('.page-scope')||section.querySelector(':scope > .page-scope:not(.current-permission)');
+  scope ||= el('span','page-scope');
+  CLATI18n.bind(scope,'textContent',()=>settingsScope(section.dataset.settingsPanel));line.append(scope);
+  for(const node of section.querySelectorAll(':scope > .page-scope:not(.current-permission)'))node.remove();
+  const intro=section.querySelector(':scope > p.settings-note,:scope > p:not([class])');
+  if(intro&&!header.querySelector(':scope > p'))header.append(intro);
+  const description={terminal:'terminal_description',git:'git_description',desktop:'desktop_description'}[section.dataset.settingsPanel];
+  if(description&&!header.querySelector(':scope > p:not(.page-scope)'))header.append(el('p','',()=>settingsUi(description)));
 }
 
 function decorateDesktopSettings(section, panel) {
   decorateSettingsPanel(section);
-  if (panel.querySelector(':scope > .settings-card')) return;
-  const card = el('div', 'settings-card settings-form');
-  for (const child of [...panel.children]) {
-    if (child.matches('h2,.desktop-language,[data-action=close]')) continue;
-    card.append(child);
-  }
-  panel.append(card);
-  panel.querySelector('input[type=checkbox]')?.classList.add('settings-switch');
+  panel.querySelector('#clat-desktop-auto')?.classList.add('settings-switch');
 }
 
 function installSettingsLayout() {
   const page = dom['settings-dialog'], nav = page.querySelector('.settings-nav');
   const content = page.querySelector('.settings-content'), header = page.querySelector('.settings-panel > header');
+  header.firstElementChild.classList.add('sidebar-head','navigation-head');
   const search = navigationSearch(null, () => settingsUi('search_categories'));
   header.append(search.element);
   const empty = el('p', 'settings-search-empty', () => settingsUi('no_categories')); empty.hidden = true; nav.append(empty);

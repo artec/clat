@@ -789,6 +789,9 @@ fn development_missing_draft_requires_explicit_recreate_and_never_clobbers() {
 #[cfg(windows)]
 #[test]
 fn development_windows_conpty_input_lease_resize_and_job_close() {
+    if !windows_terminal_redirected_child() {
+        return;
+    }
     let f = Fixture::new();
     // Exercise the PTY transport with the system command interpreter. User
     // PowerShell profiles/PSReadLine prompts are not part of this invariant.
@@ -830,6 +833,33 @@ fn development_windows_conpty_input_lease_resize_and_job_close() {
         f.call("terminal.list", json!({})).unwrap()["terminals"][0]["phase"],
         "ended"
     );
+}
+
+#[cfg(windows)]
+fn windows_terminal_redirected_child() -> bool {
+    const CHILD: &str = "CLAT_CONPTY_REDIRECTED_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    // Re-enter only this test with all parent streams redirected. The shell
+    // must use ConPTY, not duplicate the test process's EOF stdin/captured stdout.
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "development::tests::development_windows_conpty_input_lease_resize_and_job_close",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "redirected ConPTY child failed: stdout={:?}, stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
 }
 
 #[cfg(windows)]

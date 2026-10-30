@@ -28,11 +28,7 @@ function resetConversationFind() {
 
 function conversationFindAnchor(){return document.querySelector('.application-actions [data-action=find]')||document.getElementById('find-open');}
 function positionConversationFind(bar) {
-  const trigger = conversationFindAnchor(), toolbar = trigger.closest('.application-toolbar');
-  positionSessionMenu(bar, 0, 0, toolbar || trigger);
-  const inset = parseFloat(getComputedStyle(bar).getPropertyValue('--toolbar-menu-inset')) || 12;
-  const right = Math.min((toolbar || dom.app).getBoundingClientRect().right, innerWidth) - inset;
-  bar.style.left = Math.max(inset, right - bar.getBoundingClientRect().width) + 'px';
+  positionSessionMenu(bar, 0, 0, conversationFindAnchor());
 }
 
 function setConversationFindOpen(open, keyboard = false) {

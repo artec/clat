@@ -52,7 +52,7 @@ function setupSettingsSections() {
 }
 function settingsScope(category) {
   if (category === 'appearance' || category === 'terminal') return pageText('client_scope');
-  if (category === 'permissions') return pageText('session_scope', {project: permissionEditTarget?.project||state.workbench?.project?.root||'', session: permissionEditTarget?.session||state.sessionId||CLATI18n.msg('web.fresh')});
+  if (category === 'permissions') return settingsUi('session_effect');
   if (category === 'projects' || category === 'git') return pageText('project_scope');
   if (category === 'desktop') return pageText('app_scope');
   return pageText('host_scope');

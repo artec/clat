@@ -3032,6 +3032,8 @@ search, copying, clear, rename and explicit input takeover. Only one client cont
 terminal; other clients observe it. Ctrl+C belongs to the foreground shell program, and
 Esc does not cancel an Agent run. Page/conversation switches detach the view, not the shell.
 Host restart ends the old terminal records and never re-executes their commands.
+On Windows, terminal input/output stays attached to ConPTY even when the Host's
+own standard streams are redirected to files, pipes or a service launcher.
 The header omits the Shell name when it matches the terminal name. The output
 area uses equal outer margins and mirrors the scrollbar gutter on the left;
 the complete character grid is centered, including leftover space smaller than one
@@ -3172,11 +3174,26 @@ or disconnected status still appears above the workspace tools.
 
 ### Settings layout
 
-Settings uses a compact, grouped category sidebar with shared icons and the same
+Settings uses the shared navigation title spacing, a compact grouped category sidebar with shared icons and the same
 search control as the other navigation pages. Search filters category names only; it does not read credential values or
 change the open panel. Press Enter to open the first matching category.
 
+In the conversation toolbar, Session actions and search use the same top/right
+menu spacing as Tools. Clicking Tools while Session actions is open closes that
+menu and opens Tools instead.
+
 The detail area has a centered reading column, section headings and grouped rows.
+Each category uses a single title row with its scope/effect timing in muted text
+beside the name, followed by its description. Scope is shown once; current values
+and operation feedback remain with their controls.
+About & updates groups application/Host/bundled-backend versions, update status
+and controls, and shared-backend management into separate sections. The desktop
+welcome dialog and integrated settings reuse the same panel and localized labels.
+The native About CLAT and Check for updates menu items both open this panel:
+inside Settings when the workspace is available, or as a dialog on the welcome
+page without requiring a Host connection. Check for updates also starts the
+update check. Menu requests survive page initialization and do not wait for Host
+startup; About does not launch a separate native information window or start a Host.
 Appearance separates language/theme from conversation reading; terminal settings
 group font/spacing, cursor, scrollback and the live preview. Model profiles, project
 forms, permissions, integrations, Git and desktop updates use the same card and

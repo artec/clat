@@ -289,10 +289,11 @@ pub fn run() {
             crate::window_frame::desktop_window
         ])
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "desktop-check-update" {
-                use tauri::Emitter;
-                show(app);
-                let _ = app.emit_to("main", "desktop-check-update", ());
+            if matches!(
+                event.id().as_ref(),
+                "desktop-about" | "desktop-check-update"
+            ) {
+                crate::tray::activate(app, event.id().as_ref());
             }
         })
         .on_window_event(|window, event| {

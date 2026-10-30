@@ -1285,9 +1285,18 @@ disabled; staged evidence must reach the model while unstaged text never does. N
 explicit repository configuration. Core ConPTY transport probes explicitly choose
 Windows' system command interpreter, queue input without assuming prompt text,
 consume output by offset and answer cursor-position queries. The input marker is
-escaped so input echo alone cannot prove execution. This transport regression does
+escaped so input echo alone cannot prove execution. The probe re-enters only its
+own test in a subprocess with EOF stdin and captured stdout/stderr, guaranteeing
+that inherited parent streams cannot substitute for the PTY. This transport regression does
 not validate a user's PowerShell profile or PSReadLine presentation; native Windows
 execution remains required after local cross-compilation.
+
+CI run 40917746004 exposed redirected standard handles bypassing ConPTY: the shell
+banner went to the parent log while the PTY received only console initialization.
+The launcher explicitly sets `STARTF_USESTDHANDLES` with null standard handles so
+Windows connects the child to the pseudoconsole rather than duplicating the
+parent's redirected pipes, even though ordinary handle inheritance is disabled.
+See the [Microsoft Terminal diagnosis](https://github.com/microsoft/terminal/discussions/15814).
 
 The headless skill command's close/reopen sequence uses the shared one-second
 cold-reopen helper only for the exact storage-root-held rejection. No command has

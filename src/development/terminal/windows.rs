@@ -143,6 +143,9 @@ fn spawn(
     let job = job()?;
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of_val(&startup) as u32;
+    // Null standard handles must be explicit: Windows otherwise duplicates the
+    // parent's redirected pipes even with bInheritHandles=false, bypassing ConPTY.
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.lpAttributeList = attributes.0.as_mut_ptr().cast();
     let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let mut command = wide(

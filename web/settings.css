@@ -2,8 +2,8 @@
 #settings-dialog { --settings-width:800px; height:100%; min-height:0; padding:0; overflow:hidden; }
 #settings-dialog [hidden] { display:none !important; }
 #settings-dialog .settings-panel { display:grid; grid-template-columns:var(--current-sidebar) minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); height:100%; min-height:0; }
-#settings-dialog .settings-panel > header { grid-column:1; grid-row:1; display:flex; flex-direction:column; align-items:stretch; gap:20px; min-width:0; padding:26px 0 12px; border:0; background:var(--sidebar-bg); overflow:hidden; }
-#settings-dialog #settings-title { margin:0 22px; font:600 18px/1.4 var(--font-ui); letter-spacing:0; }
+#settings-dialog .settings-panel > header { grid-column:1; grid-row:1; display:flex; flex-direction:column; align-items:stretch; gap:0; min-width:0; padding:0; border:0; background:var(--sidebar-bg); overflow:hidden; }
+#settings-dialog #settings-title { margin:0; font:600 18px/1.5 var(--font-ui); letter-spacing:0; }
 #settings-dialog .settings-nav { grid-column:1; grid-row:2; display:block; min-width:0; min-height:0; padding:0 10px 24px; border:0; background:var(--sidebar-bg); overflow:auto; }
 #settings-dialog .settings-group { display:block; margin:20px 12px 8px; color:var(--text-muted); font:500 12px/1.5 var(--font-ui); }
 #settings-dialog .settings-nav-group:first-child .settings-group { margin-top:10px; }
@@ -19,7 +19,8 @@
 #settings-dialog .settings-section-header { display:flex; flex-direction:column; align-items:flex-start; gap:10px; margin-bottom:32px; }
 #settings-dialog .settings-section-header :is(h2,h3) { margin:0; font:600 25px/1.35 var(--font-ui); letter-spacing:-.02em; }
 #settings-dialog .settings-section-header p { margin:0; color:var(--text-muted); font:400 13px/1.7 var(--font-ui); }
-#settings-dialog .settings-section-header .page-scope { max-width:100%; padding:3px 8px; border-radius:5px; background:var(--surface-input); font-size:11px; overflow-wrap:anywhere; }
+#settings-dialog .settings-title-line { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+#settings-dialog .settings-section-header .page-scope { margin:0; color:var(--text-muted); font:400 11px/1.6 var(--font-ui); overflow-wrap:anywhere; }
 #settings-dialog .section-kicker { display:inline-block; margin-inline-start:8px; vertical-align:middle; color:var(--text-muted); font:500 10px/1.5 var(--font-ui); letter-spacing:0; }
 #settings-dialog .settings-group-block { margin:30px 0 0; padding:0; border:0; }
 #settings-dialog .settings-group-block > :is(h3,h4) { margin:0 0 12px; color:var(--text-soft); font:600 13px/1.5 var(--font-ui); }
@@ -129,7 +130,7 @@
 #settings-dialog .desktop-settings-integrated button:disabled { color:var(--text-muted); opacity:.55; }
 #settings-dialog .desktop-settings-integrated button.danger { color:var(--danger); }
 #settings-dialog .desktop-settings-integrated a { color:var(--accent); }
-#settings-dialog #clat-desktop-versions { white-space:pre-line; color:var(--text-soft); }
+
 #settings-dialog .settings-draft-bar { margin-top:20px; padding:12px 16px; border:1px solid var(--line); background:var(--surface-input); }
 #settings-dialog .settings-mobile-back { display:none; width:32px; height:32px; min-height:32px; padding:6px; }
 @media (prefers-reduced-motion:reduce) { #settings-dialog input::after { transition:none; } }

@@ -5,7 +5,7 @@ function createApplicationToolbar(shell){
   const list=navigationIcon(()=>viewText('toggle_list'),'panel',()=>toggleViewList(shell));list.id='project-list-toggle';navigation.append(back,forward,list);
   const location=el('nav','application-location');CLATI18n.attribute(location,'aria-label',()=>viewText('location'));
   const actions=el('nav','application-actions'),menu=el('div','workbench-tools hidden');menu.id='workbench-tools';menu.setAttribute('role','menu');
-  const more=navigationIcon(()=>CLATI18n.msg('tui.tools'),'tools',()=>{menu.classList.toggle('hidden');more.setAttribute('aria-expanded',String(!menu.classList.contains('hidden')));});more.id='tools-open';more.setAttribute('aria-controls',menu.id);more.setAttribute('aria-expanded','false');
+  const more=navigationIcon(()=>CLATI18n.msg('tui.tools'),'tools',()=>{closeSessionMenu();menu.classList.toggle('hidden');more.setAttribute('aria-expanded',String(!menu.classList.contains('hidden')));});more.id='tools-open';more.setAttribute('aria-controls',menu.id);more.setAttribute('aria-expanded','false');
   const technical=document.querySelector('.session-technical');technical.querySelector('summary').after(document.querySelector('.conversation-meta'));
   const legacy=document.querySelector('.header-actions');legacy.hidden=true;legacy.id='legacy-workbench-actions';legacy.append(dom['session-title'],dom['mobile-sidebar-open']);document.getElementById('conversation-page').append(legacy);dom['session-title'].hidden=true;dom['mobile-sidebar-open'].hidden=true;
   document.querySelector('.conversation-header').remove();bar.append(navigation,location,more,actions,menu);dom.app.prepend(bar);

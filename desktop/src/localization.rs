@@ -93,7 +93,13 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         "CLAT",
         true,
         &[
-            &Item::about(app, Some(l.text("desktop.menu_about")), None)?,
+            &MenuItem::with_id(
+                app,
+                "desktop-about",
+                l.text("desktop.menu_about"),
+                true,
+                None::<&str>,
+            )?,
             &MenuItem::with_id(
                 app,
                 "desktop-check-update",

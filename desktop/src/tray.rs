@@ -187,8 +187,10 @@ pub fn activate(app: &tauri::AppHandle, id: &str) {
         app.exit(0);
         return;
     }
-    let intent = if id == "tray-settings" {
+    let intent = if matches!(id, "tray-settings" | "desktop-about") {
         serde_json::json!({"settings":true})
+    } else if id == "desktop-check-update" {
+        serde_json::json!({"settings":true,"checkUpdate":true})
     } else {
         let state = app.state::<State>();
         let Some(row) = state
@@ -208,7 +210,10 @@ pub fn activate(app: &tauri::AppHandle, id: &str) {
 }
 fn open(app: &tauri::AppHandle, intent: serde_json::Value) {
     let state = app.state::<Desktop>();
-    let _connection = state.connection.lock().expect("connection");
+    // Local application settings remain available while Host startup is blocked.
+    let _connection = intent["conversation"]
+        .is_object()
+        .then(|| state.connection.lock().expect("connection"));
     if state.updates.lock().expect("updates").preserve_page() {
         crate::app::show(app);
         return;

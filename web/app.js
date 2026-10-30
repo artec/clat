@@ -2517,11 +2517,13 @@ function openSessionMenu(session, x, y, source) {
 function positionSessionMenu(menu, x, y, source) {
   const style = getComputedStyle(menu);
   const inset = parseFloat(style.getPropertyValue('--menu-inset'));
-  const gap = parseFloat(style.getPropertyValue('--menu-gap'));
-  const anchor = (source.closest('.application-toolbar') || source.classList.contains('session-more')) ? source : null;
+  const toolbar = source.closest('.application-toolbar');
+  const gap = parseFloat(style.getPropertyValue(toolbar ? '--toolbar-menu-gap' : '--menu-gap'));
+  const anchor = toolbar || (source.classList.contains('session-more') ? source : null);
   if (anchor) {
     const bounds = anchor.getBoundingClientRect();
-    x = bounds.right - menu.offsetWidth;
+    const rightInset = toolbar ? parseFloat(style.getPropertyValue('--toolbar-menu-inset')) : 0;
+    x = Math.min(bounds.right, innerWidth) - rightInset - menu.offsetWidth;
     y = bounds.bottom + gap;
     if (y + menu.offsetHeight > innerHeight - inset && bounds.top - gap - menu.offsetHeight >= inset) {
       y = bounds.top - gap - menu.offsetHeight;
