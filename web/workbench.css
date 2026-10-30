@@ -228,6 +228,8 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .session-technical .inspector-section, .session-technical .inspector-toolbar { padding-inline: 0; }
 .session-technical .inspector-section h2 { letter-spacing: 0; font-family: var(--font-ui); }
 .shell-pages { overflow: auto; height: 100%; min-width: 0; background: var(--surface); }
+/* Full-height split views own their scrollers; the shell reserves no gutter. */
+.shell-pages:has(> :is(.navigation-layout,.settings-dialog):not(.hidden):not([hidden])) { overflow:hidden; }
 .page-tabs { display: flex; gap: 12px; padding: 20px 32px; border-bottom: 1px solid var(--line); }
 .page-tabs[hidden] { display: none; }
 .shell-surface { position: static; inset: auto; width: 100%; max-width: none; max-height: none; height: auto; margin: 0; border: 0; border-radius: 0; background: var(--surface); color: var(--text); overflow: visible; box-shadow: none; }
@@ -281,7 +283,6 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 }
 
 /* Shared content pages: clear ownership, compact controls and useful detail panes. */
-.shell-pages { scrollbar-gutter: stable; }
 .shell-pages [hidden], .shell-pages .hidden { display: none !important; }
 .shell-pages .shell-surface { min-height: 100%; padding: 32px clamp(20px, 3.5vw, 56px); }
 .page-header, .shell-pages .review-header { display: flex; align-items: center; gap: 12px; margin: 0 0 24px; padding: 0; border: 0; }
@@ -477,7 +478,6 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .shell-content > .conversation-page { flex: 1; height: auto; min-height: 0; }
 .shell-content > .shell-pages { flex: 1; min-height: 0; }
 .workspace-tool-host { flex:1;min-width:0;min-height:0;overflow:hidden;border-radius:inherit;isolation:isolate; }
-.workspace-tool-host.workspace-tool-departing { position:absolute;inset:0;z-index:10;pointer-events:none; }
 .app:is([data-tool],[data-page]) { --current-inspector:0px; }
 .app:is([data-tool],[data-page]) > .inspector { visibility:hidden;pointer-events:none; }
 .workspace-tool[hidden] { display: none !important; }

@@ -2892,8 +2892,11 @@ Help groups getting started, workflows, keyboard navigation and troubleshooting.
 
 The right workspace shortcuts and the Tools menu open Project Files, Git,
 Operation Records, Current Tasks, and Plans & Goals in a shared list/detail area.
-There is no conversation/tool tab bar. Opening a tool uses a short fade/expand
-transition; closing reverses it over the retained conversation. Rapid navigation
+There is no conversation/tool tab bar. Column widths retain their short eased
+transition. When returning from a tool, only the conversation history stays
+transparent during resizing, restores its reading position at the final width,
+then fades in. The composer and sidebars remain visible; tools do not fade as a
+whole. History text is never scaled. Rapid navigation
 interrupts motion immediately, and the system Reduce Motion preference disables it. The top breadcrumb shows the actual view
 hierarchy; only these five tools have an × beside the last level. The × or parent
 conversation name returns to the existing conversation, preserving its draft and
@@ -3177,6 +3180,11 @@ or disconnected status still appears above the workspace tools.
 Settings uses the shared navigation title spacing, a compact grouped category sidebar with shared icons and the same
 search control as the other navigation pages. Search filters category names only; it does not read credential values or
 change the open panel. Press Enter to open the first matching category.
+All navigation pages share a shell without an extra reserved scrollbar gutter.
+Split views, including Settings, own their list/detail scrollers; the outer shell
+does not scroll. Full-page content such as Help retains its normal page scrolling.
+Settings text and cards retain their centered reading width, independently of the
+detail scrollbar at the workspace edge.
 
 In the conversation toolbar, Session actions and search use the same top/right
 menu spacing as Tools. Clicking Tools while Session actions is open closes that

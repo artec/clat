@@ -15,7 +15,7 @@ function installWorkspaceTools(shell) {
   let unread=false,pending=0;
   const content = document.getElementById('content-area'); content.append(host);
   const conversation = document.getElementById('conversation-page');
-  const motion=createWorkspaceToolMotion(host,conversation,sync);
+  const motion=createWorkspaceToolMotion();
   function route() { if (!navigating && context.isActive()) context.navigatePage(active ? 'workbench?tool=' + seats.get(selected).key + '&session=' + encodeURIComponent(owner || '') : 'workbench'); }
   function sync() {
     host.classList.toggle('hidden', !active); host.inert = !active;
@@ -34,17 +34,17 @@ function installWorkspaceTools(shell) {
     else sync();
   }
   function showChat(update = true) {
-    motion.cancel();const departing=active?seats.get(selected)?.node:null;
+    motion.cancel();const returning=active;
     suspend(); unread=false; sync(); refreshStatus();restoreProjectReading(); if (update) route();
-    if(departing&&!shell.page)motion.close(departing);
+    if(returning&&!shell.page)motion.close();
   }
   function open(id) {
     if (!seats.has(id)) return;
-    motion.cancel();const changed=!active||selected!==id;
+    motion.cancel();
     if (shell.page) shell.chat(false);
     if (owner !== state.sessionId) resetOwner();
     if (selected !== id) suspend();
-    selected = id; activate(); route();if(changed)motion.open();
+    selected = id; activate(); route();
   }
   function resetOwner(){
     motion.cancel();
@@ -99,26 +99,39 @@ function mountWorkspaceToolRegion(node,host,key){
 }
 
 /* Motion owns temporary paint only; lifecycle, selection and execution switch immediately. */
-function createWorkspaceToolMotion(host,conversation,settle){
-  const reduced=matchMedia('(prefers-reduced-motion: reduce)');let animations=[],departing=null,epoch=0;
+function createWorkspaceToolMotion(){
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  const viewport=dom['transcript-scroll'];
+  let animations=[],resizing=[],frame=0,epoch=0,restoring=false;
   function cancel(){
+    if(frame)cancelAnimationFrame(frame);frame=0;
+    if(restoring){
+      for(const animation of resizing){try{animation.finish();}catch(_){/* Already cancelled. */}}
+      restoreProjectReading();restoring=false;
+    }
     epoch++;for(const animation of animations)animation.cancel();animations=[];
-    if(departing){departing=null;host.classList.remove('workspace-tool-departing');host.removeAttribute('aria-hidden');settle();}
+    resizing=[];
   }
-  function enabled(){return context.isActive()&&!reduced.matches&&typeof host.animate==='function';}
-  function play(node,frames,duration){const animation=node.animate(frames,{duration,easing:'cubic-bezier(.2,.75,.25,1)',fill:'both'});animations.push(animation);return animation;}
-  function open(){
-    if(!enabled())return;const version=++epoch;
-    const animation=play(host,[{opacity:0,transform:'translateY(10px) scale(.992)',transformOrigin:'50% 0'},{opacity:1,transform:'none',transformOrigin:'50% 0'}],200);
-    animation.finished.then(()=>{if(version===epoch){for(const item of animations)item.cancel();animations=[];}},()=>{});
-  }
-  function close(node){
-    if(!enabled())return;const version=++epoch;departing=node;
-    host.classList.remove('hidden');host.classList.add('workspace-tool-departing');host.inert=true;host.setAttribute('aria-hidden','true');node.hidden=false;node.inert=true;
-    play(conversation,[{opacity:.55},{opacity:1}],180);
-    const animation=play(host,[{opacity:1,transform:'none',transformOrigin:'50% 0'},{opacity:0,transform:'translateY(10px) scale(.992)',transformOrigin:'50% 0'}],160);
-    animation.finished.then(()=>{if(version===epoch)cancel();},()=>{});
+  function close(){
+    if(!context.isActive()||reduced.matches||typeof viewport.animate!=='function')return;
+    const version=++epoch;restoring=true;
+    // Only history is concealed; the composer, sidebars and tools keep their geometry motion.
+    const cover=viewport.animate([{opacity:0},{opacity:0}],{duration:1,fill:'forwards'});
+    animations.push(cover);
+    // Resolve styles before collecting the actual CSS transitions, avoiding a second timing constant.
+    void getComputedStyle(dom.app).gridTemplateColumns;
+    resizing=dom.app.getAnimations().filter(animation=>animation.transitionProperty==='grid-template-columns');
+    Promise.allSettled(resizing.map(animation=>animation.finished)).then(()=>{
+      if(version!==epoch)return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;if(version!==epoch)return;
+        restoreProjectReading();restoring=false;resizing=[];
+        const fade=viewport.animate([{opacity:0},{opacity:1}],{duration:160,easing:'ease-out',fill:'both'});
+        cover.cancel();animations=[fade];
+        fade.finished.then(()=>{if(version===epoch)cancel();},()=>{});
+      });
+    });
   }
   reduced.addEventListener('change',()=>{if(reduced.matches)cancel();});
-  return {open,close,cancel};
+  return {close,cancel};
 }

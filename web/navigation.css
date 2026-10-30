@@ -27,7 +27,6 @@
 .navigation-body>h3:first-child{margin-top:0}.navigation-body pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .navigation-back{display:none!important}
 .app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions']) #inspector{display:none}
-.app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions']) .shell-pages{overflow:hidden;scrollbar-gutter:auto}
 .navigation-layout .picker-hint,.navigation-layout .settings-note{overflow-wrap:anywhere}
 .navigation-status{margin:0 14px 8px;font-size:var(--text-size-secondary);color:var(--text-muted)}
 .navigation-status:empty{display:none}
