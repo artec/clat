@@ -47,7 +47,7 @@ impl WorkspaceHost {
             .application
             .update_workspace(request.project_id.as_deref(), root.as_deref(), request.edit)
             .map_err(|error| {
-                RpcError::bad_request(&error.to_string()).with_presentation(error.presentation())
+                RpcError::bad_request(error.to_string()).with_presentation(error.presentation())
             })?;
         drop(projects);
         self.notifications

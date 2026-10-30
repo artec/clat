@@ -3132,6 +3132,9 @@ const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
     "https://pi.at.cn",
     "https://pi.at.cn/catalog.json",
     "https://github.com/artec/clat/releases",
+    // vendor README 的文档引证（canvas 字体查证的 WebKit 缺陷说明），
+    // 非运行时目的地；离线 bundle 不发任何网络请求。
+    "https://bugs.webkit.org/show_bug.cgi?id=316777",
 ];
 
 #[test]

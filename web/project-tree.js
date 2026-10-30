@@ -85,7 +85,7 @@
       const retry = button('project-sessions-retry', () => text('retry_project'), () => { void this.load(row, true); });
       CLATI18n.bind(retry, 'textContent', () => text('retry_project'));
       const organization=this.host.organization.menuButton(row);this.host.organization.bind(header,row,organization);
-      header.append(toggle, title, fresh, organization); body.append(list, status, more, retry); group.append(header, body);
+      header.append(toggle, title, organization, fresh); body.append(list, status, more, retry); group.append(header, body);
       return { group, body, toggle, title, badge, list, status, more, retry, fresh, pin,
         identity: JSON.stringify([row.route_id, row.root]) };
     }

@@ -3256,7 +3256,9 @@ uses a separate muted project row. Only the conversation row activates navigatio
 Project rows in Conversations, Terminal and Settings → Projects share a three-dot
 menu and the same right-click menu: Rename project, Pin/Unpin project, and Use
 directory name. The menu button appears on hover or keyboard focus without
-reserving blank text space; touch devices keep it available. Renaming uses a
+reserving blank text space; touch devices keep it available. In conversation and
+terminal project rows, the menu sits immediately left of the new-item plus button.
+Renaming uses a
 small form (Enter saves, Escape cancels); failed saves keep the entered name.
 Custom names are trimmed, allow 1–128 Unicode characters, and reject controls.
 
