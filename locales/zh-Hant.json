@@ -402,7 +402,7 @@
   "dev.cm_unfold": "展開行",
   "dev.commit": "提交",
   "dev.commit_language": "自動提交說明語言",
-  "dev.commit_placeholder": "提交說明；留空則自動產生並提交",
+  "dev.commit_placeholder": "留空則自動產生並提交",
   "dev.compare": "比較",
   "dev.conflict": "底層內容已變更，請重新整理確認後重試。",
   "dev.controlling": "你正在控制此終端。",

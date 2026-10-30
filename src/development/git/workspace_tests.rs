@@ -166,6 +166,54 @@ fn development_git_graph_pages_freeze_the_revision_walk() {
             .any(|r| r.as_str().unwrap().contains("graph-label"))
     );
 }
+#[test]
+fn development_git_graph_accepts_many_labels_for_the_same_revision() {
+    let f = Fixture::new();
+    f.repository();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let mut refs = String::from("# pack-refs with: peeled fully-peeled sorted\n");
+    for n in 0..4100 {
+        refs.push_str(&format!("{head} refs/tags/release-{n:04}\n"));
+    }
+    fs::write(f.project.join(".git/packed-refs"), refs).unwrap();
+    let history = f.call("git.history", json!({"scope":"all"})).unwrap();
+    assert_eq!(history["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(history["commits"][0]["id"], head);
+    assert_eq!(
+        history["commits"][0]["refs"].as_array().unwrap().len(),
+        4101
+    );
+    assert_eq!(history["hasMore"], false);
+}
+
+#[test]
+fn development_git_graph_peels_tag_chains_and_skips_non_commit_labels() {
+    let f = Fixture::new();
+    f.repository();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["tag", "--no-sign", "-am", "annotated", "annotated"]);
+    f.git(&["tag", "--no-sign", "-am", "nested", "nested", "annotated"]);
+    let tree = f.git(&["rev-parse", "HEAD^{tree}"]);
+    f.git(&["update-ref", "refs/tags/tree", &tree]);
+    let blob = f.git(&["hash-object", "file.txt"]);
+    f.git(&["update-ref", "refs/tags/blob", &blob]);
+    let history = f.call("git.history", json!({"scope":"all"})).unwrap();
+    assert_eq!(history["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(history["commits"][0]["id"], head);
+    assert!(
+        history["commits"][0]["refs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "tag: nested")
+    );
+    let empty = Fixture::new();
+    empty.git(&["init", "-q", "--template="]);
+    assert_eq!(
+        empty.call("git.history", json!({"scope":"all"})).unwrap()["commits"],
+        json!([])
+    );
+}
 #[cfg(unix)]
 #[test]
 fn development_git_repository_cache_rejects_replaced_directory_links() {

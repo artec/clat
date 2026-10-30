@@ -56,36 +56,19 @@ impl GitService {
         if !["all", "current"].contains(&scope) {
             return Err("invalid_scope".into());
         }
-        let mut anchors = Vec::new();
+        // Resolve and peel all reference tips in one Git process, without walking
+        // their ancestors. Labels are not separate revisions: thousands of tags
+        // at one commit must not exhaust a per-label timer or cursor capacity.
+        let mut args = vec!["rev-list", "--no-walk=unsorted", "--ignore-missing"];
         if scope == "all" {
-            let raw = query(
-                &self.project,
-                &[
-                    "for-each-ref",
-                    "--format=%(objectname)",
-                    "refs/heads",
-                    "refs/remotes",
-                    "refs/tags",
-                ],
-            )?;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            for (i, id) in String::from_utf8(raw)
-                .map_err(|_| "git_encoding")?
-                .lines()
-                .enumerate()
-            {
-                if i >= 4096 || std::time::Instant::now() >= deadline {
-                    return Err("git_output_large".into());
-                }
-                let commit = format!("{}^{{commit}}", oid(id)?);
-                if let Ok(raw) = query(&self.project, &["rev-parse", "--verify", &commit]) {
-                    anchors.push(json!(String::from_utf8_lossy(&raw).trim()));
-                }
-            }
+            args.extend(["--branches", "--remotes", "--tags"]);
         }
-        if let Ok(raw) = query(&self.project, &["rev-parse", "--verify", "HEAD"]) {
-            anchors.push(json!(String::from_utf8_lossy(&raw).trim()));
-        }
+        args.extend(["HEAD", "--"]);
+        let raw = String::from_utf8(query(&self.project, &args)?).map_err(|_| "git_encoding")?;
+        let mut anchors = raw
+            .lines()
+            .map(|id| oid(id).map(|id| json!(id)))
+            .collect::<Result<Vec<_>, _>>()?;
         anchors.sort_by_key(Value::to_string);
         anchors.dedup();
         Ok(anchors)

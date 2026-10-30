@@ -3134,7 +3134,10 @@ Only one repository is selected for an operation; commit drafts, pending operati
 and comparison tabs remain attached to it when switching repositories.
 
 The graph walks the current branch or all existing local/remote references without
-fetching. Expand a commit to select its changed files. Merge commits default to the
+fetching. Reference tips, including annotated tag chains, are resolved in one batch
+and deduplicated before freezing the paginated walk; extra labels do not consume
+separate revision slots. Tags pointing to non-commit objects are excluded.
+Expand a commit to select its changed files. Merge commits default to the
 first parent and allow choosing another parent; root commits compare against an
 empty version. Binary, oversized, conflicted and submodule entries show a bounded
 explanation instead of an ordinary editable comparison.

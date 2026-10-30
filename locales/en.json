@@ -402,7 +402,7 @@
   "dev.cm_unfold": "Unfold line",
   "dev.commit": "Commit",
   "dev.commit_language": "Generated commit message language",
-  "dev.commit_placeholder": "Commit message · leave empty to generate and commit",
+  "dev.commit_placeholder": "Leave empty to generate and commit",
   "dev.compare": "Compare",
   "dev.conflict": "The underlying content changed. Refresh and review before retrying.",
   "dev.controlling": "You control this terminal.",
