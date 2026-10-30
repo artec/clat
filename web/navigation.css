@@ -26,7 +26,7 @@
 .navigation-body:empty{display:none}
 .navigation-body>h3:first-child{margin-top:0}.navigation-body pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .navigation-back{display:none!important}
-.app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions']) #inspector{display:none}
+.app:is([data-page='terminal'],[data-page='resources'],[data-page^='tasks'],[data-page='history'],[data-page='extensions'],[data-page='help']) #inspector{display:none}
 .navigation-layout .picker-hint,.navigation-layout .settings-note{overflow-wrap:anywhere}
 .navigation-status{margin:0 14px 8px;font-size:var(--text-size-secondary);color:var(--text-muted)}
 .navigation-status:empty{display:none}
@@ -74,3 +74,21 @@
 .navigation-option-copy small{display:block;color:var(--text-muted);font-size:var(--text-size-secondary);font-weight:400;line-height:1.7;margin-top:6px;overflow-wrap:anywhere}
 .navigation-detail>.schedule-interactions{flex:none;max-height:40%;overflow:auto;padding:12px 16px}
 .navigation-detail>.schedule-interactions:empty{display:none}
+
+/* Help uses the same searchable sidebar and full-width scroll owner as other pages. */
+.help-topic-group>h3{margin:18px 12px 8px;color:var(--text-muted);font-size:var(--text-size-secondary);font-weight:500}
+.help-topic-group:first-child>h3{margin-top:8px}
+.help-no-results{margin:16px 12px;color:var(--text-muted);font-size:var(--text-size-ui);line-height:1.8}
+.help-article{max-width:820px;overflow-wrap:anywhere}
+.help-intro>svg{width:28px;height:28px;color:var(--accent);margin-bottom:16px}
+.help-article h2{margin:0 0 12px;font-size:24px;font-weight:600;line-height:1.4}
+.help-intro>p{margin:0 0 20px;color:var(--text-muted);line-height:1.8}
+.help-article>section{margin-top:32px}
+.help-article h3{margin:0 0 14px;font-size:16px;font-weight:600}
+.help-steps ol{padding-left:24px;margin:0}
+.help-steps li{padding-left:8px;margin:0 0 16px;line-height:1.9;color:var(--text-soft);font-size:var(--text-size-ui)}
+.help-steps li::marker{color:var(--accent);font-weight:600}
+.help-questions{padding:20px;border:1px solid var(--line);border-radius:var(--radius-md)}
+.help-questions h4{margin:0 0 8px;font-size:var(--text-size-ui);font-weight:500}
+.help-questions p{margin:0;line-height:1.9;color:var(--text-muted);font-size:var(--text-size-ui)}
+.help-related .navigation-row{padding-inline:0!important}

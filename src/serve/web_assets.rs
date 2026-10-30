@@ -365,6 +365,16 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/help-topics.js",
+        include_bytes!("../../web/help-topics.js"),
+        "application/javascript",
+    ),
+    (
+        "/help-center.js",
+        include_bytes!("../../web/help-center.js"),
+        "application/javascript",
+    ),
+    (
         "/navigation-help.js",
         include_bytes!("../../web/navigation-help.js"),
         "application/javascript",
@@ -484,6 +494,8 @@ const PROJECT_MODULES: &[&str] = &[
     "/workflow-details.js",
     "/workflow-view.js",
     "/work-mode.js",
+    "/help-topics.js",
+    "/help-center.js",
     "/navigation-help.js",
     "/task-review.js",
     "/extension-view.js",

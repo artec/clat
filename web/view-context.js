@@ -51,7 +51,6 @@ function toggleViewList(shell){
 function registerGlobalViewContexts(shell){
   const settings=document.getElementById('settings-dialog'),nav=settings.querySelector('.settings-nav');
   registerView(settings,{id:settings.id,sidebar:nav,crumbs:()=>[{label:()=>shellText('settings'),run:()=>{viewListPreferences.write(settings.id,false);refreshViewContext();nav.querySelector('button')?.focus();}},...(currentSettingsCategory?[{label:()=>settingsCategoryLabel(currentSettingsCategory)}]:[])],actions:()=>[]});
-  const help=document.getElementById('help-dialog');registerView(help,{id:help.id,crumbs:()=>[{label:()=>shellText('help')}],actions:()=>[]});
 }
 function settingsCategoryLabel(category){
   const keys={appearance:'web.appearance',projects:'web.projects',models:'web.models',utility:'web.companion',permissions:'web.permissions',wechat:'web.wechat',web:'webtool.title',desktop:'pages.updates_about',terminal:'dev.terminal',git:'dev.git'};

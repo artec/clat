@@ -1838,3 +1838,23 @@ uses `model.preset.select` for explicit activation; it owns no vendor table, key
 store or model policy. Preset selection fields are action arguments, separate from
 the unsaved custom-profile editor. Native tray typography lives in the macOS client
 adapter; menu actions, recent identity and persisted ordering remain in `tray.rs`.
+
+
+### Contextual help ownership
+
+`help-topics.js` is the static guide registry (topic, group, shared icon, existing
+navigation target and related topics). `help-center.js` maps view IDs and settings
+categories to guides, searches localized catalog text locally, and composes the
+shared navigation frame. The application toolbar adds a secondary help intent to
+each view without adding business actions to the help renderer. Every guide uses
+the shared three-language catalogs, with no HTML injection or external content
+fetch. New pages should supply a matching topic mapping and guide alongside their
+user-facing behavior.
+
+A return target captures page/tool identity, settings category, project and
+conversation; it invokes existing navigation only while the owner still matches.
+Topic routes reuse the existing page history and existing project workbench
+lifecycle. Help creates no run, permission policy, persistence or RPC surface.
+Notification permission controls remain owned by navigation settings, independently
+of the guide renderer. Guide selection and scroll state live in the mounted
+client; changing locale rebinds guide text and refilters the existing search.

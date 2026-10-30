@@ -28,7 +28,7 @@ function createShellRail(shell) {
   ]) links.append(shellButton(id, icon, () => shellText(label), () => { closeMobileSidebar(); run(); }));
   const bottom = el('div', 'global-bottom sidebar-footer');
   bottom.append(shellButton('nav-settings', 'settings', () => shellText('settings'), () => openSettings()),
-    shellButton('nav-help', 'help', () => shellText('help'), () => shell.open('help-dialog')));
+    shellButton('nav-help', 'help', () => shellText('help'), () => openHelp()));
   rail.append(links, bottom); dom.app.prepend(rail);
   return rail;
 }

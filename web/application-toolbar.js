@@ -23,7 +23,8 @@ function refreshApplicationToolbar(shell=workbenchShell){
   renderApplicationActions(chrome,view,shell);chrome.back.disabled=!context.history.canGo(-1);chrome.forward.disabled=!context.history.canGo(1);syncPanelAccessibility();
 }
 function renderApplicationActions(chrome,view,shell){
-  const actions=(view.actions?.()||[]).filter(action=>!action.hidden?.()),primary=actions.filter(action=>action.primary).slice(0,3),secondary=actions.filter(action=>!primary.includes(action));
+  const contextualHelp=view.id==='help-dialog'?[]:[viewAction('page-help','help',()=>helpText('page_help'),()=>openHelp(),false)];
+  const actions=[...(view.actions?.()||[]),...contextualHelp].filter(action=>!action.hidden?.()),primary=actions.filter(action=>action.primary).slice(0,3),secondary=actions.filter(action=>!primary.includes(action));
   const signature=JSON.stringify([view.id,actions.map(a=>[a.id,typeof a.label==='function'?a.label():a.label,a.enabled?.()!==false,Boolean(a.busy?.())]),Boolean(view.workspace),shell.tools?.current()?.id]);
   if(signature===chrome.signature)return;chrome.signature=signature;chrome.actions.replaceChildren();chrome.menu.replaceChildren();
   const button=(action,inline)=>{const run=event=>{const source=inline?event.currentTarget:chrome.more;chrome.close();void Promise.resolve().then(()=>{if(activeViewContext(shell).id===view.id&&action.enabled?.()!==false)return action.run({currentTarget:source,detail:event.detail});}).catch(error=>{if(activeViewContext(shell).id===view.id)updateRunState(error.message||String(error));});};const node=inline?navigationIcon(action.label,action.icon,run):shellButton('',action.icon,action.label,run);node.dataset.action=action.id;if(action.controls)node.setAttribute('aria-controls',action.controls);if(action.expanded)node.setAttribute('aria-expanded',String(action.expanded()));node.disabled=action.enabled?.()===false||Boolean(action.busy?.());if(!inline)node.setAttribute('role','menuitem');return node;};

@@ -1948,7 +1948,8 @@ next spawn, and run cleanup/restart removes all entries. No cross-run history,
 background jobs, stdin or process-specific cancel controls are added. Viewing
 logs does not consume the tool's output cursor or extend a process lifetime.
 
-**Help** explains current shortcuts and optional online page notifications.
+**Help** opens the contextual, searchable guides described below; online page
+notification controls remain in General & Appearance settings.
 Notifications are off by default and require a user click plus browser permission;
 completion, failure, approval and questions come only from live host facts and
 are deduplicated in this page. Focused pages use inline status; notifications do
@@ -2885,7 +2886,20 @@ configuration, update and rollback flows. Public previews are distinguished from
 installable packages. WeChat settings lists paired and manually authorized users;
 complete revocation removes both grant sources. Web settings separates fetch mode
 from search credentials. Configuration is not a successful connectivity check.
-Help groups getting started, workflows, keyboard navigation and troubleshooting.
+Help uses the shared searchable list/detail layout. Each main page, workspace tool
+and settings category offers **Help for this page** in its top Tools menu; the
+Help navigation button also selects the guide for the page being viewed. Guides
+cover concrete steps, common problems and related features, with links that only
+navigate: they do not submit, restore, launch shells or change permissions.
+Search covers guide titles and bodies in the current interface language and stays
+local; it does not query conversations, files or a remote service. No-match results
+provide a clear-search action. The selected guide is addressable by
+`#/help?topic=git` (with the normal project URL retained), including browser
+back/forward navigation. **Return to source page** restores the originating tool,
+conversation or settings category while that project and conversation still match;
+changing either invalidates that return target. Conversation drafts and tool state
+remain owned by their existing controllers. Help itself does not run diagnostics
+or claim that saved configuration proves connectivity.
 
 
 ### Web/Desktop conversation reading and next steps
@@ -3186,7 +3200,7 @@ search control as the other navigation pages. Search filters category names only
 change the open panel. Press Enter to open the first matching category.
 All navigation pages share a shell without an extra reserved scrollbar gutter.
 Split views, including Settings, own their list/detail scrollers; the outer shell
-does not scroll. Full-page content such as Help retains its normal page scrolling.
+does not scroll. Split navigation pages, including Help, keep separate sidebar and detail scrollers.
 Settings text and cards retain their centered reading width, independently of the
 detail scrollbar at the workspace edge.
 

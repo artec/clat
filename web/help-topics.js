@@ -1,0 +1,27 @@
+/* Local guide metadata; all displayed copy lives in the shared catalogs. */
+const HELP_TOPICS = [
+  {"id":"chat","group":"conversation","icon":"chat","target":"conversation","related":["queue","context","keyboard"]},
+  {"id":"queue","group":"conversation","icon":"pending","target":"conversation","related":["chat","workflow"]},
+  {"id":"context","group":"conversation","icon":"trace","target":"conversation","related":["chat","models"]},
+  {"id":"files","group":"tools","icon":"folder","target":"file-browser","related":["git","resources","terminal"]},
+  {"id":"git","group":"tools","icon":"branch","target":"workspace-review","related":["git_settings","files","operations"]},
+  {"id":"operations","group":"tools","icon":"activity-log","target":"turn-review","related":["git","processes"]},
+  {"id":"processes","group":"tools","icon":"task-list","target":"task-review","related":["tasks","operations","terminal"]},
+  {"id":"workflow","group":"tools","icon":"plan","target":"workflow-details","related":["queue","permissions","tasks"]},
+  {"id":"terminal","group":"pages","icon":"terminal","target":"terminal-page","related":["terminal_font","processes","projects"]},
+  {"id":"resources","group":"pages","icon":"folder","target":"resources-dialog","related":["files","history"]},
+  {"id":"tasks","group":"pages","icon":"schedule","target":"jobs-dialog","related":["processes","workflow"]},
+  {"id":"history","group":"pages","icon":"history","target":"history-dialog","related":["chat","resources","operations"]},
+  {"id":"extensions","group":"pages","icon":"wasm","target":"market-dialog","related":["permissions","network"]},
+  {"id":"appearance","group":"settings","icon":"settings","target":"settings:appearance","related":["terminal_font","chat"]},
+  {"id":"terminal_font","group":"settings","icon":"terminal","target":"settings:terminal","related":["terminal","appearance"]},
+  {"id":"models","group":"settings","icon":"wasm","target":"settings:models","related":["utility","context","network"]},
+  {"id":"permissions","group":"settings","icon":"permission-write","target":"settings:permissions","related":["workflow","files","terminal"]},
+  {"id":"projects","group":"settings","icon":"folder","target":"settings:projects","related":["chat","files","about"]},
+  {"id":"network","group":"settings","icon":"search","target":"settings:web","related":["models","extensions","wechat"]},
+  {"id":"wechat","group":"settings","icon":"chat","target":"settings:wechat","related":["permissions","network"]},
+  {"id":"utility","group":"settings","icon":"sparkles","target":"settings:utility","related":["models","git","chat"]},
+  {"id":"about","group":"settings","icon":"info","target":"settings:desktop","related":["projects","models"]},
+  {"id":"git_settings","group":"settings","icon":"branch","target":"settings:git","related":["git","models"]},
+  {"id":"keyboard","group":"conversation","icon":"help","target":"conversation","related":["chat","files","git"]}
+];
