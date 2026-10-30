@@ -257,10 +257,7 @@ fn command_interactive_selections_are_usage_errors_headless() {
     let (storage_root, project_root, project) = setup("exec-command-interactive");
     prepare_storage(&project, &storage_root, TestBehavior::Success);
     for command in ["/model", "/resume", "/perm"] {
-        let mut options = args(None);
-        options.command = Some(command.into());
-        let (io, _captured) = ExecIo::capture(&[]);
-        let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+        let (outcome, _captured) = command_after_close(&project, &storage_root, command);
         match outcome {
             ExecOutcome::UsageError(message) => {
                 assert!(message.contains("interactive"), "{command}: {message}");

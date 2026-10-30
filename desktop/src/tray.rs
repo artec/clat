@@ -259,6 +259,48 @@ fn open(app: &tauri::AppHandle, intent: serde_json::Value) {
     crate::app::show(app);
     let _ = app.emit_to("main", "desktop-tray-intent", ());
 }
+/// Refresh display metadata for all cached recents, without opening or reordering them.
+pub fn sync_project_titles(
+    app: &tauri::AppHandle,
+    client: &clat_core::client_ports::host::HostClient,
+) {
+    let Ok(directory) = client.workspace_directory() else {
+        return;
+    };
+    let desktop = app.state::<Desktop>();
+    let current = desktop.host.lock().expect("host state");
+    if current.as_ref().map(|host| host.instance_id()) != Some(client.instance_id()) {
+        return;
+    }
+    let state = app.state::<State>();
+    let mut rows = state.rows.lock().expect("recents");
+    if !apply_project_titles(&mut rows, &directory) {
+        return;
+    }
+    if let Ok(path) = crate::localization::path(app) {
+        let _ = save_ui_preferences(&path, &serde_json::json!({"recentConversations":*rows}));
+    }
+    drop(rows);
+    drop(current);
+    let _ = refresh(app);
+}
+
+fn apply_project_titles(
+    rows: &mut [Recent],
+    directory: &[clat_core::client_ports::host::WorkspaceDirectoryEntry],
+) -> bool {
+    let mut changed = false;
+    for row in rows.iter_mut() {
+        if let Some(project) = directory.iter().find(|project| project.root == row.root)
+            && row.project_title != project.title
+        {
+            row.project_title = project.title.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,46 +369,4 @@ mod tests {
         );
         assert_ne!(item_id(&row("/a", "1")), item_id(&row("/b", "1")));
     }
-}
-
-/// Refresh display metadata for all cached recents, without opening or reordering them.
-pub fn sync_project_titles(
-    app: &tauri::AppHandle,
-    client: &clat_core::client_ports::host::HostClient,
-) {
-    let Ok(directory) = client.workspace_directory() else {
-        return;
-    };
-    let desktop = app.state::<Desktop>();
-    let current = desktop.host.lock().expect("host state");
-    if current.as_ref().map(|host| host.instance_id()) != Some(client.instance_id()) {
-        return;
-    }
-    let state = app.state::<State>();
-    let mut rows = state.rows.lock().expect("recents");
-    if !apply_project_titles(&mut rows, &directory) {
-        return;
-    }
-    if let Ok(path) = crate::localization::path(app) {
-        let _ = save_ui_preferences(&path, &serde_json::json!({"recentConversations":*rows}));
-    }
-    drop(rows);
-    drop(current);
-    let _ = refresh(app);
-}
-
-fn apply_project_titles(
-    rows: &mut [Recent],
-    directory: &[clat_core::client_ports::host::WorkspaceDirectoryEntry],
-) -> bool {
-    let mut changed = false;
-    for row in rows.iter_mut() {
-        if let Some(project) = directory.iter().find(|project| project.root == row.root) {
-            if row.project_title != project.title {
-                row.project_title = project.title.clone();
-                changed = true;
-            }
-        }
-    }
-    changed
 }
