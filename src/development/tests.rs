@@ -843,16 +843,16 @@ fn windows_terminal_redirected_child() -> bool {
     }
     // Re-enter only this test with all parent streams redirected. The shell
     // must use ConPTY, not duplicate the test process's EOF stdin/captured stdout.
-    let output = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             "development::tests::development_windows_conpty_input_lease_resize_and_job_close",
             "--nocapture",
         ])
-        .env(CHILD, "1")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
+        .env(CHILD, "1");
+    let output = crate::process::capture_command(command, 256 * 1024, Duration::from_secs(60))
+        .expect("redirected ConPTY child must finish within time/output limits");
     assert!(
         output.status.success(),
         "redirected ConPTY child failed: stdout={:?}, stderr={:?}",

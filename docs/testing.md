@@ -110,6 +110,12 @@ are bounded. There are no file-wide exemptions. Removing or changing a registere
 call requires updating its entry. Run `python3 scripts/check-test-waits.py` to
 check the inventory without compiling.
 
+The redirected ConPTY regression child uses the shared process capture with a
+60-second deadline and a 256 KiB limit per output stream. It retains EOF stdin
+and captured stdout/stderr while avoiding an unbounded test-process wait; timeout
+or output overflow terminates the child process group rather than adding an
+exception to the wait inventory.
+
 The quick path runs only matching library tests. It does not also build the
 CLI/integration binaries or run clippy, Windows cross compilation, rustdoc,
 npm or browser E2E. Test output is concise. No matching tests, ignored-only
