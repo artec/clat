@@ -27,7 +27,7 @@
       this.host = host; this.branches = new Map(); this.contexts = new WeakMap();
       this.rows = []; this.views = new Map();
     }
-    key(row) { return row.project_id || row.root; }
+    key(row) { return row.root; }
     state(row) {
       let value = this.branches.get(this.key(row));
       if (!value || value.route !== row.route_id) {
@@ -67,7 +67,8 @@
         void this.host.open(row).catch(error => this.failure(error));
       });
       title.dataset.projectRoute = row.route_id || '';
-      title.append(glyph('M3 7h7l2-3h9v16H3z'), node('span', 'project-directory-name', () => row.title || row.root));
+      const pin=this.host.organization.pin(row);
+      title.append(glyph('M3 7h7l2-3h9v16H3z'), node('span', 'project-directory-name', () => row.title || row.root),pin);
       CLATI18n.attribute(title, 'title', () => row.root);
       const badge = node('small'); title.append(badge);
       const fresh = button('project-new-session', () => text('new_in_project', { name: row.title }), () => {
@@ -83,9 +84,10 @@
       more.dataset.action = 'more-project-sessions'; CLATI18n.bind(more, 'textContent', () => text(this.state(row).all ? 'show_less' : 'show_more'));
       const retry = button('project-sessions-retry', () => text('retry_project'), () => { void this.load(row, true); });
       CLATI18n.bind(retry, 'textContent', () => text('retry_project'));
-      header.append(toggle, title, fresh); body.append(list, status, more, retry); group.append(header, body);
-      return { group, body, toggle, title, badge, list, status, more, retry, fresh,
-        identity: JSON.stringify([row.route_id, row.root, row.title]) };
+      const organization=this.host.organization.menuButton(row);this.host.organization.bind(header,row,organization);
+      header.append(toggle, title, fresh, organization); body.append(list, status, more, retry); group.append(header, body);
+      return { group, body, toggle, title, badge, list, status, more, retry, fresh, pin,
+        identity: JSON.stringify([row.route_id, row.root]) };
     }
     renderSession(row, session) {
       const item = node('li'); item.dataset.sessionId = session.id;
@@ -105,7 +107,8 @@
       group.toggle.setAttribute('aria-expanded', String(value.expanded));
       labelButton(group.toggle, () => text(value.expanded ? 'collapse_project' : 'expand_project', { name: row.title || row.root }));
       group.title.setAttribute('aria-current', String(active));
-      group.body.hidden = !value.expanded;
+      group.body.hidden = !value.expanded;group.pin.classList.toggle('hidden',!row.pinned);
+      CLATI18n.bind(group.title.querySelector('.project-directory-name'),'textContent',()=>row.title||row.root);
       if (label) group.title.append(group.badge); else group.badge.remove();
       CLATI18n.bind(group.badge, 'textContent', () => label ? text(label) : '');
       if (active && group.list !== snapshot.list) {
@@ -171,7 +174,7 @@
       }];
       for (const [index, row] of entries.entries()) {
         let group = snapshot.groups.get(this.key(row));
-        if (!group || group.identity !== JSON.stringify([row.route_id, row.root, row.title])) {
+        if (!group || group.identity !== JSON.stringify([row.route_id, row.root])) {
           group?.group.remove(); group = this.createGroup(row, context); snapshot.groups.set(this.key(row), group);
         }
         if (snapshot.tree.children[index] !== group.group) snapshot.tree.insertBefore(group.group, snapshot.tree.children[index] || null);

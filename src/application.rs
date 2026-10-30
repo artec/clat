@@ -114,6 +114,7 @@ mod trusted;
 mod utility_tests;
 mod vision_probe;
 
+pub use crate::control_storage::WorkspaceUpdate;
 pub use crate::input::{InputDraft, PendingInputEdit, PendingInputView, PendingInputsView};
 pub use bootstrap::{BootstrapApplication, ProjectAuthorization};
 pub use compaction::{CompactHandle, CompactReport};

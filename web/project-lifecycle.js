@@ -86,6 +86,13 @@ function projectLifecycle() {
   }
   return {
     activate, deactivate, navigateConversation,
+    icon:svgIcon,
+    directoryChanged(){
+      const project=state.workbench?.project;if(project)project.name=projectDisplayName(project.root,project.name);
+      refreshViewContext();
+      if(pageIsOpen(dom['settings-dialog'])&&currentSettingsCategory==='projects')renderWorkspaceDirectory(context.organization.rows());
+      window.dispatchEvent(new Event('clat:projects-updated'));
+    },
     openTerminal: id => developmentTerminal.selectById(id),
     createTerminal: (directory,shell) => developmentTerminal.create(directory,shell),
     route:()=>dom.app.dataset.page||workbenchShell?.tools?.location()||'workbench',

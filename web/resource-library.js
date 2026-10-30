@@ -51,7 +51,7 @@ function createResourceLibrary(shell) {
   const status=el('div','navigation-status');view.sidebar.insertBefore(status,view.list);
   const refresh=()=>{if(tab==='files')void files.refresh();else{seats.get(tab)?.dispose?.();seats.delete(tab);select(tab);}};
   view.actions([viewAction('refresh','refresh',()=>pageText('refresh'),refresh)]);
-  view.context({crumbs:()=>[{label:()=>shellText('resources'),run:()=>{delete page.dataset.detail;}},{label:()=>state.workbench?.project?.root?.split(/[\\/]/).pop(),run:()=>openSettings('projects')},{label:()=>pageText(tab)},...(seats.get(tab)?.title?[{label:()=>seats.get(tab).title}]:[])]});
+  view.context({crumbs:()=>[{label:()=>shellText('resources'),run:()=>{delete page.dataset.detail;}},{label:()=>projectDisplayName(state.workbench?.project?.root,state.workbench?.project?.name),run:()=>openSettings('projects')},{label:()=>pageText(tab)},...(seats.get(tab)?.title?[{label:()=>seats.get(tab).title}]:[])]});
   function select(key){
     const prior=seats.get(tab);if(prior){prior.scroll=[view.list.scrollTop,view.body.scrollTop];prior.query=view.query.value;}
     files.suspend();tab=key;tabs.select(key);

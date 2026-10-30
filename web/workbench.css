@@ -410,7 +410,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .msg:hover .message-time, .msg:focus-within .message-time, .reader-message:hover .message-time, .reader-message:focus-within .message-time { opacity: 1; }
 .msg.user .message-actions { justify-content: flex-end; }
 .round-suggestions { display: grid; gap: 3px; margin: 12px 0 20px 36px; padding-top: 12px; border-top: 1px solid var(--line); background: transparent; }
-.round-suggestions .followup-choice { padding: 7px 0; text-align: left; font-size: var(--text-size-reading); font-weight: 400; color: var(--text-muted); border: 0; background: transparent; }
+.round-suggestions .followup-choice { display:flex;align-items:flex-start;gap:9px; padding: 7px 0; text-align: left; font-size: var(--text-size-reading); font-weight: 400; color: var(--text-muted); border: 0; background: transparent; }
 .round-suggestions .followup-choice:hover { color: var(--text); }
 .usage-seat { position: relative; flex: none; }
 .context-ring { --usage: 0deg; display: block; flex: none; width: 18px; height: 18px; translate: 0 1px; border-radius: 50%; background: conic-gradient(var(--text-soft) var(--usage),var(--line-strong) 0); mask: radial-gradient(transparent 57%,#000 61%); }
@@ -493,3 +493,21 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .work-mode-menu > h3:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .workflow-goal-form { display: grid; gap: 16px; max-width: 720px; }
 .workflow-goal-form textarea { width: 100%; resize: vertical; background: var(--surface-input); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+
+.round-suggestions .followup-choice>svg{width:16px;height:16px;flex:none;margin-top:calc((1lh - 16px)/2);color:var(--text-muted)}
+.round-suggestions .followup-choice>span{min-width:0;line-height:inherit}
+.project-organizable>.project-more{display:none;flex:none;width:26px;min-width:26px;height:30px;min-height:30px;padding:5px;border-radius:6px;align-items:center;justify-content:center;color:var(--text-muted)}
+.project-organizable:is(:hover,:focus-within)>.project-more{display:inline-flex}
+.project-organizable>.project-more:hover{background:var(--surface-input);color:var(--text)}
+.project-more>svg{width:16px;height:16px}
+.project-pinned-mark{flex:none;width:12px!important;height:12px!important;color:var(--text-muted)}
+.project-rename-dialog{width:min(420px,calc(100vw - 32px))}
+.project-rename-dialog form{display:grid;gap:14px}
+.project-rename-dialog .page-header,.project-rename-dialog p{margin:0}
+.project-rename-dialog label{display:grid;gap:8px}
+.project-rename-actions{display:flex;justify-content:flex-end;gap:8px}
+.session-context-menu>.error:empty{display:none}
+.session-context-menu>.error{max-width:260px;padding:0 10px;white-space:normal}
+@media(hover:none){.project-organizable>.project-more{display:inline-flex}}
+
+.project-title-line{display:flex!important;align-items:center;gap:6px}

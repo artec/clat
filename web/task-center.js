@@ -13,7 +13,9 @@ function createTaskCenter() {
   const toolbar=view.filters;toolbar.append(filter);
   const project=el('select');project.id='task-project';CLATI18n.attribute(project,'aria-label',()=>pageText('project_scope'));toolbar.prepend(project);
   project.onchange=()=>{const row=project.options[project.selectedIndex];void context.openProject({route_id:row.value,root:row.dataset.root},{hash:'#/tasks'}).then(target=>target?.root.querySelector('#nav-tasks')?.click()).catch(fail);};
-  page.addEventListener('clat:page-enter',()=>{void rpc('workspace.directory',{}).then(value=>{if(!pageIsOpen(page)||!context.isActive())return;project.replaceChildren();for(const row of value.projects){const o=el('option','',row.title);o.value=row.route_id||'';o.dataset.root=row.root;o.selected=row.root===state.workbench?.project?.root;project.append(o);}}).catch(()=>{});});
+  function renderProjects(){if(!pageIsOpen(page)||!context.isActive())return;project.replaceChildren();for(const row of context.organization.rows()){const o=el('option','',()=>row.title);o.value=row.route_id||'';o.dataset.root=row.root;o.selected=row.root===state.workbench?.project?.root;project.append(o);}}
+  page.addEventListener('clat:page-enter',()=>{renderProjects();void context.refreshDirectory().catch(()=>{});});
+  window.addEventListener('clat:projects-updated',renderProjects);
   status.className='navigation-status';view.sidebar.insertBefore(status,list);document.body.append(page);
   let generation = 0, selection = 0, selected = null, restoreId=null, rules = [], jobs = [], deliveries = [], reader = null, scheduleActions = null,reading=0;
   const fail = error => CLATI18n.bind(status, 'textContent', () => error.message);

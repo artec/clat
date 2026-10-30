@@ -70,6 +70,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "host.takeover",
     "workspace.list",
     "workspace.directory",
+    "workspace.update",
     "workspace.open",
     "workbench.info",
     "jobs.list",

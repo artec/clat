@@ -23,12 +23,15 @@ use crate::session::path_layout;
 pub(crate) const WORKSPACE_FILE_NAME: &str = "workspace.json";
 pub(crate) const WORKSPACE_UNIT: (&str, u64) = ("workspace", 2);
 
-/// DSH 五字段 + CLAT 扩展 `activeSessionId`（驼峰对齐 DSH）。
+/// DSH 字段及 CLAT 可忽略扩展（活动指针、会话标志、项目置顶）。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceRecord {
     /// 创建时盖章的 realpath 规范形（DSH canon 语义）。
     pub path: String,
     pub title: String,
+    /// CLAT display organization; never changes the ownership/restore order.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     /// 有序所有权账：数组顺序即显示顺序（投影，可对账修复）。
     #[serde(default, rename = "sessionIds")]
     pub session_ids: Vec<String>,
@@ -125,6 +128,15 @@ pub(crate) struct ReconcileReport {
 }
 
 impl WorkspaceRegistry {
+    pub(super) fn restore_display_selection(
+        &mut self,
+        selection: (Option<String>, Option<String>),
+    ) {
+        (
+            self.file.global.active_workspace_id,
+            self.file.global.active_session_id,
+        ) = selection;
+    }
     pub(crate) fn empty() -> Self {
         Self {
             file: WorkspaceFile {
@@ -191,6 +203,7 @@ impl WorkspaceRegistry {
             WorkspaceRecord {
                 path: path.to_owned(),
                 title: title.to_owned(),
+                pinned: false,
                 session_ids,
                 created_at: now.clone(),
                 updated_at: now,

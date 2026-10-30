@@ -2269,7 +2269,7 @@ async function refreshWorkbench() {
     renderPendingInputs(info.pending_inputs);
     syncPlanModeBadge();
 
-    CLATI18n.bind(dom['project-name'], "textContent", () => project.name || CLATI18n.msg("web.current_project", {}, "Current project"));
+    CLATI18n.bind(dom['project-name'], "textContent", () => projectDisplayName(project.root,project.name) || CLATI18n.msg("web.current_project", {}, "Current project"));
     CLATI18n.bind(dom['project-root'], "textContent", () => project.root || '');
     CLATI18n.bind(dom['project-root'], "title", () => project.root || '');
     CLATI18n.bind(dom['session-title'], "textContent", () => session.title || CLATI18n.msg("web.untitled_session", {}, "Untitled session"));
@@ -3206,21 +3206,20 @@ for (const field of ['utility-naming-enabled', 'utility-suggestions-enabled', 'u
 }
 
 async function refreshWorkspaces() {
-  const list = document.getElementById('workspace-list');
-  const error = document.getElementById('workspace-error');
-  try {
-    const result = await rpc('workspace.directory', {});
-    list.replaceChildren();
-    for (const workspace of result.projects) {
-      const row = el('article','project-setting-row'); const copy = el('div');
-      copy.append(el('strong','',workspace.root.split('/').filter(Boolean).pop()||workspace.root),el('small','',workspace.root));
-      copy.append(el('small','',()=>workspace.run_active?pageText('running'):workspace.root===state.workbench?.project?.root?pageText('current_project'):''));
-      const open = pageAction('switch_project',()=>void context.openProject(workspace).catch(failure=>{error.textContent=failure.message;}));
-      const link = el('a','workspace-link',()=>pageText('new_window'));link.href='/?workspace='+encodeURIComponent(workspace.route_id||'default');link.hidden=!workspace.route_id;link.target='_blank';link.rel='noopener';
-      row.append(svgIcon('folder'),copy,open);if(!window.__TAURI__)row.append(link);list.append(row);
-    }
-    await context.refreshDirectory();
-  } catch (failure) { CLATI18n.bind(error, "textContent", () => failure.message); }
+  try { await context.refreshDirectory(); }
+  catch(failure){if(context.isActive())CLATI18n.bind(document.getElementById('workspace-error'),'textContent',()=>failure.message);}
+}
+function renderWorkspaceDirectory(projects){
+  const list=document.getElementById('workspace-list'),error=document.getElementById('workspace-error');list.replaceChildren();
+  for(const workspace of projects){
+    const row=el('article','project-setting-row'),copy=el('div'),name=el('strong','project-title-line');
+    name.append(context.organization.pin(workspace),el('span','',()=>workspace.title));copy.append(name,el('small','',workspace.root));
+    copy.append(el('small','',()=>workspace.run_active?pageText('running'):workspace.root===state.workbench?.project?.root?pageText('current_project'):''));
+    const open=pageAction('switch_project',()=>void context.openProject(workspace).catch(failure=>{error.textContent=failure.message;}));
+    const link=el('a','workspace-link',()=>pageText('new_window'));link.href='/?workspace='+encodeURIComponent(workspace.route_id||'default');link.hidden=!workspace.route_id;link.target='_blank';link.rel='noopener';
+    const more=context.organization.menuButton(workspace);context.organization.bind(row,workspace,more);
+    row.append(svgIcon('folder'),copy,open);if(!window.__TAURI__)row.append(link);row.append(more);list.append(row);
+  }
 }
 
 document.getElementById('workspace-open').addEventListener('click', async () => {

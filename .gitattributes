@@ -138,3 +138,6 @@ web/settings-layout.js text eol=lf
 web/settings.css text eol=lf
 
 web/settings-models.js text eol=lf
+
+web/project-organization.js text eol=lf
+web/project-directory-watch.js text eol=lf

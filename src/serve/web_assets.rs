@@ -255,6 +255,16 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "image/svg+xml",
     ),
     (
+        "/project-organization.js",
+        include_bytes!("../../web/project-organization.js"),
+        "application/javascript",
+    ),
+    (
+        "/project-directory-watch.js",
+        include_bytes!("../../web/project-directory-watch.js"),
+        "application/javascript",
+    ),
+    (
         "/project-tree.js",
         include_bytes!("../../web/project-tree.js"),
         "application/javascript",

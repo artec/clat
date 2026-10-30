@@ -78,7 +78,7 @@ function installTransientScrollbars() {
   const views = new Map();
   const viewport = document.getElementById('project-view');
   const template = document.getElementById('project-template');
-  let directory = [], refreshPending = null, navigation = 0, nativeLocked = false;
+  let directory = [], refreshPending = null, directoryEpoch = 0, navigation = 0, nativeLocked = false;
   const appHistory = createApplicationHistory();
   const host = { active: null, open, openConversation, readSessions, refresh, render, changed, history: appHistory,
     navigatePage: route => appHistory.push('#/' + route), navigationToken: () => navigation };
@@ -87,6 +87,8 @@ function installTransientScrollbars() {
   const message = key => CLATI18n.msg('workbench.' + key);
   const blocked = () => nativeLocked || CLATWorkbenchState.snapshot().composing;
   const tree = CLATProjectTree.create(host);
+  host.organization=CLATProjectOrganization.create({request:hostRpc,refresh,icon:name=>host.active.view.icon(name)});
+  const watchDirectory=createProjectDirectoryWatch(()=>refresh(true));
 
   function createApplicationHistory() {
     const id = globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random(), listeners = new Set();
@@ -208,13 +210,15 @@ function installTransientScrollbars() {
       () => target === host.active && request === navigation && !blocked());
   }
 
-  async function refresh() {
-    if (refreshPending) return refreshPending;
-    refreshPending = (async () => {
-      directory = (await hostRpc('workspace.directory')).projects;
-      render();
-    })();
-    try { await refreshPending; } finally { refreshPending = null; }
+  async function refresh(force=false) {
+    if (refreshPending&&!force) return refreshPending;
+    const epoch=++directoryEpoch;
+    const pending=(async()=>{
+      const rows=(await hostRpc('workspace.directory')).projects;if(epoch!==directoryEpoch)return;
+      directory=host.organization.accept(rows);render();watchDirectory.start();
+      for(const view of views.values())view.view?.directoryChanged?.();
+    })();refreshPending=pending;
+    try{await pending;}finally{if(refreshPending===pending)refreshPending=null;}
   }
 
   function changed() {
@@ -227,7 +231,7 @@ function installTransientScrollbars() {
     if (window.__TAURI__ && host.active?.view) {
       const nav=host.active.view.navigation(), root=host.active.view.summary().root;
       const row=nav.items.find(row=>row.id===nav.selected);
-      if(nav.ready&&root&&row)window.dispatchEvent(new CustomEvent('clat-desktop-conversation',{detail:{root,session:row.id,title:row.title||''}}));
+      if(nav.ready&&root&&row)window.dispatchEvent(new CustomEvent('clat-desktop-conversation',{detail:{root,session:row.id,title:row.title||'',project_title:host.organization.get(root)?.title||''}}));
     }
   }
 

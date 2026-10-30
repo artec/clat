@@ -25,6 +25,7 @@ mod desktop;
 mod reconcile;
 pub use reconcile::BackendConnection;
 mod notification;
+mod workspace;
 pub use error::HostCallError;
 pub use models::HostModelChoices;
 pub use notification::HostNotification;

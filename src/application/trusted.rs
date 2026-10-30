@@ -807,12 +807,7 @@ impl TrustedProjectApplication {
         let (config, credentials) = self.model_state()?;
         let usage = self.sessions.active_usage().map_err(session_error)?;
         let root = self.canonical_root.clone();
-        let name = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| root.display().to_string());
+        let display = self.workspace_directory_entry();
         Ok(crate::WorkbenchSnapshot {
             monitor_status: self.monitor.snapshot(&config, &credentials),
             route_usage: usage
@@ -825,8 +820,8 @@ impl TrustedProjectApplication {
             last_request_usage: usage.last_request,
             project: crate::WorkbenchProjectSnapshot {
                 root,
-                name,
-                workspace_id: self.workspace_id.clone(),
+                name: display.title,
+                workspace_id: display.project_id,
             },
             session: crate::WorkbenchSessionSnapshot {
                 id: self.current_session_id(),

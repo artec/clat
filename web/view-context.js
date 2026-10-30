@@ -1,3 +1,4 @@
+function projectDisplayName(root,fallback){return context.organization?.get(root)?.title||fallback||root?.split(/[\\/]/).filter(Boolean).pop()||'';}
 /* Views describe their identity and actions; application chrome never reads UI copy. */
 const viewContexts=new Map();
 const viewText=key=>CLATI18n.msg('view.'+key);
@@ -12,7 +13,7 @@ function activeViewContext(shell){
   if(shell.page)return viewContexts.get(shell.page)||{id:shell.page,node:shell.surfaces.get(shell.page)?.dialog,crumbs:()=>[{label:()=>shellText((dom.app.dataset.page||'').split(/[/?]/)[0])}]};
   const tool=shell.tools?.current();
   const project=state.workbench?.project,session=state.workbench?.session?.id===state.sessionId?state.workbench.session:state.sessions.find(row=>row.id===state.sessionId);
-  const crumbs=[{label:()=>shellText('workbench'),run:()=>shell.tools.chat()},...(project?[{label:()=>project.root.split(/[\\/]/).filter(Boolean).pop(),run:()=>openSettings('projects')}]:[])];
+  const crumbs=[{label:()=>shellText('workbench'),run:()=>shell.tools.chat()},...(project?[{label:()=>projectDisplayName(project.root,project.name),run:()=>openSettings('projects')}]:[])];
   if(state.sessionId)crumbs.push({label:()=>session?.title||CLATI18n.msg('web.untitled_session'),session:true,run:tool?()=>shell.tools.chat():null});
   if(tool)crumbs.push({label:()=>experienceText(tool.key),close:()=>shell.tools.chat(),tool:true});
   const seat=tool?viewContexts.get(tool.id):null;
@@ -26,7 +27,7 @@ function conversationViewActions(shell){
 function navigationViewContext(page,sidebar,title){
   const roots={'resources-dialog':['resources',true],'jobs-dialog':['tasks',true],'history-dialog':['history',false],'market-dialog':['extensions',false]};
   const [,project]=roots[page.id]||[];let selected=null,extra=[];
-  const describe={id:page.id,sidebar,actions:()=>extra,crumbs:()=>[{label:title,run:()=>{delete page.dataset.detail;sidebar.querySelector('input')?.focus();}},...(project&&state.workbench?.project?[{label:()=>state.workbench.project.root.split(/[\\/]/).filter(Boolean).pop(),run:()=>openSettings('projects')}]:[]),...(selected?[{label:selected}]:[])]};
+  const describe={id:page.id,sidebar,actions:()=>extra,crumbs:()=>[{label:title,run:()=>{delete page.dataset.detail;sidebar.querySelector('input')?.focus();}},...(project&&state.workbench?.project?[{label:()=>projectDisplayName(state.workbench.project.root,state.workbench.project.name),run:()=>openSettings('projects')}]:[]),...(selected?[{label:selected}]:[])]};
   registerView(page,describe);
   return {select(value){selected=value;refreshViewContext();},actions(value){extra=value;refreshViewContext();},context(patch){Object.assign(describe,patch);registerView(page,describe);}};
 }

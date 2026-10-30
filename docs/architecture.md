@@ -1858,3 +1858,26 @@ lifecycle. Help creates no run, permission policy, persistence or RPC surface.
 Notification permission controls remain owned by navigation settings, independently
 of the guide renderer. Guide selection and scroll state live in the mounted
 client; changing locale rebinds guide text and refilters the existing search.
+
+### Shared project organization
+
+`HostApplication::update_workspace` owns validated name/pin patches; the shared
+`WorkspaceUpdate` port and authenticated `workspace.update` RPC expose intent.
+Requests identify a registered `projectId` or an existing mounted `routeId` and
+carry an `edit` object (`title`, `reset_title`, `pinned`). The response contains the
+updated `project` directory entry. Path authority stays in the core. Directory
+entries add default-compatible `pinned`; existing RPCs keep their meanings.
+
+The core directory and workbench display snapshot read registered names rather
+than deriving UI names independently. A transient `workspace.updated` Host
+notification invalidates directory snapshots, without creating journal facts or
+user notifications. The document-level watcher refreshes after reconnect/focus;
+request epochs reject stale replies. Existing terminal directory queries share
+this projection. Desktop refreshes cached tray subtitles without reordering
+recents; old tray cache records default to the directory basename.
+
+`project-organization.js` provides the single rename form/menu and dispatches
+manual intents. Project-tree keys remain canonical roots through first metadata
+registration, preserving existing list state. Shared SVG creation is injected
+from the active view rather than copying another icon table. Frontend metadata
+maps are directory snapshots, never a second persisted source of truth.

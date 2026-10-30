@@ -47,6 +47,7 @@
       document: documentPort, window: windowPort,
       navigationToken: () => host.navigationToken(),
       history: host.history,
+      organization: host.organization,
       navigatePage: route => host.navigatePage(route),
       openProject: (row, options) => host.open(row, options),
       refreshDirectory: () => host.refresh(),

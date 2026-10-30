@@ -418,7 +418,8 @@ The `sessions/` directory wins over list caches and derived session-id arrays.
 `storages/workspace.json` is field-for-field compatible with DSH's workspace
 unit: `unit`, `global`, and `tables.workspaces` with camelCase path/title/
 session/time fields. CLAT adds optional active-workspace and active-session
-pointers, and per-workspace `sessionFlags` keyed by session id with `pinned` /
+pointers, an optional project-level `pinned` flag (default false), and per-workspace
+`sessionFlags` keyed by session id with `pinned` /
 `archived` booleans. Missing flags mean false; explicit organization is shared
 frontend state, not deletion authority or journal vocabulary. CLAT writes its
 own registry only, not a DSH installation's files.
@@ -746,3 +747,22 @@ journal events. The browser retains per-project/repository commit drafts and pen
 operation IDs; operation receipts in core remain authoritative. Comparison tabs and
 graph selection survive view switches in memory. Sidebar proportions and collapsed
 sections are device preferences, independent of repository execution state.
+
+### Project organization metadata
+
+Workspace records reuse `title` for the user-selected display name and add the
+CLAT optional boolean `pinned` (missing/false means unpinned; false is omitted on
+write). This is Host-owned control metadata, not a session event. Original
+`global.workspaceIds` order and active selection pointers retain their semantics;
+the directory read model performs a stable pinned-first partition only for display.
+Registration and reconciliation preserve both display fields.
+
+An explicit organization update may register a previously mounted, sessionless
+project, preserving global active pointers and creating no session files. Name and
+pin patches modify only supplied fields, serialize under the existing control
+mutex, and atomically persist with memory rollback on failure. Same-field updates
+use last-successful-write semantics. Reset derives the directory name from the
+stored canonical root without filesystem I/O. Unknown roots are never admitted by
+this operation. Old records need no migration; older readers ignore `pinned` and
+continue to read standard `title`. See the local DSH project-organization mapping
+for the deliberate optional extension.

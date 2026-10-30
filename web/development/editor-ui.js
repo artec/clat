@@ -36,7 +36,8 @@ function createEditorLayout(actions){
   registerView(node,{sidebar,actions:()=>[viewAction('save','save',()=>devText('save'),()=>actions.save(),true,actions.canSave),viewAction('save-all','save-all',()=>devText('save_all'),()=>actions.saveAll(),true,actions.canSaveAll),viewAction('find','search',()=>devText('find'),()=>actions.find(),true,actions.canFind)]});
   const menu=navigationIcon(()=>devText('file_actions'),'more',()=>editorPopup(actions.menu(),menu));tools.append(menu);bar.append(back,breadcrumb,tools);
   const mount=el('div','dev-editor-mount'),footer=el('footer','editor-statusbar');detail.append(tabs,bar,mount,footer);node.append(sidebar,detail);
-  window.addEventListener('clat:workbench-updated',()=>{CLATI18n.bind(root.querySelector('strong'),'textContent',editorProjectName);const title=mount.querySelector('.editor-empty>strong');if(title)CLATI18n.bind(title,'textContent',editorProjectName);});
+  const syncProjectName=()=>{CLATI18n.bind(root.querySelector('strong'),'textContent',editorProjectName);const title=mount.querySelector('.editor-empty>strong');if(title)CLATI18n.bind(title,'textContent',editorProjectName);};
+  window.addEventListener('clat:workbench-updated',syncProjectName);window.addEventListener('clat:projects-updated',syncProjectName);
   return {node,sidebar,query,list,status,detail,tabs,toolbar:bar,mount,breadcrumb,footer,root};
 }
 function createEditorTab(doc,activate,closeDoc,render){
@@ -63,7 +64,7 @@ function editorBreadcrumb(target,doc,reveal){
   parts.forEach((part,index)=>{if(index)target.append(svgIcon('next'));if(index===parts.length-1){const name=el('span','editor-path-file',part);target.append(developmentFileIcon(doc.path),name);}else{const button=el('button','',part);button.type='button';button.onclick=()=>reveal(parts.slice(0,index+1).join('/'),true);target.append(button);}});
   CLATI18n.attribute(target,'title',()=>doc.path);
 }
-function editorProjectName(){return state.workbench?.project?.name||state.workbench?.project?.root?.split(/[\\/]/).filter(Boolean).pop()||CLATI18n.msg('web.current_project');}
+function editorProjectName(){return projectDisplayName(state.workbench?.project?.root,state.workbench?.project?.name)||CLATI18n.msg('web.current_project');}
 function editorEmpty(mount){
   const empty=el('div','editor-empty');empty.append(svgIcon('code'),el('strong','',editorProjectName),el('p','',()=>devText('editor_empty')),el('small','',()=>devText('editor_shortcuts')));mount.replaceChildren(empty);
 }

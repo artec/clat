@@ -103,6 +103,8 @@ fn refresh(app: &tauri::AppHandle, host: &HostClient) {
         return;
     };
     streams.insert(key.clone(), interrupt);
+    drop(streams);
+    crate::tray::sync_project_titles(app, host);
     let app = app.clone();
     let client = host.clone();
     std::thread::spawn(move || {
@@ -135,6 +137,10 @@ fn refresh(app: &tauri::AppHandle, host: &HostClient) {
 }
 
 fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification) {
+    if notice.kind == "workspace.updated" {
+        crate::tray::sync_project_titles(app, client);
+        return;
+    }
     static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
     let title = match notice.kind.as_str() {
         "completed" => crate::localization::text(app, "desktop.notification_completed"),

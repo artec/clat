@@ -125,3 +125,129 @@ fn terminal_directory_sources_do_not_mount_or_create_project_sessions() {
     drop(host);
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn project_organization_updates_live_titles_without_mounting_or_selecting() {
+    let (root, mut host, first, _) = fixture("directory-organization");
+    let missing = root.join("missing");
+    let id = host
+        .storage
+        .control
+        .register_workspace(missing.to_str().unwrap(), "Original", &[])
+        .unwrap();
+    let selected = host.storage.control.active_workspace().unwrap();
+    let edit = super::super::WorkspaceUpdate {
+        title: Some("Shared alias".into()),
+        pinned: Some(true),
+        ..Default::default()
+    };
+    let saved = host.update_workspace(Some(&id), None, edit).unwrap();
+    assert_eq!(saved.title, "Shared alias");
+    assert!(saved.pinned);
+    assert!(!saved.mounted);
+    assert!(!missing.exists());
+    assert_eq!(host.project_roots().len(), 1);
+    assert_eq!(
+        host.storage.control.active_workspace().unwrap().0,
+        selected.0
+    );
+    let active = host.attach(first.clone()).unwrap();
+    let session = active.lock().unwrap().current_session_id();
+    let real = first.root().canonicalize().unwrap();
+    let saved = host
+        .update_workspace(
+            None,
+            Some(&real),
+            super::super::WorkspaceUpdate {
+                title: Some("Active alias".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let app = active.lock().unwrap();
+    assert_eq!(
+        app.workbench_snapshot().unwrap().project.name,
+        "Active alias"
+    );
+    assert_eq!(app.current_session_id(), session);
+    assert!(app.list_sessions().unwrap().is_empty());
+    assert_eq!(app.workspace_directory_entry().project_id, saved.project_id);
+    drop(app);
+    drop(active);
+    assert!(
+        host.update_workspace(
+            Some("unknown"),
+            None,
+            super::super::WorkspaceUpdate {
+                pinned: Some(true),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn project_pinning_is_a_stable_display_projection_not_restore_order() {
+    let (root, mut host, _, _) = fixture("directory-pin-order");
+    let mut ids = Vec::new();
+    for name in ["a", "b", "c"] {
+        ids.push(
+            host.storage
+                .control
+                .register_workspace(&format!("/unavailable/{name}"), name, &[])
+                .unwrap(),
+        );
+    }
+    let original = host.storage.control.workspace_infos();
+    for i in [2, 1] {
+        host.update_workspace(
+            Some(&ids[i]),
+            None,
+            super::super::WorkspaceUpdate {
+                pinned: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let rows = host.workspace_directory();
+    assert_eq!(
+        rows[..3]
+            .iter()
+            .map(|row| row.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["b", "c", "a"]
+    );
+    assert_eq!(
+        host.storage
+            .control
+            .workspace_infos()
+            .iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        original.iter().map(|(id, _)| id).collect::<Vec<_>>()
+    );
+    host.update_workspace(
+        Some(&ids[1]),
+        None,
+        super::super::WorkspaceUpdate {
+            pinned: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        host.workspace_directory()[..3]
+            .iter()
+            .map(|row| row.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["c", "a", "b"]
+    );
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}

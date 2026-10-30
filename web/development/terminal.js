@@ -7,7 +7,7 @@ function installDevelopmentTerminal(){
   const trigger=devButton('terminal',()=>presentPage(node));trigger.id='terminal-open';trigger.hidden=true;document.body.append(trigger);
   const visible=()=>active&&context.isActive(),report=error=>devReport(status,error);
   const currentProject=()=>projects.find(project=>project.route_id===context.route)||{root:state.workbench?.project?.root,title:state.workbench?.project?.root,route_id:context.route,terminals:[]};
-  function render(){const stamp=JSON.stringify([projects,selected?.id,ui.query.value,[...expanded],creating]);if(stamp!==renderStamp){const top=ui.list.scrollTop;renderTerminalDirectory(ui,projects,selected,actions,expanded);ui.list.scrollTop=top;renderStamp=stamp;}ui.empty.hidden=Boolean(selected)||creating;ui.name.textContent=terminalHeading(selected?.row);registerView(node,{crumbs:()=>[{label:()=>devText('terminal'),run:()=>{delete node.dataset.detail;}},...(selected?[{label:()=>currentProject().title||currentProject().root.split(/[\\/]/).pop()},{label:()=>terminalHeading(selected.row)}]:[])]});}
+  function render(){const stamp=JSON.stringify([projects,selected?.id,ui.query.value,[...expanded],creating]);if(stamp!==renderStamp){const top=ui.list.scrollTop;renderTerminalDirectory(ui,projects,selected,actions,expanded);ui.list.scrollTop=top;renderStamp=stamp;}ui.empty.hidden=Boolean(selected)||creating;ui.name.textContent=terminalHeading(selected?.row);registerView(node,{crumbs:()=>[{label:()=>devText('terminal'),run:()=>{delete node.dataset.detail;}},...(selected?[{label:()=>projectDisplayName(currentProject().root,currentProject().title)},{label:()=>terminalHeading(selected.row)}]:[])]});}
   async function refresh(){
     const request=++refreshEpoch,previous=currentProject().terminals,previousIndex=previous.findIndex(row=>row.id===selected?.id);
     try{const data=await rpc('terminal.directory',{});if(request!==refreshEpoch)return;projects=data.projects;
@@ -56,6 +56,7 @@ function installDevelopmentTerminal(){
   async function shellMenu(source){try{const data=await rpc('terminal.shells',{});menuClose=terminalMenu(source,data.shells.map(path=>[()=>devText('shell_for_project',{project:currentProject().title,shell:path.split(/[\\/]/).pop()}),'terminal',()=>{preferredShell=path;void createTerminal();}]));}catch(error){report(error);}}
   const attach=seat=>startTerminalStream(seat,{visible,isSelected:()=>selected===seat,refresh,has:()=>terminals.has(seat.id),attach,status});
   new ResizeObserver(()=>{if(visible())requestAnimationFrame(()=>void fit());}).observe(mount);
+  window.addEventListener('clat:projects-updated',()=>{if(visible())void refresh();});
   node.addEventListener('clat:page-enter',async()=>{active=true;await refresh();if(selected?.row.phase==='running'){await claim(false);await fit();void attach(selected);}});
   const leave=()=>{active=false;epoch++;menuClose?.();globalThis.CLATTerminalMenuClose?.();selected?.stream?.abort();};node.addEventListener('clat:page-leave',leave);window.addEventListener('clat:development-deactivated',leave);
   window.addEventListener('clat:activated',()=>{if(pageIsOpen(node)){active=true;void refresh();}});

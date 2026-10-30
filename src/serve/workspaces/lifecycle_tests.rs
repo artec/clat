@@ -509,3 +509,47 @@ fn human_terminal_pins_project_and_agent_stop_does_not_terminate_it() {
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&project);
 }
+
+#[test]
+fn project_organization_rpc_preserves_routes_and_emits_transient_invalidation() {
+    let (host, storage, project) = fixture("workspace-organization-rpc");
+    let before = host.dispatch("workspace.list", &json!({})).unwrap();
+    let (_, notices, _) = host.notifications.subscribe();
+    let value = host
+        .dispatch(
+            "workspace.update",
+            &json!({"routeId":"default","edit":{"title":"RPC alias","pinned":true}}),
+        )
+        .unwrap();
+    let id = value["project"]["project_id"].as_str().unwrap();
+    assert_eq!(before, host.dispatch("workspace.list", &json!({})).unwrap());
+    assert!(
+        host.route("default")
+            .unwrap()
+            .app
+            .lock()
+            .unwrap()
+            .list_sessions()
+            .unwrap()
+            .is_empty()
+    );
+    let notice = notices.try_recv().unwrap();
+    assert_eq!(notice.kind, "workspace.updated");
+    assert_eq!(notice.workspace_id, id);
+    assert!(notice.session_id.is_none());
+    assert_eq!(
+        host.dispatch("terminal.directory", &json!({})).unwrap()["projects"][0]["title"],
+        "RPC alias"
+    );
+    for bad in [
+        json!({"root":"/arbitrary","edit":{"pinned":true}}),
+        json!({"routeId":"unknown","edit":{"pinned":true}}),
+        json!({"projectId":id,"routeId":"default","edit":{"pinned":true}}),
+    ] {
+        assert!(host.dispatch("workspace.update", &bad).is_err());
+    }
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}

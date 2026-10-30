@@ -501,7 +501,7 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "instance_id": instance,
         "storage_root": described_root,
         "methods": ["plugin.list", "plugin.market", "plugin.prepare", "plugin.commit", "plugin.cancel", "plugin.remove",
-            "host.describe", "host.runtime_status", "host.stop", "host.takeover", "workspace.list", "workspace.directory", "terminal.directory", "workspace.open"],
+            "host.describe", "host.runtime_status", "host.stop", "host.takeover", "workspace.list", "workspace.directory", "workspace.update", "terminal.directory", "workspace.open"],
         "wire_version": crate::wire::WIRE_VERSION,
         "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
         "product_version": crate::host_client::build_identity::product_version(),
@@ -716,4 +716,18 @@ fn authenticated_host_stop_closes_the_owner_cleanly() {
     assert_eq!(exit.close, Some(Ok(())));
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
+fn project_organization_rpc_requires_owner_authentication() {
+    let (handle, storage, project) = spawn_serve("organization-owner-auth", TestBehavior::Success);
+    let request = r#"{"routeId":"default","edit":{"title":"Authorized alias","pinned":true}}"#;
+    let (status, _) = post(handle.addr, "wrong-token", "workspace.update", request);
+    assert_eq!(status, 401);
+    let (_, before) = post(handle.addr, TEST_TOKEN, "workspace.directory", "{}");
+    assert_ne!(before.unwrap()["projects"][0]["title"], "Authorized alias");
+    let (status, reply) = post(handle.addr, TEST_TOKEN, "workspace.update", request);
+    assert_eq!(status, 200);
+    assert_eq!(reply.unwrap()["project"]["title"], "Authorized alias");
+    cleanup(handle, &storage, &project);
 }

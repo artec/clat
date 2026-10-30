@@ -46,7 +46,8 @@ function renderRoundFollowups(value) {
   panel.append(el('span', 'visually-hidden', () => experienceText('followups')));
   if (value.status === 'pending') panel.append(el('small', '', () => experienceText('generating')));
   for (const text of value.items || []) {
-    const button = el('button', 'followup-choice', text); button.type = 'button';
+    const button = el('button', 'followup-choice'); button.type = 'button';
+    button.append(svgIcon('sparkles'),el('span','',text));
     button.onclick = () => {
       if (state.desktopUpdateLocked || state.switching || !composerOwns(value.owner)) return;
       dom.prompt.value += (dom.prompt.value ? '\n\n' : '') + text;

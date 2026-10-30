@@ -19,6 +19,8 @@ pub(crate) mod timestamp;
 mod web;
 mod wechat_users;
 pub(crate) mod workspace;
+mod workspace_organization;
+pub use workspace_organization::WorkspaceUpdate;
 
 use crate::model::{ModelConfig, ModelProtocol, ProviderCredentials};
 use crate::session::use_cases::SessionSummary;

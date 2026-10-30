@@ -2270,7 +2270,7 @@ keeps its storage-root lease. If every project is active, opening another
 project fails with a capacity error rather than disrupting existing work.
 
 Authenticated clients can call `host.describe`, `workspace.list`, `workspace.directory`,
-`workspace.open` (`root`, optional boolean `trust`), and `host.stop`.
+`workspace.update`, `workspace.open` (`root`, optional boolean `trust`), and `host.stop`.
 `host.takeover` additionally requires the exact instance id and a strictly
 newer product version; it serves the native startup upgrade flow described
 earlier and is rejected for same-version or older clients.
@@ -2284,10 +2284,11 @@ compare a CLAT executable identity and continue to attach normally.
 
 `workspace.list` retains its mounted-route listing. `workspace.directory` returns
 a read-only `projects` array merging persisted registrations and mounted runtime
-summaries, in registration order with fresh mounted projects appended. Each entry
+summaries, with pinned projects first and original registration order retained within
+each group (fresh mounted projects append to the base order). Each entry
 separates the persistent `project_id` from the current `route_id`/`api_prefix`;
 an untouched project has a null persistent id, and an unmounted entry has no route.
-Entries include root/title, mounted state, active-session pointer, Agent Run and
+Entries include root/title, pinned state, mounted state, active-session pointer, Agent Run and
 compaction activity. Unmounted pointers are saved metadata. Listing never mounts,
 grants trust, checks path availability, or loads session content; unavailable
 registered projects remain listed. Selecting an unmounted entry calls the
@@ -3248,3 +3249,25 @@ uses same-window project switching.
 Tray recents display the conversation title above its project. macOS uses the
 standard native subtitle when available (a styled second line on macOS 13); Windows
 uses a separate muted project row. Only the conversation row activates navigation.
+
+
+### Project display names and pinning
+
+Project rows in Conversations, Terminal and Settings → Projects share a three-dot
+menu and the same right-click menu: Rename project, Pin/Unpin project, and Use
+directory name. The menu button appears on hover or keyboard focus without
+reserving blank text space; touch devices keep it available. Renaming uses a
+small form (Enter saves, Escape cancels); failed saves keep the entered name.
+Custom names are trimmed, allow 1–128 Unicode characters, and reject controls.
+
+These preferences belong to the Host storage root and are shared across clients.
+Pinned projects appear first, with original order retained within each group;
+unpinning restores the original relative order. Lists, project selectors,
+breadcrumbs and recent-conversation project subtitles use the same display name.
+The tray still orders its three conversations by last opening, not project pinning.
+Real paths remain visible in details/tooltips. Names do not rename directories,
+change Git identities or Shell working directories, or alter Agent context.
+A project with no conversation can be organized without creating a conversation.
+
+Each generated round-end suggestion has a shared sparkle icon. The whole row
+still only appends the original suggestion to the draft; it never auto-sends.

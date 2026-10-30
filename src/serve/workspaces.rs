@@ -14,6 +14,7 @@ const MAX_MOUNTED_PROJECTS: usize = 16;
 mod directory;
 #[cfg(test)]
 mod lifecycle_tests;
+mod organization;
 mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
     "plugin.list",
@@ -28,6 +29,7 @@ pub(crate) const HOST_METHODS: &[&str] = &[
     "host.takeover",
     "workspace.list",
     "workspace.directory",
+    "workspace.update",
     "terminal.directory",
     "workspace.open",
 ];
@@ -170,6 +172,9 @@ impl WorkspaceHost {
     ) -> Result<Value, RpcError> {
         if method == "terminal.directory" {
             return self.terminal_directory();
+        }
+        if method == "workspace.update" {
+            return self.update_workspace(params);
         }
         let params = params
             .as_object()
