@@ -1,9 +1,10 @@
 use super::*;
-use crate::ProjectAuthorization;
 use crate::application::host_tests::fixture;
 use crate::plugin::InstallKind;
+use crate::{BootstrapApplication, ProjectAuthorization};
 use sha2::{Digest as _, Sha256};
 use std::path::Path;
+use std::sync::Arc;
 
 fn install_fixture(root: &Path, host: &HostApplication) -> String {
     let package = root.join("plg2-package");
@@ -481,5 +482,183 @@ fn plg6_caller_ticket_is_unique_and_legacy_prepare_still_works() {
     let legacy = ticket(&mut host, &id, "enable");
     host.plugin_cancel(&legacy);
     host.close().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn static_configuration_survives_settings_writes_and_reopen_without_mounting_disabled_features() {
+    use crate::test_support::{TestBehavior, TestProviderPlugin};
+    let (root, mut host, first, second) = fixture("static-composition");
+    let inventory = host.plugin_list().unwrap();
+    let disabled: Vec<_> = inventory["builtins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            row["id"].as_str().unwrap().starts_with("builtin.")
+                && row["instances"][0]["configurable"] == true
+        })
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect();
+    let absent_tools: Vec<String> = inventory["builtins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| disabled.contains(&row["id"].as_str().unwrap().to_owned()))
+        .flat_map(|row| {
+            row["instances"][0]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool.as_str().unwrap().to_owned())
+        })
+        .collect();
+    assert!(disabled.contains(&"builtin.compaction".into()));
+    assert!(disabled.contains(&"builtin.todo".into()));
+    assert!(disabled.contains(&"builtin.wasm_adapter".into()));
+    for id in [
+        "builtin.web",
+        "builtin.history",
+        "builtin.provider_monitor",
+        "builtin.language_intelligence",
+    ] {
+        assert!(
+            disabled.contains(&id.into()),
+            "feature port must allow absence: {id}"
+        );
+    }
+    host.close().unwrap();
+    drop(host);
+    let settings = root.join("state/builtin-plugins.json");
+    let value = json!({"unit":{"name":"builtin-plugins","version":1},"disabled":disabled});
+    std::fs::write(&settings, serde_json::to_vec(&value).unwrap()).unwrap();
+    for _ in 0..2 {
+        let app = BootstrapApplication::open(first.clone(), root.join("state"))
+            .unwrap()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        let mut host = HostApplication::new(app);
+        let project = host.attach(first.clone()).unwrap();
+        {
+            let mut app = project.lock().unwrap();
+            assert!(app.compactor.is_none());
+            assert!(app.todo.is_none());
+            assert!(app.titler.is_none());
+            assert!(app.monitor.is_none());
+            assert!(app.history.is_none());
+            assert!(app.web.is_none());
+            assert_eq!(
+                app.web_settings().unwrap_err().presentation().key,
+                "extension.disabled_builtin"
+            );
+            let (changes, updates) = std::sync::mpsc::channel();
+            app.subscribe(changes);
+            app.composition.stop_external_plugins().unwrap();
+            app.reload_external_plugins().unwrap();
+            let config = crate::ModelConfig {
+                model: "test".into(),
+                endpoint: "https://example.invalid/v1".into(),
+                ..Default::default()
+            };
+            let keys = crate::ProviderCredentials::for_protocol(config.protocol);
+            app.save_model_state(&config, &keys).unwrap();
+            assert!(
+                updates
+                    .try_iter()
+                    .any(|event| matches!(event, crate::ApplicationEvent::ModelsUpdated)),
+                "model notifications must not depend on optional quota monitoring"
+            );
+        }
+        // A later disk edit is not online authority, even for a newly attached project.
+        std::fs::write(&settings, b"{").unwrap();
+        let attached = host
+            .authorize_and_attach(second.clone(), ProjectAuthorization::grant())
+            .unwrap();
+        drop(attached);
+        let inventory = host.plugin_list().unwrap();
+        std::fs::write(&settings, serde_json::to_vec(&value).unwrap()).unwrap();
+        for id in &disabled {
+            let row = inventory["builtins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == *id)
+                .unwrap();
+            assert_eq!(row["instances"][0]["phase"], "disabled", "{id}");
+            assert!(
+                row["instances"][0]["tools"].as_array().unwrap().is_empty(),
+                "{id}"
+            );
+            assert!(
+                row["instances"][0]["commands"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{id}"
+            );
+        }
+        let (completion, received) = std::sync::mpsc::channel();
+        let run = project
+            .lock()
+            .unwrap()
+            .start_run(crate::ApplicationRunRequest {
+                message: crate::message::PendingMessage::text("still runs"),
+                approver: Arc::new(allow_plugin_test),
+                asker: None,
+                events: Box::new(crate::test_support::SharedEvents(Arc::new(
+                    std::sync::Mutex::new(Vec::new()),
+                ))),
+                completion,
+            })
+            .unwrap();
+        run.join().unwrap();
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .is_ok()
+        );
+        {
+            let mut app = project.lock().unwrap();
+            let original = app.current_session_id().unwrap();
+            app.new_session().unwrap();
+            let target = crate::application::target_services::TargetServices::new(
+                &app,
+                &original,
+                Arc::new(crate::web_tools::PaidCallBudget::new(0)),
+                Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
+            )
+            .expect("automatic targets must tolerate disabled feature tools");
+            for tool in &absent_tools {
+                assert!(
+                    target.runtime.tools.get(tool).is_none(),
+                    "disabled tool was resurrected in target: {tool}"
+                );
+            }
+            target.close().unwrap();
+        }
+        drop(project);
+        host.close().unwrap();
+        drop(host);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(saved, value, "model settings writers preserve composition");
+    }
+    for (id, key) in [
+        ("builtin.default_permission", "extension.required_builtin"),
+        ("builtin.typo", "extension.unknown_builtin"),
+    ] {
+        let config = json!({"unit":{"name":"builtin-plugins","version":1},"disabled":[id]});
+        std::fs::write(&settings, serde_json::to_vec(&config).unwrap()).unwrap();
+        let error = BootstrapApplication::open(first.clone(), root.join("state"))
+            .unwrap()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .err()
+            .expect("invalid composition must refuse startup");
+        assert_eq!(error.presentation().key, key);
+    }
     crate::test_support::cleanup_tree(&root);
 }

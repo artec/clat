@@ -204,6 +204,13 @@ pub(crate) struct PluginManager {
 }
 
 impl PluginManager {
+    pub(crate) fn validate_catalog(
+        scope: ScopeKind,
+        catalog: &[Arc<dyn Plugin>],
+    ) -> Result<(), CatalogError> {
+        plan(catalog, scope, &ServiceRegistry::root()).map(|_| ())
+    }
+
     pub(crate) fn root(scope: ScopeKind) -> Self {
         Self {
             scope,
@@ -365,6 +372,13 @@ impl PluginManager {
         key: ServiceKey<T>,
     ) -> Result<Arc<T>, ServiceError> {
         self.registry.require(key)
+    }
+
+    pub(crate) fn try_require<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: ServiceKey<T>,
+    ) -> Result<Option<Arc<T>>, ServiceError> {
+        self.registry.try_require(key)
     }
 
     /// Only successfully mounted, not-yet-revoked entries are observable.

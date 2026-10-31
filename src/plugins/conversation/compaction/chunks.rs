@@ -5,7 +5,7 @@ pub(super) fn rendered_units(items: &[ModelItem], active: bool) -> Vec<String> {
     if active {
         items
             .iter()
-            .map(|item| render_group_with_limit(&[std::slice::from_ref(item)], false))
+            .map(|item| render_group(&[std::slice::from_ref(item)]))
             .collect()
     } else {
         split_turns(items)

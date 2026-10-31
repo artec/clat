@@ -4285,7 +4285,7 @@ fn subscribing_a_host_client_configures_monitor_without_terminal_snapshot() {
     );
     configure_test_model(&app);
     let monitor = Arc::new(Monitor(std::sync::Mutex::new(None)));
-    app.monitor = monitor.clone();
+    app.monitor = Some(monitor.clone());
     let (tx, _rx) = std::sync::mpsc::channel();
     app.subscribe(tx);
     assert_eq!(

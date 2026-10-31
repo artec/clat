@@ -34,6 +34,8 @@ impl TrustedProjectApplication {
         if !remove {
             let text = self
                 .history
+                .as_ref()
+                .ok_or_else(|| missing_builtin("builtin.history"))?
                 .public_message(&reference, &crate::CancelToken::new())
                 .map_err(|e| ApplicationError::presented(e.presentation()))?;
             if let Some(snapshot) = snapshot {

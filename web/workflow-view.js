@@ -37,8 +37,12 @@ function renderWorkflowPlan(view,doc){
 }
 function renderWorkflowGoal(view,goal){
   const {value,detail}=view;
+  if(!goal){
+    const overview=navigationOverview({title:()=>workflowText('no_goal'),description:()=>workflowText('no_plans'),icon:'plan'});
+    overview.append(workflowViewButton(view,'create_goal',()=>renderWorkflowGoalForm(view)));
+    detail.append(overview);return;
+  }
   detail.append(el('h2','',()=>goal?.objective||workflowText('no_goal')),el('p','',()=>workflowText(workflowGoalStatus(value))));
-  if(!goal){detail.append(workflowViewButton(view,'create_goal',()=>renderWorkflowGoalForm(view)));return;}
   const action=verb=>view.act({action:'goal',verb,id:goal.id,revision:goal.revision,summary:null}),actions=el('div','file-range');
   if(goal.phase!=='complete')actions.append(
     workflowViewButton(view,'continue_goal',()=>action('start'),value.plan_mode||value.busy||Boolean(value.handoff)),

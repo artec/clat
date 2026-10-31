@@ -3,6 +3,8 @@ pub use crate::web_tools::{FetchProvider, WebSettingsEdit, WebSettingsView};
 impl TrustedProjectApplication {
     pub fn web_settings(&self) -> Result<WebSettingsView, ApplicationError> {
         self.web
+            .as_ref()
+            .ok_or_else(|| missing_builtin("builtin.web"))?
             .view()
             .map_err(|e| ApplicationError::presented(e.presentation()))
     }
@@ -11,6 +13,8 @@ impl TrustedProjectApplication {
         edit: WebSettingsEdit,
     ) -> Result<WebSettingsView, ApplicationError> {
         self.web
+            .as_ref()
+            .ok_or_else(|| missing_builtin("builtin.web"))?
             .save(edit)
             .map_err(|e| ApplicationError::presented(e.presentation()))?;
         self.web_settings()

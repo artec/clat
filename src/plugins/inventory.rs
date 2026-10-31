@@ -24,6 +24,8 @@ pub(crate) struct BuiltinPluginInfo {
 pub(crate) struct PluginInstance {
     project: String,
     phase: &'static str,
+    configurable: bool,
+    disabled_by: Vec<&'static str>,
     provides: Vec<&'static str>,
     requires: Vec<&'static str>,
     optional: Vec<&'static str>,
@@ -36,10 +38,15 @@ pub(crate) fn snapshot(
     tools: &ToolRegistry,
     commands: &CommandRegistry,
     project: &std::path::Path,
+    selection: &crate::plugin::selection::Selection,
 ) -> Result<Vec<BuiltinPluginInfo>, String> {
-    manager
-        .descriptors()
-        .map(|descriptor| {
+    let mounted: std::collections::BTreeSet<_> = manager.descriptors().map(|d| d.id).collect();
+    selection
+        .entries
+        .iter()
+        .map(|entry| {
+            let descriptor = entry.descriptor;
+            let active = mounted.contains(&descriptor.id);
             let (name, summary) = presentation::messages(descriptor.id);
             Ok(BuiltinPluginInfo {
                 id: descriptor.id.as_str(),
@@ -57,7 +64,9 @@ pub(crate) fn snapshot(
                 },
                 instances: vec![PluginInstance {
                     project: project.to_string_lossy().into_owned(),
-                    phase: "active",
+                    phase: if active { "active" } else { "disabled" },
+                    configurable: !entry.protected,
+                    disabled_by: entry.disabled_by.iter().map(|id| id.as_str()).collect(),
                     provides: descriptor.provides.iter().map(|id| id.as_str()).collect(),
                     requires: descriptor.requires.iter().map(|id| id.as_str()).collect(),
                     optional: descriptor.optional.iter().map(|id| id.as_str()).collect(),

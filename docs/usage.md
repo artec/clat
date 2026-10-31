@@ -432,7 +432,12 @@ publisher and package health. Tab cycles through installed packages, built-in
 plugins and the signed market. The built-in view shows localized responsibilities,
 the bundled version and how many projects have mounted the plugin. It is read-only;
 the PWA/Desktop detail view also exposes per-project service dependencies and
-owned tools/commands under technical details. Refresh rereads actual mounts.
+owned tools/commands under technical details. Refresh rereads actual mounts and
+the immutable startup plan, including disabled candidates. For static built-in
+configuration, stop CLAT, edit the storage-root `builtin-plugins.json`, and
+restart; see [static composition](plugins.md#static-composition-and-absence-contracts).
+Only entries whose project instance has `configurable: true` can currently be
+disabled. A restart applies the plan; this view does not hot-unplug services.
 Arrows select, `/` edits the search filter, Enter finishes search,
 R refreshes, and V switches market manifest generation v1/v2. Browse and search
 use the host's verified index; a usable signed cache remains available offline.

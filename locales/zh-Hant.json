@@ -2413,6 +2413,7 @@
   "dev.git_output_large": "Git 查詢超出限制，請縮小歷史範圍或在終端機中檢視。",
   "dev.repositories_truncated": "巢狀儲存庫搜尋已達掃描限制，可能有遺漏。目前儲存庫的變更檔案清單不受影響。",
   "dev.more_history": "載入更早提交",
+  "dev.graph_scope": "提交圖譜引用範圍",
   "dev.history_all": "全部引用",
   "dev.history_current": "目前分支",
   "dev.no_history": "尚無提交記錄。",
@@ -2876,5 +2877,11 @@
   "setup.first_prompt": "描述你想完成的事情，亦可先請 CLAT 介紹這個專案。",
   "setup.uncertain": "回應中斷，可重試查詢同一次操作，無須重複發起驗證。",
   "setup.provider_key": "API 金鑰",
-  "setup.request_rejected": "供應商拒絕了請求，請檢查模型是否可用、API 格式及帳戶額度。"
+  "setup.request_rejected": "供應商拒絕了請求，請檢查模型是否可用、API 格式及帳戶額度。",
+  "extension.invalid_composition": "無法解析內建外掛組合：{error}",
+  "extension.unknown_builtin": "未知內建外掛：{id}。請檢查 builtin-plugins.json 的 disabled。",
+  "extension.required_builtin": "無法關閉 {id}：它提供 Application 必需服務或其相依項。",
+  "extension.static_configuration": "啟動時設定；請在 CLAT 停止後編輯 builtin-plugins.json 的 disabled，再重新啟動。",
+  "extension.required_contract": "目前 Application 服務仍依賴此外掛，暫不能關閉。",
+  "extension.disabled_builtin": "此功能已在啟動外掛設定中關閉：{id}。"
 }

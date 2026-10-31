@@ -279,7 +279,9 @@ impl RunWorker {
         }
         self.deps.subagent_service.unbind();
         let close_result = self.deps.run_scope.close();
-        self.deps.monitor.refresh();
+        if let Some(monitor) = &self.deps.monitor {
+            monitor.refresh();
+        }
         let result = match (result, close_result) {
             (result, Ok(())) => result,
             (Ok(done), Err(error)) => Err(ApplicationRunFailure {

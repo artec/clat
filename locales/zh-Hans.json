@@ -2413,6 +2413,7 @@
   "dev.git_output_large": "Git 查询超出限制，请缩小历史范围或在终端中查看。",
   "dev.repositories_truncated": "嵌套仓库搜索已达扫描限制，可能有遗漏。当前仓库的变更文件列表不受影响。",
   "dev.more_history": "加载更早提交",
+  "dev.graph_scope": "提交图谱引用范围",
   "dev.history_all": "全部引用",
   "dev.history_current": "当前分支",
   "dev.no_history": "尚无提交记录。",
@@ -2876,5 +2877,11 @@
   "setup.first_prompt": "描述你想完成的事情，也可以先请 CLAT 介绍这个项目。",
   "setup.uncertain": "响应中断，可重试查询同一次操作，无需重复发起验证。",
   "setup.provider_key": "API 密钥",
-  "setup.request_rejected": "供应商拒绝了请求，请检查模型是否可用、API 格式和账户额度。"
+  "setup.request_rejected": "供应商拒绝了请求，请检查模型是否可用、API 格式和账户额度。",
+  "extension.invalid_composition": "无法解析内置插件组合：{error}",
+  "extension.unknown_builtin": "未知内置插件：{id}。请检查 builtin-plugins.json 的 disabled。",
+  "extension.required_builtin": "无法关闭 {id}：它提供 Application 必需服务或其依赖。",
+  "extension.static_configuration": "启动时配置；请在 CLAT 停止后编辑 builtin-plugins.json 的 disabled，再重新启动。",
+  "extension.required_contract": "当前 Application 服务仍依赖此插件，暂不能关闭。",
+  "extension.disabled_builtin": "此功能已在启动插件配置中关闭：{id}。"
 }

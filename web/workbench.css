@@ -481,6 +481,19 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .workspace-tool .review-files,.workspace-tool .review-patch { max-height:none; }
 .workspace-tool .review-diff { max-height:none;white-space:pre-wrap;overflow-wrap:anywhere; }
 .workspace-tool .navigation-list { border:0; }
+/* Tool landing states follow the project editor's quiet, centered empty view. */
+.workspace-tool .navigation-overview {
+  box-sizing:border-box;min-height:100%;width:100%;max-width:none;margin:0;
+  padding:24px;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:12px;text-align:center;color:var(--text-muted);
+}
+.workspace-tool .navigation-overview>svg { width:40px;height:40px;flex:none;margin:0;color:inherit;opacity:.65; }
+.workspace-tool .navigation-overview>h2 { margin:0;font-size:var(--text-size-ui);line-height:1.5;font-weight:500;color:inherit; }
+.workspace-tool .navigation-overview>p { max-width:480px;margin:0;font-size:var(--text-size-ui);line-height:1.7;overflow-wrap:anywhere; }
+.workspace-tool .navigation-overview>.navigation-options:empty { display:none; }
+.workspace-tool .navigation-overview>button { margin-top:4px; }
+.workspace-tool .git-diff-content>.navigation-overview { flex:1;min-height:min-content; }
+.workspace-tool .git-diff-content>.navigation-overview>p:last-child { font-size:var(--text-size-secondary); }
 .operation-turn { margin:16px 10px 6px;font-size:var(--text-size-secondary);color:var(--text-muted);font-weight:500; }
 .operation-status { color:var(--text-muted); }
 .operation-capture { border-top:1px solid var(--line);margin-top:20px;padding-top:12px; }

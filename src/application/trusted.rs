@@ -682,7 +682,9 @@ impl TrustedProjectApplication {
         max_messages: Option<usize>,
     ) -> Result<crate::application::HistoryWindow<ProjectSnapshot>, ApplicationError> {
         let (config, credentials) = self.model_state()?;
-        self.monitor.configure(config.clone(), credentials.clone());
+        if let Some(monitor) = &self.monitor {
+            monitor.configure(config.clone(), credentials.clone());
+        }
         let (transcript, replay, replay_has_more, usage, input_history, session_id) =
             match self.sessions.active_id() {
                 Some(id) => {
@@ -809,7 +811,10 @@ impl TrustedProjectApplication {
         let root = self.canonical_root.clone();
         let display = self.workspace_directory_entry();
         Ok(crate::WorkbenchSnapshot {
-            monitor_status: self.monitor.snapshot(&config, &credentials),
+            monitor_status: self
+                .monitor
+                .as_ref()
+                .and_then(|monitor| monitor.snapshot(&config, &credentials)),
             route_usage: usage
                 .routes
                 .get(&crate::model::model_route_key(
@@ -1396,17 +1401,22 @@ impl TrustedProjectApplication {
         {
             let _ = sender.send(ApplicationEvent::LanguageIntelligenceNotice { message });
         }
-        self.monitor.subscribe(sender);
+        let Some(monitor) = &self.monitor else {
+            return;
+        };
+        monitor.subscribe(sender);
         // Attached clients need monitoring without invoking the standalone
         // terminal's heavyweight snapshot path. Configure is idempotent for
         // an unchanged endpoint/account; another frontend does not refetch.
         if let Ok((config, credentials)) = self.model_state() {
-            self.monitor.configure(config, credentials);
+            monitor.configure(config, credentials);
         }
     }
 
     pub fn refresh_monitor(&self) {
-        self.monitor.refresh();
+        if let Some(monitor) = &self.monitor {
+            monitor.refresh();
+        }
     }
 }
 

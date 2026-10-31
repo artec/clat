@@ -6,6 +6,7 @@
 //! 单写者 = storage-root flock 租约（跨进程）+ 本类型互斥（进程内，
 //! §4.6 的读-改-写全程持锁——无 CAS 字段）。
 
+mod builtin_plugins;
 pub(crate) mod im;
 pub(crate) mod json_file;
 mod library;
@@ -80,6 +81,7 @@ pub(crate) struct ControlStorage {
     dir: Dir,
     state: Mutex<ControlState>,
     web_updates: Mutex<()>,
+    builtin_plugins: crate::plugin::selection::Configuration,
     #[cfg(test)]
     fail_next_chat_mapping_save: std::sync::atomic::AtomicBool,
 }
@@ -106,6 +108,7 @@ impl ControlStorage {
             .map_err(|error| control_error(format!("cannot canonicalize storage root: {error}")))?;
         let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority())
             .map_err(|error| control_error(format!("cannot open the storage root: {error}")))?;
+        let builtin_plugins = builtin_plugins::load(&dir)?;
         let loaded = settings::load(&dir, &root)?;
         let mut salvage_diagnostics = loaded.diagnostics;
         let (im, im_diagnostics) = im::load(&dir, &root)?;
@@ -119,6 +122,7 @@ impl ControlStorage {
         let projcache_file = projcache::load(&storages_dir, &storages_root);
         let storage = Self {
             web_updates: Mutex::new(()),
+            builtin_plugins,
             root,
             dir,
             state: Mutex::new(ControlState {

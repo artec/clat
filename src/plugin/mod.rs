@@ -17,6 +17,7 @@ pub(crate) use store::tests as store_hash_probe;
 
 /// panic 载荷的统一文案化（mount/run worker/dispatch 三处隔离共用）。
 pub(crate) use manager::panic_message;
+pub(crate) mod selection;
 mod service;
 
 pub(crate) use bundle::{pack_directory, unpack_bundle};

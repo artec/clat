@@ -106,6 +106,42 @@ fn load_inner<T: DeserializeOwned>(
     expected_unit: (&str, u64),
     max_bytes: Option<usize>,
 ) -> Result<Loaded<T>, LoadError> {
+    let Some(bytes) = read_file(dir, name, max_bytes)? else {
+        return Ok(Loaded::Missing);
+    };
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    // 先按无类型 JSON 解析：失败 = 撕裂（抢救路径）；成功后再过 unit
+    // 门与结构门（fail-closed）。
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => {
+            let remnant = salvage_torn(dir, parent, name)?;
+            return Ok(Loaded::Salvaged { remnant });
+        }
+    };
+    // unit 头先验：版本错位是异常而非崩溃残迹——fail-closed 拒载，
+    // 绝不自动降级猜读（INV-MP6）。
+    if let Ok(shallow) = serde_json::from_value::<UnitTagShallow>(value.clone())
+        && !shallow.unit.matches(expected_unit)
+    {
+        return Err(LoadError::VersionMismatch {
+            file: name.to_owned(),
+            found: format!("unit {} v{}", shallow.unit.name, shallow.unit.version),
+        });
+    }
+    let parsed: T = serde_json::from_value(value).map_err(|error| LoadError::Malformed {
+        file: name.to_owned(),
+        reason: error.to_string(),
+    })?;
+    Ok(Loaded::Intact(parsed))
+}
+
+/// Capability-confined bounded read without salvage or writes. Missing differs from corrupt.
+pub(crate) fn read_file(
+    dir: &cap_std::fs::Dir,
+    name: &str,
+    max_bytes: Option<usize>,
+) -> Result<Option<Vec<u8>>, LoadError> {
     if dir
         .symlink_metadata(name)
         .is_ok_and(|meta| meta.file_type().is_symlink())
@@ -128,7 +164,7 @@ fn load_inner<T: DeserializeOwned>(
     let mut file = match dir.open_with(name, &options) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Loaded::Missing);
+            return Ok(None);
         }
         Err(error) => return Err(LoadError::Io(format!("cannot open {name}: {error}"))),
     };
@@ -166,31 +202,7 @@ fn load_inner<T: DeserializeOwned>(
     // Windows does not permit the torn-remnant rename while this read handle
     // is still open. Close it before parsing can enter the salvage path.
     drop(file);
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    // 先按无类型 JSON 解析：失败 = 撕裂（抢救路径）；成功后再过 unit
-    // 门与结构门（fail-closed）。
-    let value: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(value) => value,
-        Err(_) => {
-            let remnant = salvage_torn(dir, parent, name)?;
-            return Ok(Loaded::Salvaged { remnant });
-        }
-    };
-    // unit 头先验：版本错位是异常而非崩溃残迹——fail-closed 拒载，
-    // 绝不自动降级猜读（INV-MP6）。
-    if let Ok(shallow) = serde_json::from_value::<UnitTagShallow>(value.clone())
-        && !shallow.unit.matches(expected_unit)
-    {
-        return Err(LoadError::VersionMismatch {
-            file: name.to_owned(),
-            found: format!("unit {} v{}", shallow.unit.name, shallow.unit.version),
-        });
-    }
-    let parsed: T = serde_json::from_value(value).map_err(|error| LoadError::Malformed {
-        file: name.to_owned(),
-        reason: error.to_string(),
-    })?;
-    Ok(Loaded::Intact(parsed))
+    Ok(Some(bytes))
 }
 
 /// 只关心 `unit` 头的浅解析（结构门的前置探针）。

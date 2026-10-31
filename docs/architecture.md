@@ -182,6 +182,37 @@ reopens tool/prompt registration and remounts only those adapters. Core services
 sessions and drafts retain their owners. The next run freezes the new tool
 surface; management replies remain outside the durable run vocabulary.
 
+### Stable static composition
+
+The design separates three responsibilities: contracts describe dependencies;
+the startup plan decides presence; the manager owns resource lifetimes. Display
+metadata has no activation authority. Every feature owns its contributions and
+cleanup. Callers must express an optional capability as optional rather than
+requiring its plugin and hoping a configuration switch makes that safe.
+
+`plugin/selection.rs` validates the full catalog, protects the transitive hard
+dependency closure of `project_service_contract`, and propagates explicitly
+disabled candidates through hard dependency edges only. It produces immutable
+activation intent before mount. The existing manager then enforces typed service
+registration, dependency order, failure rollback and inverse cleanup. Optional
+mount failures still abort and roll back; absence is an explicit configured
+state, not a blanket exception handler. No native dynamic loader, Node runtime,
+new binary or online built-in dependency restart is introduced.
+
+`control_storage/builtin_plugins.rs` reads a bounded, versioned activation file
+once per Host lifetime. Invalid input remains untouched and refuses startup,
+so salvage of unrelated settings cannot reactivate a disabled feature. All
+projects share that snapshot. External adapter remounts filter through the same
+plan. The inventory joins the plan with actual mounts and owner registries:
+absent rows expose no tools, commands or fabricated service instance.
+
+Web, history query, language intelligence and provider monitoring are genuinely
+optional ports. Disabled read/control APIs return a typed unavailable result;
+monitor fields are absent and no monitor worker starts. Model notification
+subscriptions remain independent of monitor ownership. Some Application feature
+contracts are still mandatory; their protected status documents coupling that
+remains to be removed, rather than redefining every feature as kernel.
+
 ## Application boundary
 
 `HostApplication` groups already trusted project runtimes under one storage-root
@@ -539,7 +570,12 @@ source seqs are deduplicated because an assistant event projects several model
 items. Unshadowed live JSON, image parts, and provider state are copied intact,
 instead of replacing rich live results with their redacted journal projection.
 The context and image projection share the quantized request pressure line.
-Manual/startup compaction retains the older user-turn selection policy.
+Manual/startup compaction retains the older user-turn selection policy. Both idle and active
+summary inputs preserve complete rendered text before UTF-8-safe splitting;
+there is no per-item 2,000-character prefix truncation on the idle path. This
+protects late user constraints and tool/error evidence before the model sees it.
+It does not guarantee lossless model-written summaries or image understanding:
+image content is still represented by a placeholder in the text summarizer.
 
 `read_file` results are constructed to stay under the shared pruner threshold,
 so the generic head/tail replacement never fires on them: every segment keeps

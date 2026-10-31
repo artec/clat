@@ -160,20 +160,27 @@ impl TargetServices {
         replacements.push(crate::plugins::target_goal_tool(self.goal.clone()));
         replacements.push(crate::plugins::target_plan_tool(self.plan.clone()));
         replacements.extend(crate::task::plugin::execution_tools(self.task.clone()));
-        replacements.extend(crate::session_query::plugin::execution_tools(
-            app.history.for_session(&self.sessions),
-        ));
+        if let Some(history) = &app.history {
+            replacements.extend(crate::session_query::plugin::execution_tools(
+                history.for_session(&self.sessions),
+            ));
+        }
         replacements.extend(crate::background_jobs::plugin::execution_tools(
             app.jobs.clone(),
             self.process.clone(),
         ));
-        replacements.extend(app.web.execution_tools(quota));
+        if let Some(web) = &app.web {
+            replacements.extend(web.execution_tools(quota));
+        }
         replacements.extend(crate::scheduler::plugin::execution_tools(
             app.scheduler.clone(),
             self.sessions.clone(),
             app.config.clone(),
             app.schedule_project(),
         ));
+        // Target bindings specialize existing capabilities; configured absence
+        // must neither fail assembly nor resurrect a disabled contribution.
+        replacements.retain(|tool| app.tools.get(&tool.definition().name).is_some());
         let tools = app
             .tools
             .for_session(replacements)

@@ -59,12 +59,55 @@ cannot redirect these deletions outside storage. Connection-local clipboard
 buffers in Host clients remain client-process resources, outside this Host's
 project inventory.
 
-Built-ins are updated with the CLAT binary. Their information is read-only:
-individual enable, disable, configure, update, rollback and uninstall operations
-remain package-store operations, not runtime controls for static services.
-The inventory reports project-scope mounts, not ephemeral run resources or a
-catalog of every compiled type. The standalone `clat plugin list` command
-continues to list installed external packages without mounting a project.
+Built-ins are updated with the CLAT binary. Their package-store actions remain
+read-only: update, rollback and uninstall apply to external packages. Static
+composition is configured while CLAT is stopped and takes effect on Host restart.
+The standalone `clat plugin list` command continues to list installed external
+packages without mounting a project.
+
+### Static composition and absence contracts
+
+CLAT chooses a fixed composition before running plugins. It does not load native
+libraries or a JavaScript host to reconfigure built-ins. Create
+`builtin-plugins.json` in the storage root (`~/.clat` by default):
+
+```json
+{
+  "unit": { "name": "builtin-plugins", "version": 1 },
+  "disabled": ["builtin.web", "builtin.language_intelligence", "builtin.provider_monitor"]
+}
+```
+
+Stop all CLAT clients/Host using that root before editing, then restart. Removing
+an id re-enables that candidate on the next Host startup. A missing file preserves
+the default composition. The file is at most 64 KiB; invalid JSON, unknown fields,
+unsupported units/versions and unknown plugin ids are rejected. Corrupt activation
+facts are never renamed or replaced with defaults. The Host reads one immutable
+snapshot; attaching another project or reloading external packages cannot bypass it.
+Model/profile writes do not rewrite this independent file.
+
+Each project resolves a complete plan before any plugin mounts. Hard dependencies
+propagate disablement to dependent optional plugins; soft dependencies do not.
+Disabling an Application-required service or its hard dependency is rejected with
+an actionable error before mount. The existing mount engine still owns ordered
+activation, rollback and reverse cleanup. Mount failures abort with rollback;
+CLAT does not silently pretend a failed feature is available.
+
+The inventory includes configured-disabled candidates as well as actual mounts.
+Per-project `configurable` reports whether a candidate can currently be disabled;
+`disabled_by` contains the explicitly disabled ids responsible for its absence.
+Only active instances contribute tools or commands. Web, history querying,
+language intelligence and quota monitoring have explicit absence behavior: their
+services are not mounted, affected APIs return unavailable or omit optional data,
+and normal model selection, notifications and conversation execution continue.
+Compaction, Todo, titles and contribution-only plugins can also be absent.
+
+**Current boundary:** several feature services are still required by Application
+ports, including goals, tasks, scheduling, skills, memory, development and drafts.
+They are protected by the current service contract, not declared permanent kernel
+components. Full independent disablement requires migrating those callers to
+explicit optional capability ports; the inventory does not disguise that debt.
+Ephemeral run resources and per-session preset trees are not listed.
 
 `builtin.task` owns acceptance orchestration and explicitly mounts built-in
 process-domain checker adapters (`text`, `json`, `records`, `command`, version 1).
@@ -352,9 +395,10 @@ methods, independent of session selection, journal events and `RunEvent`.
 `plugin.list` retains its `installed` package array and adds `builtins`. Each
 built-in row carries `id`, `runtime: "rust-builtin"`, `version`,
 `management: "bundled"`, localized name/summary descriptors and `scope`.
-Its `instances` array carries the canonical `project` path, `phase: "active"`,
-`provides`, `requires`, `optional`, `tools` and `commands`. These are fresh,
-read-only manager/registry projections; no configuration or credential values
+Its `instances` array carries the canonical `project` path, `phase` (`active` or
+`disabled`), `configurable`, `disabled_by`, `provides`, `requires`, `optional`,
+`tools` and `commands`. These are read-only startup-plan/manager/registry
+projections; no credential values
 are included. A Host with no mounted projects returns an empty array.
 `plugin.prepare` takes an id and action (`install`, `update`, `enable`,
 `rollback`, `configure`); `plugin.commit` takes the returned ticket,

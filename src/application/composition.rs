@@ -47,8 +47,8 @@ pub(super) struct ProjectPorts {
     pub(super) draft_images: Arc<crate::draft::DraftImageStore>,
     pub(super) sessions: Arc<SessionService>,
     pub(super) config: Arc<dyn ConfigStore>,
-    pub(super) web: Arc<crate::web_tools::WebService>,
-    pub(super) history: Arc<crate::session_query::SessionQueryService>,
+    pub(super) web: Option<Arc<crate::web_tools::WebService>>,
+    pub(super) history: Option<Arc<crate::session_query::SessionQueryService>>,
     pub(super) jobs: Arc<crate::background_jobs::JobRegistry>,
     pub(super) scheduler: Arc<crate::scheduler::SchedulerService>,
     pub(super) providers: Arc<ProviderRegistry>,
@@ -69,7 +69,7 @@ pub(super) struct ProjectPorts {
     pub(super) commands: Arc<crate::command::CommandRegistry>,
     pub(super) agent: Arc<dyn AgentRuntime>,
     pub(super) mcp_status: Arc<McpStatus>,
-    pub(super) monitor: Arc<dyn MonitorService>,
+    pub(super) monitor: Option<Arc<dyn MonitorService>>,
     pub(super) compactor: Option<Arc<dyn HistoryCompactor>>,
     pub(super) todo: Option<Arc<TodoService>>,
     pub(super) titler: Option<Arc<dyn SessionTitler>>,
@@ -79,6 +79,7 @@ pub(super) struct ProjectPorts {
 
 pub(super) struct TrustedProjectComposition {
     manager: Option<PluginManager>,
+    selection: crate::plugin::selection::Selection,
 }
 
 /// A mounted run child. The execution engine can cancel and close it without
@@ -101,6 +102,7 @@ impl TrustedProjectComposition {
             required(manager, TOOL_SERVICE)?.as_ref(),
             required(manager, COMMAND_SERVICE)?.as_ref(),
             project,
+            &self.selection,
         )
         .map_err(ApplicationError::new)
     }
@@ -134,21 +136,23 @@ impl TrustedProjectComposition {
             .reopen_for_plugin_reload()
             .map_err(|e| ApplicationError::new(e.to_string()))?;
         prompts.reopen_for_plugin_reload();
+        let mut catalog: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
+                root.clone(),
+                project.root().to_owned(),
+                super::trusted::glm_mcp_pack_from_control(control),
+                Arc::clone(host),
+            )),
+            Arc::new(crate::plugins::WasmAdapterPlugin::new(
+                root,
+                Arc::clone(host),
+                project.root().to_owned(),
+                permission_mode,
+            )),
+        ];
+        self.selection.apply(&mut catalog);
         manager
-            .mount_additional(vec![
-                Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
-                    root.clone(),
-                    project.root().to_owned(),
-                    super::trusted::glm_mcp_pack_from_control(control),
-                    Arc::clone(host),
-                )),
-                Arc::new(crate::plugins::WasmAdapterPlugin::new(
-                    root,
-                    Arc::clone(host),
-                    project.root().to_owned(),
-                    permission_mode,
-                )),
-            ])
+            .mount_additional(catalog)
             .map_err(|e| ApplicationError::new(e.to_string()))?;
         required(manager, MCP_STATUS_SERVICE)
     }
@@ -156,7 +160,14 @@ impl TrustedProjectComposition {
     pub(super) fn mount(
         mut input: CompositionInput,
     ) -> Result<(Self, ProjectPorts), ApplicationError> {
-        let catalog = project_catalog(&mut input);
+        let mut catalog = project_catalog(&mut input);
+        let selection = crate::plugin::selection::Selection::resolve(
+            &catalog,
+            &project_service_contract(),
+            &input.control.builtin_plugins(),
+        )
+        .map_err(ApplicationError::presented)?;
+        selection.apply(&mut catalog);
         let mut manager = PluginManager::root(ScopeKind::TrustedProject);
         manager
             .mount_all(catalog)
@@ -166,6 +177,7 @@ impl TrustedProjectComposition {
         Ok((
             Self {
                 manager: Some(manager),
+                selection,
             },
             ports,
         ))
@@ -325,7 +337,7 @@ fn resolve_and_freeze(
     let goal = required(manager, GOAL_SERVICE)?;
     let subagents = required(manager, SUBAGENT_SERVICE)?;
     let process_service = required(manager, PROCESS_SERVICE)?;
-    let language_intelligence = required(
+    let language_intelligence = optional(
         manager,
         crate::plugins::services::LANGUAGE_INTELLIGENCE_SERVICE,
     )?;
@@ -347,8 +359,8 @@ fn resolve_and_freeze(
         development: required(manager, crate::development::plugin::DEVELOPMENT_SERVICE)?,
         draft_images: required(manager, crate::draft::plugin::DRAFT_IMAGES_SERVICE)?,
         tool_pipeline,
-        web: required(manager, crate::plugins::services::WEB_SERVICE)?,
-        history: required(manager, crate::plugins::services::HISTORY_SERVICE)?,
+        web: optional(manager, crate::plugins::services::WEB_SERVICE)?,
+        history: optional(manager, crate::plugins::services::HISTORY_SERVICE)?,
         jobs: required(manager, crate::plugins::services::JOB_SERVICE)?,
         scheduler: required(manager, crate::plugins::services::SCHEDULER_SERVICE)?,
         sessions: required(manager, SESSION_SERVICE)?,
@@ -370,12 +382,13 @@ fn resolve_and_freeze(
         commands,
         agent: required(manager, AGENT_SERVICE)?,
         mcp_status: required(manager, MCP_STATUS_SERVICE)?,
-        monitor: required(manager, MONITOR_SERVICE)?,
-        compactor: manager.require(COMPACTION_SERVICE).ok(),
-        todo: manager.require(TODO_SERVICE).ok(),
-        titler: manager.require(SESSION_TITLE_SERVICE).ok(),
+        monitor: optional(manager, MONITOR_SERVICE)?,
+        compactor: optional(manager, COMPACTION_SERVICE)?,
+        todo: optional(manager, TODO_SERVICE)?,
+        titler: optional(manager, SESSION_TITLE_SERVICE)?,
         utility: required(manager, crate::plugins::services::UTILITY_MODEL_SERVICE)?,
-        language_startup_diagnostic: language_intelligence.diagnostics().first().cloned(),
+        language_startup_diagnostic: language_intelligence
+            .and_then(|service| service.diagnostics().first().cloned()),
     })
 }
 
@@ -385,6 +398,16 @@ fn required<T: ?Sized + Send + Sync + 'static>(
 ) -> Result<Arc<T>, ApplicationError> {
     manager
         .require(key)
+        .map_err(|error| ApplicationError::new(error.to_string()))
+}
+
+/// Absence is optional; a poisoned registry or wrong service type is still an error.
+fn optional<T: ?Sized + Send + Sync + 'static>(
+    manager: &PluginManager,
+    key: ServiceKey<T>,
+) -> Result<Option<Arc<T>>, ApplicationError> {
+    manager
+        .try_require(key)
         .map_err(|error| ApplicationError::new(error.to_string()))
 }
 
@@ -487,5 +510,39 @@ fn project_runtime_catalog(
             input.project.clone(),
         )),
         Arc::new(crate::plugins::MonitorPlugin),
+    ]
+}
+
+/// Existing Application contracts, not a claim that all these features are kernel.
+/// Optional ports (compaction, todo, titler) deliberately do not appear here.
+fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
+    use crate::plugins::services::*;
+    vec![
+        crate::development::plugin::DEVELOPMENT_SERVICE.id(),
+        crate::draft::plugin::DRAFT_IMAGES_SERVICE.id(),
+        SESSION_SERVICE.id(),
+        CONFIG_SERVICE.id(),
+        JOB_SERVICE.id(),
+        SCHEDULER_SERVICE.id(),
+        PROVIDER_SERVICE.id(),
+        TOOL_SERVICE.id(),
+        TOOL_PIPELINE_SERVICE.id(),
+        PROMPT_SERVICE.id(),
+        DYNAMIC_INSTRUCTIONS_SERVICE.id(),
+        PROCESS_SERVICE.id(),
+        PLAN_MODE_SERVICE.id(),
+        TOOL_ACCESS_SERVICE.id(),
+        VIEW_IMAGE_SERVICE.id(),
+        SKILLS_SERVICE.id(),
+        SKILL_CATALOG_SERVICE.id(),
+        MEMORY_SERVICE.id(),
+        GOAL_SERVICE.id(),
+        crate::task::plugin::TASK_SERVICE.id(),
+        SUBAGENT_SERVICE.id(),
+        COMMAND_SERVICE.id(),
+        AGENT_SERVICE.id(),
+        MCP_STATUS_SERVICE.id(),
+        UTILITY_MODEL_SERVICE.id(),
+        PERMISSION_SERVICE.id(),
     ]
 }

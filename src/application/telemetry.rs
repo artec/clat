@@ -32,7 +32,7 @@ impl TrustedProjectApplication {
                 "capacity":config.max_context_tokens,"output_reserve":value.output_reserve_estimate,"estimated":true})),
             "last_request":snapshot.last_request_usage.as_ref().map(crate::wire::usage_to_json),
             "route":snapshot.route_usage.as_ref().map(crate::wire::usage_to_json),
-            "allowance":self.monitor.allowance(&config,&credentials),
+            "allowance":self.monitor.as_ref().map(|monitor| monitor.allowance(&config,&credentials)),
         }))
     }
 }

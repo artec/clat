@@ -106,7 +106,7 @@ fn active_compaction_text_chunks_preserve_utf8_tail_and_tool_error_identity() {
     output.is_error = true;
     output.output = json!({"diagnostic":format!("{}TAIL_EVIDENCE_最后", "中🙂abc".repeat(8000))});
     let items = vec![call("last-evidence"), ModelItem::ToolResult(output)];
-    let full = render_group_with_limit(&[&items], false);
+    let full = render_group(&[&items]);
     let chunks = chunks::full_units(&items, 700);
     assert!(chunks.len() > 10);
     assert!(chunks.iter().all(|text| estimate_tokens_str(text) <= 700));
@@ -200,6 +200,12 @@ fn history_compaction_splits_an_oversized_turn_without_losing_rendered_evidence(
         rendered,
         "map inputs must preserve every rendered character in order"
     );
+    for index in 0..36 {
+        assert!(
+            rendered.contains(&format!("TAIL_{index}")),
+            "late tool evidence must reach summarization"
+        );
+    }
     assert!(inputs.last().unwrap().contains("## Part 3"));
 }
 

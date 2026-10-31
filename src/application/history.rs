@@ -11,26 +11,33 @@ pub use crate::session_query::{
 };
 /// A cloneable, read-only port. Heavy indexing never holds an Application lock.
 #[derive(Clone)]
-pub struct HistoryReader(Arc<crate::session_query::SessionQueryService>);
+pub struct HistoryReader(Option<Arc<crate::session_query::SessionQueryService>>);
 impl TrustedProjectApplication {
     pub fn history_reader(&self) -> HistoryReader {
         HistoryReader(self.history.clone())
     }
 }
 impl HistoryReader {
+    fn service(&self) -> Result<&crate::session_query::SessionQueryService, ApplicationError> {
+        self.0
+            .as_deref()
+            .ok_or_else(|| missing_builtin("builtin.history"))
+    }
     pub fn operations(
         &self,
         request: OperationsRequest,
         cancel: &CancelToken,
     ) -> Result<OperationsPage, ApplicationError> {
-        self.0.operations(request, cancel).map_err(error)
+        self.service()?.operations(request, cancel).map_err(error)
     }
     pub fn operation_detail(
         &self,
         request: OperationDetailRequest,
         cancel: &CancelToken,
     ) -> Result<OperationDetail, ApplicationError> {
-        self.0.operation_detail(request, cancel).map_err(error)
+        self.service()?
+            .operation_detail(request, cancel)
+            .map_err(error)
     }
     pub fn attachment(
         &self,
@@ -39,7 +46,7 @@ impl HistoryReader {
         trusted_projects: bool,
         cancel: &CancelToken,
     ) -> Result<serde_json::Value, ApplicationError> {
-        self.0
+        self.service()?
             .attachment(reference, id, trusted_projects, cancel)
             .map_err(error)
     }
@@ -49,7 +56,7 @@ impl HistoryReader {
         request: ConversationRequest,
         cancel: &CancelToken,
     ) -> Result<ConversationPage, ApplicationError> {
-        self.0.conversation(request, cancel).map_err(error)
+        self.service()?.conversation(request, cancel).map_err(error)
     }
 
     pub fn search(
@@ -57,21 +64,25 @@ impl HistoryReader {
         request: HistorySearch,
         cancel: &CancelToken,
     ) -> Result<HistoryPage, ApplicationError> {
-        self.0.search(request, cancel, false).map_err(error)
+        self.service()?
+            .search(request, cancel, false)
+            .map_err(error)
     }
     pub fn events(
         &self,
         request: HistoryEventsRequest,
         cancel: &CancelToken,
     ) -> Result<HistoryEventsPage, ApplicationError> {
-        self.0.events(request, cancel, false).map_err(error)
+        self.service()?
+            .events(request, cancel, false)
+            .map_err(error)
     }
     pub fn read(
         &self,
         request: HistoryReadRequest,
         cancel: &CancelToken,
     ) -> Result<HistoryEventRead, ApplicationError> {
-        self.0.read(request, cancel, false).map_err(error)
+        self.service()?.read(request, cancel, false).map_err(error)
     }
 }
 fn error(e: crate::session_query::QueryError) -> ApplicationError {

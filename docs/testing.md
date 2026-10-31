@@ -1320,3 +1320,16 @@ Context component estimates preserve exact additivity, while comparison of an
 unchanged layer across different preceding text permits the estimator's single
 token rounding boundary. Catalog vocabulary counts remain owned by catalog tests;
 admission checks resolve every catalog seat instead of duplicating its size.
+
+
+Static composition tests derive from absence invariants: resolve without running
+plugin code; protect required-service closure; propagate hard but not optional
+dependency absence; reject unknown ids; retain corrupt activation facts unchanged;
+and use an isolated Host to disable all currently configurable built-ins, reload
+external adapters, execute a scripted model, close and reopen twice. Model updates
+must remain observable with quota monitoring absent. Configuration file contents
+must survive unrelated settings writes. Tests pin these behaviors, not UI wording
+or list size. Compaction regression coverage also places essential evidence after
+2,000 characters and requires every character of a large idle summarization input
+to reach bounded map requests; the model-written result still needs separate
+semantic evaluation against real tasks.

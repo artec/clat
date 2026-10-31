@@ -40,7 +40,7 @@
 .dev-git .navigation-sidebar{display:flex;flex-direction:column}.dev-git .navigation-head{min-height:54px;padding-block:10px}.git-repository-heading{display:flex;align-items:center;gap:8px;padding:0 16px 12px;min-width:0;font-size:var(--text-size-ui)}
 .git-repository-heading>svg{width:17px;height:17px}.git-repository-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.git-repository-heading>span{font-size:var(--text-size-secondary);color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;max-width:45%}
 .git-submit{flex:none;padding:0 14px 12px;display:flex;flex-direction:column;gap:6px}.git-submit textarea{box-sizing:border-box;width:100%;min-height:36px;max-height:140px;resize:none;border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:var(--surface-input);color:var(--text);font:var(--text-size-ui)/1.5 var(--font-ui)}
-.git-submit-tools{display:flex;align-items:center;gap:4px}.git-submit-tools select{margin-left:auto;min-width:0;max-width:calc(100% - 70px);font-size:var(--text-size-secondary);border:0;background:transparent;color:var(--text-muted)}.git-submit>.primary{min-height:32px;border-radius:6px}
+.git-submit-input{position:relative;min-width:0}.git-submit-input textarea{display:block;padding-right:64px}.git-submit-tools{position:absolute;right:5px;top:5px;display:flex;align-items:center;gap:2px}.git-submit>.primary{min-height:32px;border-radius:6px}
 .git-submit .icon-button,.git-file-tools .icon-button,.git-group-tools .icon-button{width:25px;height:25px;min-height:25px;padding:4px}.git-submit .icon-button svg,.git-file-tools svg,.git-group-tools svg{width:16px;height:16px}
 .git-changes{flex:1 1 var(--git-list-ratio);min-height:64px;overflow:auto;padding:0 10px}.git-bottom{flex:1 1 calc(100% - var(--git-list-ratio));min-height:70px;overflow:hidden;display:flex;flex-direction:column}.git-splitter{height:5px;flex:none;cursor:row-resize;touch-action:none;border-block:1px solid var(--line)}.git-splitter:hover{background:var(--accent)}
 .git-file-group>summary{display:flex;align-items:center;gap:6px;cursor:pointer;padding:7px 4px;font-size:var(--text-size-ui);font-weight:500;list-style:none}.git-file-group>summary:before{content:'›';transform:rotate(0);width:12px}.git-file-group[open]>summary:before{transform:rotate(90deg)}.git-count{font-size:var(--text-size-secondary);padding:0 5px;border:1px solid var(--line);border-radius:12px;margin-left:auto;color:var(--text-muted)}
@@ -53,4 +53,8 @@
 .git-status-added{color:var(--success,#79be8a)}.git-status-modified{color:var(--warning,#d9b06f)}.git-status-deleted,.git-status-conflict{color:var(--danger,#e58b8b)}
 .git-file-copy strong{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}.git-file-copy small{min-width:0;flex:0 2 auto}
 .git-bottom>.git-repositories[open]{max-height:50%}.git-bottom>.git-history{min-height:32px}
+.git-bottom>.git-history{border-top:1px solid var(--line)}
+.dev-git[data-git-collapsed=true] .git-changes{flex:1 1 0}
+.dev-git[data-git-collapsed=true] .git-bottom{flex:0 0 auto;min-height:0;border-top:1px solid var(--line)}
+.git-splitter[hidden]{display:none}
 .git-commit-text{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:var(--text-size-code)/1.6 var(--font-mono)}

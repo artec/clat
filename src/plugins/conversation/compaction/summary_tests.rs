@@ -520,3 +520,21 @@ fn summary_job_uses_the_model_capacity_without_a_separate_input_allowance() {
     assert!(estimate_tokens_str(&inputs[0]) > 24_000);
     assert_eq!(inputs[0].matches("证🙂").count(), 160_000);
 }
+
+#[test]
+fn idle_summary_receives_late_evidence_in_long_user_tool_and_assistant_items() {
+    let items = vec![
+        ModelItem::user_text(format!("{}USER_CONSTRAINT_END", "甲".repeat(6000))),
+        ModelItem::assistant_text(format!("{}OBSERVED_ERROR_END", "乙".repeat(6000))),
+    ];
+    let units = chunks::rendered_units(&items, false);
+    let input = units.join("\n");
+    assert!(
+        input.contains("USER_CONSTRAINT_END"),
+        "idle compaction must not discard late user constraints before summarization"
+    );
+    assert!(
+        input.contains("OBSERVED_ERROR_END"),
+        "idle compaction must not discard late observations"
+    );
+}

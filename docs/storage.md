@@ -30,6 +30,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── mcp.json                     # optional, user-managed MCP servers
 ├── lsp.json                     # optional, user-managed read-only LSP servers
 ├── skills/<name>/SKILL.md       # optional user-layer instruction bundles
+├── builtin-plugins.json         # optional, user-managed static composition; restart to apply
 ├── plugins.json                 # optional, user-managed WASM components
 ├── plugin-grants.json           # hash- and directory-bound WASM write grants
 ├── plugin-store/
@@ -61,6 +62,12 @@ user and override a same-id installed package. `plugin-store` is written only
 by `clat plugin` while holding the same storage-root lease as a running CLAT
 application. The other files are written through core storage helpers or, for
 `dsh-last-session`, a small fail-soft client preference writer.
+`builtin-plugins.json` is also user-managed. It is a versioned, bounded activation
+policy read once per Host lifetime; edit it only while CLAT is stopped. Invalid
+input is retained unchanged and refuses startup rather than being salvaged into
+a default-enabled composition. It contains ids, not credentials or permissions;
+see [static composition](plugins.md#static-composition-and-absence-contracts).
+
 Market cache bytes are not trusted merely because they are local: every online
 or offline use rechecks the embedded public-key signature and index expiry.
 Market staging is protected by the package-store storage-root lease during

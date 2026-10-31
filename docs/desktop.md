@@ -51,9 +51,17 @@ These visual and interaction details are manually accepted on each platform.
 The work area has two reusable columns. **Conversation** shows the session list
 and chat/composer. Project files, workspace changes, captured turn operations,
 current tasks and plans/goals replace both columns with their own list and
-details. The right work-area overview is temporarily hidden and restored when
+details. Workspace changes, operation records, current tasks and the empty
+goal view use the project-file view's centered icon and guidance layout;
+selecting a list item opens its normal details. The right work-area overview is temporarily hidden and restored when
 returning to the conversation. File editing/saving is a separate future feature;
 this file view remains a browser with fixed-snapshot quoting.
+
+Git settings holds the generated commit-message language and the commit graph's
+reference scope. The sparkle button inside the commit-message field generates a
+message for staged changes. A thin divider separates repositories from history;
+when both sections are collapsed, their headers stay at the bottom and the
+resize handle is hidden. Expanding either restores the saved split ratio.
 
 Opening a tool creates one **Conversation / current tool** tab pair. The existing
 Tools menu switches that tool; tabs do not accumulate. Conversation remains

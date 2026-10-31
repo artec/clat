@@ -245,14 +245,24 @@ fn append_builtin(
     width: usize,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let count = row["instances"].as_array().map_or(0, Vec::len);
+    let count = row["instances"].as_array().map_or(0, |rows| {
+        rows.iter().filter(|row| row["phase"] == "active").count()
+    });
     let parts = [
         localized_label(row, "summary", dialog.locale),
         dialog
             .locale
+            .text(if count == 0 {
+                "web.disabled"
+            } else {
+                "extension.active"
+            })
+            .into(),
+        dialog
+            .locale
             .render(&UiMessage::new("extension.active_instances").arg("count", count)),
         label(row, "id"),
-        dialog.locale.text("extension.read_only").into(),
+        dialog.locale.text("extension.static_configuration").into(),
     ];
     for part in parts {
         lines.extend(styled_lines(&part, width, theme::style(theme::Role::Dim)));

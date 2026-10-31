@@ -2,23 +2,24 @@
 function createGitLayout(node){
   const view=createNavigationPage(node,{title:()=>devText('git')});view.list.remove();view.filters.remove();
   const repo=el('div','git-repository-heading'),name=el('strong'),branch=el('span');repo.append(svgIcon('branch'),name,branch);view.sidebar.append(repo);
-  const form=el('div','git-submit'),message=el('textarea'),tools=el('div','git-submit-tools'),locale=devLanguageSelect('system');
+  const form=el('div','git-submit'),message=el('textarea'),tools=el('div','git-submit-tools'),input=el('div','git-submit-input');
   CLATI18n.attribute(message,'placeholder',()=>devText('commit_placeholder'));CLATI18n.attribute(message,'aria-label',()=>devText('commit'));message.rows=1;
   const generate=navigationIcon(()=>devText('generate_message'),'sparkles',()=>{}),commit=devButton('commit',()=>{},'primary'),cancel=navigationIcon(()=>devText('cancel'),'close',()=>{});cancel.hidden=true;
-  tools.append(generate,locale,cancel);form.append(message,tools,commit);view.sidebar.append(form);
+  tools.append(generate,cancel);input.append(message,tools);form.append(input,commit);view.sidebar.append(form);
   const status=el('p','navigation-status');status.setAttribute('role','status');view.sidebar.append(status);
   const changes=el('section','git-changes'),split=el('div','git-splitter'),bottom=el('section','git-bottom');split.tabIndex=0;split.setAttribute('role','separator');split.setAttribute('aria-orientation','horizontal');split.setAttribute('aria-valuemin','25');split.setAttribute('aria-valuemax','80');CLATI18n.attribute(split,'aria-label',()=>devText('resize_graph'));
   const repositories=el('details','git-repositories'),repos=el('nav'),graph=el('details','git-history'),history=el('section');graph.open=true;
   const repositoryStatus=el('p','navigation-status');repositoryStatus.hidden=true;repositoryStatus.setAttribute('role','status');repositories.append(el('summary','',()=>devText('repositories')),repositoryStatus,repos);graph.append(el('summary','',()=>devText('graph')),history);bottom.append(repositories,graph);view.sidebar.append(changes,split,bottom);
   const tabs=el('nav','dev-file-tabs'),toolbar=el('div','dev-editor-toolbar'),mount=el('section','git-diff-content');view.body.replaceChildren(tabs,toolbar,mount);view.body.classList.add('git-body');
   view.bar.remove();gitLayoutPreference(node,changes,split,repositories,graph);
-  return {...view,repoName:name,branch,message,locale,generate,commit,cancel,status,repositoryStatus,changes,repos,history,tabs,toolbar,mount};
+  return {...view,repoName:name,branch,message,generate,commit,cancel,status,repositoryStatus,changes,repos,history,tabs,toolbar,mount};
 }
 function gitLayoutPreference(node,changes,split,repositories,graph){
   const key='clat.git.layout';let saved={ratio:60,repositories:false,graph:true};try{Object.assign(saved,JSON.parse(localStorage.getItem(key)||'{}'));}catch(_){}
   const ratio=value=>{saved.ratio=Math.max(25,Math.min(80,Number(value)||60));node.style.setProperty('--git-list-ratio',saved.ratio+'%');split.setAttribute('aria-valuenow',String(Math.round(saved.ratio)));};
   const store=()=>{try{localStorage.setItem(key,JSON.stringify(saved));}catch(_){}};ratio(saved.ratio);repositories.open=saved.repositories;graph.open=saved.graph;
-  repositories.ontoggle=()=>{saved.repositories=repositories.open;store();};graph.ontoggle=()=>{saved.graph=graph.open;store();};
+  const sync=()=>{const collapsed=!repositories.open&&!graph.open;node.dataset.gitCollapsed=String(collapsed);split.hidden=collapsed;saved.repositories=repositories.open;saved.graph=graph.open;store();};
+  repositories.ontoggle=sync;graph.ontoggle=sync;sync();
   split.onpointerdown=event=>{split.setPointerCapture(event.pointerId);const rect=changes.getBoundingClientRect(),total=rect.height+node.querySelector('.git-bottom').clientHeight;split.onpointermove=e=>ratio((e.clientY-rect.top)/total*100);};
   split.onpointerup=()=>{split.onpointermove=null;store();};split.onpointercancel=()=>{split.onpointermove=null;store();};
   split.onkeydown=event=>{if(['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();ratio(saved.ratio+(event.key==='ArrowUp'?-5:5));store();}};

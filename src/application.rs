@@ -92,6 +92,7 @@ pub use model_settings::{
     ModelProfileEdit, ModelRouteView, ModelSettingsView, ModelSetupOperation, ModelSetupView,
     UtilitySettingsEdit, UtilitySettingsView,
 };
+use plugin_control::missing_builtin;
 #[cfg(test)]
 mod plan_mode_tests;
 mod remote_control;
@@ -297,8 +298,8 @@ pub enum ApplicationEvent {
 
 pub struct TrustedProjectApplication {
     development: Arc<crate::development::DevelopmentService>,
-    web: Arc<crate::web_tools::WebService>,
-    history: Arc<crate::session_query::SessionQueryService>,
+    web: Option<Arc<crate::web_tools::WebService>>,
+    history: Option<Arc<crate::session_query::SessionQueryService>>,
     jobs: Arc<crate::background_jobs::JobRegistry>,
     scheduler: Arc<crate::scheduler::SchedulerService>,
     project: Project,
@@ -353,7 +354,7 @@ pub struct TrustedProjectApplication {
     plugin_host: Arc<crate::plugin_host::PluginHostBridge>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     mcp_status: Arc<McpStatus>,
-    monitor: Arc<dyn MonitorService>,
+    monitor: Option<Arc<dyn MonitorService>>,
     /// 可选服务：最小 Catalog（无 CompactionPlugin）下为 None。
     compactor: Option<Arc<dyn HistoryCompactor>>,
     /// 可选服务：最小 Catalog（无 TodoPlugin）下为 None。

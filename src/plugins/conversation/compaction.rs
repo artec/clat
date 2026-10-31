@@ -41,8 +41,6 @@ const MIN_RETAINED_TURNS: usize = 4;
 /// 摘要输出上限与预算安全余量。
 const SUMMARY_OUTPUT_LIMIT: u32 = 2048;
 const MARGIN_TOKENS: usize = 512;
-/// 渲染被覆盖区间时单条 item 的文本截断（声明截断量）。
-const RENDER_ITEM_CHARS: usize = 2_000;
 /// 摘要的 summary 硬上限（≈4×SUMMARY_OUTPUT_LIMIT chars）。
 const SUMMARY_MAX_CHARS: usize = 16_384;
 
@@ -311,50 +309,32 @@ fn retained_turns(nodes: &[CompactionNode], cut: usize) -> usize {
         .count()
 }
 
-/// 历史压缩保留兼容渲染；运行中摘要用无截断分块。
+/// Render all text before capacity-aware splitting. Never discard a field's tail.
 fn render_group(group: &[&[ModelItem]]) -> String {
-    render_group_with_limit(group, true)
-}
-
-fn render_group_with_limit(group: &[&[ModelItem]], limited: bool) -> String {
-    let render = |value: &str| {
-        if limited {
-            truncate(value)
-        } else {
-            value.to_owned()
-        }
-    };
     let mut text = String::new();
     for turn in group {
         for item in turn.iter() {
             match item {
                 ModelItem::User { content } => {
-                    text.push_str(&format!("[user] {}\n", render(&content_text(content))));
+                    text.push_str(&format!("[user] {}\n", content_text(content)));
                 }
                 ModelItem::Assistant { content, .. } => {
-                    text.push_str(&format!("[assistant] {}\n", render(&content_text(content))));
+                    text.push_str(&format!("[assistant] {}\n", content_text(content)));
                 }
                 ModelItem::ToolCall(call) => {
                     let arguments = serde_json::to_string(&call.arguments).unwrap_or_default();
-                    let label = if limited {
-                        call.name.clone()
-                    } else {
-                        format!("{} id={}", call.name, call.id)
-                    };
-                    text.push_str(&format!("[tool_call {label}] {}\n", render(&arguments)));
+                    text.push_str(&format!(
+                        "[tool_call {} id={}] {arguments}\n",
+                        call.name, call.id
+                    ));
                 }
                 ModelItem::ToolResult(result) => {
                     let output = serde_json::to_string(&result.output).unwrap_or_default();
-                    let label = if limited {
-                        result.tool_name.clone()
-                    } else {
-                        format!(
-                            "{} id={} is_error={}",
-                            result.tool_name, result.call_id, result.is_error
-                        )
-                    };
-                    text.push_str(&format!("[tool_result {label}] {}\n", render(&output)));
-                    if !limited && !result.image_parts.is_empty() {
+                    text.push_str(&format!(
+                        "[tool_result {} id={} is_error={}] {output}\n",
+                        result.tool_name, result.call_id, result.is_error
+                    ));
+                    if !result.image_parts.is_empty() {
                         text.push_str(&content_text(&result.image_parts));
                         text.push('\n');
                     }
@@ -379,19 +359,6 @@ fn content_text(content: &[crate::model::ContentPart]) -> String {
             crate::model::ContentPart::Image { .. } => "[image]",
         })
         .collect()
-}
-
-fn truncate(text: &str) -> String {
-    let total = text.chars().count();
-    if total <= RENDER_ITEM_CHARS {
-        return text.to_owned();
-    }
-    let cut: String = text.chars().take(RENDER_ITEM_CHARS).collect();
-    // CB1-07：显式声明被省略的量，摘要输入的截断不静默。
-    format!(
-        "{cut}\n…(truncated, {} more chars)",
-        total - RENDER_ITEM_CHARS
-    )
 }
 
 #[cfg(test)]

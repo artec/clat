@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 
 type Subscribers = Mutex<Vec<mpsc::Sender<ApplicationEvent>>>;
-type ModelConsumer = (Weak<dyn MonitorService>, Weak<Subscribers>);
+type ModelConsumer = (Option<Weak<dyn MonitorService>>, Weak<Subscribers>);
 
 pub(super) struct HostStorage {
     pub(super) control: Arc<ControlStorage>,
@@ -67,14 +67,15 @@ impl HostStorage {
 
     pub(super) fn register_models(
         &self,
-        monitor: &Arc<dyn MonitorService>,
+        monitor: &Option<Arc<dyn MonitorService>>,
         subscribers: &Arc<Subscribers>,
     ) {
         let mut consumers = self.model_consumers.lock().expect("model consumers");
-        consumers.retain(|(monitor, subscribers)| {
-            monitor.strong_count() > 0 && subscribers.strong_count() > 0
-        });
-        consumers.push((Arc::downgrade(monitor), Arc::downgrade(subscribers)));
+        consumers.retain(|(_, subscribers)| subscribers.strong_count() > 0);
+        consumers.push((
+            monitor.as_ref().map(Arc::downgrade),
+            Arc::downgrade(subscribers),
+        ));
     }
 
     pub(super) fn publish_models(
@@ -88,11 +89,12 @@ impl HostStorage {
             .lock()
             .expect("model consumers")
             .retain(|(monitor, subscribers)| {
-                let (Some(monitor), Some(subscribers)) = (monitor.upgrade(), subscribers.upgrade())
-                else {
+                let Some(subscribers) = subscribers.upgrade() else {
                     return false;
                 };
-                monitor.configure(config.clone(), credentials.clone());
+                if let Some(monitor) = monitor.as_ref().and_then(Weak::upgrade) {
+                    monitor.configure(config.clone(), credentials.clone());
+                }
                 super::broadcast_to(&subscribers, ApplicationEvent::ModelsUpdated);
                 true
             });
@@ -104,10 +106,8 @@ impl HostStorage {
         self.model_consumers
             .lock()
             .expect("model consumers")
-            .retain(|(monitor, subscribers)| {
-                let (Some(_monitor), Some(subscribers)) =
-                    (monitor.upgrade(), subscribers.upgrade())
-                else {
+            .retain(|(_, subscribers)| {
+                let Some(subscribers) = subscribers.upgrade() else {
                     return false;
                 };
                 super::broadcast_to(&subscribers, ApplicationEvent::ModelsUpdated);

@@ -364,3 +364,9 @@ impl TrustedProjectApplication {
         Ok(())
     }
 }
+
+pub(super) fn missing_builtin(id: &str) -> ApplicationError {
+    ApplicationError::presented(
+        crate::i18n::UiMessage::new("extension.disabled_builtin").arg("id", id),
+    )
+}

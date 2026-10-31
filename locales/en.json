@@ -2413,6 +2413,7 @@
   "dev.git_output_large": "Git query exceeded its limit. Narrow the history scope or use the terminal.",
   "dev.repositories_truncated": "Nested repository discovery is incomplete because it reached a scan limit. The current repository's changed-file list is unaffected.",
   "dev.more_history": "Load older commits",
+  "dev.graph_scope": "Commit graph reference scope",
   "dev.history_all": "All references",
   "dev.history_current": "Current branch",
   "dev.no_history": "No commits yet.",
@@ -2876,5 +2877,11 @@
   "setup.first_prompt": "Describe what you want to do. You can ask CLAT to explain this project first.",
   "setup.uncertain": "The response was interrupted. Retry to retrieve the same operation; do not create another check.",
   "setup.provider_key": "API key",
-  "setup.request_rejected": "The provider rejected the request. Check model availability, API format and account quota."
+  "setup.request_rejected": "The provider rejected the request. Check model availability, API format and account quota.",
+  "extension.invalid_composition": "Cannot resolve the built-in plugin composition: {error}",
+  "extension.unknown_builtin": "Unknown built-in plugin: {id}. Check disabled in builtin-plugins.json.",
+  "extension.required_builtin": "Cannot disable {id}: it supplies a required Application service or its dependency.",
+  "extension.static_configuration": "Configured at startup; edit disabled in builtin-plugins.json while CLAT is stopped, then restart.",
+  "extension.required_contract": "Currently required by Application services; cannot be disabled yet.",
+  "extension.disabled_builtin": "This feature is disabled by the startup plugin configuration: {id}."
 }

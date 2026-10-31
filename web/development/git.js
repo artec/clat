@@ -5,7 +5,7 @@ function installDevelopmentGit(){
   function seat(){if(!seats.has(repository))seats.set(repository,gitRepositorySeat(repository));return seats.get(repository);}
   const call=(method,value={},owner=seat())=>rpc(method,{...value,repositoryId:owner.id});
   const report=error=>devReport(ui.status,error),tabs=createGitTabs(ui,{seat,call,report,openFile});
-  const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),outputBody);ui.message.parentElement.append(output);
+  const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),outputBody);ui.commit.parentElement.append(output);
   const result=view=>{output.hidden=!view;outputBody.textContent=view?[view.message,view.result?.output,view.error].filter(Boolean).join('\n\n'):'';};
   const actions=createGitActions({seat,call,refresh,render:renderSubmission,report,result});
   registerView(node,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>devText('refresh'),()=>refresh()),viewAction('branches','branch',()=>devText('branches'),()=>branches(),false),...['fetch','pull','push'].map(key=>viewAction(key,key==='push'?'next':'refresh',()=>devText(key),()=>actions.start(key),false,()=>!seat().operation)),viewAction('backups','restore',()=>devText('restore'),()=>backups(),false)]});
@@ -13,9 +13,8 @@ function installDevelopmentGit(){
   ui.generate.onclick=()=>void actions.start('generate');ui.commit.onclick=()=>void actions.start('commit');ui.cancel.onclick=()=>actions.cancel();
   ui.message.oninput=()=>{const owner=seat();owner.draft=ui.message.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}autosize();if(owner.pending?.automatic)actions.cancel();saveDraft(owner);};
   ui.message.onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();void actions.start('commit');}};
-  ui.locale.onchange=()=>{const owner=seat();owner.language=ui.locale.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}if(owner.pending?.automatic)actions.cancel();void rpc('git.settings.set',{language:owner.language}).catch(report);};
   function autosize(){ui.message.style.height='auto';ui.message.style.height=Math.min(140,Math.max(36,ui.message.scrollHeight))+'px';}
-  function renderSubmission(){const owner=seat();if(ui.message.value!==owner.draft)ui.message.value=owner.draft;ui.locale.value=owner.language;ui.commit.disabled=Boolean(owner.operation)||!owner.snapshot?.files.some(f=>f.staged);ui.generate.disabled=ui.commit.disabled;ui.cancel.hidden=!owner.operation;autosize();if(owner.operation)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);}
+  function renderSubmission(){const owner=seat();if(ui.message.value!==owner.draft)ui.message.value=owner.draft;ui.commit.disabled=Boolean(owner.operation)||!owner.snapshot?.files.some(f=>f.staged);ui.generate.disabled=ui.commit.disabled;ui.cancel.hidden=!owner.operation;autosize();if(owner.operation)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);}
   async function refresh(){
     const version=++epoch,owner=seat();try{const [snapshot,settings,repositories]=await Promise.all([call('git.snapshot',{},owner).catch(error=>({error})),rpc('git.settings',{}),rpc('git.repositories',{})]);if(version!==epoch||seat()!==owner||!active)return;
       directory=repositories.repositories;ui.repositoryStatus.hidden=!repositories.truncated;devStatus(ui.repositoryStatus,'repositories_truncated');if(snapshot.error){owner.snapshot=null;renderRepositories();renderSubmission();tabs.overview();report(snapshot.error);return;}

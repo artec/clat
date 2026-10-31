@@ -17,8 +17,11 @@ function installDevelopmentSettings(){
   fonts.after(fontStatus);const previewGroup=el('section','settings-group-block');previewGroup.append(el('h4','',()=>settingsUi('preview')),preview);terminal.append(previewGroup);
   installTerminalLicenses(terminal);
   const language=devLanguageSelect('system'),label=settingsControlRow(()=>devText('commit_language'),language);label.classList.add('settings-card');git.append(label);
+  const scope=el('select');for(const key of ['all','current']){const option=el('option','',()=>devText('history_'+key));option.value=key;scope.append(option);}
+  scope.value=readGitGraphScope();const scopeRow=settingsControlRow(()=>devText('graph_scope'),scope);scopeRow.classList.add('settings-card');git.append(scopeRow);
+  scope.onchange=()=>{try{localStorage.setItem('clat.git.graph.scope',scope.value);developmentGit?.refresh();}catch(error){git.append(el('p','error',error.message));}};
   language.onchange=async()=>{try{await rpc('git.settings.set',{language:language.value});developmentGit?.refresh();}catch(error){git.append(el('p','error',error.message));}};
-  dom['settings-dialog'].addEventListener('clat:page-enter',()=>{void rpc('git.settings',{}).then(value=>{language.value=value.language;}).catch(()=>{});});
+  dom['settings-dialog'].addEventListener('clat:page-enter',()=>{scope.value=readGitGraphScope();void rpc('git.settings',{}).then(value=>{language.value=value.language;}).catch(()=>{});});
   const sizePreview=()=>{if(!widget)return;const screen=preview.querySelector('.xterm-screen');if(screen&&widget.term.rows)preview.style.setProperty('--terminal-preview-height',Math.ceil(screen.offsetHeight/widget.term.rows*6+26)+'px');};
   const renderPreview=()=>{if(!preview.clientHeight||!preview.clientWidth)return;if(!widget&&terminalAppearance.current){widget=globalThis.CLATDevelopmentWidgets.terminal(preview,devTerminalOptions());widget.term.options.disableStdin=true;widget.term.write('CLAT · abc 0123 · 中文\r\n\x1b[1mBold 粗体\x1b[0m  \x1b[3mItalic\x1b[0m\r\n\ue0b0 \ue0b2 \uf126 \uf120 \uf09b  ✓ →  😀\r\n┌──────┬──────┐\r\n│ Nerd │ Font │\r\n└──────┴──────┘',sizePreview);}widget?.fit.fit();};
   new ResizeObserver(renderPreview).observe(preview);
