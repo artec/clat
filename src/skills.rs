@@ -142,33 +142,8 @@ impl SkillCatalogEntry {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct SkillCatalogSnapshot {
-    pub entries: Vec<SkillCatalogEntry>,
-    /// Collected so `/context` can expose the exact snapshot diagnostics without
-    /// rescanning; the model/header paths still consume only the valid catalog.
-    pub diagnostics: Vec<SkillDiagnostic>,
-    rendered_catalog: String,
-}
-
-impl SkillCatalogSnapshot {
-    pub(crate) fn instructions(&self) -> Option<&str> {
-        (!self.entries.is_empty()).then_some(self.rendered_catalog.as_str())
-    }
-
-    pub(crate) fn header_json(&self) -> Value {
-        Value::Array(
-            self.entries
-                .iter()
-                .map(SkillCatalogEntry::header_json)
-                .collect(),
-        )
-    }
-
-    fn entry(&self, name: &str) -> Option<&SkillCatalogEntry> {
-        self.entries.iter().find(|entry| entry.name == name)
-    }
-}
+mod catalog;
+pub(crate) use catalog::SkillCatalogSnapshot;
 
 /// One explicitly invoked skill resolved at a run boundary (SC-2). The body
 /// comes from the run's frozen catalog via the same staleness-checked

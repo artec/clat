@@ -1,5 +1,4 @@
 use super::*;
-use crate::plan_mode::Handoff;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -42,6 +41,19 @@ pub enum WorkflowIntent {
 }
 impl TrustedProjectApplication {
     pub fn workflow_action(&mut self, request: WorkflowRequest) -> Result<Value, ApplicationError> {
+        let requires_plan = match &request.intent {
+            WorkflowIntent::Mode { mode } => mode == "plan" || self.plan_mode_active(),
+            WorkflowIntent::SavePlan { .. }
+            | WorkflowIntent::Approve { .. }
+            | WorkflowIntent::Revise { .. } => true,
+            _ => false,
+        };
+        if requires_plan {
+            self.plan_service()?;
+        }
+        if matches!(&request.intent, WorkflowIntent::CreateGoal { .. }) && self.plan_mode_active() {
+            self.plan_service()?;
+        }
         self.workflow_action_inner(&request)
             .map_err(super::workflow_error)
     }
@@ -53,10 +65,13 @@ impl TrustedProjectApplication {
             return Err("session selection changed".into());
         }
         let digest = serde_json::to_string(request).map_err(|e| e.to_string())?;
-        if let Some(receipt) = self.plan_mode.receipt(&request.operation_id, &digest)? {
+        if let Some(receipt) =
+            self.workflow
+                .receipt(&self.sessions, &request.operation_id, &digest)?
+        {
             return Ok(receipt);
         }
-        if self.plan_mode.generation() != request.expected_generation {
+        if self.workflow.generation() != request.expected_generation {
             return Err("workflow authority changed; refresh before acting".into());
         }
         if self.sessions.plan_documents()?.version != request.expected_version {
@@ -71,8 +86,12 @@ impl TrustedProjectApplication {
         }
         let result = self.apply_workflow_intent(&request.intent)?;
         if self.sessions.active_id().is_some() {
-            self.plan_mode
-                .remember(&request.operation_id, &digest, result.clone())?;
+            self.workflow.remember(
+                &self.sessions,
+                &request.operation_id,
+                &digest,
+                result.clone(),
+            )?;
         }
         Ok(result)
     }
@@ -82,7 +101,7 @@ impl TrustedProjectApplication {
                 if mode == "plan"
                     && let Some(goal) = self.goal().map_err(|e| e.to_string())?
                     && let Some(doc) = self
-                        .plan_mode
+                        .plan_plugin()?
                         .documents()?
                         .into_iter()
                         .rev()
@@ -92,10 +111,11 @@ impl TrustedProjectApplication {
                 }
                 self.workflow_mode(mode)
             }
-            WorkflowIntent::SavePlan { id, revision, text } => {
-                serde_json::to_value(self.plan_mode.save_draft(id.as_deref(), *revision, text)?)
-                    .map_err(|e| e.to_string())
-            }
+            WorkflowIntent::SavePlan { id, revision, text } => serde_json::to_value(
+                self.plan_plugin()?
+                    .save_draft(id.as_deref(), *revision, text)?,
+            )
+            .map_err(|e| e.to_string()),
             WorkflowIntent::Approve {
                 plan,
                 revision,
@@ -127,14 +147,14 @@ impl TrustedProjectApplication {
         }
     }
     fn workflow_revise(&mut self, plan: &str, revision: u64) -> Result<Value, String> {
-        let doc = self.plan_mode.document(plan, revision)?;
+        let doc = self.plan_plugin()?.document(plan, revision)?;
         // A live planning/goal worker must be stopped before changing its policy.
         if doc.approved && self.active_run.as_ref().is_none_or(|h| h.is_finished()) {
-            self.plan_mode.approve_document(plan, revision)?;
+            self.plan_plugin()?.approve_document(plan, revision)?;
         }
         let result = self.workflow_mode("plan")?;
         if result["pending"] == true {
-            let mut handoff = self.plan_mode.handoff.lock().map_err(|_| "handoff")?;
+            let mut handoff = self.workflow.handoff.lock().map_err(|_| "handoff")?;
             if let Some(Handoff::Plan { plan: target, .. }) = handoff.as_mut() {
                 *target = Some((plan.to_owned(), revision));
             }
@@ -156,7 +176,7 @@ impl TrustedProjectApplication {
                 .current_session_id()
                 .ok_or("no current session")?
                 .to_string();
-            *self.plan_mode.handoff.lock().map_err(|_| "handoff")? = Some(Handoff::Plan {
+            *self.workflow.handoff.lock().map_err(|_| "handoff")? = Some(Handoff::Plan {
                 session,
                 plan: None,
             });
@@ -164,8 +184,10 @@ impl TrustedProjectApplication {
         }
         self.cancel_workflow_continuation();
         self.goal.disarm();
-        self.set_plan_mode(mode == "plan")
-            .map_err(|e| e.to_string())?;
+        if self.plan_mode.is_some() || self.plan_mode_active() {
+            self.set_plan_mode(mode == "plan")
+                .map_err(|e| e.to_string())?;
+        }
         Ok(json!({"pending":false}))
     }
     fn workflow_approve(
@@ -174,9 +196,9 @@ impl TrustedProjectApplication {
         revision: u64,
         execute: bool,
     ) -> Result<Value, String> {
-        let doc = self.plan_mode.document(id, revision)?;
+        let doc = self.plan_plugin()?.document(id, revision)?;
         let latest = self
-            .plan_mode
+            .plan_plugin()?
             .documents()?
             .into_iter()
             .filter(|p| p.id == id)
@@ -188,14 +210,14 @@ impl TrustedProjectApplication {
         if execute {
             self.check_workflow_goal_binding(&doc)?;
         }
-        if self.plan_mode.review_document().is_some() {
-            if !self.plan_mode.approve_review(id, revision, execute)? {
+        if self.plan_plugin()?.review_document().is_some() {
+            if !self.plan_plugin()?.approve_review(id, revision, execute)? {
                 return Err("plan review changed; refresh before acting".into());
             }
         } else {
             self.reject_session_switch_while_busy()
                 .map_err(|e| e.to_string())?;
-            self.plan_mode.approve_document(id, revision)?;
+            self.plan_plugin()?.approve_document(id, revision)?;
             if execute {
                 self.request_workflow_goal(Some((id.into(), revision)))?;
             }

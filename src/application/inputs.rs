@@ -78,7 +78,7 @@ impl TrustedProjectApplication {
             .queue
             .interrupt(id, version)
             .map_err(ApplicationError::new)?;
-        self.plan_mode.revoke_handoff();
+        self.workflow.revoke_handoff();
         if let Some(goal) = self
             .goal()
             .map_err(|e| ApplicationError::new(e.to_string()))?

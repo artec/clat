@@ -513,7 +513,10 @@ impl TrustedProjectApplication {
         } else {
             memory_query.as_str()
         };
-        self.memory
+        let Some(memory) = &self.memory else {
+            return Ok(crate::memory::MemoryInjection::empty());
+        };
+        memory
             .injection(memory_query)
             .map_err(ApplicationError::new)
     }

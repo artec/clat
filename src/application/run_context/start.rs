@@ -22,7 +22,7 @@ impl TrustedProjectApplication {
             .dynamic_instructions
             .snapshot()
             .map_err(ApplicationError::new)?;
-        let skills = self.skills.snapshot().map_err(ApplicationError::new)?;
+        let skills = self.skills_snapshot()?;
         let invoked_skill = self.take_invoked_skill(&skills)?;
         let memory = self.memory_for_message(message)?;
         Ok(PendingRunContext {
@@ -77,14 +77,16 @@ impl TrustedProjectApplication {
         // 败，不留任何耐久用户事实；武装位无论成败都在此取走（失败后重
         // 新提交即普通 run，不会反复中毒）。
         Ok(match self.invoked_skill.take() {
-            Some(name) => Some(self.skills.resolve_invoked(skill_snapshot, &name).map_err(
-                |error| {
-                    ApplicationError::new(format!(
-                        "invoked skill `{name}` is unavailable: {error}; \
+            Some(name) => Some(
+                self.skills_service()?
+                    .resolve_invoked(skill_snapshot, &name)
+                    .map_err(|error| {
+                        ApplicationError::new(format!(
+                            "invoked skill `{name}` is unavailable: {error}; \
                              run /skill to pick another"
-                    ))
-                },
-            )?),
+                        ))
+                    })?,
+            ),
             None => None,
         })
     }

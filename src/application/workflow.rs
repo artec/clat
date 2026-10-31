@@ -1,21 +1,29 @@
 mod actions;
 mod execution;
+pub(super) mod state;
 use super::*;
 pub use actions::{WorkflowIntent, WorkflowRequest};
 use serde_json::json;
 impl TrustedProjectApplication {
     pub fn workflow_review(&self) -> Option<crate::plan_mode::documents::PlanDocument> {
-        self.plan_mode.review_document()
+        self.plan_mode
+            .as_ref()
+            .and_then(|plan| plan.review_document())
     }
 
     pub fn workflow_details(&self) -> Result<Value, ApplicationError> {
-        let plan = self.plan_mode.state();
+        let plan = self.plan_state();
         let goal = self.goal_overview()?;
-        let documents = self.plan_mode.documents().map_err(ApplicationError::new)?;
+        let documents = crate::plan_mode::documents::historical(&self.sessions)
+            .map_err(ApplicationError::new)?;
         let documents = documents
             .into_iter()
             .map(|doc| {
-                let projection = self.sessions.materialize_plan(&doc);
+                let projection = if self.plan_mode.is_some() {
+                    self.sessions.materialize_plan(&doc)
+                } else {
+                    Err(missing_builtin("builtin.plan_mode").to_string())
+                };
                 let mut value = serde_json::to_value(doc).expect("plan serializes");
                 value["projection_ready"] = json!(projection.is_ok());
                 value["projection_error"] = json!(projection.err());
@@ -26,7 +34,10 @@ impl TrustedProjectApplication {
             .sessions
             .plan_documents()
             .map_err(ApplicationError::new)?;
-        let review = self.plan_mode.review_document();
+        let review = self
+            .plan_mode
+            .as_ref()
+            .and_then(|plan| plan.review_document());
         let todos = self.todo.as_ref().map(|s| s.snapshot()).unwrap_or_default();
         let busy = self.active_run.as_ref().is_some_and(|r| !r.is_finished())
             || self
@@ -34,8 +45,8 @@ impl TrustedProjectApplication {
                 .as_ref()
                 .is_some_and(|r| !r.is_finished());
         Ok(
-            json!({"session":self.current_session_id(),"plan_mode":plan.active,"documents":documents,"version":document_state.version,"generation":self.plan_mode.generation(),"review":review,
-            "handoff":self.plan_mode.handoff.lock().expect("handoff").is_some(),
+            json!({"builtin_availability":self.builtin_availability(),"session":self.current_session_id(),"plan_mode":plan.active,"documents":documents,"version":document_state.version,"generation":self.workflow.generation(),"review":review,
+            "handoff":self.workflow.handoff.lock().expect("handoff").is_some(),
             "approved_plan":plan.approved.map(|p|json!({"text":p.text,"digest":p.digest,"event_seq":p.event_seq})),
             "goal":goal,"todos":todos.iter().take(100).map(|t|json!({"content":t.content,"status":t.status.as_str()})).collect::<Vec<_>>(),
             "todos_truncated":todos.len()>100,"busy":busy,

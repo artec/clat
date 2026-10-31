@@ -1,6 +1,14 @@
 /* Workflow controller: snapshots and typed intentions, independent of page rendering. */
 let workflowController=null;
 const workflowText=key=>CLATI18n.msg('workflow.'+key);
+function builtinEnabled(value,id){return value?.builtin_availability?.[id]?.enabled!==false;}
+function builtinReason(value,id){return CLATI18n.present(value?.builtin_availability?.[id]?.reason);}
+function disableBuiltin(node,value,id){
+  if(!node)return;
+  node.disabled=!builtinEnabled(value,id);
+  CLATI18n.attribute(node,'title',()=>builtinReason(value,id));
+}
+function retainedPlan(value){return value?.plan_mode&&!builtinEnabled(value,'builtin.plan_mode');}
 function workflowGoalStatus(value){
   const goal=value.goal?.goal;if(!goal)return 'not_created';
   if(goal.blockedReason?.code==='awaiting-user-acceptance')return 'awaiting_acceptance';
@@ -23,7 +31,7 @@ async function loadWorkflowView(view){
   try{
     const value=await rpc('workflow.details',{});if(!current())return;
     const signature=JSON.stringify(value);view.value=value;
-    if(view.signature!==signature){view.signature=signature;renderWorkflowView(view);}
+    if(view.signature!==signature){view.signature=signature;renderWorkflowView(view);refreshViewContext();}
     CLATI18n.bind(view.status,'textContent',()=>workflowText(view.value.handoff?'handoff':view.value.plan_mode?'planning':workflowGoalStatus(view.value)));
   }catch(error){if(current())CLATI18n.bind(view.status,'textContent',()=>error.message);}
 }
@@ -48,7 +56,7 @@ function installWorkflowDetails(){
     if(token===view.intent&&toolViewIsOpen(page)&&owner[0]===state.sessionId&&owner[1]===state.selectionGeneration)run();
   }
   trigger.onclick=open;for(const id of ['plan-mode-badge','goal-badge'])document.getElementById(id).onclick=open;
-  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load()),viewAction('create-goal','plus',()=>workflowText('create_goal'),()=>{page.dataset.detail='true';renderWorkflowGoalForm(view);})]});
+  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load()),viewAction('create-goal','plus',()=>workflowText('create_goal'),()=>{page.dataset.detail='true';renderWorkflowGoalForm(view);},true,()=>!retainedPlan(view.value))]});
   page.addEventListener('clat:tool-enter',()=>void load());page.addEventListener('clat:tool-leave',()=>{view.epoch++;view.intent++;});
   page.addEventListener('clat:tool-refresh',()=>{if(!view.acting)void load();});
   window.addEventListener('clat:workflow-changed',()=>{if(toolViewIsOpen(page))void load();});

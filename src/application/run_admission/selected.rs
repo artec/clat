@@ -103,7 +103,11 @@ impl TrustedProjectApplication {
         pending_goal: Option<NewSessionEvent>,
     ) -> (Vec<NewSessionEvent>, bool) {
         let mut events = Vec::new();
-        let plan_birth = materialized && self.plan_mode.pending_birth();
+        let plan_birth = materialized
+            && self
+                .plan_mode
+                .as_ref()
+                .is_some_and(|plan| plan.pending_birth());
         if materialized && self.permission_modes_enabled {
             events.push(NewSessionEvent::new(
                 "sandbox/mode",
@@ -126,14 +130,18 @@ impl TrustedProjectApplication {
         plan_birth: bool,
     ) -> Result<(), ApplicationError> {
         if plan_birth {
-            self.plan_mode.materialized();
+            if let Some(plan) = &self.plan_mode {
+                plan.materialized();
+            }
         }
         if let Some(id) = materialized {
             admitted.project(
                 "goal-materialize",
                 self.goal.materialized(id).map_err(ApplicationError::new),
             )?;
-            self.subagents.materialized(id);
+            if let Some(subagents) = &self.subagents {
+                subagents.materialized(id);
+            }
             // Facts win over these projections; mount reconciliation heals a
             // crash between admission, registration, ledger and selection.
             admitted.project("workspace-register", self.ensure_registered())?;

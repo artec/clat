@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 pub(super) struct CompositionInput {
+    pub(super) workflow: Arc<super::WorkflowState>,
     pub(super) project: Project,
     pub(super) storage_root: PathBuf,
     pub(super) control: Arc<ControlStorage>,
@@ -43,6 +44,7 @@ pub(super) struct CompositionInput {
 /// Required services cannot be omitted; only explicitly optional plugins are
 /// represented by `Option`.
 pub(super) struct ProjectPorts {
+    pub(super) workflow: Arc<super::WorkflowState>,
     pub(super) development: Arc<crate::development::DevelopmentService>,
     pub(super) draft_images: Arc<crate::draft::DraftImageStore>,
     pub(super) sessions: Arc<SessionService>,
@@ -57,15 +59,15 @@ pub(super) struct ProjectPorts {
     pub(super) prompts: Arc<PromptRegistry>,
     pub(super) dynamic_instructions: Arc<dyn DynamicInstructions>,
     pub(super) process_service: Arc<crate::process::ProcessService>,
-    pub(super) plan_mode: Arc<crate::plan_mode::PlanModeService>,
+    pub(super) plan_mode: Option<Arc<crate::plan_mode::PlanModeService>>,
     pub(super) tool_access: Arc<crate::tool::ToolAccessSlot>,
     pub(super) view_image: Arc<crate::view_image::ViewImageState>,
-    pub(super) skills: Arc<crate::skills::SkillsService>,
-    pub(super) skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
-    pub(super) memory: Arc<crate::memory::MemoryService>,
+    pub(super) skills: Option<Arc<crate::skills::SkillsService>>,
+    pub(super) skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
+    pub(super) memory: Option<Arc<crate::memory::MemoryService>>,
     pub(super) goal: Arc<crate::goal::GoalService>,
     pub(super) task: Arc<crate::task::TaskService>,
-    pub(super) subagents: Arc<crate::subagent::SubagentService>,
+    pub(super) subagents: Option<Arc<crate::subagent::SubagentService>>,
     pub(super) commands: Arc<crate::command::CommandRegistry>,
     pub(super) agent: Arc<dyn AgentRuntime>,
     pub(super) mcp_status: Arc<McpStatus>,
@@ -90,6 +92,33 @@ pub(super) struct MountedRunScope {
 }
 
 impl TrustedProjectComposition {
+    pub(super) fn enabled(&self, id: &str) -> bool {
+        self.manager.is_some()
+            && self
+                .selection
+                .entries
+                .iter()
+                .any(|entry| entry.descriptor.id.as_str() == id && entry.enabled())
+    }
+    pub(super) fn availability(&self) -> super::BuiltinAvailabilityMap {
+        self.selection
+            .entries
+            .iter()
+            .map(|entry| {
+                let enabled = self.enabled(entry.descriptor.id.as_str());
+                let id = entry.descriptor.id.as_str();
+                (
+                    id.to_owned(),
+                    super::BuiltinAvailability {
+                        enabled,
+                        reason: (!enabled)
+                            .then(|| crate::plugins::inventory::unavailable(entry.descriptor.id)),
+                    },
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn inventory(
         &self,
         project: &std::path::Path,
@@ -108,12 +137,16 @@ impl TrustedProjectComposition {
     }
 
     pub(super) fn stop_external_plugins(&mut self) -> Result<(), ApplicationError> {
-        self.manager
+        let manager = self
+            .manager
             .as_mut()
-            .ok_or_else(|| ApplicationError::new("project scope is closed"))?
+            .ok_or_else(|| ApplicationError::new("project scope is closed"))?;
+        required(manager, MCP_STATUS_SERVICE)?.close();
+        manager
             .remove_plugins(&[
                 crate::plugin::PluginId::new("builtin.mcp_adapter"),
                 crate::plugin::PluginId::new("builtin.wasm_adapter"),
+                crate::plugin::PluginId::new("builtin.extension_status"),
             ])
             .map_err(|e| ApplicationError::new(e.to_string()))
     }
@@ -137,12 +170,19 @@ impl TrustedProjectComposition {
             .map_err(|e| ApplicationError::new(e.to_string()))?;
         prompts.reopen_for_plugin_reload();
         let mut catalog: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
-                root.clone(),
-                project.root().to_owned(),
-                super::trusted::glm_mcp_pack_from_control(control),
-                Arc::clone(host),
-            )),
+            Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
+            Arc::new(
+                crate::plugins::McpAdapterPlugin::with_project_root(
+                    root.clone(),
+                    project.root().to_owned(),
+                    Vec::new(),
+                    Arc::clone(host),
+                )
+                .with_pack_factory({
+                    let control = control.clone();
+                    move || super::trusted::glm_mcp_pack_from_control(&control)
+                }),
+            ),
             Arc::new(crate::plugins::WasmAdapterPlugin::new(
                 root,
                 Arc::clone(host),
@@ -172,7 +212,12 @@ impl TrustedProjectComposition {
         manager
             .mount_all(catalog)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
-        let ports = resolve_and_freeze(&manager, &input.project, &input.plugin_host)?;
+        let ports = resolve_and_freeze(
+            &manager,
+            &input.project,
+            &input.plugin_host,
+            input.workflow.clone(),
+        )?;
         wire_project_notices(&ports, &input.subscribers);
         Ok((
             Self {
@@ -208,6 +253,7 @@ impl TrustedProjectComposition {
         let Some(mut manager) = self.manager.take() else {
             return Ok(());
         };
+        required(&manager, MCP_STATUS_SERVICE)?.close();
         manager
             .close()
             .map_err(|error| ApplicationError::new(error.to_string()))
@@ -317,36 +363,33 @@ fn resolve_and_freeze(
     manager: &PluginManager,
     project: &Project,
     plugin_host: &Arc<crate::plugin_host::PluginHostBridge>,
+    workflow: Arc<super::WorkflowState>,
 ) -> Result<ProjectPorts, ApplicationError> {
-    // Tools and prompts intentionally stay open until the first run has
-    // bounded-waited for asynchronous MCP/DSH contributions. Providers,
-    // commands, and the tool pipeline have no such late contribution path.
+    freeze_project_registries(manager)?;
     let tools = required(manager, TOOL_SERVICE)?;
     let providers = required(manager, PROVIDER_SERVICE)?;
-    providers
-        .freeze()
-        .map_err(|error| ApplicationError::new(error.to_string()))?;
     let prompts = required(manager, PROMPT_SERVICE)?;
     let dynamic_instructions = required(manager, DYNAMIC_INSTRUCTIONS_SERVICE)?;
-    let plan_mode = required(manager, PLAN_MODE_SERVICE)?;
+    let plan_mode = optional(manager, PLAN_MODE_SERVICE)?;
     let tool_access = required(manager, TOOL_ACCESS_SERVICE)?;
     let view_image = required(manager, VIEW_IMAGE_SERVICE)?;
-    let skills = required(manager, crate::plugins::services::SKILLS_SERVICE)?;
-    let skill_catalog = required(manager, crate::plugins::services::SKILL_CATALOG_SERVICE)?;
-    let memory = required(manager, MEMORY_SERVICE)?;
+    let skills = optional(manager, crate::plugins::services::SKILLS_SERVICE)?;
+    let skill_catalog = optional(manager, crate::plugins::services::SKILL_CATALOG_SERVICE)?;
+    if skills.is_some() != skill_catalog.is_some() {
+        return Err(ApplicationError::new(
+            "skills service and run catalog must be mounted together",
+        ));
+    }
+    let memory = optional(manager, MEMORY_SERVICE)?;
     let goal = required(manager, GOAL_SERVICE)?;
-    let subagents = required(manager, SUBAGENT_SERVICE)?;
+    let subagents = optional(manager, SUBAGENT_SERVICE)?;
     let process_service = required(manager, PROCESS_SERVICE)?;
     let language_intelligence = optional(
         manager,
         crate::plugins::services::LANGUAGE_INTELLIGENCE_SERVICE,
     )?;
     let commands = required(manager, COMMAND_SERVICE)?;
-    commands.freeze();
     let tool_pipeline = required(manager, TOOL_PIPELINE_SERVICE)?;
-    tool_pipeline
-        .freeze()
-        .map_err(|error| ApplicationError::new(error.to_string()))?;
     let permissions = required(manager, PERMISSION_SERVICE)?;
     plugin_host.configure_host_services(
         project.clone(),
@@ -356,6 +399,7 @@ fn resolve_and_freeze(
     );
 
     Ok(ProjectPorts {
+        workflow,
         development: required(manager, crate::development::plugin::DEVELOPMENT_SERVICE)?,
         draft_images: required(manager, crate::draft::plugin::DRAFT_IMAGES_SERVICE)?,
         tool_pipeline,
@@ -390,6 +434,17 @@ fn resolve_and_freeze(
         language_startup_diagnostic: language_intelligence
             .and_then(|service| service.diagnostics().first().cloned()),
     })
+}
+
+fn freeze_project_registries(manager: &PluginManager) -> Result<(), ApplicationError> {
+    // Tools/prompts freeze after bounded startup; these have no late contributions.
+    required(manager, PROVIDER_SERVICE)?
+        .freeze()
+        .map_err(|error| ApplicationError::new(error.to_string()))?;
+    required(manager, COMMAND_SERVICE)?.freeze();
+    required(manager, TOOL_PIPELINE_SERVICE)?
+        .freeze()
+        .map_err(|error| ApplicationError::new(error.to_string()))
 }
 
 fn required<T: ?Sized + Send + Sync + 'static>(
@@ -454,12 +509,19 @@ fn project_runtime_catalog(
     permission_source: crate::permission::ModeSource,
 ) -> Vec<Arc<dyn Plugin>> {
     vec![
-        Arc::new(crate::plugins::McpAdapterPlugin::with_project_root(
-            input.storage_root.clone(),
-            input.project.root().to_owned(),
-            super::trusted::glm_mcp_pack_from_control(&input.control),
-            Arc::clone(&input.plugin_host),
-        )) as Arc<dyn Plugin>,
+        Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
+        Arc::new(
+            crate::plugins::McpAdapterPlugin::with_project_root(
+                input.storage_root.clone(),
+                input.project.root().to_owned(),
+                Vec::new(),
+                Arc::clone(&input.plugin_host),
+            )
+            .with_pack_factory({
+                let control = input.control.clone();
+                move || super::trusted::glm_mcp_pack_from_control(&control)
+            }),
+        ) as Arc<dyn Plugin>,
         Arc::new(crate::plugins::WasmAdapterPlugin::new(
             input.storage_root.clone(),
             Arc::clone(&input.plugin_host),
@@ -468,9 +530,10 @@ fn project_runtime_catalog(
                 .permission_modes
                 .then(|| Arc::clone(&input.permission_mode)),
         )) as Arc<dyn Plugin>,
-        Arc::new(crate::plugins::PlanModePlugin::new(Arc::clone(
-            &input.asker_slot,
-        ))),
+        Arc::new(
+            crate::plugins::PlanModePlugin::new(Arc::clone(&input.asker_slot))
+                .with_workflow(input.workflow.clone()),
+        ),
         Arc::new(crate::plugins::SkillsPlugin::new(
             input.project.root().to_owned(),
             input.storage_root.clone(),
@@ -530,15 +593,10 @@ fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
         PROMPT_SERVICE.id(),
         DYNAMIC_INSTRUCTIONS_SERVICE.id(),
         PROCESS_SERVICE.id(),
-        PLAN_MODE_SERVICE.id(),
         TOOL_ACCESS_SERVICE.id(),
         VIEW_IMAGE_SERVICE.id(),
-        SKILLS_SERVICE.id(),
-        SKILL_CATALOG_SERVICE.id(),
-        MEMORY_SERVICE.id(),
         GOAL_SERVICE.id(),
         crate::task::plugin::TASK_SERVICE.id(),
-        SUBAGENT_SERVICE.id(),
         COMMAND_SERVICE.id(),
         AGENT_SERVICE.id(),
         MCP_STATUS_SERVICE.id(),

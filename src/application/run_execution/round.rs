@@ -82,8 +82,8 @@ impl RoundExecution {
         let subagent_round_error = worker
             .deps
             .subagent_service
-            .begin_round(Arc::clone(&spend_ledger))
-            .err();
+            .as_ref()
+            .and_then(|service| service.begin_round(Arc::clone(&spend_ledger)).err());
         recorder.set_run_ledger(Arc::clone(&spend_ledger));
         Self {
             process_generation,

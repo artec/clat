@@ -83,6 +83,15 @@ pub(crate) struct MemoryInjection {
     pub bytes: usize,
 }
 
+impl MemoryInjection {
+    pub(crate) fn empty() -> Self {
+        Self {
+            instructions: String::new(),
+            header: serde_json::json!({"records":[],"bytes":0}),
+            bytes: 0,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MemoryFile {

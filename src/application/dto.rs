@@ -77,6 +77,7 @@ pub struct SkillEntryDto {
 /// 可用它绘制应用壳；会话正文仍只从 journal replay / RunEvent 获得。
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchSnapshot {
+    pub builtin_availability: super::BuiltinAvailabilityMap,
     pub monitor_status: Option<String>,
     pub route_usage: Option<crate::model::Usage>,
     pub last_request_usage: Option<crate::model::Usage>,
@@ -147,6 +148,7 @@ pub struct WorkbenchModelSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct ProjectSnapshot {
+    pub builtin_availability: super::BuiltinAvailabilityMap,
     pub session_id: Option<SessionId>,
     /// 会话右标题（effective：显式标题事件，否则首条用户消息派生的
     /// fallback；全新空会话为 None）。快照携带 + `TitleUpdated` 事件
@@ -171,7 +173,7 @@ pub struct ProjectSnapshot {
     pub mcp: McpStatusDto,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub struct McpStatusDto {
     pub configured: usize,
     pub connected: usize,
@@ -182,7 +184,7 @@ pub struct McpStatusDto {
     pub servers: Vec<McpServerInfoDto>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct McpServerInfoDto {
     pub name: String,
     pub server_version: String,

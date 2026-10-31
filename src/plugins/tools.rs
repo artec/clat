@@ -1,6 +1,6 @@
 //! Tool registry plugin + native tool mount points.
 
-use super::services::{TOOL_SERVICE, TOOL_SERVICE_ID};
+use super::services::{TOOL_ACCESS_SERVICE, TOOL_ACCESS_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID};
 use crate::native_tools::{native_interaction_tools, native_read_tools, native_write_tools};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
@@ -12,7 +12,7 @@ use std::sync::Arc;
 const REGISTRY_ID: PluginId = PluginId::new("builtin.tool_registry");
 const READ_ID: PluginId = PluginId::new("builtin.native_read");
 const WRITE_ID: PluginId = PluginId::new("builtin.native_write");
-const REGISTRY_PROVIDES: &[ServiceId] = &[TOOL_SERVICE_ID];
+const REGISTRY_PROVIDES: &[ServiceId] = &[TOOL_SERVICE_ID, TOOL_ACCESS_SERVICE_ID];
 const REQUIRES_REGISTRY: &[ServiceId] = &[TOOL_SERVICE_ID];
 const REGISTRY_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: REGISTRY_ID,
@@ -53,6 +53,9 @@ impl Plugin for ToolRegistryPlugin {
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         debug_assert_eq!(context.scope(), ScopeKind::TrustedProject);
+        context
+            .provide(TOOL_ACCESS_SERVICE, crate::tool::ToolAccessSlot::shared())
+            .map_err(|error| PluginError::new(error.to_string()))?;
         context
             .provide(TOOL_SERVICE, Arc::new(ToolRegistry::new()))
             .map_err(|error| PluginError::new(error.to_string()))

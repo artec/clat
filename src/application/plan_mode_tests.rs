@@ -42,7 +42,11 @@ fn pu_plan_command_toggles_and_explicit_modes_are_idempotent() {
         ("/plan off", false),
     ] {
         let outcome = app.dispatch_command(command).unwrap();
-        assert_eq!(app.plan_mode.state().active, active, "{command}");
+        assert_eq!(
+            app.plan_service().unwrap().state().active,
+            active,
+            "{command}"
+        );
         let crate::CommandOutcome::Status(message) = outcome else {
             panic!("operation must remain Status")
         };
@@ -78,7 +82,7 @@ fn pu_plan_rejects_goal_activation_before_any_mutation() {
             .contains("exit plan mode first")
     );
     assert_eq!(app.goal().unwrap(), before);
-    assert!(app.plan_mode.state().active);
+    assert!(app.plan_service().unwrap().state().active);
     app.close().unwrap();
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }
@@ -93,7 +97,7 @@ fn pu_armed_goal_rejects_plan_without_silently_disarming() {
     let error = app.set_plan_mode(true).unwrap_err();
     assert!(error.to_string().contains("disarm the goal first"));
     assert_eq!(app.goal().unwrap(), before);
-    assert!(!app.plan_mode.state().active);
+    assert!(!app.plan_service().unwrap().state().active);
     app.dispatch_command("/goal pause").unwrap();
     app.set_plan_mode(true).unwrap();
     app.dispatch_command("/goal resume").unwrap();
@@ -355,7 +359,7 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
 
     application.set_plan_mode(true).expect("pending /plan");
     assert!(application.current_session_id().is_none());
-    assert!(application.plan_mode.state().active);
+    assert!(application.plan_service().unwrap().state().active);
 
     let asker = Arc::new(crate::test_support::ScriptedAsker {
         selected: "Approve".into(),
@@ -374,7 +378,7 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
     assert_eq!(approval_calls.load(Ordering::SeqCst), 0);
     assert_eq!(asker.asked.lock().unwrap().len(), 1);
 
-    let state = application.plan_mode.state();
+    let state = application.plan_service().unwrap().state();
     assert!(!state.active);
     let approved = state.approved.expect("approved plan projection");
     assert_eq!(approved.text, PLAN);
@@ -466,7 +470,7 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
         TestBehavior::Scripted(script.clone()),
         true,
     );
-    let restored = application.plan_mode.state();
+    let restored = application.plan_service().unwrap().state();
     assert!(!restored.active);
     assert_eq!(
         restored.approved.as_ref().map(|plan| plan.text.as_str()),
@@ -529,9 +533,23 @@ fn approved_handoff_is_durable_and_unlocks_only_the_next_run() {
     // A direct idle `/plan off` is an explicit state transition even when the
     // active bit is already false: it clears the previously approved plan.
     let mut application = mount(&project, &storage_root, TestBehavior::Success, true);
-    assert!(application.plan_mode.state().approved.is_some());
+    assert!(
+        application
+            .plan_service()
+            .unwrap()
+            .state()
+            .approved
+            .is_some()
+    );
     application.set_plan_mode(false).expect("direct plan off");
-    assert!(application.plan_mode.state().approved.is_none());
+    assert!(
+        application
+            .plan_service()
+            .unwrap()
+            .state()
+            .approved
+            .is_none()
+    );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
@@ -594,7 +612,7 @@ fn pu_approved_plan_is_announced_and_injected_into_a_real_goal_round() {
     );
     assert_eq!(script.step.load(Ordering::SeqCst), 2);
     assert!(!app.goal().unwrap().unwrap().armed);
-    assert!(app.plan_mode.state().approved.is_some());
+    assert!(app.plan_service().unwrap().state().approved.is_some());
     app.close().unwrap();
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }
@@ -667,7 +685,7 @@ fn assert_failed_review_keeps_plan_active(
     .expect("review failure is a recoverable tool result");
     assert_eq!(done.output, "still planning");
     assert_eq!(script.requests.load(Ordering::SeqCst), 2);
-    let state = application.plan_mode.state();
+    let state = application.plan_service().unwrap().state();
     assert!(state.active);
     assert!(state.approved.is_none());
     let id = application.current_session_id().unwrap();
@@ -705,10 +723,10 @@ fn plan_birth_resets_on_new_and_resume_uses_each_sessions_own_projection() {
     configure_test_model(&application);
 
     application.set_plan_mode(true).unwrap();
-    assert!(application.plan_mode.state().active);
+    assert!(application.plan_service().unwrap().state().active);
     application.new_session().unwrap();
     assert!(
-        !application.plan_mode.state().active,
+        !application.plan_service().unwrap().state().active,
         "/new must reset an unmaterialized Plan birth state"
     );
 
@@ -722,7 +740,7 @@ fn plan_birth_resets_on_new_and_resume_uses_each_sessions_own_projection() {
     .unwrap();
     let a = application.current_session_id().unwrap();
     application.set_plan_mode(true).unwrap();
-    assert!(application.plan_mode.state().active);
+    assert!(application.plan_service().unwrap().state().active);
 
     // Session B starts fresh and inactive.
     application.new_session().unwrap();
@@ -735,12 +753,12 @@ fn plan_birth_resets_on_new_and_resume_uses_each_sessions_own_projection() {
     .unwrap();
     let b = application.current_session_id().unwrap();
     assert_ne!(a, b);
-    assert!(!application.plan_mode.state().active);
+    assert!(!application.plan_service().unwrap().state().active);
 
     application.switch_session(a.clone()).unwrap();
-    assert!(application.plan_mode.state().active);
+    assert!(application.plan_service().unwrap().state().active);
     application.switch_session(b.clone()).unwrap();
-    assert!(!application.plan_mode.state().active);
+    assert!(!application.plan_service().unwrap().state().active);
     application.close().unwrap();
 
     let a_events = load_events_for(&storage_root, &a);

@@ -21,6 +21,7 @@
 //! `engine.increment_epoch()`，组件在下一个执行点 trap——Esc 不必等
 //! 燃料耗尽。epoch 刻度不经时间流逝推进，"等待不烧预算"不变量保持。
 
+mod legacy_mount;
 use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, PROMPT_SERVICE, PROMPT_SERVICE_ID,
     TOOL_SERVICE, TOOL_SERVICE_ID,
@@ -1106,6 +1107,7 @@ impl PluginTrait for WasmAdapterPlugin {
         let status = context
             .try_require(MCP_STATUS_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        let _batch = status.as_ref().map(|status| status.begin_batch("wasm"));
         let prompt_registry = context
             .try_require(PROMPT_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
@@ -1119,154 +1121,21 @@ impl PluginTrait for WasmAdapterPlugin {
 
         let (engine, linker) = legacy_runtime()?;
 
-        // 逐插件加载（INV-W5：失败隔离——坏插件记入状态，其余照常）。
-        let owner = context.owner();
-        let mut instances: Vec<Arc<WasmInstance>> = Vec::new();
-        let mut leases = Vec::new();
-        let mut prompt_leases = Vec::new();
-        // 非 server 级失败（空名段/工具注册失败）上报状态面板（对齐
-        // MCP 适配器的 record_failure 语义——对抗自审 2026-08-21：此前
-        // 仅收集进本地 vec 后丢弃，工具静默失踪）。
-        let record_failure = |message: String| {
-            if let Some(status) = &status {
-                status.record_failure(message);
-            }
-        };
+        let mut legacy = legacy_mount::LegacyMount::new(registry, prompt_registry, status.clone());
         for (name, plugin_config) in &config {
             if let Some(result) = network::try_mount(self, context, name, plugin_config) {
-                if let Some(status) = &status {
-                    match result {
-                        Ok(tools) => status.record_connected(McpServerStatus {
-                            name: name.clone(),
-                            server_version: WASMTIME_VERSION.into(),
-                            protocol_version: "clat-plugin-manifest/2".into(),
-                            tools,
-                            transport: "wasm".into(),
-                        }),
-                        Err(error) => status.record_capability_failed(
-                            "wasm",
-                            name,
-                            "component_unavailable",
-                            format!("wasm `{name}`: {error}"),
-                        ),
-                    }
-                }
+                legacy.observe_component(name, result);
                 continue;
             }
             match compile_plugin(&engine, &linker, &self.storage_root, name, plugin_config) {
                 Ok(compiled) => {
-                    // A4-2：元数据消毒诊断上状态面板（不拖垮整个插件）。
-                    for diagnostic in &compiled.diagnostics {
-                        record_failure(diagnostic.clone());
-                    }
-                    if let Some(prompt_registry) = &prompt_registry {
-                        for prompt in &compiled.prompts {
-                            if prompt.system.trim().is_empty() {
-                                continue;
-                            }
-                            match prompt_registry.contribute(owner, prompt.system.clone()) {
-                                Ok(lease) => prompt_leases.push(lease),
-                                Err(error) => record_failure(format!(
-                                    "wasm `{name}` prompt `{}`: {error}",
-                                    prompt.name
-                                )),
-                            }
-                        }
-                    } else if !compiled.prompts.is_empty() {
-                        record_failure(format!(
-                            "wasm `{name}` manifest declares prompts but PromptRegistry is unavailable"
-                        ));
-                    }
-                    let mut tools = 0usize;
-                    let fs_cap = compiled.definitions.iter().any(|definition| {
-                        matches!(
-                            definition.effect,
-                            ToolEffect::Write | ToolEffect::Execute | ToolEffect::Destructive
-                        )
-                    });
-                    let shared = Arc::new(WasmInstance {
-                        name: name.clone(),
-                        engine: engine.clone(),
-                        linker: Arc::clone(&linker),
-                        component: Arc::new(compiled.component),
-                        host: Arc::clone(&self.host),
-                        grants: GrantPolicy {
-                            mode: self.permission_mode.clone(),
-                            project_root: self.project_root.clone(),
-                            fs_cap,
-                            extra_dirs: compiled.extra_dirs,
-                        },
-                        config: compiled.config,
-                        capabilities: compiled.capabilities,
-                        fuel: self.fuel,
-                        digest: compiled.digest,
-                        grants_path: wasm_grants::grants_path(&self.storage_root),
-                        write_state: Mutex::new(None),
-                        slot: Mutex::new(None),
-                    });
-                    for definition in compiled.definitions {
-                        let remote_name = definition.name.clone();
-                        let Some(qualified) =
-                            qualify_prefixed_tool_name("wasm", name, &remote_name)
-                        else {
-                            record_failure(format!(
-                                "wasm `{name}` tool `{remote_name}`: empty name segment"
-                            ));
-                            continue;
-                        };
-                        let tool = WasmTool {
-                            remote_name,
-                            definition: ToolDefinition {
-                                name: qualified,
-                                ..definition
-                            },
-                            instance: Arc::clone(&shared),
-                        };
-                        match registry.register(owner, Arc::new(tool)) {
-                            Ok(lease) => {
-                                leases.push(lease);
-                                tools += 1;
-                            }
-                            Err(error) => {
-                                record_failure(format!("wasm `{name}` tool registration: {error}"));
-                            }
-                        }
-                    }
-                    instances.push(shared);
-                    if let Some(status) = &status {
-                        status.record_connected(McpServerStatus {
-                            name: name.clone(),
-                            server_version: compiled
-                                .package_version
-                                .clone()
-                                .unwrap_or_else(|| WASMTIME_VERSION.to_owned()),
-                            protocol_version: compiled
-                                .package_version
-                                .as_ref()
-                                .map(|_| "clat-plugin-manifest/1".to_owned())
-                                .unwrap_or_else(|| WIT_PROTOCOL.to_owned()),
-                            tools,
-                            transport: "wasm".to_owned(),
-                        });
-                    }
+                    legacy.mount(self, context.owner(), name, compiled, &engine, &linker)
                 }
-                Err(error) => {
-                    if let Some(status) = &status {
-                        status.record_capability_failed(
-                            "wasm",
-                            name,
-                            "component_unavailable",
-                            format!("wasm `{name}`: {error}"),
-                        );
-                    }
-                }
+                Err(error) => legacy.failed(name, error),
             }
         }
-
-        // teardown：撤工具 lease → 释放实例/store（fuel 化后无后台
-        // 线程需要停机）。
         context.defer(move || {
-            close_tool_contributions(leases, prompt_leases, instances);
+            legacy.close();
             Ok(())
         });
         Ok(())

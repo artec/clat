@@ -32,14 +32,19 @@ function renderWorkflowPlan(view,doc){
   actions.append(workflowViewButton(view,doc.approved?'execute_plan':'approve_execute',()=>approve(true),!ready||!latest||Boolean(value.handoff)||value.busy&&!reviewing),
     workflowViewButton(view,'approve_only',()=>approve(false),!ready||doc.approved||!latest||value.busy&&!reviewing),
     workflowViewButton(view,'revise',async()=>{if(await view.act({action:'revise',plan:doc.id,revision:doc.revision})){workbenchShell.chat();dom.prompt.focus();}},value.busy&&!reviewing));
-  if(!ready)detail.append(el('p','error',()=>workflowText('projection_unavailable')));
+  if(!builtinEnabled(value,'builtin.plan_mode')){
+    for(const button of actions.querySelectorAll('button'))disableBuiltin(button,value,'builtin.plan_mode');
+    detail.append(el('p','picker-hint',()=>retainedPlan(value)?CLATI18n.msg('extension.retained_plan'):builtinReason(value,'builtin.plan_mode')));
+  }else if(!ready)detail.append(el('p','error',()=>workflowText('projection_unavailable')));
   detail.append(el('h2','',()=>doc.title),el('p','picker-hint',()=>CLATI18n.msg('workflow.plan_revision',{revision:doc.revision,status:workflowText(doc.approved?'approved':'draft')})),actions,text);
 }
 function renderWorkflowGoal(view,goal){
   const {value,detail}=view;
   if(!goal){
     const overview=navigationOverview({title:()=>workflowText('no_goal'),description:()=>workflowText('no_plans'),icon:'plan'});
-    overview.append(workflowViewButton(view,'create_goal',()=>renderWorkflowGoalForm(view)));
+    const create=workflowViewButton(view,'create_goal',()=>renderWorkflowGoalForm(view));
+    if(value.plan_mode)disableBuiltin(create,value,'builtin.plan_mode');
+    overview.append(create);
     detail.append(overview);return;
   }
   detail.append(el('h2','',()=>goal?.objective||workflowText('no_goal')),el('p','',()=>workflowText(workflowGoalStatus(value))));
@@ -62,6 +67,7 @@ function renderWorkflowGoalForm(view,goal=null){
   const label=()=>workflowText(goal?'feedback_prompt':'goal_objective');CLATI18n.attribute(input,'aria-label',label);
   const submit=workflowViewButton(view,goal?'feedback_continue':'create_and_start',()=>{});submit.type='submit';
   form.append(el('label','',label),input,el('p','picker-hint',()=>workflowText('acceptance_help')),submit);
+  if(retainedPlan(view.value)){disableBuiltin(submit,view.value,'builtin.plan_mode');form.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));}
   view.detail.replaceChildren(form);view.page.dataset.detail='true';input.focus();
   form.onsubmit=async event=>{
     event.preventDefault();if(!input.value.trim())return;submit.disabled=true;

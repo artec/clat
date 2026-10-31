@@ -13,7 +13,7 @@ pub(super) struct TargetServices {
     pub todo: Arc<TodoService>,
     pub task: Arc<crate::task::TaskService>,
     pub goal: Arc<crate::goal::GoalService>,
-    pub plan: Arc<crate::plan_mode::PlanModeService>,
+    pub plan: Option<Arc<crate::plan_mode::PlanModeService>>,
     pub access: Arc<crate::tool::ToolAccessSlot>,
     pub mode: Option<Arc<RwLock<PermissionMode>>>,
     pub runtime: RuntimeBindings,
@@ -76,10 +76,12 @@ impl TargetServices {
             sessions.clone(),
             app.canonical_root.clone(),
         ));
-        let plan = Arc::new(crate::plan_mode::PlanModeService::new(
-            sessions.clone(),
-            app.asker_slot.clone(),
-        ));
+        let plan = app.plan_mode.as_ref().map(|_| {
+            Arc::new(crate::plan_mode::PlanModeService::new(
+                sessions.clone(),
+                app.asker_slot.clone(),
+            ))
+        });
         let access = crate::tool::ToolAccessSlot::shared();
         let scope = mode.as_ref().map_or(WriteScopeSource::ProjectRoot, |cell| {
             WriteScopeSource::Shared(cell.clone())
@@ -158,7 +160,9 @@ impl TargetServices {
         replacements.push(crate::plugins::target_patch_tool(scope));
         replacements.push(crate::plugins::target_todo_tool(self.todo.clone()));
         replacements.push(crate::plugins::target_goal_tool(self.goal.clone()));
-        replacements.push(crate::plugins::target_plan_tool(self.plan.clone()));
+        if let Some(plan) = &self.plan {
+            replacements.push(crate::plugins::target_plan_tool(plan.clone()));
+        }
         replacements.extend(crate::task::plugin::execution_tools(self.task.clone()));
         if let Some(history) = &app.history {
             replacements.extend(crate::session_query::plugin::execution_tools(

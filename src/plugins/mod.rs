@@ -3,6 +3,7 @@
 //! titles, monitor — capabilities are plugins over the `plugin/` kernel.
 
 mod context;
+pub(crate) mod extension_status;
 use context::{context_inspector, goal, instructions, memory, plan_mode, prompt, skills};
 pub(crate) mod conversation;
 use conversation::{compaction, pruner, title, todo, utility};

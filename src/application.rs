@@ -50,7 +50,9 @@ mod content_views;
 mod context;
 mod development;
 mod discovery;
+mod features;
 pub use development::{DevelopmentService, GitModel, OperationView};
+pub use features::{BuiltinAvailability, BuiltinAvailabilityMap};
 mod files;
 mod library;
 mod session_organization;
@@ -63,6 +65,7 @@ mod task_recovery_tests;
 mod tasks;
 mod workflow;
 pub use crate::plan_mode::documents::PlanDocument;
+pub(crate) use workflow::state::{Handoff, WorkflowState};
 pub(crate) use workflow::workflow_error;
 pub use workflow::{WorkflowIntent, WorkflowRequest};
 mod workspace_directory;
@@ -323,13 +326,14 @@ pub struct TrustedProjectApplication {
     /// durable request/header when sessions change.
     dynamic_instructions: Arc<dyn DynamicInstructions>,
     process_service: Arc<crate::process::ProcessService>,
-    plan_mode: Arc<crate::plan_mode::PlanModeService>,
+    plan_mode: Option<Arc<crate::plan_mode::PlanModeService>>,
+    workflow: Arc<WorkflowState>,
     tool_access: Arc<crate::tool::ToolAccessSlot>,
     /// Current-run visual attachment/scratch authority. The tool registry is
     /// project-owned, while this slot is reset at every run boundary.
     view_image: Arc<crate::view_image::ViewImageState>,
-    skills: Arc<crate::skills::SkillsService>,
-    skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
+    skills: Option<Arc<crate::skills::SkillsService>>,
+    skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
     /// `/skill <name>` 武装的一次性显式调用（SC-2，INV-SC-4：只是提示侧
     /// 指令，不带来新权力）。run 边界消费一次；会话切换与 `/new` 清除
     /// （草稿不跨会话）；不持久化——重启后不再武装，与 goal 武装位同
@@ -337,14 +341,14 @@ pub struct TrustedProjectApplication {
     invoked_skill: Option<String>,
     /// Explicit, local knowledge service. Mutations are user-only Application
     /// APIs; runs consume immutable bounded injections.
-    memory: Arc<crate::memory::MemoryService>,
+    memory: Option<Arc<crate::memory::MemoryService>>,
     /// Event-sourced same-session goal state. Only the activation bit is
     /// process-local and is reset on every session boundary.
     goal: Arc<crate::goal::GoalService>,
     task: Arc<crate::task::TaskService>,
     /// Default-off, process-local gate and bounded run binding for fixed-role
     /// read-only children.
-    subagents: Arc<crate::subagent::SubagentService>,
+    subagents: Option<Arc<crate::subagent::SubagentService>>,
     /// Frozen command registry（`core.commands`）：斜杠命令的唯一语义
     /// 源，前端经 `dispatch_command` 触达（INV-C1）。
     commands: Arc<crate::command::CommandRegistry>,

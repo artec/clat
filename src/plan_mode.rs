@@ -2,7 +2,7 @@ pub(crate) mod documents;
 pub(crate) mod projection;
 mod review;
 mod service;
-pub(crate) use service::Handoff;
+pub(crate) use crate::application::Handoff;
 // Durable Plan Mode state and the user-review transition.
 //
 // `plan/mode` remains the DSH-compatible durable fact. This module owns the
@@ -66,10 +66,8 @@ pub(crate) struct PlanModeService {
     sessions: Arc<SessionService>,
     asker: Arc<AskUserSlot>,
     pending_birth: Mutex<bool>,
-    document_lane: Mutex<()>,
     review: Mutex<Option<service::Review>>,
-    pub(crate) handoff: Mutex<Option<Handoff>>,
-    authority: Mutex<String>,
+    pub(crate) workflow: Arc<crate::application::WorkflowState>,
 }
 
 impl PlanModeService {
@@ -78,11 +76,17 @@ impl PlanModeService {
             sessions,
             asker,
             pending_birth: Mutex::new(false),
-            document_lane: Mutex::new(()),
             review: Mutex::new(None),
-            handoff: Mutex::new(None),
-            authority: Mutex::new(uuid::Uuid::new_v4().to_string()),
+            workflow: Arc::new(crate::application::WorkflowState::default()),
         }
+    }
+
+    pub(crate) fn with_workflow(
+        mut self,
+        workflow: Arc<crate::application::WorkflowState>,
+    ) -> Self {
+        self.workflow = workflow;
+        self
     }
 
     pub(crate) fn state(&self) -> PlanModeState {

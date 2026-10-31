@@ -62,6 +62,22 @@ assertions.
 
 ## Targeted verification
 
+Static plugin absence is verified with
+`scripts/gates.sh application::plugin_control::phase2_tests:: plugins::extension_status::`
+and the HTTP projection tests in `serve::tests::plugin_absence_tests::`. The
+combination test mounts all 32 Skills/Memory/Subagent/MCP/Plan configurations in
+isolated Hosts. Lifecycle tests use invalid skill/MCP inputs and a torn memory
+file to prove that disabled capabilities perform no discovery or recovery, then
+exercise ordinary/Goal/automatic-target runs, cancellation, package reload,
+reopen and re-enable. Plan attacks cover Full Access, native and external tool
+calls, the real PluginHost bridge, automatic targets, stale approvals and session
+boundaries. Existing approved Goal guidance retains its approval sequence.
+
+The explicitly armed `serve_e2e_host_plugins_absent` fixture provides a temporary
+browser Host with an old planning conversation and all five features disabled.
+It uses test storage and TestProvider only; do not point it at the daily Host.
+Native Desktop/Windows, real providers and release acceptance remain separate.
+
 Localization error-path regressions use `scripts/gates.sh host_client::
 model_editor::remote serve::tests::`, `bun test scripts/i18n-check.test.ts`, and
 the `i18n.spec.js` / desktop shell browser tests. These cover Host build/trust

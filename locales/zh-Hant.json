@@ -2896,5 +2896,9 @@
   "round.summary": "上下文摘要",
   "round.responding": "正在產生答覆",
   "round.waiting_approval": "等待權限確認",
-  "round.waiting_answer": "等待你的回答"
+  "round.waiting_answer": "等待你的回答",
+  "extension.builtin.extension_status.name": "擴充啟動狀態",
+  "extension.builtin.extension_status.summary": "追蹤擴充的啟動與關閉狀態，本身不啟動外部工具。",
+  "extension.retained_plan": "計畫擴充已關閉。此對話仍保留原有的計畫唯讀限制；編輯、審批或退出計畫模式前，請重新啟用擴充並重新啟動。",
+  "extension.retained_plan_label": "計畫（唯讀）"
 }

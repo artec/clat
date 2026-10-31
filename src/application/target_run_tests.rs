@@ -203,7 +203,7 @@ fn target_run_activation_failure_preserves_committed_phase_and_foreground() {
     let committed_id = receipt.committed_message_id.clone();
     assert_eq!(app.current_session_id(), Some(foreground.clone()));
     assert!(app.plugin_host.context().is_none());
-    assert!(app.skill_catalog.snapshot().is_none());
+    assert!(app.skill_catalog.as_ref().unwrap().snapshot().is_none());
     run(&mut app, "foreground still usable").unwrap();
     app.close().unwrap();
 

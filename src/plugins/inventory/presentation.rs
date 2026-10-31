@@ -2,6 +2,11 @@
 use crate::{i18n::UiMessage, plugin::PluginId};
 const DISPLAY: &[(&str, &str, &str)] = &[
     (
+        "builtin.extension_status",
+        "extension.builtin.extension_status.name",
+        "extension.builtin.extension_status.summary",
+    ),
+    (
         "builtin.apply_patch",
         "extension.builtin.apply_patch.name",
         "extension.builtin.apply_patch.summary",

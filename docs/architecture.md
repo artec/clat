@@ -177,8 +177,14 @@ existing leases.
 
 The host plugin control plane pauses external-plugin mutation until every
 mounted project is idle and MCP startup is settled. Under the ordered project
-locks it revokes MCP/WASM adapters, atomically publishes the package registry,
-reopens tool/prompt registration and remounts only those adapters. Core services,
+locks it closes the current extension-observation generation, revokes MCP/WASM
+adapters, atomically publishes the package registry, reopens tool/prompt
+registration and remounts only adapters enabled in the immutable startup plan.
+`builtin.extension_status` owns readiness independently of both adapters. Each
+adapter holds its own startup batch; an empty composition is immediately ready.
+Revocation expires updates and notices before teardown. MCP contribution
+publication and cancellation share a lane, and late connection cleanup executes
+immediately after cancellation rather than entering an already-drained queue. Core services,
 sessions and drafts retain their owners. The next run freezes the new tool
 surface; management replies remain outside the durable run vocabulary.
 
@@ -1471,8 +1477,9 @@ lifetime bind detail ids/cursors. Idle views also bind the existing external
 startup observation generation. A query checks generation before/after building
 its reply and checks cancellation; no locks enclose arbitrary provider callbacks.
 Observations have an epoch and time, with explicit scope: an adapter lifetime or
-startup connection is not a health/login test. MCP/WASM status remains owned by
-the existing domain; typed, secret-free projections accompany idle queries.
+startup connection is not a health/login test. The core
+`builtin.extension_status` plugin owns MCP/WASM startup observations; typed,
+secret-free projections accompany idle queries.
 
 Discovery produces no durable capability events, database or automatic action.
 Its model tools use ordinary journal/result projection and are excluded from Task
@@ -1665,8 +1672,30 @@ unaccepted old workflow requests so a delayed approval cannot restart execution.
 The serve adapter only supplies the usual asker/approver/event/completion ports
 and drives a ready core action after the preceding worker has joined.
 
-PlanModeService owns document mutation, shared review arbitration and exact
-revision approval. `clat/plan/change` has one catalog seat, strict admission and
+Application's `WorkflowState` owns continuation handoffs, authority generations
+and the shared journal-operation lane/receipts. Plan review and ordinary Goal
+operations use the same version, serial-commit and idempotency rules, including
+when Plan is absent. `PlanModeService` owns document mutation, review arbitration
+and exact revision approval; historical plan documents and legacy approved-plan
+IDs/digests are pure Session projections. The core tool-registry plugin owns
+`ToolAccessSlot`; permission construction requires it independently of Plan.
+
+Skills, Memory, Subagent and Plan are explicit optional context ports (the Skills
+service/catalog pair must coexist). Empty skill snapshots and memory injection
+are data, never mounted substitute services. Run/Goal/automatic-target assembly,
+context inspection, session switching and cleanup honor absence. Startup selection
+also governs all later external-package reloads. Frontends consume the additive
+`builtin_availability` projection instead of inferring presence from tool names.
+An old active planning session still freezes its durable read-only policy with
+Plan disabled, without adding exit events, clearing approvals or changing the
+permission mode. Disabled Plan mutations fail before cancellation or receipts;
+viewing history does not materialize plan files.
+
+Each Goal round refreshes the recorder's protected system-head position from
+current Session projection: the preceding recorder may have replaced that node.
+Request-bound feature authority remains frozen throughout the run.
+
+`clat/plan/change` has one catalog seat, strict admission and
 a checkpointable projection. Markdown is core-owned derived session output.
 GoalService retains execution, accounting and acceptance; creation plus new-plan
 binding use one durable journal batch. A human completion candidate records an
@@ -1678,8 +1707,8 @@ No frontend owns a second workflow or persists plan/run policy directly.
 ### Human development workspace
 
 `DevelopmentService` owns three project-scoped services behind client ports and
-`editor.*`, `git.*`, `terminal.*` authenticated RPC methods. It is not a plugin service
-and adds no model-callable tools. Human authorization is established by the trusted
+`editor.*`, `git.*`, `terminal.*` authenticated RPC methods. Its lifecycle belongs
+to `builtin.development`; it adds no model-callable tools. Human authorization is established by the trusted
 client channel and explicit intent, never an `is_human` field supplied to an Agent tool.
 The services do not alter the session permission mode, planning mode or Agent RunOwner.
 Blocking filesystem/model/Git/PTY I/O occurs after releasing the Application mutex.

@@ -2896,5 +2896,9 @@
   "round.summary": "Context summary",
   "round.responding": "Generating response",
   "round.waiting_approval": "Waiting for approval",
-  "round.waiting_answer": "Waiting for your answer"
+  "round.waiting_answer": "Waiting for your answer",
+  "extension.builtin.extension_status.name": "Extension startup status",
+  "extension.builtin.extension_status.summary": "Tracks extension startup and shutdown without starting external tools.",
+  "extension.retained_plan": "The planning extension is disabled. This conversation keeps its existing read-only planning restrictions; re-enable the extension and restart to edit, approve or leave planning mode.",
+  "extension.retained_plan_label": "Plan (read only)"
 }

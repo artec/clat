@@ -138,7 +138,7 @@ fn valid_lsp_is_registered_but_plan_mode_hides_it_from_model_and_header_without_
     );
     configure_test_model(&application);
     assert!(application.tools.get("lsp").is_some());
-    application.plan_mode.set_pending_birth(true);
+    application.plan_service().unwrap().set_pending_birth(true);
 
     assert!(run_request(&mut application, "investigate in plan mode").is_ok());
     let header = application

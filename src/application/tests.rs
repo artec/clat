@@ -5705,7 +5705,12 @@ fn mm2_w7_worker_start_channel_failure_after_commit_returns_committed_receipt() 
         "failed activation must revoke the just-installed plugin-host context"
     );
     assert!(
-        application.skill_catalog.snapshot().is_none(),
+        application
+            .skill_catalog
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .is_none(),
         "failed activation must clear the run-local skill snapshot"
     );
     assert_eq!(

@@ -18,6 +18,7 @@ fn ga3_mcp_fixture_discovery_does_not_call_or_probe_and_close_expires_identity()
     manager
         .mount_all(vec![
             Arc::new(ToolRegistryPlugin),
+            Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             Arc::new(McpAdapterPlugin::new(
                 root.clone(),
                 vec![],

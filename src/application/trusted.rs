@@ -98,6 +98,7 @@ impl TrustedProjectApplication {
         let subscribers = Arc::new(Mutex::new(Vec::new()));
         let (composition, ports) = super::composition::TrustedProjectComposition::mount(
             super::composition::CompositionInput {
+                workflow: Arc::new(super::WorkflowState::default()),
                 project: project.clone(),
                 storage_root: storage_root.clone(),
                 control: Arc::clone(&control),
@@ -165,6 +166,7 @@ impl TrustedProjectApplication {
             dynamic_instructions: ports.dynamic_instructions,
             process_service: ports.process_service,
             plan_mode: ports.plan_mode,
+            workflow: ports.workflow,
             tool_access: ports.tool_access,
             view_image: ports.view_image,
             skills: ports.skills,
@@ -212,7 +214,11 @@ impl TrustedProjectApplication {
         // 5. 进入工作区（§4.4）：realpath 命中注册表 → 恢复该工作区自己
         //    的当前会话；未命中 = 待注册（首条耐久会话落盘时惰性建区）。
         self.load_workspace_selection()?;
-        if let Some(diagnostic) = self.memory.take_diagnostic() {
+        if let Some(diagnostic) = self
+            .memory
+            .as_ref()
+            .and_then(|memory| memory.take_diagnostic())
+        {
             self.startup_diagnostic = match self.startup_diagnostic.take() {
                 Some(existing) => Some(format!("{existing}; {diagnostic}")),
                 None => Some(diagnostic),
@@ -363,7 +369,7 @@ impl TrustedProjectApplication {
         content: &str,
         source: Option<&str>,
     ) -> Result<crate::memory::MemoryRecord, ApplicationError> {
-        self.memory
+        self.memory_service()?
             .add(scope, content, source)
             .map_err(ApplicationError::new)
     }
@@ -374,7 +380,7 @@ impl TrustedProjectApplication {
         expected_revision: u64,
         content: &str,
     ) -> Result<crate::memory::MemoryRecord, ApplicationError> {
-        self.memory
+        self.memory_service()?
             .update(id, expected_revision, content)
             .map_err(ApplicationError::new)
     }
@@ -384,7 +390,7 @@ impl TrustedProjectApplication {
         id: &str,
         expected_revision: u64,
     ) -> Result<crate::memory::MemoryRecord, ApplicationError> {
-        self.memory
+        self.memory_service()?
             .delete(id, expected_revision)
             .map_err(ApplicationError::new)
     }
@@ -393,14 +399,18 @@ impl TrustedProjectApplication {
         &self,
         id: &str,
     ) -> Result<Option<crate::memory::MemoryHit>, ApplicationError> {
-        self.memory.get(id).map_err(ApplicationError::new)
+        self.memory_service()?
+            .get(id)
+            .map_err(ApplicationError::new)
     }
 
     pub fn memory_list(
         &self,
         scope: Option<crate::memory::MemoryScope>,
     ) -> Result<Vec<crate::memory::MemoryHit>, ApplicationError> {
-        self.memory.list(scope).map_err(ApplicationError::new)
+        self.memory_service()?
+            .list(scope)
+            .map_err(ApplicationError::new)
     }
 
     pub fn goal(&self) -> Result<Option<crate::goal::GoalView>, ApplicationError> {
@@ -490,12 +500,14 @@ impl TrustedProjectApplication {
     }
 
     pub fn subagents_enabled(&self) -> bool {
-        self.subagents.enabled(self.sessions.active_id().as_ref())
+        self.subagents
+            .as_ref()
+            .is_some_and(|service| service.enabled(self.sessions.active_id().as_ref()))
     }
 
     pub fn set_subagents_enabled(&self, enabled: bool) -> Result<(), ApplicationError> {
         self.reject_session_switch_while_busy()?;
-        self.subagents
+        self.subagent_service()?
             .set_enabled(self.sessions.active_id().as_ref(), enabled)
             .map_err(ApplicationError::new)
     }
@@ -590,7 +602,7 @@ impl TrustedProjectApplication {
 
     /// Current core state, including an unmaterialized session's birth intent.
     pub fn plan_mode_active(&self) -> bool {
-        self.plan_mode.state().active
+        self.plan_state().active
     }
 
     /// Read-only preflight also used by headless before rejecting interactive runs.
@@ -605,7 +617,7 @@ impl TrustedProjectApplication {
     }
 
     pub fn goal_run_message(&self) -> String {
-        if self.plan_mode.state().approved.is_some() {
+        if self.plan_state().approved.is_some() {
             "Goal run started — approved plan will be injected".into()
         } else {
             "Goal run started".into()
@@ -614,6 +626,7 @@ impl TrustedProjectApplication {
 
     /// Enter or leave Plan Mode at an idle application boundary.
     pub fn set_plan_mode(&mut self, active: bool) -> Result<(), ApplicationError> {
+        let service = self.plan_service()?.clone();
         if self
             .active_run
             .as_ref()
@@ -638,15 +651,15 @@ impl TrustedProjectApplication {
             ));
         }
         if self.sessions.active_id().is_some() {
-            self.plan_mode.set_pending_birth(false);
-            return self.plan_mode.set_durable(active).map_err(session_error);
+            service.set_pending_birth(false);
+            return service.set_durable(active).map_err(session_error);
         }
         if !self.permission_modes_enabled {
             return Err(ApplicationError::new(
                 "Plan Mode needs an active session in headless mode",
             ));
         }
-        self.plan_mode.set_pending_birth(active);
+        service.set_pending_birth(active);
         Ok(())
     }
 
@@ -720,6 +733,7 @@ impl TrustedProjectApplication {
             };
         Ok(crate::application::HistoryWindow {
             snapshot: ProjectSnapshot {
+                builtin_availability: self.builtin_availability(),
                 session_id,
                 session_title: self.effective_session_title(),
                 transcript,
@@ -811,6 +825,7 @@ impl TrustedProjectApplication {
         let root = self.canonical_root.clone();
         let display = self.workspace_directory_entry();
         Ok(crate::WorkbenchSnapshot {
+            builtin_availability: self.builtin_availability(),
             monitor_status: self
                 .monitor
                 .as_ref()
@@ -974,9 +989,13 @@ impl TrustedProjectApplication {
         self.fresh_session_open = true;
         self.emitted_request_header = None;
         self.restore_instruction_sources();
-        self.plan_mode.reset_for_new();
+        if let Some(plan) = &self.plan_mode {
+            plan.reset_for_new();
+        }
         self.goal.reset_for_new();
-        self.subagents.session_boundary();
+        if let Some(subagents) = &self.subagents {
+            subagents.session_boundary();
+        }
         // SC-2：武装的显式技能调用不跨会话（与附件草稿同纪律）。
         self.clear_session_transient_inputs();
         // 新会话从默认档起步：上一个会话的档位绝不跨 /new 携带（PS1
@@ -1158,9 +1177,7 @@ impl TrustedProjectApplication {
         // Dedupe authority: whatever the log already holds.
         self.emitted_request_header = self.sessions.last_request_header();
         self.restore_instruction_sources();
-        self.plan_mode.materialized();
-        self.goal.session_boundary();
-        self.subagents.session_boundary();
+        self.installed_session_features();
         // SC-2：武装的显式技能调用不跨会话（与附件草稿同纪律）。
         self.clear_session_transient_inputs();
         self.restore_todo_from(&view);
@@ -1497,7 +1514,7 @@ impl TrustedProjectApplication {
     /// `/skill`（无参）列表投影（SC-2）：当前三层 catalog 的
     /// display-ready 条目加发现诊断，与 `/context` 同一 fresh 快照来源。
     pub fn skills_overview(&self) -> Result<SkillsOverviewDto, ApplicationError> {
-        let snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        let snapshot = self.skills_snapshot()?;
         Ok(SkillsOverviewDto {
             entries: snapshot
                 .entries
@@ -1518,7 +1535,8 @@ impl TrustedProjectApplication {
     /// 针对 run 冻结 catalog（stale 即拒绝），armed 位本身不持久化。
     /// 返回来源层名供确认提示。
     pub fn arm_skill(&mut self, name: &str) -> Result<&'static str, ApplicationError> {
-        let snapshot = self.skills.snapshot().map_err(ApplicationError::new)?;
+        self.skills_service()?;
+        let snapshot = self.skills_snapshot()?;
         let Some(entry) = snapshot.entries.iter().find(|entry| entry.name == name) else {
             let mut candidates: Vec<&str> = snapshot
                 .entries
@@ -1553,7 +1571,10 @@ impl TrustedProjectApplication {
         let Some(name) = self.invoked_skill.as_deref() else {
             return (None, None);
         };
-        match self.skills.resolve_invoked(snapshot, name) {
+        let Some(service) = &self.skills else {
+            return (None, None);
+        };
+        match service.resolve_invoked(snapshot, name) {
             Ok(skill) => (Some(skill), None),
             Err(message) => (
                 None,

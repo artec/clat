@@ -3,6 +3,8 @@ use super::*;
 #[derive(Default)]
 pub(super) struct NativePermissions {
     pub mode: Option<PermissionMode>,
+    pub plan: bool,
+    pub plan_available: bool,
     pub target: Option<(u64, u64)>,
     pub pending: bool,
 }
@@ -16,9 +18,21 @@ impl App {
         } else {
             theme::Role::Faint
         };
+        let plan = if native.permissions.plan {
+            format!(
+                "{} · ",
+                self.locale.text(if native.permissions.plan_available {
+                    "web.plan"
+                } else {
+                    "extension.retained_plan_label"
+                })
+            )
+        } else {
+            String::new()
+        };
         Some(
             ratatui::text::Line::from(format!(
-                " {} ",
+                " {plan}{} ",
                 self.locale.text(match mode {
                     PermissionMode::ReadOnly => "web.read_only",
                     PermissionMode::ProjectWrite => "web.project_write",

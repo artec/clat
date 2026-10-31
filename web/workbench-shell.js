@@ -208,7 +208,9 @@ async function refreshShellContext() {
     const badge = document.getElementById('composer-plan-toggle');
     badge?.setAttribute('aria-pressed', String(Boolean(value.plan_mode)));
     if (badge) badge.disabled = false;
-    document.getElementById('add-plan').disabled = value.busy || shell.planPending;
+    const planAction=document.getElementById('add-plan');disableBuiltin(planAction,value,'builtin.plan_mode');
+    planAction.disabled ||= value.busy || shell.planPending;
+    disableBuiltin(document.getElementById('add-skills'),value,'builtin.skills');
     refreshShellResources();
   } catch (_) {
     if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;
@@ -220,6 +222,7 @@ async function refreshShellContext() {
 function renderShellWorkSummary(value){
   const target=document.getElementById('context-plan'),session=state.sessionId||'',expanded=target.dataset.session===session&&target.querySelector('details')?.open;
   target.dataset.session=session;target.replaceChildren();const todos=value.todos||[];
+  if(retainedPlan(value))target.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));
   if(!todos.length&&!value.approved_plan&&!value.plan_mode)return;
   const open=shellButton('context-plan-open','open',()=>shellText('plan_details'),()=>document.getElementById('workflow-open').click());open.classList.add('context-work-open');
   if(!todos.length){const row=el('div','context-work-heading');row.append(svgIcon('plan'),el('span','',()=>shellText(value.approved_plan?'approved_plan':'planning')),open);target.append(row);return;}

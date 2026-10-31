@@ -67,188 +67,22 @@ fn workbench_base_json(
         crate::ModelProtocol::OpenAiResponses => "open_ai_responses",
         crate::ModelProtocol::OpenAiCompatible => "open_ai_compatible",
     };
-    let thinking_level = snapshot
-        .model
-        .thinking_level
-        .map(|level| level.label().to_ascii_lowercase());
-    let servers = snapshot
-        .mcp
-        .servers
-        .iter()
-        .map(|server| {
-            object(vec![
-                ("name", Value::String(server.name.clone())),
-                (
-                    "server_version",
-                    Value::String(server.server_version.clone()),
-                ),
-                (
-                    "protocol_version",
-                    Value::String(server.protocol_version.clone()),
-                ),
-                ("tools", json!(server.tools)),
-                ("transport", Value::String(server.transport.clone())),
-            ])
-        })
-        .collect::<Vec<_>>();
-
-    object(vec![
-        ("plan_mode_active", json!(snapshot.plan_mode_active)),
-        ("goal_armed", json!(snapshot.goal_armed)),
-        (
-            "project",
-            object(vec![
-                (
-                    "root",
-                    Value::String(snapshot.project.root.to_string_lossy().into_owned()),
-                ),
-                ("name", Value::String(snapshot.project.name.clone())),
-                (
-                    "workspace_id",
-                    snapshot
-                        .project
-                        .workspace_id
-                        .clone()
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
-                ),
-            ]),
-        ),
-        (
-            "session",
-            object(vec![
-                (
-                    "id",
-                    snapshot
-                        .session
-                        .id
-                        .as_ref()
-                        .map(|id| Value::String(id.as_str().to_owned()))
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "title",
-                    snapshot
-                        .session
-                        .title
-                        .clone()
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "committed_seq",
-                    snapshot
-                        .session
-                        .committed_seq
-                        .map_or(Value::Null, |seq| json!(seq)),
-                ),
-                // AG-DOGFOOD-8：当前会话有界已提交输入（旧→新），供前端
-                // ↑/↓ 召回；与本地 TUI 的 input_history 同一 journal 权威。
-                ("recent_inputs", json!(snapshot.session.recent_inputs)),
-            ]),
-        ),
-        (
-            "model",
-            object(vec![
-                ("protocol", Value::String(model_protocol.into())),
-                ("model", Value::String(snapshot.model.model.clone())),
-                (
-                    "preset",
-                    snapshot
-                        .model
-                        .preset
-                        .clone()
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "active_profile",
-                    snapshot
-                        .model
-                        .active_profile
-                        .clone()
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "thinking_level",
-                    thinking_level.map(Value::String).unwrap_or(Value::Null),
-                ),
-                (
-                    "max_context_tokens",
-                    snapshot
-                        .model
-                        .max_context_tokens
-                        .map_or(Value::Null, |tokens| json!(tokens)),
-                ),
-                (
-                    "overrides",
-                    model_overrides_value(&snapshot.model.overrides),
-                ),
-                ("run_token_budget", json!(snapshot.model.run_token_budget)),
-                ("image_input", json!(snapshot.model.image_input)),
-            ]),
-        ),
-        (
-            "permission",
-            object(vec![
-                (
-                    "mode",
-                    Value::String(snapshot.permission_mode.journal_value().into()),
-                ),
-                ("label", Value::String(snapshot.permission_mode.to_string())),
-            ]),
-        ),
-        (
-            "mcp",
-            object(vec![
-                ("configured", json!(snapshot.mcp.configured)),
-                ("connected", json!(snapshot.mcp.connected)),
-                ("connecting", json!(snapshot.mcp.connecting)),
-                (
-                    "failures",
-                    Value::Array(
-                        snapshot
-                            .mcp
-                            .failures
-                            .iter()
-                            .cloned()
-                            .map(Value::String)
-                            .collect(),
-                    ),
-                ),
-                ("servers", Value::Array(servers)),
-            ]),
-        ),
-        ("active_run", active_run),
-        ("active_compaction", active_compaction),
-        (
-            "methods",
-            Value::Array(
-                methods
-                    .iter()
-                    .map(|method| Value::String((*method).into()))
-                    .collect(),
-            ),
-        ),
-        (
-            "capabilities",
-            Value::Array(
-                [
-                    "session-history",
-                    "in-run-steering",
-                    "permission-modes",
-                    "approval-bridge",
-                    "session-compaction",
-                    "model-summary",
-                    "mcp-status",
-                ]
-                .into_iter()
-                .map(|capability| Value::String(capability.into()))
-                .collect(),
-            ),
-        ),
-    ])
+    json!({
+        "builtin_availability": snapshot.builtin_availability,
+        "plan_mode_active": snapshot.plan_mode_active, "goal_armed":snapshot.goal_armed,
+        "project": {"root":snapshot.project.root.to_string_lossy(), "name":snapshot.project.name, "workspace_id":snapshot.project.workspace_id},
+        "session": {"id":snapshot.session.id.as_ref().map(|id|id.as_str()), "title":snapshot.session.title,
+            "committed_seq":snapshot.session.committed_seq,"recent_inputs":snapshot.session.recent_inputs},
+        "model": {"protocol":model_protocol,"model":snapshot.model.model,"preset":snapshot.model.preset,
+            "active_profile":snapshot.model.active_profile,
+            "thinking_level":snapshot.model.thinking_level.map(|level|level.label().to_ascii_lowercase()),
+            "max_context_tokens":snapshot.model.max_context_tokens,
+            "overrides":model_overrides_value(&snapshot.model.overrides),"run_token_budget":snapshot.model.run_token_budget,
+            "image_input":snapshot.model.image_input},
+        "permission":{"mode":snapshot.permission_mode.journal_value(),"label":snapshot.permission_mode.to_string()},
+        "mcp":snapshot.mcp,"active_run":active_run,"active_compaction":active_compaction,"methods":methods,
+        "capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","session-compaction","model-summary","mcp-status"]
+    })
 }
 
 // —— 重放族（§7.1：ReplayEvent 8 变体，type-tagged snake_case）——————
@@ -851,6 +685,7 @@ mod tests {
         );
 
         let workbench = WorkbenchSnapshot {
+            builtin_availability: Default::default(),
             monitor_status: Some("87%".into()),
             route_usage: None,
             last_request_usage: None,
@@ -916,7 +751,7 @@ mod tests {
                 &["workbench.info", "permission.set"],
             )
             .to_string(),
-            r#"{"plan_mode_active":true,"goal_armed":false,"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42,"recent_inputs":["first prompt","second prompt"]},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"overrides":{"output_limit":{"state":"clear"},"temperature":{"state":"set","value":0.2},"parallel_tool_calls":{"state":"inherit"},"thinking_level":{"state":"set","value":"high"},"max_context_tokens":{"state":"inherit"}},"run_token_budget":10000000,"image_input":true},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"active_compaction":{"started":98},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","session-compaction","model-summary","mcp-status"]}"#
+            r#"{"builtin_availability":{},"plan_mode_active":true,"goal_armed":false,"project":{"root":"/work/repo","name":"repo","workspace_id":"workspace-1"},"session":{"id":"session-1","title":"active work","committed_seq":42,"recent_inputs":["first prompt","second prompt"]},"model":{"protocol":"open_ai_responses","model":"deepseek-v3","preset":"deepseek","active_profile":"daily","thinking_level":"high","max_context_tokens":128000,"overrides":{"output_limit":{"state":"clear"},"temperature":{"state":"set","value":0.2},"parallel_tool_calls":{"state":"inherit"},"thinking_level":{"state":"set","value":"high"},"max_context_tokens":{"state":"inherit"}},"run_token_budget":10000000,"image_input":true},"permission":{"mode":"read-only","label":"Read Only"},"mcp":{"configured":1,"connected":1,"connecting":0,"failures":["stale server warning"],"servers":[{"name":"repo-tools","server_version":"1.2.3","protocol_version":"2025-06-18","tools":4,"transport":"stdio"}]},"active_run":{"prompt_rpc_id":"prompt-1","started":99},"active_compaction":{"started":98},"methods":["workbench.info","permission.set"],"capabilities":["session-history","in-run-steering","permission-modes","approval-bridge","session-compaction","model-summary","mcp-status"]}"#
         );
 
         let replay: Vec<(&str, &str)> = vec![

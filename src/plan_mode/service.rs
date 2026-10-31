@@ -1,18 +1,7 @@
-use super::documents::{Change, Operation, PlanDocument};
+use super::documents::{Change, PlanDocument};
 use super::*;
-use serde_json::{Value, json};
+use serde_json::json;
 
-#[derive(Clone)]
-pub(crate) enum Handoff {
-    Goal {
-        session: String,
-        plan: Option<(String, u64)>,
-    },
-    Plan {
-        session: String,
-        plan: Option<(String, u64)>,
-    },
-}
 pub(crate) struct Review {
     pub document: PlanDocument,
     pub sender: std::sync::mpsc::Sender<AskAnswer>,
@@ -20,43 +9,7 @@ pub(crate) struct Review {
 }
 impl PlanModeService {
     pub(crate) fn documents(&self) -> Result<Vec<PlanDocument>, String> {
-        let mut plans = self.sessions.plan_documents()?.plans;
-        if plans.is_empty()
-            && let Some(doc) = self.legacy_document()
-        {
-            plans.push(doc);
-        }
-        Ok(plans)
-    }
-    fn legacy_document(&self) -> Option<PlanDocument> {
-        let approved = self.state().approved?;
-        let digest = &approved.digest;
-        let id = format!(
-            "plan-{}-{}-{}-{}-{}",
-            &digest[..8],
-            &digest[8..12],
-            &digest[12..16],
-            &digest[16..20],
-            &digest[20..32]
-        );
-        let title = approved
-            .text
-            .lines()
-            .map(|line| line.trim().trim_start_matches('#').trim())
-            .find(|line| !line.is_empty())?
-            .chars()
-            .take(120)
-            .collect();
-        Some(PlanDocument {
-            id,
-            session: self.sessions.active_id()?.to_string(),
-            revision: 1,
-            title,
-            text: approved.text,
-            digest: approved.digest,
-            approved: true,
-            goal_id: None,
-        })
+        crate::plan_mode::documents::historical(&self.sessions)
     }
     pub(crate) fn save_draft(
         &self,
@@ -68,7 +21,7 @@ impl PlanModeService {
         if !self.state().active {
             return Err("plan mode is not active".into());
         }
-        let _lane = self.document_lane.lock().map_err(|_| "plan lane")?;
+        let _lane = self.workflow.lane.lock().map_err(|_| "plan lane")?;
         let state = self.sessions.plan_documents()?;
         let session = self
             .sessions
@@ -122,15 +75,18 @@ impl PlanModeService {
             .into_iter()
             .find(|p| p.id == id && p.revision == revision)
             .or_else(|| {
-                self.legacy_document()
-                    .filter(|doc| doc.id == id && doc.revision == revision)
+                crate::plan_mode::documents::legacy_document(
+                    self.sessions.active_id(),
+                    self.state(),
+                )
+                .filter(|doc| doc.id == id && doc.revision == revision)
             })
             .ok_or("plan revision not found")?;
         self.sessions.materialize_plan(&doc)?;
         Ok(doc)
     }
     pub(crate) fn approve_document(&self, id: &str, revision: u64) -> Result<ApprovedPlan, String> {
-        let _lane = self.document_lane.lock().map_err(|_| "plan lane")?;
+        let _lane = self.workflow.lane.lock().map_err(|_| "plan lane")?;
         let mut state = self.sessions.plan_documents()?;
         let mut doc = self.document(id, revision)?;
         if !state.plans.iter().any(|p| p.id == id) {
@@ -200,7 +156,7 @@ impl PlanModeService {
         })
     }
     pub(crate) fn bind_goal(&self, id: &str, revision: u64, goal: &str) -> Result<(), String> {
-        let _lane = self.document_lane.lock().map_err(|_| "plan lane")?;
+        let _lane = self.workflow.lane.lock().map_err(|_| "plan lane")?;
         let state = self.sessions.plan_documents()?;
         let mut doc = self.document(id, revision)?;
         if !doc.approved {
@@ -230,7 +186,7 @@ impl PlanModeService {
         goal: &str,
         publish: impl FnOnce(crate::session::run_journal::NewSessionEvent) -> Result<T, String>,
     ) -> Result<T, String> {
-        let _lane = self.document_lane.lock().map_err(|_| "plan lane")?;
+        let _lane = self.workflow.lane.lock().map_err(|_| "plan lane")?;
         let state = self.sessions.plan_documents()?;
         let mut doc = self.document(id, revision)?;
         if !doc.approved || doc.goal_id.is_some() {
@@ -248,34 +204,6 @@ impl PlanModeService {
         publish(
             crate::session::run_journal::NewSessionEvent::new(super::documents::EVENT, data)
                 .log_only(),
-        )
-    }
-    pub(crate) fn receipt(&self, id: &str, digest: &str) -> Result<Option<Value>, String> {
-        match self.sessions.plan_documents()?.operations.get(id) {
-            Some(op) if op.digest == digest => Ok(Some(op.result.clone())),
-            Some(_) => Err("workflow operation id conflict".into()),
-            None => Ok(None),
-        }
-    }
-    pub(crate) fn remember(&self, id: &str, digest: &str, result: Value) -> Result<(), String> {
-        let _lane = self.document_lane.lock().map_err(|_| "plan lane")?;
-        let state = self.sessions.plan_documents()?;
-        if state.operations.contains_key(id) {
-            return Ok(());
-        }
-        self.sessions.commit_plan_change(
-            Change {
-                version: state.version + 1,
-                document: None,
-                operation: Some((
-                    id.into(),
-                    Operation {
-                        digest: digest.into(),
-                        result,
-                    },
-                )),
-            },
-            &[],
         )
     }
     pub(crate) fn review_document(&self) -> Option<PlanDocument> {
@@ -318,7 +246,7 @@ impl PlanModeService {
         if review.document.id != id || review.document.revision != revision {
             return Err("plan review changed".into());
         }
-        let mut handoff = self.handoff.lock().map_err(|_| "handoff")?;
+        let mut handoff = self.workflow.handoff.lock().map_err(|_| "handoff")?;
         if execute {
             if handoff.is_some() {
                 return Err("a workflow handoff is already pending".into());
@@ -337,21 +265,10 @@ impl PlanModeService {
         review.answered = true;
         Ok(true)
     }
-    pub(crate) fn generation(&self) -> String {
-        self.authority.lock().expect("workflow authority").clone()
-    }
-    pub(crate) fn revoke_handoff(&self) {
-        self.cancel_handoff();
-        *self.authority.lock().expect("workflow authority") = uuid::Uuid::new_v4().to_string();
-    }
     pub(crate) fn cancel_review_handoff(&self, id: &str) {
-        *self.authority.lock().expect("workflow authority") = uuid::Uuid::new_v4().to_string();
-        let mut handoff = self.handoff.lock().expect("handoff");
-        if matches!(handoff.as_ref(),Some(Handoff::Goal{plan:Some((plan,_)),..}) if plan==id) {
-            *handoff = None;
-        }
+        self.workflow.cancel_review_handoff(id);
     }
     pub(crate) fn cancel_handoff(&self) {
-        *self.handoff.lock().expect("workflow handoff") = None;
+        self.workflow.cancel_handoff();
     }
 }

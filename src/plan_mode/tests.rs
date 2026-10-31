@@ -92,13 +92,22 @@ fn plan_receipts_replay_exactly_and_reject_operation_id_reuse() {
     let f = Fixture::new();
     let value = serde_json::json!({"plan":"stable"});
     f.service
-        .remember("op-1", "request-one", value.clone())
+        .workflow
+        .remember(&f.sessions, "op-1", "request-one", value.clone())
         .unwrap();
     assert_eq!(
-        f.service.receipt("op-1", "request-one").unwrap(),
+        f.service
+            .workflow
+            .receipt(&f.sessions, "op-1", "request-one")
+            .unwrap(),
         Some(value)
     );
-    assert!(f.service.receipt("op-1", "different request").is_err());
+    assert!(
+        f.service
+            .workflow
+            .receipt(&f.sessions, "op-1", "different request")
+            .is_err()
+    );
 }
 #[test]
 fn document_and_receipt_survive_cold_reopen_without_arming_execution() {
@@ -106,7 +115,13 @@ fn document_and_receipt_survive_cold_reopen_without_arming_execution() {
     let doc = f.service.save_draft(None, 0, "# Durable plan").unwrap();
     f.service.approve_document(&doc.id, 1).unwrap();
     f.service
-        .remember("approval", "request", serde_json::json!({"approved":true}))
+        .workflow
+        .remember(
+            &f.sessions,
+            "approval",
+            "request",
+            serde_json::json!({"approved":true}),
+        )
         .unwrap();
     f.sessions.quiesce_active().unwrap();
     let reopened = SessionService::new(f.root.clone(), JsonlCompression::None).unwrap();
@@ -122,10 +137,13 @@ fn document_and_receipt_survive_cold_reopen_without_arming_execution() {
     assert!(restored[0].approved);
     assert_eq!(restored[0].text, doc.text);
     assert_eq!(
-        service.receipt("approval", "request").unwrap(),
+        service
+            .workflow
+            .receipt(&service.sessions, "approval", "request")
+            .unwrap(),
         Some(serde_json::json!({"approved":true}))
     );
-    assert!(service.handoff.lock().unwrap().is_none());
+    assert!(service.workflow.handoff.lock().unwrap().is_none());
     drop(service);
 }
 #[test]
@@ -312,7 +330,7 @@ fn losing_review_response_cannot_schedule_execution_after_approve_only() {
     });
     assert!(f.service.approve_review(&doc.id, 1, false).unwrap());
     assert!(f.service.approve_review(&doc.id, 1, true).is_err());
-    assert!(f.service.handoff.lock().unwrap().is_none());
+    assert!(f.service.workflow.handoff.lock().unwrap().is_none());
     assert!(matches!(
         receiver
             .recv_timeout(std::time::Duration::from_secs(1))

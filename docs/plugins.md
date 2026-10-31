@@ -27,7 +27,8 @@ because Rust compiler ABIs are not stable enough for a durable plugin market.
 
 First-party agent capabilities use the same static `Plugin`/service/lease
 lifecycle as other built-ins. They are independently removable catalog entries,
-not UI special cases. The current workflow/intelligence set is
+not UI special cases. Configurability follows the explicit Application service
+contract below. The current workflow/intelligence set is
 `builtin.plan_mode`, `builtin.skills`, `builtin.language_intelligence`,
 `builtin.context_inspector`, `builtin.memory`, `builtin.goal`, and
 `builtin.subagent`, and `builtin.task`. Omitting one removes its commands/tools/service; closing the
@@ -96,14 +97,52 @@ CLAT does not silently pretend a failed feature is available.
 The inventory includes configured-disabled candidates as well as actual mounts.
 Per-project `configurable` reports whether a candidate can currently be disabled;
 `disabled_by` contains the explicitly disabled ids responsible for its absence.
-Only active instances contribute tools or commands. Web, history querying,
+Only active instances contribute tools or commands. Workbench snapshots,
+`workflow.details` and the interaction catalog include `builtin_availability`,
+a plugin-id map of effective `enabled` flags and optional localized `reason`
+descriptors, all derived from the same startup plan. Aggregated pages retain
+available content when one feature is absent; direct feature operations return
+the existing typed unavailable error.
+
+Skills, Memory, Subagent, MCP and Plan Mode can each be disabled independently,
+including all five together. For example:
+
+```json
+{
+  "unit": { "name": "builtin-plugins", "version": 1 },
+  "disabled": ["builtin.skills", "builtin.memory", "builtin.subagent", "builtin.mcp_adapter", "builtin.plan_mode"]
+}
+```
+
+- Skills absence removes both the service and run catalog slot. No user/project
+  skill directories are scanned, no bundled catalog is injected, and no explicit
+  invocation remains armed. Request assembly uses a pure empty snapshot.
+- Memory absence never opens or repairs `memory.json`, performs retrieval or adds
+  new injection. Existing journal and summary text is preserved.
+- Subagent absence creates no service or child workers and reports effective off.
+  Its ordinary experimental on/off control remains process-local.
+- MCP absence skips server configuration, credential-derived packs and subprocess
+  startup. External package installation/update/reload cannot reactivate it.
+  WASM remains independent, observed by the core `builtin.extension_status` owner.
+- Plan absence removes its editing/review tools and commands, while Session facts
+  retain an old planning conversation's read-only guard, even under Full Access.
+  Viewing historical plans does not regenerate Markdown files. Editing, approval,
+  new plan execution binding and leaving planning mode require re-enabling Plan
+  and restarting. A new session starts without the old session's plan state.
+
+Ordinary conversation, Goal handoff/cancellation/idempotency and automatic target
+runs remain available when these five features are absent. Existing approved
+plans remain durable guidance. An active old planning session must leave planning
+mode before it can arm Goal execution; disabling the plugin grants no new authority.
+
+Web, history querying,
 language intelligence and quota monitoring have explicit absence behavior: their
 services are not mounted, affected APIs return unavailable or omit optional data,
 and normal model selection, notifications and conversation execution continue.
 Compaction, Todo, titles and contribution-only plugins can also be absent.
 
 **Current boundary:** several feature services are still required by Application
-ports, including goals, tasks, scheduling, skills, memory, development and drafts.
+ports, including goals, tasks, scheduling, development and drafts.
 They are protected by the current service contract, not declared permanent kernel
 components. Full independent disablement requires migrating those callers to
 explicit optional capability ports; the inventory does not disguise that debt.

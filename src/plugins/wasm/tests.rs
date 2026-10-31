@@ -160,6 +160,7 @@ fn manifest_package_contributes_static_system_prompt() {
     let mcp_root = unique_root("manifest-prompt-mcp");
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.clone(),
             Vec::new(),
@@ -260,6 +261,7 @@ fn installed_wasm_package_enters_the_normal_adapter_pipeline() {
     let mcp_root = unique_root("installed-wasm-mcp");
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.clone(),
             Vec::new(),
@@ -485,6 +487,7 @@ fn fs_grants_follow_the_permission_mode_and_rebuild() {
     let mcp_root = unique_root("fs-mcp");
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.clone(),
             Vec::new(),
@@ -656,6 +659,7 @@ fn mount_read_configuration(
     let cell = std::sync::Arc::new(std::sync::RwLock::new(mode));
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.to_owned(),
             Vec::new(),
@@ -1015,6 +1019,7 @@ fn greeter_reads_its_config_through_the_sdk() {
         .expect("config");
         let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
             std::sync::Arc::new(ToolRegistryPlugin),
+            std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             std::sync::Arc::new(McpAdapterPlugin::new(
                 mcp_root.to_owned(),
                 Vec::new(),
@@ -1301,6 +1306,7 @@ fn digest_plugin_registers_invokes_and_revokes() {
     let bridge = crate::plugin_host::PluginHostBridge::shared();
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.clone(),
             Vec::new(),
@@ -1392,6 +1398,7 @@ fn broken_component_is_isolated() {
     let mcp_root = unique_root("isolation-mcp");
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.clone(),
             Vec::new(),
@@ -1528,6 +1535,7 @@ fn mount_probe(
     );
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.to_owned(),
             Vec::new(),
@@ -1897,6 +1905,7 @@ fn oversized_components_are_refused_before_compilation() {
     let mcp_root = unique_root("oversize-mcp");
     let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
         std::sync::Arc::new(ToolRegistryPlugin),
+        std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         std::sync::Arc::new(McpAdapterPlugin::new(
             mcp_root.clone(),
             Vec::new(),
@@ -1954,6 +1963,7 @@ fn sha256_pins_are_verified_at_load() {
     let mount_and_status = || {
         let catalog: Vec<std::sync::Arc<dyn PluginTrait>> = vec![
             std::sync::Arc::new(ToolRegistryPlugin),
+            std::sync::Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             std::sync::Arc::new(McpAdapterPlugin::new(
                 mcp_root.clone(),
                 Vec::new(),

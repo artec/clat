@@ -32,7 +32,7 @@ fn request(
 }
 fn action(app: &mut TrustedProjectApplication, intent: WorkflowIntent) -> Value {
     let request = WorkflowRequest {
-        expected_generation: app.plan_mode.generation(),
+        expected_generation: app.workflow.generation(),
         operation_id: uuid::Uuid::new_v4().to_string(),
         session: app.current_session_id().map(|s| s.to_string()),
         expected_version: app.workflow_details().unwrap()["version"].as_u64().unwrap(),
@@ -55,11 +55,12 @@ fn typed_workflow_approval_is_idempotent_and_does_not_start_without_execution_in
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
     let doc = app
-        .plan_mode
+        .plan_service()
+        .unwrap()
         .save_draft(None, 0, "# Implementation\n\nDeliver the change.")
         .unwrap();
     let req = WorkflowRequest {
-        expected_generation: app.plan_mode.generation(),
+        expected_generation: app.workflow.generation(),
         operation_id: "approve-once".into(),
         session: app.current_session_id().map(|s| s.to_string()),
         expected_version: app.workflow_details().unwrap()["version"].as_u64().unwrap(),
@@ -87,7 +88,11 @@ fn stopped_handoff_never_starts_a_goal_and_preserves_the_approved_document() {
     let (mut app, root) = mount(TestBehavior::Success);
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
-    let doc = app.plan_mode.save_draft(None, 0, "# Deliver").unwrap();
+    let doc = app
+        .plan_service()
+        .unwrap()
+        .save_draft(None, 0, "# Deliver")
+        .unwrap();
     action(
         &mut app,
         WorkflowIntent::Approve {
@@ -175,7 +180,11 @@ fn workflow_rejects_cross_session_and_unrelated_unfinished_goal() {
     let (mut app, root) = mount(TestBehavior::Success);
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
-    let doc = app.plan_mode.save_draft(None, 0, "# Another plan").unwrap();
+    let doc = app
+        .plan_service()
+        .unwrap()
+        .save_draft(None, 0, "# Another plan")
+        .unwrap();
     app.goal_create(
         "different work",
         crate::goal::GoalAcceptance::User,
@@ -185,7 +194,7 @@ fn workflow_rejects_cross_session_and_unrelated_unfinished_goal() {
     .unwrap();
     let version = app.workflow_details().unwrap()["version"].as_u64().unwrap();
     let req = WorkflowRequest {
-        expected_generation: app.plan_mode.generation(),
+        expected_generation: app.workflow.generation(),
         operation_id: "foreign".into(),
         session: Some("foreign-session".into()),
         expected_version: version,
@@ -197,7 +206,7 @@ fn workflow_rejects_cross_session_and_unrelated_unfinished_goal() {
     };
     assert!(app.workflow_action(req).is_err());
     let req = WorkflowRequest {
-        expected_generation: app.plan_mode.generation(),
+        expected_generation: app.workflow.generation(),
         operation_id: "unrelated".into(),
         session: app.current_session_id().map(|s| s.to_string()),
         expected_version: version,
@@ -269,7 +278,8 @@ fn revising_an_approved_plan_keeps_identity_and_freezes_the_prior_revision() {
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
     let doc = app
-        .plan_mode
+        .plan_service()
+        .unwrap()
         .save_draft(None, 0, "# Original\n\nBuild the feature.")
         .unwrap();
     action(
@@ -287,7 +297,7 @@ fn revising_an_approved_plan_keeps_identity_and_freezes_the_prior_revision() {
             revision: 1,
         },
     );
-    let documents = app.plan_mode.documents().unwrap();
+    let documents = app.plan_service().unwrap().documents().unwrap();
     assert_eq!(documents.len(), 2);
     assert_eq!(documents[0].id, documents[1].id);
     assert_eq!(documents[1].revision, 2);
@@ -303,7 +313,11 @@ fn failed_goal_spawn_keeps_approval_and_retries_the_same_bound_goal() {
     let (mut app, root) = mount(TestBehavior::Success);
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
-    let doc = app.plan_mode.save_draft(None, 0, "# Retry safely").unwrap();
+    let doc = app
+        .plan_service()
+        .unwrap()
+        .save_draft(None, 0, "# Retry safely")
+        .unwrap();
     action(
         &mut app,
         WorkflowIntent::Approve {
@@ -317,7 +331,7 @@ fn failed_goal_spawn_keeps_approval_and_retries_the_same_bound_goal() {
     assert!(app.start_workflow_run(r).is_err());
     let first = app.goal().unwrap().unwrap();
     assert!(!first.armed);
-    let saved = app.plan_mode.document(&doc.id, 1).unwrap();
+    let saved = app.plan_service().unwrap().document(&doc.id, 1).unwrap();
     assert!(saved.approved);
     assert_eq!(saved.goal_id.as_deref(), Some(first.state.id.as_str()));
     action(
@@ -343,12 +357,17 @@ fn plan_mode_menu_revises_the_current_goals_bound_plan() {
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
     let doc = app
-        .plan_mode
+        .plan_service()
+        .unwrap()
         .save_draft(None, 0, "# Shared goal plan")
         .unwrap();
-    app.plan_mode.approve_document(&doc.id, 1).unwrap();
+    app.plan_service()
+        .unwrap()
+        .approve_document(&doc.id, 1)
+        .unwrap();
     let goal_id = format!("goal-{}", uuid::Uuid::new_v4());
-    app.plan_mode
+    app.plan_service()
+        .unwrap()
         .bind_goal_atomically(&doc.id, 1, &goal_id, |event| {
             app.goal.create_for_plan(&doc.title, &goal_id, &[event])
         })
@@ -359,7 +378,7 @@ fn plan_mode_menu_revises_the_current_goals_bound_plan() {
             mode: "plan".into(),
         },
     );
-    let plans = app.plan_mode.documents().unwrap();
+    let plans = app.plan_service().unwrap().documents().unwrap();
     let draft = plans.last().unwrap();
     assert_eq!(draft.id, doc.id);
     assert_eq!(draft.revision, 2);
@@ -417,14 +436,15 @@ fn a_stop_rejects_delayed_unaccepted_approval_requests() {
     seed(&mut app);
     app.set_plan_mode(true).unwrap();
     let doc = app
-        .plan_mode
+        .plan_service()
+        .unwrap()
         .save_draft(None, 0, "# Do not restart after stop")
         .unwrap();
     let stale = WorkflowRequest {
         operation_id: "delayed-approval".into(),
         session: app.current_session_id().map(|s| s.to_string()),
         expected_version: app.workflow_details().unwrap()["version"].as_u64().unwrap(),
-        expected_generation: app.plan_mode.generation(),
+        expected_generation: app.workflow.generation(),
         intent: WorkflowIntent::Approve {
             plan: doc.id.clone(),
             revision: 1,
@@ -434,7 +454,13 @@ fn a_stop_rejects_delayed_unaccepted_approval_requests() {
     app.cancel_active_run();
     assert!(app.workflow_action(stale).is_err());
     assert!(!app.workflow_ready());
-    assert!(!app.plan_mode.document(&doc.id, 1).unwrap().approved);
+    assert!(
+        !app.plan_service()
+            .unwrap()
+            .document(&doc.id, 1)
+            .unwrap()
+            .approved
+    );
     app.close().unwrap();
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }

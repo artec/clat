@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 mod market_view;
 #[cfg(test)]
+mod phase2_tests;
+#[cfg(test)]
 mod tests;
 
 pub(super) struct PluginReview {
@@ -365,8 +367,8 @@ impl TrustedProjectApplication {
     }
 }
 
-pub(super) fn missing_builtin(id: &str) -> ApplicationError {
-    ApplicationError::presented(
-        crate::i18n::UiMessage::new("extension.disabled_builtin").arg("id", id),
-    )
+pub(super) fn missing_builtin(id: &'static str) -> ApplicationError {
+    ApplicationError::presented(crate::plugins::inventory::unavailable(
+        crate::plugin::PluginId::new(id),
+    ))
 }

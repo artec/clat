@@ -1,5 +1,5 @@
 use super::*;
-use crate::plan_mode::{Handoff, documents::PlanDocument};
+use crate::plan_mode::documents::PlanDocument;
 impl TrustedProjectApplication {
     pub(super) fn check_workflow_goal_binding(&self, doc: &PlanDocument) -> Result<(), String> {
         if let Some(goal) = self.goal().map_err(|e| e.to_string())? {
@@ -27,11 +27,14 @@ impl TrustedProjectApplication {
         Ok(())
     }
     pub(super) fn request_workflow_goal(&self, plan: Option<(String, u64)>) -> Result<(), String> {
+        if plan.is_some() {
+            self.plan_plugin()?;
+        }
         let session = self
             .current_session_id()
             .map(|s| s.to_string())
             .unwrap_or_default();
-        let mut handoff = self.plan_mode.handoff.lock().map_err(|_| "handoff")?;
+        let mut handoff = self.workflow.handoff.lock().map_err(|_| "handoff")?;
         if handoff.is_some() {
             return Err("a workflow handoff is already pending".into());
         }
@@ -62,7 +65,7 @@ impl TrustedProjectApplication {
         }
     }
     pub(in crate::application) fn cancel_workflow_continuation(&self) {
-        self.plan_mode.revoke_handoff();
+        self.workflow.revoke_handoff();
         *self
             .transient_inputs
             .goal_after_interrupt
@@ -70,7 +73,7 @@ impl TrustedProjectApplication {
             .expect("goal interruption") = None;
     }
     pub fn workflow_ready(&self) -> bool {
-        self.plan_mode.handoff.lock().is_ok_and(|h| h.is_some())
+        self.workflow.handoff.lock().is_ok_and(|h| h.is_some())
             && self.active_run.as_ref().is_none_or(|h| h.is_finished())
             && self
                 .active_compaction
@@ -84,7 +87,7 @@ impl TrustedProjectApplication {
         if !self.workflow_ready() {
             return Ok(None);
         }
-        let handoff = self.plan_mode.handoff.lock().expect("handoff").take();
+        let handoff = self.take_workflow_handoff()?;
         let Some(handoff) = handoff else {
             return Ok(None);
         };
@@ -116,22 +119,24 @@ impl TrustedProjectApplication {
         &mut self,
         plan: Option<(String, u64)>,
     ) -> Result<(), String> {
+        self.plan_plugin()?;
         self.goal.disarm();
         self.set_plan_mode(true).map_err(|e| e.to_string())?;
         if let Some((id, revision)) = plan {
-            let doc = self.plan_mode.document(&id, revision)?;
-            self.plan_mode.save_draft(Some(&id), revision, &doc.text)?;
+            let doc = self.plan_plugin()?.document(&id, revision)?;
+            self.plan_plugin()?
+                .save_draft(Some(&id), revision, &doc.text)?;
         }
         Ok(())
     }
     fn prepare_workflow_goal(&mut self, plan: Option<(String, u64)>) -> Result<(), String> {
         if let Some((id, revision)) = plan {
-            let doc = self.plan_mode.document(&id, revision)?;
+            let doc = self.plan_plugin()?.document(&id, revision)?;
             if !doc.approved {
                 return Err("planning ended without approval".into());
             }
             self.check_workflow_goal_binding(&doc)?;
-            self.plan_mode.approve_document(&id, revision)?;
+            self.plan_plugin()?.approve_document(&id, revision)?;
             let current = self.goal().map_err(|e| e.to_string())?;
             let goal = match current.filter(|g| g.state.phase != crate::goal::GoalPhase::Complete) {
                 Some(goal) => goal,
@@ -143,13 +148,14 @@ impl TrustedProjectApplication {
                     }
                     let goal_id = format!("goal-{}", uuid::Uuid::new_v4());
                     self.check_goal_activation().map_err(|e| e.to_string())?;
-                    self.plan_mode
+                    self.plan_plugin()?
                         .bind_goal_atomically(&id, revision, &goal_id, |event| {
                             self.goal.create_for_plan(&doc.title, &goal_id, &[event])
                         })?
                 }
             };
-            self.plan_mode.bind_goal(&id, revision, &goal.state.id)?;
+            self.plan_plugin()?
+                .bind_goal(&id, revision, &goal.state.id)?;
         }
         let goal = self
             .goal()
@@ -163,7 +169,9 @@ impl TrustedProjectApplication {
             .rev()
             .find(|p| p.goal_id.as_deref() == Some(&goal.state.id) && p.approved)
         {
-            self.plan_mode.approve_document(&doc.id, doc.revision)?;
+            if let Some(plan) = &self.plan_mode {
+                plan.approve_document(&doc.id, doc.revision)?;
+            }
         }
         let eligible = if goal.state.phase != crate::goal::GoalPhase::Active {
             self.goal_resume(goal.state.revision)

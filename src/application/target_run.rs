@@ -117,7 +117,7 @@ impl TrustedProjectApplication {
         let context = self.target_context_snapshot(
             &target,
             &request.config,
-            self.skills.snapshot().map_err(ApplicationError::new)?,
+            self.skills_snapshot()?,
             self.memory_for_message(&request.message)?,
         )?;
         let instructions = target

@@ -58,6 +58,13 @@ impl CommandPicker {
 
     pub(super) fn load(&mut self, catalog: &Value) {
         self.choices.clear();
+        self.load_commands(catalog);
+        self.load_skills(catalog);
+        self.load_absent_features(catalog);
+        self.choices.extend(local_choices());
+        self.status = UiMessage::new("tui.commands_empty").into();
+    }
+    fn load_commands(&mut self, catalog: &Value) {
         for entry in catalog["commands"]
             .as_array()
             .into_iter()
@@ -94,6 +101,8 @@ impl CommandPicker {
                 });
             }
         }
+    }
+    fn load_skills(&mut self, catalog: &Value) {
         for entry in catalog["skills"]["entries"]
             .as_array()
             .into_iter()
@@ -127,8 +136,28 @@ impl CommandPicker {
                 });
             }
         }
-        self.choices.extend(local_choices());
-        self.status = UiMessage::new("tui.commands_empty").into();
+    }
+    fn load_absent_features(&mut self, catalog: &Value) {
+        for name in ["skills", "memory", "subagent", "mcp_adapter", "plan_mode"] {
+            let id = format!("builtin.{name}");
+            let value = &catalog["builtin_availability"][&id];
+            if value["enabled"] != false {
+                continue;
+            }
+            let reason = PresentedText {
+                raw: String::new(),
+                presentation: serde_json::from_value(value["reason"].clone()).ok(),
+            };
+            self.choices.push(Choice {
+                text: String::new(),
+                label: UiMessage::new(&format!("extension.builtin.{name}.name")).into(),
+                description: reason.clone(),
+                hint: reason,
+                aliases: String::new(),
+                unavailable: true,
+                skill: false,
+            });
+        }
     }
 
     fn filtered(&self) -> Vec<&Choice> {
@@ -488,6 +517,32 @@ fn picker_body(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn absent_builtin_choices_explain_unavailability_and_cannot_submit() {
+        let mut picker = CommandPicker::new(1);
+        picker.load(&json!({"commands":[],"builtin_availability":{
+            "builtin.plan_mode":{"enabled":false,"reason":UiMessage::new("extension.disabled_builtin").arg("id","planning")}
+        }}));
+        picker.selected = picker
+            .filtered()
+            .iter()
+            .position(|choice| {
+                choice
+                    .label
+                    .presentation
+                    .as_ref()
+                    .is_some_and(|p| p.key == "extension.builtin.plan_mode.name")
+            })
+            .unwrap();
+        assert!(picker.selected_text().is_none());
+        assert!(!picker.selected_command_matches("/plan"));
+        assert!(
+            picker.filtered()[picker.selected]
+                .hint
+                .presentation
+                .is_some()
+        );
+    }
     #[test]
     fn exact_submit_requires_selected_available_command_not_skill_or_prefix() {
         let mut picker = CommandPicker::new(1);

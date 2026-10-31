@@ -134,7 +134,7 @@ struct RunSlots {
     plugin_host: Arc<crate::plugin_host::PluginHostBridge>,
     tool_access: Arc<crate::tool::ToolAccessSlot>,
     tools: Arc<crate::tool::ToolRegistry>,
-    skill_catalog: Arc<crate::skills::SkillCatalogSlot>,
+    skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
     view_image: Arc<crate::view_image::ViewImageState>,
     file_review: Option<Arc<crate::project::review::FileReview>>,
 }
@@ -145,7 +145,7 @@ impl RunSlots {
             plugin_host: Arc::clone(&app.plugin_host),
             tool_access: Arc::clone(&app.tool_access),
             tools: Arc::clone(&app.tools),
-            skill_catalog: Arc::clone(&app.skill_catalog),
+            skill_catalog: app.skill_catalog.clone(),
             view_image: Arc::clone(&app.view_image),
             file_review: app.project.file_review(),
         }
@@ -155,7 +155,9 @@ impl RunSlots {
         self.plugin_host.clear();
         self.tool_access.clear();
         self.tools.clear_capabilities();
-        self.skill_catalog.clear();
+        if let Some(catalog) = &self.skill_catalog {
+            catalog.clear();
+        }
         self.view_image.clear();
         if let Some(review) = &self.file_review {
             review.end();
@@ -190,7 +192,7 @@ struct RunWorkerDeps {
     todo_service: Option<Arc<crate::plugins::services::TodoService>>,
     goal_service: Arc<crate::goal::GoalService>,
     task_service: Arc<crate::task::TaskService>,
-    subagent_service: Arc<crate::subagent::SubagentService>,
+    subagent_service: Option<Arc<crate::subagent::SubagentService>>,
     titler: Option<Arc<dyn crate::plugins::services::SessionTitler>>,
     title_sender: Option<mpsc::SyncSender<AutotitleJob>>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
@@ -312,9 +314,9 @@ impl WaitingRunExecution {
         self.slots
             .tool_access
             .install(start.context.tool_access.clone());
-        self.slots
-            .skill_catalog
-            .install(Arc::clone(&start.context.skills));
+        if let Some(catalog) = &self.slots.skill_catalog {
+            catalog.install(Arc::clone(&start.context.skills));
+        }
         self.slots
             .tools
             .install_capabilities(Arc::clone(&start.context.capabilities));
@@ -587,7 +589,7 @@ impl RunWorkerDeps {
             todo_service: app.todo.clone(),
             goal_service: Arc::clone(&app.goal),
             task_service: Arc::clone(&app.task),
-            subagent_service: Arc::clone(&app.subagents),
+            subagent_service: app.subagents.clone(),
             titler: app.titler.clone(),
             title_sender: app
                 .title_worker

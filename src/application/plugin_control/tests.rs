@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 use std::path::Path;
 use std::sync::Arc;
 
-fn install_fixture(root: &Path, host: &HostApplication) -> String {
+pub(super) fn install_fixture(root: &Path, host: &HostApplication) -> String {
     let package = root.join("plg2-package");
     std::fs::create_dir_all(&package).unwrap();
     let wasm = include_bytes!("../../../tests/fixtures/wasm/greeter.wasm");

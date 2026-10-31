@@ -1149,7 +1149,12 @@ impl App {
             }
             if application.plan_mode_active() {
                 spans.push(Span::styled(
-                    self.locale.text("web.plan"),
+                    self.locale
+                        .text(if application.builtin_available("builtin.plan_mode") {
+                            "web.plan"
+                        } else {
+                            "extension.retained_plan_label"
+                        }),
                     Style::default().fg(ratatui::style::Color::Rgb(240, 189, 90)),
                 ));
                 spans.push(Span::styled(" · ", theme::style(theme::Role::Faint)));

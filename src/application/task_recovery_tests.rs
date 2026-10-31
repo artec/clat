@@ -1115,12 +1115,15 @@ fn ga1_rework_model_switch_invalidates_check_and_matches_actual_tool_visibility(
         app.task_validate_resume(&old).unwrap();
         app.save_model_state(&config, &credentials).unwrap();
         let check = app.task_check().unwrap();
-        let skills = app.skills.snapshot().unwrap();
+        let skills = app.skills_service().unwrap().snapshot().unwrap();
         let context = app.run_context_snapshot(
             &config,
             skills,
             None,
-            app.memory.injection("inspection").unwrap(),
+            app.memory_service()
+                .unwrap()
+                .injection("inspection")
+                .unwrap(),
             app.goal.injection().unwrap(),
             Some("task".into()),
         );

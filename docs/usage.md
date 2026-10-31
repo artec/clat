@@ -487,6 +487,17 @@ after the planning worker has completely settled. `/plan
 off` leaves the mode at an idle boundary. Plan Mode is an agent authority guard,
 not an operating-system sandbox.
 
+These capabilities can be independently disabled in the startup
+`builtin-plugins.json` configuration; see [static composition](plugins.md#static-composition-and-absence-contracts).
+Disabled plugins contribute no tools or commands; controls explain
+unavailability. With Plan disabled, an old planning conversation stays read-only
+under every permission mode, including Full Access. Historical plans remain
+viewable without creating plan files. Re-enable Plan and restart to edit, approve,
+execute a new plan handoff or leave planning mode. Ordinary new conversations,
+Goal operations outside active planning mode, and automatic targets keep working.
+Already approved plan text remains durable guidance. The TUI marks retained
+planning restrictions as **Plan (read only)**.
+
 The TUI composer title shows **Plan** in amber (`#f0bd5a`) before the permission
 label. An armed goal shows **Goal** in green (`#5cf07d`) in the same location;
 paused or otherwise disarmed goals have no marker. These markers reflect core

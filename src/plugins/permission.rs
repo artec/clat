@@ -16,13 +16,13 @@ use std::sync::Arc;
 
 const ID: PluginId = PluginId::new("builtin.default_permission");
 const PROVIDES: &[ServiceId] = &[PERMISSION_SERVICE_ID];
-const OPTIONAL: &[ServiceId] = &[TOOL_ACCESS_SERVICE_ID];
+const REQUIRES: &[ServiceId] = &[TOOL_ACCESS_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: ID,
     scope: ScopeKind::TrustedProject,
     provides: PROVIDES,
-    requires: &[],
-    optional: OPTIONAL,
+    requires: REQUIRES,
+    optional: &[],
 };
 
 pub(crate) struct DefaultPermissionPlugin {
@@ -44,7 +44,7 @@ impl Plugin for DefaultPermissionPlugin {
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         let access = context
-            .try_require(TOOL_ACCESS_SERVICE)
+            .require(TOOL_ACCESS_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
         let factory: Arc<dyn PermissionPolicyFactory> = Arc::new(DefaultPermissionFactory {
             source: self.source.clone(),
@@ -58,12 +58,12 @@ impl Plugin for DefaultPermissionPlugin {
 
 struct DefaultPermissionFactory {
     source: ModeSource,
-    access: Option<Arc<crate::tool::ToolAccessSlot>>,
+    access: Arc<crate::tool::ToolAccessSlot>,
 }
 
 impl PermissionPolicyFactory for DefaultPermissionFactory {
     fn revision(&self) -> u64 {
-        self.access.as_ref().map_or(0, |access| access.revision())
+        self.access.revision()
     }
 
     fn create(
@@ -83,13 +83,10 @@ impl PermissionPolicyFactory for DefaultPermissionFactory {
                 approver,
             )),
         };
-        match &self.access {
-            Some(access) => Box::new(ToolAccessGuardPolicy {
-                inner,
-                access: Arc::clone(access),
-            }),
-            None => inner,
-        }
+        Box::new(ToolAccessGuardPolicy {
+            inner,
+            access: Arc::clone(&self.access),
+        })
     }
 }
 
@@ -150,7 +147,7 @@ pub(crate) fn network_test_factory_with_access(
 ) -> Arc<dyn PermissionPolicyFactory> {
     Arc::new(DefaultPermissionFactory {
         source: ModeSource::Shared(cell),
-        access: Some(access),
+        access,
     })
 }
 
@@ -158,10 +155,7 @@ pub(crate) fn execution_factory(
     source: ModeSource,
     access: Arc<crate::tool::ToolAccessSlot>,
 ) -> Arc<dyn PermissionPolicyFactory> {
-    Arc::new(DefaultPermissionFactory {
-        source,
-        access: Some(access),
-    })
+    Arc::new(DefaultPermissionFactory { source, access })
 }
 
 #[cfg(test)]
@@ -206,7 +200,7 @@ mod tests {
         access.install(crate::tool::ToolAccessPolicy::plan_mode());
         let factory: Arc<dyn PermissionPolicyFactory> = Arc::new(DefaultPermissionFactory {
             source: ModeSource::Classic,
-            access: Some(Arc::clone(&access)),
+            access: Arc::clone(&access),
         });
         let tools = Arc::new(ToolRegistry::new());
         let _lease = tools

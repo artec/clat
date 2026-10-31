@@ -9,14 +9,14 @@ use crate::plugin::{
 };
 use crate::plugins::services::{
     COMMAND_SERVICE, COMMAND_SERVICE_ID, PLAN_MODE_SERVICE, PLAN_MODE_SERVICE_ID, SESSION_SERVICE,
-    SESSION_SERVICE_ID, TOOL_ACCESS_SERVICE, TOOL_ACCESS_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID,
+    SESSION_SERVICE_ID, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::{CancelToken, Project, Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 const ID: PluginId = PluginId::new("builtin.plan_mode");
-const PROVIDES: &[ServiceId] = &[PLAN_MODE_SERVICE_ID, TOOL_ACCESS_SERVICE_ID];
+const PROVIDES: &[ServiceId] = &[PLAN_MODE_SERVICE_ID];
 const REQUIRES: &[ServiceId] = &[SESSION_SERVICE_ID, TOOL_SERVICE_ID, COMMAND_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: ID,
@@ -28,14 +28,27 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 
 pub(crate) struct PlanModePlugin {
     asker: Arc<crate::interaction::AskUserSlot>,
+    workflow: Arc<crate::application::WorkflowState>,
 }
 
 impl PlanModePlugin {
     pub(crate) fn new(asker: Arc<crate::interaction::AskUserSlot>) -> Self {
-        Self { asker }
+        Self {
+            asker,
+            workflow: Arc::new(crate::application::WorkflowState::default()),
+        }
     }
 }
 
+impl PlanModePlugin {
+    pub(crate) fn with_workflow(
+        mut self,
+        workflow: Arc<crate::application::WorkflowState>,
+    ) -> Self {
+        self.workflow = workflow;
+        self
+    }
+}
 impl Plugin for PlanModePlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
         &DESCRIPTOR
@@ -51,8 +64,10 @@ impl Plugin for PlanModePlugin {
         let commands = context
             .require(COMMAND_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
-        let service = Arc::new(PlanModeService::new(sessions, Arc::clone(&self.asker)));
-        let access = crate::tool::ToolAccessSlot::shared();
+        let service = Arc::new(
+            PlanModeService::new(sessions, Arc::clone(&self.asker))
+                .with_workflow(self.workflow.clone()),
+        );
 
         let tool_lease = tools
             .register(
@@ -90,9 +105,6 @@ impl Plugin for PlanModePlugin {
 
         context
             .provide(PLAN_MODE_SERVICE, service)
-            .map_err(|error| PluginError::new(error.to_string()))?;
-        context
-            .provide(TOOL_ACCESS_SERVICE, access)
             .map_err(|error| PluginError::new(error.to_string()))
     }
 }
@@ -181,6 +193,7 @@ pub(crate) fn execution_tool(service: Arc<PlanModeService>) -> Arc<dyn Tool> {
 mod tests {
     use super::*;
     use crate::plugin::PluginManager;
+    use crate::plugins::services::TOOL_ACCESS_SERVICE;
     use crate::plugins::{CommandsPlugin, SessionPersistencePlugin, ToolRegistryPlugin};
     use crate::session::persistence::JsonlCompression;
 

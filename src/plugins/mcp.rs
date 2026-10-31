@@ -23,8 +23,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const ID: PluginId = PluginId::new("builtin.mcp_adapter");
-const PROVIDES: &[ServiceId] = &[MCP_STATUS_SERVICE_ID];
-const REQUIRES: &[ServiceId] = &[TOOL_SERVICE_ID];
+const PROVIDES: &[ServiceId] = &[];
+const REQUIRES: &[ServiceId] = &[TOOL_SERVICE_ID, MCP_STATUS_SERVICE_ID];
 const OPTIONAL: &[ServiceId] = &[PROMPT_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     id: ID,
@@ -34,6 +34,8 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: OPTIONAL,
 };
 
+type VendorPack = Vec<(String, McpServerConfig)>;
+type PackFactory = Arc<dyn Fn() -> VendorPack + Send + Sync>;
 pub(crate) struct McpAdapterPlugin {
     storage_root: PathBuf,
     /// DSH `{{cwd}}` 变量的项目真值。子进程 cwd 仍是 storage_root，
@@ -43,6 +45,7 @@ pub(crate) struct McpAdapterPlugin {
     /// 在挂载期按激活厂商与凭据算好传入；密钥只在内存，用户
     /// `mcp.json` 同名条目优先（见 `merge_vendor_pack`）。
     vendor_pack: Vec<(String, crate::mcp::client::McpServerConfig)>,
+    pack_factory: Option<PackFactory>,
     /// 宿主桥（sampling/elicitation 的传输无关实现）：connect 时按
     /// server 包成 McpHostHandler 注入——服务端请求在 dispatcher 线程
     /// 经桥过权限门/记账/问答（docs/todo/mcp-sampling-elicitation.md）。
@@ -60,8 +63,17 @@ impl McpAdapterPlugin {
             project_root: storage_root.clone(),
             storage_root,
             vendor_pack,
+            pack_factory: None,
             host,
         }
+    }
+
+    pub(crate) fn with_pack_factory(
+        mut self,
+        factory: impl Fn() -> Vec<(String, crate::mcp::client::McpServerConfig)> + Send + Sync + 'static,
+    ) -> Self {
+        self.pack_factory = Some(Arc::new(factory));
+        self
     }
 
     /// 生产 Catalog 使用：控制面与 MCP 子进程 cwd 仍取 `storage_root`；
@@ -76,6 +88,7 @@ impl McpAdapterPlugin {
             storage_root,
             project_root,
             vendor_pack,
+            pack_factory: None,
             host,
         }
     }
@@ -92,7 +105,19 @@ struct McpStartupState {
 
 impl McpStartupState {
     fn cancel(&self) {
+        let _lane = self.cleanups.lock().expect("mcp publication");
         self.cancelled.store(true, Ordering::Release);
+    }
+    fn publish(
+        &self,
+        contribution: impl FnOnce() -> Result<Box<dyn FnOnce() + Send>, String>,
+    ) -> Result<bool, String> {
+        let mut cleanups = self.cleanups.lock().map_err(|_| "mcp publication")?;
+        if self.is_cancelled() {
+            return Ok(false);
+        }
+        cleanups.push(contribution()?);
+        Ok(true)
     }
 
     fn is_cancelled(&self) -> bool {
@@ -100,7 +125,11 @@ impl McpStartupState {
     }
 
     fn push_cleanup(&self, cleanup: Box<dyn FnOnce() + Send>) {
-        if let Ok(mut cleanups) = self.cleanups.lock() {
+        let mut cleanups = self.cleanups.lock().expect("mcp publication");
+        if self.is_cancelled() {
+            drop(cleanups);
+            cleanup();
+        } else {
             cleanups.push(cleanup);
         }
     }
@@ -129,13 +158,23 @@ impl Plugin for McpAdapterPlugin {
         // 本地配置读取保留 fail-fast（无网络/子进程 I/O，INV-M1）；
         // 连接与握手全部挪进后台 worker——mount 即返回，ready 不再被
         // MCP 阻塞（docs/todo/mcp-async-startup.md）。
-        let effective = load_effective_mcp_config(&self.storage_root, &self.vendor_pack)
-            .map_err(PluginError::new)?;
-        let status = Arc::new(McpStatus::new(
-            effective.servers.len() + effective.failures.len(),
-        ));
+        let pack = self.pack_factory.as_ref().map(|factory| factory());
+        let effective = load_effective_mcp_config(
+            &self.storage_root,
+            pack.as_ref().unwrap_or(&self.vendor_pack),
+        )
+        .map_err(PluginError::new)?;
+        let status = context
+            .require(MCP_STATUS_SERVICE)
+            .map_err(|error| PluginError::new(error.to_string()))?;
+        let batch = status.begin_batch("mcp");
+        status.extend_configured(effective.servers.len() + effective.failures.len());
         for failure in &effective.failures {
             status.record_failed_server(failure.clone());
+        }
+        if effective.servers.is_empty() {
+            drop(batch);
+            return Ok(());
         }
         let state = Arc::new(McpStartupState {
             cancelled: AtomicBool::new(false),
@@ -152,6 +191,7 @@ impl Plugin for McpAdapterPlugin {
             std::thread::Builder::new()
                 .name("clat-mcp-startup".into())
                 .spawn(move || {
+                    let _batch = batch;
                     run_startup(McpStartupInputs {
                         config: effective.servers,
                         manifest_prompts: effective.manifest_prompts,
@@ -167,9 +207,6 @@ impl Plugin for McpAdapterPlugin {
                 })
                 .map_err(|error| PluginError::new(format!("spawn mcp startup worker: {error}")))?
         };
-        context
-            .provide(MCP_STATUS_SERVICE, status)
-            .map_err(|error| PluginError::new(error.to_string()))?;
         // 单一 defer：cancel → 有界 join → 依序执行 worker 登记的清理。
         // 卡住的握手不拖关闭（对齐 monitor/title 的 EXIT_JOIN_GRACE 纪
         // 律，INV-M5）；被放弃的 worker 由进程退出回收。
@@ -390,22 +427,55 @@ fn register_capability_tools(
             info.description = format!("{kept}… [truncated by host]");
         }
         let tool: Arc<dyn Tool> = Arc::new(McpTool::new(server, info));
-        match registry.register(owner, tool) {
-            Ok(lease) => {
-                // 清理序（每 server）：先贡献 lease、后进程关闭。
-                state.push_cleanup(Box::new(move || {
-                    let _ = lease.revoke();
-                }));
-                tools += 1;
-            }
+        match state.publish(|| {
+            let lease = registry
+                .register(owner, tool)
+                .map_err(|error| error.to_string())?;
+            Ok(Box::new(move || {
+                let _ = lease.revoke();
+            }))
+        }) {
+            Ok(true) => tools += 1,
+            Ok(false) => break,
             Err(error) => {
-                // server 已连上：连接级失败之外的登记（不参与
-                // connecting 推导）。
-                status.record_failure(format!("mcp `{name}` tool `{remote_name}`: {error}"));
+                status.record_failure(format!("mcp `{name}` tool `{remote_name}`: {error}"))
             }
         }
     }
     tools
+}
+
+fn register_prompts(
+    registry: Option<&Arc<PromptRegistry>>,
+    state: &McpStartupState,
+    status: &McpStatus,
+    owner: PluginOwner,
+    name: &str,
+    prompts: impl Iterator<Item = (String, String)>,
+) {
+    for (prompt, text) in prompts {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let Some(registry) = registry else {
+            status.record_failure(format!(
+                "mcp `{name}` prompt `{prompt}`: PromptRegistry is unavailable"
+            ));
+            continue;
+        };
+        match state.publish(|| {
+            let lease = registry
+                .contribute(owner, text)
+                .map_err(|e| e.to_string())?;
+            Ok(Box::new(move || {
+                let _ = lease.revoke();
+            }))
+        }) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(error) => status.record_failure(format!("mcp `{name}` prompt `{prompt}`: {error}")),
+        }
+    }
 }
 
 fn run_startup(inputs: McpStartupInputs) {
@@ -429,6 +499,9 @@ fn run_startup(inputs: McpStartupInputs) {
     let (tx, rx) = std::sync::mpsc::channel::<ServerOutcome>();
     let mut pending = 0usize;
     for (name, server_config) in &config {
+        if state.is_cancelled() {
+            break;
+        }
         let valid = valid_capability_source(&status, name, server_config);
         if !valid {
             status.record_failed_server(format!("mcp `{name}`: empty command and no url"));
@@ -578,8 +651,13 @@ fn run_startup(inputs: McpStartupInputs) {
         let server = Arc::new(server);
         if server.supports_clat_host_services() {
             let weak_server = Arc::downgrade(&server);
+            let lifetime = Arc::downgrade(&state);
             let lease = host.subscribe_context(Arc::new(move |context| {
-                if let Some(server) = weak_server.upgrade() {
+                if lifetime
+                    .upgrade()
+                    .is_some_and(|state| !state.is_cancelled())
+                    && let Some(server) = weak_server.upgrade()
+                {
                     let _ = server.notify_clat_host_context(context);
                 }
             }));
@@ -587,38 +665,21 @@ fn run_startup(inputs: McpStartupInputs) {
         }
         let tools = register_capability_tools(&registry, &status, &state, owner, &server, infos);
         let static_prompts = manifest_prompts.remove(&name).unwrap_or_default();
-        if let Some(prompt_registry) = &prompt_registry {
-            for prompt in &static_prompts {
-                if prompt.system.trim().is_empty() {
-                    continue;
-                }
-                match prompt_registry.contribute(owner, prompt.system.clone()) {
-                    Ok(lease) => state.push_cleanup(Box::new(move || {
-                        let _ = lease.revoke();
-                    })),
-                    Err(error) => status.record_failure(format!(
-                        "mcp `{name}` manifest prompt `{}`: {error}",
-                        prompt.name
-                    )),
-                }
-            }
-            for (prompt, text) in prompt_infos {
-                if text.trim().is_empty() {
-                    continue;
-                }
-                match prompt_registry.contribute(owner, text) {
-                    Ok(lease) => state.push_cleanup(Box::new(move || {
-                        let _ = lease.revoke();
-                    })),
-                    Err(error) => status
-                        .record_failure(format!("mcp `{name}` prompt `{}`: {error}", prompt.name)),
-                }
-            }
-        } else if !static_prompts.is_empty() {
-            status.record_failure(format!(
-                "mcp `{name}` manifest declares prompts but PromptRegistry is unavailable"
-            ));
-        }
+        register_prompts(
+            prompt_registry.as_ref(),
+            &state,
+            &status,
+            owner,
+            &name,
+            static_prompts
+                .iter()
+                .map(|prompt| (prompt.name.clone(), prompt.system.clone()))
+                .chain(
+                    prompt_infos
+                        .into_iter()
+                        .map(|(prompt, text)| (prompt.name, text)),
+                ),
+        );
         let shutdown_server = Arc::clone(&server);
         state.push_cleanup(Box::new(move || {
             // 工具/prompt lease 已先行 revoke（McpTool 释放 Arc）；仍被放弃的
@@ -646,6 +707,33 @@ mod tests {
     use crate::plugin::{Plugin, PluginManager};
     use crate::plugins::{PromptRegistryPlugin, ToolRegistryPlugin};
     use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn cancellation_revokes_late_startup_contributions_and_forbids_publication() {
+        let state = McpStartupState {
+            cancelled: AtomicBool::new(false),
+            cleanups: Mutex::new(vec![]),
+        };
+        state.cancel();
+        state.run_cleanups();
+        let revoked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        state.push_cleanup({
+            let revoked = revoked.clone();
+            Box::new(move || {
+                revoked.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        assert_eq!(
+            revoked.load(Ordering::SeqCst),
+            1,
+            "late connection cleanup cannot remain after the close drain"
+        );
+        assert!(
+            !state
+                .publish(|| { panic!("cancelled generation published a contribution") })
+                .unwrap()
+        );
+    }
     use std::fs;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -971,6 +1059,7 @@ mod tests {
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
+            Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             Arc::new(McpAdapterPlugin::new(
                 storage.clone(),
                 Vec::new(),
@@ -1015,6 +1104,7 @@ mod tests {
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
+            Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             Arc::new(McpAdapterPlugin::new(
                 root.clone(),
                 Vec::new(),
@@ -1100,6 +1190,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
             Arc::new(PromptRegistryPlugin),
+            Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             Arc::new(McpAdapterPlugin::new(
                 root.clone(),
                 Vec::new(),
@@ -1239,6 +1330,7 @@ for line in sys.stdin:
 
         let catalog: Vec<Arc<dyn Plugin>> = vec![
             Arc::new(ToolRegistryPlugin),
+            Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
             Arc::new(McpAdapterPlugin::new(
                 root.clone(),
                 Vec::new(),

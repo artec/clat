@@ -4,6 +4,7 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct InteractionCatalog {
+    pub builtin_availability: super::BuiltinAvailabilityMap,
     pub commands: Vec<InteractionCommand>,
     pub skills: SkillsOverviewDto,
 }
@@ -44,6 +45,7 @@ impl TrustedProjectApplication {
             })
             .collect();
         Ok(InteractionCatalog {
+            builtin_availability: self.builtin_availability(),
             commands,
             skills: self.skills_overview()?,
         })

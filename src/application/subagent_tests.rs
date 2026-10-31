@@ -568,7 +568,7 @@ fn experiment_is_opt_in_child_is_project_confined_and_lifecycle_is_durable() {
         "budget guarded"
     );
     assert_eq!(approvals.load(Ordering::SeqCst), 0);
-    assert_eq!(application.subagents.worker_count(), 0);
+    assert_eq!(application.subagent_service().unwrap().worker_count(), 0);
     assert_eq!(
         script.child_step.load(Ordering::SeqCst),
         3,
@@ -676,7 +676,7 @@ fn two_child_delegation_overlaps_and_returns_in_input_order() {
     assert_eq!(state.peak_active, 2, "both child workers must overlap");
     assert_eq!(state.active, 0);
     drop(state);
-    assert_eq!(application.subagents.worker_count(), 0);
+    assert_eq!(application.subagent_service().unwrap().worker_count(), 0);
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
@@ -716,7 +716,7 @@ fn parent_cancellation_aborts_and_joins_the_delegated_child() {
     handle.cancel();
     handle.join().unwrap();
     assert!(receiver.recv().unwrap().unwrap().cancelled);
-    assert_eq!(application.subagents.worker_count(), 0);
+    assert_eq!(application.subagent_service().unwrap().worker_count(), 0);
     let session_id = application.current_session_id().unwrap();
     application.close().unwrap();
 

@@ -30,7 +30,7 @@ impl TrustedProjectApplication {
             .dynamic_instructions
             .snapshot()
             .map_err(ApplicationError::new)?;
-        let skills = self.skills.snapshot().map_err(ApplicationError::new)?;
+        let skills = self.skills_snapshot()?;
         // `/context` has no next user prompt yet, so it reports a zero actual
         // memory injection rather than guessing which records a future query
         // would retrieve. The fixed budget remains visible in the DTO.

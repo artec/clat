@@ -675,6 +675,9 @@ impl App {
                         .collect()
                 })
                 .unwrap_or_default();
+            native.permissions.plan = value["plan_mode_active"] == true;
+            native.permissions.plan_available =
+                value["builtin_availability"]["builtin.plan_mode"]["enabled"] != false;
             native.permissions.mode = value["permission"]["mode"]
                 .as_str()
                 .and_then(PermissionMode::from_journal_value);

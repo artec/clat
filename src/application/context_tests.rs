@@ -381,11 +381,15 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
             false,
         )
         .unwrap();
-    application.subagents.set_enabled(None, true).unwrap();
+    application
+        .subagent_service()
+        .unwrap()
+        .set_enabled(None, true)
+        .unwrap();
 
     let (config, _) = application.model_state().unwrap();
     let instruction_snapshot = application.dynamic_instructions.snapshot().unwrap();
-    let skills = application.skills.snapshot().unwrap();
+    let skills = application.skills_service().unwrap().snapshot().unwrap();
     let goal = application.goal.injection().unwrap();
     let context = application.run_context_snapshot(
         &config,
@@ -395,14 +399,22 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
         goal,
         None,
     );
-    application.subagents.set_enabled(None, false).unwrap();
+    application
+        .subagent_service()
+        .unwrap()
+        .set_enabled(None, false)
+        .unwrap();
     let mut frozen_probe = context.clone();
     frozen_probe.tool_definitions = Vec::new().into();
     let frozen_header =
         application.request_header_data(&config, &frozen_probe, instruction_snapshot.as_ref());
     assert_eq!(frozen_header.header["subagents"]["enabled"], true);
     assert!(frozen_header.header.get("tools").is_none());
-    application.subagents.set_enabled(None, true).unwrap();
+    application
+        .subagent_service()
+        .unwrap()
+        .set_enabled(None, true)
+        .unwrap();
     let header = application.request_header_data(&config, &context, instruction_snapshot.as_ref());
 
     assert_eq!(header.base_system, context.instructions.with_goal);

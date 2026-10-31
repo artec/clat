@@ -55,7 +55,7 @@ impl TrustedProjectApplication {
         goal: crate::goal::GoalInjection,
         task: Option<String>,
     ) -> RunContextSnapshot {
-        let subagents_enabled = self.subagents.enabled(self.sessions.active_id().as_ref());
+        let subagents_enabled = self.subagents_enabled();
         let (plan_instructions, plan_header) = self.plan_context();
 
         let base = crate::plugins::services::base_model_instructions(
@@ -90,13 +90,14 @@ impl TrustedProjectApplication {
             crate::tool::ToolAccessPolicy::all()
         };
         access
-            .with_subagents(self.subagents.enabled(self.sessions.active_id().as_ref()))
+            .with_subagents(self.subagents_enabled())
             .with_view_image(config.capabilities.accepts_image_tool_results())
             .with_task_progress(task)
     }
 
     fn plan_context(&self) -> (Option<String>, Option<Value>) {
-        let (mut instructions, mut header) = plan_layers(self.plan_mode.state());
+        let (mut instructions, mut header) =
+            plan_layers(self.plan_state(), self.plan_mode.is_some());
         if self.plan_mode_active()
             && let Ok(documents) = self.sessions.plan_documents()
             && let Some(doc) = documents.plans.iter().rev().find(|p| !p.approved)
@@ -410,10 +411,20 @@ impl RunContextSnapshot {
     }
 }
 
-fn plan_layers(state: crate::plan_mode::PlanModeState) -> (Option<String>, Option<Value>) {
+fn plan_layers(
+    state: crate::plan_mode::PlanModeState,
+    enabled: bool,
+) -> (Option<String>, Option<Value>) {
     if state.active {
         (
-            Some(crate::plan_mode::PLAN_POLICY.to_owned()),
+            Some(
+                if enabled {
+                    crate::plan_mode::PLAN_POLICY
+                } else {
+                    super::features::RETAINED_PLAN_POLICY
+                }
+                .to_owned(),
+            ),
             Some(json!({ "active": true })),
         )
     } else if let Some(approved) = state.approved {
@@ -440,14 +451,17 @@ impl TrustedProjectApplication {
         skills: Arc<crate::skills::SkillCatalogSnapshot>,
         memory: crate::memory::MemoryInjection,
     ) -> Result<RunContextSnapshot, ApplicationError> {
-        let state = target.plan.state();
+        let state = target
+            .plan
+            .as_ref()
+            .map_or_else(|| target.sessions.plan_mode_state(), |plan| plan.state());
         let access = if state.active {
             crate::tool::ToolAccessPolicy::plan_mode()
         } else {
             crate::tool::ToolAccessPolicy::all()
         }
         .with_view_image(config.capabilities.accepts_image_tool_results());
-        let (plan_instructions, plan_header) = plan_layers(state);
+        let (plan_instructions, plan_header) = plan_layers(state, self.plan_mode.is_some());
         let mode = target
             .mode
             .as_ref()

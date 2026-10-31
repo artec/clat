@@ -147,3 +147,49 @@ pub(crate) fn validate_snapshot(state: &Documents) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Read journal-backed plan facts without materializing projection files.
+pub(crate) fn historical(
+    sessions: &crate::session::use_cases::SessionService,
+) -> Result<Vec<PlanDocument>, String> {
+    let mut plans = sessions.plan_documents()?.plans;
+    if plans.is_empty()
+        && let Some(doc) = legacy_document(sessions.active_id(), sessions.plan_mode_state())
+    {
+        plans.push(doc);
+    }
+    Ok(plans)
+}
+pub(crate) fn legacy_document(
+    session: Option<crate::SessionId>,
+    state: crate::plan_mode::PlanModeState,
+) -> Option<PlanDocument> {
+    let approved = state.approved?;
+    let digest = &approved.digest;
+    let id = format!(
+        "plan-{}-{}-{}-{}-{}",
+        &digest[..8],
+        &digest[8..12],
+        &digest[12..16],
+        &digest[16..20],
+        &digest[20..32]
+    );
+    let title = approved
+        .text
+        .lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())?
+        .chars()
+        .take(120)
+        .collect();
+    Some(PlanDocument {
+        id,
+        session: session?.to_string(),
+        revision: 1,
+        title,
+        text: approved.text,
+        digest: approved.digest,
+        approved: true,
+        goal_id: None,
+    })
+}

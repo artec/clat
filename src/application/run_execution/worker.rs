@@ -41,16 +41,17 @@ impl RunWorker {
         if let Some(todo) = &deps.todo_service {
             todo.bind_run(&input.session_id, Arc::clone(&input.journal));
         }
-        let subagent_bind_error = deps
-            .subagent_service
-            .bind_run(
-                &input.session_id,
-                input.turn,
-                Arc::clone(&input.journal),
-                deps.config.clone(),
-                deps.credentials.clone(),
-            )
-            .err();
+        let subagent_bind_error = deps.subagent_service.as_ref().and_then(|service| {
+            service
+                .bind_run(
+                    &input.session_id,
+                    input.turn,
+                    Arc::clone(&input.journal),
+                    deps.config.clone(),
+                    deps.credentials.clone(),
+                )
+                .err()
+        });
         let capture = CapturingEventSink::new(events);
         let captured_text = Arc::clone(&capture.text);
         let ui_sink = Arc::new(Mutex::new(Box::new(capture) as Box<dyn EventSink + Send>));
@@ -109,7 +110,9 @@ impl RunWorker {
         }
     }
     fn prepare_round(&mut self) {
-        self.deps.subagent_service.update_turn(self.input.turn);
+        if let Some(service) = &self.deps.subagent_service {
+            service.update_turn(self.input.turn);
+        }
         if let Some(compactor) = &self.deps.compactor
             && self.deps.task_service.cap().is_none()
         {
@@ -141,6 +144,9 @@ impl RunWorker {
             .update_run_metadata(&self.input.session_id.to_string(), &self.input.history);
     }
     fn execute_round(&mut self) -> round::SettledRound {
+        // Each recorder may replace the protected system head. The next round
+        // must follow its current durable position rather than the first request.
+        self.durable_request_header.system_head = self.deps.sessions.last_system_head();
         let context = self.context.round_context(
             &self.durable_request_header,
             self.header_reason,
@@ -169,7 +175,9 @@ impl RunWorker {
                 false,
             ),
         };
-        usage.add_assign(&self.deps.subagent_service.take_round_usage());
+        if let Some(service) = &self.deps.subagent_service {
+            usage.add_assign(&service.take_round_usage());
+        }
         let cancelled = was_cancelled || matches!(result, Ok(done) if done.cancelled);
         self.aggregate_usage.add_assign(&usage);
         self.aggregate_turns = self.aggregate_turns.saturating_add(turns);
@@ -277,7 +285,9 @@ impl RunWorker {
         if let Some(todo_service) = &self.deps.todo_service {
             todo_service.unbind();
         }
-        self.deps.subagent_service.unbind();
+        if let Some(service) = &self.deps.subagent_service {
+            service.unbind();
+        }
         let close_result = self.deps.run_scope.close();
         if let Some(monitor) = &self.deps.monitor {
             monitor.refresh();
