@@ -652,7 +652,10 @@ async function connect() {
     if (error.name === 'AbortError') return;
     closeQuestionCards();
     state.connected = false;
+    conversationRounds.stop();
+    runActivity.hide();
     state.runActive = false;
+    context.changed();
     updateRunState('');
     updateRunDetail();
     if (error.authentication === 'invalid_credentials') {
@@ -669,6 +672,8 @@ async function connect() {
 }
 
 function stopApp() {
+  conversationRounds.stop();
+  runActivity.hide();
   closeQuestionCards();
   if (state.stream) state.stream.abort();
   clearTranscriptAttachmentUrls();
@@ -700,6 +705,8 @@ function handleFrame(frame) {
     case 'prompt.settled': onSettled(payload.ctl); break;
     case 'notice': onNotice(payload.ctl); break;
     case 'replay.begin':
+      conversationRounds.reset();
+      runActivity.clear();
       resetConversationFind();
       clearTranscriptAttachmentUrls();
       dom.transcript.replaceChildren();
@@ -730,6 +737,7 @@ function handleFrame(frame) {
       dom['transcript-scroll'].scrollTop = dom['transcript-scroll'].scrollHeight;
       requestAnimationFrame(() => { dom['transcript-scroll'].style.scrollBehavior = ''; });
       state.history.replaying = false;
+      conversationRounds.refresh();
       syncActiveMapItem();
       // O3/C1（J1 冷恢复/重连，AG5-R1 F5）：回放重建后，最后一个 turn
       // 的真实终态同样要可再现——run 状态栏恢复与 live 相同词汇的常驻
@@ -812,7 +820,7 @@ function handleReplay(event) {
       state.lastTurnEndSeq = Number.isSafeInteger(event.seq) ? event.seq : state.lastTurnEndSeq;
       node = addTurnEndNotice(event);
       break;
-    case 'compaction': node = addNoticeLine('', event.type); break;
+    case 'compaction': node = renderCompactionDisclosure(event); break;
     default: console.warn('[clat] unknown replay type:', event.type);
   }
   if (node && Number.isSafeInteger(event.seq)) {
@@ -822,15 +830,19 @@ function handleReplay(event) {
     decorateConversationBookmarks();
     updateConversationFind();
   }
+  conversationRounds.replay(event,node);
 }
 
 function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started':
+      conversationRounds.begin();
+      void refreshWorkbench();
       liveMessageBase=state.history.outline.at(-1)?.seq ?? -1; liveMessageNodes=[];
       invalidateSuggestion(); clearRoundFollowups();
       state.runActive = true;
+      runActivity.set(CLATI18n.msg('web.running'));
       // ORDER-1/CONT-1：新 run 开工即清配对与终态去重记忆——不同 run 的
       // 同名 call_id 不误合并，旧 run 的重复完成帧不再立第二张终态卡。
       clearToolCardScope();
@@ -843,6 +855,7 @@ function handleLive(event) {
       liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks));
       break;
     case 'model_requested':
+      runActivity.set(CLATI18n.msg('web.thinking_in_progress'));
       // ORDER-LIVE-1/O1：不急开回复气泡——气泡由首个正文/reasoning 增量懒
       // 开（无正文的纯工具步不产生空气泡）；气泡位置因此落在它之前的
       // 工具卡之后，保持因果顺序。重试（无 model_responded 分隔）继续追
@@ -855,6 +868,7 @@ function handleLive(event) {
       // 等非正文帧不得开空气泡（无正文的纯工具步不渲染回复项）。
       const inner = event.event || {};
       if (inner.type === 'text_delta' || inner.type === 'refusal_delta') {
+        runActivity.set(CLATI18n.msg('round.responding'));
         ensureAssistant().appendBody(inner.delta || '');
       } else if (inner.type === 'reasoning_delta' || inner.type === 'reasoning_summary_delta') {
         const bubble = ensureAssistant();
@@ -875,6 +889,7 @@ function handleLive(event) {
       break;
     case 'tool_requested': {
       state.run = state.run || {};
+      runActivity.set(toolDisplayName(event.call?.name));
       const callId = event.call && event.call.id;
       state.lastCallId = callId || state.lastCallId;
       // live 帧 run 内配对：键 = call_id（run_started 已清场）。
@@ -889,8 +904,9 @@ function handleLive(event) {
       // 与 TUI 同语义：live 拒绝不带 call id，落定最近一次请求的卡。
       denyToolCard(state.lastCallId, event.reason);
       break;
-    case 'tool_started': break;
+    case 'tool_started': runActivity.set(toolDisplayName(event.tool));break;
     case 'tool_finished': {
+      runActivity.set(CLATI18n.msg('web.running'));
       const result = event.result || {};
       settleToolCard(
         result.call_id || null,
@@ -930,6 +946,7 @@ function finishRun(event) {
   }
   state.runActive = false;
   state.run = null;
+  conversationRounds.finish();
   const restoredText = finishTextSteering();
   const restoredDraft = restoreQueuedDraft() || restoredText;
   updateRunState(restoredDraft ? CLATI18n.msg("web.run_ended_before_steering_was_applied_draft_restored", {}, "run ended before steering was applied; draft restored") : '');
@@ -967,6 +984,7 @@ function onSubscribed(ctl) {
   if (ctl && Object.prototype.hasOwnProperty.call(ctl, 'session_id')) {
     state.sessionId = ctl.session_id || null;
   }
+  conversationRounds.scope(state.sessionId);
   state.history.outline = Array.isArray(ctl && ctl.message_outline) ? ctl.message_outline : [];
   renderMessageMap(); syncMessageTimes(); void refreshUsage();
   if(!state.runActive)void loadRoundFollowups('', 'read');
@@ -978,6 +996,7 @@ function onSubscribed(ctl) {
 
 function onApprovalResolved(ctl) {
   if (!ctl || !ctl.rpc_id) return;
+  runActivity.resume('round.waiting_approval',ctl.rpc_id);
   for (const card of document.querySelectorAll('.approval-card')) {
     if (card.dataset.rpcId !== ctl.rpc_id) continue;
     // A confirmed local answer owns its final wording. Other clients retain
@@ -991,6 +1010,7 @@ function onApprovalResolved(ctl) {
 function onApprovalRequested(ctl) {
   if (!ctl || !ctl.rpc_id) return;
   const request = ctl.request || {};
+  if(!ctl.automatic_session_id||ctl.automatic_session_id===state.sessionId)runActivity.wait(CLATI18n.msg('round.waiting_approval'),ctl.rpc_id);
   const card = el('div', 'approval-card');
   card.dataset.rpcId = ctl.rpc_id;
   const title = el('div', 'title', () => (CLATI18n.msg("web.line_permission_required_value",{value1:toolDisplayName(request.tool)},"Permission required — {value1}")));
@@ -1263,7 +1283,7 @@ function onNotice(ctl) {
         state.compactionActive = false;
         updateRunState(payload.note ? CLATI18n.present(payload.presentation, String(payload.note)) : CLATI18n.msg("web.compaction_finished", {}, "compaction finished"));
         if (payload.succeeded) {
-          addNoticeLine(payload.note ? CLATI18n.present(payload.presentation, String(payload.note)) : CLATI18n.msg("web.compaction_finished", {}, "compaction finished"), 'compaction');
+          void refreshCompactionDisclosure();
         } else {
           addNoticeLine(payload.note ? CLATI18n.present(payload.presentation, String(payload.note)) : CLATI18n.msg("web.compaction_did_not_change_history", {}, "compaction did not change history"));
         }
@@ -1326,10 +1346,12 @@ function onQuestionNotice(ctl) {
   const existing = [...document.querySelectorAll('.question-card')]
     .find((card) => card.dataset.rpcId === payload.rpc_id);
   if (ctl.kind === 'question_resolved') {
+    runActivity.resume('round.waiting_answer',payload.rpc_id);
     if (existing && !existing.classList.contains('resolved')) {
       resolveQuestionCard(existing, CLATI18n.msg("web.answered_or_closed_by_host_2", {}, "Answered or closed by host."));
     }
   } else if (!existing && payload.question && typeof payload.question.question === 'string') {
+    if(!payload.automatic_session_id||payload.automatic_session_id===state.sessionId)runActivity.wait(CLATI18n.msg('round.waiting_answer'),payload.rpc_id);
     appendHostInteraction(createQuestionCard(payload), payload.automatic_session_id);
     scrollIfNearEnd();
   }
@@ -1409,12 +1431,14 @@ async function submitQuestionAnswer(card, answer) {
 
 function appendTranscript(node) {
   hide(dom['empty-state']);
-  (state.history.replayTarget || dom.transcript).appendChild(node);
+  const target=state.history.replayTarget || dom.transcript;
+  if(node.parentNode!==target)target.appendChild(node);
+  conversationRounds.capture(node);
+  runActivity.sync();
   return node;
 }
 
-// Group only adjacent, ordinary process records. No run/turn inference: the
-// message, interactive-card, error and history-fragment boundaries stay intact.
+// Labels are presentation only; the round presenter owns process visibility.
 // Moving neither answers nor existing nodes keeps map seqs and tool state stable.
 // Presentation only: journal identifiers, model text and tool payloads stay intact.
 const TOOL_PRESENTATION_KEYS = {
@@ -1458,23 +1482,7 @@ function addPermissionRecord(tool, decision, eventId) {
 }
 
 function appendWorkRecord(node, toolName) {
-  const target = state.history.replayTarget || dom.transcript;
-  let group = target.lastElementChild;
-  if (!group || !group.classList.contains('work-summary')) {
-    group = el('details', 'work-summary');
-    group.open = state.processView === 'expanded';
-    group.dataset.records = '0';
-    const summary = el('summary');
-    summary.append(svgIcon('tool'), el('span', 'work-summary-label'));
-    group.append(summary, el('div', 'work-records'));
-    appendTranscript(group);
-  }
-  group.querySelector('.work-records').appendChild(node);
-  const records = Number(group.dataset.records) + 1;
-  group.dataset.records = String(records);
-  if (toolName) group.dataset.tool = toolName;
-  CLATI18n.bind(group.querySelector('.work-summary-label'), "textContent", () => CLATI18n.msg('web.work_records',{count:records,tool:group.dataset.tool?' · '+toolDisplayName(group.dataset.tool):''}));
-  return node;
+  return appendTranscript(node);
 }
 
 function addPermissionNotice(event) {
@@ -1737,7 +1745,7 @@ function openToolCard(name, argsText, rawId, key) {
   if (rawId) card.dataset.callId = rawId;
   const summary = el('summary');
   summary.append(
-    svgIcon('tool'),
+    svgIcon(toolPresentationIcon(name)),
     el('span', null, () => toolDisplayName(name)),
     el('span', 'tool-state', () => (CLATI18n.msg("web.running_short",{},"Running"))),
   );
@@ -1760,7 +1768,7 @@ function settleToolCard(rawId, explicitKey, outputText, isError, toolName, state
     card = el('details', 'tool-card');
     card.dataset.state = 'pending';
     const summary = el('summary');
-    summary.append(svgIcon('tool'), el('span', null, () => toolDisplayName(toolName)), el('span', 'tool-state'));
+    summary.append(svgIcon(toolPresentationIcon(toolName)), el('span', null, () => toolDisplayName(toolName)), el('span', 'tool-state'));
     card.append(summary, el('div', 'tool-body'));
     const nameSpan = card.querySelector('.tool-state');
     if (!isError) appendWorkRecord(card, toolName || null);
@@ -1785,10 +1793,11 @@ function settleToolCard(rawId, explicitKey, outputText, isError, toolName, state
     output.replaceChildren(document.createTextNode(outputText || ''));
   }
   if (isError) {
+    card.classList.remove('round-process-hidden');
     // 错误卡必须位于过程摘要之外（WEB-3 不变量），移出并回落计数。
     const group = card.closest('.work-summary');
     if (group) detachWorkRecord(card, group);
-    appendTranscript(card);
+    if (!card.parentNode) appendTranscript(card);
   }
   // R2-F3：fallback 卡也注册其稳定身份（显式键优先）——重复结果/
   // 迟到请求命中注册保持同一张卡；无 id 的兼容输入不伪造全局身份。
@@ -1803,6 +1812,8 @@ function denyToolCard(rawId, reason) {
   const card = key ? state.toolCards.get(key) : null;
   if (!card) return;
   card.dataset.state = 'denied';
+  card.classList.remove('round-process-hidden');
+  card.classList.add('is-warning');
   const stateSpan = card.querySelector('.tool-state');
   if (stateSpan) CLATI18n.bind(stateSpan, "textContent", () => CLATI18n.msg("web.denied_short",{},"Denied"));
   const body = card.querySelector('.tool-body');
@@ -1863,6 +1874,7 @@ function addNoticeLine(text, eventId, ordinary = ['model_requested', 'model_resp
     CLATI18n.bind(copy, "textContent", typeof text==='function'?text:() => text);
   }
   line.appendChild(copy);
+  if (eventId) line.dataset.event=eventId;
   if (['permission_denied', 'retry_scheduled'].includes(eventId)) line.classList.add('is-warning');
   if (ordinary) appendWorkRecord(line);
   else appendTranscript(line);
@@ -1991,6 +2003,7 @@ async function loadOlderHistory() {
     for (const event of events) handleReplay(event);
     state.history.replayTarget = null;
     if (fragment.childNodes.length > 0) dom.transcript.insertBefore(fragment, dom.transcript.firstChild);
+    conversationRounds.refresh();
     state.history.hasMore = Boolean(page.has_more);
     if (anchor && anchorTop !== null) {
       dom['transcript-scroll'].scrollTop += anchor.getBoundingClientRect().top - anchorTop;
@@ -2035,7 +2048,7 @@ function buildMapPreviews(outline) {
     if (item.role === 'user' && !entry.user) entry.user = preview;
     if (item.role === 'assistant' && preview) {
       entry.assistant.push(preview);
-      if (entry.assistant.length > 3) entry.assistant.shift();
+      if (entry.assistant.length > 1) entry.assistant.shift();
     }
   }
   return new Map([...turns].map(([turn, entry]) => [turn,
@@ -2078,7 +2091,7 @@ function renderMapWindow() {
     bar.type = 'button';
     bar.style.top = `${index * MAP_ITEM_HEIGHT}px`;
     bar.dataset.seq = String(item.seq);
-    CLATI18n.attribute(bar,'aria-label',()=>CLATI18n.msg("web.dynamic_value_at_turn_value", {value1:(item.role || 'message'),value2:(item.turn || 0)}, "{value1} at turn {value2}"));
+    CLATI18n.attribute(bar,'aria-label',()=>CLATI18n.msg('view.turn_number',{turn:item.turn||0}));
     const preview = () => showMapPreview(item);
     bar.addEventListener('mouseenter', preview);
     bar.addEventListener('focus', preview);
@@ -2093,18 +2106,20 @@ function renderMessageMap() {
   const track = dom['message-map-track'];
   const oldScroll = track.scrollTop;
   const outline = state.history.outline;
-  const items = outline.filter((item) => item && Number.isSafeInteger(item.seq));
+  const items = conversationMapTurns(outline);
   state.history.mapItems = items;
-  state.history.mapSeqToIndex = new Map(items.map((item, index) => [String(item.seq), index]));
-  state.history.mapPreviewByTurn = buildMapPreviews(items);
+  const turnIndex=new Map(items.map((item,index)=>[item.turn||0,index]));
+  state.history.mapSeqToIndex = new Map(outline.map(item=>[String(item.seq),turnIndex.get(item.turn||0)]));
+  state.history.mapPreviewByTurn = buildMapPreviews(outline);
   state.history.mapRange = null;
   state.history.mapSpace = el('div', 'message-map-space');
   state.history.mapSpace.style.height = `${items.length * MAP_ITEM_HEIGHT}px`;
   track.replaceChildren(state.history.mapSpace);
-  dom['message-map'].classList.toggle('hidden', items.length < 2);
+  dom['message-map'].classList.toggle('hidden', items.length === 0);
   track.scrollTop = oldScroll;
   renderMapWindow();
-  bindLiveMessageSeqs(items);
+  bindLiveMessageSeqs(outline);
+  conversationRounds.refresh();
   syncActiveMapItem();
   decorateConversationBookmarks();
 }
@@ -2131,7 +2146,7 @@ async function jumpToMessage(seq) {
       if (!await loadOlderHistory()) break;
       row = dom.transcript.querySelector(`:scope > [data-seq="${seq}"]`);
     }
-    if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (row) { conversationRounds.reveal(row);row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
   } finally {
     state.history.jumping = false;
     dom['message-map-track'].querySelector(`[data-seq="${seq}"]`)?.classList.remove('is-jumping');
@@ -2139,21 +2154,7 @@ async function jumpToMessage(seq) {
 }
 
 function syncActiveMapItem() {
-  const readingLine = dom['transcript-scroll'].getBoundingClientRect().top + 72;
-  const rows = dom.transcript.children;
-  let low = 0;
-  let high = rows.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (rows[middle].getBoundingClientRect().top <= readingLine) low = middle + 1;
-    else high = middle;
-  }
-  let active = null;
-  for (let index = Math.min(low, rows.length) - 1; index >= 0; index -= 1) {
-    if (rows[index].matches('.msg[data-seq]')) { active = rows[index]; break; }
-  }
-  if (!active) active = dom.transcript.querySelector(':scope > .msg[data-seq]');
-  const seq = active && active.dataset.seq;
+  const seq=conversationMapActiveSeq();
   state.history.activeMapSeq = seq || null;
   const track = dom['message-map-track'];
   const index = state.history.mapSeqToIndex.get(seq);
@@ -2266,6 +2267,7 @@ async function refreshWorkbench() {
     observeInputHistory(session.recent_inputs);
     state.runActive = Boolean(info.active_run);
     state.compactionActive = Boolean(info.active_compaction);
+    conversationRounds.active(info.active_run);
     renderPendingInputs(info.pending_inputs);
     syncPlanModeBadge();
 
@@ -2544,6 +2546,7 @@ window.addEventListener('resize', () => {
 
 function setSwitching(active) {
   state.switching = active;
+  if(active)conversationRounds.stop();else conversationRounds.tick();
   syncInteractionControls();
   renderSessions();
   if (active) updateRunState(CLATI18n.msg("web.switching_session", {}, "switching session"));
@@ -2605,6 +2608,8 @@ function syncInteractionControls() {
   syncSuggestionControl();
   syncUsageTrigger();
   renderDraft();
+  runActivity.sync();
+  context.changed();
 }
 
 async function switchSession(id) {
@@ -3308,11 +3313,7 @@ dom['reading-options'].addEventListener('change', (event) => {
   const { name, value } = event.target;
   if (!['messageLayout', 'processView'].includes(name)) return;
   state[name] = value;
-  if (name === 'processView') {
-    for (const group of dom.transcript.querySelectorAll('.work-summary')) {
-      group.open = value === 'expanded';
-    }
-  }
+  if (name === 'processView') conversationRounds.preference();
   applyPresentation();
   savePresentationPreference();
 });

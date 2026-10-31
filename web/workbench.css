@@ -119,9 +119,10 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .session-row .session-avatar { background: transparent; color: var(--text-muted); }
 .sidebar > .sidebar-footer { display: none; }
 .conversation { grid-area: conversation; grid-template-rows: minmax(0, 1fr); container: conversation / inline-size; }
-@container conversation (max-width: 920px) {
+@container conversation (max-width: 560px) {
   .message-map { display: none; }
 }
+.message-map { right:4px; }
 .conversation-list-toggle .shell-label { display: none; }
 .conversation-list-toggle { padding: 8px; flex: none; }
 .conversation-header { min-height: 72px; padding-inline: 24px; }
@@ -524,3 +525,39 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 @media(hover:none){.project-organizable>.project-more{display:inline-flex}}
 
 .project-title-line{display:flex!important;align-items:center;gap:6px}
+
+/* A turn has one process disclosure; messages remain in their original slots. */
+.round-process-heading{display:flex;align-items:center;gap:8px;width:calc(100% - 36px);margin:4px 0 20px 36px;padding:8px 0 12px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--text-muted);text-align:start;font:var(--text-size-ui)/1.5 var(--font-ui);cursor:pointer}
+.round-process-heading>svg{width:14px;height:14px;flex:none}
+.round-process-heading[aria-expanded=true]>svg{transform:rotate(90deg)}
+.round-process-heading[data-running=true]>svg{visibility:hidden}
+.round-process-hidden,.msg.round-hide-reasoning>.reasoning{display:none!important}
+.workspace-tool .round-process-heading{max-width:100%}
+.compaction-disclosure{margin:14px 0 20px 36px;color:var(--text-muted);font-size:var(--text-size-secondary)}
+.compaction-disclosure>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;padding:6px 0}
+.compaction-disclosure>summary::-webkit-details-marker{display:none}
+.compaction-disclosure>summary>svg{width:15px;height:15px;flex:none}
+.compaction-disclosure-body{padding:12px 16px;border-inline-start:1px solid var(--line);overflow-wrap:anywhere}
+.compaction-disclosure-body>p{margin:0 0 8px}.compaction-disclosure-body>h4{font-weight:500;margin:16px 0 8px}
+#transcript>.tool-card{border:0;border-radius:0;background:transparent}
+#transcript>.tool-card>summary{padding:6px 0}
+#transcript>.tool-card>summary>svg{width:17px;height:17px;flex:none}
+#transcript>.tool-card>.tool-body{border-inline-start:1px solid var(--line);padding:8px 12px;margin:6px 0 12px 8px}
+@media(max-width:640px){.round-process-heading{width:100%;margin-inline-start:0}.compaction-disclosure{margin-inline-start:0}}
+.round-process-heading:disabled{opacity:1;cursor:default}
+
+/* Running sessions keep a fixed trailing slot separate from their actions menu. */
+.session-running{position:absolute;inset-inline-end:38px;top:50%;width:13px;height:13px;margin-top:-6.5px;border:1.5px solid var(--text-muted);border-inline-end-color:transparent;border-radius:50%;pointer-events:none;animation:session-running-spin 1s linear infinite}
+.session-running[hidden]{display:none}
+.project-group .session-list li[data-running=true] .session-item{padding-inline-end:60px}
+@keyframes session-running-spin{to{transform:rotate(360deg)}}
+.run-activity{display:flex;align-items:center;gap:8px;min-height:28px;margin:6px 0 20px 36px;color:var(--text-muted);font:var(--text-size-ui)/1.6 var(--font-ui)}
+.run-activity>svg{width:16px;height:16px;flex:none;opacity:.65}
+.run-activity-label{max-width:100%;overflow-wrap:anywhere}
+@supports (background-clip:text) or (-webkit-background-clip:text){
+  .run-activity-label{background-image:linear-gradient(110deg,var(--text-muted) 40%,var(--text) 50%,var(--text-muted) 60%);background-size:300% 100%;background-position:100% 0;background-repeat:no-repeat;background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:activity-spotlight 2.8s ease-in-out infinite}
+}
+@keyframes activity-spotlight{0%{background-position:100% 0}80%,100%{background-position:0 0}}
+@media(max-width:640px){.run-activity{margin-inline-start:0}}
+@media(prefers-reduced-motion:reduce){.session-running{animation:none}.run-activity-label{animation:none;background:none;color:var(--text-muted);-webkit-text-fill-color:currentColor}}
+@media(forced-colors:active){.run-activity-label{animation:none;background:none;color:CanvasText;-webkit-text-fill-color:currentColor}.session-running{border-color:CanvasText;border-inline-end-color:transparent}}

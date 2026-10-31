@@ -83,9 +83,7 @@ fn replay_snapshot(
         subscribed: serde_json::json!({
             "last_seq": app.committed_seq(),
             "session_id": app.current_session_id().map(|id| id.as_str().to_owned()),
-            "message_outline": outline.into_iter().map(|item| serde_json::json!({
-                "seq": item.seq, "turn": item.turn, "role": item.role, "preview": item.preview,
-            })).collect::<Vec<_>>(),
+            "message_outline": super::shapes::message_outline_json(&outline),
             "replaying": false,
             "selection_generation": selection_generation,
         }),

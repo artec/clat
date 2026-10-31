@@ -370,23 +370,20 @@ impl SseClient {
     /// 连接并等到 `subscribed`（订阅六步完成；活跃 run 场景下其后还
     /// 会有缓冲重发，由调用方继续断言）。
     fn connect(addr: SocketAddr) -> Self {
-        let mut stream = connect(addr);
-        let request = format!(
-            "GET /api/events HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: close\r\n\r\n"
-        );
-        stream
-            .write_all(request.as_bytes())
-            .expect("write sse request");
-        let mut client = Self {
-            stream,
+        let mut client = Self::pending(addr);
+        client.wait_for("subscribed", WAIT);
+        client.subscribed_seen = true;
+        client
+    }
+
+    fn pending(addr: SocketAddr) -> Self {
+        Self {
+            stream: sse_connect_raw(addr),
             subscribed_seen: false,
             pending: String::new(),
             scanned: 0,
             frames: Vec::new(),
-        };
-        client.wait_for("subscribed", WAIT);
-        client.subscribed_seen = true;
-        client
+        }
     }
 
     fn pump_once(&mut self) -> bool {
@@ -2788,6 +2785,33 @@ fn approval_rpc_id(frame: &ParsedSseFrame) -> String {
         .and_then(|value| value.as_str())
         .expect("rpc_id")
         .to_owned()
+}
+
+#[test]
+fn subscribed_outline_matches_settled_navigation_metadata() {
+    let (handle, storage, project) = spawn_serve("subscribed-outline", TestBehavior::Success);
+    let mut client = SseClient::connect(handle.addr);
+    prompt_send(handle.addr, "outline metadata");
+    let settled = ctl_of(&client.wait_settled());
+    let mut rebuilt = SseClient::pending(handle.addr);
+    let subscribed = ctl_of(&rebuilt.wait_for("subscribed", WAIT));
+    let expected = settled["message_outline"]
+        .as_array()
+        .expect("settled outline");
+    assert!(!expected.is_empty());
+    assert!(
+        expected
+            .iter()
+            .all(|item| item["renderable"].is_boolean() && item["time_ms"].as_i64().is_some())
+    );
+    let actual = subscribed["message_outline"].clone();
+    drop(client);
+    drop(rebuilt);
+    cleanup(handle, &storage, &project);
+    assert_eq!(
+        actual, settled["message_outline"],
+        "reconnect must preserve eligibility and timing, not drop every map item"
+    );
 }
 
 // ---- 慢消费者（验收 13，INV-S7）----

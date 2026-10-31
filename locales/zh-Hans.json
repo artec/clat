@@ -2883,5 +2883,18 @@
   "extension.required_builtin": "无法关闭 {id}：它提供 Application 必需服务或其依赖。",
   "extension.static_configuration": "启动时配置；请在 CLAT 停止后编辑 builtin-plugins.json 的 disabled，再重新启动。",
   "extension.required_contract": "当前 Application 服务仍依赖此插件，暂不能关闭。",
-  "extension.disabled_builtin": "此功能已在启动插件配置中关闭：{id}。"
+  "extension.disabled_builtin": "此功能已在启动插件配置中关闭：{id}。",
+  "round.unknown": "用时未知",
+  "round.duration": "{minutes} 分 {seconds} 秒",
+  "round.processing": "已处理 {duration}",
+  "round.elapsed": "用时 {duration}",
+  "round.elapsed_estimated": "用时约 {duration}",
+  "round.compacted": "上下文已压缩",
+  "round.compacted_records": "上下文已压缩 · {count} 条日志记录",
+  "round.range": "日志范围：{start}–{end}",
+  "round.tokens": "原内容 token 估算：{count}",
+  "round.summary": "上下文摘要",
+  "round.responding": "正在生成答复",
+  "round.waiting_approval": "等待权限确认",
+  "round.waiting_answer": "等待你的回答"
 }

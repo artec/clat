@@ -80,6 +80,7 @@ function moveConversationFind(direction) {
   const current = findMatches.findIndex((m) => m.id === findActive?.id && m.offset === findActive?.offset);
   findActive = findMatches[(current + direction + findMatches.length) % findMatches.length];
   updateConversationFind();
+  conversationRounds.reveal(findActive.node);
   findActive.node.scrollIntoView({ block: 'center', behavior: 'auto' });
   const match = findActive;
   CLATI18n.bind(document.getElementById('find-preview'), "textContent", () => match.role + ': '

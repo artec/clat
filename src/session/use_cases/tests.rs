@@ -73,6 +73,7 @@ fn history_pages_use_exclusive_seq_cursors_and_never_split_a_turn() {
         turn: 2,
         time_ms: 6,
         summary_text: "summary".into(),
+        disclosure: None,
     });
     assert_eq!(
         paginate_replay(&compacted, Some(3), 50),

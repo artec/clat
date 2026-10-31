@@ -147,12 +147,28 @@
         }
         if (value.expanded && row.route_id && !source && !value.error) void this.load(row);
       }
+      this.renderRunning(group,row);
       const children = [...group.list.children];
-      children.forEach((item, index) => { item.hidden = !value.all && !navigation.query && index >= 5 && !item.classList.contains('active'); });
+      children.forEach((item, index) => { item.hidden = !value.all && !navigation.query && index >= 5 && !item.classList.contains('active') && item.dataset.running!=='true'; });
       group.more.hidden = children.length <= 5 || Boolean(navigation.query);
       group.more.setAttribute('aria-expanded', String(value.all));
       labelButton(group.more, () => text(value.all ? 'show_less' : 'show_more'));
       CLATI18n.bind(group.more, 'textContent', () => text(value.all ? 'show_less' : 'show_more'));
+    }
+    renderRunning(group,row) {
+      const summary=this.views.get(row.route_id)?.view?.summary();
+      const session=summary?summary.runningSession:(row.run_active?row.active_session_id:null);
+      for(const item of group.list.children){
+        const running=Boolean(session&&item.dataset.sessionId===session);
+        item.dataset.running=String(running);
+        let indicator=item.querySelector('.session-running');
+        if(running&&!indicator){
+          indicator=node('span','session-running');indicator.setAttribute('role','img');
+          CLATI18n.attribute(indicator,'aria-label',()=>CLATI18n.msg('web.running_short'));
+          CLATI18n.attribute(indicator,'title',()=>CLATI18n.msg('web.running_short'));item.append(indicator);
+        }
+        if(indicator)indicator.hidden=!running;
+      }
     }
     async load(row, retry = false) {
       const value = this.state(row);

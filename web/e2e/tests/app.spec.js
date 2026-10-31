@@ -25,8 +25,11 @@ async function openDetails(page) {
 
 async function revealWorkRecord(record) {
   await expect(record).toBeAttached(LIVE);
-  const group = record.locator('xpath=ancestor::details[contains(@class,"work-summary")]');
-  if (await group.getAttribute('open') === null) await group.locator(':scope > summary').click();
+  await record.evaluate(node => {
+    let previous=node.closest('#transcript > *')?.previousElementSibling;
+    while(previous&&!previous.classList.contains('round-process-heading'))previous=previous.previousElementSibling;
+    if(previous?.getAttribute('aria-expanded')==='false')previous.click();
+  });
 }
 
 test('UX-1 text drafts stay with their session while switching', async ({ page }) => {
@@ -132,7 +135,7 @@ test('WEB-3 idle session switch clears its progress label without erasing a newe
   await expect(page.locator('#run-state')).toHaveText('send failed: retain this notice');
 });
 
-test('WEB-3 process grouping agrees in live and replay and does not span a history fragment', async ({ page }) => {
+test('WEB-3 process content agrees in live and replay and preserves history node ownership', async ({ page }) => {
   await openWorkbench(page, hostInfo('success'));
   const result = await page.evaluate(() => {
     const call = { name: 'read_file', arguments: { path: 'file.rs' } };
@@ -147,7 +150,7 @@ test('WEB-3 process grouping agrees in live and replay and does not span a histo
       { type: 'permission_checked', tool: 'read_file', decision: { allow: null } },
       { type: 'tool_finished', tool: 'read_file', output: 'ok', is_error: false },
     ];
-    const snapshot = () => [...dom.transcript.querySelectorAll('.work-records > *')]
+    const snapshot = () => [...dom.transcript.querySelectorAll(':scope > .tool-card, :scope > .notice-line')]
       .map((node) => [node.className, node.textContent]);
     reset(); live.forEach(handleLive); const liveView = snapshot();
     reset(); replay.forEach(handleReplay); const replayView = snapshot();
@@ -157,15 +160,14 @@ test('WEB-3 process grouping agrees in live and replay and does not span a histo
     state.history.replayTarget = fragment;
     replay.forEach(handleReplay);
     state.history.replayTarget = null;
-    const separate = fragment.lastElementChild !== tail && tail.dataset.records === '3';
+    const separate = fragment.lastElementChild !== tail && tail.parentNode === dom.transcript;
     dom.transcript.prepend(fragment);
     handleLive({ type: 'tool_requested', call });
-    return { liveView, replayView, separate, groups: dom.transcript.childElementCount,
-      tailKept: dom.transcript.lastElementChild === tail && tail.open && tail.dataset.records === '4' };
+    return { liveView, replayView, separate,
+      tailKept: tail.parentNode === dom.transcript && tail.open };
   });
   expect(result.liveView).toEqual(result.replayView);
   expect(result.separate).toBe(true);
-  expect(result.groups).toBe(2);
   expect(result.tailKept).toBe(true);
 });
 
@@ -180,8 +182,7 @@ test('WEB-3 display preferences survive reload without storing conversation cont
   await page.reload();
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'column');
-  await page.evaluate(() => addToolCard('read_file', 'file.rs', null, false));
-  await expect(page.locator('.work-summary').last()).toHaveAttribute('open', '');
+  expect(await page.evaluate(() => state.processView)).toBe('expanded');
 });
 
 test('WEB-3 background session repaint restores its own focus and never steals the draft focus', async ({ page }) => {
@@ -211,26 +212,24 @@ test('WEB-3 layout variants preserve drafts and disclosure node identity', async
     const reply = addAssistantMessage();
     reply.appendBody('结论'); reply.finishBody();
   });
-  const group = page.locator('.work-summary').last();
-  await expect(group).toBeAttached({ timeout: 3000 });
-  await expect(group).not.toHaveAttribute('open');
-  await group.locator(':scope > summary').click();
-  await group.locator('.tool-card summary').click();
+  const tool = page.locator('.tool-card').last();
+  await expect(tool).toBeAttached({ timeout: 3000 });
+  await tool.locator('summary').click();
   await page.fill('#prompt', '尚未提交的草稿');
   await page.click('#nav-settings');
   await page.getByText('Single column', { exact: true }).click();
   await page.getByText('All steps', { exact: true }).click();
   await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'column');
-  await expect(group.locator('.tool-card')).toHaveAttribute('open', '');
+  await expect(tool).toHaveAttribute('open', '');
   await page.getByText('Work summaries', { exact: true }).click();
   await page.getByText('User bubbles', { exact: true }).click();
   await page.keyboard.press('Escape');
   await expect(page.locator('#prompt')).toHaveValue('尚未提交的草稿');
   await expect(page.locator('#app')).toHaveAttribute('data-message-layout', 'bubbles');
-  await expect(group.locator('.tool-card')).toHaveAttribute('open', '');
+  await expect(tool).toHaveAttribute('open', '');
 });
 
-test('WEB-3 work summaries never contain answers interactive cards errors or retry signals', async ({ page }) => {
+test('WEB-3 retains answers interactive cards errors and retry signals in event order', async ({ page }) => {
   await openWorkbench(page, hostInfo('success'));
   await page.evaluate(() => {
     handleFrame({ event: 'replay.begin', data: '{}' });
@@ -258,9 +257,6 @@ test('WEB-3 work summaries never contain answers interactive cards errors or ret
     // from replay (event.is_error); drive both so F1 routing holds on each.
     handleLive({ type: 'tool_finished', result: { tool_name: 'bash', output: 'live broken', is_error: true } });
   });
-  await expect(page.locator('.work-summary')).toHaveCount(1);
-  await expect(page.locator('.work-summary .tool-card')).toHaveCount(2);
-  await expect(page.locator('.work-summary .msg, .work-summary .approval-card, .work-summary .question-card')).toHaveCount(0);
   await expect(page.locator('.transcript > .tool-card.is-error')).toHaveCount(2);
   // F1: each failed card keeps its own event position and stays individually
   // visible. Replay seq=8 must sit between its retry notice and its turn-end
@@ -284,7 +280,6 @@ test('WEB-3 work summaries never contain answers interactive cards errors or ret
       liveAfterEarlierContent: after(transcript.querySelector('.interaction-anchor:last-of-type'), liveCard),
     };
   })).toEqual({ replayAfterRetry: true, replayBeforeOwnTurnEnd: true, liveAfterEarlierContent: true });
-  await expect(page.locator('.work-summary .tool-card.is-error')).toHaveCount(0);
   await expect(page.locator('.trace-event', { hasText: 'Retry' })).toBeVisible();
   await expect(page.locator('.trace-event', { hasText: 'bash' })).toBeVisible();
   await expect(page.locator('.trace-event', { hasText: 'failed on replay' })).toBeVisible();
@@ -1120,7 +1115,6 @@ test('tail history opens at the newest message and prepends without moving the r
   await openWorkbench(page, entry);
 
   await expect(page.locator('.transcript > .msg')).toHaveCount(50, LIVE);
-  await expect(page.locator('.message-map-item')).toHaveCount(56, LIVE);
   await expect(page.locator('.msg.user .body').last()).toHaveText('history question 27', LIVE);
   await expect(page.locator('#history-status')).toBeVisible(LIVE);
   const anchor = await page.evaluate(() => {
@@ -1224,12 +1218,12 @@ test('long conversation map keeps bounded DOM and can jump from a virtual window
     state.history.outline = Array.from({ length: 5000 }, (_, index) => ({
       seq: index === 2500 ? Number(targetSeq) : 10000 + index,
       turn: Math.floor(index / 2) + 1,
-      role: index % 2 ? 'assistant' : 'user',
+      role: index % 2 ? 'assistant' : 'user',renderable:true,
       preview: index === 2500 ? '## **Jump** [here](https://example.com)' : `message ${index}`,
     }));
     renderMessageMap();
     const track = document.querySelector('#message-map-track');
-    track.scrollTop = 2500 * MAP_ITEM_HEIGHT;
+    track.scrollTop = 1250 * MAP_ITEM_HEIGHT;
   }, target);
   const bars = page.locator('.message-map-item');
   await expect(page.locator(`.message-map-item[data-seq="${target}"]`)).toBeVisible(LIVE);
@@ -1252,11 +1246,11 @@ test('long conversation map keeps bounded DOM and can jump from a virtual window
   await page.keyboard.press('Home');
   await expect(page.locator('.message-map-item[data-seq="10000"]')).toBeVisible(LIVE);
   await page.keyboard.press('End');
-  await expect(page.locator('.message-map-item[data-seq="14999"]')).toBeVisible(LIVE);
-  await page.locator('#message-map-track').evaluate((track) => { track.scrollTop = 2500 * 9; });
+  await expect(page.locator('.message-map-item[data-seq="14998"]')).toBeVisible(LIVE);
+  await page.locator('#message-map-track').evaluate((track) => { track.scrollTop = 1250 * 9; });
   await page.setViewportSize({ width: 1440, height: 1100 });
   const bottomVisibleSeq = await page.locator('#message-map-track').evaluate((track) =>
-    10000 + Math.ceil((track.scrollTop + track.clientHeight) / 9) - 1);
+    10000 + 2 * (Math.ceil((track.scrollTop + track.clientHeight) / 9) - 1));
   await expect(page.locator(`.message-map-item[data-seq="${bottomVisibleSeq}"]`)).toBeAttached(LIVE);
 });
 
@@ -1291,12 +1285,11 @@ test('Think disclosure follows the latest live line, then the first settled line
   await expect(reasoning.locator('.reasoning-preview')).toHaveText('latest thought', LIVE);
   await expect(reasoning).not.toHaveAttribute('data-running', 'true', LIVE);
   await expect(reasoning.locator('.reasoning-preview')).toHaveText('first thought', LIVE);
+  await revealWorkRecord(reasoning);
   await reasoning.locator('summary').click();
   await expect(reasoning.locator('.reasoning-copy')).toHaveText('first thought\nlatest thought', LIVE);
-  await expect(page.locator('.message-map-item')).toHaveCount(2, LIVE);
   await expect(page.locator('.msg.user[data-seq]')).toHaveCount(1, LIVE);
   await expect(page.locator('.msg.assistant[data-seq]')).toHaveCount(1, LIVE);
-  await page.locator('.message-map-item').last().click();
   expect(historyRequests).toBe(0);
 
   // Audit F1: this is a fresh replay, not the live node above. Settled Think

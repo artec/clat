@@ -51,6 +51,8 @@ function projectLifecycle() {
     if (fresh) await newSession(); else if (session) await switchSession(session);
   }
   function deactivate() {
+    conversationRounds.stop();
+    runActivity.hide();
     saveComposerText();
     window.dispatchEvent(new Event('clat:development-deactivated'));
     workbenchShell?.tools?.suspend();
@@ -77,6 +79,8 @@ function projectLifecycle() {
     CLATI18n.hydrate(context.root);
     window.dispatchEvent(new Event('clat:activated'));
     renderMessageMap();
+    conversationRounds.tick();
+    runActivity.sync();
     resizePrompt();
     if (!saved) return;
     for (const [node, top, left] of saved.scrolls) { node.scrollTop = top; node.scrollLeft = left; }
@@ -102,6 +106,7 @@ function projectLifecycle() {
     summary: () => ({
       root: state.workbench?.project?.root || dom['project-root'].textContent,
       running: state.runActive || state.compactionActive,
+      runningSession:state.connected&&state.runActive?(state.workbench?.active_run?.session_id||state.sessionId):null,
       pending: context.root.querySelectorAll('.question-card:not(.resolved), .approval-card:not(.resolved)').length,
     }),
   };

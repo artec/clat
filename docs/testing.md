@@ -38,6 +38,7 @@ dropping their useful behavior coverage:
 | SVG presence/count/shape and composer DOM order | Send/stop call the correct action, model selection works, Escape restores focus, and native close closes its panel. |
 | Routine screenshots and repeated translated display strings | Manual screenshots for appearance; stable action identifiers/catalog keys for behavior. |
 | Exact inventory of visible public links | Explicit external-destination allowlist; unknown addresses and credential-bearing URL variants remain rejected. |
+| Adjacent `.work-summary` wrappers, nested group counts and per-message map counts | Live/replay process content parity, history fragment ownership, tool disclosure identity, drafts, failure ordering and notices remain checked; map fixtures use round representatives and retain bounded DOM, previews and exact-message navigation. |
 
 Feature-page focus checks cover navigation ownership and keyboard reachability:
 opening a page must not steal focus, and Tab must still reach its actions. They

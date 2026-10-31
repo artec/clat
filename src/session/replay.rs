@@ -55,6 +55,8 @@ use crate::tool::ToolCall;
 use serde_json::Value;
 use std::collections::HashMap;
 mod codec;
+mod disclosure;
+pub use disclosure::CompactionDisclosure;
 
 /// One reconstructed conversation item. Every variant carries the journal
 /// envelope time so frontends can derive per-step durations later.
@@ -139,6 +141,8 @@ pub enum ReplayEvent {
         turn: u64,
         time_ms: i64,
         summary_text: String,
+        #[serde(default)]
+        disclosure: Option<CompactionDisclosure>,
     },
 }
 
@@ -386,18 +390,7 @@ impl ReplayAdapter {
                 });
             }
             crate::session::catalog::ReplayKind::Compaction => {
-                let summary_text = event
-                    .data
-                    .get("summary")
-                    .and_then(Value::as_array)
-                    .map(|blocks| blocks_text(blocks))
-                    .unwrap_or_default();
-                out.push(ReplayEvent::Compaction {
-                    seq: event.seq,
-                    turn: self.turn,
-                    time_ms: event.time,
-                    summary_text,
-                });
+                out.push(replay_compaction(event, self.turn));
             }
             crate::session::catalog::ReplayKind::Skip => {}
         }
@@ -624,6 +617,22 @@ fn blocks_text(blocks: &[Value]) -> String {
 
 fn parse_json_or_string(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or(Value::String(text.to_owned()))
+}
+
+fn replay_compaction(event: &SessionEvent, turn: u64) -> ReplayEvent {
+    let summary_text = event
+        .data
+        .get("summary")
+        .and_then(Value::as_array)
+        .map(|blocks| blocks_text(blocks))
+        .unwrap_or_default();
+    ReplayEvent::Compaction {
+        seq: event.seq,
+        turn,
+        time_ms: event.time,
+        summary_text,
+        disclosure: Some(CompactionDisclosure::from_data(&event.data)),
+    }
 }
 
 #[cfg(test)]
@@ -1296,6 +1305,12 @@ mod tests {
                 turn: 0,
                 time_ms: 1009,
                 summary_text: "earlier context".into(),
+                disclosure: Some(CompactionDisclosure {
+                    id: Some("cmp-1".into()),
+                    range: Some((0, 4)),
+                    records: Some(4),
+                    estimated_tokens: Some(100)
+                }),
             }]
         );
     }

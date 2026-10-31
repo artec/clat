@@ -48,6 +48,31 @@ These visual and interaction details are manually accepted on each platform.
 
 ## Conversation and contextual tools
 
+Each Agent round has one process header below its initial user message. While
+running, it displays an updating elapsed time and keeps process entries visible.
+The running session has a trailing spinner in the project list. A separate
+current-action label below the live conversation uses a slow text-only spotlight
+for thinking, tool work and response generation, with explicit approval/answer
+waiting states. The reasoning preview itself stays static. Completion or a lost
+connection clears the live activity; reduced-motion and forced-color settings
+use static, readable status indicators.
+Known native tools use action icons; external tools retain a generic icon and
+original identifiers in their details. Once the actual terminal event arrives,
+the process collapses behind the elapsed-time chevron, leaving the last nonempty
+answer visible. User inputs, failures, permission refusals and interruptions
+remain visible. The process reading preference can keep completed rounds open;
+individual toggles last for the current conversation view. Historical durations
+based on message timestamps are marked approximate; missing times remain unknown.
+
+The conversation map appears even for a single known round and remains available
+with the desktop sidebar open; it is hidden only in narrow reading areas. It has one mark per round, with its question and last answer
+in the hover preview. Steering does not add marks. Search and exact message
+navigation reveal hidden process content when needed. Completed compactions have
+an independent disclosure showing the available journal range, distinct record
+count, estimated source tokens and expandable context summary. Missing legacy
+statistics are omitted. These are presentation projections, not changes to the
+journal, compression algorithm or model context.
+
 The work area has two reusable columns. **Conversation** shows the session list
 and chat/composer. Project files, workspace changes, captured turn operations,
 current tasks and plans/goals replace both columns with their own list and
@@ -58,7 +83,7 @@ returning to the conversation. File editing/saving is a separate future feature;
 this file view remains a browser with fixed-snapshot quoting.
 
 Git settings holds the generated commit-message language and the commit graph's
-reference scope. The sparkle button inside the commit-message field generates a
+reference scope in one card with a divider between the two rows. The sparkle button inside the commit-message field generates a
 message for staged changes. A thin divider separates repositories from history;
 when both sections are collapsed, their headers stay at the bottom and the
 resize handle is hidden. Expanding either restores the saved split ratio.

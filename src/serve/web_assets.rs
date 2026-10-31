@@ -235,6 +235,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "image/svg+xml",
     ),
     (
+        "/conversation-rounds.js",
+        include_bytes!("../../web/conversation-rounds.js"),
+        "application/javascript",
+    ),
+    (
         "/conversation-experience.js",
         include_bytes!("../../web/conversation-experience.js"),
         "application/javascript",
@@ -502,6 +507,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/composer-popovers.js",
     "/composer-permissions.js",
     "/conversation-experience.js",
+    "/conversation-rounds.js",
     "/navigation-pages.js",
     "/settings-pages.js",
     "/resource-library.js",

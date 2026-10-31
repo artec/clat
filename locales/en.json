@@ -2883,5 +2883,18 @@
   "extension.required_builtin": "Cannot disable {id}: it supplies a required Application service or its dependency.",
   "extension.static_configuration": "Configured at startup; edit disabled in builtin-plugins.json while CLAT is stopped, then restart.",
   "extension.required_contract": "Currently required by Application services; cannot be disabled yet.",
-  "extension.disabled_builtin": "This feature is disabled by the startup plugin configuration: {id}."
+  "extension.disabled_builtin": "This feature is disabled by the startup plugin configuration: {id}.",
+  "round.unknown": "duration unknown",
+  "round.duration": "{minutes}m {seconds}s",
+  "round.processing": "Working · {duration}",
+  "round.elapsed": "Worked for {duration}",
+  "round.elapsed_estimated": "Worked for approximately {duration}",
+  "round.compacted": "Context compacted",
+  "round.compacted_records": "Context compacted · {count} journal records",
+  "round.range": "Journal range: {start}–{end}",
+  "round.tokens": "Estimated source tokens: {count}",
+  "round.summary": "Context summary",
+  "round.responding": "Generating response",
+  "round.waiting_approval": "Waiting for approval",
+  "round.waiting_answer": "Waiting for your answer"
 }

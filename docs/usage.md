@@ -1816,19 +1816,32 @@ The permission control remains visible next to the composer tools; Plan, Goal,
 run status, attachments and cancellation retain their existing behavior.
 
 Appearance offers **User bubbles** (default) and **Single column** for comparing
-role layouts on the same conversation. **Work summaries** (default) collapse
-adjacent ordinary process records; expand a summary, then a tool, to inspect its
-arguments or output. **All steps** starts those summaries expanded. Changing
-these views keeps the current draft and existing tool nodes intact. Record
-counts include separate requests/results, not inferred tool-call or turn counts.
-Answers, pending approvals/questions, failed tools, permission decisions other
-than Allow, retries, command output and cancellation/failure outcomes remain
-outside the collapsed summaries.
-Non-completed replay turn endings likewise remain visible, including blocked,
-aborted, error, token-limit and interrupted endings. Grouping follows visible message and
-interactive/error boundaries, including history-page boundaries; it does not
-change runtime events, permission authority or replay content. The layout and
-process-display choices are browser-only preferences, not session policy.
+role layouts on the same conversation. **Work summaries** (default) shows each
+running round's process beneath an elapsed-time header. A spinner identifies
+the running session in the project list; the current-action label below the
+conversation has a text-only spotlight. Reasoning previews remain static, and
+reduced-motion settings keep status text readable without animation. At the actual terminal
+event, the process collapses behind the elapsed-time chevron and the last
+nonempty answer stays visible. Expand it to read intermediate explanations,
+reasoning, retries and tool records; each tool's arguments and output retain
+their own disclosure. Known tools have action SVG icons, while unknown external
+tools use the generic icon. **All steps** keeps completed processes open.
+
+User inputs (including steering), approvals/questions, failed tools, permission
+refusals and non-completed turn endings stay visible. Display toggles preserve
+message identities, content and order; they do not change events or permissions.
+The elapsed clock stops on completion or disconnection. Historical message-based
+durations are approximate; missing timestamps remain unknown. Display settings
+are browser presentation preferences, and per-round toggles remain in the current
+conversation view.
+
+The conversation map contains one navigation mark per round rather than per
+model/tool step. Its hover preview shows the question and last answer; selecting
+a mark goes to that round's first message. Find and exact message navigation
+expand hidden process content as needed. Compaction has its own expandable row
+with the context summary and any available journal range, distinct record count
+and source-token estimate. These statistics come from existing compaction facts;
+missing legacy fields are omitted, and no current usage is substituted.
 
 The embedded zero-build PWA has a fixed navigation rail, a content area and an
 optional right extension area. Conversations own their project/session list and

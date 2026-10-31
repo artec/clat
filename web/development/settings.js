@@ -16,9 +16,9 @@ function installDevelopmentSettings(){
   const actions=el('div','settings-action-bar');terminal.append(actions);actions.append(devButton('reset_defaults',()=>{Object.assign(values,DEV_TERMINAL_DEFAULTS);for(const [key,input]of inputs){if(input.type==='checkbox')input.checked=values[key];else input.value=values[key];}void saveDevTerminalSettings(values).then(()=>syncFonts()).catch(error=>devReport(fontStatus,error));}));
   fonts.after(fontStatus);const previewGroup=el('section','settings-group-block');previewGroup.append(el('h4','',()=>settingsUi('preview')),preview);terminal.append(previewGroup);
   installTerminalLicenses(terminal);
-  const language=devLanguageSelect('system'),label=settingsControlRow(()=>devText('commit_language'),language);label.classList.add('settings-card');git.append(label);
+  const language=devLanguageSelect('system'),label=settingsControlRow(()=>devText('commit_language'),language);const gitCard=el('div','settings-card');gitCard.append(label);git.append(gitCard);
   const scope=el('select');for(const key of ['all','current']){const option=el('option','',()=>devText('history_'+key));option.value=key;scope.append(option);}
-  scope.value=readGitGraphScope();const scopeRow=settingsControlRow(()=>devText('graph_scope'),scope);scopeRow.classList.add('settings-card');git.append(scopeRow);
+  scope.value=readGitGraphScope();const scopeRow=settingsControlRow(()=>devText('graph_scope'),scope);gitCard.append(scopeRow);
   scope.onchange=()=>{try{localStorage.setItem('clat.git.graph.scope',scope.value);developmentGit?.refresh();}catch(error){git.append(el('p','error',error.message));}};
   language.onchange=async()=>{try{await rpc('git.settings.set',{language:language.value});developmentGit?.refresh();}catch(error){git.append(el('p','error',error.message));}};
   dom['settings-dialog'].addEventListener('clat:page-enter',()=>{scope.value=readGitGraphScope();void rpc('git.settings',{}).then(value=>{language.value=value.language;}).catch(()=>{});});

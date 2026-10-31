@@ -437,16 +437,28 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             turn,
             time_ms,
             summary_text,
-        } => event_object(
-            "compaction",
-            vec![
-                ("seq", json!(seq)),
-                ("turn", json!(turn)),
-                ("time_ms", json!(time_ms)),
-                ("summary_text", Value::String(summary_text.clone())),
-            ],
-        ),
+            disclosure,
+        } => replay_compaction_json(*seq, *turn, *time_ms, summary_text, disclosure),
     }
+}
+
+fn replay_compaction_json(
+    seq: u64,
+    turn: u64,
+    time_ms: i64,
+    summary_text: &str,
+    disclosure: &Option<crate::session::replay::CompactionDisclosure>,
+) -> Value {
+    event_object(
+        "compaction",
+        vec![
+            ("seq", json!(seq)),
+            ("turn", json!(turn)),
+            ("time_ms", json!(time_ms)),
+            ("summary_text", json!(summary_text)),
+            ("disclosure", json!(disclosure)),
+        ],
+    )
 }
 
 fn replay_retry_failure_json(failure: &ReplayRetryFailure) -> Value {
@@ -560,26 +572,28 @@ pub(crate) fn with_message_outline(
     outline: &[crate::MessageOutlineDto],
 ) -> Value {
     if let Some(map) = settled.as_object_mut() {
-        map.insert(
-            "message_outline".into(),
-            Value::Array(
-                outline
-                    .iter()
-                    .map(|item| {
-                        object(vec![
-                            ("seq", json!(item.seq)),
-                            ("time_ms", json!(item.time_ms)),
-                            ("renderable", json!(item.renderable)),
-                            ("turn", json!(item.turn)),
-                            ("role", Value::String(item.role.clone())),
-                            ("preview", Value::String(item.preview.clone())),
-                        ])
-                    })
-                    .collect(),
-            ),
-        );
+        map.insert("message_outline".into(), message_outline_json(outline));
     }
     settled
+}
+
+/// Subscribe/reconnect and settlement share the same navigation projection.
+pub(super) fn message_outline_json(outline: &[crate::MessageOutlineDto]) -> Value {
+    Value::Array(
+        outline
+            .iter()
+            .map(|item| {
+                object(vec![
+                    ("seq", json!(item.seq)),
+                    ("time_ms", json!(item.time_ms)),
+                    ("renderable", json!(item.renderable)),
+                    ("turn", json!(item.turn)),
+                    ("role", Value::String(item.role.clone())),
+                    ("preview", Value::String(item.preview.clone())),
+                ])
+            })
+            .collect(),
+    )
 }
 
 /// M-03（审查 2026-08-27）：settled 帧 / prompt.send 响应附带的
@@ -799,6 +813,21 @@ pub(crate) fn ctl_data(ctl: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn compaction_disclosure_wire_preserves_summary_and_optional_metadata() {
+        let legacy = json!({"type":"compaction", "seq":9, "turn":2, "time_ms":100,
+            "summary_text":"original summary"});
+        let event: ReplayEvent = serde_json::from_value(legacy.clone()).unwrap();
+        let encoded = replay_event_json(&event);
+        assert_eq!(encoded["summary_text"], legacy["summary_text"]);
+        assert!(encoded["disclosure"].is_null());
+        let mut current = legacy;
+        current["disclosure"] = json!({"id":"cmp-1", "range":[1,8],
+            "records":3, "estimated_tokens":42});
+        let event: ReplayEvent = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(replay_event_json(&event), current);
+    }
     use super::*;
 
     /// §12 验收 4：serve 帧形状的固定 golden——字段名/顺序/省略形态是
@@ -933,7 +962,7 @@ mod tests {
             ),
             (
                 "compaction",
-                r#"{"type":"compaction","seq":11,"turn":4,"time_ms":4000,"summary_text":"earlier turns summarized"}"#,
+                r#"{"type":"compaction","seq":11,"turn":4,"time_ms":4000,"summary_text":"earlier turns summarized","disclosure":null}"#,
             ),
             // MM-1A additive：含图 user 消息的 golden——blocks 只带
             // descriptor（无字节/路径），幂等键随行；纯文本形态见
@@ -1051,6 +1080,7 @@ mod tests {
                 turn: 4,
                 time_ms: 4000,
                 summary_text: "earlier turns summarized".into(),
+                disclosure: None,
             },
             ReplayEvent::UserMessage {
                 seq: 12,

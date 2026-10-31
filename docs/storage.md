@@ -109,6 +109,13 @@ not create a session directory or log. The first prompt or an explicit `/task cr
 session. Task creation saves its own durable objective without inventing a user
 chat message.
 
+The client replay compaction DTO adds optional `disclosure` metadata from the
+existing `compaction/summary` payload: `id`, `range`, `records` (distinct
+`shadowedSeqs` count) and `estimated_tokens` (`shadowedTokenCount`). Absent source
+fields remain unknown; ranges do not imply a contiguous record count. This
+read-only projection adds no journal fields or event types and preserves
+`summary_text`. Older serialized replay events without disclosure still decode.
+
 ### Physical encoding
 
 New sessions use `session.v4.jsonl.zstd`. Discovery recognizes the canonical

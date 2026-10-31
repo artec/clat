@@ -313,9 +313,7 @@ button:disabled { cursor: default; opacity: .45; }
 .reasoning-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg.assistant .reasoning summary::after, .work-summary > summary::after { content: "+"; flex: 0 0 auto; margin-left: auto; color: var(--text-muted); }
 .msg.assistant .reasoning[open] summary::after { content: "−"; }
-.msg.assistant .reasoning[data-running="true"] summary::before { content: ""; position: absolute; inset: 0 auto 0 -300px; width: 300px; pointer-events: none; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 24%, transparent), transparent); animation: reasoning-sweep 2.6s ease-out infinite; }
 .reasoning-copy { font-size: var(--text-size-reading); line-height: var(--text-leading); color: var(--text-soft); max-height: 300px; margin: 0; padding: 7px 0 7px 22px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-@keyframes reasoning-sweep { to { transform: translateX(calc(100vw + 600px)); } }
 .work-summary { min-width: 0; margin: 4px 0 20px 36px; color: var(--text-muted); }
 .work-summary > summary { display: flex; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; list-style: none; font-size: 13px; }
 .work-summary > summary::-webkit-details-marker { display: none; }
@@ -608,7 +606,6 @@ button:disabled { cursor: default; opacity: .45; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
-  .msg.assistant .reasoning[data-running="true"] summary::before,
   .message-map-item.is-jumping::before { animation: none !important; }
 }
 :is(#workspace-list, #workspace-error) .workspace-link {
