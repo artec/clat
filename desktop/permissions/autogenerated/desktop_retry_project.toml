@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-retry-project"
+description = "Enables the desktop_retry_project command without any pre-configured scope."
+commands.allow = ["desktop_retry_project"]
+
+[[permission]]
+identifier = "deny-desktop-retry-project"
+description = "Denies the desktop_retry_project command without any pre-configured scope."
+commands.deny = ["desktop_retry_project"]

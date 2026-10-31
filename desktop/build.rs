@@ -6,6 +6,7 @@ fn main() {
             "desktop_fonts",
             "desktop_locale",
             "desktop_open_project",
+            "desktop_retry_project",
             "desktop_pick_directory",
             "desktop_remember_conversation",
             "desktop_take_tray_intent",

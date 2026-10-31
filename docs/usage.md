@@ -2054,7 +2054,10 @@ The sidebar's Plugin Index shows a searchable projection of the public
 [pi.at.cn](https://pi.at.cn) catalog. The public catalog is a display surface;
 its cross-origin GET explicitly omits credentials, cookies, referrer and the
 local Bearer token. When the catalog is unavailable, the PWA shows a clearly
-labelled built-in preview and retains the external link. The panel installs,
+labelled built-in preview. The sidebar contains categories, search and extension
+results; the optional **Browse extension website (pi.at.cn)** action is available
+only in Discover's top toolbar menu. Desktop opens it in the system browser;
+the Web client opens a separate tab. The panel installs,
 updates and manages packages through the authenticated local host, which owns
 signature verification and permission review. The public website cannot install
 or remove packages. See [PWA and TUI plugin control](plugins.md#install-and-manage-from-the-pwa-or-tui)
@@ -3273,3 +3276,16 @@ A project with no conversation can be organized without creating a conversation.
 
 Each generated round-end suggestion has a shared sparkle icon. The whole row
 still only appends the original suggestion to the draft; it never auto-sends.
+
+### Desktop first conversation
+
+Choose and trust a project directory, then configure a model in the first-use
+page. Existing CLI/TUI configuration is reused. Pick a built-in provider or a
+custom endpoint; custom local services can omit API keys. **Save and verify**
+sends one short, potentially billable request without project or chat content;
+**Save only** skips that check. Failed checks retain saved configuration.
+**Set up later** opens the workbench for manual files, Git and terminals. The
+conversation keeps a configuration entry, and sending an ordinary prompt before
+configuration preserves its draft and returns to setup. Finishing setup never
+automatically sends a message. Connection checks are also available in Models
+settings. See [Desktop](desktop.md#first-use-setup) for recovery and startup details.

@@ -300,3 +300,29 @@ the remembered vendor key. Confirming an empty key clears the current credential
 not the remembered vendor cache (a later selection can reuse that cache).
 Cancel does not submit; once dispatched, a save is not cancelled by closing the
 form. The same single-flight, write-only and delayed-response protections apply.
+
+## Desktop setup and connection checks
+
+Desktop first-use setup and the Models settings connection button share the
+core `model.setup.get`, `model.setup.apply`, `model.setup.verify`,
+`model.setup.status` and `model.setup.cancel` methods, advertised in
+`workbench.info.methods`. Older hosts keep their existing settings entry.
+Readiness distinguishes missing routes and required preset credentials from a
+configured custom service that intentionally uses no key. A saved configuration
+is not presented as a successfully verified connection.
+
+Setup writes carry `expected_revision` and a UUID `operation_id`. The revision
+includes the Host lifetime as well as its shared model revision. Applying a
+custom profile saves that profile, its active route and active pointer in one
+settings-file commit; the older profile-save method still only saves. Root-wide
+serialization, existing route checks and secret handling remain in core. On a
+concurrent edit, refresh the configuration before applying the retained form.
+
+Checks are direct, single-attempt requests through the selected adapter, with
+no retry wrapper, tools, project context, journal entries or capability changes.
+They release the application lock before contacting the provider. Cancellation
+wins over late success. Status returns bounded classifications rather than raw
+provider text that could echo credentials. A result for a changed model is stale.
+Repeated identical operation IDs return the existing receipt; changing the
+payload under the same ID is rejected. Receipts are private Host memory, capped
+at 1,024 operations per Host lifetime without eviction or automatic replay.

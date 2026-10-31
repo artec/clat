@@ -9,12 +9,13 @@
   </section>
   <main>
     <div class="brand"><img src="icon.png" width="34" height="34" alt=""><span>CLAT</span></div>
-    <div class="eyebrow" data-i18n="desktop.eyebrow">LOCAL FIRST · READY WHEN YOU ARE</div>
+    <div class="eyebrow" data-i18n="setup.project_step">1 · Open project　2 · Configure model</div>
     <h1 data-i18n="desktop.welcome_heading">Continue your work, one project at a time.</h1>
     <p class="intro" data-i18n="desktop.welcome_intro">Keep conversations, tools and long tasks on your machine. Open a project or connect to the running CLAT background.</p>
-    <button id="open" class="primary"><span data-i18n="desktop.open">Open project</span> <span aria-hidden="true">↗</span></button>
+    <button id="open" class="primary"><span data-i18n="setup.choose_directory">Choose project directory</span> <span aria-hidden="true">↗</span></button>
+    <button id="retry-project" class="retry-project" hidden data-i18n="setup.retry_project">Retry previous project</button>
     <p id="status" role="status" aria-live="polite" data-i18n="desktop.checking_host">Checking local background…</p>
-    <footer><span id="version">CLAT</span><button id="settings" data-i18n="desktop.settings">About &amp; updates</button></footer>
+    <footer><span id="version">CLAT</span><div data-language-control></div><button id="settings" data-i18n="desktop.settings">About &amp; updates</button></footer>
   </main>
   <script src="welcome.js"></script>
 </body>

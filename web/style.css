@@ -593,7 +593,6 @@ button:disabled { cursor: default; opacity: .45; }
   .landing-card::after { display: none; }
   .market-toolbar { flex-direction: column; }
   .market-toolbar label { flex: 0 0 42px; }
-  .market-toolbar > a { justify-content: center; min-height: 42px; }
   .market-list { grid-template-columns: 1fr; }
 }
 

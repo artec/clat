@@ -51,6 +51,9 @@ pub mod input {
         InputDraft, PendingInputEdit, PendingInputView, PendingInputsView,
     };
 }
+pub mod model_setup {
+    pub use crate::application::{ModelSetupOperation, ModelSetupView};
+}
 pub mod interaction {
     pub use crate::interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
 }

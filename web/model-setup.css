@@ -1,0 +1,18 @@
+.model-setup-page{position:absolute;inset:var(--toolbar-height,48px) 8px 8px var(--global-rail-width,58px);z-index:80;background:var(--surface);border-radius:16px;overflow:auto;padding:40px 24px;display:flex}
+.model-setup-page[hidden],.model-setup-page [hidden],.setup-composer-notice[hidden]{display:none!important}
+.model-setup-card{width:min(600px,100%);margin:auto}
+.setup-brand{display:flex;align-items:center;gap:12px;font-size:22px;line-height:1.5}
+.setup-brand img{border-radius:8px}.setup-language{margin-left:auto;font-size:12px;color:var(--text-muted)}
+.setup-language label{display:flex;align-items:center;gap:10px}.setup-language select{width:auto}
+.setup-steps{font-size:12px;color:var(--accent);margin:32px 0 12px}
+.model-setup-card h1{font:600 28px/1.35 var(--font-ui);margin:0 0 10px}
+.setup-project{color:var(--text-muted);font-size:13px;margin:0 0 16px;overflow-wrap:anywhere}
+.setup-description,.setup-note{color:var(--text-muted);font-size:13px;line-height:1.7}
+.setup-form{margin-top:24px;display:grid;gap:16px}.setup-field{display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--text-soft)}
+.setup-field input,.setup-field select{width:100%;min-height:38px;font:inherit;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-input);color:var(--text)}
+.setup-custom{display:grid;grid-template-columns:1fr 1fr;gap:16px}.setup-advanced{grid-column:1/-1;color:var(--text-muted);font-size:13px}.setup-advanced .setup-field{margin-top:12px}
+.setup-links{display:flex;flex-wrap:wrap;gap:20px;font-size:12px}.setup-links a{color:var(--accent)}
+.setup-note{margin:18px 0}.setup-status{font-size:13px;line-height:1.7;white-space:pre-wrap;color:var(--text-soft);overflow-wrap:anywhere}
+.setup-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:24px}.setup-actions button{min-height:36px;padding:8px 14px;font-size:13px}.setup-actions .ghost{margin-left:auto}
+.setup-composer-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 8px 12px;color:var(--text-muted);font-size:12px}.setup-composer-notice button{font-size:12px;flex:none}
+@media(max-width:760px){.model-setup-page{padding:24px 18px}.setup-custom{grid-template-columns:1fr}.setup-language label>span{display:none}.setup-actions .ghost{margin-left:0}}

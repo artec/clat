@@ -4389,3 +4389,6 @@ fn serve_e2e_host_native_jobs() {
     );
     crate::test_support::cleanup_tree(&root);
 }
+
+#[path = "model_setup_tests.rs"]
+mod model_setup;

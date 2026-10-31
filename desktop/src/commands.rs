@@ -107,6 +107,19 @@ pub async fn desktop_open_project(
 }
 
 #[tauri::command]
+pub async fn desktop_retry_project(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), UiMessage> {
+    guard(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::startup::retry(&app).map_err(|e| e.message())
+    })
+    .await
+    .map_err(|_| UiMessage::new("desktop.project_worker_failed"))?
+}
+
+#[tauri::command]
 pub async fn desktop_check_update(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

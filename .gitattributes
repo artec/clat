@@ -141,3 +141,6 @@ web/settings-models.js text eol=lf
 
 web/project-organization.js text eol=lf
 web/project-directory-watch.js text eol=lf
+web/model-setup-form.js text eol=lf
+web/model-setup.js text eol=lf
+web/model-setup.css text eol=lf

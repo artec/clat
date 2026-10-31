@@ -12,6 +12,7 @@ async function refresh() {
       && (info.startupLoading || (document.body.dataset.startup === 'loading' && info.hostConnected));
     document.body.dataset.startup = loading ? 'loading' : 'ready';
     document.getElementById('version').textContent = `CLAT ${info.desktopVersion}`;
+    document.getElementById('retry-project').hidden = !info.connectionError;
     CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || info.backendError || CLATI18n.present(info.connectionPresentation,info.connectionError) || CLATI18n.t('desktop.welcome'));
   } catch (error) { document.body.dataset.startup='ready'; CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(error,String(error))); }
   finally { refreshing = false; }
@@ -28,5 +29,13 @@ document.getElementById('open').onclick = async event => {
   }
 };
 document.getElementById('settings').onclick = () => window.CLATDesktop?.showSettings();
+document.getElementById('retry-project').onclick = async event => {
+  if (opening) return;
+  opening = true; actionError = ''; event.currentTarget.disabled = true;
+  CLATI18n.bind(status, 'textContent', () => CLATI18n.t('desktop.opening_workbench'));
+  try { await invoke('desktop_retry_project'); }
+  catch (error) { actionError = error?.key ? error : String(error); }
+  finally { opening = false; event.currentTarget.disabled = false; await refresh(); }
+};
 refresh();
 setInterval(refresh, 2000);

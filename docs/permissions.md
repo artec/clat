@@ -534,3 +534,13 @@ contents. Submodule initialization is never an implicit consequence of browsing.
 Historical version reads remain read-only with executable Git filters/drivers
 isolated; actual human mutations retain the existing hooks, signing, confirmation
 and staged-version checks. Selecting another repository does not change Agent mode.
+
+### First-use setup
+
+Trusting a directory does not grant Full Access. Setup preserves the existing
+project trust and Agent permission policies. The explicitly triggered connection
+check is a standalone model request with a fixed text input and no tools or
+project/conversation data. It cannot act as an Agent execution or change model
+capability permissions. Model settings remain shared across the same Host storage
+root, and setup APIs use the existing authenticated RPC channel. Deferring model
+setup does not prevent separately authorized manual file, Git or terminal use.

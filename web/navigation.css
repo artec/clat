@@ -51,7 +51,6 @@
 }
 
 .navigation-filters select{width:100%;min-width:0}.navigation-filters label{display:flex;align-items:center;gap:8px}.navigation-filters input[type=checkbox]{flex:none}
-.navigation-external{font-size:var(--text-size-secondary);color:var(--text-muted);display:flex;gap:6px;align-items:center}
 .navigation-body>.settings-note{font-size:var(--text-size-secondary);color:var(--text-muted);padding-top:20px}
 .navigation-layout .history-detail{margin-top:0}
 

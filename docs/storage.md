@@ -766,3 +766,14 @@ stored canonical root without filesystem I/O. Unknown roots are never admitted b
 this operation. Old records need no migration; older readers ignore `pinned` and
 continue to read standard `title`. See the local DSH project-organization mapping
 for the deliberate optional extension.
+
+### First-use model setup state
+
+Setup uses the existing settings model/profile fields and credential storage.
+Saving and activating a custom setup profile is one atomic settings-file write;
+no setup-specific schema or session event is added. Verification operation IDs,
+request digests, cancellation tokens and results live only in Host memory and
+are never replayed after restart. They contain no retained plaintext request
+credentials. The device-only `clat.setup.later.<scope>` preference stores only
+whether the user deferred setup; `<scope>` is a hash of the canonical storage
+root. Model configuration remains authoritative regardless of this preference.

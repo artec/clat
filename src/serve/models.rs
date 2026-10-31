@@ -8,6 +8,9 @@ pub(crate) fn dispatch(
     params: &Value,
     shared: &Arc<ServeShared>,
 ) -> Result<Value, RpcError> {
+    if method.starts_with("model.setup.") {
+        return super::model_setup::dispatch(method, params, shared);
+    }
     let params = params
         .as_object()
         .ok_or_else(|| RpcError::bad_request("params must be an object"))?;

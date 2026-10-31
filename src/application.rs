@@ -89,7 +89,8 @@ mod next_turn;
 pub use next_turn::NextTurnItem;
 mod plugin_control;
 pub use model_settings::{
-    ModelProfileEdit, ModelRouteView, ModelSettingsView, UtilitySettingsEdit, UtilitySettingsView,
+    ModelProfileEdit, ModelRouteView, ModelSettingsView, ModelSetupOperation, ModelSetupView,
+    UtilitySettingsEdit, UtilitySettingsView,
 };
 #[cfg(test)]
 mod plan_mode_tests;

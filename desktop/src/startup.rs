@@ -71,6 +71,25 @@ fn load(path: &Path) -> Result<Option<PathBuf>, PresentedText> {
     }
 }
 
+/// Explicit retry uses only the saved project and never grants new trust.
+pub fn retry(app: &tauri::AppHandle) -> Result<(), PresentedText> {
+    let state = app.state::<crate::app::Desktop>();
+    let _guard = state
+        .connection
+        .lock()
+        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+    state.startup.cancel();
+    let path = load(&crate::localization::path(app)?)?
+        .ok_or_else(|| UiMessage::new("setup.select_project"))?;
+    let backend = state
+        .backend
+        .as_ref()
+        .ok_or_else(|| UiMessage::new("desktop.backend_reinstall"))?;
+    let client = backend.resume_project_presented(&path)?;
+    save_project(app, &client)?;
+    crate::app::connected(app, client).map_err(Into::into)
+}
+
 pub fn restore(app: &tauri::AppHandle) {
     let state = app.state::<crate::app::Desktop>();
     let _guard = state.connection.lock().expect("connection state");

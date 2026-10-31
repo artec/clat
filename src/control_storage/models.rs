@@ -3,6 +3,47 @@
 use super::*;
 
 impl ControlStorage {
+    /// Setup commits the profile, active route and pointer in one atomic file write.
+    pub(crate) fn save_and_activate_profile(
+        &self,
+        name: &str,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+    ) -> Result<(), ControlError> {
+        if !valid_profile_name(name) {
+            return Err(control_error("invalid profile name"));
+        }
+        let (config, runtime) = encode_config_pair(config, credentials)?;
+        self.commit(
+            self.lock(),
+            |state| settings::save_settings(&self.dir, &self.root, &state.settings),
+            |state| {
+                let now = timestamp::now_iso8601();
+                let created_at = state
+                    .settings
+                    .profiles
+                    .get(name)
+                    .map(|row| row.created_at.clone())
+                    .unwrap_or_else(|| now.clone());
+                state.settings.profiles.insert(
+                    name.into(),
+                    settings::ProfileRow {
+                        config: config.clone(),
+                        runtime: runtime.clone(),
+                        created_at,
+                        updated_at: now.clone(),
+                    },
+                );
+                state.settings.model_state = Some(settings::ModelStateRow {
+                    config,
+                    runtime,
+                    active_profile: Some(name.into()),
+                    updated_at: now,
+                });
+            },
+        )
+    }
+
     pub(crate) fn activate_profile(
         &self,
         name: &str,

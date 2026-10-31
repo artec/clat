@@ -276,6 +276,7 @@ pub fn run() {
             crate::fonts::desktop_fonts,
             crate::commands::desktop_locale,
             crate::commands::desktop_open_project,
+            crate::commands::desktop_retry_project,
             crate::commands::desktop_pick_directory,
             crate::commands::desktop_check_update,
             crate::commands::desktop_download_update,

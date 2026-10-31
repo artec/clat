@@ -1881,3 +1881,20 @@ manual intents. Project-tree keys remain canonical roots through first metadata
 registration, preserving existing list state. Shared SVG creation is injected
 from the active view rather than copying another icon table. Frontend metadata
 maps are directory snapshots, never a second persisted source of truth.
+
+### First-use model setup
+
+The model-settings domain owns a Host-scoped setup service. Clients consume its
+redacted readiness snapshot, version-checked apply intent, asynchronous
+connection checks and cancellation/status receipts. It reuses provider factories
+and the shared model-update lane. The new atomic profile-and-activation write
+uses the existing settings schema and rollback path; legacy save semantics are
+unchanged. Verification neither owns a run nor reads a session, and adds no
+persistent events. Its fixed text request bypasses automatic retry, discards
+response events and returns only classified outcomes. Receipts are tied to a
+Host epoch; model changes invalidate old verification results.
+
+Desktop's local welcome page owns only directory selection, trust and connection.
+Model setup lives in the connected Web workbench and therefore uses the same
+core as other clients. Skipping the page is a device preference keyed by an
+opaque storage-root scope, not a second model configuration or installation flag.

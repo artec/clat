@@ -17,6 +17,7 @@ pub(super) struct HostStorage {
     pub(super) job_capacity: Arc<crate::background_jobs::JobCapacity>,
     pub(super) scheduler: Arc<crate::scheduler::SchedulerService>,
     pub(super) model_updates: Mutex<()>,
+    pub(super) model_setup: super::model_settings::setup::SetupService,
     model_consumers: Mutex<Vec<ModelConsumer>>,
     model_revision: std::sync::atomic::AtomicU64,
     // Mutex supplies Sync on Windows without changing the lease's Send-only
@@ -51,6 +52,7 @@ impl HostStorage {
             history: Arc::new(crate::session_query::QueryIndex::new(root.to_path_buf())),
             job_capacity: Arc::new(crate::background_jobs::JobCapacity::new(root)),
             model_updates: Mutex::new(()),
+            model_setup: Default::default(),
             model_consumers: Mutex::new(Vec::new()),
             model_revision: std::sync::atomic::AtomicU64::new(0),
             lease: Arc::new(Mutex::new(lease)),

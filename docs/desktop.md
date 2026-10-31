@@ -437,3 +437,33 @@ Terminal settings query the viewing device font library through the guarded
 Only family, face names, PostScript identifiers and monospace metadata cross the
 bridge; no font files or filesystem paths are exposed. The selector uses local
 font faces and validates loading before updating terminal appearance.
+
+## First-use setup
+
+On a fresh installation, choose a project directory and explicitly trust it.
+Trust permits project instructions and tools under the normal permission policy;
+it does not select Full Access. Cancelling the folder picker or trust prompt
+keeps the welcome page available. A failed restore offers a retry of the saved
+project without granting new trust; selecting another directory remains possible.
+About & updates is available even when Host cannot start.
+
+After connection, Desktop reads the Host's actual model configuration. Existing
+CLI/TUI settings are reused without another setup prompt or automatic network
+check. Missing configuration opens a compact model page with the shared provider
+catalog and custom profiles. A custom local endpoint may omit its API key.
+Language follows the device by default and can be changed during setup.
+
+**Save and verify** saves and activates the route, then sends one short text
+request to that provider. Charges may apply. No project files, conversation
+history or tools are supplied, and no session is created. Verification is a basic
+connection check, not a guarantee of every Agent or image capability. **Save only**
+leaves a clear unverified state. Failed or cancelled verification keeps the saved
+configuration and supports retry or entry into the workbench.
+
+**Set up later** records a device preference scoped to the storage root, so
+switching projects does not repeatedly open the page. Manual files, Git and
+terminals remain available. Sending ordinary conversation input checks model
+configuration first, preserves the draft and opens setup when necessary; finishing
+setup never sends that draft automatically. Models settings exposes the same
+connection checker. Host restart preserves configuration but does not retain or
+automatically repeat verification results.

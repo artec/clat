@@ -2934,6 +2934,7 @@ let modelSettingsRefresh = 0;
 let utilitySettingsRefresh = 0;
 let utilityFormGeneration = 0;
 let modelProfileGeneration = 0;
+const modelSetup = createModelSetup();
 
 modelField('profile-editor').addEventListener('input', () => { modelProfileGeneration++; });
 modelField('profile-editor').addEventListener('change', () => { modelProfileGeneration++; });
@@ -3835,6 +3836,13 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 }
 
 async function submitPrompt() {
+  const generation = state.composerGeneration, owner = composerScope;
+  if (!dom.prompt.value.trim().startsWith('/') && !await modelSetup.ensure()) return;
+  if (generation !== state.composerGeneration || !composerOwns(owner)) return;
+  return submitConfiguredPrompt();
+}
+
+async function submitConfiguredPrompt() {
   if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if(borrowedConversation && borrowedConversation.session !== state.sessionId) {updateRunState(pageText('conversation_unavailable'));return;}
   if(state.desktopUpdateLocked)return;

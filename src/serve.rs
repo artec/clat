@@ -26,6 +26,7 @@ mod conversation;
 mod development;
 mod http;
 mod inputs;
+mod model_setup;
 mod models;
 mod next_turn;
 mod notifications;

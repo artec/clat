@@ -9,6 +9,8 @@ mod auth;
 use auth::ModelProfileAuth;
 mod body;
 mod headers;
+pub(super) mod setup;
+pub use setup::{ModelSetupOperation, ModelSetupView};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModelSettingsView {
@@ -276,12 +278,20 @@ impl TrustedProjectApplication {
     }
 
     pub fn edit_model_profile(&self, edit: ModelProfileEdit) -> Result<(), ApplicationError> {
-        validate_edit(&edit)?;
         let _update = self
             .host_storage
             .model_updates
             .lock()
             .expect("model updates");
+        let (name, config, credentials) = self.prepare_model_profile(edit)?;
+        self.save_model_profile_locked(&name, &config, &credentials)
+    }
+
+    fn prepare_model_profile(
+        &self,
+        edit: ModelProfileEdit,
+    ) -> Result<(String, ModelConfig, ProviderCredentials), ApplicationError> {
+        validate_edit(&edit)?;
         let old = self.load_model_profile(&edit.name)?;
         let unchanged = old.as_ref().is_some_and(|(config, _)| {
             config.protocol == edit.protocol
@@ -320,7 +330,7 @@ impl TrustedProjectApplication {
         if let Some(key) = edit.api_key {
             credentials.set_value(0, key);
         }
-        self.save_model_profile_locked(&edit.name, &config, &credentials)
+        Ok((edit.name, config, credentials))
     }
 }
 
