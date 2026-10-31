@@ -211,6 +211,7 @@ async function refreshShellContext() {
     const planAction=document.getElementById('add-plan');disableBuiltin(planAction,value,'builtin.plan_mode');
     planAction.disabled ||= value.busy || shell.planPending;
     disableBuiltin(document.getElementById('add-skills'),value,'builtin.skills');
+    disableBuiltin(document.getElementById('add-goal'),value,'builtin.goal');
     refreshShellResources();
   } catch (_) {
     if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;

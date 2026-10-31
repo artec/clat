@@ -18,6 +18,16 @@ struct Running {
 }
 impl ServeShared {
     pub(super) fn spawn_automatic(self: &Arc<Self>) {
+        if !self
+            .app
+            .lock()
+            .expect("application lock")
+            .builtin_available("builtin.scheduler")
+        {
+            return;
+        }
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("scheduler.worker");
         let weak = Arc::downgrade(self);
         let worker = std::thread::Builder::new()
             .name("clat-host-scheduler".into())
@@ -247,6 +257,50 @@ impl crate::EventSink for ScopedSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn absent_scheduler_never_reads_state_or_starts_a_host_poller() {
+        let (storage, project) = crate::test_support::roots("absent-scheduler-worker");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(
+            storage.join("builtin-plugins.json"),
+            serde_json::json!({
+                "unit":{"name":"builtin-plugins","version":1},"disabled":["builtin.scheduler"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(storage.join("schedules.json"), b"{must never read").unwrap();
+        crate::test_support::execution_observation::take();
+        let app = crate::BootstrapApplication::open(crate::Project::new(&project), storage.clone())
+            .unwrap()
+            .authorize_and_mount_with_provider(Arc::new(crate::test_support::TestProviderPlugin {
+                behavior: crate::test_support::TestBehavior::Success,
+            }))
+            .unwrap();
+        let app = Arc::new(std::sync::Mutex::new(app));
+        let shared = Arc::new(ServeShared::new(app.clone(), "fixture".into(), 0));
+        shared.spawn_automatic();
+        let calls = crate::test_support::execution_observation::take();
+        for key in ["scheduler.create", "scheduler.read", "scheduler.worker"] {
+            assert!(!calls.contains_key(key), "unexpected disabled call: {key}");
+        }
+        assert_eq!(
+            std::fs::read(storage.join("schedules.json")).unwrap(),
+            b"{must never read"
+        );
+        shared.drain_workers();
+        drop(shared);
+        Arc::try_unwrap(app)
+            .ok()
+            .expect("no remaining app owner")
+            .into_inner()
+            .unwrap()
+            .close()
+            .unwrap();
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&project);
+    }
     #[test]
     fn idle_scheduler_poll_never_publishes_a_run_claim_while_waiting_for_application() {
         let (storage, project) = crate::test_support::roots("idle-scheduler-slot");

@@ -49,14 +49,14 @@ function installWorkflowDetails(){
   const ui=createWorkspaceToolView(page,'workflow'),status=ui.status,list=ui.list,detail=ui.body;document.body.append(page);
   const view={page,status,list,detail,value:null,selection:null,epoch:0,acting:false,signature:'',editing:false,intent:0};
   view.act=intent=>actWorkflowView(view,intent);
-  view.select=key=>{view.intent++;view.editing=false;view.selection=key;ui.show(()=>key.startsWith('plan:')?workflowText('plans'):key==='goal'?workflowText('goals'):workflowText('todos'));renderWorkflowView(view);page.dataset.detail='true';};
+  view.select=key=>{view.intent++;view.editing=false;view.selection=key;ui.show(()=>key.startsWith('plan:')?workflowText('plans'):key==='goal'?workflowText('goals'):key==='task'?CLATI18n.msg('extension.builtin.task.name'):workflowText('todos'));renderWorkflowView(view);page.dataset.detail='true';};
   const open=()=>openWorkbenchTool(page),load=()=>loadWorkflowView(view);
   async function afterEnter(run){
     open();const token=++view.intent,owner=[state.sessionId,state.selectionGeneration];await load();
     if(token===view.intent&&toolViewIsOpen(page)&&owner[0]===state.sessionId&&owner[1]===state.selectionGeneration)run();
   }
   trigger.onclick=open;for(const id of ['plan-mode-badge','goal-badge'])document.getElementById(id).onclick=open;
-  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load()),viewAction('create-goal','plus',()=>workflowText('create_goal'),()=>{page.dataset.detail='true';renderWorkflowGoalForm(view);},true,()=>!retainedPlan(view.value))]});
+  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load()),viewAction('create-goal','plus',()=>workflowText('create_goal'),()=>{page.dataset.detail='true';renderWorkflowGoalForm(view);},true,()=>!retainedPlan(view.value)&&builtinEnabled(view.value,"builtin.goal"))]});
   page.addEventListener('clat:tool-enter',()=>void load());page.addEventListener('clat:tool-leave',()=>{view.epoch++;view.intent++;});
   page.addEventListener('clat:tool-refresh',()=>{if(!view.acting)void load();});
   window.addEventListener('clat:workflow-changed',()=>{if(toolViewIsOpen(page))void load();});

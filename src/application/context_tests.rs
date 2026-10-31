@@ -390,7 +390,7 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
     let (config, _) = application.model_state().unwrap();
     let instruction_snapshot = application.dynamic_instructions.snapshot().unwrap();
     let skills = application.skills_service().unwrap().snapshot().unwrap();
-    let goal = application.goal.injection().unwrap();
+    let goal = application.goal.as_ref().unwrap().injection().unwrap();
     let context = application.run_context_snapshot(
         &config,
         skills,

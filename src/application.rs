@@ -50,6 +50,7 @@ mod content_views;
 mod context;
 mod development;
 mod discovery;
+mod execution_features;
 mod features;
 pub use development::{DevelopmentService, GitModel, OperationView};
 pub use features::{BuiltinAvailability, BuiltinAvailabilityMap};
@@ -303,8 +304,8 @@ pub struct TrustedProjectApplication {
     development: Arc<crate::development::DevelopmentService>,
     web: Option<Arc<crate::web_tools::WebService>>,
     history: Option<Arc<crate::session_query::SessionQueryService>>,
-    jobs: Arc<crate::background_jobs::JobRegistry>,
-    scheduler: Arc<crate::scheduler::SchedulerService>,
+    jobs: Option<Arc<crate::background_jobs::JobRegistry>>,
+    scheduler: Option<Arc<crate::scheduler::SchedulerService>>,
     project: Project,
     composition: composition::TrustedProjectComposition,
     sessions: Arc<SessionService>,
@@ -344,8 +345,8 @@ pub struct TrustedProjectApplication {
     memory: Option<Arc<crate::memory::MemoryService>>,
     /// Event-sourced same-session goal state. Only the activation bit is
     /// process-local and is reset on every session boundary.
-    goal: Arc<crate::goal::GoalService>,
-    task: Arc<crate::task::TaskService>,
+    goal: Option<Arc<crate::goal::GoalService>>,
+    task: Option<Arc<crate::task::TaskService>>,
     /// Default-off, process-local gate and bounded run binding for fixed-role
     /// read-only children.
     subagents: Option<Arc<crate::subagent::SubagentService>>,

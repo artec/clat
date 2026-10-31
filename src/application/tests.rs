@@ -6,6 +6,7 @@ mod agent_evidence;
 mod argument_recovery;
 #[path = "automatic_tests.rs"]
 mod automatic_tests;
+pub(super) use automatic_tests::{authorize as authorize_schedule, draft as schedule_draft};
 #[path = "edit_recovery_tests.rs"]
 mod edit_recovery;
 #[path = "history_tests.rs"]

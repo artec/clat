@@ -24,10 +24,10 @@ impl TrustedProjectApplication {
         // An ordinary human prompt competes with any previously armed goal.
         // Preserve durable phase, remove only process-local continuation
         // authority, matching DSH goal-round-driver's competing prompt fence.
-        self.goal.disarm();
+        self.disarm_goal();
         let client_message_id = request.message.client_message_id.clone();
         let cancel = self
-            .task
+            .task_port()
             .deadline()
             .map_or_else(CancelToken::new, CancelToken::with_deadline);
         let catalog = run_catalog(cancel.clone(), Arc::clone(&request.approver));
@@ -44,22 +44,26 @@ impl TrustedProjectApplication {
         &mut self,
         mut request: ApplicationRunRequest,
     ) -> Result<(RunHandle, String), ApplicationError> {
+        self.goal_service()?;
         self.check_goal_activation()?;
         if !request.message.staged_attachments.is_empty() {
             return Err(ApplicationError::new(
                 "goal continuation rounds do not accept attachments",
             ));
         }
-        let round = self.goal.next_round().map_err(ApplicationError::new)?;
+        let round = self
+            .goal_service()?
+            .next_round()
+            .map_err(ApplicationError::new)?;
         // goal 续轮是 core 合成消息：覆盖客户端载荷，无幂等键。
         request.message = crate::message::PendingMessage::text(round.prompt.clone());
         let visible_prompt = round.prompt.clone();
         let remaining = self
-            .goal
+            .goal_service()?
             .remaining_time()
             .ok_or_else(|| ApplicationError::new("no current goal time budget"))?;
         if remaining.is_zero() {
-            self.goal.disarm();
+            self.disarm_goal();
             return Err(ApplicationError::new("goal time budget is exhausted"));
         }
         let cancel = CancelToken::with_deadline(std::time::Instant::now() + remaining);
@@ -67,7 +71,7 @@ impl TrustedProjectApplication {
         match self.start_run_with_catalog(request, catalog, Some(round)) {
             Ok(handle) => Ok((handle, visible_prompt)),
             Err(error) => {
-                self.goal.disarm();
+                self.disarm_goal();
                 Err(error)
             }
         }
@@ -79,9 +83,7 @@ impl TrustedProjectApplication {
         run_plugins: Vec<Arc<dyn Plugin>>,
         goal_round: Option<crate::goal::GoalRound>,
     ) -> Result<RunHandle, ApplicationError> {
-        self.task
-            .ensure_start_allowed()
-            .map_err(ApplicationError::new)?;
+        self.ensure_execution_allowed()?;
         self.prepare_execution_slot()?;
         // 模型配置检查在前：无模型时立即失败，不为 MCP 白等。
         let (config, credentials) = self.model_state()?;
@@ -209,7 +211,7 @@ impl TrustedProjectApplication {
 
     pub fn cancel_active_run(&self) {
         self.cancel_workflow_continuation();
-        self.goal.disarm();
+        self.disarm_goal();
         self.transient_inputs.queue.pause();
         if let Some(handle) = &self.active_run {
             handle.cancel();
@@ -281,7 +283,7 @@ impl TrustedProjectApplication {
                 // A human interjection wins over unattended continuation. It
                 // still enters the current Run normally, while subsequent
                 // synthetic rounds are disarmed at the next boundary.
-                self.goal.disarm();
+                self.disarm_goal();
                 SteerOutcome::Queued {
                     receipt: reserved_receipt,
                 }
@@ -596,7 +598,11 @@ mod acceptance_cleanup_tests {
             check_digest: check.digest.clone(),
             accept_changes: false,
         };
-        app.task.begin(&resume, &check, Some(200000)).unwrap();
+        app.task
+            .as_ref()
+            .unwrap()
+            .begin(&resume, &check, Some(200000))
+            .unwrap();
         let approver: Arc<dyn PermissionApprover> = Arc::new(
             crate::test_support::CountingApprover(Arc::new(std::sync::atomic::AtomicUsize::new(0))),
         );

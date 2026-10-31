@@ -7,6 +7,10 @@ const DISABLED: &[&str] = &[
     "builtin.subagent",
     "builtin.mcp_adapter",
     "builtin.plan_mode",
+    "builtin.goal",
+    "builtin.task",
+    "builtin.jobs",
+    "builtin.scheduler",
 ];
 
 fn fixture() -> (ServeHandle, PathBuf, PathBuf) {

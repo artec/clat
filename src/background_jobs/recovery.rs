@@ -3,6 +3,8 @@ use super::*;
 use crate::session::{catalog::JobPhase, projection::ProjectionUnit};
 impl JobRegistry {
     pub(crate) fn recover(&self) -> Result<(), JobError> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("jobs.recover");
         let reader = self.sessions.query_reader();
         let snapshots = reader.list(&self.project).map_err(failed)?;
         let mut recent = Vec::new();
@@ -48,4 +50,16 @@ impl JobRegistry {
 }
 fn failed(error: impl ToString) -> JobError {
     JobError::new("persistence_failed").detail(error)
+}
+
+#[cfg(test)]
+impl JobRegistry {
+    pub(crate) fn seed_registered_for_test(&self, id: &SessionId) -> String {
+        self.bind(id.clone());
+        let entry = self.prepare_entry("never launched".into(), id).unwrap();
+        self.persist(&entry, JobPhase::Registered).unwrap();
+        self.unbind();
+        let id = entry.view().id.clone();
+        id
+    }
 }

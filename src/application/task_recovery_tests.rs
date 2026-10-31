@@ -826,7 +826,7 @@ fn ga1_rework_goal_cannot_bypass_an_unresolved_task_operation() {
     );
 }
 
-fn make_task_uncertain(app: &TrustedProjectApplication) {
+pub(super) fn make_task_uncertain(app: &TrustedProjectApplication) {
     use crate::tool::{ToolInvocation, ToolMiddleware, ToolNext};
     struct UncertainEffect;
     impl crate::Tool for UncertainEffect {
@@ -856,9 +856,15 @@ fn make_task_uncertain(app: &TrustedProjectApplication) {
         }
     }
     let c = app.task_check().unwrap();
-    app.task.begin(&task_request(app), &c, None).unwrap();
-    app.task.admit(1).unwrap();
     app.task
+        .as_ref()
+        .unwrap()
+        .begin(&task_request(app), &c, None)
+        .unwrap();
+    app.task.as_ref().unwrap().admit(1).unwrap();
+    app.task
+        .as_ref()
+        .unwrap()
         .execute(
             &ToolInvocation {
                 call_id: None,
@@ -870,7 +876,7 @@ fn make_task_uncertain(app: &TrustedProjectApplication) {
             &Invoke,
         )
         .unwrap();
-    app.task.settle(5).unwrap();
+    app.task.as_ref().unwrap().settle(5).unwrap();
     assert_eq!(
         app.task_state().unwrap().unwrap().operations[0].outcome,
         "unknown"
@@ -970,6 +976,8 @@ fn ga1_rework_cold_conflicting_goal_cannot_resume_arm_or_execute() {
         // Production callers cannot bypass the Application exclusion this way.
         let mut goal = app
             .goal
+            .as_ref()
+            .unwrap()
             .create(
                 "old conflicting goal",
                 crate::goal::GoalAcceptance::User,
@@ -978,7 +986,12 @@ fn ga1_rework_cold_conflicting_goal_cannot_resume_arm_or_execute() {
             )
             .unwrap();
         if paused {
-            goal = app.goal.pause(goal.state.revision).unwrap();
+            goal = app
+                .goal
+                .as_ref()
+                .unwrap()
+                .pause(goal.state.revision)
+                .unwrap();
         }
         app.close().unwrap();
         let mut app = crate::test_support::reopen_after_close(|| {
@@ -1011,7 +1024,7 @@ fn ga1_rework_cold_conflicting_goal_cannot_resume_arm_or_execute() {
         assert!(app.goal_arm(goal.state.revision).is_err());
         if !paused {
             // Even stale process-local arming cannot grant authority over a task.
-            app.goal.arm(goal.state.revision).unwrap();
+            app.goal.as_ref().unwrap().arm(goal.state.revision).unwrap();
         }
         assert!(app.start_goal_run(rework_request()).is_err());
         assert_eq!(calls.0.load(Ordering::SeqCst), 0);
@@ -1029,7 +1042,11 @@ fn ga1_rework_crash_between_reservation_and_binding_keeps_budget_and_retries_new
         app.task_create("survive admission gap".into(), vec![], budget())
             .unwrap();
         let check = app.task_check().unwrap();
-        app.task.begin(&task_request(&app), &check, None).unwrap();
+        app.task
+            .as_ref()
+            .unwrap()
+            .begin(&task_request(&app), &check, None)
+            .unwrap();
         if admitted {
             use crate::session::{event::payloads, run_journal::NewSessionEvent};
             // Commit the same admission facts, then drop the app before task binding.
@@ -1124,7 +1141,7 @@ fn ga1_rework_model_switch_invalidates_check_and_matches_actual_tool_visibility(
                 .unwrap()
                 .injection("inspection")
                 .unwrap(),
-            app.goal.injection().unwrap(),
+            app.goal.as_ref().unwrap().injection().unwrap(),
             Some("task".into()),
         );
         let available = context

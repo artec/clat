@@ -66,7 +66,7 @@ impl TrustedProjectApplication {
                 self.input_queue().prefer_initial(initial_id);
             }
             if idle {
-                self.goal.disarm();
+                self.disarm_goal();
             }
         }
         result
@@ -90,7 +90,7 @@ impl TrustedProjectApplication {
                 .lock()
                 .expect("goal interruption") = Some(goal.state.id);
         }
-        self.goal.disarm();
+        self.disarm_goal();
         if let Some(run) = &self.active_run {
             run.cancel();
         }

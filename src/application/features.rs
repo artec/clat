@@ -9,13 +9,18 @@ impl TrustedProjectApplication {
         ) {
             self.plan_service()?;
         }
+        if matches!(handoff.as_ref(), Some(Handoff::Goal { .. })) {
+            self.goal_service()?;
+        }
         Ok(handoff.take())
     }
     pub(super) fn installed_session_features(&self) {
         if let Some(plan) = &self.plan_mode {
             plan.materialized();
         }
-        self.goal.session_boundary();
+        if let Some(goal) = &self.goal {
+            goal.session_boundary();
+        }
         if let Some(subagents) = &self.subagents {
             subagents.session_boundary();
         }

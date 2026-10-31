@@ -47,6 +47,22 @@ The model tools `schedule_create`, `schedule_list`, `schedule_update` and
 produce drafts; model output contains no confirmation nonce. They cannot select
 another project or enable a task. Subagents cannot create schedules.
 
+## Static availability
+
+`builtin.scheduler` and `builtin.jobs` can be disabled independently in the
+storage-root `builtin-plugins.json`, taking effect after restart. Scheduler
+absence does not load scheduling state, restore automatic projects or poll for
+work. Jobs absence does not prevent time scheduling; job-triggered rules wait
+without reserving a new delivery, spending budget or changing their saved
+specification. The Tasks page explains unavailable sections while retaining the
+available section and ordinary process inspection.
+
+Re-enabling Scheduler restores the existing authorization and budget, including
+pending delivery identity. Periodic work handles only the most recent due
+occurrence, and overdue one-shot work may execute. Recovery does not unarchive
+sessions or grant project trust. Re-enabling Jobs marks unfinished work uncertain
+or interrupted; it never adopts an old PID or reruns the command.
+
 ## Terminal management
 
 `clat schedule list` and `clat schedule deliveries` inspect the current project's

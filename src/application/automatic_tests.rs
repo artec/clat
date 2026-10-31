@@ -2,7 +2,10 @@ use super::*;
 use crate::application::AutomaticRequest;
 use crate::scheduler::{DeliveryPhase, RulePhase, TimeRule, Trigger, WorkBudget};
 use std::time::Instant;
-fn draft(session: &SessionId, at: i64) -> crate::application::ScheduleDraft {
+pub(in crate::application) fn draft(
+    session: &SessionId,
+    at: i64,
+) -> crate::application::ScheduleDraft {
     crate::application::ScheduleDraft {
         title: None,
         notification: None,
@@ -23,7 +26,7 @@ fn draft(session: &SessionId, at: i64) -> crate::application::ScheduleDraft {
         },
     }
 }
-fn authorize(
+pub(in crate::application) fn authorize(
     app: &TrustedProjectApplication,
     rule: &crate::scheduler::Rule,
 ) -> crate::scheduler::Rule {

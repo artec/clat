@@ -141,11 +141,44 @@ services are not mounted, affected APIs return unavailable or omit optional data
 and normal model selection, notifications and conversation execution continue.
 Compaction, Todo, titles and contribution-only plugins can also be absent.
 
-**Current boundary:** several feature services are still required by Application
-ports, including goals, tasks, scheduling, development and drafts.
-They are protected by the current service contract, not declared permanent kernel
-components. Full independent disablement requires migrating those callers to
-explicit optional capability ports; the inventory does not disguise that debt.
+Goal, Task, background Jobs and Scheduler can also be independently disabled
+with `builtin.goal`, `builtin.task`, `builtin.jobs` and `builtin.scheduler`.
+All nine context/execution features can be absent together while ordinary
+conversation, native tools and normal session management continue to work.
+
+- Goal absence creates no execution service, continuation rounds or new Goal
+  context. History retains identity, revision, approval and budget facts, with
+  effective activation off. Re-enabling requires explicitly starting the Goal.
+  Plan editing and approval-only remain available when Plan is enabled; approve
+  and execute, new Goal creation and execution handoff require Goal before any
+  approval, cancellation or operation receipt is written.
+- Task absence creates no Task service, recovery checker, acceptance chain or
+  artifact scan. Session facts still enforce project/session ownership, directory
+  identity, unresolved-operation admission and Goal/Task exclusion. Previously
+  allowed ordinary conversation remains possible; continuing, changing, checking
+  or accepting the Task requires re-enabling it. Historical Task details remain
+  readable in Plans & Goals. Disabling a plugin never completes or clears work.
+- Jobs absence creates no registry or recovery scan and contributes no background
+  Job tools. `exec_command`, `write_stdin` and `tasks.list`/`tasks.logs` belong to
+  ProcessService and remain available. Task evidence about Jobs reports
+  `Unavailable`, without treating it as successful completion. On re-enable,
+  unfinished Job records are marked interrupted/uncertain, never adopted by PID
+  or replayed.
+- Scheduler absence creates no shared execution service, reads no scheduling
+  file, restores no automatic projects and starts no polling worker. Time rules
+  work independently of Jobs. Job-triggered rules retain their original facts
+  while Jobs is absent and reserve no new work or budget. Re-enabling Scheduler
+  preserves existing authorization, budgets and delivery idempotency: periodic
+  work catches only its latest occurrence; overdue one-shot work may still run.
+  Archived sessions stay archived and project trust is never granted by recovery.
+
+The task center loads Jobs and Scheduler separately and reports actual read
+failures while keeping other available content. Availability comes from the
+same startup plan on Web, Desktop and TUI.
+
+**Current boundary:** development and draft/attachment services remain required
+by Application ports and protected by the service contract. They are not
+permanent kernel declarations; their independent disablement remains future work.
 Ephemeral run resources and per-session preset trees are not listed.
 
 `builtin.task` owns acceptance orchestration and explicitly mounts built-in

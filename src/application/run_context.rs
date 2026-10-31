@@ -473,7 +473,9 @@ impl TrustedProjectApplication {
             skills,
             invoked_skill: None,
             memory,
-            goal: target.goal.injection().map_err(ApplicationError::new)?,
+            goal: super::execution_features::GoalRunPort(target.goal.clone())
+                .injection()
+                .map_err(ApplicationError::new)?,
             task: None,
             tool_access: access,
             tools: target.runtime.tools.clone(),

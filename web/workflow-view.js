@@ -13,7 +13,12 @@ function renderWorkflowView(view) {
   for(const [index,todo]of value.todos.entries()){
     list.append(navigationRow({title:todo.content,meta:()=>workflowText('todo_'+todo.status),icon:'task-list',selected:view.selection==='todo:'+index,action:()=>view.select('todo:'+index)}));
   }
-  if(view.selection.startsWith('plan:'))renderWorkflowPlan(view,value.documents.find(doc=>view.selection==='plan:'+doc.id+':'+doc.revision));
+  if(value.task)list.append(navigationRow({title:value.task.objective,meta:()=>CLATI18n.msg('extension.builtin.task.name'),icon:'task-list',selected:view.selection==='task',action:()=>view.select('task')}));
+  if(view.selection==='task'&&value.task){
+    detail.append(el('h2','',()=>value.task.objective),el('p','',()=>value.task.progress.summary));
+    if(!builtinEnabled(value,'builtin.task'))detail.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_task')));
+    const original=el('details');original.append(el('summary','',()=>CLATI18n.msg('dev.technical_details')),el('pre','review-diff',()=>JSON.stringify(value.task,null,2)));detail.append(original);
+  }else if(view.selection.startsWith('plan:'))renderWorkflowPlan(view,value.documents.find(doc=>view.selection==='plan:'+doc.id+':'+doc.revision));
   else if(view.selection.startsWith('todo:')){
     const todo=value.todos[Number(view.selection.split(':')[1])];
     if(todo)detail.append(el('h2','',()=>todo.content),el('p','',()=>CLATI18n.msg('workflow.todo_status',{status:CLATI18n.msg('workflow.todo_'+todo.status)})));
@@ -36,6 +41,10 @@ function renderWorkflowPlan(view,doc){
     for(const button of actions.querySelectorAll('button'))disableBuiltin(button,value,'builtin.plan_mode');
     detail.append(el('p','picker-hint',()=>retainedPlan(value)?CLATI18n.msg('extension.retained_plan'):builtinReason(value,'builtin.plan_mode')));
   }else if(!ready)detail.append(el('p','error',()=>workflowText('projection_unavailable')));
+  if(builtinEnabled(value,'builtin.plan_mode')&&!builtinEnabled(value,'builtin.goal')){
+    disableBuiltin(actions.firstElementChild,value,'builtin.goal');
+    detail.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));
+  }
   detail.append(el('h2','',()=>doc.title),el('p','picker-hint',()=>CLATI18n.msg('workflow.plan_revision',{revision:doc.revision,status:workflowText(doc.approved?'approved':'draft')})),actions,text);
 }
 function renderWorkflowGoal(view,goal){
@@ -44,6 +53,7 @@ function renderWorkflowGoal(view,goal){
     const overview=navigationOverview({title:()=>workflowText('no_goal'),description:()=>workflowText('no_plans'),icon:'plan'});
     const create=workflowViewButton(view,'create_goal',()=>renderWorkflowGoalForm(view));
     if(value.plan_mode)disableBuiltin(create,value,'builtin.plan_mode');
+    if(!builtinEnabled(value,'builtin.goal')){disableBuiltin(create,value,'builtin.goal');overview.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));}
     overview.append(create);
     detail.append(overview);return;
   }
@@ -55,6 +65,10 @@ function renderWorkflowGoal(view,goal){
     workflowViewButton(view,'accept_goal',()=>action('complete'),value.busy),
     workflowViewButton(view,'feedback_continue',()=>renderWorkflowGoalForm(view,goal),value.busy||value.plan_mode),
     workflowViewButton(view,'end_goal',()=>{if(confirm(workflowText('end_goal_confirm')))void action('clear');},value.busy));
+  if(!builtinEnabled(value,'builtin.goal')){
+    for(const button of actions.querySelectorAll('button'))disableBuiltin(button,value,'builtin.goal');
+    detail.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));
+  }
   detail.append(actions);
   if(goal.lastResult)detail.append(el('h3','',()=>workflowText('latest_result')),el('pre','review-diff',()=>goal.lastResult));
   if(goal.blockedReason)detail.append(el('p','picker-hint',()=>goal.blockedReason.code==='awaiting-user-acceptance'?workflowText('acceptance_help'):goal.blockedReason.message));
@@ -67,14 +81,15 @@ function renderWorkflowGoalForm(view,goal=null){
   const label=()=>workflowText(goal?'feedback_prompt':'goal_objective');CLATI18n.attribute(input,'aria-label',label);
   const submit=workflowViewButton(view,goal?'feedback_continue':'create_and_start',()=>{});submit.type='submit';
   form.append(el('label','',label),input,el('p','picker-hint',()=>workflowText('acceptance_help')),submit);
+  if(!builtinEnabled(view.value,'builtin.goal')){disableBuiltin(submit,view.value,'builtin.goal');form.append(el('p','picker-hint',()=>builtinReason(view.value,'builtin.goal')));}
   if(retainedPlan(view.value)){disableBuiltin(submit,view.value,'builtin.plan_mode');form.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));}
   view.detail.replaceChildren(form);view.page.dataset.detail='true';input.focus();
   form.onsubmit=async event=>{
-    event.preventDefault();if(!input.value.trim())return;submit.disabled=true;
+    event.preventDefault();if(submit.disabled||!input.value.trim())return;submit.disabled=true;
     const token=view.intent,session=state.sessionId;
     const intent=goal?{action:'goal',verb:'feedback',id:goal.id,revision:goal.revision,summary:input.value.trim()}:{action:'create_goal',objective:input.value.trim()};
     const done=await view.act(intent);
     if(token!==view.intent||session!==state.sessionId||!view.detail.contains(form))return;
-    if(done){view.editing=false;renderWorkflowView(view);}else submit.disabled=false;
+    if(done){view.editing=false;renderWorkflowView(view);}else submit.disabled=retainedPlan(view.value)||!builtinEnabled(view.value,'builtin.goal');
   };
 }

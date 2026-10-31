@@ -14,6 +14,7 @@ impl TrustedProjectApplication {
     pub fn workflow_details(&self) -> Result<Value, ApplicationError> {
         let plan = self.plan_state();
         let goal = self.goal_overview()?;
+        let task = self.task_state()?;
         let documents = crate::plan_mode::documents::historical(&self.sessions)
             .map_err(ApplicationError::new)?;
         let documents = documents
@@ -48,7 +49,7 @@ impl TrustedProjectApplication {
             json!({"builtin_availability":self.builtin_availability(),"session":self.current_session_id(),"plan_mode":plan.active,"documents":documents,"version":document_state.version,"generation":self.workflow.generation(),"review":review,
             "handoff":self.workflow.handoff.lock().expect("handoff").is_some(),
             "approved_plan":plan.approved.map(|p|json!({"text":p.text,"digest":p.digest,"event_seq":p.event_seq})),
-            "goal":goal,"todos":todos.iter().take(100).map(|t|json!({"content":t.content,"status":t.status.as_str()})).collect::<Vec<_>>(),
+            "goal":goal,"task":task,"todos":todos.iter().take(100).map(|t|json!({"content":t.content,"status":t.status.as_str()})).collect::<Vec<_>>(),
             "todos_truncated":todos.len()>100,"busy":busy,
             "presentation":crate::i18n::UiMessage::new("web.workflow_facts_note"),"note":"Plan Mode is policy; approved plan is durable text; todo is model-maintained; Goal is bounded durable execution state. These are distinct."}),
         )

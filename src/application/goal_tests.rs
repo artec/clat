@@ -286,6 +286,8 @@ fn user_only_acceptance_waits_for_confirmation_and_cas_is_strict() {
     assert!(application.goal_pause(created.state.revision + 1).is_err());
     application
         .goal
+        .as_ref()
+        .unwrap()
         .complete_candidate(created.state.revision, "model says done")
         .unwrap();
     let recorded = application.goal().unwrap().unwrap();
@@ -299,6 +301,8 @@ fn user_only_acceptance_waits_for_confirmation_and_cas_is_strict() {
     assert!(!recorded.armed);
     let progressed = application
         .goal
+        .as_ref()
+        .unwrap()
         .update_progress(recorded.state.revision, "still working")
         .unwrap();
     assert!(!progressed.armed);
@@ -332,6 +336,8 @@ fn resuming_a_blocked_goal_never_arms_continuation_implicitly() {
         .unwrap();
     let blocked = application
         .goal
+        .as_ref()
+        .unwrap()
         .block(created.state.revision, "needs-user", "user action required")
         .unwrap();
     assert!(!blocked.armed);

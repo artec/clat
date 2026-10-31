@@ -1,6 +1,8 @@
 use super::*;
 impl ControlStorage {
     pub(crate) fn read_schedules(&self) -> Result<Option<String>, String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("scheduler.read");
         let _guard = self.lock();
         crate::private_fs::read_private_text(&self.dir, "schedules.json", 2 * 1024 * 1024)
     }

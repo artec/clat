@@ -2900,5 +2900,7 @@
   "extension.builtin.extension_status.name": "擴充啟動狀態",
   "extension.builtin.extension_status.summary": "追蹤擴充的啟動與關閉狀態，本身不啟動外部工具。",
   "extension.retained_plan": "計畫擴充已關閉。此對話仍保留原有的計畫唯讀限制；編輯、審批或退出計畫模式前，請重新啟用擴充並重新啟動。",
-  "extension.retained_plan_label": "計畫（唯讀）"
+  "extension.retained_plan_label": "計畫（唯讀）",
+  "extension.retained_task": "任務擴充功能已關閉。歷史任務保留，未確認操作仍會阻止執行。繼續、修改、復原檢查及驗收須重新啟用擴充功能並重新啟動。",
+  "extension.job_source_paused": "背景作業已關閉。此作業觸發規則保留原有授權與預算，重新啟用擴充功能後恢復執行。"
 }

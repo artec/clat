@@ -24,7 +24,7 @@ pub struct ScheduleDraft {
 impl TrustedProjectApplication {
     pub fn schedules(&self) -> Result<Vec<Rule>, ApplicationError> {
         let mut rules = self
-            .scheduler
+            .scheduler_service()?
             .list(&self.schedule_project())
             .map_err(schedule_error)?;
         for rule in &mut rules {
@@ -33,18 +33,21 @@ impl TrustedProjectApplication {
         Ok(rules)
     }
     pub fn schedule_deliveries(&self) -> Result<Vec<Delivery>, ApplicationError> {
-        self.scheduler
+        self.scheduler_service()?
             .deliveries(&self.schedule_project())
             .map_err(schedule_error)
     }
     pub fn schedule_create(&self, draft: ScheduleDraft) -> Result<Rule, ApplicationError> {
+        self.scheduler_service()?;
         self.schedule_scope(&draft.session)?;
         let scope = WorkScope {
             project: self.schedule_project(),
             session: draft.session.clone(),
         };
         let spec = self.schedule_spec(draft)?;
-        self.scheduler.create(scope, spec).map_err(schedule_error)
+        self.scheduler_service()?
+            .create(scope, spec)
+            .map_err(schedule_error)
     }
     pub fn schedule_update(
         &self,
@@ -57,7 +60,7 @@ impl TrustedProjectApplication {
             return Err(schedule_message("invalid_rule"));
         }
         self.schedule_scope(&draft.session)?;
-        self.scheduler
+        self.scheduler_service()?
             .edit(
                 &self.schedule_project(),
                 id,
@@ -69,7 +72,7 @@ impl TrustedProjectApplication {
     pub fn schedule_review(&self, id: &str, revision: u64) -> Result<RuleReview, ApplicationError> {
         let rule = self.schedule_rule(id)?;
         self.resolve_automatic_model(&rule)?;
-        self.scheduler
+        self.scheduler_service()?
             .review(&self.schedule_project(), id, revision)
             .map_err(schedule_error)
     }
@@ -81,9 +84,10 @@ impl TrustedProjectApplication {
         digest: &str,
     ) -> Result<Rule, ApplicationError> {
         let rule = self.schedule_rule(id)?;
+        self.require_trigger_jobs(&rule.spec.trigger)?;
         self.schedule_scope(&rule.scope.session)?;
         self.resolve_automatic_model(&rule)?;
-        self.scheduler
+        self.scheduler_service()?
             .confirm(
                 &self.schedule_project(),
                 id,
@@ -95,25 +99,26 @@ impl TrustedProjectApplication {
             .map_err(schedule_error)
     }
     pub fn schedule_pause(&self, id: &str, revision: u64) -> Result<Rule, ApplicationError> {
-        self.scheduler
+        self.scheduler_service()?
             .pause(&self.schedule_project(), id, revision)
             .map_err(schedule_error)
     }
     pub fn schedule_resume(&self, id: &str, revision: u64) -> Result<Rule, ApplicationError> {
         let rule = self.schedule_rule(id)?;
+        self.require_trigger_jobs(&rule.spec.trigger)?;
         self.schedule_scope(&rule.scope.session)?;
         self.resolve_automatic_model(&rule)?;
-        self.scheduler
+        self.scheduler_service()?
             .resume(&self.schedule_project(), id, revision)
             .map_err(schedule_error)
     }
     pub fn schedule_delete(&self, id: &str, revision: u64) -> Result<(), ApplicationError> {
-        self.scheduler
+        self.scheduler_service()?
             .delete(&self.schedule_project(), id, revision)
             .map_err(schedule_error)
     }
     pub fn schedule_reload(&self) -> Result<(), ApplicationError> {
-        self.scheduler.reload().map_err(schedule_error)
+        self.scheduler_service()?.reload().map_err(schedule_error)
     }
     pub(super) fn schedule_project(&self) -> String {
         self.canonical_root.to_string_lossy().into_owned()
@@ -138,6 +143,7 @@ impl TrustedProjectApplication {
             .ok_or_else(|| schedule_message("not_found"))
     }
     fn schedule_spec(&self, draft: ScheduleDraft) -> Result<WorkSpec, ApplicationError> {
+        self.require_trigger_jobs(&draft.trigger)?;
         if let Trigger::Job { job_id } = &draft.trigger
             && !self
                 .jobs_reader()
@@ -157,6 +163,12 @@ impl TrustedProjectApplication {
             budget: draft.budget,
             model,
         })
+    }
+    pub(super) fn require_trigger_jobs(&self, trigger: &Trigger) -> Result<(), ApplicationError> {
+        if matches!(trigger, Trigger::Job { .. }) {
+            self.require_jobs()?;
+        }
+        Ok(())
     }
     pub(super) fn automatic_model(
         &self,
@@ -191,12 +203,13 @@ impl TrustedProjectApplication {
         request: &str,
     ) -> Result<Delivery, ApplicationError> {
         let rule = self.schedule_rule(id)?;
+        self.require_trigger_jobs(&rule.spec.trigger)?;
         self.schedule_scope(&rule.scope.session)?;
         self.resolve_automatic_model(&rule)?;
         if self.manual_work_blocks_automatic() {
             return Err(schedule_message("busy"));
         }
-        self.scheduler
+        self.scheduler_service()?
             .run_now(&self.schedule_project(), id, revision, request)
             .map_err(schedule_error)
     }

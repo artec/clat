@@ -48,6 +48,10 @@ These visual and interaction details are manually accepted on each platform.
 
 ## Conversation and contextual tools
 
+The outer window shell does not scroll, including during focus and message
+navigation. The toolbar keeps its full height; lists, messages and tool contents
+scroll inside their own panels.
+
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.
 The running session has a trailing spinner in the project list. A separate

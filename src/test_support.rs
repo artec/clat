@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+pub(crate) mod execution_observation;
 mod tool_once;
 pub use tool_once::ToolOnceScript;
 pub mod mcp_discovery;

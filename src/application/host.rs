@@ -110,7 +110,7 @@ impl HostApplication {
                 || app.development().has_live_work()
                 || app.has_background_jobs()
                 || app.has_automatic_work()
-                || !app.schedules()?.is_empty()
+                || app.has_schedule_rules(None)?
             {
                 return Ok(false);
             }

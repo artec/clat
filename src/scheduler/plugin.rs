@@ -14,7 +14,7 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: &[],
 };
 pub(crate) struct SchedulerPlugin {
-    pub scheduler: Arc<SchedulerService>,
+    pub scheduler: Arc<HostScheduler>,
     pub project: String,
 }
 impl Plugin for SchedulerPlugin {
@@ -22,9 +22,10 @@ impl Plugin for SchedulerPlugin {
         &DESCRIPTOR
     }
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
+        let scheduler = self.scheduler.mount();
         let tools = context.require(TOOL_SERVICE).map_err(pe)?;
         for tool in execution_tools(
-            self.scheduler.clone(),
+            scheduler.clone(),
             context.require(SESSION_SERVICE).map_err(pe)?,
             context.require(CONFIG_SERVICE).map_err(pe)?,
             self.project.clone(),
@@ -33,7 +34,7 @@ impl Plugin for SchedulerPlugin {
             context.defer(move || lease.revoke().map_err(|e| DisposeError::new(e.to_string())));
         }
         context
-            .provide(SCHEDULER_SERVICE, self.scheduler.clone())
+            .provide(SCHEDULER_SERVICE, scheduler)
             .map_err(|e| PluginError::new(e.to_string()))
     }
 }

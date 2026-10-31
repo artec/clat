@@ -11,6 +11,8 @@ mod market_view;
 #[cfg(test)]
 mod phase2_tests;
 #[cfg(test)]
+mod phase3_tests;
+#[cfg(test)]
 mod tests;
 
 pub(super) struct PluginReview {

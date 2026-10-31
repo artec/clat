@@ -46,14 +46,19 @@ impl SchedulerService {
             Ok(())
         })
     }
-    pub(crate) fn pending_claim(&self, project: &str) -> Result<Option<Claim>, ScheduleError> {
+    pub(crate) fn pending_claim(
+        &self,
+        project: &str,
+        eligible: impl Fn(&Rule) -> bool,
+    ) -> Result<Option<Claim>, ScheduleError> {
         let rules = self.list(project)?;
         for delivery in self.deliveries(project)? {
             if delivery.phase != DeliveryPhase::Reserved {
                 continue;
             }
             if let Some(rule) = rules.iter().find(|r| {
-                r.id == delivery.rule_id
+                eligible(r)
+                    && r.id == delivery.rule_id
                     && r.phase == RulePhase::Enabled
                     && r.authorization_valid()
                     && digest(&(&r.id, r.spec_digest(), delivery.scheduled_at)) == delivery.id
@@ -67,6 +72,8 @@ impl SchedulerService {
         Ok(None)
     }
     pub(crate) fn new(control: Arc<crate::control_storage::ControlStorage>) -> Self {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("scheduler.create");
         Self {
             control,
             lane: Mutex::new(Cache::default()),

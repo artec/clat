@@ -219,6 +219,25 @@ subscriptions remain independent of monitor ownership. Some Application feature
 contracts are still mandatory; their protected status documents coupling that
 remains to be removed, rather than redefining every feature as kernel.
 
+Goal, Task, Jobs and Scheduler execution services are optional capability ports.
+`application/execution_features.rs` concentrates absent Run hooks; no empty
+services are registered. `goal/facts.rs` and `task/facts.rs` read Session
+projections without execution activation. Task's passive owner checks use only
+project-directory identity and durable unresolved operations, without installing
+checkers or reading artifacts. Goal/Task exclusion remains a core admission rule.
+Target bindings replace Task middleware only when its actual owner is mounted;
+cancellation, permission and project-instruction observers remain intact.
+
+The Host owns a lazy `scheduler/owner.rs` cell. Only an actual Scheduler mount
+constructs the shared service; project mounts reuse that instance. Disabled
+Scheduler paths do not read control documents or create a Host polling worker.
+Jobs registry creation and restart recovery likewise belong to the Jobs mount.
+ProcessService retains ordinary Run processes and process inspection independently.
+Missing Jobs produces unavailable Task evidence and suspends job-triggered
+admission without changing stored rules or consuming new reservations. Existing
+scheduler recovery, trust, archived-session and admission-receipt checks remain
+in force after a restart.
+
 ## Application boundary
 
 `HostApplication` groups already trusted project runtimes under one storage-root
@@ -807,8 +826,9 @@ system snapshot and source path/scope/digest metadata travel in
 Agent phase 3 is four removable Trusted Project catalog entries rather than one
 new runtime layer:
 
-- `builtin.plan_mode` owns durable plan state, `/plan`, `exit_plan_mode`, and the
-  per-run `ToolAccessPolicy`;
+- `builtin.plan_mode` contributes `/plan`, `exit_plan_mode`, editing and review.
+  Session owns durable plan facts; the core tool registry owns the access slot
+  and retains per-run restrictions when the plugin is absent;
 - `builtin.skills` scans bundled/user/project `SKILL.md` layers and installs one
   run-bound frozen catalog plus the read-only `skill` loader;
 - `builtin.language_intelligence` reads user-level `lsp.json`, exposes one

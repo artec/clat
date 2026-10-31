@@ -41,6 +41,14 @@ pub enum WorkflowIntent {
 }
 impl TrustedProjectApplication {
     pub fn workflow_action(&mut self, request: WorkflowRequest) -> Result<Value, ApplicationError> {
+        if matches!(
+            &request.intent,
+            WorkflowIntent::Approve { execute: true, .. }
+                | WorkflowIntent::CreateGoal { .. }
+                | WorkflowIntent::Goal { .. }
+        ) {
+            self.goal_service()?;
+        }
         let requires_plan = match &request.intent {
             WorkflowIntent::Mode { mode } => mode == "plan" || self.plan_mode_active(),
             WorkflowIntent::SavePlan { .. }
@@ -183,7 +191,7 @@ impl TrustedProjectApplication {
             return Ok(json!({"pending":true}));
         }
         self.cancel_workflow_continuation();
-        self.goal.disarm();
+        self.disarm_goal();
         if self.plan_mode.is_some() || self.plan_mode_active() {
             self.set_plan_mode(mode == "plan")
                 .map_err(|e| e.to_string())?;
@@ -196,6 +204,9 @@ impl TrustedProjectApplication {
         revision: u64,
         execute: bool,
     ) -> Result<Value, String> {
+        if execute {
+            self.goal_service().map_err(|e| e.to_string())?;
+        }
         let doc = self.plan_plugin()?.document(id, revision)?;
         let latest = self
             .plan_plugin()?

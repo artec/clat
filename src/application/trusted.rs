@@ -414,7 +414,10 @@ impl TrustedProjectApplication {
     }
 
     pub fn goal(&self) -> Result<Option<crate::goal::GoalView>, ApplicationError> {
-        self.goal.current().map_err(ApplicationError::new)
+        self.goal
+            .as_ref()
+            .map_or_else(|| crate::goal::historical(&self.sessions), |s| s.current())
+            .map_err(ApplicationError::new)
     }
 
     pub fn goal_create(
@@ -424,12 +427,13 @@ impl TrustedProjectApplication {
         limits: crate::goal::GoalLimits,
         arm: bool,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.goal_service()?;
         self.reject_session_switch_while_busy()?;
         self.check_goal_task_exclusion()?;
         if arm {
             self.check_goal_activation()?;
         }
-        self.goal
+        self.goal_service()?
             .create(objective, acceptance, limits, arm)
             .map_err(ApplicationError::new)
     }
@@ -438,9 +442,10 @@ impl TrustedProjectApplication {
         &self,
         expected_revision: u64,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.goal_service()?;
         self.reject_session_switch_while_busy()?;
         self.check_goal_activation()?;
-        self.goal
+        self.goal_service()?
             .arm(expected_revision)
             .map_err(ApplicationError::new)
     }
@@ -449,9 +454,10 @@ impl TrustedProjectApplication {
         &self,
         expected_revision: u64,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.goal_service()?;
         self.reject_session_switch_while_busy()?;
         let result = self
-            .goal
+            .goal_service()?
             .pause(expected_revision)
             .map_err(ApplicationError::new);
         if result.is_ok() {
@@ -464,9 +470,10 @@ impl TrustedProjectApplication {
         &self,
         expected_revision: u64,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.goal_service()?;
         self.reject_session_switch_while_busy()?;
         self.check_goal_task_exclusion()?;
-        self.goal
+        self.goal_service()?
             .resume(expected_revision)
             .map_err(ApplicationError::new)
     }
@@ -476,9 +483,10 @@ impl TrustedProjectApplication {
         expected_revision: u64,
         summary: &str,
     ) -> Result<crate::goal::GoalView, ApplicationError> {
+        self.goal_service()?;
         self.reject_session_switch_while_busy()?;
         let result = self
-            .goal
+            .goal_service()?
             .complete_human(expected_revision, summary)
             .map_err(ApplicationError::new);
         if result.is_ok() {
@@ -488,9 +496,10 @@ impl TrustedProjectApplication {
     }
 
     pub fn goal_clear(&self, expected_revision: u64) -> Result<(), ApplicationError> {
+        self.goal_service()?;
         self.reject_session_switch_while_busy()?;
         let result = self
-            .goal
+            .goal_service()?
             .clear(expected_revision)
             .map_err(ApplicationError::new);
         if result.is_ok() {
@@ -992,7 +1001,9 @@ impl TrustedProjectApplication {
         if let Some(plan) = &self.plan_mode {
             plan.reset_for_new();
         }
-        self.goal.reset_for_new();
+        if let Some(goal) = &self.goal {
+            goal.reset_for_new();
+        }
         if let Some(subagents) = &self.subagents {
             subagents.session_boundary();
         }
@@ -1615,7 +1626,9 @@ impl TrustedProjectApplication {
         {
             errors.push(error.to_string());
         }
-        if let Err(error) = self.jobs.close() {
+        if let Some(jobs) = &self.jobs
+            && let Err(error) = jobs.close()
+        {
             errors.push(error.presentation().english());
         }
         if let Err(error) = self.flush_input_references() {

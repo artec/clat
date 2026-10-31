@@ -10,7 +10,7 @@ const FEATURES: [&str; 5] = [
     "builtin.mcp_adapter",
     "builtin.plan_mode",
 ];
-fn mount(project: &Project, state: &std::path::Path) -> HostApplication {
+pub(super) fn mount(project: &Project, state: &std::path::Path) -> HostApplication {
     HostApplication::new(
         BootstrapApplication::open(project.clone(), state.to_owned())
             .unwrap()
@@ -21,7 +21,7 @@ fn mount(project: &Project, state: &std::path::Path) -> HostApplication {
             .unwrap(),
     )
 }
-fn policy(state: &std::path::Path, disabled: &[&str]) {
+pub(super) fn policy(state: &std::path::Path, disabled: &[&str]) {
     std::fs::create_dir_all(state).unwrap();
     std::fs::write(
         state.join("builtin-plugins.json"),
@@ -38,7 +38,7 @@ mod lifecycle;
 #[path = "phase2_tests/retained_plan_tests.rs"]
 mod retained_plan;
 
-fn request() -> (
+pub(super) fn request() -> (
     crate::ApplicationRunRequest,
     std::sync::mpsc::Receiver<crate::application::ApplicationRunResult>,
 ) {
@@ -59,7 +59,7 @@ fn request() -> (
     )
 }
 
-fn run(app: &mut crate::TrustedProjectApplication) {
+pub(super) fn run(app: &mut crate::TrustedProjectApplication) {
     let (request, receiver) = request();
     let handle = app.start_run(request).unwrap();
     receiver

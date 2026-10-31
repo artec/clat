@@ -156,6 +156,9 @@ struct LiveState {
     armed_session: Option<SessionId>,
 }
 
+mod facts;
+pub(crate) use facts::historical;
+
 pub(crate) struct GoalService {
     sessions: Arc<SessionService>,
     project_root: PathBuf,
@@ -165,6 +168,8 @@ pub(crate) struct GoalService {
 
 impl GoalService {
     pub(crate) fn new(sessions: Arc<SessionService>, project_root: PathBuf) -> Self {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("goal.create");
         Self {
             sessions,
             project_root,

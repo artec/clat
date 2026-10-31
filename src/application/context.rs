@@ -34,7 +34,10 @@ impl TrustedProjectApplication {
         // `/context` has no next user prompt yet, so it reports a zero actual
         // memory injection rather than guessing which records a future query
         // would retrieve. The fixed budget remains visible in the DTO.
-        let goal = self.goal.injection().map_err(ApplicationError::new)?;
+        let goal = self
+            .goal_port()
+            .injection()
+            .map_err(ApplicationError::new)?;
         // SC-2: `/skill <name>` 武装的显式调用属于"下一次请求"，/context
         // 如实计入其指令层（只读一瞥，不消费武装位）。
         let (invoked_skill, invoked_diagnostic) = self.peek_invoked_skill(&skills);
@@ -44,82 +47,102 @@ impl TrustedProjectApplication {
             invoked_skill,
             crate::memory::MemoryInjection::default(),
             goal,
-            self.task.injection().map_err(ApplicationError::new)?,
+            self.task_port()
+                .injection()
+                .map_err(ApplicationError::new)?,
         );
         let final_system = crate::plugins::services::compose_instructions(
             &run_context.instructions.with_goal,
             instruction_snapshot.as_ref(),
         );
         let history = self.current_model_history()?;
-        let tools = &run_context.tool_definitions;
-
-        let estimate_instructions = |text: &str| {
-            crate::model::estimate_request_tokens((!text.is_empty()).then_some(text), &[], &[])
-        };
-        let base_total = estimate_instructions(&run_context.instructions.base);
-        let plan_total = estimate_instructions(&run_context.instructions.with_plan);
-        let skills_total = estimate_instructions(&run_context.instructions.with_skills);
-        let invoked_total = estimate_instructions(&run_context.instructions.with_invoked);
-        let goal_total = estimate_instructions(&run_context.instructions.with_goal);
-        let system_total = estimate_instructions(&final_system);
-        let model_options = context_model_options(&config);
-        let (projected_history, image_projection) = crate::model::preview_items_for_image_budget(
+        Ok(estimate_snapshot(
+            &config,
+            &run_context,
+            &final_system,
             &history,
-            (!final_system.is_empty()).then_some(final_system.as_str()),
-            tools,
-            &model_options,
-        );
-        let with_history = crate::model::estimate_request_tokens(
-            (!final_system.is_empty()).then_some(final_system.as_str()),
-            &projected_history,
-            &[],
-        );
-        let input_total = crate::model::estimate_request_tokens(
-            (!final_system.is_empty()).then_some(final_system.as_str()),
-            &projected_history,
-            tools,
-        );
-        let output_reserve = u64::from(config.output_limit.unwrap_or(4096));
+            &skills,
+            invoked_diagnostic,
+        ))
+    }
+}
 
-        Ok(super::ContextEstimateSnapshot {
-            estimator: format!(
-                "model::estimate_request_tokens conservative estimate ({})",
-                crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION
-            ),
-            unit: "tokens".into(),
-            base_prompt_estimate: base_total,
-            project_instructions_estimate: system_total.saturating_sub(goal_total),
-            plan_policy_estimate: plan_total.saturating_sub(base_total),
-            skill_catalog_estimate: skills_total.saturating_sub(plan_total),
-            invoked_skill_estimate: invoked_total.saturating_sub(skills_total),
-            goal_policy_estimate: goal_total.saturating_sub(invoked_total),
-            memory_estimate: run_context.memory_bytes as u64,
-            memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
-            tool_schemas_estimate: input_total.saturating_sub(with_history),
-            history_estimate: with_history.saturating_sub(system_total),
-            image_count: image_projection.retained_images,
-            image_original_count: image_projection.original_images,
-            image_offloaded_count: image_projection.offloaded_images,
-            image_bytes: image_projection.retained_bytes,
-            image_token_estimate: image_projection.retained_tokens,
-            image_token_safety_factor: crate::media::IMAGE_TOKEN_SAFETY_FACTOR,
-            output_reserve_estimate: output_reserve,
-            input_estimate: input_total,
-            total_estimate: input_total.saturating_add(output_reserve),
-            tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
-            skill_names: skills
-                .entries
-                .iter()
-                .map(|entry| entry.name.clone())
-                .collect(),
-            skill_diagnostics: {
-                let mut diagnostics = skill_diagnostics_dto(&skills);
-                if let Some(diagnostic) = invoked_diagnostic {
-                    diagnostics.push(diagnostic);
-                }
-                diagnostics
-            },
-        })
+fn estimate_snapshot(
+    config: &crate::model::ModelConfig,
+    run_context: &super::run_context::RunContextSnapshot,
+    final_system: &str,
+    history: &[ModelItem],
+    skills: &crate::skills::SkillCatalogSnapshot,
+    invoked_diagnostic: Option<super::ContextSkillDiagnostic>,
+) -> super::ContextEstimateSnapshot {
+    let tools = &run_context.tool_definitions;
+
+    let estimate_instructions = |text: &str| {
+        crate::model::estimate_request_tokens((!text.is_empty()).then_some(text), &[], &[])
+    };
+    let base_total = estimate_instructions(&run_context.instructions.base);
+    let plan_total = estimate_instructions(&run_context.instructions.with_plan);
+    let skills_total = estimate_instructions(&run_context.instructions.with_skills);
+    let invoked_total = estimate_instructions(&run_context.instructions.with_invoked);
+    let goal_total = estimate_instructions(&run_context.instructions.with_goal);
+    let system_total = estimate_instructions(final_system);
+    let model_options = context_model_options(config);
+    let (projected_history, image_projection) = crate::model::preview_items_for_image_budget(
+        history,
+        (!final_system.is_empty()).then_some(final_system),
+        tools,
+        &model_options,
+    );
+    let with_history = crate::model::estimate_request_tokens(
+        (!final_system.is_empty()).then_some(final_system),
+        &projected_history,
+        &[],
+    );
+    let input_total = crate::model::estimate_request_tokens(
+        (!final_system.is_empty()).then_some(final_system),
+        &projected_history,
+        tools,
+    );
+    let output_reserve = u64::from(config.output_limit.unwrap_or(4096));
+
+    super::ContextEstimateSnapshot {
+        estimator: format!(
+            "model::estimate_request_tokens conservative estimate ({})",
+            crate::media::IMAGE_TOKEN_ESTIMATOR_VERSION
+        ),
+        unit: "tokens".into(),
+        base_prompt_estimate: base_total,
+        project_instructions_estimate: system_total.saturating_sub(goal_total),
+        plan_policy_estimate: plan_total.saturating_sub(base_total),
+        skill_catalog_estimate: skills_total.saturating_sub(plan_total),
+        invoked_skill_estimate: invoked_total.saturating_sub(skills_total),
+        goal_policy_estimate: goal_total.saturating_sub(invoked_total),
+        memory_estimate: run_context.memory_bytes as u64,
+        memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
+        tool_schemas_estimate: input_total.saturating_sub(with_history),
+        history_estimate: with_history.saturating_sub(system_total),
+        image_count: image_projection.retained_images,
+        image_original_count: image_projection.original_images,
+        image_offloaded_count: image_projection.offloaded_images,
+        image_bytes: image_projection.retained_bytes,
+        image_token_estimate: image_projection.retained_tokens,
+        image_token_safety_factor: crate::media::IMAGE_TOKEN_SAFETY_FACTOR,
+        output_reserve_estimate: output_reserve,
+        input_estimate: input_total,
+        total_estimate: input_total.saturating_add(output_reserve),
+        tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
+        skill_names: skills
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect(),
+        skill_diagnostics: {
+            let mut diagnostics = skill_diagnostics_dto(skills);
+            if let Some(diagnostic) = invoked_diagnostic {
+                diagnostics.push(diagnostic);
+            }
+            diagnostics
+        },
     }
 }
 

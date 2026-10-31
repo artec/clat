@@ -2,6 +2,7 @@
 pub(crate) mod acceptance;
 mod check;
 mod execution;
+pub(crate) mod facts;
 mod model_view;
 pub(crate) mod plugin;
 pub(crate) mod projection;

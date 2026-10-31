@@ -438,6 +438,15 @@ configuration, stop CLAT, edit the storage-root `builtin-plugins.json`, and
 restart; see [static composition](plugins.md#static-composition-and-absence-contracts).
 Only entries whose project instance has `configurable: true` can currently be
 disabled. A restart applies the plan; this view does not hot-unplug services.
+Goal, Task, Jobs and Scheduler are independently configurable, alongside Skills,
+Memory, Subagent, MCP and Plan Mode. Disabling execution plugins preserves
+historical work and safety restrictions. Old Task unresolved operations still
+block execution; Task continuation, edits, recovery checks and acceptance require
+re-enabling it. Goal history shows inactive and requires an explicit start after
+re-enable. Plan approval-only can work without Goal; approve-and-execute cannot.
+The Tasks page loads available Jobs and schedules independently. Ordinary command
+processes remain under Current Tasks, including when persistent Task and Jobs
+are disabled. See the [absence contracts](plugins.md#static-composition-and-absence-contracts).
 Arrows select, `/` edits the search filter, Enter finishes search,
 R refreshes, and V switches market manifest generation v1/v2. Browse and search
 use the host's verified index; a usable signed cache remains available offline.

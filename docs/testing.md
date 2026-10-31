@@ -1350,3 +1350,16 @@ or list size. Compaction regression coverage also places essential evidence afte
 2,000 characters and requires every character of a large idle summarization input
 to reach bounded map requests; the model-written result still needs separate
 semantic evaluation against real tasks.
+
+
+Execution-plugin absence coverage mounts isolated Hosts for all 16 Goal/Task/
+Jobs/Scheduler combinations, then resolves all 512 context/execution plans using
+descriptor-only plugins whose mount method panics. Per-test-thread probes count
+service construction, Job recovery and schedule reads. Lifecycle tests cover
+all-nine-off Run/cancellation/reopen, native process execution, external adapter
+reload, passive Task ownership/uncertainty, Goal approval-only versus execution,
+Jobs-unavailable evidence and scheduling recovery across reserved/admitted/settled
+states. Fixtures preserve existing receipt and storage validators. Frontend
+section-loading tests assert RPC absence and failure isolation, without pinning
+wording or layout. These are local checks; native Desktop, Windows and release
+acceptance remain separate owner-controlled verification.

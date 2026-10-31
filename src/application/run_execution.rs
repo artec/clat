@@ -186,12 +186,12 @@ struct RunWorkerDeps {
     sessions: Arc<crate::session::use_cases::SessionService>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
     process_service: Arc<crate::process::ProcessService>,
-    jobs: Arc<crate::background_jobs::JobRegistry>,
+    jobs: Option<Arc<crate::background_jobs::JobRegistry>>,
     monitor: Option<Arc<dyn crate::plugins::services::MonitorService>>,
     compactor: Option<Arc<dyn crate::plugins::services::HistoryCompactor>>,
     todo_service: Option<Arc<crate::plugins::services::TodoService>>,
-    goal_service: Arc<crate::goal::GoalService>,
-    task_service: Arc<crate::task::TaskService>,
+    goal_service: super::execution_features::GoalRunPort,
+    task_service: super::execution_features::TaskRunPort,
     subagent_service: Option<Arc<crate::subagent::SubagentService>>,
     titler: Option<Arc<dyn crate::plugins::services::SessionTitler>>,
     title_sender: Option<mpsc::SyncSender<AutotitleJob>>,
@@ -548,9 +548,9 @@ impl RunWorkerDeps {
     fn bind_target(&mut self, target: &super::target_services::TargetServices) {
         self.sessions = target.sessions.clone();
         self.process_service = target.process.clone();
-        self.task_service = target.task.clone();
+        self.task_service = super::execution_features::TaskRunPort(target.task.clone());
         self.todo_service = Some(target.todo.clone());
-        self.goal_service = target.goal.clone();
+        self.goal_service = super::execution_features::GoalRunPort(target.goal.clone());
         self.permission_mode_snapshot = target
             .mode
             .as_ref()
@@ -583,12 +583,12 @@ impl RunWorkerDeps {
             sessions: Arc::clone(&app.sessions),
             agent: Arc::clone(&app.agent),
             process_service: Arc::clone(&app.process_service),
-            jobs: Arc::clone(&app.jobs),
+            jobs: app.jobs.clone(),
             monitor: app.monitor.clone(),
             compactor: app.compactor.clone(),
             todo_service: app.todo.clone(),
-            goal_service: Arc::clone(&app.goal),
-            task_service: Arc::clone(&app.task),
+            goal_service: app.goal_port(),
+            task_service: app.task_port(),
             subagent_service: app.subagents.clone(),
             titler: app.titler.clone(),
             title_sender: app

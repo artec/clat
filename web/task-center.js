@@ -1,3 +1,11 @@
+/* Independent sections: configured absence skips RPC; genuine failures stay visible. */
+async function loadTaskCenterContent(availability,call=rpc){
+  const requests=[['builtin.jobs','jobs.list','jobs'],['builtin.scheduler','schedule.list','rules'],['builtin.scheduler','schedule.deliveries','deliveries']];
+  const results=await Promise.allSettled(requests.map(([id,method,key])=>builtinEnabled(availability,id)?call(method,{}):Promise.resolve({[key]:[]})));
+  const content={jobs:[],rules:[],deliveries:[],errors:[]};
+  results.forEach((result,index)=>{const key=requests[index][2];if(result.status==='fulfilled')content[key]=result.value[key];else content.errors.push(result.reason);});
+  return content;
+}
 /* Lists and details belong to the task page; the global inspector is independent. */
 let taskCenter = null;
 function createTaskCenter() {
@@ -8,7 +16,7 @@ function createTaskCenter() {
   const query = el('input'); query.type = 'search';CLATI18n.bind(query,'placeholder',()=>pageText('search_tasks')); CLATI18n.attribute(query, 'aria-label', () => pageText('search_tasks'));
   const status = el('p', 'settings-note'); status.setAttribute('role', 'status');
   const view=createNavigationPage(page,{title:()=>shellText('tasks'),query,searchLabel:()=>pageText('search_tasks')}),list=view.list,detail=view.body,head=view.head;
-  const actions=()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>refresh()),...(scheduleActions?[viewAction('create','plus',()=>pageText('create_task'),()=>scheduleActions.create())]:[])];
+  const actions=()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>refresh()),...(scheduleActions?[viewAction('create','plus',()=>pageText('create_task'),()=>scheduleActions.create(),true,()=>builtinEnabled(state.workbench,'builtin.scheduler'))]:[])];
   view.context({actions});
   const toolbar=view.filters;toolbar.append(filter);
   const project=el('select');project.id='task-project';CLATI18n.attribute(project,'aria-label',()=>pageText('project_scope'));toolbar.prepend(project);
@@ -47,12 +55,13 @@ function createTaskCenter() {
   async function refresh() {
     const request = ++generation;
     try {
-      const values = await Promise.all([rpc('jobs.list', {}), rpc('schedule.list', {}), rpc('schedule.deliveries', {})]);
+      const values=await loadTaskCenterContent(state.workbench);
       if (request !== generation || !pageIsOpen(page)) return;
-      [jobs, rules, deliveries] = [values[0].jobs, values[1].rules, values[2].deliveries]; status.textContent='';rows();
+      ({jobs,rules,deliveries}=values);
+      CLATI18n.bind(status,'textContent',()=>[...['builtin.jobs','builtin.scheduler'].filter(id=>!builtinEnabled(state.workbench,id)).map(id=>builtinReason(state.workbench,id)),...values.errors.map(error=>error.message)].join(' · '));rows();
       if(restoreId && selected?.id!==restoreId){const rule=rules.find(r=>r.id===restoreId),job=jobs.find(j=>j.id===restoreId);if(rule)show({id:rule.id,type:'schedules',value:rule});else if(job)show({id:job.id,type:'jobs',value:job});}
       if(selected){const latest=(selected.type==='schedules'?rules:jobs).find(item=>item.id===selected.id);if(!latest){selected=null;returnConversationPane();view.reset();detail.classList.remove('has-live-conversation');}else if(latest.revision!==selected.value.revision || latest.state!==selected.value.state){reading=detail.scrollTop;show({...selected,value:latest},true);}}
-      if (!selected) {detail.replaceChildren(pageEmpty('task_intro', pageAction('create_task', () => scheduleActions.create(), true)));const overview=el('div','task-overview');for(const key of ['attention','running','upcoming']){const button=pageAction(key,()=>{filter.value=key;rows();});overview.append(button);}detail.prepend(overview);const examples=el('div','task-examples');for(const key of ['example_review','example_summary']){const button=pageAction(key,()=>scheduleActions.create(key));button.classList.add('task-example');button.append(el('small','',()=>pageText(key+'_description')));examples.append(button);}detail.append(examples);}
+      if (!selected) {const create=pageAction('create_task', () => scheduleActions.create(), true);disableBuiltin(create,state.workbench,'builtin.scheduler');detail.replaceChildren(pageEmpty('task_intro', create));const overview=el('div','task-overview');for(const key of ['attention','running','upcoming']){const button=pageAction(key,()=>{filter.value=key;rows();});overview.append(button);}detail.prepend(overview);const examples=el('div','task-examples');for(const key of ['example_review','example_summary']){const button=pageAction(key,()=>scheduleActions.create(key));disableBuiltin(button,state.workbench,'builtin.scheduler');button.classList.add('task-example');button.append(el('small','',()=>pageText(key+'_description')));examples.append(button);}detail.append(examples);}
     } catch (error) { if (request === generation) fail(error); }
   }
   filter.onchange=()=>{rows();const route='tasks?type='+filter.value+(selected?'&task='+encodeURIComponent(selected.id):'');dom.app.dataset.page=route;context.navigatePage(route);};query.oninput=rows;
@@ -60,7 +69,7 @@ function createTaskCenter() {
   page.addEventListener('clat:page-enter',()=>{if(selected)show(selected,true);});
   page.addEventListener('clat:page-leave', () => { generation++; selection++; reader?.dispose(); returnConversationPane(); });
   for (const type of ['clat:job-change','clat:background-run']) window.addEventListener(type, () => { if (pageIsOpen(page)) void refresh(); });
-  window.addEventListener('clat:workbench-updated',()=>{if(borrowedConversation && borrowedConversation.session!==state.sessionId && selected)show(selected);});
+  window.addEventListener('clat:workbench-updated',()=>{if(pageIsOpen(page))void refresh();if(borrowedConversation && borrowedConversation.session!==state.sessionId && selected)show(selected);});
   const trigger = sidebarToolButton('jobs-open', 'jobs', () => shellText('tasks')); trigger.hidden = true;
   trigger.onclick = () => { presentPage(page); void refresh(); };
   document.querySelector('.sidebar-footer').append(trigger);
@@ -70,7 +79,7 @@ function createTaskCenter() {
 function installTaskNotifications() {
   const seen=new Set();let initialized=false,pending=false;
   async function refresh(){
-    if(pending||!state.connected)return;pending=true;
+    if(pending||!state.connected||!builtinEnabled(state.workbench,'builtin.scheduler'))return;pending=true;
     try{const [rules,log]=await Promise.all([rpc('schedule.list',{}),rpc('schedule.deliveries',{})]);
       for(const delivery of log.deliveries.filter(d=>d.finished_at!=null)){
         const key=workspacePrefix+':'+delivery.id+':'+delivery.phase;if(seen.has(key))continue;seen.add(key);if(seen.size>1024)seen.delete(seen.values().next().value);
@@ -107,6 +116,10 @@ function renderScheduleTask(detail,rule,{actionsPort,deliveries,current}){
       const commands=el('div','task-menu-items');commands.append(pageAction('duplicate',()=>{menu.open=false;actionsPort.duplicate(rule);}));
       if(rule.phase==='paused')commands.append(pageAction('resume',()=>void actionsPort.change(rule,'resume')));
       commands.append(pageAction('delete',()=>{if(window.confirm(CLATI18n.msg('schedule.delete_confirm')))void actionsPort.change(rule,'delete');}));menu.append(commands);actions.append(menu);
+      if(rule.spec.trigger.kind==='job'&&!builtinEnabled(state.workbench,'builtin.jobs')){
+        for(const button of actions.querySelectorAll('button'))if(['edit','duplicate','review','resume'].some(key=>button.dataset.action===key))disableBuiltin(button,state.workbench,'builtin.jobs');
+        detail.append(el('p','settings-note',()=>CLATI18n.msg('extension.job_source_paused')));
+      }
       detail.append(el('h3', '', rule.spec.title || rule.spec.instruction.split('\n')[0]),el('p','page-scope',()=>pageText('task_scope',{session:state.sessions.find(s=>s.id===rule.scope.session)?.title||rule.scope.session,runs:String(rule.used.runs),limit:String(rule.spec.budget.max_runs)})), actions);
       if(rule.blocked)detail.append(el('p','error',()=>CLATI18n.msg(rule.blocked.includes('.')?rule.blocked:'schedule.'+rule.blocked)));
       const history = el('details'); history.append(el('summary', '', () => pageText('deliveries')));

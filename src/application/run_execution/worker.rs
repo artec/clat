@@ -37,7 +37,9 @@ impl RunWorker {
             header_reason,
             context,
         } = start;
-        deps.jobs.bind(input.session_id.clone());
+        if let Some(jobs) = &deps.jobs {
+            jobs.bind(input.session_id.clone());
+        }
         if let Some(todo) = &deps.todo_service {
             todo.bind_run(&input.session_id, Arc::clone(&input.journal));
         }
@@ -79,7 +81,9 @@ impl RunWorker {
         }
     }
     fn clear_run_slots(&self) {
-        self.deps.jobs.unbind();
+        if let Some(jobs) = &self.deps.jobs {
+            jobs.unbind();
+        }
         self.deps.slots.clear();
     }
     pub(super) fn run(mut self) {

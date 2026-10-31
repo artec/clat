@@ -98,7 +98,7 @@ fn scheduler_delayed_periodic_work_catches_only_latest_and_clock_rollback_never_
     let reopened = SchedulerService::new(f.control.clone());
     assert_eq!(
         reopened
-            .pending_claim(&f.scope.project)
+            .pending_claim(&f.scope.project, |_| true)
             .unwrap()
             .unwrap()
             .delivery

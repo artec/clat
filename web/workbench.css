@@ -1,5 +1,7 @@
 /* Shared visual system: permanent navigation, optional project list and work area. */
-.project-view, .project-context { height: 100%; min-width: 0; }
+/* The window shell is never a scroll owner, including focus/scrollIntoView. */
+html, body { overflow: clip; }
+.project-view, .project-context { height: 100%; min-width: 0; overflow: clip; }
 .project-directory { display: flex; flex-direction: column; gap: 20px; padding: 8px 8px 24px; }
 .project-directory-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; text-align: start; color: var(--text-soft); }
 .project-directory-row:hover { background: var(--surface-input); color: var(--text); }
@@ -15,6 +17,7 @@
 }
 .app {
   position:relative;
+  overflow:clip;
   --toolbar-height: 48px;
   --canvas-radius: 16px;
   --canvas-gutter: 8px;
@@ -24,7 +27,7 @@
   grid-template-rows: var(--toolbar-height) minmax(0, 1fr);
   grid-template-areas: "toolbar toolbar toolbar" "global content inspector";
 }
-.application-toolbar { position:relative;grid-area: toolbar; display: flex; align-items: center; gap: 10px; padding: 0 12px; min-width: 0; background: var(--chrome-bg); border: 0; user-select: none; z-index: 45; }
+.application-toolbar { position:relative;grid-area: toolbar; align-self:start; height:var(--toolbar-height); min-height:var(--toolbar-height); display: flex; align-items: center; gap: 10px; padding: 0 12px; min-width: 0; background: var(--chrome-bg); border: 0; user-select: none; z-index: 45; }
 .application-toolbar .shell-button { padding: 7px; min-height: 30px; }
 .application-toolbar .shell-label { display: none; }
 .application-toolbar [hidden] { display: none !important; }

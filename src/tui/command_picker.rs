@@ -138,7 +138,17 @@ impl CommandPicker {
         }
     }
     fn load_absent_features(&mut self, catalog: &Value) {
-        for name in ["skills", "memory", "subagent", "mcp_adapter", "plan_mode"] {
+        for name in [
+            "skills",
+            "memory",
+            "subagent",
+            "mcp_adapter",
+            "plan_mode",
+            "goal",
+            "task",
+            "jobs",
+            "scheduler",
+        ] {
             let id = format!("builtin.{name}");
             let value = &catalog["builtin_availability"][&id];
             if value["enabled"] != false {

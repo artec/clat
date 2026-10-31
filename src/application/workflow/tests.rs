@@ -369,7 +369,10 @@ fn plan_mode_menu_revises_the_current_goals_bound_plan() {
     app.plan_service()
         .unwrap()
         .bind_goal_atomically(&doc.id, 1, &goal_id, |event| {
-            app.goal.create_for_plan(&doc.title, &goal_id, &[event])
+            app.goal
+                .as_ref()
+                .unwrap()
+                .create_for_plan(&doc.title, &goal_id, &[event])
         })
         .unwrap();
     action(
@@ -403,6 +406,8 @@ fn human_acceptance_feedback_resumes_the_same_goal_with_durable_context() {
         .unwrap();
     let candidate = app
         .goal
+        .as_ref()
+        .unwrap()
         .complete_candidate(goal.state.revision, "ready for review")
         .unwrap();
     action(
@@ -420,6 +425,8 @@ fn human_acceptance_feedback_resumes_the_same_goal_with_durable_context() {
     assert_eq!(current.state.phase, crate::goal::GoalPhase::Active);
     assert!(
         app.goal
+            .as_ref()
+            .unwrap()
             .injection()
             .unwrap()
             .instructions

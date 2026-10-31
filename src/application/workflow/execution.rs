@@ -27,6 +27,7 @@ impl TrustedProjectApplication {
         Ok(())
     }
     pub(super) fn request_workflow_goal(&self, plan: Option<(String, u64)>) -> Result<(), String> {
+        self.goal_service().map_err(|e| e.to_string())?;
         if plan.is_some() {
             self.plan_plugin()?;
         }
@@ -120,8 +121,9 @@ impl TrustedProjectApplication {
         plan: Option<(String, u64)>,
     ) -> Result<(), String> {
         self.plan_plugin()?;
-        self.goal.disarm();
+        self.disarm_goal();
         self.set_plan_mode(true).map_err(|e| e.to_string())?;
+        self.goal_service().map_err(|e| e.to_string())?;
         if let Some((id, revision)) = plan {
             let doc = self.plan_plugin()?.document(&id, revision)?;
             self.plan_plugin()?
@@ -150,7 +152,9 @@ impl TrustedProjectApplication {
                     self.check_goal_activation().map_err(|e| e.to_string())?;
                     self.plan_plugin()?
                         .bind_goal_atomically(&id, revision, &goal_id, |event| {
-                            self.goal.create_for_plan(&doc.title, &goal_id, &[event])
+                            self.goal_service()
+                                .map_err(|e| e.to_string())?
+                                .create_for_plan(&doc.title, &goal_id, &[event])
                         })?
                 }
             };
@@ -190,7 +194,8 @@ impl TrustedProjectApplication {
             return Err("goal feedback must contain 1..16384 UTF-8 bytes".into());
         }
         let resumed = self.goal_resume(revision).map_err(|e| e.to_string())?;
-        self.goal
+        self.goal_service()
+            .map_err(|e| e.to_string())?
             .update_progress(resumed.state.revision, summary.trim())?;
         self.request_workflow_goal(None)
     }
@@ -201,6 +206,7 @@ impl TrustedProjectApplication {
         revision: u64,
         summary: &str,
     ) -> Result<Value, String> {
+        self.goal_service().map_err(|e| e.to_string())?;
         let goal = self
             .goal()
             .map_err(|e| e.to_string())?
@@ -218,9 +224,11 @@ impl TrustedProjectApplication {
             "feedback" => self.workflow_goal_feedback(revision, summary)?,
             "pause" => {
                 self.cancel_active_run();
-                self.goal.disarm();
+                self.disarm_goal();
                 if goal.state.phase == crate::goal::GoalPhase::Active {
-                    self.goal.pause(revision)?;
+                    self.goal_service()
+                        .map_err(|e| e.to_string())?
+                        .pause(revision)?;
                 }
             }
             "complete" => {

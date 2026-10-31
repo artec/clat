@@ -30,7 +30,7 @@ pub(super) struct CompositionInput {
     pub(super) control: Arc<ControlStorage>,
     pub(super) history_index: Arc<crate::session_query::QueryIndex>,
     pub(super) job_capacity: Arc<crate::background_jobs::JobCapacity>,
-    pub(super) scheduler: Arc<crate::scheduler::SchedulerService>,
+    pub(super) scheduler: Arc<crate::scheduler::HostScheduler>,
     pub(super) sessions: Arc<SessionService>,
     pub(super) provider_plugins: Option<Vec<Arc<dyn Plugin>>>,
     pub(super) permission_modes: bool,
@@ -51,8 +51,8 @@ pub(super) struct ProjectPorts {
     pub(super) config: Arc<dyn ConfigStore>,
     pub(super) web: Option<Arc<crate::web_tools::WebService>>,
     pub(super) history: Option<Arc<crate::session_query::SessionQueryService>>,
-    pub(super) jobs: Arc<crate::background_jobs::JobRegistry>,
-    pub(super) scheduler: Arc<crate::scheduler::SchedulerService>,
+    pub(super) jobs: Option<Arc<crate::background_jobs::JobRegistry>>,
+    pub(super) scheduler: Option<Arc<crate::scheduler::SchedulerService>>,
     pub(super) providers: Arc<ProviderRegistry>,
     pub(super) tools: Arc<crate::tool::ToolRegistry>,
     pub(super) tool_pipeline: Arc<crate::tool::ToolExecutionPipeline>,
@@ -65,8 +65,8 @@ pub(super) struct ProjectPorts {
     pub(super) skills: Option<Arc<crate::skills::SkillsService>>,
     pub(super) skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
     pub(super) memory: Option<Arc<crate::memory::MemoryService>>,
-    pub(super) goal: Arc<crate::goal::GoalService>,
-    pub(super) task: Arc<crate::task::TaskService>,
+    pub(super) goal: Option<Arc<crate::goal::GoalService>>,
+    pub(super) task: Option<Arc<crate::task::TaskService>>,
     pub(super) subagents: Option<Arc<crate::subagent::SubagentService>>,
     pub(super) commands: Arc<crate::command::CommandRegistry>,
     pub(super) agent: Arc<dyn AgentRuntime>,
@@ -381,7 +381,7 @@ fn resolve_and_freeze(
         ));
     }
     let memory = optional(manager, MEMORY_SERVICE)?;
-    let goal = required(manager, GOAL_SERVICE)?;
+    let goal = optional(manager, GOAL_SERVICE)?;
     let subagents = optional(manager, SUBAGENT_SERVICE)?;
     let process_service = required(manager, PROCESS_SERVICE)?;
     let language_intelligence = optional(
@@ -405,8 +405,8 @@ fn resolve_and_freeze(
         tool_pipeline,
         web: optional(manager, crate::plugins::services::WEB_SERVICE)?,
         history: optional(manager, crate::plugins::services::HISTORY_SERVICE)?,
-        jobs: required(manager, crate::plugins::services::JOB_SERVICE)?,
-        scheduler: required(manager, crate::plugins::services::SCHEDULER_SERVICE)?,
+        jobs: optional(manager, crate::plugins::services::JOB_SERVICE)?,
+        scheduler: optional(manager, crate::plugins::services::SCHEDULER_SERVICE)?,
         sessions: required(manager, SESSION_SERVICE)?,
         config: required(manager, CONFIG_SERVICE)?,
         providers,
@@ -421,7 +421,7 @@ fn resolve_and_freeze(
         skill_catalog,
         memory,
         goal,
-        task: required(manager, crate::task::plugin::TASK_SERVICE)?,
+        task: optional(manager, crate::task::plugin::TASK_SERVICE)?,
         subagents,
         commands,
         agent: required(manager, AGENT_SERVICE)?,
@@ -471,13 +471,22 @@ fn wire_project_notices(
     subscribers: &Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
 ) {
     let job_subscribers = Arc::clone(subscribers);
-    ports.jobs.set_notice(Arc::new(move |job| {
-        broadcast_to(
-            &job_subscribers,
-            ApplicationEvent::BackgroundJobChanged { job: Box::new(job) },
-        )
-    }));
-    ports.task.set_query(Some(ports.jobs.clone()));
+    if let Some(jobs) = &ports.jobs {
+        jobs.set_notice(Arc::new(move |job| {
+            broadcast_to(
+                &job_subscribers,
+                ApplicationEvent::BackgroundJobChanged { job: Box::new(job) },
+            )
+        }));
+    }
+    if let Some(task) = &ports.task {
+        task.set_query(
+            ports
+                .jobs
+                .as_ref()
+                .map(|jobs| jobs.clone() as Arc<dyn crate::task::JobQuery>),
+        );
+    }
     let mcp_subscribers = Arc::clone(subscribers);
     ports.mcp_status.set_notice_sink(Arc::new(move |failures| {
         broadcast_to(
@@ -585,8 +594,6 @@ fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
         crate::draft::plugin::DRAFT_IMAGES_SERVICE.id(),
         SESSION_SERVICE.id(),
         CONFIG_SERVICE.id(),
-        JOB_SERVICE.id(),
-        SCHEDULER_SERVICE.id(),
         PROVIDER_SERVICE.id(),
         TOOL_SERVICE.id(),
         TOOL_PIPELINE_SERVICE.id(),
@@ -595,8 +602,6 @@ fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
         PROCESS_SERVICE.id(),
         TOOL_ACCESS_SERVICE.id(),
         VIEW_IMAGE_SERVICE.id(),
-        GOAL_SERVICE.id(),
-        crate::task::plugin::TASK_SERVICE.id(),
         COMMAND_SERVICE.id(),
         AGENT_SERVICE.id(),
         MCP_STATUS_SERVICE.id(),
@@ -604,3 +609,6 @@ fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
         PERMISSION_SERVICE.id(),
     ]
 }
+
+#[cfg(test)]
+mod selection_tests;

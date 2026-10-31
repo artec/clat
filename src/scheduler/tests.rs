@@ -336,7 +336,12 @@ fn navigation_manual_delivery_is_authorized_deduplicated_budgeted_and_preserves_
     let current = f.service.list(&f.scope.project).unwrap().remove(0);
     assert_eq!(current.used.runs, 1);
     assert_eq!(current.next_at, rule.next_at);
-    assert!(f.service.pending_claim(&f.scope.project).unwrap().is_some());
+    assert!(
+        f.service
+            .pending_claim(&f.scope.project, |_| true)
+            .unwrap()
+            .is_some()
+    );
     let paused = f
         .service
         .pause(&f.scope.project, &rule.id, rule.revision)

@@ -13,7 +13,10 @@ impl TrustedProjectApplication {
         self.validate_pending_images(message)?;
         let pending_goal = self
             .goal
-            .pending_birth_event()
+            .as_ref()
+            .map(|goal| goal.pending_birth_event())
+            .transpose()
+            .map(Option::flatten)
             .map_err(ApplicationError::new)?;
         let materialized = self.attach_run_session()?;
         let id = self
@@ -135,7 +138,10 @@ impl TrustedProjectApplication {
         if let Some(id) = materialized {
             admitted.project(
                 "goal-materialize",
-                self.goal.materialized(id).map_err(ApplicationError::new),
+                self.goal
+                    .as_ref()
+                    .map_or(Ok(()), |goal| goal.materialized(id))
+                    .map_err(ApplicationError::new),
             )?;
             if let Some(subagents) = &self.subagents {
                 subagents.materialized(id);

@@ -415,7 +415,7 @@ pub(crate) struct ToolExecutionPipeline {
 impl ToolExecutionPipeline {
     pub(crate) fn for_session(
         &self,
-        task: Arc<dyn ToolMiddleware>,
+        task: Option<Arc<dyn ToolMiddleware>>,
         instructions: Arc<dyn ToolObserver>,
     ) -> Result<Arc<Self>, String> {
         let mut state = self
@@ -428,11 +428,13 @@ impl ToolExecutionPipeline {
             .iter_mut()
             .filter(|(_, owner, _)| *owner == PluginId::new("builtin.task"))
             .collect();
-        if matches.len() != 1 {
-            return Err("session pipeline requires exactly one task owner".into());
+        if matches.len() != usize::from(task.is_some()) {
+            return Err("session pipeline task owner does not match the mounted capability".into());
         }
-        for (_, _, middleware) in matches {
-            *middleware = task.clone();
+        if let Some(task) = task {
+            for (_, _, middleware) in matches {
+                *middleware = task.clone();
+            }
         }
         let mut replaced = 0;
         for (_, owner, observer) in &mut state.observers {

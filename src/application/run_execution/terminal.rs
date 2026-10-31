@@ -2,7 +2,7 @@
 use super::*;
 pub(super) fn finish(
     result: ApplicationRunResult,
-    task: &crate::task::TaskService,
+    task: &super::super::execution_features::TaskRunPort,
     run: &str,
     turn: u64,
     cancel: &CancelToken,

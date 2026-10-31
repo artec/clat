@@ -11,8 +11,8 @@ pub(super) struct TargetServices {
     pub sessions: Arc<SessionService>,
     pub process: Arc<crate::process::ProcessService>,
     pub todo: Arc<TodoService>,
-    pub task: Arc<crate::task::TaskService>,
-    pub goal: Arc<crate::goal::GoalService>,
+    pub task: Option<Arc<crate::task::TaskService>>,
+    pub goal: Option<Arc<crate::goal::GoalService>>,
     pub plan: Option<Arc<crate::plan_mode::PlanModeService>>,
     pub access: Arc<crate::tool::ToolAccessSlot>,
     pub mode: Option<Arc<RwLock<PermissionMode>>>,
@@ -60,9 +60,18 @@ impl TargetServices {
         let todo = Self::todo_for(&sessions, view);
         let task = app
             .task
-            .for_session(sessions.clone())
+            .as_ref()
+            .map(|task| task.for_session(sessions.clone()))
+            .transpose()
             .map_err(ApplicationError::new)?;
-        task.ensure_start_allowed().map_err(ApplicationError::new)?;
+        if let Some(task) = &task {
+            task.ensure_start_allowed().map_err(ApplicationError::new)?;
+        } else {
+            let state = crate::task::facts::current(&sessions, &app.project)
+                .map_err(ApplicationError::new)?;
+            crate::task::facts::ensure_start_allowed(state.as_ref())
+                .map_err(ApplicationError::new)?;
+        }
         let instructions = Arc::new(
             crate::project_instructions::ProjectInstructionService::open(app.project.clone())
                 .map_err(ApplicationError::new)?,
@@ -72,10 +81,12 @@ impl TargetServices {
             sessions.last_request_header().as_ref(),
         )
         .map_err(ApplicationError::new)?;
-        let goal = Arc::new(crate::goal::GoalService::new(
-            sessions.clone(),
-            app.canonical_root.clone(),
-        ));
+        let goal = app.goal.as_ref().map(|_| {
+            Arc::new(crate::goal::GoalService::new(
+                sessions.clone(),
+                app.canonical_root.clone(),
+            ))
+        });
         let plan = app.plan_mode.as_ref().map(|_| {
             Arc::new(crate::plan_mode::PlanModeService::new(
                 sessions.clone(),
@@ -159,29 +170,37 @@ impl TargetServices {
         replacements.extend(crate::native_tools::native_write_tools(scope.clone()));
         replacements.push(crate::plugins::target_patch_tool(scope));
         replacements.push(crate::plugins::target_todo_tool(self.todo.clone()));
-        replacements.push(crate::plugins::target_goal_tool(self.goal.clone()));
+        if let Some(goal) = &self.goal {
+            replacements.push(crate::plugins::target_goal_tool(goal.clone()));
+        }
         if let Some(plan) = &self.plan {
             replacements.push(crate::plugins::target_plan_tool(plan.clone()));
         }
-        replacements.extend(crate::task::plugin::execution_tools(self.task.clone()));
+        if let Some(task) = &self.task {
+            replacements.extend(crate::task::plugin::execution_tools(task.clone()));
+        }
         if let Some(history) = &app.history {
             replacements.extend(crate::session_query::plugin::execution_tools(
                 history.for_session(&self.sessions),
             ));
         }
-        replacements.extend(crate::background_jobs::plugin::execution_tools(
-            app.jobs.clone(),
-            self.process.clone(),
-        ));
+        if let Some(jobs) = &app.jobs {
+            replacements.extend(crate::background_jobs::plugin::execution_tools(
+                jobs.clone(),
+                self.process.clone(),
+            ));
+        }
         if let Some(web) = &app.web {
             replacements.extend(web.execution_tools(quota));
         }
-        replacements.extend(crate::scheduler::plugin::execution_tools(
-            app.scheduler.clone(),
-            self.sessions.clone(),
-            app.config.clone(),
-            app.schedule_project(),
-        ));
+        if let Some(scheduler) = &app.scheduler {
+            replacements.extend(crate::scheduler::plugin::execution_tools(
+                scheduler.clone(),
+                self.sessions.clone(),
+                app.config.clone(),
+                app.schedule_project(),
+            ));
+        }
         // Target bindings specialize existing capabilities; configured absence
         // must neither fail assembly nor resurrect a disabled contribution.
         replacements.retain(|tool| app.tools.get(&tool.definition().name).is_some());
@@ -192,7 +211,9 @@ impl TargetServices {
         let pipeline = app
             .tool_pipeline
             .for_session(
-                self.task.clone(),
+                self.task
+                    .as_ref()
+                    .map(|s| s.clone() as Arc<dyn crate::tool::ToolMiddleware>),
                 crate::plugins::target_instruction_observer(self.instructions.clone()),
             )
             .map_err(ApplicationError::new)?;

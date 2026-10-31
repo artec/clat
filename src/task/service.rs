@@ -29,6 +29,8 @@ impl TaskService {
         project: crate::Project,
     ) -> Result<Self, String> {
         let root = super::root::Root::open(project.root())?;
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("task.create");
         Ok(Self {
             root,
             sessions,
@@ -45,13 +47,13 @@ impl TaskService {
         if state.is_some() {
             self.root.check()?;
         }
-        if let Some(s) = &state
-            && (s.project_anchor != self.root.identity
-                || s.project != self.project.root().to_string_lossy()
-                || self.sessions.active_id().as_ref().map(|id| id.as_str())
-                    != Some(s.session.as_str()))
-        {
-            return Err("task project/session ownership mismatch".into());
+        if let Some(state) = &state {
+            super::facts::validate_owner(
+                &self.sessions,
+                &self.project,
+                &self.root.identity,
+                state,
+            )?;
         }
         Ok(state)
     }
@@ -59,16 +61,7 @@ impl TaskService {
         if self.cap().is_some() {
             return Ok(());
         }
-        if self
-            .current()?
-            .is_some_and(|s| s.operations.iter().any(|o| o.outcome == "unknown"))
-        {
-            return Err(
-                "task has unresolved operations; use /task check and /task resolve before continuing, or open a separate session"
-                    .into(),
-            );
-        }
-        Ok(())
+        super::facts::ensure_start_allowed(self.current()?.as_ref())
     }
     pub(crate) fn create(
         &self,

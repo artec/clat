@@ -2900,5 +2900,7 @@
   "extension.builtin.extension_status.name": "扩展启动状态",
   "extension.builtin.extension_status.summary": "跟踪扩展的启动与关闭状态，本身不启动外部工具。",
   "extension.retained_plan": "计划扩展已关闭。此会话仍保留原有的计划只读限制；编辑、审批或退出计划模式前，请重新启用扩展并重启。",
-  "extension.retained_plan_label": "计划（只读）"
+  "extension.retained_plan_label": "计划（只读）",
+  "extension.retained_task": "任务扩展已关闭。历史任务保留，未确认操作仍会阻止执行。继续、修改、恢复检查及验收须重新启用扩展并重启。",
+  "extension.job_source_paused": "后台作业已关闭。此作业触发规则保留原有授权与预算，重新启用扩展后恢复执行。"
 }

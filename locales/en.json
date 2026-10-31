@@ -2900,5 +2900,7 @@
   "extension.builtin.extension_status.name": "Extension startup status",
   "extension.builtin.extension_status.summary": "Tracks extension startup and shutdown without starting external tools.",
   "extension.retained_plan": "The planning extension is disabled. This conversation keeps its existing read-only planning restrictions; re-enable the extension and restart to edit, approve or leave planning mode.",
-  "extension.retained_plan_label": "Plan (read only)"
+  "extension.retained_plan_label": "Plan (read only)",
+  "extension.retained_task": "The task extension is disabled. Task history is preserved and unresolved operations still block execution. Re-enable the extension and restart to continue, edit, check or accept the task.",
+  "extension.job_source_paused": "Background jobs are disabled. This job-triggered rule keeps its authorization and budget; execution resumes when the extension is re-enabled."
 }

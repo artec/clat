@@ -101,6 +101,8 @@ impl JobRegistry {
         capacity: Arc<JobCapacity>,
     ) -> Self {
         use sha2::{Digest, Sha256};
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("jobs.create");
         let scope = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&(&capacity.root, &project.header_cwd)).unwrap())

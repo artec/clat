@@ -7,20 +7,32 @@ use crate::{
 };
 impl TrustedProjectApplication {
     pub(crate) fn recover_automatic(&self) -> Result<(), ApplicationError> {
+        if self.scheduler.is_none() {
+            return Ok(());
+        }
+        let paused_jobs: std::collections::BTreeSet<_> = if self.jobs.is_none() {
+            self.schedules()?
+                .into_iter()
+                .filter(|rule| matches!(rule.spec.trigger, crate::scheduler::Trigger::Job { .. }))
+                .map(|r| r.id)
+                .collect()
+        } else {
+            Default::default()
+        };
         for delivery in self
             .schedule_deliveries()?
             .into_iter()
-            .filter(|d| d.unsettled())
+            .filter(|d| d.unsettled() && !paused_jobs.contains(&d.rule_id))
         {
             let receipt = self.automatic_receipt(&delivery.id)?;
             if let Some(receipt) = receipt {
-                self.scheduler
+                self.scheduler_service()?
                     .admitted(&self.schedule_project(), &delivery.id, receipt)
                     .map_err(schedule_error)?;
                 let phase = self
                     .automatic_terminal(&delivery)?
                     .unwrap_or(DeliveryPhase::Interrupted);
-                self.scheduler
+                self.scheduler_service()?
                     .settle(
                         &self.schedule_project(),
                         &delivery.id,
@@ -31,7 +43,7 @@ impl TrustedProjectApplication {
                     )
                     .map_err(schedule_error)?;
             } else if delivery.phase == DeliveryPhase::Admitted {
-                self.scheduler
+                self.scheduler_service()?
                     .settle(
                         &self.schedule_project(),
                         &delivery.id,
@@ -46,7 +58,7 @@ impl TrustedProjectApplication {
                 .iter()
                 .any(|r| r.id == delivery.rule_id && r.phase == RulePhase::Enabled)
             {
-                self.scheduler
+                self.scheduler_service()?
                     .settle(
                         &self.schedule_project(),
                         &delivery.id,

@@ -22,19 +22,53 @@ impl TrustedProjectApplication {
                 .is_some_and(|r| !r.is_finished())
     }
     pub(crate) fn automatic_projects(&self) -> Result<Vec<String>, ApplicationError> {
-        self.scheduler.projects().map_err(schedule_error)
+        self.scheduler
+            .as_ref()
+            .map_or_else(|| Ok(vec![]), |s| s.projects().map_err(schedule_error))
     }
     pub(crate) fn automatic_candidate(&self, now: i64) -> Result<Option<Claim>, ApplicationError> {
+        let Some(_) = &self.scheduler else {
+            return Ok(None);
+        };
         if self.manual_work_blocks_automatic() {
             return Ok(None);
         }
         let project = self.schedule_project();
         if let Some(claim) = self
-            .scheduler
-            .pending_claim(&project)
+            .scheduler_service()?
+            .pending_claim(&project, |rule| {
+                self.jobs.is_some() || !matches!(rule.spec.trigger, Trigger::Job { .. })
+            })
             .map_err(schedule_error)?
         {
             return Ok(Some(claim));
+        }
+        if let Some(claim) = self.automatic_job_candidate(&project, now)? {
+            return Ok(Some(claim));
+        }
+        for (rule, at) in self
+            .scheduler_service()?
+            .due_times(&project, now)
+            .map_err(schedule_error)?
+        {
+            if self.automatic_ready(&rule).is_err() {
+                continue;
+            }
+            return self
+                .scheduler_service()?
+                .reserve(&project, &rule.id, rule.revision, at, now)
+                .map(Some)
+                .map_err(schedule_error);
+        }
+        Ok(None)
+    }
+    fn automatic_job_candidate(
+        &self,
+        project: &str,
+        now: i64,
+    ) -> Result<Option<Claim>, ApplicationError> {
+        if self.jobs.is_none() {
+            return Ok(None);
         }
         let rules = self.schedules()?;
         for rule in rules
@@ -69,9 +103,9 @@ impl TrustedProjectApplication {
                     continue;
                 }
                 return self
-                    .scheduler
+                    .scheduler_service()?
                     .reserve(
-                        &project,
+                        project,
                         &rule.id,
                         rule.revision,
                         job.finished_at.unwrap_or(job.started_at),
@@ -81,20 +115,6 @@ impl TrustedProjectApplication {
                     .map_err(schedule_error);
             }
         }
-        for (rule, at) in self
-            .scheduler
-            .due_times(&project, now)
-            .map_err(schedule_error)?
-        {
-            if self.automatic_ready(&rule).is_err() {
-                continue;
-            }
-            return self
-                .scheduler
-                .reserve(&project, &rule.id, rule.revision, at, now)
-                .map(Some)
-                .map_err(schedule_error);
-        }
         Ok(None)
     }
     fn automatic_ready(&self, rule: &crate::scheduler::Rule) -> Result<(), ApplicationError> {
@@ -103,25 +123,27 @@ impl TrustedProjectApplication {
             .and_then(|_| self.resolve_automatic_model(rule).map(|_| ()));
         if let Err(error) = &result {
             let key = error.presentation().key;
-            self.scheduler
+            self.scheduler_service()?
                 .block(&self.schedule_project(), &rule.id, Some(&key))
                 .map_err(schedule_error)?;
         } else {
-            self.scheduler
+            self.scheduler_service()?
                 .block(&self.schedule_project(), &rule.id, None)
                 .map_err(schedule_error)?;
         }
         result
     }
     pub(crate) fn block_automatic(&self, id: &str, reason: &str) -> Result<(), ApplicationError> {
-        self.scheduler
+        self.scheduler_service()?
             .block(&self.schedule_project(), id, Some(reason))
             .map_err(schedule_error)
     }
     pub(crate) fn has_automatic_work(&self) -> bool {
-        self.scheduler
-            .has_unsettled(&self.schedule_project())
-            .unwrap_or(true)
+        self.scheduler.as_ref().is_some_and(|scheduler| {
+            scheduler
+                .has_unsettled(&self.schedule_project())
+                .unwrap_or(true)
+        })
     }
     pub(crate) fn start_automatic(
         &mut self,
@@ -135,6 +157,7 @@ impl TrustedProjectApplication {
         {
             return Err(schedule_message("confirmation_required"));
         }
+        self.require_trigger_jobs(&current.spec.trigger)?;
         self.automatic_ready(&current)?;
         let (config, credentials) = self.resolve_automatic_model(&current)?;
         let source = match &current.spec.trigger {
@@ -169,7 +192,7 @@ impl TrustedProjectApplication {
             .automatic_receipt(&claim.delivery.id)
             .and_then(|receipt| {
                 let receipt = receipt.ok_or_else(|| schedule_message("invalid_receipt"))?;
-                self.scheduler
+                self.scheduler_service()?
                     .admitted(&self.schedule_project(), &claim.delivery.id, receipt)
                     .map_err(schedule_error)
             });
@@ -207,7 +230,7 @@ impl TrustedProjectApplication {
             Err(f) => f.receipt.as_deref(),
         };
         if let Some(receipt) = receipt {
-            self.scheduler
+            self.scheduler_service()?
                 .admitted(
                     &self.schedule_project(),
                     &claim.delivery.id,
@@ -222,7 +245,7 @@ impl TrustedProjectApplication {
             seconds,
         });
         let diagnostic = result.as_ref().err().map(|f| f.error.clone());
-        self.scheduler
+        self.scheduler_service()?
             .settle(
                 &self.schedule_project(),
                 &claim.delivery.id,
