@@ -66,7 +66,8 @@ based on message timestamps are marked approximate; missing times remain unknown
 
 The conversation map appears even for a single known round and remains available
 with the desktop sidebar open; it is hidden only in narrow reading areas. It has one mark per round, with its question and last answer
-in the hover preview. Steering does not add marks. Search and exact message
+in the hover preview, using the session list font size with at most one line for the question
+and three lines for the answer. Steering does not add marks. Search and exact message
 navigation reveal hidden process content when needed. Completed compactions have
 an independent disclosure showing the available journal range, distinct record
 count, estimated source tokens and expandable context summary. Missing legacy
