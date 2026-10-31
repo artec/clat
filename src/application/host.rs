@@ -111,6 +111,7 @@ impl HostApplication {
                     .is_some_and(|compact| !compact.is_finished())
                 || app.draft_images.has_live_drafts()
                 || app.has_development_work()
+                || app.has_utility_work()
                 || app.has_background_jobs()
                 || app.has_automatic_work()
                 || app.has_schedule_rules(None)?

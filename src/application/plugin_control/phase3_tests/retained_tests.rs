@@ -3,6 +3,13 @@ use crate::application::task_recovery_tests::{budget, make_task_uncertain, task_
 
 #[test]
 fn disabled_task_keeps_unknown_operations_and_ownership_without_execution_service() {
+    retained_task_check(&["builtin.task"]);
+}
+#[test]
+fn phase5_absent_instructions_keep_retained_task_full_access_guard() {
+    retained_task_check(&["builtin.task", "builtin.project_instructions"]);
+}
+fn retained_task_check(disabled: &[&str]) {
     let (root, _) = crate::test_support::roots("retained-task");
     let project = Project::new(root.join("project"));
     std::fs::create_dir_all(project.root()).unwrap();
@@ -26,7 +33,7 @@ fn disabled_task_keeps_unknown_operations_and_ownership_without_execution_servic
     drop(attached);
     host.close().unwrap();
     drop(host);
-    policy(&storage, &["builtin.task"]);
+    policy(&storage, disabled);
     let mut host = mount(&project, &storage);
     let attached = host.attach(project.clone()).unwrap();
     {
@@ -248,11 +255,23 @@ fn disabled_goal_allows_approval_only_and_rejects_execution_before_writes() {
 
 #[test]
 fn task_without_jobs_keeps_unavailable_evidence_and_can_execute() {
+    task_without_jobs_check(&["builtin.jobs"]);
+}
+#[test]
+fn phase5_task_runs_with_all_three_enhancements_absent() {
+    task_without_jobs_check(&[
+        "builtin.jobs",
+        "builtin.project_instructions",
+        "builtin.utility_model",
+        "builtin.view_image",
+    ]);
+}
+fn task_without_jobs_check(disabled: &[&str]) {
     let (root, _) = crate::test_support::roots("task-without-jobs");
     let project = Project::new(root.join("project"));
     std::fs::create_dir_all(project.root()).unwrap();
     let storage = root.join("state");
-    policy(&storage, &["builtin.jobs"]);
+    policy(&storage, disabled);
     let mut host = mount(&project, &storage);
     let attached = host.attach(project).unwrap();
     {

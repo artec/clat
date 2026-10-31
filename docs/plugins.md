@@ -199,15 +199,53 @@ its text, before admission or execution changes. This covers Web, Desktop, TUI,
 CLI client ports, queued input, steering, direct/prepared images and WeChat
 before media download. Text drafts survive failure. The vision probe also
 requires this plugin. Plain text, paste, native file/process tools and native
-`view_image` remain available. Historical images, attachment previews, downloads
+`view_image` remain available when their own plugins are enabled. Historical images, attachment previews, downloads
 and existing image context remain Session-owned; model vision settings do not
 change. A committed same-key/same-digest retry still returns its original receipt.
 Re-enabling grants fresh scopes and upload IDs, never resurrecting old ones.
 Host-client clipboard stores initialize only after the current Host/project has
 confirmed availability and actual image staging is needed.
 
+Project instructions, companion utility and native image inspection are independently
+optional as well:
+
+```json
+{
+  "unit": { "name": "builtin-plugins", "version": 1 },
+  "disabled": ["builtin.project_instructions", "builtin.utility_model", "builtin.view_image"]
+}
+```
+
+With project instructions disabled, CLAT does not automatically discover, read,
+observe or inject `AGENTS.md`/`CLAUDE.md`, including instruction sources from old
+request headers. Historical messages and summaries remain intact. Explicit file
+reads still work, and permission policy plus retained Plan/Task guards remain
+core responsibilities.
+
+Utility absence stops automatic naming, manual prompt suggestions and followup
+generation. Its dependent `builtin.session_title` becomes effectively unavailable
+without changing either configured setting. Existing titles, manual renaming and
+settings remain available. Compaction and Git keep their independent model calls,
+including the shared route setting. Re-enabling does not replay auxiliary jobs:
+only future completed turns trigger new automatic work. Disabled generation
+returns an unavailable error; passive followup reads return an empty snapshot.
+
+Native `view_image` absence removes the tool, result transformer and transient
+image authority together. User image input is controlled separately by
+`builtin.draft_images`; historical attachment reads, downloads and model image
+context remain Session-owned. External tools retain their own image capabilities.
+Targeted background runs bind image inspection to their target session, including
+its result transformer and per-run scratch state. Old scratch references never
+become valid in a new run or Host.
+
+Auxiliary and workbench producers share an internal lifecycle owner and retain
+the existing Host root lease until their final action. Close revokes new work
+and commits before teardown; unfinished or panicked workers report cleanup
+failure. Prepared, unstarted suggestions cannot execute after close or keep an
+idle root locked. This does not add another lock protocol or runtime toggle.
+
 The same `builtin_availability` projection drives controls on every frontend;
-unknown startup availability cannot initiate workspace or image I/O. Other
+unknown startup availability cannot initiate workspace, image or auxiliary generation I/O. Other
 Application contracts remain mandatory today; this is not a declaration that
 they are permanent kernel services. Ephemeral run resources and per-session
 preset trees are not listed.

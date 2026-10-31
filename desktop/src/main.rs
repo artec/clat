@@ -2,6 +2,8 @@
 #[cfg(any(target_os = "macos", windows))]
 mod app;
 #[cfg(any(target_os = "macos", windows))]
+mod background;
+#[cfg(any(target_os = "macos", windows))]
 mod commands;
 #[cfg(any(target_os = "macos", windows))]
 mod fonts;

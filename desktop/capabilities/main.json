@@ -8,7 +8,7 @@
     "core:event:allow-listen", "core:event:allow-unlisten", "allow-desktop-retry-project",
     "allow-desktop-fonts", "allow-desktop-info", "allow-desktop-locale", "allow-desktop-open-project", "allow-desktop-pick-directory", "allow-desktop-check-update",
     "allow-desktop-download-update", "allow-desktop-install-update", "allow-desktop-cancel-update",
-    "allow-desktop-preferences", "allow-desktop-quit", "allow-desktop-stop-host", "allow-desktop-window",
+    "allow-desktop-preferences", "allow-desktop-quit", "allow-desktop-stop-host", "allow-desktop-window", "allow-desktop-background",
     "allow-desktop-remember-conversation", "allow-desktop-take-tray-intent"
   ]
 }

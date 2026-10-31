@@ -17,7 +17,8 @@ pub(super) struct TargetServices {
     pub access: Arc<crate::tool::ToolAccessSlot>,
     pub mode: Option<Arc<RwLock<PermissionMode>>>,
     pub runtime: RuntimeBindings,
-    pub instructions: Arc<crate::project_instructions::ProjectInstructionService>,
+    pub instructions: InstructionPort,
+    pub view_image: ImageToolPort,
 }
 impl TargetServices {
     pub(super) fn new(
@@ -72,15 +73,9 @@ impl TargetServices {
             crate::task::facts::ensure_start_allowed(state.as_ref())
                 .map_err(ApplicationError::new)?;
         }
-        let instructions = Arc::new(
-            crate::project_instructions::ProjectInstructionService::open(app.project.clone())
-                .map_err(ApplicationError::new)?,
-        );
-        crate::plugins::services::DynamicInstructions::restore_from_header(
-            instructions.as_ref(),
-            sessions.last_request_header().as_ref(),
-        )
-        .map_err(ApplicationError::new)?;
+        let (instructions, instruction_observer) = app
+            .dynamic_instructions
+            .for_session(app.project.clone(), sessions.last_request_header().as_ref())?;
         let goal = app.goal.as_ref().map(|_| {
             Arc::new(crate::goal::GoalService::new(
                 sessions.clone(),
@@ -108,8 +103,9 @@ impl TargetServices {
             access: access.clone(),
             mode,
             instructions: instructions.clone(),
+            view_image: app.view_image.for_session(),
             runtime: RuntimeBindings {
-                instructions: Some(instructions.clone()),
+                instructions: instructions.0.clone(),
                 tools: app.tools.clone(),
                 pipeline: app.tool_pipeline.clone(),
                 project: process.execution_project(),
@@ -119,7 +115,7 @@ impl TargetServices {
                 ),
             },
         };
-        target.runtime = target.runtime_for(app, scope, quota)?;
+        target.runtime = target.runtime_for(app, scope, quota, instruction_observer)?;
         Ok(target)
     }
     fn process_for(
@@ -165,8 +161,10 @@ impl TargetServices {
         app: &TrustedProjectApplication,
         scope: WriteScopeSource,
         quota: Arc<crate::web_tools::PaidCallBudget>,
+        instructions: Option<Arc<dyn crate::tool::ToolObserver>>,
     ) -> Result<RuntimeBindings, ApplicationError> {
         let mut replacements = crate::plugins::process::process_tools(self.process.clone());
+        replacements.extend(self.view_image.tool(self.sessions.clone()));
         replacements.extend(crate::native_tools::native_write_tools(scope.clone()));
         replacements.push(crate::plugins::target_patch_tool(scope));
         replacements.push(crate::plugins::target_todo_tool(self.todo.clone()));
@@ -214,7 +212,8 @@ impl TargetServices {
                 self.task
                     .as_ref()
                     .map(|s| s.clone() as Arc<dyn crate::tool::ToolMiddleware>),
-                crate::plugins::target_instruction_observer(self.instructions.clone()),
+                instructions,
+                self.view_image.transformer(),
             )
             .map_err(ApplicationError::new)?;
         let permissions = crate::plugins::target_permission_factory(
@@ -224,7 +223,7 @@ impl TargetServices {
             self.access.clone(),
         );
         let runtime = RuntimeBindings {
-            instructions: Some(self.instructions.clone()),
+            instructions: self.instructions.0.clone(),
             tools,
             pipeline,
             permissions,

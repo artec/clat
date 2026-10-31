@@ -376,3 +376,6 @@ pub(super) fn missing_builtin(id: &'static str) -> ApplicationError {
         crate::plugin::PluginId::new(id),
     ))
 }
+
+#[cfg(test)]
+mod phase5_tests;

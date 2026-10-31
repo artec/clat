@@ -135,7 +135,7 @@ struct RunSlots {
     tool_access: Arc<crate::tool::ToolAccessSlot>,
     tools: Arc<crate::tool::ToolRegistry>,
     skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
-    view_image: Arc<crate::view_image::ViewImageState>,
+    view_image: ImageToolPort,
     file_review: Option<Arc<crate::project::review::FileReview>>,
 }
 
@@ -146,7 +146,7 @@ impl RunSlots {
             tool_access: Arc::clone(&app.tool_access),
             tools: Arc::clone(&app.tools),
             skill_catalog: app.skill_catalog.clone(),
-            view_image: Arc::clone(&app.view_image),
+            view_image: app.view_image.clone(),
             file_review: app.project.file_review(),
         }
     }
@@ -234,6 +234,8 @@ impl RunExecutionEngine {
         let mut slots = RunSlots::from_application(application);
         if let Some(target) = spec.target.as_ref() {
             slots.tool_access = target.access.clone();
+            slots.view_image = target.view_image.clone();
+            slots.tools = target.runtime.tools.clone();
         }
         let host = RunHostDeps::from_application(
             application,

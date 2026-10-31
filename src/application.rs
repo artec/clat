@@ -10,8 +10,8 @@
 use crate::Project;
 use crate::control_storage::ControlStorage;
 use crate::plugins::services::{
-    ConfigStore, DynamicInstructions, HistoryCompactor, McpStatus, MonitorService,
-    ProviderRegistry, SessionTitler, StoreError, TodoService,
+    ConfigStore, HistoryCompactor, McpStatus, MonitorService, ProviderRegistry, SessionTitler,
+    StoreError, TodoService,
 };
 use crate::session::id::SessionId;
 use crate::session::use_cases::SessionService;
@@ -28,6 +28,8 @@ pub(crate) fn bounded_reason(reason: &str) -> String {
 }
 
 mod bootstrap;
+mod enhancement_features;
+use enhancement_features::{ImageToolPort, InstructionPort};
 mod followups;
 mod history;
 pub use followups::{FollowupReply, PreparedFollowups};
@@ -327,14 +329,14 @@ pub struct TrustedProjectApplication {
     /// Cached scope-aware project instructions. The service is owned by the
     /// internal plugin; Application only restores its source scopes from the
     /// durable request/header when sessions change.
-    dynamic_instructions: Arc<dyn DynamicInstructions>,
+    dynamic_instructions: InstructionPort,
     process_service: Arc<crate::process::ProcessService>,
     plan_mode: Option<Arc<crate::plan_mode::PlanModeService>>,
     workflow: Arc<WorkflowState>,
     tool_access: Arc<crate::tool::ToolAccessSlot>,
     /// Current-run visual attachment/scratch authority. The tool registry is
     /// project-owned, while this slot is reset at every run boundary.
-    view_image: Arc<crate::view_image::ViewImageState>,
+    view_image: ImageToolPort,
     skills: Option<Arc<crate::skills::SkillsService>>,
     skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
     /// `/skill <name>` 武装的一次性显式调用（SC-2，INV-SC-4：只是提示侧
@@ -368,7 +370,7 @@ pub struct TrustedProjectApplication {
     todo: Option<Arc<TodoService>>,
     /// 可选服务：最小 Catalog（无 SessionTitlePlugin）下为 None。
     titler: Option<Arc<dyn SessionTitler>>,
-    utility: Arc<dyn crate::plugins::services::UtilityModel>,
+    utility: Option<Arc<crate::plugins::UtilityRuntime>>,
     /// 单 worker + 容量 1 的旁路标题队列。enqueue 永不阻塞 run，Scope
     /// close 取消并 join 唯一线程——运行期不存在 detached title 任务。
     /// 例外（2026-08-19 退出延迟修复）：进程退出路径上 join 有

@@ -132,6 +132,13 @@ fn intent(app: &TrustedProjectApplication, intent: WorkflowIntent) -> WorkflowRe
 
 #[test]
 fn disabled_plan_retains_durable_readonly_guard_and_rejects_changes_before_any_effect() {
+    retained_plan_check(&["builtin.plan_mode"]);
+}
+#[test]
+fn phase5_absent_instructions_keep_retained_plan_full_access_guard() {
+    retained_plan_check(&["builtin.plan_mode", "builtin.project_instructions"]);
+}
+fn retained_plan_check(disabled: &[&str]) {
     let (root, _) = crate::test_support::roots("retained-plan");
     let project = Project::new(root.join("project"));
     std::fs::create_dir_all(project.root()).unwrap();
@@ -182,7 +189,7 @@ fn disabled_plan_retains_durable_readonly_guard_and_rejects_changes_before_any_e
         &session,
     );
     std::fs::remove_dir_all(directory.join("plans")).unwrap();
-    policy(&state, &["builtin.plan_mode"]);
+    policy(&state, disabled);
     let script = Arc::new(Attack {
         calls: AtomicUsize::new(0),
         bridge: std::sync::Mutex::new(None),

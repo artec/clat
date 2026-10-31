@@ -91,7 +91,9 @@ impl TrustedProjectApplication {
         };
         access
             .with_subagents(self.subagents_enabled())
-            .with_view_image(config.capabilities.accepts_image_tool_results())
+            .with_view_image(
+                self.view_image.enabled() && config.capabilities.accepts_image_tool_results(),
+            )
             .with_task_progress(task)
     }
 
@@ -181,7 +183,7 @@ impl TrustedProjectApplication {
         crate::session::recorder::RequestHeaderData {
             header,
             base_system: context.instructions.with_goal.clone(),
-            dynamic_instructions: Some(Arc::clone(&self.dynamic_instructions)),
+            dynamic_instructions: self.dynamic_instructions.0.clone(),
             tool_registry: Some(Arc::clone(&self.tools)),
             // SV 最小适配行（S6 例外）：跨 run 的受保护头恢复——新 run
             // 必须替换既有头，绝不追加第二个头。
@@ -460,7 +462,9 @@ impl TrustedProjectApplication {
         } else {
             crate::tool::ToolAccessPolicy::all()
         }
-        .with_view_image(config.capabilities.accepts_image_tool_results());
+        .with_view_image(
+            target.view_image.enabled() && config.capabilities.accepts_image_tool_results(),
+        );
         let (plan_instructions, plan_header) = plan_layers(state, self.plan_mode.is_some());
         let mode = target
             .mode

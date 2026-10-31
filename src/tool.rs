@@ -412,40 +412,47 @@ pub(crate) struct ToolExecutionPipeline {
     inner: Arc<RwLock<ToolExecutionState>>,
 }
 
+fn replace_session_owner<T: ?Sized>(
+    entries: &mut [(u64, PluginId, Arc<T>)],
+    owner: &'static str,
+    replacement: Option<Arc<T>>,
+) -> Result<(), String> {
+    let mut count = 0;
+    for (_, id, value) in entries {
+        if *id == PluginId::new(owner) {
+            count += 1;
+            if let Some(replacement) = &replacement {
+                *value = replacement.clone();
+            }
+        }
+    }
+    if count != usize::from(replacement.is_some()) {
+        return Err(format!(
+            "session pipeline owner {owner} does not match mounted capability"
+        ));
+    }
+    Ok(())
+}
+
 impl ToolExecutionPipeline {
     pub(crate) fn for_session(
         &self,
         task: Option<Arc<dyn ToolMiddleware>>,
-        instructions: Arc<dyn ToolObserver>,
+        instructions: Option<Arc<dyn ToolObserver>>,
+        image: Option<Arc<dyn ToolResultTransformer>>,
     ) -> Result<Arc<Self>, String> {
         let mut state = self
             .inner
             .read()
             .map_err(|_| "tool pipeline poisoned")?
             .clone();
-        let matches: Vec<_> = state
-            .middleware
-            .iter_mut()
-            .filter(|(_, owner, _)| *owner == PluginId::new("builtin.task"))
-            .collect();
-        if matches.len() != usize::from(task.is_some()) {
-            return Err("session pipeline task owner does not match the mounted capability".into());
-        }
-        if let Some(task) = task {
-            for (_, _, middleware) in matches {
-                *middleware = task.clone();
-            }
-        }
-        let mut replaced = 0;
-        for (_, owner, observer) in &mut state.observers {
-            if *owner == PluginId::new("builtin.project_instructions") {
-                *observer = instructions.clone();
-                replaced += 1;
-            }
-        }
-        if replaced != 1 {
-            return Err("session pipeline requires exactly one instruction owner".into());
-        }
+        replace_session_owner(&mut state.middleware, "builtin.task", task)?;
+        replace_session_owner(
+            &mut state.observers,
+            "builtin.project_instructions",
+            instructions,
+        )?;
+        replace_session_owner(&mut state.result_transformers, "builtin.view_image", image)?;
         Ok(Arc::new(Self {
             inner: Arc::new(RwLock::new(state)),
         }))

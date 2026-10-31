@@ -5,6 +5,8 @@ CLAT's attached TUI and web workbench. The installer contains its own private
 backend: installing a separate `clat` command is optional. The CLI remains a
 single-file installation with no Tauri or user-side Node/Python requirement.
 
+Settings → General & Appearance includes device-wide background transparency (0–80%, default 0%) and frosted glass. On macOS, a second slider adjusts the native WindowServer blur radius: 0% disables blur, and moving right increases it. On Windows, frosted glass uses a switch and the system acrylic material. Left and right side panels share the sidebar palette, while the conversation uses the canvas palette. Rounded panel corners and gutters reveal the outer chrome background, rather than the conversation background. Regional sidebar, canvas and chrome colors remain distinct as transparency changes; enabling a small amount of transparency does not discard the existing palette. Text and controls remain opaque. Changes persist across projects and restarts. Old frosted-glass switches remain compatible (off → 0%, on → 25%). Blur dragging previews the effect; releasing the slider saves it. If the adjustable native API is unavailable, macOS falls back to the system material and a switch. Browser/PWA windows do not offer these native settings. High-contrast mode keeps an opaque background. macOS native transparency and variable blur use private system APIs in the directly distributed Desktop app; they are not an App Store distribution path.
+
 Scrollbar painting follows the actual native WebView. macOS WKWebView and Linux
 WebKitGTK use custom transparent WebKit tracks, even when they accept the
 standard scrollbar color property. Windows WebView2 uses standard painting when

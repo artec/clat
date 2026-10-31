@@ -59,11 +59,13 @@ pub(crate) use skills::SkillsPlugin;
 pub(crate) use storage::{ProjectControlStoragePlugin, SessionPersistencePlugin};
 pub(crate) use subagent::SubagentPlugin;
 pub(crate) use title::SessionTitlePlugin;
+#[cfg(test)]
+pub(crate) use title::test_support::test_titler;
 pub(crate) use todo::TodoPlugin;
 pub(crate) use tools::{
     NativeInteractionToolsPlugin, NativeReadToolsPlugin, NativeWriteToolsPlugin, ToolRegistryPlugin,
 };
-pub(crate) use utility::CompanionUtilityPlugin;
+pub(crate) use utility::{CompanionUtilityPlugin, UtilityRuntime};
 pub(crate) use view_image::ViewImagePlugin;
 pub(crate) use wasm::WasmAdapterPlugin;
 

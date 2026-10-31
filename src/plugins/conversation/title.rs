@@ -12,13 +12,15 @@ use crate::model::{CancelToken, ModelConfig, ProviderCredentials};
 use crate::plugin::{Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind};
 use crate::plugins::services::{
     SESSION_TITLE_SERVICE, SESSION_TITLE_SERVICE_ID, UTILITY_MODEL_SERVICE,
-    UTILITY_MODEL_SERVICE_ID, UtilityFailure, UtilityModel, UtilityTask,
+    UTILITY_MODEL_SERVICE_ID, UtilityFailure, UtilityTask,
 };
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 mod contracts;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) use contracts::{GeneratedTitle, SessionTitler};
 
 const ID: PluginId = PluginId::new("builtin.session_title");
@@ -62,7 +64,7 @@ impl Plugin for SessionTitlePlugin {
 }
 
 struct DefaultSessionTitler {
-    utility: Arc<dyn UtilityModel>,
+    utility: Arc<super::utility::UtilityRuntime>,
 }
 
 impl SessionTitler for DefaultSessionTitler {
@@ -549,33 +551,9 @@ mod tests {
         }
     }
 
-    fn titler_with(factory: CannedFactory) -> Arc<dyn SessionTitler> {
-        titler_with_factory(factory)
-    }
-
-    fn titler_with_factory(factory: impl ModelFactory + 'static) -> Arc<dyn SessionTitler> {
-        let mut manager = PluginManager::root(ScopeKind::TrustedProject);
-        manager
-            .mount_all(vec![
-                Arc::new(ProviderRegistryPlugin),
-                Arc::new(CompanionUtilityPlugin),
-                Arc::new(SessionTitlePlugin),
-            ])
-            .expect("mount");
-        let providers = manager.require(PROVIDER_SERVICE).expect("providers");
-        let _lease: ProviderLease = providers
-            .register(
-                PluginOwner::for_test(PluginId::new("test.title")),
-                Arc::new(factory),
-            )
-            .map_err(|error| error.to_string())
-            .expect("register");
-        manager.require(SESSION_TITLE_SERVICE).expect("titler")
-    }
-
     #[test]
     fn successful_generation_returns_sanitized_title() {
-        let titler = titler_with(CannedFactory("  \"Fix the login bug\" "));
+        let titler = test_support::test_titler(CannedFactory("  \"Fix the login bug\" "));
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
         let title = titler
@@ -647,7 +625,7 @@ mod tests {
             }
         }
 
-        let titler = titler_with_factory(DeadlineProbingFactory(Arc::clone(&seen)));
+        let titler = test_support::test_titler(DeadlineProbingFactory(Arc::clone(&seen)));
         let config = ModelConfig::default();
         let credentials = ProviderCredentials::for_protocol(config.protocol);
         // 空正文清洗为空标题：Err（"empty response"）——失败可诊断而非静默。
@@ -691,7 +669,7 @@ mod tests {
         manager
             .mount_all(vec![
                 Arc::new(ProviderRegistryPlugin),
-                Arc::new(CompanionUtilityPlugin),
+                Arc::new(CompanionUtilityPlugin::default()),
                 Arc::new(SessionTitlePlugin),
             ])
             .expect("mount");

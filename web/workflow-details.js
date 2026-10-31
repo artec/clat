@@ -24,6 +24,16 @@ function syncOptionalResourceControls(){
     }
   }
 }
+function syncUtilityAvailability(){
+  const ready=builtinReady('builtin.utility_model');
+  let note=document.getElementById('utility-availability');
+  const form=document.getElementById('utility-settings-save')?.parentElement;
+  if(!note&&form){note=el('p','picker-hint');note.id='utility-availability';form.append(note);}
+  if(note){note.hidden=ready;CLATI18n.bind(note,'textContent',()=>CLATI18n.msg('extension.utility_unavailable_settings',{reason:builtinUnavailableReason('builtin.utility_model')}));}
+  if(!ready){clearRoundFollowups();invalidateSuggestion();}
+  syncSuggestionControl();
+}
+window.addEventListener('clat:workbench-updated',syncUtilityAvailability);
 window.addEventListener('clat:workbench-updated',syncOptionalResourceControls);
 function retainedPlan(value){return value?.plan_mode&&!builtinEnabled(value,'builtin.plan_mode');}
 function workflowGoalStatus(value){

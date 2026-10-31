@@ -7,7 +7,6 @@ use super::{
 use crate::{
     CancelToken,
     model::{ModelConfig, ProviderCredentials},
-    plugins::services::DynamicInstructions,
 };
 use std::{
     sync::{Arc, mpsc},
@@ -125,7 +124,10 @@ impl TrustedProjectApplication {
             .instructions
             .snapshot()
             .map_err(ApplicationError::new)?;
-        let header = self.request_header_data(&request.config, &context, instructions.as_ref());
+        let mut header = self.request_header_data(&request.config, &context, instructions.as_ref());
+        header.dynamic_instructions = target.instructions.0.clone();
+        header.tool_registry = Some(target.runtime.tools.clone());
+        header.system_head = target.sessions.last_system_head();
         self.asker_slot.install(request.asker.clone());
         let cancel = CancelToken::with_deadline(deadline);
         if cancel.is_cancelled() {

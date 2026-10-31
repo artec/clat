@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 mod editor;
 mod errors;
 mod git;
-mod lifecycle;
+use crate::plugin::lifecycle;
 pub(crate) mod plugin;
 mod rename;
 mod store;

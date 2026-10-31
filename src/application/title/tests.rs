@@ -6,6 +6,27 @@ use crate::session::persistence::JsonlCompression;
 use crate::session::run_journal::NewSessionEvent;
 use crate::session::use_cases::{SetTitleExpectation, TitleSource};
 
+fn maybe_autotitle(
+    titler: &dyn SessionTitler,
+    sessions: &SessionService,
+    job: &AutotitleJob,
+    cancel: &CancelToken,
+    subscribers: &Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
+    storage_root: &Path,
+) {
+    let lifetime = Arc::new(crate::plugin::lifecycle::Lifecycle::default());
+    let producer = lifetime.producer_for(cancel).unwrap();
+    super::maybe_autotitle(
+        titler,
+        sessions,
+        job,
+        cancel,
+        subscribers,
+        storage_root,
+        &producer,
+    );
+}
+
 struct RecordingTitler(Mutex<Vec<String>>);
 
 impl SessionTitler for RecordingTitler {
@@ -117,9 +138,6 @@ fn generated_titles_persist_whole_and_replay_whole_overflow_keeps_old_title() {
         FinishReason, Model, ModelError, ModelEventSink, ModelFactory, ModelProtocol, ModelRequest,
         ModelResponse,
     };
-    use crate::plugin::{PluginId, PluginManager, PluginOwner};
-    use crate::plugins::services::{PROVIDER_SERVICE, ProviderLease, SESSION_TITLE_SERVICE};
-    use crate::plugins::{CompanionUtilityPlugin, ProviderRegistryPlugin, SessionTitlePlugin};
     use crate::session::key::SessionKey;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -168,26 +186,6 @@ fn generated_titles_persist_whole_and_replay_whole_overflow_keeps_old_title() {
         }
     }
 
-    fn plugin_titler(factory: SequencedFactory) -> Arc<dyn SessionTitler> {
-        let mut manager = PluginManager::root(crate::plugin::ScopeKind::TrustedProject);
-        manager
-            .mount_all(vec![
-                Arc::new(ProviderRegistryPlugin),
-                Arc::new(CompanionUtilityPlugin),
-                Arc::new(SessionTitlePlugin),
-            ])
-            .expect("mount");
-        let providers = manager.require(PROVIDER_SERVICE).expect("providers");
-        let _lease: ProviderLease = providers
-            .register(
-                PluginOwner::for_test(PluginId::new("test.titlecut")),
-                Arc::new(factory),
-            )
-            .map_err(|error| error.to_string())
-            .expect("register");
-        manager.require(SESSION_TITLE_SERVICE).expect("titler")
-    }
-
     let root = std::env::temp_dir().join(format!("clat-titlecut-{}", uuid::Uuid::new_v4()));
     let evidence = std::env::temp_dir().join(format!("clat-titlecut-ev-{}", uuid::Uuid::new_v4()));
     // evidence 写入不建父目录（R1-F4：无处可写即丢行），测试侧先建目录。
@@ -207,7 +205,7 @@ fn generated_titles_persist_whole_and_replay_whole_overflow_keeps_old_title() {
 
     // 腿 1：合规中文标题（18 汉字 = 36 列 ≤ 48 列上限）全值落库并广播全值。
     let whole = "修复会话标题在十六字符处被截断的问题";
-    let titler = plugin_titler(SequencedFactory(
+    let titler = crate::plugins::test_titler(SequencedFactory(
         Arc::new(AtomicUsize::new(0)),
         vec![whole.to_owned(), String::new()],
     ));
@@ -256,7 +254,7 @@ fn generated_titles_persist_whole_and_replay_whole_overflow_keeps_old_title() {
 
     // 腿 2：超限且不可断（单个 64 字符 token）→ 保留旧标题 + evidence。
     let overlong = "a".repeat(64);
-    let titler = plugin_titler(SequencedFactory(
+    let titler = crate::plugins::test_titler(SequencedFactory(
         Arc::new(AtomicUsize::new(0)),
         vec![overlong.clone()],
     ));
@@ -339,6 +337,159 @@ fn disabled_naming_never_reserves_budget_or_calls_the_provider() {
         !budget.exists(),
         "disabled naming must not consume an attempt"
     );
+    sessions.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn cancelled_title_result_cannot_commit_or_notify() {
+    struct Cancelled;
+    impl SessionTitler for Cancelled {
+        fn generate_title(
+            &self,
+            _: &ModelConfig,
+            _: &ProviderCredentials,
+            _: &str,
+            cancel: &CancelToken,
+        ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
+            cancel.cancel();
+            Ok(crate::plugins::services::GeneratedTitle {
+                title: "late result".into(),
+                provider: "test".into(),
+                model: "test".into(),
+            })
+        }
+    }
+    let (root, _) = crate::test_support::roots("phase5-title-cancel");
+    std::fs::create_dir_all(&root).unwrap();
+    let sessions = SessionService::new(root.clone(), JsonlCompression::Zstd).unwrap();
+    let id = sessions
+        .new_session(&ProjectKey::from_cwd("/tmp/phase5-title"))
+        .unwrap()
+        .id;
+    completed_turn(&sessions, 1, "new topic");
+    let before = sessions.title_state();
+    let (tx, rx) = mpsc::channel();
+    let job = AutotitleJob {
+        session_id: id,
+        config: ModelConfig::default(),
+        credentials: ProviderCredentials::for_protocol(ModelConfig::default().protocol),
+    };
+    maybe_autotitle(
+        &Cancelled,
+        &sessions,
+        &job,
+        &CancelToken::new(),
+        &Arc::new(Mutex::new(vec![tx])),
+        &root,
+    );
+    assert_eq!(sessions.title_state(), before);
+    assert!(rx.try_recv().is_err());
+    assert!(!root.join("utility-log.jsonl").exists());
+    sessions.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn phase5_title_timeout_retains_lease_and_suppresses_late_commit() {
+    struct Blocked {
+        entered: mpsc::SyncSender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl SessionTitler for Blocked {
+        fn generate_title(
+            &self,
+            _: &ModelConfig,
+            _: &ProviderCredentials,
+            _: &str,
+            _: &CancelToken,
+        ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+            Ok(crate::plugins::services::GeneratedTitle {
+                title: "late".into(),
+                provider: "test".into(),
+                model: "test".into(),
+            })
+        }
+    }
+    struct UnusedUtility;
+    impl crate::plugins::services::UtilityModel for UnusedUtility {
+        fn enabled(&self, _: crate::plugins::services::UtilityTask) -> bool {
+            true
+        }
+        fn generate(
+            &self,
+            _: crate::plugins::services::UtilityTask,
+            _: &ModelConfig,
+            _: &ProviderCredentials,
+            _: &str,
+            _: &CancelToken,
+        ) -> Result<crate::plugins::services::UtilityOutput, UtilityFailure> {
+            panic!("title fake owns model call")
+        }
+    }
+    let (root, _) = crate::test_support::roots("phase5-title-timeout");
+    std::fs::create_dir_all(&root).unwrap();
+    let lease = Arc::new(Mutex::new(
+        crate::session::root_lease::acquire(&root).unwrap(),
+    ));
+    let sessions =
+        Arc::new(SessionService::new(root.join("sessions"), JsonlCompression::Zstd).unwrap());
+    let id = sessions
+        .new_session(&ProjectKey::from_cwd("/tmp/title-timeout"))
+        .unwrap()
+        .id;
+    completed_turn(&sessions, 1, "original title");
+    let before = sessions.title_state();
+    let (entered, rx) = mpsc::sync_channel(1);
+    let (tx, release) = mpsc::channel();
+    let (notice, notices) = mpsc::channel();
+    let utility = Arc::new(crate::plugins::UtilityRuntime::new(
+        Arc::new(UnusedUtility),
+        Some(lease.clone()),
+    ));
+    let mut worker = TitleWorker::spawn(
+        Arc::new(Blocked {
+            entered,
+            release: Mutex::new(release),
+        }),
+        sessions.clone(),
+        Arc::new(Mutex::new(vec![notice])),
+        root.clone(),
+        utility.clone(),
+    )
+    .unwrap();
+    worker
+        .sender
+        .send(AutotitleJob {
+            session_id: id,
+            config: ModelConfig::default(),
+            credentials: ProviderCredentials::for_protocol(ModelConfig::default().protocol),
+        })
+        .unwrap();
+    rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    utility.revoke();
+    drop(lease);
+    assert!(worker.shutdown().is_err());
+    let probe = root.clone();
+    assert!(
+        std::thread::spawn(move || crate::session::root_lease::try_acquire(&probe)
+            .unwrap()
+            .is_none())
+        .join()
+        .unwrap()
+    );
+    tx.send(()).unwrap();
+    worker.shutdown().unwrap();
+    assert_eq!(sessions.title_state(), before);
+    assert!(notices.try_recv().is_err());
+    assert!(!root.join("utility-log.jsonl").exists());
+    assert!(!utility.active());
     sessions.quiesce_active().unwrap();
     crate::test_support::cleanup_tree(&root);
 }

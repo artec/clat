@@ -166,12 +166,12 @@ impl TrustedProjectApplication {
             tools: ports.tools,
             tool_pipeline: ports.tool_pipeline,
             prompts: ports.prompts,
-            dynamic_instructions: ports.dynamic_instructions,
+            dynamic_instructions: InstructionPort(ports.dynamic_instructions),
             process_service: ports.process_service,
             plan_mode: ports.plan_mode,
             workflow: ports.workflow,
             tool_access: ports.tool_access,
-            view_image: ports.view_image,
+            view_image: ImageToolPort(ports.view_image),
             skills: ports.skills,
             skill_catalog: ports.skill_catalog,
             invoked_skill: None,
@@ -230,12 +230,13 @@ impl TrustedProjectApplication {
         // 会话边界（mount 恢复）之后对齐档位 cell：恢复的会话用自己的
         // fold，Fresh 回落默认——绝不携带上一个进程的任何档位。
         self.reseed_permission_mode_from_session();
-        if let Some(titler) = &self.titler {
+        if let (Some(titler), Some(utility)) = (&self.titler, &self.utility) {
             self.title_worker = Some(TitleWorker::spawn(
                 Arc::clone(titler),
                 Arc::clone(&self.sessions),
                 Arc::clone(&self.subscribers),
                 self.host_storage.root().to_path_buf(),
+                utility.clone(),
             )?);
         }
         // B9 迁移腿（INV-M3 升级腿）：旧世界的唯一自定义持久化形态是
@@ -1607,6 +1608,9 @@ impl TrustedProjectApplication {
     }
 
     fn close_inner(&mut self) -> Result<(), ApplicationError> {
+        if let Some(utility) = &self.utility {
+            utility.revoke();
+        }
         let mut errors = Vec::new();
         if let Some(service) = &self.development
             && let Err(error) = service.close()
@@ -1637,6 +1641,11 @@ impl TrustedProjectApplication {
             && let Err(error) = jobs.close()
         {
             errors.push(error.presentation().english());
+        }
+        if let Some(utility) = &self.utility {
+            if let Err(error) = utility.close() {
+                errors.push(error);
+            }
         }
         if let Err(error) = self.flush_input_references() {
             errors.push(error.to_string());

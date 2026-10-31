@@ -13,6 +13,9 @@ const DISABLED: &[&str] = &[
     "builtin.scheduler",
     "builtin.development",
     "builtin.draft_images",
+    "builtin.project_instructions",
+    "builtin.utility_model",
+    "builtin.view_image",
 ];
 
 fn fixture() -> (ServeHandle, PathBuf, PathBuf) {
@@ -94,6 +97,28 @@ fn disabled_feature_http_projections_stay_aggregatable_and_deny_plan_mutation() 
     for id in DISABLED {
         assert_eq!(workflow["builtin_availability"][id]["enabled"], false);
     }
+    let (_, suggestion) = post_rpc_json(handle.addr, TEST_TOKEN, "prompt.suggest", "{}");
+    assert_eq!(suggestion["ok"], false);
+    assert_eq!(
+        suggestion["error"]["presentation"]["key"],
+        "extension.disabled_builtin"
+    );
+    let generation = workbench["selection_generation"].as_u64().unwrap_or(0);
+    let (_, followups) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "prompt.followups",
+        &json!({
+            "action":"generate", "run_id":"old", "expected_selection_generation":generation
+        })
+        .to_string(),
+    );
+    assert_eq!(followups["ok"], false);
+    assert_eq!(
+        followups["error"]["presentation"]["key"],
+        "extension.disabled_builtin"
+    );
+    assert!(rpc(handle.addr, "model.utility.get").is_object());
     assert_eq!(workflow["plan_mode"], true);
     assert_eq!(workbench["permission"]["mode"], "danger-full-access");
     assert_eq!(workflow["documents"].as_array().unwrap().len(), 1);

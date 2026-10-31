@@ -18,6 +18,7 @@ fn main() {
             "desktop_quit",
             "desktop_stop_host",
             "desktop_window",
+            "desktop_background",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("desktop resource and ACL generation");

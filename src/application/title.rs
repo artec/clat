@@ -21,7 +21,7 @@ pub(super) struct AutotitleJob {
 pub(super) struct TitleWorker {
     pub(super) sender: mpsc::SyncSender<AutotitleJob>,
     cancel: CancelToken,
-    join: Option<JoinHandle<()>>,
+    join: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl TitleWorker {
@@ -30,7 +30,10 @@ impl TitleWorker {
         sessions: Arc<SessionService>,
         subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
         storage_root: PathBuf,
+        utility: Arc<crate::plugins::UtilityRuntime>,
     ) -> Result<Self, ApplicationError> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("utility.title_worker");
         let (sender, receiver) = mpsc::sync_channel::<AutotitleJob>(1);
         let cancel = CancelToken::new();
         let worker_cancel = cancel.clone();
@@ -39,14 +42,20 @@ impl TitleWorker {
             .spawn(move || {
                 while !worker_cancel.is_cancelled() {
                     match receiver.recv_timeout(Duration::from_millis(100)) {
-                        Ok(job) => maybe_autotitle(
-                            titler.as_ref(),
-                            sessions.as_ref(),
-                            &job,
-                            &worker_cancel,
-                            &subscribers,
-                            &storage_root,
-                        ),
+                        Ok(job) => {
+                            let Ok(producer) = utility.producer(&worker_cancel) else {
+                                break;
+                            };
+                            maybe_autotitle(
+                                titler.as_ref(),
+                                sessions.as_ref(),
+                                &job,
+                                &worker_cancel,
+                                &subscribers,
+                                &storage_root,
+                                &producer,
+                            )
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
@@ -56,24 +65,13 @@ impl TitleWorker {
         Ok(Self {
             sender,
             cancel,
-            join: Some(join),
+            join: Mutex::new(vec![join]),
         })
     }
 
     pub(super) fn shutdown(&mut self) -> Result<(), ApplicationError> {
         self.cancel.cancel();
-        if let Some(join) = self.join.take() {
-            // 进程退出语义（2026-08-19，对照 DSH 的 AbortSignal 处置）：
-            // 取消后至多等 EXIT_JOIN_GRACE。在途标题请求的 HTTP 阻塞
-            // 阶段不被合作式取消打断（`CancelAwareReader` 只在 read
-            // 返回之间检查标志），无界 join 会把退出拖到请求超时——
-            // 实测可达数十秒（"exit 有时很慢"的根因之一）。放弃等价
-            // 于一次失败的自动命名（INV-F 语义，失败现在留一行有界
-            // 诊断证据）；线程随进程退出回收；运行期路径不经过这里，
-            // "无 detached 任务"的运行期不变量不变。
-            join_with_grace(join, EXIT_JOIN_GRACE, "title worker")
-                .map_err(ApplicationError::new)?;
-        }
+        crate::plugin::lifecycle::join(&self.join).map_err(ApplicationError::new)?;
         Ok(())
     }
 }
@@ -88,6 +86,7 @@ fn maybe_autotitle(
     cancel: &CancelToken,
     subscribers: &Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     storage_root: &Path,
+    producer: &crate::plugin::lifecycle::Producer,
 ) {
     let AutotitleJob {
         session_id,
@@ -97,42 +96,48 @@ fn maybe_autotitle(
     if cancel.is_cancelled() || !titler.enabled() {
         return;
     }
-    let attempt = match sessions.prepare_title_attempt(session_id) {
-        Ok(Some(attempt)) => attempt,
-        Ok(None) => return,
-        Err(error) => {
-            append_utility_evidence(
-                storage_root,
-                "session-title",
-                Some(session_id.as_str()),
-                "prepare",
-                &super::bounded_reason(&error.to_string()),
-            );
+    let attempt = match producer.commit(|| sessions.prepare_title_attempt(session_id)) {
+        Ok(Ok(Some(attempt))) => attempt,
+        Ok(Ok(None)) | Err(_) => return,
+        Ok(Err(error)) => {
+            let _ = producer.commit(|| {
+                append_utility_evidence(
+                    storage_root,
+                    "session-title",
+                    Some(session_id.as_str()),
+                    "prepare",
+                    &super::bounded_reason(&error.to_string()),
+                )
+            });
             return;
         }
     };
     let generated = match titler.generate_title(config, credentials, &attempt.context, cancel) {
         Ok(generated) => generated,
         Err(failure) => {
-            append_utility_evidence(
-                storage_root,
-                "session-title",
-                Some(session_id.as_str()),
-                "generate",
-                &failure.safe_text(),
-            );
+            let _ = producer.commit(|| {
+                append_utility_evidence(
+                    storage_root,
+                    "session-title",
+                    Some(session_id.as_str()),
+                    "generate",
+                    &failure.safe_text(),
+                )
+            });
             return;
         }
     };
-    commit_generated_title(
-        sessions,
-        subscribers,
-        storage_root,
-        session_id,
-        &attempt.expectation,
-        &attempt.message_seqs,
-        generated,
-    );
+    let _ = producer.commit(|| {
+        commit_generated_title(
+            sessions,
+            subscribers,
+            storage_root,
+            session_id,
+            &attempt.expectation,
+            &attempt.message_seqs,
+            generated,
+        )
+    });
 }
 
 /// 生成的标题落盘（清洗为空 → 证据行；CAS/属主拒绝是正常语义不留痕）并

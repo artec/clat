@@ -13,9 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod contracts;
+mod runtime;
 pub(crate) use contracts::{
     UtilityFailure, UtilityFinish, UtilityModel, UtilityOutput, UtilitySettings, UtilityTask,
 };
+pub(crate) use runtime::UtilityRuntime;
 
 const ID: PluginId = PluginId::new("builtin.utility_model");
 const REQUIRES: &[crate::plugin::ServiceId] = &[PROVIDER_SERVICE_ID];
@@ -29,7 +31,10 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 };
 const DEADLINE: Duration = Duration::from_secs(15);
 
-pub(crate) struct CompanionUtilityPlugin;
+#[derive(Default)]
+pub(crate) struct CompanionUtilityPlugin {
+    pub(crate) lease: Option<Arc<dyn Send + Sync>>,
+}
 
 impl Plugin for CompanionUtilityPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
@@ -43,11 +48,15 @@ impl Plugin for CompanionUtilityPlugin {
         let config = context
             .try_require(CONFIG_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        let runtime = context.acquire(
+            UtilityRuntime::new(
+                Arc::new(DefaultUtilityModel { providers, config }),
+                self.lease.clone(),
+            ),
+            |runtime| runtime.close().map_err(crate::plugin::DisposeError::new),
+        );
         context
-            .provide(
-                UTILITY_MODEL_SERVICE,
-                Arc::new(DefaultUtilityModel { providers, config }) as Arc<dyn UtilityModel>,
-            )
+            .provide(UTILITY_MODEL_SERVICE, runtime)
             .map_err(|error| PluginError::new(error.to_string()))
     }
 }

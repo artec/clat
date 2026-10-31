@@ -1,5 +1,5 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
-function loader(){const context=vm.createContext({});vm.runInContext(fs.readFileSync(path.join(__dirname,'../workflow-details.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../task-center.js'),'utf8'),context);return context.loadTaskCenterContent;}
+function loader(){const context=vm.createContext({window:new EventTarget()});vm.runInContext(fs.readFileSync(path.join(__dirname,'../workflow-details.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../task-center.js'),'utf8'),context);return context.loadTaskCenterContent;}
 test('task center never calls an absent capability and keeps the other section',async()=>{
  for(const jobs of [false,true])for(const scheduler of [false,true]){
   const calls=[],load=loader(),availability={builtin_availability:{'builtin.jobs':{enabled:jobs},'builtin.scheduler':{enabled:scheduler}}};
@@ -15,7 +15,7 @@ test('a real section read failure stays visible while independent content surviv
 });
 test('the work-mode goal action follows Goal availability independently of Plan',()=>{
  const nodes=[];const element=()=>({dataset:{},disabled:false,setAttribute(){},addEventListener(){},append(){},replaceChildren(){}});
- const scope={state:{runActive:false},workbenchShell:{workflow:{plan_mode:false,builtin_availability:{'builtin.goal':{enabled:false,reason:{key:'disabled'}},'builtin.plan_mode':{enabled:true}}}},workflowText:k=>k,workflowGoalStatus:()=> 'paused',el:element,CLATI18n:{attribute:(node,key,read)=>node[key]=read(),present:v=>v?.key||'',msg:k=>k},shellButton:()=>{const node=element();nodes.push(node);return node;},attachComposerPopup:(_,__,___,render)=>{render();return {toggle(){},close(){}};}};
+ const scope={window:new EventTarget(),state:{runActive:false},workbenchShell:{workflow:{plan_mode:false,builtin_availability:{'builtin.goal':{enabled:false,reason:{key:'disabled'}},'builtin.plan_mode':{enabled:true}}}},workflowText:k=>k,workflowGoalStatus:()=> 'paused',el:element,CLATI18n:{attribute:(node,key,read)=>node[key]=read(),present:v=>v?.key||'',msg:k=>k},shellButton:()=>{const node=element();nodes.push(node);return node;},attachComposerPopup:(_,__,___,render)=>{render();return {toggle(){},close(){}};}};
  vm.createContext(scope);vm.runInContext(fs.readFileSync(path.join(__dirname,'../workflow-details.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../work-mode.js'),'utf8'),scope);
  scope.installWorkModeMenu(element());
  assert.equal(nodes.find(n=>n.dataset.workMode==='goal').disabled,true);

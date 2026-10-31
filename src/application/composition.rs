@@ -58,11 +58,11 @@ pub(super) struct ProjectPorts {
     pub(super) tools: Arc<crate::tool::ToolRegistry>,
     pub(super) tool_pipeline: Arc<crate::tool::ToolExecutionPipeline>,
     pub(super) prompts: Arc<PromptRegistry>,
-    pub(super) dynamic_instructions: Arc<dyn DynamicInstructions>,
+    pub(super) dynamic_instructions: Option<Arc<dyn DynamicInstructions>>,
     pub(super) process_service: Arc<crate::process::ProcessService>,
     pub(super) plan_mode: Option<Arc<crate::plan_mode::PlanModeService>>,
     pub(super) tool_access: Arc<crate::tool::ToolAccessSlot>,
-    pub(super) view_image: Arc<crate::view_image::ViewImageState>,
+    pub(super) view_image: Option<Arc<crate::view_image::ViewImageState>>,
     pub(super) skills: Option<Arc<crate::skills::SkillsService>>,
     pub(super) skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
     pub(super) memory: Option<Arc<crate::memory::MemoryService>>,
@@ -76,7 +76,7 @@ pub(super) struct ProjectPorts {
     pub(super) compactor: Option<Arc<dyn HistoryCompactor>>,
     pub(super) todo: Option<Arc<TodoService>>,
     pub(super) titler: Option<Arc<dyn SessionTitler>>,
-    pub(super) utility: Arc<dyn crate::plugins::services::UtilityModel>,
+    pub(super) utility: Option<Arc<crate::plugins::UtilityRuntime>>,
     pub(super) language_startup_diagnostic: Option<String>,
 }
 
@@ -371,10 +371,10 @@ fn resolve_and_freeze(
     let tools = required(manager, TOOL_SERVICE)?;
     let providers = required(manager, PROVIDER_SERVICE)?;
     let prompts = required(manager, PROMPT_SERVICE)?;
-    let dynamic_instructions = required(manager, DYNAMIC_INSTRUCTIONS_SERVICE)?;
+    let dynamic_instructions = optional(manager, DYNAMIC_INSTRUCTIONS_SERVICE)?;
     let plan_mode = optional(manager, PLAN_MODE_SERVICE)?;
     let tool_access = required(manager, TOOL_ACCESS_SERVICE)?;
-    let view_image = required(manager, VIEW_IMAGE_SERVICE)?;
+    let view_image = optional(manager, VIEW_IMAGE_SERVICE)?;
     let skills = optional(manager, crate::plugins::services::SKILLS_SERVICE)?;
     let skill_catalog = optional(manager, crate::plugins::services::SKILL_CATALOG_SERVICE)?;
     if skills.is_some() != skill_catalog.is_some() {
@@ -432,7 +432,7 @@ fn resolve_and_freeze(
         compactor: optional(manager, COMPACTION_SERVICE)?,
         todo: optional(manager, TODO_SERVICE)?,
         titler: optional(manager, SESSION_TITLE_SERVICE)?,
-        utility: required(manager, crate::plugins::services::UTILITY_MODEL_SERVICE)?,
+        utility: optional(manager, crate::plugins::services::UTILITY_MODEL_SERVICE)?,
         language_startup_diagnostic: language_intelligence
             .and_then(|service| service.diagnostics().first().cloned()),
     })
@@ -578,7 +578,9 @@ fn project_runtime_catalog(
         Arc::new(crate::plugins::ToolResultPrunerPlugin),
         Arc::new(crate::plugins::CompactionPlugin),
         Arc::new(crate::plugins::TodoPlugin),
-        Arc::new(crate::plugins::CompanionUtilityPlugin),
+        Arc::new(crate::plugins::CompanionUtilityPlugin {
+            lease: Some(input.lease.clone()),
+        }),
         Arc::new(crate::plugins::SessionTitlePlugin),
         Arc::new(crate::plugins::DefaultAgentPlugin::new(
             input.project.clone(),
@@ -598,14 +600,11 @@ fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
         TOOL_SERVICE.id(),
         TOOL_PIPELINE_SERVICE.id(),
         PROMPT_SERVICE.id(),
-        DYNAMIC_INSTRUCTIONS_SERVICE.id(),
         PROCESS_SERVICE.id(),
         TOOL_ACCESS_SERVICE.id(),
-        VIEW_IMAGE_SERVICE.id(),
         COMMAND_SERVICE.id(),
         AGENT_SERVICE.id(),
         MCP_STATUS_SERVICE.id(),
-        UTILITY_MODEL_SERVICE.id(),
         PERMISSION_SERVICE.id(),
     ]
 }

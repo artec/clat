@@ -36,6 +36,8 @@ pub(crate) struct ProjectInstructionService {
 
 impl ProjectInstructionService {
     pub(crate) fn open(project: Project) -> Result<Self, String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("instructions.create");
         let service = Self {
             project,
             state: Mutex::new(InstructionState {
@@ -49,6 +51,8 @@ impl ProjectInstructionService {
     }
 
     pub(crate) fn observe_tool_result(&self, tool: &str, output: &Value) {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("instructions.observe");
         if !matches!(
             tool,
             "list_files" | "read_file" | "search" | "write_file" | "edit_file" | "apply_patch"
@@ -174,6 +178,8 @@ impl ProjectInstructionService {
     }
 
     fn read_scope(&self, directory: &Path) -> Result<Option<SourceDocument>, String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("instructions.read");
         for candidate in CANDIDATES {
             let relative = directory.join(candidate);
             let bytes = self
@@ -221,6 +227,8 @@ impl DynamicInstructions for ProjectInstructionService {
     }
 
     fn restore_from_header(&self, header: Option<&Value>) -> Result<(), String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("instructions.restore");
         let sources = header
             .and_then(|header| header.get("clatInstructionContext"))
             .and_then(|context| context.get("sources"))

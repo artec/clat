@@ -214,6 +214,9 @@ fn suggestion_shell(attached: bool) -> (App, PathBuf, u64) {
     let (mut app, storage) = shell();
     if !attached {
         app.native = None;
+    } else {
+        app.native.as_mut().unwrap().builtin_availability =
+            json!({"builtin.utility_model":{"enabled":true}});
     }
     app.session_id = Some(SessionId::new("hint-session"));
     let (request, _) = app.suggestions.begin(app.input.generation()).unwrap();
@@ -282,8 +285,8 @@ fn suggestion_preview_is_rendered_without_changing_input() {
             .map(|cell| cell.symbol())
             .collect();
         assert!(screen.contains("visible preview"));
-        assert!(screen.contains("Ctrl+Y use suggestion"));
-        assert!(screen.contains("✦ ready · Ctrl+Y"));
+        assert_eq!(app.suggestions.preview.as_deref(), Some("visible preview"));
+        assert!(!app.suggestions.pending());
         assert_eq!(app.input.text(), "");
         drop(app);
         crate::test_support::cleanup_tree(&storage);
@@ -294,6 +297,8 @@ fn suggestion_preview_is_rendered_without_changing_input() {
 fn native_suggestion_has_one_request_in_flight() {
     let (mut app, storage) = shell();
     app.native.as_mut().unwrap().online = true;
+    app.native.as_mut().unwrap().builtin_availability =
+        json!({"builtin.utility_model":{"enabled":true}});
     let (sender, received) = ui_event_channel();
     app.event_sender = Some(sender);
     for (code, modifiers) in [('g', KeyModifiers::CONTROL), ('s', KeyModifiers::ALT)] {
@@ -1478,6 +1483,27 @@ fn ag8_native_late_receipt_selection_fence() {
         "fenced probe",
         "a late accepted receipt must not cross the session fence"
     );
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn phase5_native_absent_or_unknown_utility_never_launches_suggestion_or_changes_draft() {
+    let (mut app, storage) = shell();
+    app.native.as_mut().unwrap().online = true;
+    let (sender, received) = ui_event_channel();
+    app.event_sender = Some(sender);
+    app.input.insert_str("keep original draft");
+    for availability in [
+        Value::Null,
+        json!({"builtin.utility_model":{"enabled":false,"reason":UiMessage::new("extension.disabled_builtin").arg("id","utility")}}),
+    ] {
+        app.native.as_mut().unwrap().builtin_availability = availability;
+        app.open_native_suggestion();
+        assert!(!app.suggestions.pending());
+        assert!(received.try_recv().is_err());
+        assert_eq!(app.input.text(), "keep original draft");
+    }
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }

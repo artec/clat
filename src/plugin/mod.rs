@@ -7,6 +7,7 @@ mod context;
 mod effect;
 pub(crate) mod hashing;
 mod id;
+pub(crate) mod lifecycle;
 mod manager;
 mod market;
 mod package;

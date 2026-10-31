@@ -419,8 +419,8 @@ Image input requires `builtin.draft_images`. If it is disabled in
 `builtin-plugins.json`, restart applies the change across all frontends, direct
 attachments, queued messages, steering, WeChat and `/vision-probe`. A message
 containing images is rejected as a whole and its text draft is kept. Historical
-images, attachment downloads and the Agent's native `view_image` still work;
-ordinary text and text paste remain available. Re-enabling creates fresh upload
+images and attachment downloads still work; the Agent's native `view_image` is
+controlled by its separate plugin. Ordinary text and text paste remain available. Re-enabling creates fresh upload
 and clipboard authority.
 
 The editor, Git and independent terminals require `builtin.development`.
@@ -879,7 +879,8 @@ probe-verified image capability receive native image input; unreadable or
 route-rejected parts degrade to a path-free notice.
 
 On a route whose frozen capabilities also permit image tool results, the agent
-receives the read-only `view_image` tool. It accepts one of an attachment ID
+receives the read-only `view_image` tool when `builtin.view_image` is enabled. It accepts one of
+an attachment ID
 already reachable from the active session, a project-relative PNG/JPEG path,
 or a core-minted current-run scratch reference. It never accepts an absolute
 path, including in Full Access, and read-only subagents do not receive it. A
@@ -1494,6 +1495,12 @@ process-only override; it neither reads nor changes the persistent token.
 ### Companion utility and manual suggestions
 
 The Workbench settings panel exposes a host-wide companion utility policy.
+Disabling `builtin.utility_model` in `builtin-plugins.json` and restarting stops
+automatic naming, prompt suggestions and followups. Settings and manual renaming
+remain available; compaction and Git keep their own model calls and shared route
+configuration. Re-enabling does not catch up old auxiliary jobs: new completed
+turns trigger future automatic work. The Extensions view explains effective
+availability, including the dependent session-title plugin.
 Continuous session naming is on by default; it coalesces duplicate notifications
 for the same ended turn and never changes a user-owned title. Generated titles
 follow a bounded contract: the model is asked for a short script-aware title
@@ -1541,7 +1548,7 @@ so these bounds keep the answer from being crowded out under the controlled
 reproduction; the exact vendor-side accounting of reasoning tokens against
 `max_tokens` is not claimed for every provider.
 
-When a naming or suggestion request fails, one bounded evidence line is
+When an active naming or suggestion request fails, one bounded evidence line is
 appended to `~/.clat/utility-log.jsonl` and the frontends show the same
 failure text. That text is a CLAT-owned category code — for example
 `request failed (server)`, `request failed (transport)`,
@@ -1551,7 +1558,16 @@ classified by CLAT's own stable error taxonomy instead of being copied,
 truncated, or echoed. The log records no credentials and no conversation
 text, is serialized across writers, and rotates to `.1` once it exceeds
 256 KiB; if rotation itself fails the line is dropped so the log stays
-bounded. Naming never blocks the run and never retries in the background.
+bounded. Naming never blocks the run and never retries in the background. Cancellation or Host
+closure revokes final publication, including diagnostic writes from late replies.
+
+Project instruction loading can be disabled with `builtin.project_instructions`
+in the same restart-based configuration. This stops automatic AGENTS.md and
+CLAUDE.md discovery and injection, including old header source restoration.
+Historical content remains, and explicit file reads remain ordinary tools.
+Permission, retained Plan and retained Task constraints continue to apply.
+Native image inspection can be disabled separately with `builtin.view_image`;
+this does not change image input, historical attachments or model vision settings.
 
 ### WeChat remote control
 

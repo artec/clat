@@ -106,6 +106,7 @@ pub(super) struct NativeState {
     editor_saved_revision: u64,
     questions: questions::NativeQuestions,
     info_request: u64,
+    pub(super) builtin_availability: Value,
     permissions: permissions::NativePermissions,
     /// CF7：run.cancel 在途标志（所在 run 的本地序号）——同一 run 取
     /// 消未结算期间重复 ESC 幂等跳过（C1）；真实终态/新 run 解除。
@@ -174,6 +175,7 @@ impl App {
             editor_saved_revision: 0,
             questions: questions::NativeQuestions::default(),
             info_request: 0,
+            builtin_availability: Value::Null,
             permissions: Default::default(),
             cancel_inflight: None,
             run_seq: 0,
@@ -187,6 +189,9 @@ impl App {
     }
 
     pub(super) fn start_native(&mut self) {
+        if let Some(native) = &mut self.native {
+            native.builtin_availability = Value::Null;
+        }
         self.close_plugin_dialog();
         self.close_native_info();
         self.permission_picker = None;
@@ -300,6 +305,10 @@ impl App {
     }
 
     pub(super) fn open_native_suggestion(&mut self) {
+        if let Some(reason) = self.suggestion_unavailable() {
+            self.flash_message(reason);
+            return;
+        }
         let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) else {
             return;
         };
@@ -541,6 +550,9 @@ impl App {
     }
 
     fn native_offline(&mut self, error: String) {
+        if let Some(native) = &mut self.native {
+            native.builtin_availability = Value::Null;
+        }
         self.close_plugin_dialog();
         self.native.as_mut().unwrap().online = false;
         self.native.as_mut().unwrap().approval_id = None;
@@ -560,6 +572,7 @@ impl App {
             .native
             .as_ref()
             .is_some_and(|native| native.epoch == epoch && native.selection == selection)
+            && self.suggestion_unavailable().is_none()
             && result.as_ref().map_or(true, |value| {
                 value["selection_generation"].as_u64() == Some(selection)
                     && value["session_id"].as_str()
@@ -667,7 +680,17 @@ impl App {
         }
     }
 
+    fn update_native_availability(&mut self, value: &Value) {
+        if let Some(native) = &mut self.native {
+            native.builtin_availability = value["builtin_availability"].clone();
+        }
+        if self.suggestion_unavailable().is_some() {
+            self.suggestions.invalidate();
+        }
+    }
+
     fn native_snapshot(&mut self, value: Value) {
+        self.update_native_availability(&value);
         if let Some(native) = &mut self.native {
             native.next_turn = value["next_turn_queue"]
                 .as_array()

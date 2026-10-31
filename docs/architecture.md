@@ -143,12 +143,32 @@ an unavailable reason without reading workspace files.
 `application/user_images::DraftImages` centralizes the optional runtime port: resource inspection,
 reservation, transfer, settlement and cleanup. Empty/text paths need no store.
 Application checks every new user-image shape before admission, queue or run
-changes; Session attachment reads and native `view_image` bypass this input
+changes; Session attachment reads and the independently optional native `view_image` bypass this input
 capability deliberately. Durable duplicate receipts precede source reservation.
 HostClient checks the current instance/project availability before reading image
 files or clipboard pixels and lazily creates client staging only when needed.
 A closed store cannot publish late uploads; a new Host cannot reuse old scopes,
 upload IDs or terminal control leases.
+
+`application/enhancement_features` owns the absence contract for automatic project
+instructions, native image inspection and utility execution. None belongs to the
+required Application service closure. A missing instruction port neither scans
+files nor restores old header sources. A missing image port owns no tool,
+transformer or scratch state. Target-session bindings replace only mounted
+contributions under their original owners, retaining cancellation, permission and
+Task guards; tools, transformers, request headers and run slots use the same
+target Session.
+
+`plugin/lifecycle` is the shared low-level producer owner for Development and
+utility execution. Each active producer retains the actual Host root lease;
+prepared idle handles retain only revocable ownership. The commit boundary is
+serialized against close, including auxiliary attempt preparation, title CAS,
+followup publication, notifications and bounded diagnostics. Model I/O runs
+outside that lock. Close cancels registered operations and rejects new ones;
+a worker timeout is an error, with root exclusion retained until real exit.
+Session history, manual titles and utility route settings outlive the optional
+execution service. Automatic jobs are process-local and are never replayed on
+reopen; compaction and Git retain separate execution paths.
 
 Third-party packages of both runtime kinds are activated from one immutable
 local store. The package tree is copied and fsynced before an atomic registry

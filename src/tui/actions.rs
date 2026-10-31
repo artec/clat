@@ -612,6 +612,10 @@ impl App {
     }
 
     pub(super) fn start_prompt_suggestion(&mut self) -> bool {
+        if let Some(reason) = self.suggestion_unavailable() {
+            self.flash_message(reason);
+            return true;
+        }
         if self.suggestions.pending() || self.running || self.run_start_pending {
             self.flash_message(UiMessage::new("tui.suggestions_are_available_while_idle"));
             return true;

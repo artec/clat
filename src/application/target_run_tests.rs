@@ -323,3 +323,115 @@ fn target_run_never_claims_steering_or_attachments_from_another_selected_session
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
 }
+
+struct TargetImageScript {
+    ids: Mutex<Option<(String, String)>>,
+    step: AtomicUsize,
+}
+impl TestModelScript for TargetImageScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let ids = self.ids.lock().unwrap();
+        let Some((target, foreground)) = ids.as_ref() else {
+            return Ok(write_guard::response(None, "seed"));
+        };
+        let last = request.items.iter().rev().find_map(|item| match item {
+            crate::ModelItem::ToolResult(out) => Some(out),
+            _ => None,
+        });
+        let next = match self.step.fetch_add(1, Ordering::AcqRel) {
+            0 => Some(("view_image", json!({"attachment_id":foreground}))),
+            1 => {
+                assert!(
+                    last.unwrap().is_error,
+                    "target must deny foreground-only attachment"
+                );
+                Some(("view_image", json!({"attachment_id":target})))
+            }
+            2 => {
+                let result = last.unwrap();
+                assert!(
+                    !result.is_error,
+                    "target attachment must be available: {:?}",
+                    result.output
+                );
+                assert!(
+                    result
+                        .image_parts
+                        .iter()
+                        .any(|part| matches!(part, crate::model::ContentPart::Image { .. }))
+                );
+                None
+            }
+            _ => panic!("unexpected image loop"),
+        };
+        Ok(write_guard::response(next, "target images checked"))
+    }
+}
+#[test]
+fn phase5_target_images_use_target_authority_and_transformer() {
+    let (storage, root) = roots("phase5-target-images");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = Arc::new(TargetImageScript {
+        ids: Mutex::new(None),
+        step: AtomicUsize::new(0),
+    });
+    let mut app = mount_with_permission_modes(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(script.clone()),
+        crate::PermissionMode::FullAccess,
+    );
+    configure_test_model(&app);
+    let mut ids = vec![];
+    let mut sessions = vec![];
+    for color in [[1, 2, 3], [4, 5, 6]] {
+        let source = root.join("image.png");
+        std::fs::write(&source, crate::test_support::png_bytes(3, 2, color)).unwrap();
+        run_with_attachments(&mut app, "image", vec![source]).unwrap();
+        let image = app
+            .current_model_history()
+            .unwrap()
+            .iter()
+            .find_map(|item| match item {
+                crate::ModelItem::User { content } => content.iter().find_map(|part| match part {
+                    crate::model::ContentPart::Image { path, .. } => Some(
+                        std::path::Path::new(path)
+                            .file_name()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned(),
+                    ),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        ids.push(image);
+        sessions.push(app.current_session_id().unwrap());
+        if ids.len() == 1 {
+            app.new_session().unwrap();
+        }
+    }
+    *script.ids.lock().unwrap() = Some((ids[0].clone(), ids[1].clone()));
+    let (request, receiver) = target_request(
+        &app,
+        sessions[0].clone(),
+        "target-images",
+        allow_all_approver(),
+    );
+    let handle = app.start_target_run(request).unwrap();
+    handle.join().unwrap();
+    receiver
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    assert_eq!(app.current_session_id(), Some(sessions[1].clone()));
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}

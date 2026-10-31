@@ -12,7 +12,7 @@ impl Plugin for DescriptorOnly {
     }
 }
 #[test]
-fn all_2048_optional_capability_combinations_plan_without_side_effects() {
+fn all_16384_optional_capability_combinations_plan_without_side_effects() {
     let (storage, root) = crate::test_support::roots("all-plugin-plans");
     std::fs::create_dir_all(&root).unwrap();
     let app = crate::BootstrapApplication::open(Project::new(&root), storage.clone())
@@ -40,8 +40,11 @@ fn all_2048_optional_capability_combinations_plan_without_side_effects() {
         "builtin.plan_mode",
         "builtin.development",
         "builtin.draft_images",
+        "builtin.project_instructions",
+        "builtin.utility_model",
+        "builtin.view_image",
     ];
-    for mask in 0..2048 {
+    for mask in 0..16384 {
         let config = crate::plugin::selection::Configuration {
             disabled: ids
                 .iter()

@@ -1,4 +1,10 @@
 {
+  "desktop.background_blur_strength_hint": "Drag right for more blur. 0% turns blur off.",
+  "desktop.background_blur_failed": "Could not adjust background blur (system code {code}).",
+  "desktop.background_transparency": "Background transparency",
+  "desktop.background_transparency_hint": "Adjust the background while keeping text clear.",
+  "desktop.background_blur": "Frosted glass",
+  "desktop.background_blur_hint": "Blur the content behind the window.",
   "background.already_admitted": "This automatic occurrence was already admitted. Its existing result must be reconciled; it will not be executed again.",
   "background.busy": "The project is busy. Automatic work will wait for the active work and pending user input.",
   "background.cleanup_failed": "{original}; target cleanup failed: {detail}",
@@ -2904,5 +2910,6 @@
   "extension.retained_task": "The task extension is disabled. Task history is preserved and unresolved operations still block execution. Re-enable the extension and restart to continue, edit, check or accept the task.",
   "extension.job_source_paused": "Background jobs are disabled. This job-triggered rule keeps its authorization and budget; execution resumes when the extension is re-enabled.",
   "extension.capability_pending": "Loading feature availability…",
-  "dev.cleanup_failed": "Some workspace processes have not stopped. Cleanup failed; retry after they stop."
+  "dev.cleanup_failed": "Some workspace processes have not stopped. Cleanup failed; retry after they stop.",
+  "extension.utility_unavailable_settings": "{reason} Settings are retained. Shared model routing still applies to compaction and Git."
 }

@@ -97,13 +97,35 @@ fn all_four_phase4_host_compositions_keep_native_tools_and_plain_runs() {
 
 #[test]
 fn native_file_and_process_execution_work_with_both_phase4_features_disabled() {
+    native_execution_check(&FEATURES);
+}
+#[test]
+fn phase5_native_file_and_process_execution_work_with_all_fourteen_features_disabled() {
+    native_execution_check(&[
+        "builtin.skills",
+        "builtin.memory",
+        "builtin.subagent",
+        "builtin.mcp_adapter",
+        "builtin.plan_mode",
+        "builtin.goal",
+        "builtin.task",
+        "builtin.jobs",
+        "builtin.scheduler",
+        "builtin.development",
+        "builtin.draft_images",
+        "builtin.project_instructions",
+        "builtin.utility_model",
+        "builtin.view_image",
+    ]);
+}
+fn native_execution_check(disabled: &[&str]) {
     use crate::test_support::{SharedEvents, TestBehavior, TestProviderPlugin};
     for behavior in [TestBehavior::WriteFile, TestBehavior::RunCommand] {
         let (root, _) = crate::test_support::roots("phase4-native-execution");
         let project = Project::new(root.join("project"));
         std::fs::create_dir_all(project.root()).unwrap();
         let state = root.join("state");
-        policy(&state, &FEATURES);
+        policy(&state, disabled);
         let write = matches!(behavior, TestBehavior::WriteFile);
         let mut app = BootstrapApplication::open(project.clone(), state)
             .unwrap()

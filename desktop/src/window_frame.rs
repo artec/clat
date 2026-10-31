@@ -50,6 +50,9 @@ pub fn desktop_window(
 pub fn configure<R: tauri::Runtime, M: tauri::Manager<R>>(
     builder: tauri::WebviewWindowBuilder<'_, R, M>,
 ) -> tauri::WebviewWindowBuilder<'_, R, M> {
+    let builder = builder
+        .transparent(true)
+        .background_color(tauri::webview::Color(0, 0, 0, 0));
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)

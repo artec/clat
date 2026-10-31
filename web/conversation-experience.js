@@ -68,8 +68,9 @@ function renderRoundFollowups(value) {
 let followupEpoch = 0;
 function clearRoundFollowups() { followupEpoch++; renderRoundFollowups(null); }
 async function loadRoundFollowups(run, action = 'generate') {
+  if (!builtinReady('builtin.utility_model')) { clearRoundFollowups(); return; }
   const epoch = ++followupEpoch, owner = composerScope, generation = state.selectionGeneration;
-  const current = () => epoch === followupEpoch && composerOwns(owner) && generation === state.selectionGeneration && !state.runActive;
+  const current = () => builtinReady('builtin.utility_model') && epoch === followupEpoch && composerOwns(owner) && generation === state.selectionGeneration && !state.runActive;
   if (action !== 'read') renderRoundFollowups({status:'pending',run,owner});
   try {
     const result = await rpc('prompt.followups', {run_id:run, action, expected_selection_generation:generation});

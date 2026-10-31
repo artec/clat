@@ -30,6 +30,9 @@ pub struct PreparedFollowups {
 }
 impl TrustedProjectApplication {
     pub(crate) fn register_followup_run(&self, run: &str, completed: bool) {
+        if self.utility.is_none() {
+            return;
+        }
         let Some(session) = self.current_session_id() else {
             return;
         };
@@ -61,6 +64,9 @@ impl TrustedProjectApplication {
         }
     }
     pub fn followup_snapshot(&self) -> FollowupReply {
+        if self.utility.is_none() {
+            return FollowupReply::default();
+        }
         let Some(session) = self.current_session_id() else {
             return FollowupReply::default();
         };
@@ -68,7 +74,7 @@ impl TrustedProjectApplication {
         let Some(slot) = store.sessions.get_mut(&session) else {
             return FollowupReply::default();
         };
-        if slot.seq != self.followup_content_seq() || !self.utility.enabled(UtilityTask::Followups)
+        if slot.seq != self.followup_content_seq() || !self.utility_enabled(UtilityTask::Followups)
         {
             slot.cancel.cancel();
             slot.reply.status = "empty".into();
@@ -102,6 +108,7 @@ impl TrustedProjectApplication {
         run: &str,
         retry: bool,
     ) -> Result<Option<PreparedFollowups>, ApplicationError> {
+        self.utility_service()?;
         let snapshot = self.followup_snapshot();
         if snapshot.run_id != run || run.is_empty() {
             return Ok(None);
@@ -135,24 +142,23 @@ impl TrustedProjectApplication {
 }
 impl PreparedFollowups {
     pub fn generate(self) {
-        let result = self
-            .suggestion
-            .generate(&self.cancel)
-            .and_then(|output| parse_followups(&output.text));
-        let mut store = self.store.lock().expect("followups");
-        let Some(slot) = store.sessions.get_mut(&self.session) else {
-            return;
-        };
-        if slot.run != self.run || self.cancel.is_cancelled() {
-            return;
-        }
-        match result {
-            Ok(items) => {
-                slot.reply.items = items;
-                slot.reply.status = "ready".into();
+        let _ = self.suggestion.execute(&self.cancel, |result| {
+            let result = result.and_then(|output| parse_followups(&output.text));
+            let mut store = self.store.lock().expect("followups");
+            let Some(slot) = store.sessions.get_mut(&self.session) else {
+                return;
+            };
+            if slot.run != self.run || self.cancel.is_cancelled() {
+                return;
             }
-            Err(_) => slot.reply.status = "failed".into(),
-        }
+            match result {
+                Ok(items) => {
+                    slot.reply.items = items;
+                    slot.reply.status = "ready".into();
+                }
+                Err(_) => slot.reply.status = "failed".into(),
+            }
+        });
     }
 }
 fn parse_followups(text: &str) -> Result<Vec<String>, String> {

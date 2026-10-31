@@ -40,7 +40,13 @@ pub(crate) fn dispatch(
             None
         } else {
             app.prepare_followups(run, action == "retry")
-                .map_err(|_| localized("experience.followups_busy", true))?
+                .map_err(|error| {
+                    if error.presentation().key == "extension.disabled_builtin" {
+                        super::protocol::app_error(error)
+                    } else {
+                        localized("experience.followups_busy", true)
+                    }
+                })?
         }
     };
     if let Some(prepared) = prepared {

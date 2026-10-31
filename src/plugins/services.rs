@@ -99,7 +99,7 @@ pub(crate) const SUBAGENT_SERVICE: ServiceKey<crate::subagent::SubagentService> 
     ServiceKey::new(SUBAGENT_SERVICE_ID);
 pub(crate) const VIEW_IMAGE_SERVICE: ServiceKey<crate::view_image::ViewImageState> =
     ServiceKey::new(VIEW_IMAGE_SERVICE_ID);
-pub(crate) const UTILITY_MODEL_SERVICE: ServiceKey<dyn UtilityModel> =
+pub(crate) const UTILITY_MODEL_SERVICE: ServiceKey<super::utility::UtilityRuntime> =
     ServiceKey::new(UTILITY_MODEL_SERVICE_ID);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -217,9 +217,10 @@ pub(crate) const SESSION_TITLE_SERVICE: ServiceKey<dyn SessionTitler> =
 
 pub(crate) use super::conversation::title::{GeneratedTitle, SessionTitler};
 #[cfg(test)]
+pub(crate) use super::conversation::utility::UtilityModel;
 pub(crate) use super::conversation::utility::UtilityOutput;
 pub(crate) use super::conversation::utility::{
-    UtilityFailure, UtilityFinish, UtilityModel, UtilitySettings, UtilityTask,
+    UtilityFailure, UtilityFinish, UtilitySettings, UtilityTask,
 };
 
 pub(crate) trait ConfigStore: Send + Sync {

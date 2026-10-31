@@ -33,6 +33,8 @@ impl Plugin for ViewImagePlugin {
     }
 
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("image_tool.mount");
         let sessions = context
             .require(SESSION_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
@@ -43,6 +45,11 @@ impl Plugin for ViewImagePlugin {
             .require(TOOL_PIPELINE_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
         let state = Arc::new(crate::view_image::ViewImageState::default());
+        let cleanup = state.clone();
+        context.defer(move || {
+            cleanup.clear();
+            Ok(())
+        });
         let tool_lease = tools
             .register(
                 context.owner(),

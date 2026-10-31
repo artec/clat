@@ -200,7 +200,7 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .composer-add-group .shell-button { display: flex; width: 100%; min-height: 30px; padding: 5px 8px; line-height: 20px; white-space: nowrap; }
 #composer-plan-toggle { font-size: 12px; }
 #composer-plan-toggle[aria-pressed="true"] { color: var(--accent); }
-.inspector { position: relative; display: flex; flex-direction: column; grid-area: inspector; margin-right: var(--canvas-gutter); border: 0; border-radius: var(--canvas-radius); background: var(--surface); }
+.inspector { position: relative; display: flex; flex-direction: column; grid-area: inspector; margin-right: var(--canvas-gutter); border: 0; border-radius: var(--canvas-radius); background: var(--sidebar-bg); }
 /* Center the grip in the canvas gutter; keep it outside the clipped inspector. */
 .inspector-resize { position:absolute;top:var(--toolbar-height);bottom:var(--canvas-gutter);right:calc(var(--current-inspector) + var(--canvas-gutter) / 2 - 3px);width:6px;z-index:20;cursor:col-resize;touch-action:none;border-radius:3px; }
 .app:is([data-inspector="closed"],[data-tool],[data-page]) > .inspector-resize { display:none; }

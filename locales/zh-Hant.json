@@ -1,4 +1,10 @@
 {
+  "desktop.background_blur_strength_hint": "向右拖動增強模糊，0% 關閉。",
+  "desktop.background_blur_failed": "無法調整背景模糊（系統代碼 {code}）。",
+  "desktop.background_transparency": "背景透明度",
+  "desktop.background_transparency_hint": "調整背景，不影響文字清晰度。",
+  "desktop.background_blur": "毛玻璃",
+  "desktop.background_blur_hint": "模糊視窗後面的內容。",
   "background.already_admitted": "本次自動工作已經獲准執行。請核對既有執行結果，不會再次執行。",
   "background.busy": "專案忙碌中。自動工作將等待目前工作與待處理的使用者輸入。",
   "background.cleanup_failed": "{original}；目標會話清理失敗：{detail}",
@@ -2904,5 +2910,6 @@
   "extension.retained_task": "任務擴充功能已關閉。歷史任務保留，未確認操作仍會阻止執行。繼續、修改、復原檢查及驗收須重新啟用擴充功能並重新啟動。",
   "extension.job_source_paused": "背景作業已關閉。此作業觸發規則保留原有授權與預算，重新啟用擴充功能後恢復執行。",
   "extension.capability_pending": "正在讀取功能可用狀態…",
-  "dev.cleanup_failed": "部分工作台程序尚未退出，清理失敗；請待其退出後重試。"
+  "dev.cleanup_failed": "部分工作台程序尚未退出，清理失敗；請待其退出後重試。",
+  "extension.utility_unavailable_settings": "{reason} 設定仍可儲存；共用模型路由繼續供上下文壓縮和 Git 使用。"
 }

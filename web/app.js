@@ -1088,7 +1088,7 @@ function onSettled(ctl) {
         break;
       default: console.warn('[clat] unknown settled outcome:', outcome.type);
     }
-    if (outcome.type === 'completed' && rpcId && context.isActive() && !dom.transcript.closest('.hidden,[hidden]') && state.utilitySettings?.automatic_followups !== false) void loadRoundFollowups(rpcId);
+    if (outcome.type === 'completed' && rpcId && context.isActive() && !dom.transcript.closest('.hidden,[hidden]') && state.utilitySettings?.automatic_followups !== false && builtinReady('builtin.utility_model')) void loadRoundFollowups(rpcId);
     accountUnfinishedWork(outcome.type, rpcId ? `settled:${rpcId}` : `live:${outcome.type}`);
     const idleText = settledIdleText(outcome.type);
     if (idleText && (dom['run-state'].textContent === '' || dom['run-state'].dataset.presentation === 'web.running')) {
@@ -2576,13 +2576,17 @@ function renderSuggestion() {
 }
 
 function syncSuggestionControl() {
-  const enabled = Boolean(state.utilitySettings && state.utilitySettings.suggestions_enabled);
+  const available = builtinReady('builtin.utility_model');
+  const enabled = available && Boolean(state.utilitySettings && state.utilitySettings.suggestions_enabled);
   const disabled = state.desktopUpdateLocked || state.suggestionPending || !enabled || state.runActive
     || state.compactionActive || state.switching || !state.sessionId;
   dom.suggest.disabled = disabled;
   dom.suggest.dataset.pending = String(state.suggestionPending);
   dom.suggest.setAttribute('aria-busy', String(state.suggestionPending));
-  if (state.suggestionPending) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.generating_a_prompt_suggestion", {}, "Generating a prompt suggestion…"));
+  const menuSuggestion = document.getElementById('add-suggestion');
+  if (menuSuggestion) { menuSuggestion.disabled = disabled; CLATI18n.attribute(menuSuggestion,'title',()=>available?'':builtinUnavailableReason('builtin.utility_model')); }
+  if (!available) CLATI18n.bind(dom.suggest, 'title', () => builtinUnavailableReason('builtin.utility_model'));
+  else if (state.suggestionPending) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.generating_a_prompt_suggestion", {}, "Generating a prompt suggestion…"));
   else if (!enabled) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.enable_manual_suggestions_in_workbench_settings", {}, "Enable manual suggestions in Workbench settings"));
   else if (!state.sessionId) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.start_a_session_before_requesting_a_suggestion", {}, "Start a session before requesting a suggestion"));
   else if (state.runActive || state.compactionActive || state.switching) CLATI18n.bind(dom.suggest, "title", () => CLATI18n.msg("web.suggestions_are_available_while_idle", {}, "Suggestions are available while idle"));
@@ -3097,7 +3101,8 @@ async function selectModelChoice(choice) {
 
 function renderUtilitySettings(settings, profiles = []) {
   if (!settings) return;
-  if (settings.automatic_followups === false) clearRoundFollowups();
+  syncUtilityAvailability();
+  if (!builtinReady('builtin.utility_model') || settings.automatic_followups === false) clearRoundFollowups();
   dom['utility-naming-enabled'].checked = settings.naming_enabled !== false;
   dom['utility-suggestions-enabled'].checked = settings.suggestions_enabled === true;
   document.getElementById('utility-followups-enabled').checked = settings.automatic_followups !== false;
@@ -3797,7 +3802,7 @@ function clearSubmittedPrompt(generation) {
 }
 
 async function requestSuggestion() {
-  if (state.suggestionPending || dom.suggest.disabled) return;
+  if (!builtinReady('builtin.utility_model') || state.suggestionPending || dom.suggest.disabled) return;
   const request = ++state.suggestionRequest;
   const sessionId = state.sessionId;
   const selectionGeneration = state.selectionGeneration;
@@ -3806,7 +3811,7 @@ async function requestSuggestion() {
   syncSuggestionControl();
   try {
     const result = await rpc('prompt.suggest', {});
-    if (request !== state.suggestionRequest || sessionId !== state.sessionId
+    if (!builtinReady('builtin.utility_model') || request !== state.suggestionRequest || sessionId !== state.sessionId
       || selectionGeneration !== state.selectionGeneration) return;
     if (result.session_id !== sessionId || result.selection_generation !== selectionGeneration) return;
     clearRoundFollowups();

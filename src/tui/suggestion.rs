@@ -50,9 +50,32 @@ impl SuggestionState {
 }
 
 impl App {
+    pub(super) fn suggestion_unavailable(&self) -> Option<UiMessage> {
+        if let Some(native) = &self.native {
+            let value = &native.builtin_availability["builtin.utility_model"];
+            if value["enabled"] == true {
+                return None;
+            }
+            return serde_json::from_value(value["reason"].clone())
+                .ok()
+                .or_else(|| Some(UiMessage::new("extension.capability_pending")));
+        }
+        self.application.as_ref().and_then(|app| {
+            app.builtin_availability()
+                .get("builtin.utility_model")
+                .and_then(|v| v.reason.clone())
+        })
+    }
     pub(super) fn suggestion_input_title(&self, title: &'static str) -> Line<'static> {
         let mut spans = vec![Span::raw(format!(" {title} "))];
         if self.running || self.session_id.is_none() || self.dsh.is_some() {
+            return Line::from(spans);
+        }
+        if let Some(reason) = self.suggestion_unavailable() {
+            spans.push(Span::styled(
+                self.locale.render(&reason),
+                theme::style(theme::Role::Faint),
+            ));
             return Line::from(spans);
         }
         let (label, role) = if self.suggestions.preview.is_some()

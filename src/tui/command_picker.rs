@@ -150,6 +150,9 @@ impl CommandPicker {
             "scheduler",
             "development",
             "draft_images",
+            "project_instructions",
+            "utility_model",
+            "view_image",
         ] {
             let id = format!("builtin.{name}");
             let value = &catalog["builtin_availability"][&id];

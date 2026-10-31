@@ -139,6 +139,7 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
         .initialization_script(crate::window_frame::initialization_script())
         .initialization_script(include_str!("../ui/window-bar.js"))
         .initialization_script(include_str!("../ui/bridge.js"))
+        .initialization_script(include_str!("../ui/background.js"))
         .on_page_load(|window, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished
                 && payload.url().host_str() == Some("127.0.0.1")
@@ -287,7 +288,8 @@ pub fn run() {
             crate::commands::desktop_stop_host,
             crate::tray::desktop_remember_conversation,
             crate::tray::desktop_take_tray_intent,
-            crate::window_frame::desktop_window
+            crate::window_frame::desktop_window,
+            crate::background::desktop_background
         ])
         .on_menu_event(|app, event| {
             if matches!(
