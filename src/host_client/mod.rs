@@ -56,7 +56,7 @@ pub struct HostClient {
     instance: String,
     root: PathBuf,
     #[cfg(any(test, feature = "test-support"))]
-    fixture_image_availability: Option<crate::application::BuiltinAvailability>,
+    fixture_image_availability: Option<Box<crate::application::BuiltinAvailability>>,
     clipboard:
         std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<crate::draft::DraftImageStore>>>>,
 }
@@ -72,10 +72,10 @@ impl HostClient {
             prefix: String::new(),
             instance: "11111111-1111-1111-1111-111111111111".into(),
             #[cfg(any(test, feature = "test-support"))]
-            fixture_image_availability: Some(crate::application::BuiltinAvailability {
+            fixture_image_availability: Some(Box::new(crate::application::BuiltinAvailability {
                 enabled: true,
                 reason: None,
-            }),
+            })),
             clipboard: Default::default(),
             root,
         }

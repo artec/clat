@@ -289,10 +289,10 @@ fn budget_path(root: &std::path::Path) -> Option<std::path::PathBuf> {
         if entry.file_name() == "clat-utility-budget.json" {
             return Some(entry.path());
         }
-        if entry.file_type().ok()?.is_dir() {
-            if let Some(path) = budget_path(&entry.path()) {
-                return Some(path);
-            }
+        if entry.file_type().ok()?.is_dir()
+            && let Some(path) = budget_path(&entry.path())
+        {
+            return Some(path);
         }
     }
     None

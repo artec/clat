@@ -87,7 +87,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.service.close().unwrap();
+        self.service.close().unwrap();
         let _ = fs::remove_dir_all(&self.base);
     }
 }

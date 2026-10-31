@@ -59,7 +59,6 @@ impl JobRegistry {
         let entry = self.prepare_entry("never launched".into(), id).unwrap();
         self.persist(&entry, JobPhase::Registered).unwrap();
         self.unbind();
-        let id = entry.view().id.clone();
-        id
+        entry.view().id.clone()
     }
 }

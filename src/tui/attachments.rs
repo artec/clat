@@ -22,10 +22,10 @@ pub(super) enum PreparedClipboardPaste {
     Empty,
 }
 
+type StageClipboardPng = dyn Fn(&[u8]) -> Result<PathBuf, String> + Send + Sync;
+
 #[derive(Clone)]
-pub(super) struct ClipboardStager(
-    std::sync::Arc<dyn Fn(&[u8]) -> Result<PathBuf, String> + Send + Sync>,
-);
+pub(super) struct ClipboardStager(std::sync::Arc<StageClipboardPng>);
 impl ClipboardStager {
     pub(super) fn stage_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
         self.0(bytes)

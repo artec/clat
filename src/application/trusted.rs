@@ -1642,10 +1642,10 @@ impl TrustedProjectApplication {
         {
             errors.push(error.presentation().english());
         }
-        if let Some(utility) = &self.utility {
-            if let Err(error) = utility.close() {
-                errors.push(error);
-            }
+        if let Some(utility) = &self.utility
+            && let Err(error) = utility.close()
+        {
+            errors.push(error);
         }
         if let Err(error) = self.flush_input_references() {
             errors.push(error.to_string());
