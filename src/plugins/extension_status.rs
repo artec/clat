@@ -250,11 +250,10 @@ impl McpStatus {
     pub(crate) fn mark_settled(&self) {
         if let Ok(mut inner) = self.inner.lock()
             && !inner.closed
+            && inner.batches.is_empty()
         {
-            if inner.batches.is_empty() {
-                inner.settled = true;
-                self.settled.notify_all();
-            }
+            inner.settled = true;
+            self.settled.notify_all();
         }
     }
 

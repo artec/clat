@@ -129,10 +129,8 @@ impl TrustedProjectApplication {
         materialized: Option<&SessionId>,
         plan_birth: bool,
     ) -> Result<(), ApplicationError> {
-        if plan_birth {
-            if let Some(plan) = &self.plan_mode {
-                plan.materialized();
-            }
+        if plan_birth && let Some(plan) = &self.plan_mode {
+            plan.materialized();
         }
         if let Some(id) = materialized {
             admitted.project(

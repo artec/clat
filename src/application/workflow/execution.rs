@@ -168,10 +168,9 @@ impl TrustedProjectApplication {
             .iter()
             .rev()
             .find(|p| p.goal_id.as_deref() == Some(&goal.state.id) && p.approved)
+            && let Some(plan) = &self.plan_mode
         {
-            if let Some(plan) = &self.plan_mode {
-                plan.approve_document(&doc.id, doc.revision)?;
-            }
+            plan.approve_document(&doc.id, doc.revision)?;
         }
         let eligible = if goal.state.phase != crate::goal::GoalPhase::Active {
             self.goal_resume(goal.state.revision)
