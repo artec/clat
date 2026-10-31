@@ -39,6 +39,7 @@ pub(crate) mod shapes;
 mod sse;
 mod startup;
 mod state;
+mod uploads;
 mod workflow;
 use startup::serve_wechat_credentials;
 #[cfg(test)]
@@ -652,114 +653,8 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
     if request.method == "POST"
         && let Some(scope_id) = draft_upload_scope(&request.path)
     {
-        let Some(media_type) = request.content_type.as_deref().map(str::trim) else {
-            let _ = write_json(
-                &mut stream,
-                400,
-                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
-                    "image upload requires Content-Type: image/png or image/jpeg",
-                ))),
-            );
-            return;
-        };
-        if !matches!(media_type, "image/png" | "image/jpeg") {
-            let _ = write_json(
-                &mut stream,
-                400,
-                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
-                    "image upload requires Content-Type: image/png or image/jpeg",
-                ))),
-            );
-            return;
-        }
-        if request.content_length == 0
-            || request.content_length as u64 > crate::media::MAX_ATTACHMENT_BYTES
-        {
-            let _ = write_json(
-                &mut stream,
-                413,
-                protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(format!(
-                    "image upload must be 1..={} bytes",
-                    crate::media::MAX_ATTACHMENT_BYTES
-                )))),
-            );
-            return;
-        }
-        let Some(_permit) = shared.try_upload_permit() else {
-            let _ = write_json(
-                &mut stream,
-                429,
-                protocol::rpc_result_json(&Err(protocol::RpcError::busy(
-                    "too many image uploads are active",
-                ))),
-            );
-            return;
-        };
-        let mut writer = match shared.drafts.begin_upload(
-            scope_id,
-            shared.selection_generation(),
-            shared.token_generation(),
-            request.content_length as u64,
-            media_type,
-            request.display_name.as_deref(),
-        ) {
-            Ok(writer) => writer,
-            Err(error) => {
-                let _ = write_json(
-                    &mut stream,
-                    400,
-                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(error))),
-                );
-                return;
-            }
-        };
-        match http::read_body_into(
-            &mut stream,
-            &mut request,
-            crate::media::MAX_ATTACHMENT_BYTES as usize,
-            &mut writer,
-        ) {
-            Ok(()) => {}
-            Err(http::HttpReadError::TooLarge(_)) => {
-                let _ = write_json(
-                    &mut stream,
-                    413,
-                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
-                        "image upload exceeds the size limit",
-                    ))),
-                );
-                return;
-            }
-            Err(http::HttpReadError::BadRequest(reason)) => {
-                let _ = write_json(
-                    &mut stream,
-                    400,
-                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(reason))),
-                );
-                return;
-            }
-            Err(http::HttpReadError::TimedOut | http::HttpReadError::Closed) => return,
-            Err(http::HttpReadError::Io) => return,
-        }
-        match writer.finish() {
-            Ok(uploaded) => {
-                let _ = write_json(
-                    &mut stream,
-                    200,
-                    protocol::rpc_result_json(&Ok(serde_json::json!({
-                        "uploadId": uploaded.upload_id,
-                        "bytes": uploaded.bytes,
-                    }))),
-                );
-            }
-            Err(error) => {
-                let _ = write_json(
-                    &mut stream,
-                    400,
-                    protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(error))),
-                );
-            }
-        }
+        let scope_id = scope_id.to_owned();
+        uploads::accept(&mut stream, &mut request, &scope_id, &shared);
         return;
     }
 

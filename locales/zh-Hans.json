@@ -2589,8 +2589,8 @@
   "extension.builtin.web.summary": "使用配置的提供方搜索网页和读取页面。",
   "extension.builtin.development.name": "开发工作台",
   "extension.builtin.development.summary": "提供人工文件编辑、Git 操作与持久终端。",
-  "extension.builtin.draft_images.name": "草稿附件",
-  "extension.builtin.draft_images.summary": "在消息接纳前暂存剪贴板图像和浏览器上传。",
+  "extension.builtin.draft_images.name": "图片输入",
+  "extension.builtin.draft_images.summary": "接纳文件附件、上传、剪贴板与微信中的新增用户图片。",
   "extension.builtins": "内置",
   "extension.bundled": "随 CLAT 内置",
   "extension.read_only": "内置插件随 CLAT 更新，生命周期跟随项目，暂不支持单独调整运行状态。",
@@ -2902,5 +2902,7 @@
   "extension.retained_plan": "计划扩展已关闭。此会话仍保留原有的计划只读限制；编辑、审批或退出计划模式前，请重新启用扩展并重启。",
   "extension.retained_plan_label": "计划（只读）",
   "extension.retained_task": "任务扩展已关闭。历史任务保留，未确认操作仍会阻止执行。继续、修改、恢复检查及验收须重新启用扩展并重启。",
-  "extension.job_source_paused": "后台作业已关闭。此作业触发规则保留原有授权与预算，重新启用扩展后恢复执行。"
+  "extension.job_source_paused": "后台作业已关闭。此作业触发规则保留原有授权与预算，重新启用扩展后恢复执行。",
+  "extension.capability_pending": "正在读取功能可用状态…",
+  "dev.cleanup_failed": "部分工作台进程尚未退出，清理失败；请待其退出后重试。"
 }

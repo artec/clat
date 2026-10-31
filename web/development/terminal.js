@@ -2,13 +2,14 @@
 function installDevelopmentTerminal(){
   let projects=[],selected=null,active=false,epoch=0,refreshEpoch=0,preferredShell='',menuClose=null,creating=false,renderStamp='';
   const terminals=new Map(),expanded=new Map();
-  const actions={render,canCreate:()=>!creating,hasSelection:()=>Boolean(selected),create:project=>void createTerminal('',project),select:(project,row)=>void choose(project,row),claim:()=>void claim(true),find:()=>{const text=window.prompt(devText('find_terminal'));if(text)selected?.widget.search.findNext(text);},copy:()=>void navigator.clipboard.writeText(selected?.widget.term.getSelection()||'').catch(report),clear:()=>selected?.widget.term.clear(),menu:rowMenu,cleanup:project=>void cleanup(project),shellMenu:source=>void shellMenu(source),more:source=>{menuClose=terminalMenu(source,[['refresh','refresh',refresh],['close_ended','trash',()=>cleanup()]]);}};
+  const actions={render,canCreate:()=>devAvailable()&&!creating,hasSelection:()=>Boolean(selected),create:project=>void createTerminal('',project),select:(project,row)=>void choose(project,row),claim:()=>void claim(true),find:()=>{const text=window.prompt(devText('find_terminal'));if(text)selected?.widget.search.findNext(text);},copy:()=>void navigator.clipboard.writeText(selected?.widget.term.getSelection()||'').catch(report),clear:()=>selected?.widget.term.clear(),menu:rowMenu,cleanup:project=>void cleanup(project),shellMenu:source=>void shellMenu(source),more:source=>{menuClose=terminalMenu(source,[['refresh','refresh',refresh],['close_ended','trash',()=>cleanup()]]);}};
   const ui=createTerminalPage(actions),{node,mount,status}=ui;document.body.append(node);
   const trigger=devButton('terminal',()=>presentPage(node));trigger.id='terminal-open';trigger.hidden=true;document.body.append(trigger);
-  const visible=()=>active&&context.isActive(),report=error=>devReport(status,error);
+  const visible=()=>active&&context.isActive()&&devAvailable(),report=error=>devReport(status,error);
   const currentProject=()=>projects.find(project=>project.route_id===context.route)||{root:state.workbench?.project?.root,title:state.workbench?.project?.root,route_id:context.route,terminals:[]};
   function render(){const stamp=JSON.stringify([projects,selected?.id,ui.query.value,[...expanded],creating]);if(stamp!==renderStamp){const top=ui.list.scrollTop;renderTerminalDirectory(ui,projects,selected,actions,expanded);ui.list.scrollTop=top;renderStamp=stamp;}ui.empty.hidden=Boolean(selected)||creating;ui.name.textContent=terminalHeading(selected?.row);registerView(node,{crumbs:()=>[{label:()=>devText('terminal'),run:()=>{delete node.dataset.detail;}},...(selected?[{label:()=>projectDisplayName(currentProject().root,currentProject().title)},{label:()=>terminalHeading(selected.row)}]:[])]});}
   async function refresh(){
+    if(!devAvailable()){devUnavailable(status);return;}
     const request=++refreshEpoch,previous=currentProject().terminals,previousIndex=previous.findIndex(row=>row.id===selected?.id);
     try{const data=await rpc('terminal.directory',{});if(request!==refreshEpoch)return;projects=data.projects;
       const local=currentProject();for(const [id,seat]of terminals){const row=local.terminals.find(row=>row.id===id);if(!row){dispose(seat);if(selected===seat)selected=null;terminals.delete(id);}else seat.row=row;}
@@ -22,6 +23,7 @@ function installDevelopmentTerminal(){
     await select(row,true);
   }
   async function select(row,focus=false){
+    if(!devAvailable()){devUnavailable(status);return;}
     const request=++epoch;await devLoadTerminalFonts();if(request!==epoch)return;
     selected?.stream?.abort();if(selected)selected.element.hidden=true;
     let seat=terminals.get(row.id);if(!seat){seat=makeSeat(row.id,row);terminals.set(row.id,seat);}seat.row=row;selected=seat;seat.element.hidden=false;node.dataset.detail='true';render();
@@ -39,6 +41,7 @@ function installDevelopmentTerminal(){
     seat.sizeLane=seat.sizeLane.catch(()=>{}).then(async()=>{if(version!==seat.sizeVersion)return;await rpc('terminal.resize',{id:seat.id,clientId:developmentClient,lease:seat.lease,...size});}).catch(report);await seat.sizeLane;
   }
   async function createTerminal(directory='',project=currentProject()){
+    if(!devAvailable()){devUnavailable(status);return;}
     if(project.root!==currentProject().root){const target=await context.openProject(project,{hash:'#/terminal'});if(target)await target.view.createTerminal(directory,preferredShell);return;}
     if(creating)return;creating=true;let seat;
     try{await devLoadTerminalFonts();if(!visible())throw new Error(devText('terminal_measure_failed'));
@@ -56,6 +59,7 @@ function installDevelopmentTerminal(){
   async function shellMenu(source){try{const data=await rpc('terminal.shells',{});menuClose=terminalMenu(source,data.shells.map(path=>[()=>devText('shell_for_project',{project:currentProject().title,shell:path.split(/[\\/]/).pop()}),'terminal',()=>{preferredShell=path;void createTerminal();}]));}catch(error){report(error);}}
   const attach=seat=>startTerminalStream(seat,{visible,isSelected:()=>selected===seat,refresh,has:()=>terminals.has(seat.id),attach,status});
   new ResizeObserver(()=>{if(visible())requestAnimationFrame(()=>void fit());}).observe(mount);
+  window.addEventListener('clat:workbench-updated',()=>{if(active){if(devAvailable())void refresh();else{selected?.stream?.abort();devUnavailable(status);}}});
   window.addEventListener('clat:projects-updated',()=>{if(visible())void refresh();});
   node.addEventListener('clat:page-enter',async()=>{active=true;await refresh();if(selected?.row.phase==='running'){await claim(false);await fit();void attach(selected);}});
   const leave=()=>{active=false;epoch++;menuClose?.();globalThis.CLATTerminalMenuClose?.();selected?.stream?.abort();};node.addEventListener('clat:page-leave',leave);window.addEventListener('clat:development-deactivated',leave);

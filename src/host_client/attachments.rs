@@ -22,6 +22,7 @@ impl HostClient {
         if text.trim_start().starts_with('/') {
             return Err("attachments belong to messages, not slash commands".into());
         }
+        self.ensure_image_input_available()?;
         let sources = read_sources(images)?;
         let scope = self.call_with_receipt(
             "draft.open",

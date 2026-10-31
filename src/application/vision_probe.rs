@@ -152,12 +152,12 @@ impl TrustedProjectApplication {
     /// `ApplicationEvent::VisionProbeNotice` 回流）。同一时刻至多一个
     /// 探针：上一轮未收尾则先 join 它（/compact 同纪律）。
     pub fn start_vision_probe(&mut self) -> Result<VisionProbeHandle, ApplicationError> {
+        let draft_store = self.draft_image_store()?;
         if let Some(previous) = self.active_vision_probe.take() {
             previous.join()?;
         }
         let (config, credentials, revision) = self.validated_probe_model()?;
         let providers = Arc::clone(&self.providers);
-        let draft_store = Arc::clone(&self.draft_images);
         let store = Arc::clone(&self.config);
         let host_storage = Arc::clone(&self.host_storage);
         let subscribers = Arc::clone(&self.subscribers);

@@ -42,6 +42,10 @@ impl TrustedProjectApplication {
         mut message: PendingMessage,
         draft: InputDraft,
     ) -> Result<(), ApplicationError> {
+        self.ensure_user_images(&message)?;
+        if !draft.uploads.is_empty() {
+            self.ensure_image_input_available()?;
+        }
         self.check_input_run()?;
         let idle = self.active_run.as_ref().is_none_or(|run| run.is_finished())
             && !self.pending_inputs().interrupting;
@@ -196,6 +200,8 @@ impl TrustedProjectApplication {
         &self,
         mut message: PendingMessage,
     ) -> Result<PendingMessage, InputPreparationError> {
+        self.ensure_user_images(&message)
+            .map_err(|error| preparation_error(error.to_string(), "image-unavailable"))?;
         if message.content.has_images() && message.admitted_images.is_empty() {
             return Err(preparation_error(
                 "image content must be admitted from staged sources by core",

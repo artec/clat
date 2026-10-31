@@ -8,6 +8,23 @@ function disableBuiltin(node,value,id){
   node.disabled=!builtinEnabled(value,id);
   CLATI18n.attribute(node,'title',()=>builtinReason(value,id));
 }
+// Startup availability is authoritative; an unreceived snapshot cannot grant capability I/O.
+function builtinReady(id){return state.workbench?.builtin_availability?.[id]?.enabled===true;}
+function builtinUnavailableReason(id){return builtinReason(state.workbench,id)||CLATI18n.msg('extension.capability_pending');}
+function requireBuiltin(id){if(!builtinReady(id))throw CLATI18n.error(CLATI18n.view(()=>builtinUnavailableReason(id)));}
+const optionalResourceControlState=new WeakMap();
+function syncOptionalResourceControls(){
+  for(const [id,names] of [['builtin.development',['files-open','review-open','terminal-open','nav-terminal','context-resources-files','context-files-open','context-changes-open','add-project-file']],['builtin.draft_images',['attachment-open','attachment-input','add-image']]]){
+    for(const name of names){const node=document.getElementById(name);if(node){node.disabled=!builtinReady(id)||(id==='builtin.draft_images'&&Boolean(state.switching||state.compactionActive||state.desktopUpdateLocked));CLATI18n.attribute(node,'title',()=>builtinReady(id)?'':builtinUnavailableReason(id));}}
+  }
+  for(const name of ['file-browser','workspace-review','terminal-page']){
+    for(const node of document.getElementById(name)?.querySelectorAll?.('button,input,textarea,select')||[]){
+      if(!builtinReady('builtin.development')){if(!optionalResourceControlState.has(node))optionalResourceControlState.set(node,node.disabled);node.disabled=true;}
+      else if(optionalResourceControlState.has(node)){node.disabled=optionalResourceControlState.get(node);optionalResourceControlState.delete(node);}
+    }
+  }
+}
+window.addEventListener('clat:workbench-updated',syncOptionalResourceControls);
 function retainedPlan(value){return value?.plan_mode&&!builtinEnabled(value,'builtin.plan_mode');}
 function workflowGoalStatus(value){
   const goal=value.goal?.goal;if(!goal)return 'not_created';

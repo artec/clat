@@ -261,7 +261,7 @@ fn live_drafts_and_attached_handles_prevent_eviction_until_released() {
         let id = opened["id"].as_str().unwrap().to_owned();
         let route = host.route(&id).unwrap();
         if index == 0 {
-            let store = route.drafts.clone();
+            let store = route.drafts.require().unwrap();
             let mut bytes = std::io::Cursor::new(Vec::new());
             image::DynamicImage::new_rgb8(1, 1)
                 .write_to(&mut bytes, image::ImageFormat::Png)
@@ -465,7 +465,7 @@ fn background_observer_receives_approval_and_question_and_run_continues() {
 fn human_terminal_pins_project_and_agent_stop_does_not_terminate_it() {
     let (host, storage, project) = fixture("human-terminal-project-pin");
     let route = host.route("default").unwrap();
-    let service = route.app.lock().unwrap().development();
+    let service = route.app.lock().unwrap().development().unwrap();
     route
         .app
         .lock()

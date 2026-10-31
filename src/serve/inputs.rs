@@ -99,6 +99,7 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
         }
         return Ok(json!({"outcome":"received"}));
     }
+    app.ensure_user_images(&message)?;
     if let Some(scope) = &draft.draft_scope_id {
         let paths = shared
             .drafts
@@ -159,7 +160,7 @@ fn mutate(
             .map(|item| json!({"item":item})),
         _ => unreachable!(),
     };
-    result.map_err(|e| failed(&e.to_string()))
+    result.map_err(RpcError::from)
 }
 
 fn snapshot(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {

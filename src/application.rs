@@ -52,8 +52,10 @@ mod development;
 mod discovery;
 mod execution_features;
 mod features;
+mod user_images;
 pub use development::{DevelopmentService, GitModel, OperationView};
 pub use features::{BuiltinAvailability, BuiltinAvailabilityMap};
+pub(crate) use user_images::DraftImages;
 mod files;
 mod library;
 mod session_organization;
@@ -301,7 +303,7 @@ pub enum ApplicationEvent {
 }
 
 pub struct TrustedProjectApplication {
-    development: Arc<crate::development::DevelopmentService>,
+    development: Option<Arc<crate::development::DevelopmentService>>,
     web: Option<Arc<crate::web_tools::WebService>>,
     history: Option<Arc<crate::session_query::SessionQueryService>>,
     jobs: Option<Arc<crate::background_jobs::JobRegistry>>,
@@ -312,7 +314,7 @@ pub struct TrustedProjectApplication {
     control: Arc<ControlStorage>,
     /// Process-local, core-owned pre-admission image staging. Clipboard bytes
     /// never become frontend-owned temp paths outside this scope.
-    draft_images: Arc<crate::draft::DraftImageStore>,
+    draft_images: crate::application::DraftImages,
     config: Arc<dyn ConfigStore>,
     providers: Arc<ProviderRegistry>,
     /// Frozen tool registry: `request/header.tools` reads what the model

@@ -82,10 +82,11 @@ function editorStatus(footer,doc,widget,changeMode){
 function installEditorLifecycle(api){
   let recovered=false;
   api.tabs.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||event.target.getAttribute('role')!=='tab')return;event.preventDefault();const entries=[...api.docs.values()],index=entries.indexOf(api.selected()),next=event.key==='Home'?0:event.key==='End'?entries.length-1:(index+(event.key==='ArrowRight'?1:entries.length-1))%entries.length;api.activate(entries[next]);api.tabs.querySelector('[aria-selected=true]')?.focus();};
-  api.node.addEventListener('clat:tool-enter',async()=>{api.enter();if(!recovered)recovered=await api.recover();if(api.active())void api.refresh();});
+  api.node.addEventListener('clat:tool-enter',async()=>{api.enter();if(!devAvailable()){devUnavailable(api.status);return;}if(!recovered)recovered=await api.recover();if(api.active())void api.refresh();});
   api.node.addEventListener('clat:tool-leave',api.leave);
   CLATI18n.onChange(()=>{api.view()?.setPhrases(devEditorPhrases());api.updateStatus();});
-  window.addEventListener('focus',()=>{if(api.active())void api.recheck();});
+  window.addEventListener('clat:workbench-updated',()=>{if(api.active()&&devAvailable())void api.refresh();});
+  window.addEventListener('focus',()=>{if(api.active()&&devAvailable())void api.recheck();});
   document.addEventListener('keydown',event=>{if(!api.active()||!context.isActive()||!(event.metaKey||event.ctrlKey)||event.key.toLowerCase()!=='s')return;event.preventDefault();event.stopImmediatePropagation();if(event.shiftKey)void api.saveAll();else void api.save(api.selected());},{capture:true});
-  setInterval(()=>{if(api.active()&&context.isActive())void api.recheck(true);},2500);
+  setInterval(()=>{if(api.active()&&context.isActive()&&devAvailable())void api.recheck(true);},2500);
 }

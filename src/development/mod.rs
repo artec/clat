@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 mod editor;
 mod errors;
 mod git;
+mod lifecycle;
 pub(crate) mod plugin;
 mod rename;
 mod store;
@@ -20,11 +21,14 @@ pub struct DevelopmentService {
     store: store::Store,
     editor_lane: Mutex<()>,
     closed: std::sync::atomic::AtomicBool,
+    lifetime: Arc<lifecycle::Lifecycle>,
     git: Arc<git::GitService>,
     terminals: terminal::Terminals,
 }
 impl DevelopmentService {
     pub(crate) fn new(project: Project, private: &Path) -> Self {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("development.create");
         let root = project
             .root()
             .canonicalize()
@@ -35,6 +39,7 @@ impl DevelopmentService {
                 .join(digest(root.to_string_lossy().as_bytes())),
         );
         Self {
+            lifetime: store.lifetime.clone(),
             git: Arc::new(git::GitService::new(project.clone(), store.clone())),
             terminals: terminal::Terminals::new(project.clone(), store.clone()),
             project,
@@ -50,6 +55,7 @@ impl DevelopmentService {
         value: Value,
         model: Option<GitModel>,
     ) -> Result<Value, String> {
+        let _producer = self.lifetime.producer()?;
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("host_closed".into());
         }
@@ -65,18 +71,27 @@ impl DevelopmentService {
         errors::presentation(reason)
     }
     pub fn terminal_output(&self, id: &str, offset: u64) -> Result<Value, String> {
+        let _producer = self.lifetime.producer()?;
         self.terminals.output(id, offset)
     }
     pub fn has_live_work(&self) -> bool {
-        self.git.has_live_work() || self.terminals.has_live_work()
+        self.lifetime.active() || self.git.has_live_work() || self.terminals.has_live_work()
     }
-    pub fn close(&self) {
-        if self.closed.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return;
+    pub(crate) fn with_lease(self, lease: Arc<dyn Send + Sync>) -> Self {
+        self.lifetime.attach(lease);
+        self
+    }
+    pub fn close(&self) -> Result<(), String> {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.lifetime.close();
+        let _editor = self.editor_lane.lock().map_err(|_| "state_busy")?;
+        let git = self.git.cancel_all();
+        let terminals = self.terminals.close_all();
+        git.and(terminals)?;
+        if self.lifetime.active() {
+            return Err("cleanup_failed".into());
         }
-        let _editor = self.editor_lane.lock().expect("human editor close");
-        self.git.cancel_all();
-        self.terminals.close_all();
+        Ok(())
     }
 }
 pub(super) fn digest(bytes: &[u8]) -> String {
@@ -124,3 +139,13 @@ pub(super) fn io(error: std::io::Error) -> String {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn retained_terminals(project: &Project, private: &Path) -> Result<Value, String> {
+    let root = project.root();
+    let store = store::Store::new(
+        private
+            .join("development")
+            .join(digest(root.to_string_lossy().as_bytes())),
+    );
+    terminal::retained(&store)
+}

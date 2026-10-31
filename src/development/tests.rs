@@ -87,7 +87,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.service.close();
+        let _ = self.service.close().unwrap();
         let _ = fs::remove_dir_all(&self.base);
     }
 }
@@ -695,7 +695,7 @@ fn development_draft_recovery_does_not_overwrite_another_client() {
             .unwrap()["documents"][0]["text"],
         "recover me"
     );
-    f.service.close();
+    f.service.close().unwrap();
     assert_eq!(
         f.call("editor.drafts", json!({"clientId":"new-window"}))
             .unwrap_err(),
@@ -728,7 +728,7 @@ fn development_uncertain_commit_receipt_reconciles_parent_tree_message() {
     f.git(&["add", "file.txt"]);
     let req = json!({"operationId":"recover-commit","action":"commit","message":"Approved snapshot","expected":f.snapshot()});
     assert_eq!(f.run(req.clone(), None)["phase"], "completed");
-    f.service.close();
+    f.service.close().unwrap();
     let mut saved: Value = f.service.store.load("git-operations.json").unwrap();
     saved["rows"]["recover-commit"]["view"]["phase"] = json!("committing");
     f.service.store.save("git-operations.json", &saved).unwrap();
@@ -1057,7 +1057,7 @@ fn development_terminal_cold_records_can_rename_remove_and_not_resurrect() {
         json!({"operationId":"old","clientId":"owner","shell":"/bin/sh"}),
     )
     .unwrap();
-    f.service.close();
+    f.service.close().unwrap();
     let reopened = Arc::new(DevelopmentService::new(
         Project::new(&f.project),
         &f.storage,

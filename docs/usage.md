@@ -415,6 +415,20 @@ without touching a session or model) and appear in the TUI help under
 | `/image move ID POSITION` | move that stable image to a one-based position |
 | `/ac, /attach-clear` | clear the current structured image draft |
 
+Image input requires `builtin.draft_images`. If it is disabled in
+`builtin-plugins.json`, restart applies the change across all frontends, direct
+attachments, queued messages, steering, WeChat and `/vision-probe`. A message
+containing images is rejected as a whole and its text draft is kept. Historical
+images, attachment downloads and the Agent's native `view_image` still work;
+ordinary text and text paste remain available. Re-enabling creates fresh upload
+and clipboard authority.
+
+The editor, Git and independent terminals require `builtin.development`.
+Disabling it closes those entry points while preserving their files, ordinary
+conversation, session resources and native tool-operation history. Re-enable and
+restart to use the existing recovery flow; CLAT does not automatically reopen
+terminal processes or replay pending edits/Git operations.
+
 The retired `/attachments` spelling (formerly `/attachments clear`) answers
 with a one-line migration hint pointing at `/ac` instead of dispatching or
 being sent as a message.

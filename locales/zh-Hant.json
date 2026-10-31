@@ -2589,8 +2589,8 @@
   "extension.builtin.web.summary": "使用已設定的提供者搜尋網頁與讀取頁面。",
   "extension.builtin.development.name": "開發工作台",
   "extension.builtin.development.summary": "提供人工檔案編輯、Git 操作與持久終端。",
-  "extension.builtin.draft_images.name": "草稿附件",
-  "extension.builtin.draft_images.summary": "在訊息接納前暫存剪貼簿影像與瀏覽器上傳。",
+  "extension.builtin.draft_images.name": "圖片輸入",
+  "extension.builtin.draft_images.summary": "接納檔案附件、上傳、剪貼簿與微信中的新增使用者圖片。",
   "extension.builtins": "內建",
   "extension.bundled": "隨 CLAT 內建",
   "extension.read_only": "內建外掛隨 CLAT 更新，生命週期跟隨專案，暫不支援個別調整執行狀態。",
@@ -2902,5 +2902,7 @@
   "extension.retained_plan": "計畫擴充已關閉。此對話仍保留原有的計畫唯讀限制；編輯、審批或退出計畫模式前，請重新啟用擴充並重新啟動。",
   "extension.retained_plan_label": "計畫（唯讀）",
   "extension.retained_task": "任務擴充功能已關閉。歷史任務保留，未確認操作仍會阻止執行。繼續、修改、復原檢查及驗收須重新啟用擴充功能並重新啟動。",
-  "extension.job_source_paused": "背景作業已關閉。此作業觸發規則保留原有授權與預算，重新啟用擴充功能後恢復執行。"
+  "extension.job_source_paused": "背景作業已關閉。此作業觸發規則保留原有授權與預算，重新啟用擴充功能後恢復執行。",
+  "extension.capability_pending": "正在讀取功能可用狀態…",
+  "dev.cleanup_failed": "部分工作台程序尚未退出，清理失敗；請待其退出後重試。"
 }

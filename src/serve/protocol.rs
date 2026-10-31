@@ -10,6 +10,7 @@
 mod sessions;
 mod wechat;
 
+mod message_input;
 use super::approver;
 use super::state::ServeShared;
 use crate::application::{ApplicationRunDone, ApplicationRunFailure};
@@ -534,6 +535,7 @@ fn dispatch_project(
         "model.overrides.set" => model_overrides_set(params, shared),
         "permission.set" => set_permission(params, shared),
         "draft.open" => {
+            with_app(shared, |app| app.ensure_image_input_available())?;
             let client_draft_id = required_str(params, "clientDraftId")?;
             let selection_generation = shared.selection_generation();
             let target = with_app(shared, |app| app.current_session_id()).map_or_else(
@@ -1057,50 +1059,13 @@ fn start_goal_run(
 /// `prompt.send`：受理即应答（结果在事件流，§5.5）。busy 即拒——
 /// run 队列是产品语义，无病历不立（§4/§11-6）。
 fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
-    let text = required_str(params, "text")?;
-    let upload_ids = match params.get("attachments") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => {
-            let mut ids = Vec::new();
-            for item in items {
-                let id = item
-                    .as_str()
-                    .ok_or_else(|| RpcError::bad_request("attachments must be strings"))?;
-                ids.push(id.to_owned());
-            }
-            ids
-        }
-        Some(_) => return Err(RpcError::bad_request("attachments must be an array")),
-    };
-    if text.trim().is_empty() && upload_ids.is_empty() {
-        return Err(RpcError::bad_request(
-            "text or at least one attachment is required",
-        ));
-    }
-    let draft_scope_id = if upload_ids.is_empty() {
-        None
-    } else {
-        Some(required_str(params, "draftScopeId")?)
-    };
-    // MM-1A additive：可选客户端幂等键——durable user 事件与 receipts
-    // 投影携带它。M-02（审查 2026-08-27）：committed 重试在 append 前
-    // 拦截——同 key 同 digest 幂等成功（不重复 append，返回原回执）、
-    // 同 key 异 digest conflict（bad-request）；判别走 core 的
-    // `committed_admission` 生产查询，不在 serve 复刻投影逻辑。
-    let client_message_id = optional_str(params, "clientMessageId")?;
-    // Build retry identity over opaque upload ids before resolving them to
-    // private core paths. Committed retries therefore succeed even after raw
-    // staging has been reclaimed, and host paths never become client input.
-    let mut message = crate::message::PendingMessage::from_front_end(
-        text,
-        client_message_id,
-        upload_ids.iter().map(PathBuf::from).collect(),
-    );
+    let (mut message, upload_ids, draft_scope_id) = message_input::parse(params, false)?;
     // 第一道（claim 前）：挡住绝大多数已完成的重复提交。
     if let Some(outcome) = committed_retry_check(shared, &message) {
         return outcome;
     }
 
+    with_app(shared, |app| app.ensure_user_images(&message))?;
     let rpc_id = uuid::Uuid::new_v4().to_string();
     // 先占 run 槽再锁应用（锁纪律：Inner 锁内不调门面；busy 判定与
     // 缓冲归属之间无窗口）。
@@ -1201,40 +1166,7 @@ fn reserve_prompt_uploads(
 /// cancel，浏览器还能把同一草稿作为普通 prompt 重试。NotRunning/Refused
 /// 均立即回滚 raw reservation。
 fn steer_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
-    let text = required_str(params, "text")?;
-    let upload_ids = match params.get("attachments") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| {
-                item.as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| RpcError::bad_request("attachments must be strings"))
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        Some(_) => return Err(RpcError::bad_request("attachments must be an array")),
-    };
-    if text.trim().is_empty() && upload_ids.is_empty() {
-        return Err(RpcError::bad_request(
-            "text or at least one attachment is required",
-        ));
-    }
-    let draft_scope_id = if upload_ids.is_empty() {
-        None
-    } else {
-        Some(required_str(params, "draftScopeId")?)
-    };
-    let client_message_id = optional_str(params, "clientMessageId")?;
-    if !upload_ids.is_empty() && client_message_id.is_none() {
-        return Err(RpcError::bad_request(
-            "image steering requires clientMessageId for claim-time recovery",
-        ));
-    }
-    let mut message = crate::message::PendingMessage::from_front_end(
-        text,
-        client_message_id,
-        upload_ids.iter().map(PathBuf::from).collect(),
-    );
+    let (mut message, upload_ids, draft_scope_id) = message_input::parse(params, true)?;
     let request_digest = message.request_digest();
     if let Some(client_message_id) = message.client_message_id.as_deref() {
         if let Some(record) = with_app(shared, |app| app.committed_admission(client_message_id)) {
@@ -1263,6 +1195,7 @@ fn steer_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<
             }
         }
     }
+    with_app(shared, |app| app.ensure_user_images(&message))?;
     if let Some(scope_id) = draft_scope_id.as_deref() {
         let paths = shared
             .drafts

@@ -108,7 +108,8 @@ mod tests {
             prefix: "/workspace/default".into(),
             instance: String::new(),
             root: root.clone(),
-            clipboard: std::sync::Arc::new(crate::draft::DraftImageStore::new(&root)),
+            fixture_image_availability: None,
+            clipboard: Default::default(),
         };
         assert_eq!(
             client.submit_text(" /compact ", false, 17).unwrap()["status"],

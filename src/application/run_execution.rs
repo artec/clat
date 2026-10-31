@@ -180,7 +180,7 @@ struct RunHostDeps {
 /// Stable dependencies owned by the worker for its entire lifetime. Keeping
 /// the scope and every run-local slot together makes cleanup knowledge local.
 struct RunWorkerDeps {
-    draft_images: Arc<crate::draft::DraftImageStore>,
+    draft_images: crate::application::DraftImages,
     target: Option<Arc<super::target_services::TargetServices>>,
     run_scope: super::composition::MountedRunScope,
     sessions: Arc<crate::session::use_cases::SessionService>,
@@ -577,7 +577,7 @@ impl RunWorkerDeps {
         resources: WorkerResources,
     ) -> (Self, Box<dyn EventSink + Send>) {
         let mut deps = RunWorkerDeps {
-            draft_images: Arc::clone(&app.draft_images),
+            draft_images: app.draft_images.clone(),
             target: spec.target.clone(),
             run_scope: resources.run_scope,
             sessions: Arc::clone(&app.sessions),

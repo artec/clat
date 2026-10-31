@@ -147,7 +147,7 @@ fn bundled_services_close_even_when_clients_keep_handles_and_uploads() {
     let app = host.attach(first).unwrap();
     let (development, drafts) = {
         let app = app.lock().unwrap();
-        (app.development(), app.draft_image_store())
+        (app.development().unwrap(), app.draft_image_store().unwrap())
     };
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))

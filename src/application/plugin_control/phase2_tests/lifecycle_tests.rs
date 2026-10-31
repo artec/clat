@@ -146,7 +146,7 @@ fn absent_context_features_do_no_io_and_survive_run_goal_reload_reopen_and_reena
     crate::test_support::cleanup_tree(&root);
 }
 
-fn ordinary_goal(app: &mut TrustedProjectApplication) {
+pub(in crate::application::plugin_control) fn ordinary_goal(app: &mut TrustedProjectApplication) {
     if let Some(goal) = app.goal().unwrap() {
         app.goal_clear(goal.state.revision).unwrap();
     }
@@ -195,7 +195,10 @@ fn ordinary_goal(app: &mut TrustedProjectApplication) {
     assert!(!app.workflow_ready());
 }
 
-pub(super) fn automatic(app: &mut TrustedProjectApplication, id: crate::session::id::SessionId) {
+pub(in crate::application::plugin_control) fn automatic(
+    app: &mut TrustedProjectApplication,
+    id: crate::session::id::SessionId,
+) {
     let (request, receiver) = request();
     let (mut config, credentials) = app.model_state().unwrap();
     config.run_token_budget = Some(100000);

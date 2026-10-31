@@ -2,6 +2,7 @@
 function createDevelopmentDrafts({docs,status,activate}){
   let version=0,lane=Promise.resolve();
   async function publish(snapshot,dirty){
+    if(!devAvailable()){devUnavailable(status);return;}
     const operationId=devId();
     try{const result=await rpc(dirty?'editor.draft.save':'editor.draft.delete',{operationId,clientId:developmentClient,expectedVersion:version,...snapshot});version=result.version;}
     catch(error){
@@ -15,6 +16,7 @@ function createDevelopmentDrafts({docs,status,activate}){
     clearTimeout(doc.draftTimer);doc.draftTimer=setTimeout(()=>{lane=lane.catch(()=>{}).then(()=>publish(snapshot,dirty)).catch(error=>devReport(status,error));},250);
   }
   async function recover(others=false){
+    if(!devAvailable()){devUnavailable(status);return false;}
     try{const data=await rpc(others?'editor.drafts.recover':'editor.drafts',{clientId:developmentClient});if(!others)version=data.version;if(others&&await devChoice(devText('recover_confirm'),['restore','cancel'])!=='restore')return true;
       for(const saved of data.documents){if(docs.has(saved.path))continue;let disk;try{disk=await rpc('editor.open',{path:saved.path});}catch(_){disk={editable:true,text:'',version:'missing'};}
         const doc={...disk,...saved,baseText:disk.text,dirty:saved.text!==disk.text,pinned:true,readonly:!disk.editable,conflict:disk.version!==saved.version,disk};docs.set(doc.path,doc);if(others)queue(doc);

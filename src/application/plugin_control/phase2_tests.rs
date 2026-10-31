@@ -34,7 +34,7 @@ pub(super) fn policy(state: &std::path::Path, disabled: &[&str]) {
 }
 
 #[path = "phase2_tests/lifecycle_tests.rs"]
-mod lifecycle;
+pub(super) mod lifecycle;
 #[path = "phase2_tests/retained_plan_tests.rs"]
 mod retained_plan;
 

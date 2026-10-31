@@ -972,6 +972,14 @@ impl WechatBridge {
             .iter()
             .filter_map(|item| item.image_item.as_ref())
             .collect::<Vec<_>>();
+        if !images.is_empty() {
+            self.shared
+                .app
+                .lock()
+                .expect("application")
+                .ensure_image_input_available()
+                .map_err(|e| PrepareMessageError::Reject(e.to_string()))?;
+        }
         if images.len() > MAX_INBOUND_IMAGES {
             return Err(PrepareMessageError::Reject(format!(
                 "WeChat message contains more than {MAX_INBOUND_IMAGES} images"
@@ -1345,6 +1353,46 @@ mod tests {
         (message, transport)
     }
 
+    #[test]
+    fn disabled_user_images_reject_mixed_wechat_input_before_media_download() {
+        let (storage, root) = roots("wechat-images-disabled");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(storage.join("builtin-plugins.json"),serde_json::json!({"unit":{"name":"builtin-plugins","version":1},"disabled":["builtin.draft_images"]}).to_string()).unwrap();
+        let application = BootstrapApplication::open(Project::new(&root), storage.clone())
+            .unwrap()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        let app = Arc::new(Mutex::new(application));
+        let shared = Arc::new(ServeShared::new(app.clone(), "token".into(), 0));
+        let (mut message, transport) = encrypted_png_message("disabled", [0x44; 16]);
+        message
+            .item_list
+            .extend(message_with_id("must not send this text", "text").item_list);
+        let bridge = WechatBridge {
+            shared: shared.clone(),
+            client: Client::with_transport(transport.clone()),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            outbound: Arc::new(RecordingOutbox::default()),
+            approvals: Arc::new(ApprovalRegistry::default()),
+            armed_new_chats: Mutex::new(HashMap::new()),
+            volatile_chat_sessions: Mutex::new(HashMap::new()),
+        };
+        assert!(matches!(
+            bridge.prepare_message(&message, "disabled"),
+            Err(PrepareMessageError::Reject(_))
+        ));
+        assert!(transport.requests.lock().unwrap().is_empty());
+        assert!(app.lock().unwrap().current_session_id().is_none());
+        assert!(!storage.join("drafts").exists());
+        drop(bridge);
+        drop(shared);
+        drop(app);
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&root);
+    }
     #[test]
     fn commands_are_standalone_exact_and_never_embedded() {
         assert_eq!(standalone_text(&message(" /help ")), Some("/help"));

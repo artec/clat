@@ -22,11 +22,22 @@ pub(super) enum PreparedClipboardPaste {
     Empty,
 }
 
+#[derive(Clone)]
+pub(super) struct ClipboardStager(
+    std::sync::Arc<dyn Fn(&[u8]) -> Result<PathBuf, String> + Send + Sync>,
+);
+impl ClipboardStager {
+    pub(super) fn stage_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
+        self.0(bytes)
+    }
+}
+impl From<std::sync::Arc<crate::draft::DraftImageStore>> for ClipboardStager {
+    fn from(store: std::sync::Arc<crate::draft::DraftImageStore>) -> Self {
+        Self(std::sync::Arc::new(move |bytes| store.stage_png(bytes)))
+    }
+}
 pub(super) type ClipboardPasteReader = std::sync::Arc<
-    dyn Fn(
-            Option<std::sync::Arc<crate::draft::DraftImageStore>>,
-            ClipboardPasteMode,
-        ) -> Result<PreparedClipboardPaste, String>
+    dyn Fn(Option<ClipboardStager>, ClipboardPasteMode) -> Result<PreparedClipboardPaste, String>
         + Send
         + Sync,
 >;
@@ -238,10 +249,30 @@ impl App {
         self.native_clipboard_drafts().or_else(|| {
             self.application
                 .as_ref()
-                .map(|application| application.draft_image_store())
+                .and_then(|a| a.draft_image_store().ok())
         })
     }
-
+    fn image_stager(&self) -> Result<Option<ClipboardStager>, PresentedText> {
+        if let Some(client) = self.native_image_client() {
+            client
+                .ensure_image_input_available()
+                .map_err(|e| e.presented())?;
+            return Ok(Some(ClipboardStager(std::sync::Arc::new(move |bytes| {
+                client
+                    .clipboard_drafts()
+                    .map_err(|e| e.to_string())?
+                    .stage_png(bytes)
+            }))));
+        }
+        self.application
+            .as_ref()
+            .map(|app| {
+                app.draft_image_store()
+                    .map(ClipboardStager::from)
+                    .map_err(|e| e.presentation().into())
+            })
+            .transpose()
+    }
     pub(super) fn release_core_staged_attachment_paths(
         &mut self,
         paths: impl IntoIterator<Item = PathBuf>,
@@ -270,6 +301,10 @@ impl App {
         };
         match command {
             Ok(AttachmentCommand::Add(paths)) => {
+                if let Err(error) = self.image_stager() {
+                    self.flash_status(error);
+                    return true;
+                }
                 let root = self.project.root().to_path_buf();
                 match self.attachments.add_paths(&root, paths) {
                     Ok(added) => self.flash_status(
@@ -410,7 +445,14 @@ impl App {
             });
             return;
         }
-        let stager = self.attachment_draft_store();
+        let stager = match self.image_stager() {
+            Ok(stager) => stager,
+            Err(error) if mode == ClipboardPasteMode::ImageOnly => {
+                self.flash_status(error);
+                return;
+            }
+            Err(_) => None,
+        };
         if mode == ClipboardPasteMode::ImageOnly && stager.is_none() {
             self.flash_message(UiMessage::new("tui.clipboard_dsh"));
             return;
@@ -451,11 +493,17 @@ impl App {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn read_encode_and_stage_clipboard(
-    stager: Option<std::sync::Arc<crate::draft::DraftImageStore>>,
+    stager: Option<ClipboardStager>,
     mode: ClipboardPasteMode,
 ) -> Result<PreparedClipboardPaste, String> {
     let mut clipboard = arboard::Clipboard::new()
         .map_err(|error| format!("system clipboard is unavailable: {error}"))?;
+    if stager.is_none() && mode == ClipboardPasteMode::ImageOrText {
+        return Ok(match clipboard.get_text() {
+            Ok(text) if !text.is_empty() => PreparedClipboardPaste::Text(text),
+            _ => PreparedClipboardPaste::Empty,
+        });
+    }
     match clipboard.get_image() {
         Ok(image) => {
             let stager = stager.ok_or_else(|| {
@@ -476,7 +524,7 @@ fn read_encode_and_stage_clipboard(
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn read_encode_and_stage_clipboard(
-    _stager: Option<std::sync::Arc<crate::draft::DraftImageStore>>,
+    _stager: Option<ClipboardStager>,
     _mode: ClipboardPasteMode,
 ) -> Result<PreparedClipboardPaste, String> {
     Err(
@@ -805,7 +853,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let store = std::sync::Arc::new(crate::draft::DraftImageStore::new(&root));
         let path = match read_encode_and_stage_clipboard(
-            Some(std::sync::Arc::clone(&store)),
+            Some(std::sync::Arc::clone(&store).into()),
             ClipboardPasteMode::ImageOnly,
         )
         .expect("copy a non-sensitive image to the system clipboard before running")

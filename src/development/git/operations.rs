@@ -82,12 +82,15 @@ impl GitService {
         request: Value,
         model: Option<GitModel>,
     ) -> Result<(), String> {
+        let producer = self.store.lifetime.producer()?;
         let service = self.clone();
         let worker_op = op.clone();
         match std::thread::Builder::new()
             .name("clat-human-git".into())
-            .spawn(move || service.run_operation(&worker_op, &request, model))
-        {
+            .spawn(move || {
+                let _producer = producer;
+                service.run_operation(&worker_op, &request, model)
+            }) {
             Ok(thread) => {
                 self.workers.lock().map_err(|_| "git_busy")?.push(thread);
                 Ok(())

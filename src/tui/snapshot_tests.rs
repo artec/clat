@@ -252,7 +252,8 @@ fn core_staged_clipboard_drafts_release_on_remove_clear_and_durable_claim_only()
         .application
         .as_ref()
         .expect("trusted application")
-        .draft_image_store();
+        .draft_image_store()
+        .unwrap();
     let bytes = test_png(8, 6);
 
     let removed = store
@@ -4148,6 +4149,7 @@ fn failed_initial_admission_keeps_core_staged_clipboard_source_retryable() {
         .as_ref()
         .expect("application")
         .draft_image_store()
+        .unwrap()
         .stage_png(&test_png(20, 10))
         .expect("core-staged retry image");
     harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));
@@ -4184,6 +4186,7 @@ fn attachment_admission_handoff_restores_app_before_first_run_event() {
         .as_ref()
         .expect("application")
         .draft_image_store()
+        .unwrap()
         .stage_png(&test_png(40, 30))
         .expect("core-staged handoff image");
     harness.event(UiEvent::Terminal(Event::Paste(image.display().to_string())));

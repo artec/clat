@@ -24,6 +24,8 @@ pub(super) fn start(
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<Session, String> {
+    #[cfg(test)]
+    crate::test_support::execution_observation::record("development.pty_start");
     use portable_pty::{PtySize, native_pty_system};
     super::processes::pids()?;
     let pair = native_pty_system()
@@ -84,7 +86,6 @@ impl Control for Unix {
         if self.terminated {
             return Ok(());
         }
-        self.terminated = true;
         let groups = super::processes::groups(self.pid, self.group);
         for group in &groups {
             unsafe {
@@ -101,6 +102,7 @@ impl Control for Unix {
         }
         let _ = self.child.kill();
         self.child.wait().map_err(io)?;
+        self.terminated = true;
         Ok(())
     }
 }
@@ -111,6 +113,8 @@ pub(super) fn start(
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<Session, String> {
+    #[cfg(test)]
+    crate::test_support::execution_observation::record("development.pty_start");
     super::windows::start(shell, args, cwd, size)
 }
 

@@ -57,3 +57,6 @@ function devEditorPhrases(){
   const keys={Find:'cm_find',Replace:'cm_replace',next:'cm_next',previous:'cm_previous',all:'cm_all','match case':'cm_match_case','by word':'cm_by_word',regexp:'cm_regexp',replace:'cm_replace','replace all':'cm_replace_all',close:'cm_close','Go to line':'cm_goto',go:'cm_go','current match':'cm_current','on line':'cm_on_line','No matches found':'cm_no_matches','Fold line':'cm_fold','Unfold line':'cm_unfold'};
   return Object.fromEntries(Object.entries(keys).map(([phrase,key])=>[phrase,devText(key)]));
 }
+
+function devAvailable(){return builtinReady('builtin.development');}
+function devUnavailable(target){CLATI18n.bind(target,'textContent',()=>builtinUnavailableReason('builtin.development'));}

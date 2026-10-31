@@ -32,7 +32,7 @@ impl Terminals {
                     return Err("confirmation_required".into());
                 }
                 entry.stop_checked()?;
-                entry.close();
+                entry.close()?;
             }
             removed.push(row.id.clone());
         }
@@ -160,7 +160,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        service.close();
+        service.close().unwrap();
         drop(entry);
         drop(service);
         crate::test_support::cleanup_tree(&base);

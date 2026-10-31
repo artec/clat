@@ -577,12 +577,15 @@ impl App {
         );
     }
 
+    pub(super) fn native_image_client(&self) -> Option<HostClient> {
+        self.native.as_ref().map(|n| n.client.clone())
+    }
     pub(super) fn native_clipboard_drafts(
         &self,
     ) -> Option<std::sync::Arc<crate::draft::DraftImageStore>> {
         self.native
             .as_ref()
-            .map(|native| native.client.clipboard_drafts())
+            .and_then(|native| native.client.existing_clipboard_drafts())
     }
 
     fn native_submitted(&mut self, result: Result<Value, HostCallError>) {

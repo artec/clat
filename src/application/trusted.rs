@@ -38,8 +38,10 @@ impl TrustedProjectApplication {
         self.sessions.inject_next_quiesce_failure();
     }
 
-    pub fn draft_image_store(&self) -> Arc<crate::draft::DraftImageStore> {
-        Arc::clone(&self.draft_images)
+    pub fn draft_image_store(
+        &self,
+    ) -> Result<Arc<crate::draft::DraftImageStore>, ApplicationError> {
+        self.draft_images.require()
     }
 
     pub(super) fn mount(
@@ -98,6 +100,7 @@ impl TrustedProjectApplication {
         let subscribers = Arc::new(Mutex::new(Vec::new()));
         let (composition, ports) = super::composition::TrustedProjectComposition::mount(
             super::composition::CompositionInput {
+                lease: storage.lease.clone(),
                 workflow: Arc::new(super::WorkflowState::default()),
                 project: project.clone(),
                 storage_root: storage_root.clone(),
@@ -153,7 +156,7 @@ impl TrustedProjectApplication {
             composition,
             sessions: ports.sessions,
             control,
-            draft_images: ports.draft_images,
+            draft_images: crate::application::DraftImages(ports.draft_images),
             config: ports.config,
             web: ports.web,
             history: ports.history,
@@ -1604,8 +1607,12 @@ impl TrustedProjectApplication {
     }
 
     fn close_inner(&mut self) -> Result<(), ApplicationError> {
-        self.development.close();
         let mut errors = Vec::new();
+        if let Some(service) = &self.development
+            && let Err(error) = service.close()
+        {
+            errors.push(error);
+        }
         // 先停止一切会话事件生产者（run → 压缩 → 标题 worker），再
         // flush 会话与 checkpoint——标题 worker 仍持有 SessionService，
         // 迟到的自动命名若在 quiesce 之后写入会被静默丢弃。

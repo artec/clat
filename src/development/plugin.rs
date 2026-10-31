@@ -17,6 +17,7 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 pub(crate) struct DevelopmentPlugin {
     pub project: crate::Project,
     pub private: std::path::PathBuf,
+    pub lease: std::sync::Arc<std::sync::Mutex<crate::session::root_lease::StorageRootLease>>,
 }
 impl Plugin for DevelopmentPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
@@ -24,11 +25,9 @@ impl Plugin for DevelopmentPlugin {
     }
     fn mount(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         let service = context.acquire(
-            DevelopmentService::new(self.project.clone(), &self.private),
-            |service| {
-                service.close();
-                Ok(())
-            },
+            DevelopmentService::new(self.project.clone(), &self.private)
+                .with_lease(self.lease.clone()),
+            |service| service.close().map_err(crate::plugin::DisposeError::new),
         );
         context
             .provide(DEVELOPMENT_SERVICE, service)

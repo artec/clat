@@ -113,6 +113,8 @@ impl DraftImageStore {
     }
 
     pub fn new(storage_root: &Path) -> Self {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("draft.create");
         Self {
             storage_root: storage_root.to_path_buf(),
             root: storage_root

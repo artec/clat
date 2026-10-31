@@ -16,6 +16,7 @@ impl TrustedProjectApplication {
         &mut self,
         request: ApplicationRunRequest,
     ) -> Result<RunHandle, ApplicationError> {
+        self.ensure_user_images(&request.message)?;
         if !self.input_queue().accepts_initial(&request.message) {
             return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
                 "input.changed",
@@ -44,6 +45,7 @@ impl TrustedProjectApplication {
         &mut self,
         mut request: ApplicationRunRequest,
     ) -> Result<(RunHandle, String), ApplicationError> {
+        self.ensure_user_images(&request.message)?;
         self.goal_service()?;
         self.check_goal_activation()?;
         if !request.message.staged_attachments.is_empty() {
@@ -229,6 +231,12 @@ impl TrustedProjectApplication {
     /// claims and append+flush commits the user event. A sealed/not-running
     /// queue is checked first, so rejected drafts do not create orphan work.
     pub fn steer(&self, message: crate::message::PendingMessage) -> SteerOutcome {
+        if let Err(error) = self.ensure_user_images(&message) {
+            return SteerOutcome::Refused {
+                reason: error.to_string(),
+                receipt: steering_rollback_receipt(&message, "steering-admission"),
+            };
+        }
         if message
             .client_message_id
             .as_ref()

@@ -782,7 +782,10 @@ fn host_projects_share_control_updates_but_not_permissions_or_drafts() {
         a.set_permission_mode(crate::PermissionMode::FullAccess)
             .unwrap();
         assert_ne!(a.permission_mode(), b.permission_mode());
-        assert!(!Arc::ptr_eq(&a.draft_image_store(), &b.draft_image_store()));
+        assert!(!Arc::ptr_eq(
+            &a.draft_image_store().unwrap(),
+            &b.draft_image_store().unwrap()
+        ));
         assert!(a.current_session_id().is_none());
         assert!(b.current_session_id().is_none());
     }

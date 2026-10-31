@@ -109,14 +109,11 @@ fn terminal_directory_sources_do_not_mount_or_create_project_sessions() {
     assert_eq!(sources.len(), 2);
     for (_, service) in &sources {
         assert!(
-            service
-                .request("terminal.list", serde_json::json!({}), None)
-                .unwrap()["terminals"]
+            service.read().unwrap()["terminals"]
                 .as_array()
                 .unwrap()
                 .is_empty()
         );
-        assert!(!service.has_live_work());
     }
     assert!(!missing.exists());
     assert_eq!(before, host.project_roots());

@@ -111,20 +111,20 @@ impl GitService {
                     )
                 })
     }
-    pub(super) fn cancel_all(&self) {
+    pub(super) fn cancel_all(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::SeqCst);
+        let mut failed = false;
         for service in self.repositories.lock().expect("repositories").values() {
-            service.cancel_all();
+            failed |= service.cancel_all().is_err();
         }
         for op in self.operations.lock().expect("git operations").values() {
             op.cancel.cancel();
         }
-        for worker in self.workers.lock().expect("git workers").drain(..) {
-            let _ = crate::application::join_with_grace(
-                worker,
-                std::time::Duration::from_secs(2),
-                "human git",
-            );
+        failed |= super::lifecycle::join(&self.workers).is_err();
+        if failed {
+            Err("cleanup_failed".into())
+        } else {
+            Ok(())
         }
     }
     fn settings(&self, method: &str, value: &Value) -> Result<Value, String> {

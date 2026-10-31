@@ -2,6 +2,8 @@ use super::*;
 use command::query;
 impl GitService {
     pub(super) fn snapshot(&self) -> Result<Value, String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("development.git_scan");
         let status = query(
             &self.project,
             &[

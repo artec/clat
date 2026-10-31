@@ -52,14 +52,12 @@ impl super::WorkspaceHost {
             .map(|(project, service)| {
                 let mut row = json!(project);
                 row["route_id"] = json!(routes.get(&project.root));
-                match service.request("terminal.list", json!({}), None) {
+                match service.read() {
                     Ok(value) => row["terminals"] = value["terminals"].clone(),
                     Err(error) => {
                         row["terminals"] = json!([]);
-                        row["error"] = json!(error);
-                        row["presentation"] = json!(
-                            crate::application::DevelopmentService::error_presentation(&error)
-                        );
+                        row["error"] = json!(error.raw);
+                        row["presentation"] = json!(error.presentation);
                     }
                 }
                 row

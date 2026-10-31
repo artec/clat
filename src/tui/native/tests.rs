@@ -124,9 +124,35 @@ fn shell() -> (App, PathBuf) {
 }
 
 fn reject_request(stream: &mut TcpStream) -> std::io::Result<()> {
-    stream.write_all(
-        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-    )
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request = String::new();
+    reader.read_line(&mut request)?;
+    let mut size = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            size = value.trim().parse().unwrap();
+        }
+    }
+    let mut body = vec![0; size];
+    reader.read_exact(&mut body)?;
+    if request.contains("/api/workbench.info ") {
+        let reply=json!({"ok":true,"value":{"builtin_availability":{"builtin.draft_images":{"enabled":true}}}}).to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            reply.len(),
+            reply
+        )
+    } else {
+        stream.write_all(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+    }
 }
 
 #[test]
@@ -1135,7 +1161,7 @@ fn native_clipboard_paste_stages_without_mounting_a_session_writer() {
 fn native_clipboard_clients_have_independent_source_ownership() {
     let (app, storage) = shell();
     let client = app.native.as_ref().unwrap().client.clone();
-    let store = client.clipboard_drafts();
+    let store = client.clipboard_drafts().unwrap();
     let sibling = crate::draft::DraftImageStore::new(&storage);
     let own = store.stage_png(&clipboard_png()).unwrap();
     let other = sibling.stage_png(&clipboard_png()).unwrap();
@@ -1162,7 +1188,13 @@ fn native_image_submission_restores_only_uncommitted_images_before_new_draft() {
     for outcome in ["rollback", "success", "committed-error"] {
         let committed = outcome != "rollback";
         let (mut app, storage) = shell();
-        let store = app.native_clipboard_drafts().unwrap();
+        let store = app
+            .native
+            .as_ref()
+            .unwrap()
+            .client
+            .clipboard_drafts()
+            .unwrap();
         let old_image = store.stage_png(&clipboard_png()).unwrap();
         let new_image = store.stage_png(&clipboard_png()).unwrap();
         app.native.as_mut().unwrap().pending = Some("old".into());

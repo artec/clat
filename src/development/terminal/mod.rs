@@ -20,6 +20,7 @@ mod service;
 mod shells;
 #[cfg(windows)]
 mod windows;
+mod workers;
 #[derive(Clone, Serialize, Deserialize)]
 struct Metadata {
     id: String,
@@ -58,6 +59,7 @@ struct Entry {
     closed: AtomicBool,
     output_done: AtomicBool,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    lifetime: Arc<super::lifecycle::Lifecycle>,
 }
 pub(super) struct Terminals {
     project: Project,
@@ -83,10 +85,16 @@ impl Terminals {
             .values()
             .any(|entry| !entry.closed.load(Ordering::SeqCst))
     }
-    pub(super) fn close_all(&self) {
+    pub(super) fn close_all(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::SeqCst);
+        let mut failed = false;
         for entry in self.entries.lock().expect("human terminals").values() {
-            entry.close();
+            failed |= entry.close().is_err();
+        }
+        if failed {
+            Err("cleanup_failed".into())
+        } else {
+            Ok(())
         }
     }
     fn entry(&self, id: &str) -> Result<Arc<Entry>, String> {
@@ -115,28 +123,36 @@ impl Terminals {
     }
 }
 impl Entry {
-    fn end_platform(&self) {
-        let mut control = self.platform.lock().expect("PTY");
-        let _ = control.terminate();
+    fn end_platform(&self) -> Result<(), String> {
+        let mut control = self.platform.lock().map_err(|_| "state_busy")?;
+        control.terminate()?;
         *control = Box::new(platform::Ended);
+        Ok(())
     }
-
-    fn close(&self) {
-        if !self.closed.swap(true, Ordering::SeqCst) {
-            self.end_platform();
+    fn close(&self) -> Result<(), String> {
+        self.closed.store(true, Ordering::SeqCst);
+        let end = self.end_platform();
+        if end.is_ok() {
             self.metadata.lock().expect("terminal metadata").phase = "ended".into();
         }
-        for worker in self.workers.lock().expect("terminal workers").drain(..) {
-            let _ = crate::application::join_with_grace(
-                worker,
-                Duration::from_secs(2),
-                "human terminal",
-            );
-        }
+        let joined = super::lifecycle::join(&self.workers);
+        end.and(joined)
     }
 }
+
 impl Drop for Terminals {
     fn drop(&mut self) {
-        self.close_all();
+        let _ = self.close_all();
     }
 }
+
+pub(super) fn retained(store: &store::Store) -> Result<Value, String> {
+    let mut registry: Registry = store.load_existing("terminals.json")?;
+    for row in &mut registry.terminals {
+        row.phase = "ended".into();
+    }
+    Ok(json!({"terminals":registry.terminals}))
+}
+
+#[cfg(test)]
+mod lifecycle_tests;

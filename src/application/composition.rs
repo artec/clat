@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 pub(super) struct CompositionInput {
+    pub(super) lease: Arc<Mutex<crate::session::root_lease::StorageRootLease>>,
     pub(super) workflow: Arc<super::WorkflowState>,
     pub(super) project: Project,
     pub(super) storage_root: PathBuf,
@@ -45,8 +46,8 @@ pub(super) struct CompositionInput {
 /// represented by `Option`.
 pub(super) struct ProjectPorts {
     pub(super) workflow: Arc<super::WorkflowState>,
-    pub(super) development: Arc<crate::development::DevelopmentService>,
-    pub(super) draft_images: Arc<crate::draft::DraftImageStore>,
+    pub(super) development: Option<Arc<crate::development::DevelopmentService>>,
+    pub(super) draft_images: Option<Arc<crate::draft::DraftImageStore>>,
     pub(super) sessions: Arc<SessionService>,
     pub(super) config: Arc<dyn ConfigStore>,
     pub(super) web: Option<Arc<crate::web_tools::WebService>>,
@@ -285,6 +286,7 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         Arc::new(ProjectControlStoragePlugin::new(Arc::clone(&input.control))),
         Arc::new(SessionPersistencePlugin::new(Arc::clone(&input.sessions))),
         Arc::new(crate::development::plugin::DevelopmentPlugin {
+            lease: input.lease.clone(),
             project: input.project.clone(),
             private: input.control.root_path().to_owned(),
         }),
@@ -400,8 +402,8 @@ fn resolve_and_freeze(
 
     Ok(ProjectPorts {
         workflow,
-        development: required(manager, crate::development::plugin::DEVELOPMENT_SERVICE)?,
-        draft_images: required(manager, crate::draft::plugin::DRAFT_IMAGES_SERVICE)?,
+        development: optional(manager, crate::development::plugin::DEVELOPMENT_SERVICE)?,
+        draft_images: optional(manager, crate::draft::plugin::DRAFT_IMAGES_SERVICE)?,
         tool_pipeline,
         web: optional(manager, crate::plugins::services::WEB_SERVICE)?,
         history: optional(manager, crate::plugins::services::HISTORY_SERVICE)?,
@@ -590,8 +592,6 @@ fn project_runtime_catalog(
 fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
     use crate::plugins::services::*;
     vec![
-        crate::development::plugin::DEVELOPMENT_SERVICE.id(),
-        crate::draft::plugin::DRAFT_IMAGES_SERVICE.id(),
         SESSION_SERVICE.id(),
         CONFIG_SERVICE.id(),
         PROVIDER_SERVICE.id(),

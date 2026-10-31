@@ -12,6 +12,7 @@ pub(super) fn dispatch(
     }
     let (service, model) = {
         let app = shared.app.lock().expect("application");
+        let service = app.development()?;
         let model = if method == "git.start"
             && matches!(value["action"].as_str(), Some("commit" | "generate"))
             && (value["action"] == "generate"
@@ -21,7 +22,7 @@ pub(super) fn dispatch(
         } else {
             None
         };
-        (app.development(), model)
+        (service, model)
     };
     service
         .request(method, value.clone(), model)
@@ -46,6 +47,17 @@ pub(super) fn stream(stream: &mut TcpStream, path: &str, shared: &Arc<ServeShare
         return;
     };
     let service = shared.app.lock().expect("application").development();
+    let service = match service {
+        Ok(service) => service,
+        Err(error) => {
+            let _ = super::write_json(
+                stream,
+                400,
+                super::protocol::rpc_result_json(&Err(error.into())),
+            );
+            return;
+        }
+    };
     if service.terminal_output(id, offset).is_err() {
         return;
     }

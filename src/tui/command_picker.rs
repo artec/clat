@@ -148,6 +148,8 @@ impl CommandPicker {
             "task",
             "jobs",
             "scheduler",
+            "development",
+            "draft_images",
         ] {
             let id = format!("builtin.{name}");
             let value = &catalog["builtin_availability"][&id];

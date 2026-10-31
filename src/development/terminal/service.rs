@@ -30,7 +30,7 @@ impl Terminals {
             "terminal.input" => input(&entry, value),
             "terminal.resize" => resize(&entry, value),
             "terminal.close" => {
-                entry.close();
+                entry.close()?;
                 self.persist()?;
                 Ok(json!({"ended":true}))
             }
@@ -38,7 +38,7 @@ impl Terminals {
         }
     }
     pub(super) fn list(&self) -> Result<Value, String> {
-        let mut registry: Registry = self.store.load("terminals.json")?;
+        let mut registry: Registry = self.store.load_existing("terminals.json")?;
         let entries = self.entries.lock().map_err(|_| "terminal_busy")?;
         for row in &mut registry.terminals {
             if let Some(entry) = entries.get(&row.id) {
@@ -123,6 +123,7 @@ pub(super) fn start_entry(
     client: String,
     session: platform::Session,
     size: (u16, u16),
+    lifetime: Arc<super::super::lifecycle::Lifecycle>,
 ) -> Result<Arc<Entry>, String> {
     let platform::Session {
         reader,
@@ -148,83 +149,11 @@ pub(super) fn start_entry(
         closed: AtomicBool::new(false),
         output_done: AtomicBool::new(false),
         workers: Mutex::new(Vec::new()),
+        lifetime,
     });
-    if let Err(error) = start_workers(&entry, reader, writer, queue) {
-        entry.close();
+    if let Err(error) = super::workers::start_workers(&entry, reader, writer, queue) {
+        let _ = entry.close();
         return Err(error);
     }
     Ok(entry)
-}
-fn start_workers(
-    entry: &Arc<Entry>,
-    mut reader: Box<dyn Read + Send>,
-    mut writer: Box<dyn Write + Send>,
-    queue: mpsc::Receiver<Vec<u8>>,
-) -> Result<(), String> {
-    let output = entry.clone();
-    let read = std::thread::Builder::new()
-        .name("clat-terminal-output".into())
-        .spawn(move || {
-            let mut buffer = [0u8; 8192];
-            while let Ok(n) = reader.read(&mut buffer) {
-                if n == 0 {
-                    break;
-                }
-                output.append(&buffer[..n]);
-            }
-            output.output_done.store(true, Ordering::SeqCst);
-        })
-        .map_err(io)?;
-    entry
-        .workers
-        .lock()
-        .map_err(|_| "terminal_busy")?
-        .push(read);
-    let target = entry.clone();
-    let write = std::thread::Builder::new()
-        .name("clat-terminal-input".into())
-        .spawn(move || {
-            while !target.closed.load(Ordering::SeqCst) {
-                match queue.recv_timeout(Duration::from_millis(100)) {
-                    Ok(bytes) => {
-                        if writer
-                            .write_all(&bytes)
-                            .and_then(|_| writer.flush())
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(_) => break,
-                }
-            }
-        })
-        .map_err(io)?;
-    entry
-        .workers
-        .lock()
-        .map_err(|_| "terminal_busy")?
-        .push(write);
-    let target = entry.clone();
-    let monitor = std::thread::Builder::new()
-        .name("clat-terminal-lifecycle".into())
-        .spawn(move || {
-            while !target.closed.load(Ordering::SeqCst) {
-                if target.platform.lock().expect("PTY").ended().unwrap_or(true) {
-                    target.end_platform();
-                    target.closed.store(true, Ordering::SeqCst);
-                    target.metadata.lock().expect("terminal metadata").phase = "ended".into();
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        })
-        .map_err(io)?;
-    entry
-        .workers
-        .lock()
-        .map_err(|_| "terminal_busy")?
-        .push(monitor);
-    Ok(())
 }

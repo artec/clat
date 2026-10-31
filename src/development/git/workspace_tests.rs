@@ -84,7 +84,7 @@ fn development_git_repository_selection_fences_operations_and_cold_receipts() {
     ));
     let view = reopened.request("git.start", req, None).unwrap();
     assert_eq!(view["phase"], "completed");
-    reopened.close();
+    reopened.close().unwrap();
     assert!(
         f.call("git.snapshot", json!({"repositoryId":"../../escape"}))
             .is_err()

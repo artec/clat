@@ -41,6 +41,7 @@ pub(super) fn image(
         .and_then(Value::as_u64)
         .ok_or_else(|| failed("index required"))? as usize;
     let app = shared.app.lock().expect("application");
+    app.ensure_image_input_available()?;
     let entry = app
         .input_queue()
         .entry(id, version)

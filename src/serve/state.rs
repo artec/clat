@@ -88,7 +88,7 @@ pub(crate) struct ServeShared {
     pub(crate) rpc_mutations: Mutex<()>,
     pub(crate) host: Mutex<std::sync::Weak<super::workspaces::WorkspaceHost>>,
     pub app: Arc<Mutex<TrustedProjectApplication>>,
-    pub(crate) drafts: Arc<crate::draft::DraftImageStore>,
+    pub(crate) drafts: crate::application::DraftImages,
     pub token: String,
     pub port: u16,
     /// 每订阅者队列容量（生产 = [`SUBSCRIBER_QUEUE_FRAMES`]；测试可
@@ -137,7 +137,7 @@ impl ServeShared {
         token: String,
         port: u16,
     ) -> Self {
-        let drafts = app.lock().expect("application lock").draft_image_store();
+        let drafts = app.lock().expect("application lock").image_runtime();
         let notification_root = app
             .lock()
             .expect("application lock")
@@ -204,7 +204,7 @@ impl ServeShared {
         let app = self.app.lock().expect("application lock");
         app.next_turn_queue().is_empty()
             && app.pending_inputs().items.is_empty()
-            && !app.development().has_live_work()
+            && !app.has_development_work()
             && !app.has_background_jobs()
             && !app.has_automatic_work()
     }

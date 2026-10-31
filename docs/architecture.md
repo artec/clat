@@ -125,11 +125,30 @@ Frontends render this through the same client ports as external packages.
 
 The development workspace and transient draft-image stores are project plugins
 (`development::plugin`, `draft::plugin`), resolved through typed services rather
-than constructed by the Application facade. Plugin cleanup closes the services
+than constructed by the Application facade. Both ports are optional: absence
+means no service instance. Session owns durable attachments and native operation
+receipts; optional plugins own execution and transient resources. Plugin cleanup closes the services
 even while clients hold clones. Draft creation and close share a serialization
 lane; scope creation and upload publication check the closed state under the
 draft-state lock. Application still owns run shutdown and flushing pending-input
 references before project plugin teardown, preserving the admission transaction.
+Workbench producers retain the existing Host storage lease until they actually
+stop. Cancellation/join failures are reported; unfinished workers cannot race a
+new Host writing the same root. Read-only terminal directory ports use the
+initial successful composition's immutable availability projection. An unmounted
+project can expose existing terminal metadata without constructing a development
+service, creating private directories or changing trust. Disabled entries expose
+an unavailable reason without reading workspace files.
+
+`application/user_images::DraftImages` centralizes the optional runtime port: resource inspection,
+reservation, transfer, settlement and cleanup. Empty/text paths need no store.
+Application checks every new user-image shape before admission, queue or run
+changes; Session attachment reads and native `view_image` bypass this input
+capability deliberately. Durable duplicate receipts precede source reservation.
+HostClient checks the current instance/project availability before reading image
+files or clipboard pixels and lazily creates client staging only when needed.
+A closed store cannot publish late uploads; a new Host cannot reuse old scopes,
+upload IDs or terminal control leases.
 
 Third-party packages of both runtime kinds are activated from one immutable
 local store. The package tree is copied and fsynced before an atomic registry
@@ -243,7 +262,7 @@ in force after a restart.
 `HostApplication` groups already trusted project runtimes under one storage-root
 owner. That owner retains the kernel lease and exactly one `ControlStorage`
 cache; each canonical project path has one `TrustedProjectApplication`, with
-its own session service, permission state, draft store and plugin composition.
+its own session service, permission state, optional draft store and plugin composition.
 Dropping a client handle does not remove a hosted project. Explicit host close
 requires client handles to drain before project producers and journals close.
 Fresh-root initialization extends the ancestor lease to the newly created root

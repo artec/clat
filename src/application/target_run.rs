@@ -32,6 +32,7 @@ impl TrustedProjectApplication {
         &mut self,
         request: TargetRunRequest,
     ) -> Result<RunHandle, ApplicationError> {
+        self.ensure_user_images(&request.message)?;
         let deadline = std::time::Instant::now() + request.timeout;
         self.validate_target_run(&request)?;
         self.prepare_execution_slot()?;

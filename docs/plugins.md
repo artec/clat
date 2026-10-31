@@ -48,8 +48,8 @@ currently owns. A mounted adapter does not imply that its external provider,
 account or language server is ready. Closed projects disappear on refresh.
 
 `builtin.development` owns the human editor, Git and persistent-terminal service.
-`builtin.draft_images` owns clipboard and browser-upload staging before message
-admission. Both enter through the same typed service and cleanup lifecycle as
+`builtin.draft_images` owns all new user image input, including clipboard, browser
+uploads, direct attachments, steering and WeChat media, before message admission. Both enter through the same typed service and cleanup lifecycle as
 other static plugins. Closing the project stops development operations and
 reclaims transient attachments even when a client retains a service handle;
 late uploads cannot publish into the closed store. Durable attachments and
@@ -176,10 +176,41 @@ The task center loads Jobs and Scheduler separately and reports actual read
 failures while keeping other available content. Availability comes from the
 same startup plan on Web, Desktop and TUI.
 
-**Current boundary:** development and draft/attachment services remain required
-by Application ports and protected by the service contract. They are not
-permanent kernel declarations; their independent disablement remains future work.
-Ephemeral run resources and per-session preset trees are not listed.
+The human workspace and new user images are also independently optional:
+
+```json
+{
+  "unit": { "name": "builtin-plugins", "version": 1 },
+  "disabled": ["builtin.development", "builtin.draft_images"]
+}
+```
+
+Stop CLAT before changing this file; restart to apply it. Disabling development
+removes the editor, Git, independent terminals and their history entry points.
+It does not construct their services or read their private state. Files remain
+on disk. The global terminal directory preserves project rows and reports why
+terminals are unavailable; enabled, unmounted projects are read from existing
+metadata without mounting services, creating directories or granting trust.
+Actual read errors remain visible. Re-enabling uses the existing recovery rules,
+without starting terminals, replaying Git operations or applying editor drafts.
+
+Disabling draft images rejects an entire new image-bearing message, including
+its text, before admission or execution changes. This covers Web, Desktop, TUI,
+CLI client ports, queued input, steering, direct/prepared images and WeChat
+before media download. Text drafts survive failure. The vision probe also
+requires this plugin. Plain text, paste, native file/process tools and native
+`view_image` remain available. Historical images, attachment previews, downloads
+and existing image context remain Session-owned; model vision settings do not
+change. A committed same-key/same-digest retry still returns its original receipt.
+Re-enabling grants fresh scopes and upload IDs, never resurrecting old ones.
+Host-client clipboard stores initialize only after the current Host/project has
+confirmed availability and actual image staging is needed.
+
+The same `builtin_availability` projection drives controls on every frontend;
+unknown startup availability cannot initiate workspace or image I/O. Other
+Application contracts remain mandatory today; this is not a declaration that
+they are permanent kernel services. Ephemeral run resources and per-session
+preset trees are not listed.
 
 `builtin.task` owns acceptance orchestration and explicitly mounts built-in
 process-domain checker adapters (`text`, `json`, `records`, `command`, version 1).

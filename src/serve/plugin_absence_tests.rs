@@ -11,6 +11,8 @@ const DISABLED: &[&str] = &[
     "builtin.task",
     "builtin.jobs",
     "builtin.scheduler",
+    "builtin.development",
+    "builtin.draft_images",
 ];
 
 fn fixture() -> (ServeHandle, PathBuf, PathBuf) {
@@ -123,3 +125,6 @@ fn serve_e2e_host_plugins_absent() {
         json!({}),
     );
 }
+
+#[path = "plugin_absence_tests/phase4_tests.rs"]
+mod phase4;

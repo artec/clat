@@ -4,6 +4,7 @@ use super::*;
 use std::io::Read;
 #[derive(Clone)]
 pub(super) struct Store {
+    pub(super) lifetime: Arc<super::lifecycle::Lifecycle>,
     root: PathBuf,
     lane: Arc<Mutex<()>>,
 }
@@ -11,6 +12,7 @@ impl Store {
     pub(super) fn new(root: PathBuf) -> Self {
         Self {
             root,
+            lifetime: Default::default(),
             lane: Arc::new(Mutex::new(())),
         }
     }
@@ -41,7 +43,7 @@ impl Store {
             .strip_prefix(&private)
             .map_err(|_| "path_denied")?;
         for component in relative.components() {
-            dir = open_private_child(&dir, component.as_os_str())?;
+            dir = open_private_child(&dir, component.as_os_str(), true)?;
         }
         #[cfg(unix)]
         {
@@ -56,38 +58,40 @@ impl Store {
         &self,
         name: &str,
     ) -> Result<T, String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("development.read");
         let dir = self.dir()?;
-        match dir.symlink_metadata(name) {
+        read_from(&dir, name)
+    }
+    pub(super) fn load_existing<T: serde::de::DeserializeOwned + Default>(
+        &self,
+        name: &str,
+    ) -> Result<T, String> {
+        #[cfg(test)]
+        crate::test_support::execution_observation::record("development.read");
+        let private = self.root_ancestor();
+        match std::fs::symlink_metadata(&private) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
-            Ok(m) if !m.is_file() || m.file_type().is_symlink() => return Err("path_denied".into()),
+            Ok(meta) if meta.file_type().is_symlink() => return Err("path_denied".into()),
             Err(e) => return Err(io(e)),
             _ => {}
         }
-        let mut options = cap_std::fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        #[cfg(windows)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.custom_flags(0x00200000);
-        }
-        let mut file = dir.open_with(name, &options).map_err(io)?;
-        if !file.metadata().map_err(io)?.is_file() {
-            return Err("path_denied".into());
-        }
-        let mut bytes = Vec::new();
-        file.by_ref()
-            .take(64 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
+        let mut dir = cap_std::fs::Dir::open_ambient_dir(&private, cap_std::ambient_authority())
             .map_err(io)?;
-        if bytes.len() > 64 * 1024 * 1024 {
-            return Err("state_limit".into());
+        for part in self
+            .root
+            .strip_prefix(&private)
+            .map_err(|_| "path_denied")?
+            .components()
+        {
+            match dir.symlink_metadata(part.as_os_str()) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+                Err(e) => return Err(io(e)),
+                _ => {}
+            }
+            dir = open_private_child(&dir, part.as_os_str(), false)?;
         }
-        serde_json::from_slice(&bytes).map_err(|_| "state_corrupt".into())
+        read_from(&dir, name)
     }
     pub(super) fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<(), String> {
         let _guard = self.lane.lock().map_err(|_| "state_busy")?;
@@ -103,11 +107,14 @@ impl Store {
 fn open_private_child(
     parent: &cap_std::fs::Dir,
     name: &std::ffi::OsStr,
+    create: bool,
 ) -> Result<cap_std::fs::Dir, String> {
-    match parent.create_dir(name) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(io(error)),
+    if create {
+        match parent.create_dir(name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(io(error)),
+        }
     }
     let mut options = cap_std::fs::OpenOptions::new();
     options.read(true);
@@ -149,4 +156,41 @@ impl OperationView {
             presentation: None,
         }
     }
+}
+
+fn read_from<T: serde::de::DeserializeOwned + Default>(
+    dir: &cap_std::fs::Dir,
+    name: &str,
+) -> Result<T, String> {
+    match dir.symlink_metadata(name) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+        Ok(m) if !m.is_file() || m.file_type().is_symlink() => return Err("path_denied".into()),
+        Err(e) => return Err(io(e)),
+        _ => {}
+    }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000);
+    }
+    let mut file = dir.open_with(name, &options).map_err(io)?;
+    if !file.metadata().map_err(io)?.is_file() {
+        return Err("path_denied".into());
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(64 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err("state_limit".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "state_corrupt".into())
 }

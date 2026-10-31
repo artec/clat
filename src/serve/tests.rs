@@ -1954,6 +1954,8 @@ fn selection_commit_cannot_race_an_old_draft_reservation_into_the_new_session() 
     let bytes = png_bytes(1, 1);
     let mut writer = shared
         .drafts
+        .require()
+        .unwrap()
         .begin_upload(
             &scope.draft_scope_id,
             generation,

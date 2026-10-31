@@ -545,6 +545,8 @@ function authHeaders() {
 }
 
 async function rpc(method, params) {
+  if (/^(editor|git|terminal)\./.test(method)) requireBuiltin("builtin.development");
+  if (method === "draft.open") requireBuiltin("builtin.draft_images");
   if ((method.startsWith('editor.') || method.startsWith('terminal.')) && params?.clientId) {
     await developmentClientSession.ready;params={...params,clientId:developmentClientSession.id};
   }
@@ -645,6 +647,7 @@ function setConnStatus(text, stateName) {
 }
 
 async function connect() {
+  state.workbench=null;syncOptionalResourceControls();
   setConnStatus(CLATI18n.msg("web.connecting", {}, "connecting…"), 'connecting');
   try {
     await openStream();
@@ -2591,7 +2594,8 @@ function syncInteractionControls() {
   syncInputSubmitButtons();
   dom.send.disabled = locked;
   dom.prompt.disabled = locked;
-  dom['attachment-open'].disabled = locked;
+  dom['attachment-open'].disabled = locked || !builtinReady('builtin.draft_images');
+  dom['attachment-input'].disabled = dom['attachment-open'].disabled;
   dom['model-picker-trigger'].disabled = locked || state.modelSelectionPending;
   const thinking = document.getElementById('model-thinking');
   thinking.disabled = locked || state.runActive || state.modelSelectionPending
@@ -3659,6 +3663,7 @@ function moveDraftImage(from, to) {
 }
 
 async function ensureDraftScope() {
+  requireBuiltin("builtin.draft_images");
   if (state.draft.scope) return state.draft.scope;
   const epoch = state.draft.epoch;
   const clientDraftId = state.draft.clientDraftId;
@@ -3704,6 +3709,7 @@ async function uploadDraftImage(image, epoch) {
 }
 
 async function addDraftFiles(files) {
+  if (!builtinReady("builtin.draft_images")) { updateRunState(CLATI18n.view(()=>builtinUnavailableReason("builtin.draft_images"))); return; }
   if(state.desktopUpdateLocked)return;
   if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if (state.compactionActive || state.switching) {
@@ -4060,6 +4066,7 @@ dom['composer-shell'].addEventListener('drop', async (event) => {
 });
 dom.prompt.addEventListener('paste', async (event) => {
   const items = Array.from(event.clipboardData ? event.clipboardData.items : []);
+  if(items.some(item=>item.kind==='file')&&!builtinReady('builtin.draft_images')){event.preventDefault();updateRunState(CLATI18n.view(()=>builtinUnavailableReason('builtin.draft_images')));return;}
   const files = items.filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean);
   if (files.length === 0) return;
   event.preventDefault();

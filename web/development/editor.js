@@ -5,7 +5,7 @@ function createDevelopmentEditor(){
   const {node,status,list,toolbar,mount,tabs,breadcrumb,footer}=ui;
   const controller={node,docs,get selected(){return selected;},openFile,save,saveAll,refresh,createFile,selection:()=>view?view.view.state.selection.main:null,flush:()=>drafts.flush()};
   const drafts=createDevelopmentDrafts({docs,status,activate});const queueDraft=drafts.queue,recover=drafts.recover;
-  const tree=installEditorTree(ui,{active:()=>active,recheck,openFile,menu:(entry,source,x,y)=>{tree.select(entry.path,Boolean(entry.directory));editorMenu(fileMenu(Boolean(entry.directory)),source,x,y);}});
+  const tree=installEditorTree(ui,{active:()=>active&&devAvailable(),recheck,openFile,menu:(entry,source,x,y)=>{tree.select(entry.path,Boolean(entry.directory));editorMenu(fileMenu(Boolean(entry.directory)),source,x,y);}});
   function fileMenu(directory){return [
     {key:'new_file',icon:'file-plus',run:()=>createFile(false)},
     {key:'new_folder',icon:'folder-plus',run:()=>createFile(true)},
@@ -34,6 +34,7 @@ function createDevelopmentEditor(){
     if(doc.conflict)showConflict(doc);
   }
   async function openFile(path,{fixed=false}={}){
+    if(!devAvailable()){devUnavailable(status);return;}
     const request=++openEpoch;
     if(docs.has(path)){const doc=docs.get(path);doc.pinned||=fixed;activate(doc);return;}
     try{const result=await rpc('editor.open',{path});if(request!==openEpoch)return;
@@ -41,7 +42,7 @@ function createDevelopmentEditor(){
       const doc={...result,text:result.text,baseText:result.text,dirty:false,pinned:fixed,readonly:!result.editable};docs.set(path,doc);activate(doc);
     }catch(error){devReport(status,error);}
   }
-  async function refresh(){return tree.refresh();}
+  async function refresh(){if(!devAvailable()){devUnavailable(status);return;}return tree.refresh();}
   async function recheck(currentOnly=false){
     for(const doc of currentOnly?(selected?[selected]:[]):docs.values()){
       if(doc.saving)continue;const version=doc.version;
@@ -72,6 +73,6 @@ function createDevelopmentEditor(){
   async function rename(){return controller.rename();}async function remove(){return controller.remove();}async function quote(){return controller.quote();}async function terminalHere(){return controller.terminalHere();}
   function showConflict(doc){controller.showConflict(doc,save);}
   editorEmpty(mount);
-  installEditorLifecycle({node,tabs,docs,activate,selected:()=>selected,view:()=>view,refresh,recheck,recover,updateStatus,save,saveAll,enter:()=>{active=true;},leave:()=>{active=false;openEpoch++;tree.suspend();},active:()=>active});
+  installEditorLifecycle({node,status,tabs,docs,activate,selected:()=>selected,view:()=>view,refresh,recheck,recover,updateStatus,save,saveAll,enter:()=>{active=true;},leave:()=>{active=false;openEpoch++;tree.suspend();},active:()=>active});
   return {element:node,open:()=>openWorkbenchTool(node),controller};
 }

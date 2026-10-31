@@ -17,6 +17,9 @@ impl TrustedProjectApplication {
             .keep_uploads
             .clone()
             .unwrap_or(old.view.draft.uploads.clone());
+        if !keep.is_empty() || !edit.attachments.is_empty() {
+            self.ensure_image_input_available()?;
+        }
         let mut paths = retained_paths(&old, &keep).map_err(ApplicationError::new)?;
         if edit.text.len() > 64 * 1024
             || keep.len() + edit.attachments.len()

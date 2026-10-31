@@ -3,6 +3,7 @@ pub(super) fn presentation(reason: &str) -> crate::i18n::UiMessage {
     let code = reason.split(':').next().unwrap_or("failed");
     let key = match code {
         "file_conflict" | "draft_conflict" | "git_changed" => "dev.conflict",
+        "cleanup_failed" => "dev.cleanup_failed",
         "cancelled" => "dev.cancelled",
         "path_denied" => "dev.path_denied",
         "model_unavailable" => "dev.model_unavailable",

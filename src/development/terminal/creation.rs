@@ -46,7 +46,13 @@ impl Terminals {
         self.store.save("terminals.json", &registry)?;
         let session = platform::start(&metadata.shell, &shells::args(&metadata.shell), &cwd, size)?;
         metadata.phase = "running".into();
-        let entry = super::service::start_entry(metadata.clone(), client, session, size)?;
+        let entry = super::service::start_entry(
+            metadata.clone(),
+            client,
+            session,
+            size,
+            self.store.lifetime.clone(),
+        )?;
         entries.insert(id, entry);
         drop(entries);
         self.persist()?;

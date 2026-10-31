@@ -30,6 +30,7 @@ pub use error::HostCallError;
 pub use models::HostModelChoices;
 pub use notification::HostNotification;
 mod events;
+mod images;
 mod transport;
 pub use events::{HostEvent, decode_host_approval, decode_host_event};
 use serde_json::{Value, json};
@@ -54,7 +55,10 @@ pub struct HostClient {
     prefix: String,
     instance: String,
     root: PathBuf,
-    clipboard: std::sync::Arc<crate::draft::DraftImageStore>,
+    #[cfg(any(test, feature = "test-support"))]
+    fixture_image_availability: Option<crate::application::BuiltinAvailability>,
+    clipboard:
+        std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<crate::draft::DraftImageStore>>>>,
 }
 
 impl HostClient {
@@ -67,7 +71,12 @@ impl HostClient {
             token: "frontend-fixture".into(),
             prefix: String::new(),
             instance: "11111111-1111-1111-1111-111111111111".into(),
-            clipboard: std::sync::Arc::new(crate::draft::DraftImageStore::new(&root)),
+            #[cfg(any(test, feature = "test-support"))]
+            fixture_image_availability: Some(crate::application::BuiltinAvailability {
+                enabled: true,
+                reason: None,
+            }),
+            clipboard: Default::default(),
             root,
         }
     }
@@ -182,7 +191,9 @@ impl HostClient {
             token,
             prefix: String::new(),
             instance: String::new(),
-            clipboard: std::sync::Arc::new(crate::draft::DraftImageStore::new(&root)),
+            #[cfg(any(test, feature = "test-support"))]
+            fixture_image_availability: None,
+            clipboard: Default::default(),
             root,
         };
         let description = client
@@ -239,12 +250,6 @@ impl HostClient {
         &self.root
     }
 
-    /// Ephemeral client-owned sources only; never opens a session writer.
-    /// Worker clones share ownership until their last reference is released.
-    pub fn clipboard_drafts(&self) -> std::sync::Arc<crate::draft::DraftImageStore> {
-        self.clipboard.clone()
-    }
-
     pub fn open_project(&self, root: &Path, trust: bool) -> Result<Self, String> {
         let root = root
             .canonicalize()
@@ -260,6 +265,9 @@ impl HostClient {
             return Err("host returned an invalid project route".into());
         }
         let mut client = self.clone();
+        if client.prefix != format!("/workspace/{id}") {
+            client.clipboard = Default::default();
+        }
         client.prefix = format!("/workspace/{id}");
         Ok(client)
     }

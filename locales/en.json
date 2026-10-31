@@ -2589,8 +2589,8 @@
   "extension.builtin.web.summary": "Search the web and retrieve pages using configured providers.",
   "extension.builtin.development.name": "Development workspace",
   "extension.builtin.development.summary": "Provide the human file editor, Git operations and persistent terminals.",
-  "extension.builtin.draft_images.name": "Draft attachments",
-  "extension.builtin.draft_images.summary": "Stage clipboard images and browser uploads before message admission.",
+  "extension.builtin.draft_images.name": "Image input",
+  "extension.builtin.draft_images.summary": "Accept new user images from files, uploads, clipboard and WeChat before message admission.",
   "extension.builtins": "Built-in",
   "extension.bundled": "Included with CLAT",
   "extension.read_only": "Bundled plugins are updated with CLAT. Their lifecycle follows the project; individual runtime changes are unavailable.",
@@ -2902,5 +2902,7 @@
   "extension.retained_plan": "The planning extension is disabled. This conversation keeps its existing read-only planning restrictions; re-enable the extension and restart to edit, approve or leave planning mode.",
   "extension.retained_plan_label": "Plan (read only)",
   "extension.retained_task": "The task extension is disabled. Task history is preserved and unresolved operations still block execution. Re-enable the extension and restart to continue, edit, check or accept the task.",
-  "extension.job_source_paused": "Background jobs are disabled. This job-triggered rule keeps its authorization and budget; execution resumes when the extension is re-enabled."
+  "extension.job_source_paused": "Background jobs are disabled. This job-triggered rule keeps its authorization and budget; execution resumes when the extension is re-enabled.",
+  "extension.capability_pending": "Loading feature availability…",
+  "dev.cleanup_failed": "Some workspace processes have not stopped. Cleanup failed; retry after they stop."
 }

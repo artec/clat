@@ -30,7 +30,7 @@ use super::*;
 /// 顺序不变量保持：事件按到达顺序先记账再转发（handle 单线程串行）。
 pub(super) struct RecorderHandle {
     pub(super) inputs: crate::input::InputQueue,
-    pub(super) drafts: Arc<crate::draft::DraftImageStore>,
+    pub(super) drafts: crate::application::DraftImages,
     pub(super) recorder: Arc<Mutex<SessionRecorder>>,
     pub(super) sink: Arc<Mutex<Box<dyn EventSink + Send>>>,
 }
