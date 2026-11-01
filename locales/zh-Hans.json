@@ -1,4 +1,6 @@
 {
+  "dev.push_count": "推送 {count} ↑",
+  "dev.pull_count": "拉取 {count} ↓",
   "dev.stage_commit_confirm": "尚未暂存更改。要暂存当前仓库的全部更改并继续提交吗？说明留空时会自动生成。",
   "dev.stage_generate_confirm": "尚未暂存更改。要暂存当前仓库的全部更改并生成提交说明吗？此操作不会提交。",
   "dev.submission_conflicts": "请先解决冲突，再暂存全部更改并继续。",

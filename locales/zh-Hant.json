@@ -1,4 +1,6 @@
 {
+  "dev.push_count": "推送 {count} ↑",
+  "dev.pull_count": "拉取 {count} ↓",
   "dev.stage_commit_confirm": "尚未暫存變更。要暫存目前儲存庫的全部變更並繼續提交嗎？說明留空時會自動產生。",
   "dev.stage_generate_confirm": "尚未暫存變更。要暫存目前儲存庫的全部變更並產生提交說明嗎？此操作不會提交。",
   "dev.submission_conflicts": "請先解決衝突，再暫存全部變更並繼續。",

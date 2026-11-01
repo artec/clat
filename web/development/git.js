@@ -10,7 +10,7 @@ function installDevelopmentGit(){
   const actions=createGitActions({seat,call,refresh,render:renderSubmission,report,result});
   registerView(node,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>devText('refresh'),()=>refresh()),viewAction('branches','branch',()=>devText('branches'),()=>branches(),false),...['fetch','pull','push'].map(key=>viewAction(key,key==='push'?'next':'refresh',()=>devText(key),()=>actions.start(key),false,()=>!seat().operation)),viewAction('backups','restore',()=>devText('restore'),()=>backups(),false)]});
   node.addEventListener('clat:git-selection',()=>{if(seat().snapshot)renderChanges();});
-  ui.generate.onclick=()=>void actions.start('generate');ui.commit.onclick=()=>void actions.start('commit');ui.cancel.onclick=()=>actions.cancel();
+  ui.generate.onclick=()=>void actions.start('generate');ui.commit.onclick=()=>void actions.start(gitPrimaryAction(seat().snapshot).action);ui.cancel.onclick=()=>actions.cancel();
   ui.message.oninput=()=>{const owner=seat();owner.draft=ui.message.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}autosize();if(owner.pending?.automatic)actions.cancel();saveDraft(owner);};
   ui.message.onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();void actions.start('commit');}};
   function autosize(){ui.message.style.height='auto';ui.message.style.height=Math.min(140,Math.max(36,ui.message.scrollHeight))+'px';}
@@ -18,10 +18,12 @@ function installDevelopmentGit(){
     const owner=seat(),files=owner.snapshot?.files||[],busy=Boolean(owner.operation||owner.preparing);
 
     if(ui.message.value!==owner.draft)ui.message.value=owner.draft;
-    ui.commit.disabled=busy||!files.length;ui.generate.disabled=ui.commit.disabled;
+    const primary=gitPrimaryAction(owner.snapshot);
+    ui.commit.disabled=busy||!primary.enabled;ui.generate.disabled=busy||!files.length;
+    CLATI18n.bind(ui.commit,'textContent',()=>devText(primary.key,{count:primary.count}));
     ui.cancel.hidden=!busy;
-    for(const [button,key]of [[ui.commit,'commit'],[ui.generate,'generate_message']]){
-      CLATI18n.attribute(button,'title',()=>devText(key));
+    for(const [button,key]of [[ui.commit,primary.key],[ui.generate,'generate_message']]){
+      CLATI18n.attribute(button,'title',()=>devText(key,{count:primary.count}));
     }
     autosize();if(busy)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);
   }
@@ -29,8 +31,8 @@ function installDevelopmentGit(){
     if(!devAvailable()){devUnavailable(ui.status);return;}
     const version=++epoch,owner=seat();try{const [snapshot,settings,repositories]=await Promise.all([call('git.snapshot',{},owner).catch(error=>({error})),rpc('git.settings',{}),rpc('git.repositories',{})]);if(version!==epoch||seat()!==owner||!active)return;
       directory=repositories.repositories;ui.repositoryStatus.hidden=!repositories.truncated;devStatus(ui.repositoryStatus,'repositories_truncated');if(snapshot.error){owner.snapshot=null;renderRepositories();renderSubmission();tabs.overview();report(snapshot.error);return;}
-      const changed=owner.snapshot&&JSON.stringify([owner.snapshot.head,owner.snapshot.index,owner.snapshot.status])!==JSON.stringify([snapshot.head,snapshot.index,snapshot.status]);owner.snapshot=snapshot;owner.language=settings.language;directory=repositories.repositories;
-      const row=directory.find(r=>r.id===repository);owner.path=row?.path||'';ui.repoName.textContent=owner.path||state.workbench?.project?.root?.split('/').pop()||'';ui.branch.textContent=snapshot.branch||devText('detached');renderSubmission();renderChanges();renderRepositories();
+      const changed=owner.snapshot&&JSON.stringify([owner.snapshot.head,owner.snapshot.index,owner.snapshot.status,owner.snapshot.tracking])!==JSON.stringify([snapshot.head,snapshot.index,snapshot.status,snapshot.tracking]);owner.snapshot=snapshot;owner.language=settings.language;directory=repositories.repositories;
+      const row=directory.find(r=>r.id===repository);owner.path=row?.path||'';ui.repoName.textContent=owner.path||state.workbench?.project?.root?.split('/').pop()||'';ui.branch.textContent=(snapshot.branch||devText('detached'))+(snapshot.tracking?' · '+snapshot.tracking.behind+'↓ '+snapshot.tracking.ahead+'↑':'');renderSubmission();renderChanges();renderRepositories();
       if(!owner.operation)ui.status.textContent='';
       if(changed)await tabs.reload();else tabs.refresh();if(version!==epoch||seat()!==owner||!active)return;if(!graph)installGraph(owner);await graph.load();if(version===epoch&&seat()===owner&&active)result(owner.result);
     }catch(error){if(version===epoch&&seat()===owner){report(error);if(!owner.tab)tabs.overview();}}

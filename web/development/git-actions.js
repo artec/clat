@@ -46,3 +46,12 @@ function createGitActions({seat,call,refresh,render,report,result}){
   function cancel(owner=seat()){if(owner.operation)void call('git.cancel',{operationId:owner.operation},owner).catch(report);}
   return {start,reconcile,cancel};
 }
+
+// Projection of local repository facts; no implicit fetch, pull or push.
+function gitPrimaryAction(snapshot){
+  if(!snapshot||snapshot.files?.length)return {action:'commit',key:'commit',enabled:Boolean(snapshot?.files?.length)};
+  const tracking=snapshot.tracking;
+  if(tracking?.behind>0)return {action:'pull',key:'pull_count',count:tracking.behind,enabled:true};
+  if(tracking?.ahead>0)return {action:'push',key:'push_count',count:tracking.ahead,enabled:true};
+  return {action:'commit',key:'commit',enabled:false};
+}

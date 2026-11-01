@@ -64,7 +64,7 @@ for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
 connection clears the live activity; reduced-motion and forced-color settings
 use static, readable status indicators.
-Known native tools use action icons; external tools retain a generic icon and
+Known native tools use action icons with a recognizable pencil for edits and a rounded terminal for commands; external tools retain a generic wrench icon and
 original identifiers in their details. Once the actual terminal event arrives,
 the process collapses behind the elapsed-time chevron, leaving the last nonempty
 answer visible. User inputs, failures, permission refusals and interruptions

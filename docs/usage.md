@@ -3230,6 +3230,8 @@ explanation instead of an ordinary editable comparison.
 
 With working changes, both Commit and Generate message are clickable. When nothing is staged, clicking either asks to stage all current changes in the selected repository and continue with that action. Declining makes no changes. Conflicts must be resolved first. An unsuccessful or uncertain stage, repository switch or message edit stops the continuation. Existing staged selections are used as-is: unstaged content is never silently added. Generate message never commits.
 
+When the selected working tree is clean and has a configured upstream, the main button becomes **Push N ↑** for outgoing commits, or **Pull N ↓** when incoming commits must be integrated first. Counts use local tracking refs, without an automatic fetch. Clicking performs only the displayed action; committing never pushes automatically. Without an upstream, the existing Git actions remain available and no outgoing count is guessed.
+
 Commits still include staged changes only. An empty message authorizes generation
 and commit, while Generate message only fills the draft. The existing project
 language setting applies, and Cmd/Ctrl+Enter in the message field submits. Editing

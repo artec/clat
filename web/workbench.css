@@ -544,7 +544,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .compaction-disclosure-body>p{margin:0 0 8px}.compaction-disclosure-body>h4{font-weight:500;margin:16px 0 8px}
 #transcript>.tool-card{border:0;border-radius:0;background:transparent}
 #transcript>.tool-card>summary{padding:6px 0}
-#transcript>.tool-card>summary>svg{width:17px;height:17px;flex:none}
+#transcript .tool-card>summary>svg{width:18px;height:18px;flex:none;stroke-width:1.65}
 #transcript>.tool-card>.tool-body{border-inline-start:1px solid var(--line);padding:8px 12px;margin:6px 0 12px 8px}
 @media(max-width:640px){.round-process-heading{width:100%;margin-inline-start:0}.compaction-disclosure{margin-inline-start:0}}
 .round-process-heading:disabled{opacity:1;cursor:default}
@@ -555,7 +555,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .project-group .session-list li[data-running=true] .session-item{padding-inline-end:60px}
 @keyframes session-running-spin{to{transform:rotate(360deg)}}
 .run-activity{display:flex;align-items:center;gap:8px;min-height:28px;margin:6px 0 20px 36px;color:var(--text-muted);font:var(--text-size-ui)/1.6 var(--font-ui)}
-.run-activity>svg{width:16px;height:16px;flex:none;opacity:.65}
+.run-activity>svg{width:18px;height:18px;flex:none;stroke-width:1.65;opacity:.8}
 .run-activity-label{max-width:100%;overflow-wrap:anywhere}
 @supports (background-clip:text) or (-webkit-background-clip:text){
   .run-activity-label{background-image:linear-gradient(110deg,var(--text-muted) 40%,var(--text) 50%,var(--text-muted) 60%);background-size:300% 100%;background-position:100% 0;background-repeat:no-repeat;background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:activity-spotlight 2.8s ease-in-out infinite}

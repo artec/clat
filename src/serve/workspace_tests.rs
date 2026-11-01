@@ -486,6 +486,8 @@ fn native_client_checks_host_identity_and_detaches_without_stopping_it() {
 #[test]
 fn host_description_golden_is_additive_and_http_clients_need_no_build_identity() {
     let (handle, storage, project) = spawn_serve("host-description-golden", TestBehavior::Success);
+    let (_, workbench) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    let availability = workbench.unwrap()["builtin_availability"].clone();
     let (_, description) = post(handle.addr, TEST_TOKEN, "host.describe", "{}");
     let description = description.unwrap();
     let instance = description["instance_id"].clone();
@@ -509,6 +511,7 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
         "native_client_compatibility": 1,
         "capabilities": ["desktop-workbench-v1", "host.runtime_status"],
+        "builtin_availability": availability,
     });
     assert_eq!(
         serde_json::to_string(&description).unwrap(),

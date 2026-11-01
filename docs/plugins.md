@@ -94,6 +94,13 @@ an actionable error before mount. The existing mount engine still owns ordered
 activation, rollback and reverse cleanup. Mount failures abort with rollback;
 CLAT does not silently pretend a failed feature is available.
 
+`host.describe` publishes the immutable `builtin_availability` captured from
+the successful startup composition without taking project or session locks.
+Web/Desktop fetch it when connecting, in parallel with conversation replay;
+enabled controls do not wait for history or external extension connections.
+Reconnects discard previous connection snapshots and reject late responses.
+The existing workbench snapshot remains a fallback for older Hosts.
+
 The inventory includes configured-disabled candidates as well as actual mounts.
 Per-project `configurable` reports whether a candidate can currently be disabled;
 `disabled_by` contains the explicitly disabled ids responsible for its absence.

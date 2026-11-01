@@ -42,7 +42,7 @@ struct Projects {
 pub(crate) struct WorkspaceHost {
     projects: Mutex<Projects>,
     instance: String,
-    build_fingerprint: String,
+    description: Value,
     shutdown: Arc<AtomicBool>,
     _runtime_lease: Mutex<Option<std::fs::File>>,
     pub(super) notifications: super::notifications::Notifications,
@@ -56,6 +56,12 @@ impl Drop for WorkspaceHost {
 }
 
 impl WorkspaceHost {
+    fn startup_description(&self) -> Result<Value, RpcError> {
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(RpcError::busy("host is shutting down"));
+        }
+        Ok(self.description.clone())
+    }
     pub(super) fn is_stopping(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
     }
@@ -93,7 +99,19 @@ impl WorkspaceHost {
         shutdown: Arc<AtomicBool>,
     ) -> Arc<Self> {
         let project = application.project().clone();
+        let availability = application.builtin_availability();
         let mut application = HostApplication::new(application);
+        let instance = uuid::Uuid::new_v4().to_string();
+        let description = json!({"protocol_version": 1, "instance_id": instance,
+            "storage_root": application.storage_root(), "methods": HOST_METHODS,
+            "wire_version": crate::wire::WIRE_VERSION,
+            "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
+            "product_version": crate::host_client::build_identity::product_version(),
+            "build_fingerprint": build_fingerprint,
+            "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
+            "native_client_compatibility": 1,
+            "capabilities": ["desktop-workbench-v1", "host.runtime_status"],
+            "builtin_availability": availability});
         let app = application
             .attach(project)
             .expect("bootstrap project is mounted");
@@ -105,8 +123,8 @@ impl WorkspaceHost {
                 application,
                 routes: BTreeMap::from([("default".into(), shared.clone())]),
             }),
-            instance: uuid::Uuid::new_v4().to_string(),
-            build_fingerprint,
+            instance,
+            description,
             _runtime_lease: Mutex::new(None),
             notifications: Default::default(),
             shutdown,
@@ -186,6 +204,9 @@ impl WorkspaceHost {
         if method == "host.takeover" {
             return self.takeover(params);
         }
+        if method == "host.describe" {
+            return self.startup_description();
+        }
         let mut projects = self.projects.lock().expect("host projects");
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(RpcError::busy("host is shutting down"));
@@ -194,15 +215,6 @@ impl WorkspaceHost {
             return super::plugins::dispatch(&mut projects.application, method, params);
         }
         match method {
-            "host.describe" => Ok(json!({"protocol_version": 1, "instance_id": self.instance,
-                "storage_root": projects.application.storage_root(), "methods": HOST_METHODS,
-                "wire_version": crate::wire::WIRE_VERSION,
-                "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
-                "product_version": crate::host_client::build_identity::product_version(),
-                "build_fingerprint": self.build_fingerprint,
-                "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
-                "native_client_compatibility": 1,
-                "capabilities": ["desktop-workbench-v1", "host.runtime_status"]})),
             "host.runtime_status" => {
                 let busy = projects
                     .routes

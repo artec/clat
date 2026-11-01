@@ -32,3 +32,8 @@ test('availability controls restore per capability and active capabilities can m
   await f.context.rpc('git.snapshot',{});assert.deepEqual(f.requests,['/api/git.snapshot']);
   f.state.workbench=null;f.context.syncOptionalResourceControls();assert.equal(f.controls.get('files-open').disabled,true);
 });
+test('startup description bypasses project routing while ordinary queries retain it',async()=>{
+  const f=fixture(null);f.context.workspacePrefix='/workspace/project-one';
+  await f.context.rpc('host.describe',{});await f.context.rpc('workbench.info',{});
+  assert.deepEqual(f.requests,['/api/host.describe','/workspace/project-one/api/workbench.info']);
+});

@@ -9,8 +9,8 @@ function disableBuiltin(node,value,id){
   CLATI18n.attribute(node,'title',()=>builtinReason(value,id));
 }
 // Startup availability is authoritative; an unreceived snapshot cannot grant capability I/O.
-function builtinReady(id){return state.workbench?.builtin_availability?.[id]?.enabled===true;}
-function builtinUnavailableReason(id){return builtinReason(state.workbench,id)||CLATI18n.msg('extension.capability_pending');}
+function builtinReady(id){return (state.builtinAvailability||state.workbench?.builtin_availability)?.[id]?.enabled===true;}
+function builtinUnavailableReason(id){return builtinReason({builtin_availability:state.builtinAvailability||state.workbench?.builtin_availability},id)||CLATI18n.msg('extension.capability_pending');}
 function requireBuiltin(id){if(!builtinReady(id))throw CLATI18n.error(CLATI18n.view(()=>builtinUnavailableReason(id)));}
 const optionalResourceControlState=new WeakMap();
 function syncOptionalResourceControls(){
@@ -35,6 +35,8 @@ function syncUtilityAvailability(){
 }
 window.addEventListener('clat:workbench-updated',syncUtilityAvailability);
 window.addEventListener('clat:workbench-updated',syncOptionalResourceControls);
+window.addEventListener('clat:builtin-availability',syncUtilityAvailability);
+window.addEventListener('clat:builtin-availability',syncOptionalResourceControls);
 function retainedPlan(value){return value?.plan_mode&&!builtinEnabled(value,'builtin.plan_mode');}
 function workflowGoalStatus(value){
   const goal=value.goal?.goal;if(!goal)return 'not_created';

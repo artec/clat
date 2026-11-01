@@ -1160,3 +1160,52 @@ fn development_terminal_remove_rename_compete_without_resurrection() {
 
 #[path = "git/workspace_tests.rs"]
 mod git_workspace;
+
+#[test]
+fn development_git_snapshot_tracks_local_outgoing_and_incoming_without_network() {
+    let f = Fixture::new();
+    f.repository();
+    assert!(f.snapshot()["tracking"].is_null());
+    let branch = f.git(&["symbolic-ref", "--short", "HEAD"]);
+    let initial = f.git(&["rev-parse", "HEAD"]);
+    // A deliberately unreachable remote proves that snapshot does not contact it.
+    f.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://invalid.invalid/no-network.git",
+    ]);
+    f.git(&["update-ref", "refs/remotes/origin/main", &initial]);
+    f.git(&["config", &format!("branch.{branch}.remote"), "origin"]);
+    f.git(&[
+        "config",
+        &format!("branch.{branch}.merge"),
+        "refs/heads/main",
+    ]);
+    let tracking = f.snapshot()["tracking"].clone();
+    assert_eq!(tracking["upstream"], "origin/main");
+    assert_eq!(tracking["ahead"], 0);
+    assert_eq!(tracking["behind"], 0);
+    fs::write(f.project.join("file.txt"), "outgoing\n").unwrap();
+    f.git(&["add", "file.txt"]);
+    f.git(&["commit", "-qm", "local"]);
+    let local = f.git(&["rev-parse", "HEAD"]);
+    assert_eq!(f.snapshot()["tracking"]["ahead"], 1);
+    assert_eq!(f.snapshot()["tracking"]["behind"], 0);
+    // Simulate another commit on the upstream branch using a local branch only.
+    f.git(&["checkout", "-qb", "upstream-side", &initial]);
+    fs::write(f.project.join("file.txt"), "incoming\n").unwrap();
+    f.git(&["add", "file.txt"]);
+    f.git(&["commit", "-qm", "upstream"]);
+    let remote = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["update-ref", "refs/remotes/origin/main", &remote]);
+    f.git(&["checkout", "-q", &branch]);
+    assert_eq!(f.snapshot()["tracking"]["ahead"], 1);
+    assert_eq!(f.snapshot()["tracking"]["behind"], 1);
+    // A successful push updates the tracking ref; there is nothing left to push.
+    f.git(&["update-ref", "refs/remotes/origin/main", &local]);
+    assert_eq!(f.snapshot()["tracking"]["ahead"], 0);
+    assert_eq!(f.snapshot()["tracking"]["behind"], 0);
+    f.git(&["checkout", "-q", "--detach"]);
+    assert!(f.snapshot()["tracking"].is_null());
+}

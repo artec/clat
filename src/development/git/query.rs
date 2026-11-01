@@ -36,8 +36,36 @@ impl GitService {
             .map_err(|_| "git_encoding")?;
         let files = parse_status(&status, prefix.trim_end())?;
         Ok(
-            json!({"head":head,"index":digest(&index),"status":working_version(&self.project,&status,&files)?,"branch":branch,"files":files}),
+            json!({"head":head,"index":digest(&index),"status":working_version(&self.project,&status,&files)?,"branch":branch,"files":files,"tracking":self.tracking()}),
         )
+    }
+    // Local remote-tracking refs only. Never fetch during UI refresh.
+    fn tracking(&self) -> Option<Value> {
+        let upstream = String::from_utf8(
+            query(
+                &self.project,
+                &[
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
+            )
+            .ok()?,
+        )
+        .ok()?;
+        let counts = String::from_utf8(
+            query(
+                &self.project,
+                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+            )
+            .ok()?,
+        )
+        .ok()?;
+        let mut parts = counts.split_whitespace();
+        let ahead = parts.next()?.parse::<u64>().ok()?;
+        let behind = parts.next()?.parse::<u64>().ok()?;
+        Some(json!({"upstream":upstream.trim(),"ahead":ahead,"behind":behind}))
     }
     pub(super) fn diff(&self, value: &Value) -> Result<Value, String> {
         if value.get("commit").is_some() {

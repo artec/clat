@@ -250,9 +250,9 @@ const ICON_PATHS = {
   plus: ["M12 5v14M5 12h14"],
   "chevron-down": ["m6 9 6 6 6-6"],
   refresh: ["M20 11a8 8 0 1 0-2 7M20 4v7h-7"],
-  edit: ["m16 3 5 5-12 12-6 1 1-6Z","m14 5 5 5"],
+  edit: ['M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z', 'm14.5 5.5 3 3'],
   trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
-  terminal: ['M4 5h16v14H4z','m8 9 3 3-3 3','M13 15h4'],
+  terminal: ['M6 4h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z', 'm7.5 8.5 3.5 3.5-3.5 3.5M14 15.5h3'],
   chat: ['M4 4h16v12H9l-5 4V4Z', 'M8 8h8M8 12h5'],
   panel: ['M3 5h18v14H3zM9 5v14'],
   close: ['m6 6 12 12M18 6 6 18'],
@@ -277,7 +277,7 @@ const ICON_PATHS = {
   user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M5 21c.8-4 3.1-6 7-6s6.2 2 7 6'],
   // PU-9（2026-09-06 负责人令）：品牌像素机器人剪影（fill + evenodd 挖出面部）。
   agent: ['M6 4h12v4h4v4h-4v4h4v4h-4v-4h-4v4h-4v-4h-4v4H2v-4h4v-4H2V8h4V4z M6.2 8.2h11.6v3.8h-3.8v4H10.2v-4H6.2z'],
-  tool: ['m14 6 4 4-8 8-4 1 1-4z', 'm13 7 4 4'],
+  tool: ['M20.5 6.5a5.5 5.5 0 0 1-7.4 6.7l-7 7a2 2 0 0 1-2.8-2.8l7-7a5.5 5.5 0 0 1 6.7-7.4l-3.5 3.5 3.5 3.5Z'],
   tools: ['M21 7.5a6 6 0 0 1-8.1 5.6l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8A6 6 0 0 1 16.5 3L13 6.5l4.5 4.5L21 7.5Z'],
   trace: ['M5 17 9 9l4 6 3-10 3 12', 'M4 20h16'],
   info: ['M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z', 'M12 7h.01M10 11h2v6m-2 0h4'],
@@ -403,6 +403,8 @@ const state = {
   sessionId: null,
   sessions: [],
   workbench: null,
+  builtinAvailability: null,
+  builtinAvailabilityRequest: 0,
   lastUsage: null,
   reconnectDelayMs: 1000,
   stream: null,
@@ -557,7 +559,7 @@ async function rpc(method, params) {
   ].includes(method)) {
     params = { ...params, expected_selection_generation: (params?.expected_selection_generation ?? state.selectionGeneration) };
   }
-  const response = await fetch(workspacePrefix + '/api/' + method, {
+  const response = await fetch((method === 'host.describe' ? '' : workspacePrefix) + '/api/' + method, {
     method: 'POST',
     headers: {
       ...authHeaders(),
@@ -646,12 +648,37 @@ function setConnStatus(text, stateName) {
     : String(text).replace('…', ''));
 }
 
+async function refreshBuiltinAvailability() {
+  const request = state.builtinAvailabilityRequest = (state.builtinAvailabilityRequest || 0) + 1;
+  const prefix = workspacePrefix;
+  try {
+    const description = await rpc('host.describe', {});
+    if (request !== state.builtinAvailabilityRequest || prefix !== workspacePrefix) return;
+    if (typeof description.instance_id !== 'string' || !description.builtin_availability) return;
+    state.builtinAvailability = description.builtin_availability;
+    window.dispatchEvent(new Event('clat:builtin-availability'));
+  } catch (error) {
+    if (request === state.builtinAvailabilityRequest) console.warn('[clat] startup availability failed:', error.message);
+  }
+}
+
 async function connect() {
-  state.workbench=null;syncOptionalResourceControls();
+  state.workbench = null;
+  state.workbenchRequest = (state.workbenchRequest || 0) + 1;
+  state.builtinAvailability = null;
+  window.dispatchEvent(new Event('clat:builtin-availability'));
+  void refreshBuiltinAvailability();
+  const availabilityRequest = state.builtinAvailabilityRequest;
   setConnStatus(CLATI18n.msg("web.connecting", {}, "connecting…"), 'connecting');
   try {
     await openStream();
   } catch (error) {
+    if (availabilityRequest !== state.builtinAvailabilityRequest) return;
+    state.builtinAvailabilityRequest++;
+    state.builtinAvailability = null;
+    state.workbench = null;
+    state.workbenchRequest++;
+    window.dispatchEvent(new Event('clat:builtin-availability'));
     if (error.name === 'AbortError') return;
     closeQuestionCards();
     state.connected = false;

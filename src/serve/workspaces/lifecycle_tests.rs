@@ -82,6 +82,40 @@ fn host_description_retains_the_identity_captured_at_startup() {
 }
 
 #[test]
+fn startup_availability_does_not_wait_for_project_or_session_locks() {
+    let (host, storage, project) = fixture("startup-availability-locks");
+    let route = host.route("default").unwrap();
+    let app = route.app.lock().unwrap();
+    let expected = serde_json::to_value(app.builtin_availability()).unwrap();
+    let projects = host.projects.lock().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn({
+        let route = route.clone();
+        move || {
+            send.send(crate::serve::protocol::dispatch(
+                "host.describe",
+                &json!({}),
+                &route,
+            ))
+            .unwrap()
+        }
+    });
+    let early = receive.recv_timeout(std::time::Duration::from_secs(1));
+    drop(projects);
+    drop(app);
+    worker.join().unwrap();
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+    let description = early
+        .expect("startup facts must not wait for runtime locks")
+        .unwrap();
+    assert_eq!(description["builtin_availability"], expected);
+}
+
+#[test]
 fn idle_host_accepts_instance_fenced_upgrade_takeover() {
     let (host, storage, project) = fixture("idle-upgrade-takeover");
     let route = host.route("default").unwrap();

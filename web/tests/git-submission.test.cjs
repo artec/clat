@@ -67,3 +67,16 @@ test('simultaneous submissions of an already staged selection execute once',asyn
   await Promise.all([h.api.start('commit'),h.api.start('commit')]);
   assert.equal(h.calls.length,1);
 });
+
+test('main action follows repository facts after commit and push',()=>{
+  const ctx=vm.createContext({});vm.runInContext(fs.readFileSync('web/development/git-actions.js','utf8'),ctx);
+  const project=snapshot=>ctx.gitPrimaryAction(snapshot);
+  assert.equal(project({files:[{unstaged:true}],tracking:{ahead:1,behind:0}}).action,'commit');
+  const outgoing=project({files:[],tracking:{ahead:2,behind:0}});
+  assert.equal(outgoing.action,'push');assert.equal(outgoing.count,2);assert.equal(outgoing.enabled,true);
+  const diverged=project({files:[],tracking:{ahead:2,behind:3}});
+  assert.equal(diverged.action,'pull');assert.equal(diverged.count,3);
+  assert.equal(project({files:[],tracking:{ahead:0,behind:0}}).enabled,false);
+  assert.equal(project({files:[]}).enabled,false);
+  assert.equal(project(null).enabled,false);
+});

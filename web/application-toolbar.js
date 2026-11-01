@@ -14,6 +14,7 @@ function createApplicationToolbar(shell){
   document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target)&&!more.contains(event.target))close();});
   menu.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();close();more.focus();}else if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();const rows=[...menu.querySelectorAll('button:not(:disabled)')],index=rows.indexOf(document.activeElement);rows[(index+(event.key==='ArrowDown'?1:rows.length-1))%rows.length]?.focus();}};
   context.history.subscribe(()=>refreshApplicationToolbar(shell));CLATI18n.onChange(()=>{shell.toolbar.signature='';refreshApplicationToolbar(shell);});refreshApplicationToolbar(shell);
+  window.addEventListener('clat:builtin-availability',()=>refreshApplicationToolbar(shell));
 }
 function refreshApplicationToolbar(shell=workbenchShell){
   if(!shell?.toolbar)return;const chrome=shell.toolbar,view=activeViewContext(shell);
@@ -27,7 +28,7 @@ function renderApplicationActions(chrome,view,shell){
   const featureReady=()=>!capability||builtinReady(capability);
   const contextualHelp=view.id==='help-dialog'?[]:[viewAction('page-help','help',()=>helpText('page_help'),()=>openHelp(),false)];
   const actions=[...(view.actions?.()||[]),...contextualHelp].filter(action=>!action.hidden?.()),primary=actions.filter(action=>action.primary).slice(0,3),secondary=actions.filter(action=>!primary.includes(action));
-  const signature=JSON.stringify([view.id,actions.map(a=>[a.id,typeof a.label==='function'?a.label():a.label,featureReady()&&a.enabled?.()!==false,Boolean(a.busy?.())]),Boolean(view.workspace),shell.tools?.current()?.id]);
+  const signature=JSON.stringify([view.id,actions.map(a=>[a.id,typeof a.label==='function'?a.label():a.label,featureReady()&&a.enabled?.()!==false,Boolean(a.busy?.())]),Boolean(view.workspace),view.workspace?[builtinReady('builtin.development'),builtinUnavailableReason('builtin.development')]:null,shell.tools?.current()?.id]);
   if(signature===chrome.signature)return;chrome.signature=signature;chrome.actions.replaceChildren();chrome.menu.replaceChildren();
   const button=(action,inline)=>{const run=event=>{const source=inline?event.currentTarget:chrome.more;chrome.close();void Promise.resolve().then(()=>{if(activeViewContext(shell).id===view.id&&featureReady()&&action.enabled?.()!==false)return action.run({currentTarget:source,detail:event.detail});}).catch(error=>{if(activeViewContext(shell).id===view.id)updateRunState(error.message||String(error));});};const node=inline?navigationIcon(action.label,action.icon,run):shellButton('',action.icon,action.label,run);node.dataset.action=action.id;if(action.controls)node.setAttribute('aria-controls',action.controls);if(action.expanded)node.setAttribute('aria-expanded',String(action.expanded()));node.disabled=!featureReady()||action.enabled?.()===false||Boolean(action.busy?.());if(capability&&!featureReady())CLATI18n.attribute(node,'title',()=>builtinUnavailableReason(capability));if(!inline)node.setAttribute('role','menuitem');return node;};
   for(const action of primary)chrome.actions.append(button(action,true));
