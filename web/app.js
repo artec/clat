@@ -2968,6 +2968,10 @@ function selectSettingsCategory(category) {
     else button.removeAttribute('aria-current');
   }
   settingsLayout?.select(category);
+  if (category === 'projects') {
+    renderWorkspaceDirectory(context.organization.rows());
+    void refreshWorkspaces();
+  }
 }
 
 function openSettings(category = currentSettingsCategory) {
@@ -2979,7 +2983,6 @@ function openSettings(category = currentSettingsCategory) {
   CLATI18n.bind(dom['settings-saved'], "textContent", () => '');
   if (!pageIsOpen(dom['settings-dialog'])) presentPage(dom['settings-dialog']);
   refreshWechatStatus();
-  refreshWorkspaces();
   refreshModelSettings();
 }
 

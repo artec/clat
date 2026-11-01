@@ -250,6 +250,8 @@ extension area. Only Conversations contains the project/session list and chat
 detail; Search, Tasks, Resources, Extensions, Settings and Help own their content
 pages. Returning to Conversations preserves its draft, reading position and
 panel preferences.
+Opening Settings → Projects shows the trusted project directory immediately and
+refreshes it, whether entered from the settings list or a conversation breadcrumb.
 Conversation text fades out above the floating composer and stays hidden beneath
 the input area, including when window transparency is enabled.
 Extension navigation, built-in extension lists and overviews, composer shortcuts,
@@ -305,6 +307,17 @@ retained. Do not manually delete a running runtime's cache.
 The app checks on startup and every 24 hours; automatic checking can be disabled.
 A page indicator announces available updates. Checking never downloads or installs
 without a user action. The panel exposes download progress, install and cancellation.
+
+In the workbench, an update shortcut appears immediately above Settings in the
+navigation rail when a new version is available. Click it to download; its ring
+shows progress (indeterminate when the total size is unknown), with version,
+percentage and download size in the tooltip. After verification, click again to
+install and restart. Download completion never starts installation automatically.
+Click a busy or failed shortcut to view status, cancel a download or installation
+wait, or retry. Draft protection failures open this status panel immediately.
+Navigation and About share one update operation across project switches; installation
+retains all existing draft, signature and Host readiness safeguards. The shortcut
+is Desktop-only and does not appear in Web/PWA.
 
 On macOS, choose **CLAT → Check for updates** to open updates and check
 GitHub. In the redesigned workbench, use **Settings → Updates & about** on both

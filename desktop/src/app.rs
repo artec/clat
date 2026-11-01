@@ -138,6 +138,8 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
         .initialization_script(clat_core::client_ports::presentation::browser_runtime())
         .initialization_script(crate::window_frame::initialization_script())
         .initialization_script(include_str!("../ui/window-bar.js"))
+        .initialization_script(include_str!("../ui/update-controller.js"))
+        .initialization_script(include_str!("../ui/update-rail.js"))
         .initialization_script(include_str!("../ui/bridge.js"))
         .initialization_script(include_str!("../ui/background.js"))
         .on_page_load(|window, payload| {
