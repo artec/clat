@@ -12,6 +12,8 @@ fn directory_listing_does_not_construct_workbench_services() {
     {
         let mut app = attached.lock().unwrap();
         crate::test_support::configure_test_model(&app);
+        // This fixture measures directory I/O, not background naming.
+        app.title_worker.as_mut().unwrap().shutdown().unwrap();
         run(&mut app);
     }
     drop(attached);

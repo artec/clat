@@ -661,6 +661,13 @@ fn manual_prompt_suggestion_uses_shared_utility_without_journal_writes() {
     let project = Project::new(&project_root);
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
     configure_test_model(&application);
+    // Exclude independent durable title writes from the suggestion invariant.
+    application
+        .title_worker
+        .as_mut()
+        .unwrap()
+        .shutdown()
+        .unwrap();
     run(&mut application, "what should I do next?").unwrap();
     assert!(
         application.prepare_prompt_suggestion().is_err(),

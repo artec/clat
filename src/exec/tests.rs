@@ -1674,7 +1674,7 @@ fn exec_runner_is_repeatable_within_one_process() {
 
 /// EX-1: an exec terminal outcome is not publishable until the exact
 /// storage-root lease owned by its Application has been released. Slow
-/// autotitle forces the grace-abandon path implicated by the old report;
+/// cooperative autotitle exercises cancellation and joins before publication;
 /// the second nonblocking lease acquisition is the direct
 /// invariant probe, not a sleep or a process-global writer count.
 #[test]

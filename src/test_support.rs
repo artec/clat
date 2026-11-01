@@ -381,8 +381,15 @@ impl Model for TestModel {
                         .instructions
                         .is_some_and(|text| text.starts_with("Generate a concise title"));
                 if is_title {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    Ok(response("slow title", FinishReason::Completed))
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while std::time::Instant::now() < deadline && !request.cancel.is_cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    if request.cancel.is_cancelled() {
+                        Ok(response("", FinishReason::Cancelled))
+                    } else {
+                        Ok(response("slow title", FinishReason::Completed))
+                    }
                 } else {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                     events.emit(ModelEvent::TextDelta {

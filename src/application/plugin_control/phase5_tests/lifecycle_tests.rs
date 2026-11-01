@@ -300,7 +300,7 @@ fn budget_path(root: &std::path::Path) -> Option<std::path::PathBuf> {
 
 #[test]
 fn phase5_compaction_and_git_models_run_independently_of_auxiliary_execution() {
-    let (root, _) = crate::test_support::roots("phase5-independent-models");
+    let (root, _) = crate::test_support::roots("p5-models");
     let project = Project::new(root.join("project"));
     std::fs::create_dir_all(project.root()).unwrap();
     let state = root.join("state");
@@ -337,6 +337,7 @@ fn phase5_compaction_and_git_models_run_independently_of_auxiliary_execution() {
         assert_eq!(model.config.model, app.model_state().unwrap().0.model);
         for args in [
             vec!["init", "-q", "--template="],
+            vec!["config", "core.autocrlf", "false"],
             vec!["add", "--", "staged.txt"],
         ] {
             if args[0] == "add" {

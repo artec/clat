@@ -166,6 +166,8 @@ fn automatic_model_change_and_committed_unknown_recovery_never_dispatch() {
     std::fs::create_dir_all(&root).unwrap();
     let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
     configure_test_model(&app);
+    // Recovery assertions observe scheduler facts without concurrent title writes.
+    app.title_worker.as_mut().unwrap().shutdown().unwrap();
     run(&mut app, "seed").unwrap();
     let origin = app.current_session_id().unwrap();
     let rule = app.schedule_create(draft(&origin, 1000)).unwrap();

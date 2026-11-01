@@ -241,6 +241,8 @@ fn context_stats_remain_numeric_when_text_history_exceeds_the_budget() {
     std::fs::create_dir_all(&root).unwrap();
     let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
     configure_test_model(&app);
+    // Inspection must not write; unrelated automatic titles are separate writers.
+    app.title_worker.as_mut().unwrap().shutdown().unwrap();
     for _ in 0..5 {
         run_request(&mut app, &"retained history ".repeat(240)).unwrap();
     }
