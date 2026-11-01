@@ -170,6 +170,13 @@ Session history, manual titles and utility route settings outlive the optional
 execution service. Automatic jobs are process-local and are never replayed on
 reopen; compaction and Git retain separate execution paths.
 
+Development keeps native canonical paths for fenced filesystem access. At the
+Git subprocess boundary, Windows verbatim disk and UNC paths are converted to
+Git's path spelling, including frozen index environment variables, temporary
+worktrees and commit message files. Frozen index digests and commit checks
+remain mandatory; path representation must not turn staged content into an
+apparently empty index.
+
 Third-party packages of both runtime kinds are activated from one immutable
 local store. The package tree is copied and fsynced before an atomic registry
 pointer exposes it; update failure leaves the old pointer intact, and rollback

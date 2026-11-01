@@ -22,6 +22,7 @@ function rememberFindMessage(node, role, source) {
 }
 
 function resetConversationFind() {
+  userMessageReader.reset();
   findMessages.clear(); findMatches = []; findActive = null; findRequest += 1;
   setConversationFindOpen(false);
 }
@@ -83,6 +84,7 @@ function moveConversationFind(direction) {
   conversationRounds.reveal(findActive.node);
   findActive.node.scrollIntoView({ block: 'center', behavior: 'auto' });
   const match = findActive;
+  userMessageReader.reveal(match.node, {offset:match.offset, length:document.getElementById('find-query').value.length});
   CLATI18n.bind(document.getElementById('find-preview'), "textContent", () => match.role + ': '
     + match.source().slice(Math.max(0, match.offset - 40), match.offset + 160));
 }

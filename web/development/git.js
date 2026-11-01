@@ -14,7 +14,17 @@ function installDevelopmentGit(){
   ui.message.oninput=()=>{const owner=seat();owner.draft=ui.message.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}autosize();if(owner.pending?.automatic)actions.cancel();saveDraft(owner);};
   ui.message.onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();void actions.start('commit');}};
   function autosize(){ui.message.style.height='auto';ui.message.style.height=Math.min(140,Math.max(36,ui.message.scrollHeight))+'px';}
-  function renderSubmission(){const owner=seat();if(ui.message.value!==owner.draft)ui.message.value=owner.draft;ui.commit.disabled=Boolean(owner.operation)||!owner.snapshot?.files.some(f=>f.staged);ui.generate.disabled=ui.commit.disabled;ui.cancel.hidden=!owner.operation;autosize();if(owner.operation)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);}
+  function renderSubmission(){
+    const owner=seat(),files=owner.snapshot?.files||[],busy=Boolean(owner.operation||owner.preparing);
+
+    if(ui.message.value!==owner.draft)ui.message.value=owner.draft;
+    ui.commit.disabled=busy||!files.length;ui.generate.disabled=ui.commit.disabled;
+    ui.cancel.hidden=!busy;
+    for(const [button,key]of [[ui.commit,'commit'],[ui.generate,'generate_message']]){
+      CLATI18n.attribute(button,'title',()=>devText(key));
+    }
+    autosize();if(busy)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);
+  }
   async function refresh(){
     if(!devAvailable()){devUnavailable(ui.status);return;}
     const version=++epoch,owner=seat();try{const [snapshot,settings,repositories]=await Promise.all([call('git.snapshot',{},owner).catch(error=>({error})),rpc('git.settings',{}),rpc('git.repositories',{})]);if(version!==epoch||seat()!==owner||!active)return;

@@ -7,7 +7,8 @@ impl GitService {
         index: &super::index::FrozenIndex,
     ) -> Result<(), String> {
         let mut cmd = command::base(&self.project, false)?;
-        cmd.env("GIT_INDEX_FILE", index.path()).arg("write-tree");
+        cmd.env("GIT_INDEX_FILE", command::path_argument(index.path()))
+            .arg("write-tree");
         let result =
             crate::process::capture_command(cmd, 4096, std::time::Duration::from_secs(10))?;
         if !result.status.success() {

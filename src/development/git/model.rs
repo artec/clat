@@ -140,7 +140,7 @@ impl GitService {
             "commit".into(),
             "--cleanup=verbatim".into(),
             "--file".into(),
-            path.to_string_lossy().into_owned(),
+            command::path_argument(&path).to_string_lossy().into_owned(),
         ];
         let outcome =
             command::run_index(&self.project, &args, true, &op.cancel, Some(index.path()));

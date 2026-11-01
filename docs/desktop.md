@@ -54,6 +54,8 @@ The outer window shell does not scroll, including during focus and message
 navigation. The toolbar keeps its full height; lists, messages and tool contents
 scroll inside their own panels.
 
+Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening the complete original text in a centered, scrollable reader with a blurred backdrop and Copy full text. Escape, Close or clicking the backdrop dismisses it without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the reader and highlight the match; precise message navigation opens the reader as well. Web and Desktop share this behavior.
+
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.
 The running session has a trailing spinner in the project list. A separate

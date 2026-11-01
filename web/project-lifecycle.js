@@ -51,6 +51,7 @@ function projectLifecycle() {
     if (fresh) await newSession(); else if (session) await switchSession(session);
   }
   function deactivate() {
+    userMessageReader.close();
     conversationRounds.stop();
     runActivity.hide();
     saveComposerText();

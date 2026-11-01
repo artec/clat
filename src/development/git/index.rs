@@ -75,7 +75,7 @@ impl GitService {
             name,
         };
         let mut cmd = command::base(&self.project, false)?;
-        cmd.env("GIT_INDEX_FILE", frozen.path())
+        cmd.env("GIT_INDEX_FILE", command::path_argument(frozen.path()))
             .args(["ls-files", "--stage", "-z"]);
         let result = crate::process::capture_command(
             cmd,
@@ -117,15 +117,18 @@ impl GitService {
         command
             .current_dir(&worktree.path)
             .arg(format!("--git-dir={}", git_dir.trim()))
-            .arg(format!("--work-tree={}", worktree.path.display()));
-        command.env("GIT_INDEX_FILE", index.path()).args([
-            "diff",
-            "--cached",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--stat",
-            "--patch",
-        ]);
+            .arg("--work-tree")
+            .arg(command::path_argument(&worktree.path));
+        command
+            .env("GIT_INDEX_FILE", command::path_argument(index.path()))
+            .args([
+                "diff",
+                "--cached",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--stat",
+                "--patch",
+            ]);
         let result = crate::process::capture_command(
             command,
             16 * 1024 * 1024,

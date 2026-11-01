@@ -241,7 +241,7 @@ const ICON_PATHS = {
   'collapse-all': ['M4 3h14v14H4zM8 21h13V8M7 10h8'],
   'activity-log': ['M3 11a9 9 0 1 1 3 8', 'M3 4v7h7', 'M12 7v5l3 2'],
   'task-list': ['M9 6h12M9 12h12M9 18h12', 'm2 6 2 2 3-4m-5 8 2 2 3-4m-5 8 2 2 3-4'],
-  branch: ['M6 3v12a4 4 0 0 0 4 4h3', 'M18 7v4a4 4 0 0 1-4 4H6', 'M6 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z', 'M18 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z', 'M15 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z'],
+  branch: ['M7 7.5v9M17 7.5v1A7.5 7.5 0 0 1 9.5 16H7', 'M7 2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M17 2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M7 16.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z'],
   minus: ['M5 12h14'],
   sparkles: ['m13 3 2 6 6 2-6 2-2 6-2-6-6-2 6-2Z', 'M5 2v4M3 4h4'],
   file: ['M5 3h9l5 5v13H5Z','M14 3v6h5'],
@@ -1601,6 +1601,7 @@ function addUserMessage(text, blocks) {
   marker.appendChild(svgIcon('user'));
   const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
   renderMarkdown(body, text);
+  userMessageReader.attach(msg, body, text);
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
   if (attachments) msg.appendChild(attachments);
@@ -2149,7 +2150,7 @@ async function jumpToMessage(seq) {
       if (!await loadOlderHistory()) break;
       row = dom.transcript.querySelector(`:scope > [data-seq="${seq}"]`);
     }
-    if (row) { conversationRounds.reveal(row);row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    if (row) { conversationRounds.reveal(row);userMessageReader.reveal(row);row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
   } finally {
     state.history.jumping = false;
     dom['message-map-track'].querySelector(`[data-seq="${seq}"]`)?.classList.remove('is-jumping');

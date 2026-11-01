@@ -1,4 +1,10 @@
 {
+  "dev.stage_commit_confirm": "No changes are staged. Stage all current changes in this repository and continue to commit? An empty message will be generated automatically.",
+  "dev.stage_generate_confirm": "No changes are staged. Stage all current changes in this repository and generate a commit message? This will not commit.",
+  "dev.submission_conflicts": "Resolve conflicts before staging all changes and continuing.",
+  "user_reader.title": "Your message",
+  "user_reader.open": "View full message",
+  "user_reader.copy": "Copy full text",
   "desktop.background_blur_strength_hint": "Drag right for more blur. 0% turns blur off.",
   "desktop.background_blur_failed": "Could not adjust background blur (system code {code}).",
   "desktop.background_transparency": "Background transparency",

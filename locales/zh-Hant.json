@@ -1,4 +1,10 @@
 {
+  "dev.stage_commit_confirm": "尚未暫存變更。要暫存目前儲存庫的全部變更並繼續提交嗎？說明留空時會自動產生。",
+  "dev.stage_generate_confirm": "尚未暫存變更。要暫存目前儲存庫的全部變更並產生提交說明嗎？此操作不會提交。",
+  "dev.submission_conflicts": "請先解決衝突，再暫存全部變更並繼續。",
+  "user_reader.title": "你的訊息",
+  "user_reader.open": "查看完整訊息",
+  "user_reader.copy": "複製全文",
   "desktop.background_blur_strength_hint": "向右拖動增強模糊，0% 關閉。",
   "desktop.background_blur_failed": "無法調整背景模糊（系統代碼 {code}）。",
   "desktop.background_transparency": "背景透明度",

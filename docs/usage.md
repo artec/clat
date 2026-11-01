@@ -3228,6 +3228,8 @@ first parent and allow choosing another parent; root commits compare against an
 empty version. Binary, oversized, conflicted and submodule entries show a bounded
 explanation instead of an ordinary editable comparison.
 
+With working changes, both Commit and Generate message are clickable. When nothing is staged, clicking either asks to stage all current changes in the selected repository and continue with that action. Declining makes no changes. Conflicts must be resolved first. An unsuccessful or uncertain stage, repository switch or message edit stops the continuation. Existing staged selections are used as-is: unstaged content is never silently added. Generate message never commits.
+
 Commits still include staged changes only. An empty message authorizes generation
 and commit, while Generate message only fills the draft. The existing project
 language setting applies, and Cmd/Ctrl+Enter in the message field submits. Editing

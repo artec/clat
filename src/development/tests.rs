@@ -388,6 +388,36 @@ fn model(script: Script) -> (GitModel, Box<dyn Send>) {
     )
 }
 #[test]
+fn development_git_canonical_private_paths_preserve_staged_index_and_commit() {
+    let mut f = Fixture::new();
+    f.repository();
+    fs::create_dir_all(&f.storage).unwrap();
+    // Windows canonicalization introduces \\?\, unlike the old plain-path fixture.
+    f.service = Arc::new(DevelopmentService::new(
+        Project::new(f.project.canonicalize().unwrap()),
+        &f.storage.canonicalize().unwrap(),
+    ));
+    fs::write(f.project.join("file.txt"), "CANONICAL_STAGED\n").unwrap();
+    f.git(&["add", "file.txt"]);
+    fs::write(f.project.join("file.txt"), "UNSTAGED_SECRET\n").unwrap();
+    let (provider, _guard) = model(Arc::new(|request| {
+        let input = format!("{:?}", request.items);
+        assert!(input.contains("CANONICAL_STAGED"), "{input}");
+        assert!(!input.contains("UNSTAGED_SECRET"), "{input}");
+        "Keep canonical staged content".into()
+    }));
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"commit","expected":f.snapshot(),"message":"","language":"en"}),
+        Some(provider),
+    );
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(f.git(&["show", "HEAD:file.txt"]), "CANONICAL_STAGED");
+    assert_eq!(
+        fs::read_to_string(f.project.join("file.txt")).unwrap(),
+        "UNSTAGED_SECRET\n"
+    );
+}
+#[test]
 fn development_generated_commit_uses_staged_data_and_requested_languages() {
     for (language, system, expected) in [
         ("en", "zh-CN", "English"),

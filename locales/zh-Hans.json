@@ -1,4 +1,10 @@
 {
+  "dev.stage_commit_confirm": "尚未暂存更改。要暂存当前仓库的全部更改并继续提交吗？说明留空时会自动生成。",
+  "dev.stage_generate_confirm": "尚未暂存更改。要暂存当前仓库的全部更改并生成提交说明吗？此操作不会提交。",
+  "dev.submission_conflicts": "请先解决冲突，再暂存全部更改并继续。",
+  "user_reader.title": "你的消息",
+  "user_reader.open": "查看完整消息",
+  "user_reader.copy": "复制全文",
   "desktop.background_blur_strength_hint": "向右拖动增强模糊，0% 关闭。",
   "desktop.background_blur_failed": "无法调整背景模糊（系统代码 {code}）。",
   "desktop.background_transparency": "背景透明度",

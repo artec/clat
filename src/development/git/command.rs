@@ -7,6 +7,29 @@ use std::{
     time::Duration,
 };
 const CAP: usize = 16 * 1024 * 1024;
+/// Git's environment paths do not understand Rust's Windows verbatim prefix.
+/// Keep native paths for filesystem access; adapt only at the Git boundary.
+pub(super) fn path_argument(path: &Path) -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        for unit in &mut units {
+            if *unit == b'\\' as u16 {
+                *unit = b'/' as u16;
+            }
+        }
+        if units.starts_with(&[47, 47, 63, 47]) {
+            units.drain(..4);
+            if units.starts_with(&[85, 78, 67, 47]) {
+                units.splice(..4, [47, 47]);
+            }
+        }
+        std::ffi::OsString::from_wide(&units)
+    }
+    #[cfg(not(windows))]
+    path.as_os_str().to_owned()
+}
 pub(super) fn base(project: &Project, write: bool) -> Result<Command, String> {
     let command = if write {
         human_command(project)
@@ -62,7 +85,7 @@ pub(super) fn run_index(
     }
     let mut cmd = base(project, write)?;
     if let Some(index) = index {
-        cmd.env("GIT_INDEX_FILE", index);
+        cmd.env("GIT_INDEX_FILE", path_argument(index));
     }
 
     cmd.args(args)
@@ -149,4 +172,21 @@ pub(super) fn repo_lock(project: &Project) -> Result<Arc<Mutex<()>>, String> {
         .entry(root)
         .or_default()
         .clone())
+}
+
+#[cfg(all(test, windows))]
+mod path_tests {
+    use super::*;
+    #[test]
+    fn git_paths_preserve_unicode_and_unc_authority() {
+        assert_eq!(
+            path_argument(Path::new(r"\\?\C:\目录\index")),
+            "C:/目录/index"
+        );
+        assert_eq!(
+            path_argument(Path::new(r"\\?\UNC\server\share\目录\index")),
+            "//server/share/目录/index"
+        );
+        assert_eq!(path_argument(Path::new(r"C:\目录\index")), "C:/目录/index");
+    }
 }

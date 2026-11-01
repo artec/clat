@@ -564,3 +564,19 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 @media(max-width:640px){.run-activity{margin-inline-start:0}}
 @media(prefers-reduced-motion:reduce){.session-running{animation:none}.run-activity-label{animation:none;background:none;color:var(--text-muted);-webkit-text-fill-color:currentColor}}
 @media(forced-colors:active){.run-activity-label{animation:none;background:none;color:CanvasText;-webkit-text-fill-color:currentColor}.session-running{border-color:CanvasText;border-inline-end-color:transparent}}
+
+/* Long user text keeps a bounded bubble; full text is read without moving the chat. */
+.user-message-preview { min-width:0; }
+.msg.user .body.user-message-collapsed { cursor:pointer; }
+.user-message-collapsed .user-message-preview { max-height:calc(6 * var(--text-size-reading) * var(--text-leading));overflow:hidden;mask-image:linear-gradient(#000 55%,transparent 100%);-webkit-mask-image:linear-gradient(#000 55%,transparent 100%); }
+.msg.user .body.user-message-collapsed:focus-visible { outline:2px solid var(--accent);outline-offset:3px; }
+.user-message-reader { width:min(800px,calc(100vw - 32px));height:min(720px,80dvh);max-width:none;max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--line-strong);border-radius:16px;background:var(--surface);color:var(--text);box-shadow:var(--shadow);overflow:hidden; }
+.user-message-reader[open] { display:flex;flex-direction:column; }
+.user-message-reader::backdrop { background:rgb(0 0 0 / 35%);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px); }
+.user-reader-header,.user-reader-footer { display:flex;align-items:center;gap:14px;flex:none;padding:16px 20px; }
+.user-reader-header { border-bottom:1px solid var(--line); }
+.user-reader-header h2 { margin:0;flex:1;font-size:var(--text-size-ui);font-weight:600; }
+.user-reader-content { flex:1;min-height:0;overflow:auto;margin:0;padding:20px;white-space:pre-wrap;overflow-wrap:anywhere;font:var(--text-size-reading)/var(--text-leading) var(--font-ui); }
+.user-reader-footer { border-top:1px solid var(--line);color:var(--text-muted);font-size:var(--text-size-secondary); }
+.user-reader-footer button { padding:8px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface-input); }
+@media(forced-colors:active) { .user-message-collapsed .user-message-preview { mask-image:none;-webkit-mask-image:none; }.user-message-collapsed { outline:1px solid ButtonText; } }
