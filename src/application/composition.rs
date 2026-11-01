@@ -589,24 +589,10 @@ fn project_runtime_catalog(
     ]
 }
 
-/// Existing Application contracts, not a claim that all these features are kernel.
-/// Optional ports (compaction, todo, titler) deliberately do not appear here.
-fn project_service_contract() -> Vec<crate::plugin::ServiceId> {
-    use crate::plugins::services::*;
-    vec![
-        SESSION_SERVICE.id(),
-        CONFIG_SERVICE.id(),
-        PROVIDER_SERVICE.id(),
-        TOOL_SERVICE.id(),
-        TOOL_PIPELINE_SERVICE.id(),
-        PROMPT_SERVICE.id(),
-        PROCESS_SERVICE.id(),
-        TOOL_ACCESS_SERVICE.id(),
-        COMMAND_SERVICE.id(),
-        AGENT_SERVICE.id(),
-        MCP_STATUS_SERVICE.id(),
-        PERMISSION_SERVICE.id(),
-    ]
+mod core_contract;
+
+fn project_service_contract() -> Vec<crate::plugin::selection::Requirement> {
+    core_contract::requirements()
 }
 
 #[cfg(test)]

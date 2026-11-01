@@ -262,9 +262,37 @@ fn append_builtin(
             .locale
             .render(&UiMessage::new("extension.active_instances").arg("count", count)),
         label(row, "id"),
-        dialog.locale.text("extension.static_configuration").into(),
     ];
-    for part in parts {
+    for part in parts
+        .into_iter()
+        .chain(builtin_protection_text(row, dialog.locale))
+    {
         lines.extend(styled_lines(&part, width, theme::style(theme::Role::Dim)));
     }
+}
+
+fn builtin_protection_text(row: &Value, locale: LocaleContext) -> Vec<String> {
+    let mut reasons = std::collections::BTreeMap::new();
+    let mut protected = false;
+    for instance in row["instances"].as_array().into_iter().flatten() {
+        if instance["configurable"] != false {
+            continue;
+        }
+        protected = true;
+        for root in instance["required_by"].as_array().into_iter().flatten() {
+            if let Some(id) = root["service_id"].as_str() {
+                reasons
+                    .entry(id.to_string())
+                    .or_insert_with(|| localized_label(root, "reason", locale));
+            }
+        }
+    }
+    let heading = locale.text(if protected {
+        "extension.required_contract"
+    } else {
+        "extension.static_configuration"
+    });
+    std::iter::once(heading.to_owned())
+        .chain(reasons.into_values())
+        .collect()
 }

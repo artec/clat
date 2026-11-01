@@ -29,6 +29,7 @@ pub(crate) struct PluginInstance {
     project: String,
     phase: &'static str,
     configurable: bool,
+    required_by: Vec<crate::plugin::selection::Requirement>,
     disabled_by: Vec<&'static str>,
     provides: Vec<&'static str>,
     requires: Vec<&'static str>,
@@ -69,7 +70,8 @@ pub(crate) fn snapshot(
                 instances: vec![PluginInstance {
                     project: project.to_string_lossy().into_owned(),
                     phase: if active { "active" } else { "disabled" },
-                    configurable: !entry.protected,
+                    configurable: !entry.protected(),
+                    required_by: entry.required_by.clone(),
                     disabled_by: entry.disabled_by.iter().map(|id| id.as_str()).collect(),
                     provides: descriptor.provides.iter().map(|id| id.as_str()).collect(),
                     requires: descriptor.requires.iter().map(|id| id.as_str()).collect(),

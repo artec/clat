@@ -156,7 +156,7 @@
       <small id="find-preview"></small>
     </section>
     <div id="transcript-scroll" class="transcript-scroll">
-      <button id="history-status" class="history-status hidden" type="button" data-i18n="web.loading_earlier_messages">Loading earlier messages…</button>
+      <button id="history-status" class="history-status hidden" type="button" data-i18n-aria-label="web.load_earlier" data-i18n-title="web.load_earlier"></button>
       <div id="empty-state" class="empty-state">
         <p class="eyebrow" data-i18n="web.your_project_ready_to_work">Your project, ready to work</p>
         <h2 data-i18n="web.what_should_we_work_through">What should we work through?</h2>
@@ -227,8 +227,9 @@
                 <p id="model-picker-current" class="model-picker-current" role="status"></p>
                 <label class="model-picker-key"><span data-i18n="web.thinking_intensity">Thinking intensity</span>
                   <span class="model-thinking-field">
-                    <select id="model-thinking" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled><option data-i18n="web.not_adjustable">Not adjustable</option></select>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+                    <output id="model-thinking-value"></output>
+                    <input id="model-thinking" type="range" min="0" max="0" step="1" value="0" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled>
+                    <span id="model-thinking-ticks" class="model-thinking-ticks" aria-hidden="true"></span>
                   </span>
                 </label>
                 <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models" data-i18n-aria-label="web.available_models"></div>
@@ -440,7 +441,7 @@
       <label for="utility-profile" class="settings-row settings-card"><span data-i18n="web.utility_model_profile">Utility model profile</span><select id="utility-profile"><option value="" data-i18n="web.use_primary_model">Use primary model</option></select></label>
       <p class="settings-note" data-i18n="web.cost_guard_naming_waits_five_turns_and_five_minutes_between_successful_attempts_ea">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>
       <p id="utility-settings-error" class="error" role="alert"></p>
-      <div class="settings-actions"><span id="utility-settings-saved" role="status"></span><button id="utility-settings-save" class="primary" type="button" data-i18n="web.save_utility_policy">Save utility policy</button></div>
+      <div class="settings-actions"><button id="utility-settings-save" class="primary" type="button" data-i18n="web.save_utility_policy">Save utility policy</button><span id="utility-settings-saved" role="status"></span></div>
     </section>
 
     <section class="settings-section permission-settings" data-settings-panel="permissions" hidden>
@@ -468,8 +469,8 @@
       </label>
       <p id="settings-error" class="error" role="alert"></p>
       <div class="settings-actions">
-        <span id="settings-saved" role="status"></span>
         <button id="permission-save" class="primary" type="button" data-i18n="web.apply_permission_mode">Apply permission mode</button>
+        <span id="settings-saved" role="status"></span>
       </div>
     </section>
 

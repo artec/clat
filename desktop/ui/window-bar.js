@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   if (window.top !== window || !window.__TAURI__) return;
+  window.__TAURI__.event.listen('desktop-navigate', event => window.dispatchEvent(new CustomEvent('clat:navigate',{detail:event.payload}))).catch(error=>console.error('[CLAT] navigation listener',error));
   const invoke = action => window.__TAURI__.core.invoke('desktop_window', { action });
   const ready = async () => {
     let info = { platform: window.__CLAT_NATIVE_FRAME__ };

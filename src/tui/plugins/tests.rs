@@ -214,3 +214,36 @@ fn plg6_failed_generation_switch_never_offers_previous_market_packages() {
     drop(app);
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn builtin_protection_uses_server_reasons_with_locale_and_legacy_fallback() {
+    let mut dialog = PluginDialog::new();
+    dialog.view = View::Builtins;
+    let reason = UiMessage::new("common.error").arg("detail", "SERVER_REASON_SENTINEL");
+    dialog.builtins = vec![
+        json!({"id":"test.core","name":"Fixture","summary":"Fixture summary","instances":[{"phase":"active","configurable":false,"required_by":[{"service_id":"test.core","reason_presentation":reason}]}]}),
+    ];
+    for locale in [
+        clat_core::client_ports::presentation::Locale::English,
+        clat_core::client_ports::presentation::Locale::Simplified,
+        clat_core::client_ports::presentation::Locale::Traditional,
+    ] {
+        dialog.locale = LocaleContext::new(locale);
+        let text = render::plugin_lines(&dialog, 120)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("SERVER_REASON_SENTINEL"), "{text}");
+    }
+    dialog.builtins[0]["instances"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("required_by");
+    let text = render::plugin_lines(&dialog, 120)
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(dialog.locale.text("extension.required_contract")));
+}

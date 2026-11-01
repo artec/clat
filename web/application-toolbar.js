@@ -2,6 +2,11 @@
 function createApplicationToolbar(shell){
   const bar=el('header','application-toolbar');bar.id='application-toolbar';const navigation=el('nav','application-navigation');
   const back=shellButton('application-back','previous',()=>shellText('back'),()=>context.history.go(-1)),forward=shellButton('application-forward','next',()=>shellText('forward'),()=>context.history.go(1));
+  const modifier=/Mac|iPhone|iPad/.test(navigator.platform||'')?'⌘':'Ctrl+';
+  for(const [button,key,bracket]of [[back,'back','['],[forward,'forward',']']]){
+    CLATI18n.attribute(button,'title',()=>shellText(key)+' ('+modifier+bracket+')');
+    button.setAttribute('aria-keyshortcuts',(/Mac|iPhone|iPad/.test(navigator.platform||'')?'Meta':'Control')+'+'+bracket);
+  }
   const list=navigationIcon(()=>viewText('toggle_list'),'panel',()=>toggleViewList(shell));list.id='project-list-toggle';navigation.append(back,forward,list);
   const location=el('nav','application-location');CLATI18n.attribute(location,'aria-label',()=>viewText('location'));
   const actions=el('nav','application-actions'),menu=el('div','workbench-tools hidden');menu.id='workbench-tools';menu.setAttribute('role','menu');

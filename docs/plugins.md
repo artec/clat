@@ -89,8 +89,8 @@ Model/profile writes do not rewrite this independent file.
 
 Each project resolves a complete plan before any plugin mounts. Hard dependencies
 propagate disablement to dependent optional plugins; soft dependencies do not.
-Disabling an Application-required service or its hard dependency is rejected with
-an actionable error before mount. The existing mount engine still owns ordered
+Disabling a core contract provider or its hard dependency is rejected with
+a localized reason before mount. The existing mount engine still owns ordered
 activation, rollback and reverse cleanup. Mount failures abort with rollback;
 CLAT does not silently pretend a failed feature is available.
 
@@ -104,6 +104,11 @@ The existing workbench snapshot remains a fallback for older Hosts.
 The inventory includes configured-disabled candidates as well as actual mounts.
 Per-project `configurable` reports whether a candidate can currently be disabled;
 `disabled_by` contains the explicitly disabled ids responsible for its absence.
+Each instance also includes `required_by`, sorted by `service_id`, with
+`{service_id, reason_presentation}` for every core contract protecting it through
+hard dependency edges. An empty array means configurable; `configurable` is
+computed from that same result. Web/Desktop/TUI show the reasons and retain a
+generic explanation when connected to an older Host without this field.
 Only active instances contribute tools or commands. Workbench snapshots,
 `workflow.details` and the interaction catalog include `builtin_availability`,
 a plugin-id map of effective `enabled` flags and optional localized `reason`
@@ -252,10 +257,33 @@ failure. Prepared, unstarted suggestions cannot execute after close or keep an
 idle root locked. This does not add another lock protocol or runtime toggle.
 
 The same `builtin_availability` projection drives controls on every frontend;
-unknown startup availability cannot initiate workspace, image or auxiliary generation I/O. Other
-Application contracts remain mandatory today; this is not a declaration that
-they are permanent kernel services. Ephemeral run resources and per-session
-preset trees are not listed.
+unknown startup availability cannot initiate workspace, image or auxiliary generation I/O.
+
+The core boundary is defined by thirteen service contracts, not a plugin-id
+allowlist or a commitment to keep one implementation forever:
+
+| Responsibility | Mandatory service contracts |
+|---|---|
+| Durable state and configuration | Session, Config |
+| Execution and safety | Agent Runtime, Process, Sandbox, Permission, Tool Access, Tool Pipeline |
+| Contribution registries | Tools, Providers, Prompts, Commands |
+| Extension observation | Extension Status (historical ID `core.mcp_status`) |
+
+Sandbox is an explicit root even without the Process dependency edge. Process
+owns run binding, cancellation, process inspection and cleanup; disabling
+`builtin.exec_tools` removes its model-facing tools while preserving those
+responsibilities. Permission checks and durable Plan/Task guards cannot be
+removed by disabling optional tools or instructions. Registries remain available
+when individual native tools, default prompts, commands or model adapters are
+disabled. With no model adapters, configuration and session management remain
+available; model execution reports the missing provider.
+
+Host root leases, project trust and identity, Session projections and workflow
+authority stay in the core coordination layer. Core protection prevents user
+configuration from disabling a required provider; it does not forbid controlled
+Extension Status generation replacement during external package reload. A future
+alternative implementation must satisfy the same contracts and safety checks.
+Ephemeral run resources and per-session preset trees are not listed.
 
 `builtin.task` owns acceptance orchestration and explicitly mounts built-in
 process-domain checker adapters (`text`, `json`, `records`, `command`, version 1).

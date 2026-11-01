@@ -100,3 +100,16 @@ mod tests {
         }
     }
 }
+
+/// Menu accelerators share the renderer's bounded application history.
+pub fn navigate_menu(app: &tauri::AppHandle, id: &str) {
+    use tauri::{Emitter, Manager};
+    let delta = match id {
+        "desktop-back" => -1,
+        "desktop-forward" => 1,
+        _ => return,
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("desktop-navigate", delta);
+    }
+}

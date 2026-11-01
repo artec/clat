@@ -16,6 +16,13 @@ fn strength(preferences: &Value) -> u8 {
         .min(100) as u8
 }
 
+fn transparency_value(preferences: &Value, requested: Option<u8>) -> u64 {
+    requested
+        .map(u64::from)
+        .unwrap_or_else(|| preferences["backgroundTransparency"].as_u64().unwrap_or(0))
+        .min(100)
+}
+
 #[tauri::command]
 pub async fn desktop_background(
     window: tauri::WebviewWindow,
@@ -27,10 +34,7 @@ pub async fn desktop_background(
     crate::commands::guard(&window)?;
     let path = crate::localization::path(window.app_handle())?;
     let preferences = load_ui_preferences(&path)?;
-    let value = transparency
-        .map(u64::from)
-        .unwrap_or_else(|| preferences["backgroundTransparency"].as_u64().unwrap_or(0))
-        .min(80);
+    let value = transparency_value(&preferences, transparency);
     let blur_value = blur_strength
         .map(|v| v.min(100))
         .or_else(|| blur.map(|v| if v { 25 } else { 0 }))
@@ -102,6 +106,20 @@ mod macos;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_background_transparency_is_supported_without_changing_old_preferences() {
+        assert_eq!(transparency_value(&json!({}), Some(100)), 100);
+        assert_eq!(
+            transparency_value(&json!({"backgroundTransparency":80}), None),
+            80
+        );
+        assert_eq!(
+            transparency_value(&json!({"backgroundTransparency":100}), None),
+            100
+        );
+        assert_eq!(transparency_value(&json!({}), None), 0);
+        assert_eq!(transparency_value(&json!({}), Some(255)), 100);
+    }
     #[test]
     fn blur_preference_preserves_legacy_switch_and_bounds_strength() {
         assert_eq!(strength(&json!({})), 25);

@@ -58,14 +58,14 @@ fn hard_dependency_absence_propagates_but_optional_absence_does_not() {
 #[test]
 fn required_contract_protects_only_its_hard_dependency_closure() {
     let catalog = catalog();
-    let error = Selection::resolve(&catalog, &[NEXT], &config(&["source"]))
+    let error = Selection::resolve(&catalog, &requirements(&[NEXT]), &config(&["source"]))
         .err()
         .unwrap();
     assert_eq!(error.key, "extension.required_builtin");
-    let plan = Selection::resolve(&catalog, &[NEXT], &config(&["soft"])).unwrap();
-    assert!(plan.entries[0].protected);
-    assert!(plan.entries[1].protected);
-    assert!(!plan.entries[2].protected);
+    let plan = Selection::resolve(&catalog, &requirements(&[NEXT]), &config(&["soft"])).unwrap();
+    assert!(plan.entries[0].protected());
+    assert!(plan.entries[1].protected());
+    assert!(!plan.entries[2].protected());
 }
 #[test]
 fn misspelled_configuration_and_invalid_catalog_cannot_silently_activate() {
@@ -83,7 +83,7 @@ fn misspelled_configuration_and_invalid_catalog_cannot_silently_activate() {
     assert!(
         Selection::resolve(
             &catalog,
-            &[ServiceId::new("missing.root")],
+            &requirements(&[ServiceId::new("missing.root")]),
             &Configuration::default()
         )
         .is_err(),
@@ -103,4 +103,49 @@ fn default_configuration_preserves_catalog_order_and_all_candidates() {
             .collect::<Vec<_>>(),
         expected
     );
+}
+
+fn requirements(ids: &[ServiceId]) -> Vec<Requirement> {
+    ids.iter()
+        .map(|id| Requirement::new(*id, UiMessage::new("extension.required_contract")))
+        .collect()
+}
+
+#[test]
+fn protection_reports_all_roots_and_never_protects_reverse_or_soft_consumers() {
+    static CONTRIBUTION: PluginDescriptor = PluginDescriptor {
+        id: PluginId::new("contribution"),
+        scope: ScopeKind::TrustedProject,
+        provides: &[],
+        requires: &[SERVICE],
+        optional: &[],
+    };
+    let mut plugins = catalog();
+    plugins.push(Arc::new(Test(&CONTRIBUTION)));
+    let roots = requirements(&[NEXT, SERVICE]);
+    let plan = Selection::resolve(&plugins, &roots, &Configuration::default()).unwrap();
+    let causes = |i: usize| {
+        plan.entries[i]
+            .required_by
+            .iter()
+            .map(|r| r.service_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(causes(0), [NEXT.as_str(), SERVICE.as_str()]);
+    assert_eq!(causes(1), [NEXT.as_str()]);
+    assert!(causes(2).is_empty());
+    assert!(causes(3).is_empty());
+    for id in ["source", "consumer"] {
+        let error = Selection::resolve(&plugins, &roots, &config(&[id]))
+            .err()
+            .unwrap();
+        assert_eq!(error.key, "extension.required_builtin");
+        assert_eq!(
+            error.arg_presentations["reason"],
+            roots[0].reason_presentation
+        );
+    }
+    let plan = Selection::resolve(&plugins, &roots, &config(&["soft", "contribution"])).unwrap();
+    assert!(!plan.entries[2].enabled());
+    assert!(!plan.entries[3].enabled());
 }

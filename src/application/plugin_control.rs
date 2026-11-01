@@ -379,3 +379,6 @@ pub(super) fn missing_builtin(id: &'static str) -> ApplicationError {
 
 #[cfg(test)]
 mod phase5_tests;
+
+#[cfg(test)]
+mod phase6_tests;

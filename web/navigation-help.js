@@ -1,3 +1,6 @@
+let historyNavigation = null;
+function syncHistoryNavigation(){historyNavigation?.sync();}
+
 const pageNotificationSeen = new Set();
 let pageNotificationsEnabled = false;
 
@@ -27,13 +30,7 @@ function installNavigationHelp() {
   project.append(svgIcon('open'));
   for (const name of ['title','aria-label']) CLATI18n.attribute(project,name,()=>CLATI18n.msg('web.open_project_navigation'));
   document.querySelector('.project-heading').append(project); project.addEventListener('click', () => { closeMobileSidebar(); openSettings('projects'); });
-  const latest = el('button', 'ghost back-to-latest hidden', () => (CLATI18n.msg("web.latest_messages",{},"↓ Latest messages"))); latest.id = 'back-to-latest'; latest.type = 'button';
-  document.getElementById('transcript-scroll').after(latest);
-  const viewport = document.getElementById('transcript-scroll');
-  const updateLatest = () => latest.classList.toggle('hidden', nearEnd());
-  viewport.addEventListener('scroll', updateLatest, { passive: true });
-  if (typeof ResizeObserver === 'function') new ResizeObserver(updateLatest).observe(dom.transcript);
-  latest.addEventListener('click', () => { viewport.scrollTop = viewport.scrollHeight; latest.classList.add('hidden'); });
+  historyNavigation = createHistoryNavigation();
   installPageNotifications();
   helpCenter = createHelpCenter();
   trigger.addEventListener('click', () => openHelp());
@@ -62,4 +59,25 @@ function installPageNotifications() {
   const notificationGroup = el('section', 'notification-settings');
   render(); notificationGroup.append(el('h3', '', () => (CLATI18n.msg("web.online_page_notifications", {}, "Online page notifications"))), notifications, status);
   document.querySelector('[data-settings-panel=appearance]').append(notificationGroup);
+}
+
+// Floating history controls share the existing scroll owner and run lifecycle.
+function createHistoryNavigation(){
+  const viewport=dom['transcript-scroll'],latest=el('button','back-to-latest hidden');
+  latest.id='back-to-latest';latest.type='button';
+  const arrow=svgIcon('arrow-down');arrow.classList.add('history-latest-arrow');
+  const dots=el('span','history-running-dots');dots.setAttribute('aria-hidden','true');
+  dots.append(el('i'),el('i'),el('i'));latest.append(arrow,dots);viewport.after(latest);
+  function sync(){
+    const running=Boolean(state.connected&&state.runActive&&!state.switching&&context.isActive());
+    latest.dataset.running=String(running);
+    latest.classList.toggle('hidden',!running&&nearEnd());
+    for(const attr of ['title','aria-label'])CLATI18n.attribute(latest,attr,()=>CLATI18n.msg(running?'history_nav.running_latest':'history_nav.latest'));
+  }
+  latest.onclick=()=>{viewport.scrollTop=viewport.scrollHeight;sync();};
+  viewport.addEventListener('scroll',sync,{passive:true});
+  if(typeof ResizeObserver==='function')new ResizeObserver(sync).observe(dom.transcript);
+  window.addEventListener('clat:workbench-updated',sync);
+  window.addEventListener('clat:activated',sync);
+  sync();return {sync};
 }

@@ -40,3 +40,25 @@ function settingsPresetRow(vendor, presets) {
   controls.append(select, key, apply); element.append(heading, controls);
   return row;
 }
+
+function thinkingLevelLabel(level) {
+  return ['minimal','low','medium','high','xhigh','max'].includes(level)
+    ? CLATI18n.msg('thinking_level.'+level) : level;
+}
+function renderThinkingSlider(current) {
+  const slider=document.getElementById('model-thinking'),output=document.getElementById('model-thinking-value');
+  const ticks=document.getElementById('model-thinking-ticks'),levels=current.thinking_levels||[];
+  slider.dataset.levels=JSON.stringify(levels);slider.dataset.adjustable=String(levels.length>1);
+  slider.max=String(Math.max(0,levels.length-1));
+  slider.value=String(Math.max(0,levels.indexOf(current.thinking_level)));
+  slider.disabled=levels.length<2||state.modelSelectionPending||state.runActive||state.switching||state.compactionActive;
+  ticks.replaceChildren(...levels.map(level=>el('span','',()=>thinkingLevelLabel(level))));
+  function paint(preview) {
+    const level=levels[Number(slider.value)];
+    CLATI18n.bind(output,'textContent',()=>!levels.length?CLATI18n.msg('web.not_adjustable')
+      :!preview&&!current.thinking_level?CLATI18n.msg('web.choose_intensity'):thinkingLevelLabel(level));
+    CLATI18n.attribute(slider,'aria-valuetext',()=>!levels.length?CLATI18n.msg('web.not_adjustable'):thinkingLevelLabel(level));
+    slider.style.setProperty('--thinking-position',((Number(slider.value)/(levels.length-1)||0)*100)+'%');
+  }
+  slider.oninput=()=>paint(true);paint(false);
+}

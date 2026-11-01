@@ -263,7 +263,7 @@ button:disabled { cursor: default; opacity: .45; }
 .msg .marker svg { width: 15px; height: 15px; }
 .msg.user .marker { color: var(--text-soft); }
 .msg .body { min-width: 0; padding-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.msg.user .body { padding: 12px 16px; border-radius: 12px; background: var(--user-surface); font-weight: 400; }
+.msg.user .body { padding: 12px 16px; border-radius: 12px; background: var(--user-surface); font-weight: 300; }
 .app[data-message-layout="bubbles"] .msg.user { display: flex; flex-direction: column; align-items: flex-end; margin-block: 4px 28px; }
 .app[data-message-layout="bubbles"] .msg.user .marker { display: none; }
 .app[data-message-layout="bubbles"] .msg.user .body { max-width: 90%; }
@@ -271,7 +271,7 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.user .body.image-only { display: none; }
 .msg.assistant .body { color: var(--text); }
 .msg.assistant:has(.body:empty):has(.reasoning.hidden) { display: none; }
-.rich-text { font-size: var(--text-size-reading); font-weight: 400; line-height: var(--text-leading); }
+.rich-text { font-size: var(--text-size-reading); font-weight: 300; line-height: var(--text-leading); }
 .rich-text strong, .rich-text b { font-weight: var(--text-weight-emphasis); }
 .msg .rich-text.is-rendered { white-space: normal; }
 .rich-text > :first-child { margin-top: 0; }
@@ -442,11 +442,19 @@ button:disabled { cursor: default; opacity: .45; }
 .model-choice-mark { color: var(--signal); font: 700 12px var(--font-mono); }
 .model-picker-key { display: grid; gap: 5px; margin-top: 12px; color: var(--text-muted); font-size: var(--text-size-ui); }
 .model-picker-key input, .model-picker-key select { min-width: 0; width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface-input); font: inherit; }
-.model-thinking-field { position: relative; display: block; }
-.model-thinking-field > svg { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-muted); stroke-width: 1.65; pointer-events: none; }
-.model-thinking-field #model-thinking { appearance: none; -webkit-appearance: none; min-height: 38px; padding: 8px 36px 8px 12px; border-radius: var(--radius-sm); line-height: 1.5; cursor: pointer; }
-.model-thinking-field #model-thinking:hover:not(:disabled) { border-color: var(--line-strong); }
-.model-thinking-field #model-thinking:disabled { opacity: .5; cursor: default; }
+.model-thinking-field { display:grid;gap:8px; }
+.model-thinking-field output { text-align:center;color:var(--accent);font-weight:500; }
+.model-thinking-field #model-thinking { appearance:none;-webkit-appearance:none;display:block;width:100%;height:30px;min-height:30px;margin:0;padding:0;border:0;background:transparent;cursor:pointer; }
+.model-thinking-field #model-thinking::-webkit-slider-runnable-track { height:8px;border-radius:8px;background:linear-gradient(to right,var(--accent) var(--thinking-position,0%),var(--line-strong) var(--thinking-position,0%)); }
+.model-thinking-field #model-thinking::-webkit-slider-thumb { appearance:none;-webkit-appearance:none;width:22px;height:22px;margin-top:-7px;border:2px solid var(--accent);border-radius:50%;background:var(--text);box-shadow:0 1px 4px #0003; }
+.model-thinking-field #model-thinking::-moz-range-track { height:8px;border-radius:8px;background:var(--line-strong); }
+.model-thinking-field #model-thinking::-moz-range-progress { height:8px;border-radius:8px;background:var(--accent); }
+.model-thinking-field #model-thinking::-moz-range-thumb { width:18px;height:18px;border:2px solid var(--accent);border-radius:50%;background:var(--text); }
+.model-thinking-field #model-thinking:focus-visible { outline:2px solid var(--accent);outline-offset:4px; }
+.model-thinking-field #model-thinking:disabled { opacity:.45;cursor:default; }
+.model-thinking-ticks { display:flex;justify-content:space-between;gap:6px;font-size:var(--text-size-secondary);color:var(--text-muted); }
+.model-thinking-ticks>span { text-align:center; }
+.model-thinking-ticks>span::before { content:'';display:block;width:4px;height:4px;margin:0 auto 5px;border-radius:50%;background:var(--text-muted); }
 .model-picker-error { min-height: 1.4em; margin: 7px 0 0; font-size: var(--text-size-secondary); }
 .model-picker-manage { width: 100%; padding: 8px 9px 2px; color: var(--text-muted); font: var(--text-size-ui) var(--font-mono); text-align: left; }
 .model-picker-manage:hover { color: var(--signal); }

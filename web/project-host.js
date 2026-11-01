@@ -1,3 +1,24 @@
+// One app-wide handler, shared with the native menu; never escape app history.
+function installHistoryShortcuts(navigation) {
+  const navigate = delta => {
+    if (document.querySelector('dialog[open]:not(.shell-surface)')) return;
+    navigation.go(delta);
+  };
+  window.addEventListener('clat:navigate', event => {
+    if (event.detail === -1 || event.detail === 1) navigate(event.detail);
+  });
+  document.addEventListener('keydown', event => {
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey
+      || (mac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)) return;
+    const delta = event.code === 'BracketLeft' ? -1 : event.code === 'BracketRight' ? 1 : 0;
+    if (!delta) return;
+    // macOS native menu owns these accelerators, avoiding a second history step.
+    if (window.__CLAT_NATIVE_FRAME__ === 'macos') return;
+    event.preventDefault(); navigate(delta);
+  });
+}
+
 /* One application document, lazy project views, and shared authenticated directory. */
 function configureScrollbarRendering() {
   const root = document.documentElement;
@@ -80,6 +101,7 @@ function installTransientScrollbars() {
   const template = document.getElementById('project-template');
   let directory = [], refreshPending = null, directoryEpoch = 0, navigation = 0, nativeLocked = false;
   const appHistory = createApplicationHistory();
+  installHistoryShortcuts(appHistory);
   const host = { active: null, open, openConversation, readSessions, refresh, render, changed, history: appHistory,
     navigatePage: route => appHistory.push('#/' + route), navigationToken: () => navigation };
   const validRoute = route => /^(default|[a-f0-9-]{36})$/.test(route);

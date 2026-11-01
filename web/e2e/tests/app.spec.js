@@ -374,10 +374,10 @@ test('model intensity uses host choices and preserves the composer', async ({ pa
   await openWorkbench(page, hostInfo('success'));
   await page.fill('#prompt', 'Keep this draft');
   await page.click('#model-picker-trigger');
-  await expect(page.locator('#model-thinking')).toHaveValue('high', LIVE);
-  await page.selectOption('#model-thinking', 'max');
+  await expect(page.locator('#model-thinking')).toHaveValue('1', LIVE);
+  await page.locator('#model-thinking').press('End');
   await expect(page.locator('#model-thinking')).toBeEnabled(LIVE);
-  await expect(page.locator('#model-thinking')).toHaveValue('max');
+  await expect(page.locator('#model-thinking')).toHaveValue('2');
   await expect(page.locator('#prompt')).toHaveValue('Keep this draft');
   await page.emulateMedia({ colorScheme: 'dark' });
 
@@ -388,7 +388,6 @@ test('unsupported thinking stays legible and details actions preserve drafts', a
   await page.fill('#prompt', 'Do not submit this draft');
   await page.click('#model-picker-trigger');
   await expect(page.locator('#model-thinking')).toBeDisabled();
-  await expect(page.locator('#model-thinking option:checked')).toHaveText('Not adjustable');
   await page.keyboard.press('Escape');
   await openDetails(page);
   await page.click('#inspector-refresh');

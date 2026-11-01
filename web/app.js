@@ -231,6 +231,11 @@ function renderMarkdown(container, source) {
 }
 
 const ICON_PATHS = {
+  brain: ['M12 5a3 3 0 0 0-5.8-1A4 4 0 0 0 3 10a4 4 0 0 0 1 7.5A4 4 0 0 0 12 20V5Z', 'M12 5a3 3 0 0 1 5.8-1A4 4 0 0 1 21 10a4 4 0 0 1-1 7.5A4 4 0 0 1 12 20', 'M7 8c-2 1-2 3 0 4m-1 5c2 0 3-1 3-3m8-6c2 1 2 3 0 4m1 5c-2 0-3-1-3-3'],
+  globe: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M3 12h18M12 3c-5 5-5 13 0 18 5-5 5-13 0-18Z'],
+  loading: ['M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1'],
+  'arrow-down': ['M12 4v16m-7-7 7 7 7-7'],
+  'history-up': ['M12 20V7m-6 6 6-6 6 6M5 3h14'],
   code: ['m8 5-6 7 6 7m8-14 6 7-6 7m-3-16-2 18'],
   document: ['M5 3h14v18H5zM8 8h8M8 12h8M8 16h5'],
   data: ['M8 3H5v6l-2 3 2 3v6h3M16 3h3v6l2 3-2 3v6h-3'],
@@ -1655,7 +1660,7 @@ function addAssistantMessage() {
   const reasoningPreview = el('span', 'reasoning-preview');
   const reasoningRunning = el('span', 'visually-hidden reasoning-running', () => (CLATI18n.msg("web.thinking_in_progress", {}, "Thinking in progress")));
   reasoningSummary.append(
-    svgIcon('trace'), reasoningTitle, reasoningDot, reasoningPreview, reasoningRunning,
+    svgIcon('brain'), reasoningTitle, reasoningDot, reasoningPreview, reasoningRunning,
   );
   const reasoningCopy = el('pre', 'reasoning-copy');
   const reasoningText = document.createTextNode('');
@@ -2004,7 +2009,12 @@ function syncHistoryStatus() {
   }
   show(status);
   status.disabled = state.history.loading;
-  CLATI18n.bind(status, "textContent", () => state.history.loading ? CLATI18n.msg("web.loading_earlier_messages", {}, "Loading earlier messages…") : CLATI18n.msg("web.earlier_messages_available", {}, "Earlier messages available"));
+  status.dataset.loading=String(state.history.loading);
+  status.setAttribute('aria-busy',String(state.history.loading));
+  status.replaceChildren(svgIcon(state.history.loading?'loading':'history-up'));
+  for(const attr of ['title','aria-label'])CLATI18n.attribute(status,attr,()=>state.history.loading
+    ? CLATI18n.msg('web.loading_earlier_messages') : CLATI18n.msg('web.load_earlier'));
+  syncHistoryNavigation();
 }
 
 function viewportAnchor() {
@@ -3045,28 +3055,7 @@ async function openModelPicker({ keyboard = false } = {}) {
 }
 
 function renderModelPicker(view) {
-  const thinking = document.getElementById('model-thinking');
-  thinking.replaceChildren();
-  const levels = view.current.thinking_levels || [];
-  thinking.dataset.adjustable = String(levels.length > 0);
-  for (const level of levels) {
-    const option = el('option', '', () => (level.charAt(0).toUpperCase() + level.slice(1)));
-    option.value = level;
-    thinking.appendChild(option);
-  }
-  if (!levels.length) {
-    const option = el('option', '', () => (CLATI18n.msg("web.not_adjustable", {}, "Not adjustable")));
-    option.value = '';
-    thinking.appendChild(option);
-  } else if (!view.current.thinking_level) {
-    const option = el('option', '', () => (CLATI18n.msg("web.choose_intensity", {}, "Choose intensity")));
-    option.value = '';
-    option.disabled = true;
-    thinking.prepend(option);
-  }
-  thinking.value = view.current.thinking_level || '';
-  thinking.disabled = !levels.length || state.modelSelectionPending || state.runActive
-    || state.switching || state.compactionActive;
+  renderThinkingSlider(view.current);
   CLATI18n.bind(dom['model-picker-current'], "textContent", () => CLATI18n.msg("web.dynamic_current_value", {value1:(view.current.model || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Current · {value1}"));
   dom['model-picker-list'].replaceChildren();
   const presets = (view.presets || []).map((preset) => ({
@@ -3319,11 +3308,12 @@ document.getElementById('inspector-context').addEventListener('click', async (ev
   }
 });
 document.getElementById('model-thinking').addEventListener('change', async (event) => {
-  if (state.modelSelectionPending) return;
+  const value = JSON.parse(event.target.dataset.levels||'[]')[Number(event.target.value)];
+  if (!value || event.target.disabled || state.modelSelectionPending || state.runActive || state.switching || state.compactionActive) return;
   state.modelSelectionPending = true;
   event.target.disabled = true;
   try {
-    await rpc('model.overrides.set', { field: 'thinking_level', state: 'set', value: event.target.value });
+    await rpc('model.overrides.set', { field: 'thinking_level', state: 'set', value });
     await refreshWorkbench();
   } catch (error) { CLATI18n.bind(dom['model-picker-error'], "textContent", () => error.message); }
   finally {

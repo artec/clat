@@ -5,7 +5,7 @@ CLAT's attached TUI and web workbench. The installer contains its own private
 backend: installing a separate `clat` command is optional. The CLI remains a
 single-file installation with no Tauri or user-side Node/Python requirement.
 
-Settings → General & Appearance includes device-wide background transparency (0–80%, default 0%) and frosted glass. On macOS, a second slider adjusts the native WindowServer blur radius: 0% disables blur, and moving right increases it. On Windows, frosted glass uses a switch and the system acrylic material. Left and right side panels share the sidebar palette, while the conversation uses the canvas palette. Rounded panel corners and gutters reveal the outer chrome background, rather than the conversation background. Regional sidebar, canvas and chrome colors remain distinct as transparency changes; enabling a small amount of transparency does not discard the existing palette. Text and controls remain opaque. Changes persist across projects and restarts. Old frosted-glass switches remain compatible (off → 0%, on → 25%). Blur dragging previews the effect; releasing the slider saves it. If the adjustable native API is unavailable, macOS falls back to the system material and a switch. Browser/PWA windows do not offer these native settings. High-contrast mode keeps an opaque background. macOS native transparency and variable blur use private system APIs in the directly distributed Desktop app; they are not an App Store distribution path.
+Settings → General & Appearance includes device-wide background transparency (0–100%, default 0%) and frosted glass. On macOS, a second slider adjusts the native WindowServer blur radius: 0% disables blur, and moving right increases it. On Windows, frosted glass uses a switch and the system acrylic material. Left and right side panels share the sidebar palette, while the conversation uses the canvas palette. Rounded panel corners and gutters reveal the outer chrome background, rather than the conversation background. Regional sidebar, canvas and chrome colors remain distinct as transparency changes; enabling a small amount of transparency does not discard the existing palette. Text and controls remain opaque. Changes persist across projects and restarts. Old frosted-glass switches remain compatible (off → 0%, on → 25%). Blur dragging previews the effect; releasing the slider saves it. If the adjustable native API is unavailable, macOS falls back to the system material and a switch. Browser/PWA windows do not offer these native settings. High-contrast mode keeps an opaque background. macOS native transparency and variable blur use private system APIs in the directly distributed Desktop app; they are not an App Store distribution path.
 
 Scrollbar painting follows the actual native WebView. macOS WKWebView and Linux
 WebKitGTK use custom transparent WebKit tracks, even when they accept the
@@ -15,6 +15,8 @@ All paths share the same activity-driven auto-hide behavior: entering or scrolli
 a scrollable region reveals its thumb, which hides after about 1.2 seconds of
 inactivity. Hovering or dragging a custom thumb keeps it visible. High-contrast
 mode keeps scrollbars visible. Visual appearance and interaction are manually reviewed.
+
+The model picker uses a discrete thinking-intensity slider. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Selection is locked during a run and while saving.
 
 The composer toolbar groups add, permission, plan, context usage, model/thinking,
 pending messages and send/stop controls. Toolbar icons share a centered control
@@ -50,21 +52,27 @@ These visual and interaction details are manually accepted on each platform.
 
 ## Conversation and contextual tools
 
+Toolbar Back/Forward also support Cmd+[ / Cmd+] on macOS and Ctrl+[ / Ctrl+] on Windows/browser workbenches. macOS exposes them in the native View menu. They share the toolbar’s application history boundaries and do not navigate while a modal reader/dialog is open.
+
 The outer window shell does not scroll, including during focus and message
 navigation. The toolbar keeps its full height; lists, messages and tool contents
 scroll inside their own panels.
+
+Reply Copy and message Bookmark use compact icon buttons with localized hover labels and accessible names. Copy briefly shows a checkmark on success; bookmarked messages keep the bookmark highlighted. Bookmark controls appear on hover or keyboard focus and remain visible on touch devices.
+
+History controls use compact circular icons: the top upward-to-line button loads earlier messages, with a spinner during loading. The bottom button jumps to the latest messages; during an active run it stays visible and shows three dots moving in a wave. Hover or keyboard focus reveals the downward arrow. After the run it shows an arrow only when away from the bottom. Both controls retain localized tooltips and accessible names; reduced-motion mode disables animation.
 
 Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening the complete original text in a centered, scrollable reader with a blurred backdrop and Copy full text. Escape, Close or clicking the backdrop dismisses it without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the reader and highlight the match; precise message navigation opens the reader as well. Web and Desktop share this behavior.
 
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.
 The running session has a trailing spinner in the project list. A separate
-current-action label below the live conversation uses a slow text-only spotlight
+current-action label below the live conversation has a rotating progress icon and uses a slow text-only spotlight
 for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
 connection clears the live activity; reduced-motion and forced-color settings
 use static, readable status indicators.
-Known native tools use action icons with a recognizable pencil for edits and a rounded terminal for commands; external tools retain a generic wrench icon and
+Conversation body text uses font weight 300; emphasized text and interface labels retain their separate weights. Thinking uses a compact brain icon; known native web-search and web-fetch actions use a globe. Known native tools use action icons with a recognizable pencil for edits and a rounded terminal for commands; external tools retain a generic wrench icon and
 original identifiers in their details. Once the actual terminal event arrives,
 the process collapses behind the elapsed-time chevron, leaving the last nonempty
 answer visible. User inputs, failures, permission refusals and interruptions

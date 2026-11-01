@@ -9,7 +9,7 @@
 #settings-dialog .settings-nav-group:first-child .settings-group { margin-top:10px; }
 #settings-dialog .settings-nav-item { position:relative; margin:3px 0; }
 #settings-dialog .settings-nav-item > svg { position:absolute; inset-inline-start:13px; top:50%; transform:translateY(-50%); width:17px; height:17px; color:var(--text-muted); pointer-events:none; }
-#settings-dialog .settings-nav-item > button { display:block; width:100%; min-height:36px; margin:0; padding:8px 12px 8px 40px; border:0; border-radius:8px; background:transparent; color:var(--text-soft); text-align:start; font:400 13px/1.5 var(--font-ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#settings-dialog .settings-nav-item > button { display:block; width:100%; min-height:36px; margin:0; padding:8px 12px 8px 40px; border:0; border-radius:8px; background:transparent; color:var(--text-soft); text-align:start; font:400 var(--text-size-ui)/1.5 var(--font-ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #settings-dialog .settings-nav-item > button:hover { background:var(--ink-3); color:var(--text); }
 #settings-dialog .settings-nav-item > button[aria-current=page] { background:var(--surface-input); color:var(--text); box-shadow:none; }
 #settings-dialog .settings-nav-item:has([aria-current=page]) > svg { color:var(--text); }
@@ -31,7 +31,7 @@
 #settings-dialog .settings-row-copy > :is(strong,small) { display:block; }
 #settings-dialog .settings-row-copy strong, #settings-dialog strong.settings-row-copy { font-weight:500; }
 #settings-dialog .settings-row-copy small { margin-top:4px; color:var(--text-muted); font-size:12px; line-height:1.65; }
-#settings-dialog .settings-content :is(input:not([type=radio]):not([type=checkbox]),select,textarea) { min-width:0; min-height:32px; padding:6px 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); color:var(--text); font:400 13px/1.5 var(--font-ui); }
+#settings-dialog .settings-content :is(input:not([type=radio]):not([type=checkbox]),select,textarea) { min-width:0; min-height:32px; padding:6px 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); color:var(--text); font:400 var(--text-size-ui)/1.5 var(--font-ui); }
 #settings-dialog .settings-row > :is(input:not([type=checkbox]),select,.settings-language-control) { flex:none; width:min(250px,45%); }
 #settings-dialog .settings-row > input[type=number] { width:100px; text-align:end; }
 #settings-dialog .settings-language-control > label { display:none; }
@@ -81,8 +81,8 @@
 #settings-dialog .settings-action-bar { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-top:16px; }
 #settings-dialog .settings-group-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; }
 #settings-dialog .settings-group-heading > h3 { margin:0; font:600 13px/1.5 var(--font-ui); }
-#settings-dialog .settings-actions { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:12px; margin-top:22px; padding-top:0; border:0; }
-#settings-dialog .settings-actions > span { flex:1; font-size:12px; }
+#settings-dialog .settings-actions { display:flex; justify-content:flex-start; align-items:center; flex-wrap:wrap; gap:12px; margin-top:22px; padding-top:0; border:0; }
+#settings-dialog .settings-actions > span { min-width:0; font-size:12px; }
 #settings-dialog .utility-options { display:block; margin-bottom:18px; }
 #settings-dialog .utility-options label { display:flex; align-items:center; gap:24px; margin:0; padding:18px 20px; border:0; border-bottom:1px solid var(--line); border-radius:0; background:transparent; }
 #settings-dialog .utility-options label:last-child { border-bottom:0; }

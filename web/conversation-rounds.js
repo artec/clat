@@ -6,7 +6,7 @@ function roundDuration(milliseconds){
   return roundText('duration',{minutes,seconds:seconds%60});
 }
 function toolPresentationIcon(name){
-  const icons={run_command:'terminal',exec_command:'terminal',write_stdin:'terminal',read_file:'file',list_files:'folder',search:'search',web_search:'search',web_search_prime:'search',web_fetch:'file',edit_file:'edit',write_file:'edit',apply_patch:'edit',view_image:'file',update_plan:'plan',exit_plan_mode:'plan'};
+  const icons={run_command:'terminal',exec_command:'terminal',write_stdin:'terminal',read_file:'file',list_files:'folder',search:'search',web_search:'globe',web_search_prime:'globe',web_fetch:'globe',edit_file:'edit',write_file:'edit',apply_patch:'edit',view_image:'file',update_plan:'plan',exit_plan_mode:'plan'};
   return icons[name]||'tool'; // External identifiers never imply an action.
 }
 function createConversationRounds(){
@@ -133,14 +133,17 @@ async function refreshCompactionDisclosure(){
 /* One live status label, independent of recorded reasoning and message bodies. */
 function createRunActivity(){
   let element=null,label=null,signature='',waiting=null;
-  function hide(){element?.remove();}
+  function hide(){element?.remove();syncHistoryNavigation();}
   function clear(){hide();label=null;signature='';waiting=null;}
   function sync(){
+    syncHistoryNavigation();
     if(!state.connected||!state.runActive||state.switching||!context.isActive()){hide();return;}
     if(!element){
       element=el('div','run-activity');element.setAttribute('role','status');
-      element.append(svgIcon('activity-log'),el('span','run-activity-label'));
+      element.append(svgIcon('loading'),el('span','run-activity-label'));
+      element.firstChild.classList.add('run-loading');
     }
+    element.dataset.waiting=String(waiting!==null);
     if(!label)label=CLATI18n.msg('web.running');
     if(element.parentNode!==dom.transcript||element.nextSibling)dom.transcript.append(element);
     const next=JSON.stringify(label);

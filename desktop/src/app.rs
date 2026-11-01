@@ -292,6 +292,7 @@ pub fn run() {
             crate::background::desktop_background
         ])
         .on_menu_event(|app, event| {
+            crate::window_frame::navigate_menu(app, event.id().as_ref());
             if matches!(
                 event.id().as_ref(),
                 "desktop-about" | "desktop-check-update"

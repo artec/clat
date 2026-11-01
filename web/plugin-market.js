@@ -90,11 +90,12 @@ function builtinPluginCards(rows){
     card.append(el('h3','',()=>extensionLabel(plugin,'name')),el('p','market-summary',()=>extensionLabel(plugin,'summary')),
       el('p','settings-note',()=>CLATI18n.msg('extension.bundled')+' · '+plugin.version),
       el('p','',()=>CLATI18n.msg('extension.active_instances',{count:plugin.instances.filter(row=>row.phase==='active').length})),
-      el('p','settings-note',()=>CLATI18n.msg('extension.static_configuration')));
+      el('p','settings-note',()=>CLATI18n.msg(plugin.instances.some(row=>row.configurable!==false)?'extension.static_configuration':'extension.required_contract')));
     for(const instance of plugin.instances){
       const section=el('section'),details=el('details');
       section.append(el('h4','',()=>instance.project),el('p','settings-note',()=>CLATI18n.msg(instance.phase==='active'?'extension.active':'web.disabled')));
       section.append(el('p','settings-note',()=>CLATI18n.msg(instance.configurable?'extension.static_configuration':'extension.required_contract')));
+      if(instance.configurable===false)for(const root of instance.required_by||[])section.append(el('p','settings-note',()=>CLATI18n.present(root.reason_presentation)));
       details.append(el('summary','',()=>CLATI18n.msg('extension.technical')),
         el('pre','',()=>JSON.stringify({id:plugin.id,version:plugin.version,runtime:plugin.runtime,scope:plugin.scope,...instance},null,2)));
       section.append(details);card.append(section);

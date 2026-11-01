@@ -11,12 +11,29 @@ pub(crate) struct Configuration {
     pub disabled: BTreeSet<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct Requirement {
+    pub service_id: &'static str,
+    pub reason_presentation: UiMessage,
+}
+impl Requirement {
+    pub(crate) fn new(service: ServiceId, reason_presentation: UiMessage) -> Self {
+        Self {
+            service_id: service.as_str(),
+            reason_presentation,
+        }
+    }
+}
+
 pub(crate) struct Entry {
     pub descriptor: &'static PluginDescriptor,
-    pub protected: bool,
+    pub required_by: Vec<Requirement>,
     pub disabled_by: BTreeSet<PluginId>,
 }
 impl Entry {
+    pub(crate) fn protected(&self) -> bool {
+        !self.required_by.is_empty()
+    }
     pub(crate) fn enabled(&self) -> bool {
         self.disabled_by.is_empty()
     }
@@ -28,7 +45,7 @@ pub(crate) struct Selection {
 impl Selection {
     pub(crate) fn resolve(
         catalog: &[Arc<dyn Plugin>],
-        required: &[ServiceId],
+        required: &[Requirement],
         config: &Configuration,
     ) -> Result<Self, UiMessage> {
         // Reuse the kernel's complete catalog validation before filtering can hide defects.
@@ -38,8 +55,8 @@ impl Selection {
         let providers = providers(catalog);
         let missing: Vec<_> = required
             .iter()
-            .filter(|id| !providers.contains_key(id))
-            .map(|id| id.as_str())
+            .filter(|id| !providers.contains_key(&ServiceId::new(id.service_id)))
+            .map(|id| id.service_id)
             .collect();
         if !missing.is_empty() {
             return Err(
@@ -49,15 +66,20 @@ impl Selection {
         let protected = protection(catalog, &providers, required);
         let known: BTreeSet<_> = catalog.iter().map(|p| p.descriptor().id.as_str()).collect();
         for id in &config.disabled {
-            let key = if !known.contains(id.as_str()) {
-                Some("extension.unknown_builtin")
-            } else if protected.iter().any(|key| key.as_str() == id) {
-                Some("extension.required_builtin")
-            } else {
-                None
-            };
-            if let Some(key) = key {
-                return Err(UiMessage::new(key).arg("id", id.clone()));
+            if !known.contains(id.as_str()) {
+                return Err(UiMessage::new("extension.unknown_builtin").arg("id", id.clone()));
+            }
+            if let Some(roots) = protected
+                .iter()
+                .find_map(|(owner, roots)| (owner.as_str() == id).then_some(roots))
+            {
+                let reason = required
+                    .iter()
+                    .find(|r| roots.contains(&ServiceId::new(r.service_id)))
+                    .expect("protection originates from a required contract");
+                return Err(UiMessage::new("extension.required_builtin")
+                    .arg("id", id.clone())
+                    .arg_message("reason", reason.reason_presentation.clone()));
             }
         }
         let mut entries: Vec<_> = catalog
@@ -66,7 +88,19 @@ impl Selection {
                 let descriptor = plugin.descriptor();
                 Entry {
                     descriptor,
-                    protected: protected.contains(&descriptor.id),
+                    required_by: {
+                        let mut roots: Vec<_> = required
+                            .iter()
+                            .filter(|root| {
+                                protected.get(&descriptor.id).is_some_and(|ids| {
+                                    ids.contains(&ServiceId::new(root.service_id))
+                                })
+                            })
+                            .cloned()
+                            .collect();
+                        roots.sort_by_key(|root| root.service_id);
+                        roots
+                    },
                     disabled_by: if config.disabled.contains(descriptor.id.as_str()) {
                         BTreeSet::from([descriptor.id])
                     } else {
@@ -104,26 +138,33 @@ fn providers(catalog: &[Arc<dyn Plugin>]) -> BTreeMap<ServiceId, PluginId> {
 fn protection(
     catalog: &[Arc<dyn Plugin>],
     providers: &BTreeMap<ServiceId, PluginId>,
-    required: &[ServiceId],
-) -> BTreeSet<PluginId> {
-    let mut protected: BTreeSet<_> = required
-        .iter()
-        .filter_map(|id| providers.get(id).copied())
-        .collect();
+    required: &[Requirement],
+) -> BTreeMap<PluginId, BTreeSet<ServiceId>> {
+    let mut protected: BTreeMap<PluginId, BTreeSet<ServiceId>> = BTreeMap::new();
+    for requirement in required {
+        let service = ServiceId::new(requirement.service_id);
+        if let Some(owner) = providers.get(&service) {
+            protected.entry(*owner).or_default().insert(service);
+        }
+    }
     loop {
-        let previous = protected.len();
+        let previous = protected.clone();
         for plugin in catalog {
             let descriptor = plugin.descriptor();
-            if protected.contains(&descriptor.id) {
-                protected.extend(
-                    descriptor
-                        .requires
-                        .iter()
-                        .filter_map(|id| providers.get(id)),
-                );
+            if let Some(roots) = previous.get(&descriptor.id) {
+                for owner in descriptor
+                    .requires
+                    .iter()
+                    .filter_map(|service| providers.get(service))
+                {
+                    protected
+                        .entry(*owner)
+                        .or_default()
+                        .extend(roots.iter().copied());
+                }
             }
         }
-        if protected.len() == previous {
+        if protected == previous {
             return protected;
         }
     }

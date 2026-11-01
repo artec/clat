@@ -243,7 +243,8 @@ cleanup. Callers must express an optional capability as optional rather than
 requiring its plugin and hoping a configuration switch makes that safe.
 
 `plugin/selection.rs` validates the full catalog, protects the transitive hard
-dependency closure of `project_service_contract`, and propagates explicitly
+dependency closure of the thirteen contracts declared in
+`application/composition/core_contract.rs`, and propagates explicitly
 disabled candidates through hard dependency edges only. It produces immutable
 activation intent before mount. The existing manager then enforces typed service
 registration, dependency order, failure rollback and inverse cleanup. Optional
@@ -261,9 +262,26 @@ absent rows expose no tools, commands or fabricated service instance.
 Web, history query, language intelligence and provider monitoring are genuinely
 optional ports. Disabled read/control APIs return a typed unavailable result;
 monitor fields are absent and no monitor worker starts. Model notification
-subscriptions remain independent of monitor ownership. Some Application feature
-contracts are still mandatory; their protected status documents coupling that
-remains to be removed, rather than redefining every feature as kernel.
+subscriptions remain independent of monitor ownership.
+
+The mandatory contract table owns each service ID and its localized responsibility:
+Session and Config preserve durable state; Agent Runtime, Process, Sandbox,
+Permission, Tool Access and Tool Pipeline preserve execution safety; Tool,
+Provider, Prompt and Command registries own contributions; Extension Status owns
+observations under the historical `core.mcp_status` ID. Sandbox is explicit rather
+than protected only through Process. These contracts protect the current providers,
+not a second hardcoded list of plugin implementations.
+
+Selection propagates all root causes along hard dependency edges and records
+sorted `required_by` descriptors. Inventory `configurable` derives from their
+absence, so disabling a specific tool, command, prompt or model adapter does not
+remove its registry or safety infrastructure. Core disablement errors carry a
+localized cause before mount. Frontends present the same descriptors and fall
+back for old Hosts; no new activation/configuration API is introduced. Internal
+Extension Status remounts retain their established close/generation rules.
+Host leases, trust/identity, Session projections and workflow authority remain
+core-owned; a core service implementation may change only while preserving its
+contract. Optional absence never weakens durable Plan/Task execution guards.
 
 Goal, Task, Jobs and Scheduler execution services are optional capability ports.
 `application/execution_features.rs` concentrates absent Run hooks; no empty

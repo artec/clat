@@ -129,6 +129,27 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<()> {
             &Item::select_all(app, Some(l.text("desktop.menu_select")))?,
         ],
     )?;
+    let view = Submenu::with_items(
+        app,
+        l.text("desktop.menu_view"),
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "desktop-back",
+                l.text("desktop.menu_back"),
+                true,
+                Some("CmdOrCtrl+["),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "desktop-forward",
+                l.text("desktop.menu_forward"),
+                true,
+                Some("CmdOrCtrl+]"),
+            )?,
+        ],
+    )?;
     let window = Submenu::with_items(
         app,
         l.text("desktop.menu_window"),
@@ -139,6 +160,9 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<()> {
             &Item::close_window(app, Some(l.text("desktop.menu_close")))?,
         ],
     )?;
-    app.set_menu(Menu::with_items(app, &[&application, &edit, &window])?)?;
+    app.set_menu(Menu::with_items(
+        app,
+        &[&application, &edit, &view, &window],
+    )?)?;
     Ok(())
 }

@@ -44,10 +44,15 @@ function createConversationReader(parent, reference, {trusted = false, editable 
     node.append(el('small', '', () => pageText(message.role)));
     const body = el('div', 'body rich-text'); renderMarkdown(body, message.text); node.append(body);
     const actions = el('div', 'reader-actions');
-    actions.append(pageAction('copy', () => void navigator.clipboard.writeText(message.text)), pageAction('bookmark', async () => {
+    const bookmark=navigationIcon(()=>pageText('bookmark'),'bookmark',async()=>{
       try{await rpc('library.bookmark.add', {reference: message.reference});
-      CLATI18n.bind(status, 'textContent', () => pageText('bookmarked'));}catch(error){status.textContent=error.message;}
-    }));
+        bookmark.setAttribute('aria-pressed','true');
+        for(const attr of ['title','aria-label'])CLATI18n.attribute(bookmark,attr,()=>pageText('bookmarked'));
+        CLATI18n.bind(status,'textContent',()=>pageText('bookmarked'));
+      }catch(error){status.textContent=error.message;}
+    });
+    bookmark.dataset.action='bookmark';bookmark.setAttribute('aria-pressed','false');bookmark.classList.add('message-action-icon');
+    actions.append(copyTextButton(pageText('copy'),()=>message.text,true),bookmark);
     if(message.reference.project!==state.workbench?.project?.root){actions.lastChild.remove();actions.append(el('small','settings-note',()=>pageText('other_project')));}
     for(const attachment of message.attachments || []) actions.append(pageAction('view_attachment',()=>showHistoricalAttachment(message.reference,attachment,trusted)));
     node.append(actions); messageTime(node,message.time);

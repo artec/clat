@@ -1363,3 +1363,5 @@ states. Fixtures preserve existing receipt and storage validators. Frontend
 section-loading tests assert RPC absence and failure isolation, without pinning
 wording or layout. These are local checks; native Desktop, Windows and release
 acceptance remain separate owner-controlled verification.
+
+Thinking-intensity UI migration: the existing model-override scenario now selects the last discrete slider stop with End instead of selecting an option. It retains the exact RPC value, selected index and unsupported-model disabled-state coverage; the obsolete option-copy assertion is removed. UI automation is not run during this development change.

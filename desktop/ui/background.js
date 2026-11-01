@@ -37,7 +37,7 @@
     };
     const controls = document.createElement('span'); controls.className = 'desktop-background-control';
     const slider = document.createElement('input'), output = document.createElement('output');
-    slider.type = 'range'; slider.min = '0'; slider.max = '80'; slider.step = '1'; slider.value = saved.transparency;
+    slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.step = '1'; slider.value = saved.transparency;
     CLATI18n.bind(slider, 'ariaLabel', () => t('background_transparency'));
     output.textContent = slider.value + '%'; controls.append(slider, output);
     row('background_transparency', 'background_transparency_hint', controls);

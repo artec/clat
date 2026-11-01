@@ -311,21 +311,37 @@ function confirmAttachmentSelection() {
 }
 
 async function copyMessageText(button, text) {
+  if (button.disabled) return;
+  const iconOnly = button.classList.contains('message-action-icon');
   const label = button.textContent;
+  button.disabled = true;
+  let feedback;
   try {
-    if (!navigator.clipboard) throw CLATI18n.error(CLATI18n.msg("web.clipboard_unavailable", {}, "Clipboard unavailable"));
+    if (!navigator.clipboard) throw CLATI18n.error(CLATI18n.msg('web.clipboard_unavailable'));
     await navigator.clipboard.writeText(text);
-    CLATI18n.bind(button, "textContent", () => CLATI18n.msg("web.copied", {}, "Copied"));
-  } catch (_) {
-    CLATI18n.bind(button, "textContent", () => CLATI18n.msg("web.copy_failed", {}, "Copy failed"));
-  }
-  setTimeout(() => { CLATI18n.bind(button, "textContent", () => label); }, 1600);
+    feedback = 'web.copied';
+    if (iconOnly) button.replaceChildren(svgIcon('check'));
+  } catch (_) { feedback = 'web.copy_failed'; }
+  if (iconOnly) {
+    CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg(feedback));
+    CLATI18n.attribute(button,'title',()=>CLATI18n.msg(feedback));
+    const status=el('span','visually-hidden',()=>CLATI18n.msg(feedback));status.setAttribute('role','status');button.append(status);
+  } else CLATI18n.bind(button,'textContent',()=>CLATI18n.msg(feedback));
+  setTimeout(() => {
+    button.disabled = false;
+    if(iconOnly){button.replaceChildren(svgIcon('copy'));button.restoreCopyLabel();}
+    else CLATI18n.bind(button,'textContent',()=>label);
+  }, 1600);
 }
 
-function copyTextButton(label, source) {
-  const button = el('button', 'text-action', () => (label));
+function copyTextButton(label, source, iconOnly = false) {
+  const button = iconOnly ? el('button','message-action-icon icon-button') : el('button','text-action',()=>label);
   button.type = 'button';
-  CLATI18n.attribute(button,'aria-label',()=>label);
+  button.restoreCopyLabel=()=>{
+    CLATI18n.attribute(button,'aria-label',()=>label);
+    CLATI18n.attribute(button,'title',()=>label);
+  };
+  button.restoreCopyLabel();if(iconOnly)button.append(svgIcon('copy'));
   button.addEventListener('click', () => { void copyMessageText(button, source()); });
   return button;
 }
@@ -334,7 +350,7 @@ function addReplyActions(node, source) {
   if (node.querySelector('[data-action="copy-reply"]')) return;
   let actions = node.querySelector(':scope > .message-actions');
   if (!actions) { actions = el('div', 'message-actions'); node.appendChild(actions); }
-  const copy = copyTextButton(CLATI18n.msg("web.copy_reply", {}, "Copy reply"), source);
+  const copy = copyTextButton(CLATI18n.msg('web.copy_reply'), source, true);
   copy.dataset.action = 'copy-reply'; actions.prepend(copy);
 }
 

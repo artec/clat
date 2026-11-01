@@ -90,10 +90,11 @@ function decorateConversationBookmarks() {
   for(const node of dom.transcript.querySelectorAll('.msg[data-seq]')){
     if(node.querySelector('[data-action=bookmark]'))continue;
     const reference={project:state.workbench.project.root,session:state.sessionId,seq:Number(node.dataset.seq)};
-    const button=pageAction('bookmark',async()=>{
-      try{await rpc('library.bookmark.add',{reference});button.setAttribute('aria-pressed','true');CLATI18n.bind(button,'textContent',()=>pageText('bookmarked'));}
+    let bookmarked=false;
+    const button=navigationIcon(()=>pageText(bookmarked?'bookmarked':'bookmark'),'bookmark',async()=>{
+      try{await rpc('library.bookmark.add',{reference});bookmarked=true;button.setAttribute('aria-pressed','true');for(const attr of ['title','aria-label'])CLATI18n.attribute(button,attr,()=>pageText('bookmarked'));}
       catch(error){updateRunState(error.message);}
-    });button.classList.add('message-bookmark');button.setAttribute('aria-pressed','false');
+    });button.dataset.action='bookmark';button.classList.add('message-bookmark','message-action-icon');button.setAttribute('aria-pressed','false');
     let actions=node.querySelector('.message-actions');
     if(!actions){actions=el('div','message-actions');node.append(actions);}actions.insertBefore(button,actions.querySelector('.message-time'));
   }
