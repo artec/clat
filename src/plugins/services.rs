@@ -298,6 +298,16 @@ pub(super) struct ProviderRegistryState {
 }
 
 impl ProviderRegistry {
+    pub(crate) fn owners(&self) -> Vec<crate::plugin::PluginId> {
+        self.inner
+            .read()
+            .expect("provider registry")
+            .factories
+            .values()
+            .map(|(owner, _)| *owner)
+            .collect()
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             inner: std::sync::RwLock::new(ProviderRegistryState {

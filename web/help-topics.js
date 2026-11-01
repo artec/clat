@@ -12,7 +12,7 @@ const HELP_TOPICS = [
   {"id":"resources","group":"pages","icon":"folder","target":"resources-dialog","related":["files","history"]},
   {"id":"tasks","group":"pages","icon":"schedule","target":"jobs-dialog","related":["processes","workflow"]},
   {"id":"history","group":"pages","icon":"history","target":"history-dialog","related":["chat","resources","operations"]},
-  {"id":"extensions","group":"pages","icon":"wasm","target":"market-dialog","related":["permissions","network"]},
+  {"id":"extensions","group":"pages","icon":"extensions","target":"market-dialog","related":["permissions","network"]},
   {"id":"appearance","group":"settings","icon":"settings","target":"settings:appearance","related":["terminal_font","chat"]},
   {"id":"terminal_font","group":"settings","icon":"terminal","target":"settings:terminal","related":["terminal","appearance"]},
   {"id":"models","group":"settings","icon":"wasm","target":"settings:models","related":["utility","context","network"]},

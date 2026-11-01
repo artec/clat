@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 /// Closing a frontend drops its handle; idle projects can be unmounted without
 /// dropping this host's storage-root lease.
 pub struct HostApplication {
+    pub(super) builtin_config: super::builtin_config::BuiltinConfig,
     pub(super) startup_availability: super::BuiltinAvailabilityMap,
     pub(super) projects: BTreeMap<PathBuf, Arc<Mutex<TrustedProjectApplication>>>,
     pub(super) storage: Arc<HostStorage>,
@@ -21,12 +22,14 @@ pub struct HostApplication {
 impl HostApplication {
     /// Adopt the bootstrap project's lease and initialized control plane.
     pub fn new(application: TrustedProjectApplication) -> Self {
+        let builtin_config = super::builtin_config::BuiltinConfig::new(&application);
         let startup_availability = application.builtin_availability();
         let storage = Arc::clone(&application.host_storage);
         let key = application.canonical_root.clone();
         let projects = BTreeMap::from([(key, Arc::new(Mutex::new(application)))]);
         Self {
             projects,
+            builtin_config,
             startup_availability,
             storage,
             plugin_reviews: BTreeMap::new(),

@@ -157,3 +157,7 @@ fn register_factory(
     });
     Ok(())
 }
+
+pub(crate) fn is_model_adapter(id: PluginId) -> bool {
+    matches!(id, RESPONSES_ID | COMPATIBLE_ID)
+}

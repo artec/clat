@@ -44,6 +44,7 @@ pub use schedules::*;
 mod web;
 pub use history::*;
 pub use web::{FetchProvider, WebSettingsEdit, WebSettingsView};
+mod builtin_config;
 mod capabilities;
 mod changes;
 mod compaction;

@@ -42,9 +42,13 @@ contracts have an interoperable external ABI.
 The **Built-in** view in Extensions exposes the static plugins actually mounted
 in this Host's trusted projects. Names and responsibilities follow the current
 interface language. Each entry shows the bundled CLAT version and project
-instances; technical details retain the original plugin id, scope, provided,
-required and optional service ids, and the tools and commands each instance
-currently owns. A mounted adapter does not imply that its external provider,
+instances. Technical details present status, scope, configurability, dependencies
+and owned capabilities in a readable table, using localized plugin and action
+names. The expandable **Original JSON** retains the original plugin id, service
+ids, tools, commands and other instance fields. **Copy**, beside **Original JSON**, copies that original
+runtime information for troubleshooting; it is not an editable
+`builtin-plugins.json` configuration and does not change settings.
+A mounted adapter does not imply that its external provider,
 account or language server is ready. Closed projects disappear on refresh.
 
 `builtin.development` owns the human editor, Git and persistent-terminal service.
@@ -62,9 +66,54 @@ project inventory.
 
 Built-ins are updated with the CLAT binary. Their package-store actions remain
 read-only: update, rollback and uninstall apply to external packages. Static
-composition is configured while CLAT is stopped and takes effect on Host restart.
+composition can be saved through the Built-in view while CLAT is running and takes effect only on a complete Host restart. Manual file editing still requires stopping CLAT first.
 The standalone `clat plugin list` command continues to list installed external
 packages without mounting a project.
+
+### Editing built-in startup configuration
+
+The settings button at the far right of the Extensions toolbar opens **Built-in
+startup configuration**, a batch draft shared across this Host's projects. The
+same toolbar entry opens the editor on narrow screens. The editor appears only at
+this destination; individual plugin details show that plugin's information.
+Expand **Choose enabled features**, change
+the checkboxes, then **Preview changes**.
+The preview distinguishes direct changes from dependency effects. Core features
+remain protected by their service contracts. Dependencies are not silently enabled:
+a configured-on feature may remain unavailable until you explicitly enable its
+required dependencies. **Save for next startup** saves the complete explicit
+selection; **Discard changes** restores the saved selection.
+
+The editor distinguishes current effective state, saved next-start state and
+unsaved choices. Saving never stops a run or changes the running composition,
+even for projects opened afterward or external packages reloaded in the same Host.
+A pending-restart message clears when the saved configuration matches the current
+startup selection. To apply a different selection, stop every client and the Host
+using that storage root, then start CLAT again. Closing a Desktop window or
+refreshing a browser alone does not restart the shared Host.
+
+Unsaved choices stay in the client while navigating the same Host. Leaving offers
+keep, discard or return to editing. Reconnecting or changing Host instances revokes
+preview eligibility; refresh and review the retained draft before saving. A
+configuration conflict preserves the draft and requires a new preview. If a save
+fails or its acknowledgement is lost, read back the configuration to verify it;
+CLAT does not automatically retry or overwrite another client's changes. Drafts
+are not persisted across client process exits or browser reloads.
+
+TUI uses Space to toggle, `p` to preview, `s` to save, `d` to discard and `a` to
+refresh/review. Leaving a dirty draft offers `k` to keep it, `d` to discard or
+`b`/Esc to return. Hosts without the configuration methods keep the read-only
+inventory and manual-edit instructions. Configuration errors do not prevent
+reading the remaining extension inventory.
+
+The Host-level methods `plugin.builtin.get`, `plugin.builtin.preview` and
+`plugin.builtin.set` operate independently of external package management.
+Preview/set take `instance_id`, `revision` and the complete `disabled` array;
+set also takes the returned `preview_id`. The Host validates the same descriptor
+graph and core roots used at startup, then checks the revision again before an
+atomic private-file publication. Unknown fields/IDs, protected features and stale
+previews are rejected. The file format remains version 1. These methods do not
+alter `plugin.list`, current `builtin_availability`, permissions or durable facts.
 
 ### Static composition and absence contracts
 

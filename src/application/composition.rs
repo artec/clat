@@ -198,6 +198,14 @@ impl TrustedProjectComposition {
         required(manager, MCP_STATUS_SERVICE)
     }
 
+    pub(super) fn builtin_graph(&self) -> Vec<&'static crate::plugin::PluginDescriptor> {
+        self.selection
+            .entries
+            .iter()
+            .map(|entry| entry.descriptor)
+            .collect()
+    }
+
     pub(super) fn mount(
         mut input: CompositionInput,
     ) -> Result<(Self, ProjectPorts), ApplicationError> {
@@ -591,7 +599,7 @@ fn project_runtime_catalog(
 
 mod core_contract;
 
-fn project_service_contract() -> Vec<crate::plugin::selection::Requirement> {
+pub(super) fn project_service_contract() -> Vec<crate::plugin::selection::Requirement> {
     core_contract::requirements()
 }
 

@@ -2,7 +2,9 @@
 use super::*;
 use crate::host::PluginReviewTicket;
 use serde_json::Value;
+mod builtin;
 mod input;
+use builtin::BuiltinDraft;
 mod render;
 #[cfg(all(test, feature = "runtime-tests"))]
 mod style_tests;
@@ -12,6 +14,7 @@ mod transport;
 
 #[derive(Default)]
 pub(super) struct PluginUi {
+    builtin: BuiltinDraft,
     pub(super) review_terminal_area: Option<Rect>,
     pub(super) dialog: Option<PluginDialog>,
     pub(super) request_serial: u64,
@@ -26,9 +29,11 @@ enum View {
     Review,
     Config,
     Remove,
+    BuiltinLeave,
 }
 
 pub(super) struct PluginDialog {
+    builtin: BuiltinDraft,
     locale: LocaleContext,
     view: View,
     installed: Vec<Value>,
@@ -56,6 +61,7 @@ pub(super) struct PluginDialog {
 impl PluginDialog {
     fn new() -> Self {
         Self {
+            builtin: BuiltinDraft::default(),
             locale: LocaleContext::default(),
             view: View::Installed,
             installed: vec![],
@@ -163,6 +169,7 @@ pub(super) enum PluginReply {
     Market(Result<Value, String>),
     Review(Result<PluginReviewTicket, String>),
     Mutation(Result<Value, String>),
+    Builtin(&'static str, Result<Value, String>),
 }
 
 impl App {
@@ -172,7 +179,11 @@ impl App {
             return;
         }
         self.close_plugin_dialog();
-        self.plugins.dialog = Some(PluginDialog::new());
+        let mut dialog = PluginDialog::new();
+        dialog.builtin = self.plugins.builtin.clone();
+        dialog.builtin.preview = None;
+        dialog.builtin.review = true;
+        self.plugins.dialog = Some(dialog);
         self.request_plugin_list(false);
     }
     pub(super) fn plugin_repaint_deadline(&self) -> Option<Instant> {
@@ -183,7 +194,10 @@ impl App {
             .map(|at| at.max(Instant::now() + Duration::from_millis(1)))
     }
     pub(super) fn close_plugin_dialog(&mut self) {
-        self.plugins.dialog = None;
+        if let Some(dialog) = self.plugins.dialog.take() {
+            self.plugins.builtin = dialog.builtin;
+            self.plugins.builtin.preview = None;
+        }
     }
 }
 

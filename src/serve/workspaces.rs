@@ -18,6 +18,9 @@ mod organization;
 mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
     "plugin.list",
+    "plugin.builtin.get",
+    "plugin.builtin.preview",
+    "plugin.builtin.set",
     "plugin.market",
     "plugin.prepare",
     "plugin.commit",
@@ -101,7 +104,7 @@ impl WorkspaceHost {
         let project = application.project().clone();
         let availability = application.builtin_availability();
         let mut application = HostApplication::new(application);
-        let instance = uuid::Uuid::new_v4().to_string();
+        let instance = application.instance_id().to_owned();
         let description = json!({"protocol_version": 1, "instance_id": instance,
             "storage_root": application.storage_root(), "methods": HOST_METHODS,
             "wire_version": crate::wire::WIRE_VERSION,

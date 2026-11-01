@@ -288,6 +288,7 @@ const ICON_PATHS = {
   info: ['M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z', 'M12 7h.01M10 11h2v6m-2 0h4'],
   check: ['m5 12 4 4L19 6'],
   wasm: ['M5 5h14v14H5z', 'M9 9h6v6H9z'],
+  extensions: ['M3 4h5v2a2 2 0 0 0 4 0V4h5v5h1a3 3 0 0 1 0 6h-1v5H3Z'],
   mcp: ['M4 12h5m6-5h5m-5 10h5', 'M9 12l6-5m-6 5 6 5'],
   vision: ['M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'],
 };
@@ -2019,7 +2020,8 @@ function syncHistoryStatus() {
 
 function viewportAnchor() {
   const viewportTop = dom['transcript-scroll'].getBoundingClientRect().top;
-  const rows = [...dom.transcript.querySelectorAll(':scope > [data-seq]')];
+  const rows = [...dom.transcript.querySelectorAll(':scope > [data-seq]')]
+    .filter(row => row.getClientRects().length > 0);
   return rows.find((row) => row.getBoundingClientRect().bottom >= viewportTop) || rows[0] || null;
 }
 
@@ -2027,8 +2029,6 @@ async function loadOlderHistory() {
   if (state.switching || state.history.loading || !state.history.hasMore || state.history.firstSeq === null) return false;
   state.history.loading = true;
   syncHistoryStatus();
-  const anchor = viewportAnchor();
-  const anchorTop = anchor && anchor.getBoundingClientRect().top;
   const fragment = document.createDocumentFragment();
   const selection = state.selectionGeneration;
   const stream = state.stream;
@@ -2043,12 +2043,15 @@ async function loadOlderHistory() {
     state.history.replayTarget = fragment;
     for (const event of events) handleReplay(event);
     state.history.replayTarget = null;
-    if (fragment.childNodes.length > 0) dom.transcript.insertBefore(fragment, dom.transcript.firstChild);
-    conversationRounds.refresh();
-    state.history.hasMore = Boolean(page.has_more);
-    if (anchor && anchorTop !== null) {
-      dom['transcript-scroll'].scrollTop += anchor.getBoundingClientRect().top - anchorTop;
-    }
+    preserveHistoryPosition(() => {
+      if (fragment.childNodes.length > 0) dom.transcript.insertBefore(fragment, dom.transcript.firstChild);
+      conversationRounds.refresh();
+      userMessageReader.refresh();
+      state.history.hasMore = Boolean(page.has_more);
+      state.history.loading = false;
+      // Include the final loader removal in the layout being compensated.
+      syncHistoryStatus();
+    });
     syncEmptyState();
     syncActiveMapItem();
     return events.length > 0;

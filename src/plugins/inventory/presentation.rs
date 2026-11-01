@@ -242,7 +242,7 @@ const DISPLAY: &[(&str, &str, &str)] = &[
         "extension.builtin.draft_images.summary",
     ),
 ];
-pub(super) fn messages(id: PluginId) -> (UiMessage, UiMessage) {
+pub(crate) fn messages(id: PluginId) -> (UiMessage, UiMessage) {
     let (_, name, summary) = DISPLAY
         .iter()
         .find(|(key, _, _)| *key == id.as_str())

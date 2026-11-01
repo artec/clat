@@ -247,3 +247,90 @@ fn builtin_protection_uses_server_reasons_with_locale_and_legacy_fallback() {
         .join("\n");
     assert!(text.contains(dialog.locale.text("extension.required_contract")));
 }
+
+#[test]
+fn builtin_draft_preserves_choices_and_revokes_old_host_preview() {
+    let mut draft = super::builtin::BuiltinDraft::default();
+    let base =
+        serde_json::json!({"instance_id":"a","revision":"1","storage_root":"root","disabled":[]});
+    draft.receive(base.clone());
+    draft.disabled.insert("builtin.skills".into());
+    draft.preview = Some(serde_json::json!({"preview_id":"old"}));
+    let mut newer = base.clone();
+    newer["instance_id"] = serde_json::json!("b");
+    draft.receive(newer);
+    assert!(draft.dirty());
+    assert!(draft.review);
+    assert!(draft.preview.is_none());
+    assert!(draft.disabled.contains("builtin.skills"));
+    draft.discard();
+    assert!(!draft.dirty());
+    let mut other = base;
+    other["storage_root"] = serde_json::json!("another-root");
+    draft.receive(other);
+    assert!(!draft.dirty());
+}
+
+#[test]
+#[cfg(feature = "runtime-tests")]
+fn builtin_draft_leave_choices_preserve_chat_and_only_discard_on_request() {
+    let (mut app, root) = shell();
+    app.input.insert_str("retained conversation draft");
+    let mut dialog = PluginDialog::new();
+    dialog.view = View::Builtins;
+    dialog
+        .builtin
+        .receive(json!({"instance_id":"host","storage_root":"root","revision":"1","disabled":[]}));
+    dialog.builtin.disabled.insert("builtin.web".into());
+    app.plugins.dialog = Some(dialog);
+    let press = |app: &mut App, code| app.plugin_key(KeyEvent::new(code, KeyModifiers::NONE));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.plugins.dialog.as_ref().unwrap().view == View::BuiltinLeave);
+    press(&mut app, KeyCode::Char('b'));
+    assert!(app.plugins.dialog.as_ref().unwrap().builtin.dirty());
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('k'));
+    assert!(app.plugins.dialog.is_none());
+    assert!(app.plugins.builtin.dirty());
+    let mut dialog = PluginDialog::new();
+    dialog.view = View::BuiltinLeave;
+    dialog.builtin = app.plugins.builtin.clone();
+    app.plugins.dialog = Some(dialog);
+    press(&mut app, KeyCode::Char('d'));
+    assert!(!app.plugins.builtin.dirty());
+    assert_eq!(app.input.text(), "retained conversation draft");
+    drop(app);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+#[cfg(feature = "runtime-tests")]
+fn builtin_config_read_error_keeps_inventory_and_draft_but_revokes_writes() {
+    let (mut app, root) = shell();
+    let mut dialog = PluginDialog::new();
+    dialog.request = 42;
+    dialog
+        .builtin
+        .receive(json!({"instance_id":"host","storage_root":"root","revision":"1","disabled":[]}));
+    dialog.builtin.disabled.insert("builtin.web".into());
+    dialog.builtin.preview = Some(json!({"preview_id":"old"}));
+    app.plugins.dialog = Some(dialog);
+    let (epoch, selection) = app.native_selection_identity().unwrap();
+    app.plugin_loaded(
+        epoch,
+        selection,
+        42,
+        PluginReply::List(Ok(json!({
+            "installed":[{"id":"external"}],"builtins":[{"id":"builtin.web"}],
+            "builtin_configuration_error":"poisoned config fixture"
+        }))),
+    );
+    let dialog = app.plugins.dialog.as_ref().unwrap();
+    assert_eq!(dialog.installed.len(), 1);
+    assert_eq!(dialog.builtins.len(), 1);
+    assert!(dialog.builtin.dirty());
+    assert!(!dialog.builtin.available);
+    assert!(dialog.builtin.preview.is_none());
+    drop(app);
+    crate::test_support::cleanup_tree(&root);
+}

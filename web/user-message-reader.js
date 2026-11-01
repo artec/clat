@@ -3,23 +3,26 @@ function createUserMessageReader() {
   const entries = new Map();
   let dialog = null, active = null;
   const text = key => CLATI18n.msg('user_reader.' + key);
-  const observer = new ResizeObserver(records => {
-    for (const record of records) {
-      const entry = entries.get(record.target);
-      if (!entry || !record.target.getClientRects().length) continue;
-      const height = parseFloat(getComputedStyle(record.target).lineHeight) * 6;
-      const collapsed = record.target.scrollHeight > height + 1;
-      entry.body.classList.toggle('user-message-collapsed', collapsed);
-      record.target.inert = collapsed;
-      if (collapsed) {
-        entry.body.setAttribute('role', 'button'); entry.body.tabIndex = 0;
-        entry.body.setAttribute('aria-haspopup', 'dialog');
-        CLATI18n.attribute(entry.body, 'aria-label', () => text('open'));
-      } else {
-        for (const name of ['role', 'tabindex', 'aria-haspopup', 'aria-label']) entry.body.removeAttribute(name);
-      }
+  function measure(content) {
+    const entry = entries.get(content);
+    if (!entry || !content.getClientRects().length) return;
+    const height = parseFloat(getComputedStyle(content).lineHeight) * 6;
+    const collapsed = content.scrollHeight > height + 1;
+    entry.body.classList.toggle('user-message-collapsed', collapsed);
+    content.inert = collapsed;
+    if (collapsed) {
+      entry.body.setAttribute('role', 'button'); entry.body.tabIndex = 0;
+      entry.body.setAttribute('aria-haspopup', 'dialog');
+      CLATI18n.attribute(entry.body, 'aria-label', () => text('open'));
+    } else {
+      for (const name of ['role', 'tabindex', 'aria-haspopup', 'aria-label']) entry.body.removeAttribute(name);
     }
+  }
+  const observer = new ResizeObserver(records => {
+    for (const record of records) measure(record.target);
   });
+  // Finish height-changing previews before history restores its reading anchor.
+  function refresh() { for (const content of entries.keys()) measure(content); }
   function close() { if (dialog?.open) dialog.close(); }
   function open(entry, match) {
     dialog ||= createUserReaderDialog(() => active, () => {
@@ -57,7 +60,7 @@ function createUserMessageReader() {
     if (entry?.body.classList.contains('user-message-collapsed')) open(entry, match);
   }
   function reset() { close(); observer.disconnect(); entries.clear(); }
-  return { attach, reveal, reset, close };
+  return { attach, reveal, reset, close, refresh };
 }
 function createUserReaderDialog(getActive, onClose) {
     const text = key => CLATI18n.msg('user_reader.' + key);

@@ -71,6 +71,15 @@ impl HostClient {
         }
     }
 
+    pub fn builtin_plugins_get(&self) -> Result<Value, String> {
+        self.call("plugin.builtin.get", &json!({}))
+    }
+    pub fn builtin_plugins_preview(&self, edit: &Value) -> Result<Value, String> {
+        self.call("plugin.builtin.preview", edit)
+    }
+    pub fn builtin_plugins_set(&self, edit: &Value) -> Result<Value, String> {
+        self.call("plugin.builtin.set", edit)
+    }
     pub fn plugin_list(&self) -> Result<Value, String> {
         self.call("plugin.list", &json!({}))
     }

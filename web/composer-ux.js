@@ -330,16 +330,19 @@ async function copyMessageText(button, text) {
   setTimeout(() => {
     button.disabled = false;
     if(iconOnly){button.replaceChildren(svgIcon('copy'));button.restoreCopyLabel();}
+    else if(button.restoreCopyLabel)button.restoreCopyLabel();
     else CLATI18n.bind(button,'textContent',()=>label);
   }, 1600);
 }
 
 function copyTextButton(label, source, iconOnly = false) {
-  const button = iconOnly ? el('button','message-action-icon icon-button') : el('button','text-action',()=>label);
+  const readLabel=()=>typeof label==='function'?label():label;
+  const button = iconOnly ? el('button','message-action-icon icon-button') : el('button','text-action',readLabel);
   button.type = 'button';
   button.restoreCopyLabel=()=>{
-    CLATI18n.attribute(button,'aria-label',()=>label);
-    CLATI18n.attribute(button,'title',()=>label);
+    CLATI18n.attribute(button,'aria-label',readLabel);
+    CLATI18n.attribute(button,'title',readLabel);
+    if(!iconOnly)CLATI18n.bind(button,'textContent',readLabel);
   };
   button.restoreCopyLabel();if(iconOnly)button.append(svgIcon('copy'));
   button.addEventListener('click', () => { void copyMessageText(button, source()); });

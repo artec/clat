@@ -662,3 +662,27 @@ fn static_configuration_survives_settings_writes_and_reopen_without_mounting_dis
     }
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn builtin_config_save_does_not_change_external_reload_composition() {
+    let (root, mut host, first, _) = fixture("builtin-config-reload");
+    let app = host.attach(first).unwrap();
+    let id = install_fixture(&root, &host);
+    let base = host.builtin_plugins_get().unwrap();
+    let mut edit = json!({"instance_id":base["instance_id"],"revision":base["revision"],
+        "disabled":["builtin.skills","builtin.mcp_adapter"]});
+    edit["preview_id"] = host.builtin_plugins_preview(edit.clone()).unwrap()["preview_id"].clone();
+    host.builtin_plugins_set(edit).unwrap();
+    let review = ticket(&mut host, &id, "enable");
+    host.plugin_commit(&review, true, BTreeMap::new()).unwrap();
+    assert!(app.lock().unwrap().builtin_availability()["builtin.skills"].enabled);
+    assert!(app.lock().unwrap().builtin_availability()["builtin.mcp_adapter"].enabled);
+    assert_eq!(
+        host.builtin_plugins_get().unwrap()["current"],
+        base["current"]
+    );
+    drop(app);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}

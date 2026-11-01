@@ -6,6 +6,10 @@ impl App {
             return false;
         };
         dialog.expire();
+        if !dialog.pending && !dialog.searching && self.builtin_key(key) {
+            return true;
+        }
+        let dialog = self.plugins.dialog.as_mut().unwrap();
         if key.code == KeyCode::Esc {
             if dialog.view == View::Config {
                 dialog.config.clear();
@@ -14,6 +18,8 @@ impl App {
                 dialog.clear_review();
                 dialog.remove = None;
                 dialog.view = View::Installed;
+            } else if dialog.builtin.dirty() {
+                dialog.view = View::BuiltinLeave;
             } else {
                 self.close_plugin_dialog();
             }
@@ -101,6 +107,9 @@ impl App {
             KeyCode::Down => dialog.selected = (dialog.selected + 1).min(count.saturating_sub(1)),
             KeyCode::Up => dialog.selected = dialog.selected.saturating_sub(1),
             KeyCode::Char('/') => dialog.searching = true,
+            KeyCode::Tab if dialog.view == View::Builtins && dialog.builtin.dirty() => {
+                dialog.view = View::BuiltinLeave;
+            }
             KeyCode::Tab => {
                 dialog.view = match dialog.view {
                     View::Installed => View::Builtins,

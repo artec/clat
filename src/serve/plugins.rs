@@ -12,6 +12,13 @@ pub(crate) fn dispatch(
     params: &Map<String, Value>,
 ) -> Result<Value, RpcError> {
     match method {
+        "plugin.builtin.get" => app.builtin_plugins_get().map_err(Into::into),
+        "plugin.builtin.preview" => app
+            .builtin_plugins_preview(Value::Object(params.clone()))
+            .map_err(Into::into),
+        "plugin.builtin.set" => app
+            .builtin_plugins_set(Value::Object(params.clone()))
+            .map_err(Into::into),
         "plugin.list" => app.plugin_list().map_err(Into::into),
         "plugin.market" => app
             .plugin_market_listing(generation(params)?)

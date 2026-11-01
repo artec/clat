@@ -59,6 +59,7 @@ fn all_16384_optional_capability_combinations_plan_without_side_effects() {
             &config,
         )
         .unwrap();
+        assert_preview_matches(&catalog, &config, &selection);
         for (bit, id) in ids.iter().enumerate() {
             let entry = selection
                 .entries
@@ -76,6 +77,28 @@ fn all_16384_optional_capability_combinations_plan_without_side_effects() {
     app.close().unwrap();
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
+}
+
+fn assert_preview_matches(
+    catalog: &[Arc<dyn Plugin>],
+    config: &crate::plugin::selection::Configuration,
+    selection: &crate::plugin::selection::Selection,
+) {
+    let descriptors: Vec<_> = catalog.iter().map(|plugin| plugin.descriptor()).collect();
+    let preview = crate::plugin::selection::Selection::from_descriptors(
+        &descriptors,
+        &project_service_contract(),
+        config,
+    )
+    .unwrap();
+    for (active, planned) in selection.entries.iter().zip(&preview.entries) {
+        assert_eq!(active.descriptor.id, planned.descriptor.id);
+        assert_eq!(active.disabled_by, planned.disabled_by);
+        assert_eq!(
+            serde_json::to_value(&active.required_by).unwrap(),
+            serde_json::to_value(&planned.required_by).unwrap()
+        );
+    }
 }
 
 #[test]

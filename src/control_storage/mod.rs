@@ -7,6 +7,7 @@
 //! §4.6 的读-改-写全程持锁——无 CAS 字段）。
 
 mod builtin_plugins;
+pub(crate) use builtin_plugins::Snapshot as BuiltinConfigSnapshot;
 pub(crate) mod im;
 pub(crate) mod json_file;
 mod library;
@@ -83,6 +84,8 @@ pub(crate) struct ControlStorage {
     web_updates: Mutex<()>,
     builtin_plugins: crate::plugin::selection::Configuration,
     #[cfg(test)]
+    builtin_write_fault: std::sync::atomic::AtomicU8,
+    #[cfg(test)]
     fail_next_chat_mapping_save: std::sync::atomic::AtomicBool,
 }
 
@@ -123,6 +126,8 @@ impl ControlStorage {
         let storage = Self {
             web_updates: Mutex::new(()),
             builtin_plugins,
+            #[cfg(test)]
+            builtin_write_fault: std::sync::atomic::AtomicU8::new(0),
             root,
             dir,
             state: Mutex::new(ControlState {

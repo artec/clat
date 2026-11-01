@@ -5,6 +5,7 @@ pub(in crate::tui::plugins) fn plugin_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     let text = match dialog.view {
+        View::BuiltinLeave => dialog.locale.text("extension.config_tui_leave").to_owned(),
         View::Review => review_text(dialog),
         View::Config => dialog.locale.render(
             &UiMessage::new("tui.plugin_config_body")
@@ -245,6 +246,7 @@ fn append_builtin(
     width: usize,
     lines: &mut Vec<Line<'static>>,
 ) {
+    super::super::builtin::append_status(dialog, row, width, lines);
     let count = row["instances"].as_array().map_or(0, |rows| {
         rows.iter().filter(|row| row["phase"] == "active").count()
     });

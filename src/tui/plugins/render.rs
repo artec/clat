@@ -69,6 +69,7 @@ fn review_viewport(
 
 fn title(view: View, locale: LocaleContext) -> &'static str {
     match view {
+        View::BuiltinLeave => locale.text("extension.config_title"),
         View::Builtins => locale.text("extension.builtins"),
         View::Installed => locale.text("tui.plugin_installed_title"),
         View::Market => locale.text("tui.plugin_market_title"),

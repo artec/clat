@@ -24,7 +24,7 @@ function createShellRail(shell) {
     ['nav-resources', 'folder', 'resources', () => shell.open('resources-dialog')],
     ['nav-tasks', 'schedule', 'tasks', () => shell.open('jobs-dialog')],
     ['nav-history', 'history', 'history', () => shell.open('history-dialog')],
-    ['nav-extensions', 'wasm', 'extensions', () => openMarket()],
+    ['nav-extensions', 'extensions', 'extensions', () => openMarket()],
   ]) links.append(shellButton(id, icon, () => shellText(label), () => { closeMobileSidebar(); run(); }));
   const bottom = el('div', 'global-bottom sidebar-footer');
   bottom.append(shellButton('nav-settings', 'settings', () => shellText('settings'), () => openSettings()),
@@ -107,6 +107,7 @@ function mountShellDialog(shell, id, trigger, route, host, type) {
 
 function shellShow(shell, id, updateRoute = true) {
   const seat = shell.surfaces.get(id); if (!seat) return;
+  if(seat.type==='page'&&!mayLeaveShellPages(shell,id,()=>shellShow(shell,id,updateRoute)))return;
   shell[seat.type] = id;
   for (const [key, other] of shell.surfaces) {
     if (other.type !== seat.type || key === id) continue;
@@ -140,6 +141,7 @@ function shellShow(shell, id, updateRoute = true) {
 }
 
 function shellChat(shell, updateRoute = true) {
+  if(!mayLeaveShellPages(shell,null,()=>shellChat(shell,updateRoute)))return;
   returnConversationPane(); shell.page = null;
   for (const seat of shell.surfaces.values()) if (seat.type === 'page') leavePage(seat.dialog);
   shell.pageHost.classList.add('hidden'); delete dom.app.dataset.page;
@@ -269,7 +271,7 @@ function createShellComposer(shell) {
   ]);
   group(() => shellText('capabilities'), [
     ['add-skills', 'tool', () => shellText('skills'), () => { dom.prompt.focus(); dom.prompt.value += (dom.prompt.value ? '\n' : '') + '/'; state.composerGeneration++; resizePrompt(); dom.prompt.dispatchEvent(new Event('input', {bubbles:true})); }],
-    ['add-extensions', 'wasm', () => shellText('extensions'), () => openMarket()],
+    ['add-extensions', 'extensions', () => shellText('extensions'), () => openMarket()],
   ]);
   const plan = shellButton('composer-plan-toggle', 'plan', () => workflowText('work_mode'), () => {}, false);
   installWorkModeMenu(plan);
@@ -319,4 +321,12 @@ function installWorkbenchShell() {
   window.addEventListener('clat:workbench-updated', () => { refreshApplicationToolbar(shell); void refreshShellContext(); });
   if (context.isActive() && location.hash && location.hash !== '#/workbench') route();
   context.renderDirectory();
+}
+
+function mayLeaveShellPages(shell,next,retry){
+  for(const [id,seat]of shell.surfaces){
+    if(id===next||seat.type!=='page'||!seat.active||seat.dialog.builtinLeaveApproved)continue;
+    if(!seat.dialog.dispatchEvent(new CustomEvent('clat:page-before-leave',{cancelable:true,detail:{retry}})))return false;
+  }
+  return true;
 }

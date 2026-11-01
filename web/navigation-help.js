@@ -81,3 +81,25 @@ function createHistoryNavigation(){
   window.addEventListener('clat:activated',sync);
   sync();return {sync};
 }
+
+// Prepending history has one scroll owner: suppress native anchoring while
+// changing layout, then restore the visible row in the same paint transaction.
+function preserveHistoryPosition(update) {
+  const viewport = dom['transcript-scroll'];
+  const anchor = viewportAnchor();
+  const offset = anchor ? anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top : null;
+  const behavior = viewport.style.scrollBehavior;
+  const anchoring = viewport.style.overflowAnchor;
+  viewport.style.scrollBehavior = 'auto';
+  viewport.style.overflowAnchor = 'none';
+  try {
+    update();
+    if (anchor?.isConnected && offset !== null) {
+      const delta = anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top - offset;
+      viewport.scrollTop = viewport.scrollTop + delta;
+    }
+  } finally {
+    viewport.style.overflowAnchor = anchoring;
+    viewport.style.scrollBehavior = behavior;
+  }
+}

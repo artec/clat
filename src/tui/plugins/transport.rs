@@ -37,7 +37,7 @@ impl App {
             let reply = if market {
                 PluginReply::Market(client.plugin_market(generation))
             } else {
-                PluginReply::List(client.plugin_list())
+                PluginReply::List(load_builtin_configuration(&client))
             };
             let _ = ui.send(UiEvent::Native(native::NativeEvent::Plugin(
                 epoch, selection, request, reply,
@@ -147,6 +147,29 @@ impl App {
                 }
                 Err(error) => dialog.status = error.into(),
             },
+            PluginReply::Builtin(kind, result) => match result {
+                Ok(value) if kind == "preview" => {
+                    dialog.builtin.preview = Some(value);
+                    dialog.status = UiMessage::new("extension.config_confirm").into();
+                }
+                Ok(value) => {
+                    let key = if value["pending_restart"] == true {
+                        "extension.config_pending"
+                    } else {
+                        "extension.config_unchanged"
+                    };
+                    dialog.builtin.discard();
+                    dialog.builtin.receive(value);
+                    dialog.status = UiMessage::new(key).into();
+                }
+                Err(error) => {
+                    dialog.builtin.preview = None;
+                    dialog.builtin.review = true;
+                    dialog.status = UiMessage::new("extension.config_operation_failed")
+                        .arg("error", error)
+                        .into();
+                }
+            },
             PluginReply::Mutation(result) => {
                 dialog.status = match result {
                     Ok(value)
@@ -179,6 +202,15 @@ fn set_rows(dialog: &mut PluginDialog, result: Result<Value, String>, market: bo
             } else {
                 dialog.installed = rows;
                 dialog.builtins = value["builtins"].as_array().cloned().unwrap_or_default();
+                dialog.builtin.available = false;
+                if let Some(config) = value.get("builtin_configuration") {
+                    dialog.builtin.receive(config.clone());
+                }
+                if let Some(error) = value["builtin_configuration_error"].as_str() {
+                    dialog.builtin.preview = None;
+                    dialog.builtin.review = true;
+                    dialog.status = error.to_owned().into();
+                }
             }
             dialog.selected = 0;
             if dialog.status.presentation.as_ref().is_some_and(|m| {
@@ -190,7 +222,14 @@ fn set_rows(dialog: &mut PluginDialog, result: Result<Value, String>, market: bo
                 dialog.status = UiMessage::new("tui.plugin_select").into();
             }
         }
-        Err(error) => dialog.status = error.into(),
+        Err(error) => {
+            if !market {
+                dialog.builtin.available = false;
+                dialog.builtin.preview = None;
+                dialog.builtin.review = true;
+            }
+            dialog.status = error.into();
+        }
     }
 }
 
@@ -202,4 +241,33 @@ impl App {
         }
         crate::host::HostClient::finish_plugin_review_cleanup();
     }
+}
+
+fn load_builtin_configuration(client: &crate::host::HostClient) -> Result<Value, String> {
+    let mut value = client.plugin_list()?;
+    let result = (|| {
+        let description = client.call("host.describe", &serde_json::json!({}))?;
+        let supported = [
+            "plugin.builtin.get",
+            "plugin.builtin.preview",
+            "plugin.builtin.set",
+        ]
+        .iter()
+        .all(|method| {
+            description["methods"]
+                .as_array()
+                .is_some_and(|methods| methods.iter().any(|entry| entry == method))
+        });
+        if supported {
+            client.builtin_plugins_get().map(Some)
+        } else {
+            Ok(None)
+        }
+    })();
+    match result {
+        Ok(Some(config)) => value["builtin_configuration"] = config,
+        Ok(None) => {}
+        Err(error) => value["builtin_configuration_error"] = Value::String(error),
+    }
+    Ok(value)
 }

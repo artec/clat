@@ -77,7 +77,6 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .global-rail .shell-button svg { width: var(--rail-icon-size, 22px); height: var(--rail-icon-size, 22px); }
 .global-rail .shell-button svg path { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .global-rail #nav-tasks { --rail-icon-size: 24px; }
-.global-rail #nav-extensions { --rail-icon-size: 26px; }
 .global-rail #nav-settings { --rail-icon-size: 20px; }
 .global-rail .shell-label, .global-rail .sidebar-expanded-only { display: none; }
 .global-rail .shell-button[aria-current="page"] { color: var(--accent); background: var(--surface-input); }

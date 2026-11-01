@@ -13,10 +13,13 @@ struct File {
 pub(super) fn load(dir: &cap_std::fs::Dir) -> Result<Configuration, ControlError> {
     let bytes = json_file::read_file(dir, NAME, Some(65_536))
         .map_err(|error| control_error(error.message()))?;
+    parse(bytes.as_deref())
+}
+fn parse(bytes: Option<&[u8]>) -> Result<Configuration, ControlError> {
     let Some(bytes) = bytes else {
         return Ok(Configuration::default());
     };
-    let file: File = serde_json::from_slice(&bytes)
+    let file: File = serde_json::from_slice(bytes)
         .map_err(|error| control_error(format!("cannot read {NAME}: {error}")))?;
     if !file.unit.matches(("builtin-plugins", 1)) {
         return Err(control_error(format!("unsupported {NAME} unit/version")));
@@ -25,7 +28,70 @@ pub(super) fn load(dir: &cap_std::fs::Dir) -> Result<Configuration, ControlError
         disabled: file.disabled,
     })
 }
+
+pub(crate) struct Snapshot {
+    pub(crate) config: Configuration,
+    pub(crate) revision: String,
+}
+
 impl ControlStorage {
+    pub(crate) fn read_builtin_plugins(&self) -> Result<Snapshot, ControlError> {
+        use sha2::{Digest, Sha256};
+        let bytes = json_file::read_file(&self.dir, NAME, Some(65_536))
+            .map_err(|error| control_error(error.message()))?;
+        let mut hash = Sha256::new();
+        hash.update([u8::from(bytes.is_some())]);
+        hash.update(bytes.as_deref().unwrap_or_default());
+        Ok(Snapshot {
+            config: parse(bytes.as_deref())?,
+            revision: format!("{:x}", hash.finalize()),
+        })
+    }
+    /// The Host serializes callers while retaining its root lease. Never update the startup cache.
+    pub(crate) fn save_builtin_plugins(
+        &self,
+        expected: &str,
+        config: &Configuration,
+    ) -> Result<(), ControlError> {
+        let before = self.read_builtin_plugins()?;
+        if before.revision != expected {
+            return Err(control_error("extension.config_conflict"));
+        }
+        if before.config == *config {
+            return Ok(());
+        }
+        let file = File {
+            unit: json_file::UnitTag::new("builtin-plugins", 1),
+            disabled: config.disabled.clone(),
+        };
+        let text = serde_json::to_string_pretty(&file)
+            .map_err(|error| control_error(error.to_string()))?;
+        if text.len() > 65_536 {
+            return Err(control_error("extension.config_limit"));
+        }
+        #[cfg(test)]
+        let fault = self
+            .builtin_write_fault
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(test)]
+        if fault == 1 {
+            return Err(control_error("extension.config_write_uncertain"));
+        }
+        crate::private_fs::write_text_atomic_in_dir(&self.dir, NAME, &text)
+            .map_err(|_| control_error("extension.config_write_uncertain"))?;
+        #[cfg(test)]
+        if fault == 2 {
+            return Err(control_error("extension.config_write_uncertain"));
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn fail_builtin_write(&self, after_publish: bool) {
+        self.builtin_write_fault.store(
+            if after_publish { 2 } else { 1 },
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
     pub(crate) fn builtin_plugins(&self) -> Configuration {
         self.builtin_plugins.clone()
     }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Configuration {
     pub disabled: BTreeSet<String>,
@@ -52,6 +52,16 @@ impl Selection {
         super::PluginManager::validate_catalog(super::ScopeKind::TrustedProject, catalog).map_err(
             |error| UiMessage::new("extension.invalid_composition").arg("error", error.to_string()),
         )?;
+        let descriptors: Vec<_> = catalog.iter().map(|plugin| plugin.descriptor()).collect();
+        Self::from_descriptors(&descriptors, required, config)
+    }
+
+    /// Replan the complete graph captured after successful startup validation.
+    pub(crate) fn from_descriptors(
+        catalog: &[&'static PluginDescriptor],
+        required: &[Requirement],
+        config: &Configuration,
+    ) -> Result<Self, UiMessage> {
         let providers = providers(catalog);
         let missing: Vec<_> = required
             .iter()
@@ -64,7 +74,7 @@ impl Selection {
             );
         }
         let protected = protection(catalog, &providers, required);
-        let known: BTreeSet<_> = catalog.iter().map(|p| p.descriptor().id.as_str()).collect();
+        let known: BTreeSet<_> = catalog.iter().map(|p| p.id.as_str()).collect();
         for id in &config.disabled {
             if !known.contains(id.as_str()) {
                 return Err(UiMessage::new("extension.unknown_builtin").arg("id", id.clone()));
@@ -85,7 +95,7 @@ impl Selection {
         let mut entries: Vec<_> = catalog
             .iter()
             .map(|plugin| {
-                let descriptor = plugin.descriptor();
+                let descriptor = *plugin;
                 Entry {
                     descriptor,
                     required_by: {
@@ -122,11 +132,11 @@ impl Selection {
     }
 }
 
-fn providers(catalog: &[Arc<dyn Plugin>]) -> BTreeMap<ServiceId, PluginId> {
+fn providers(catalog: &[&'static PluginDescriptor]) -> BTreeMap<ServiceId, PluginId> {
     catalog
         .iter()
         .flat_map(|plugin| {
-            let descriptor = plugin.descriptor();
+            let descriptor = *plugin;
             descriptor
                 .provides
                 .iter()
@@ -136,7 +146,7 @@ fn providers(catalog: &[Arc<dyn Plugin>]) -> BTreeMap<ServiceId, PluginId> {
 }
 
 fn protection(
-    catalog: &[Arc<dyn Plugin>],
+    catalog: &[&'static PluginDescriptor],
     providers: &BTreeMap<ServiceId, PluginId>,
     required: &[Requirement],
 ) -> BTreeMap<PluginId, BTreeSet<ServiceId>> {
@@ -150,7 +160,7 @@ fn protection(
     loop {
         let previous = protected.clone();
         for plugin in catalog {
-            let descriptor = plugin.descriptor();
+            let descriptor = *plugin;
             if let Some(roots) = previous.get(&descriptor.id) {
                 for owner in descriptor
                     .requires

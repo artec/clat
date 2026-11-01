@@ -153,3 +153,66 @@ fn serve_e2e_host_plugins_absent() {
 
 #[path = "plugin_absence_tests/phase4_tests.rs"]
 mod phase4;
+
+#[test]
+fn builtin_config_rpc_serializes_competing_clients_without_changing_durable_guards() {
+    let (handle, storage, root) = fixture();
+    let before = rpc(handle.addr, "workflow.details");
+    let base = rpc(handle.addr, "plugin.builtin.get");
+    assert_eq!(
+        base["instance_id"],
+        rpc(handle.addr, "host.describe")["instance_id"]
+    );
+    let edit = json!({"instance_id":base["instance_id"],"revision":base["revision"],"disabled":["builtin.web"]});
+    let (_, preview) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "plugin.builtin.preview",
+        &edit.to_string(),
+    );
+    assert_eq!(preview["ok"], true);
+    let mut edit = edit;
+    edit["preview_id"] = preview["value"]["preview_id"].clone();
+    let results = std::thread::scope(|scope| {
+        let call = || {
+            post_rpc_json(
+                handle.addr,
+                TEST_TOKEN,
+                "plugin.builtin.set",
+                &edit.to_string(),
+            )
+            .1
+        };
+        let first = scope.spawn(call);
+        let second = scope.spawn(call);
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert_eq!(
+        results.iter().filter(|reply| reply["ok"] == true).count(),
+        1
+    );
+    assert!(
+        results
+            .iter()
+            .any(|reply| reply["error"]["presentation"]["key"] == "extension.config_conflict")
+    );
+    let saved = rpc(handle.addr, "plugin.builtin.get");
+    assert_eq!(saved["current"], base["current"]);
+    let after = rpc(handle.addr, "workflow.details");
+    assert_eq!(after["version"], before["version"]);
+    assert_eq!(after["generation"], before["generation"]);
+    assert_eq!(after["plan_mode"], true);
+    assert_eq!(after["documents"], before["documents"]);
+    assert_eq!(
+        after["builtin_availability"],
+        before["builtin_availability"]
+    );
+    let (_, rejected) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "plugin.builtin.set",
+        &edit.to_string(),
+    );
+    assert_eq!(rejected["ok"], false);
+    cleanup(handle, &storage, &root);
+}

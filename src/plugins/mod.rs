@@ -17,7 +17,7 @@ mod mcp;
 mod monitor;
 mod permission;
 pub(crate) mod process;
-mod providers;
+pub(crate) mod providers;
 mod run_scope;
 mod search;
 pub(crate) mod services;

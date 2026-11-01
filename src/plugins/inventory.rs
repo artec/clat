@@ -1,6 +1,6 @@
 //! Read-only projection of the static manager and contribution registries.
 //! Display metadata never grants activation, configuration or mutation rights.
-mod presentation;
+pub(crate) mod presentation;
 pub(crate) fn unavailable(id: crate::plugin::PluginId) -> crate::i18n::UiMessage {
     crate::i18n::UiMessage::new("extension.disabled_builtin")
         .arg_message("id", presentation::messages(id).0)

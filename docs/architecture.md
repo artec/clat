@@ -2047,3 +2047,17 @@ Desktop's local welcome page owns only directory selection, trust and connection
 Model setup lives in the connected Web workbench and therefore uses the same
 core as other clients. Skipping the page is a device preference keyed by an
 opaque storage-root scope, not a second model configuration or installation flag.
+
+### Built-in startup configuration ownership
+
+The Host retains the complete validated descriptor graph and core service roots
+from successful project composition. Startup and next-start preview use the same
+Selection rules. Host configuration ports reread and atomically write only
+`builtin-plugins.json`, with file revision and preview/Host identity checks; they
+do not mount plugins or inspect project-private resources. ControlStorage's
+startup configuration stays immutable for the Host lifetime, including new
+projects and external package reloads. Web/Desktop/TUI own transient drafts only.
+Current `builtin_availability` remains an effective-startup projection; saved
+configuration and pending restart are a separate management view. The existing
+root lease covers all writes, and rejected requests cannot change session facts,
+project trust, workflow authority or active execution.

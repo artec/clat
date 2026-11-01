@@ -502,7 +502,7 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "protocol_version": 1,
         "instance_id": instance,
         "storage_root": described_root,
-        "methods": ["plugin.list", "plugin.market", "plugin.prepare", "plugin.commit", "plugin.cancel", "plugin.remove",
+        "methods": ["plugin.list", "plugin.builtin.get", "plugin.builtin.preview", "plugin.builtin.set", "plugin.market", "plugin.prepare", "plugin.commit", "plugin.cancel", "plugin.remove",
             "host.describe", "host.runtime_status", "host.stop", "host.takeover", "workspace.list", "workspace.directory", "workspace.update", "terminal.directory", "workspace.open"],
         "wire_version": crate::wire::WIRE_VERSION,
         "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
