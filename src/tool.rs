@@ -1023,3 +1023,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tool/transformer_tests.rs"]
+mod transformer_tests;

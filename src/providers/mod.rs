@@ -7,6 +7,7 @@ pub mod openai_compatible;
 pub(crate) mod outbound_guard;
 
 mod allowance;
+mod capacity;
 #[cfg(test)]
 pub(crate) use allowance::AllowanceItem;
 pub use allowance::ProviderAllowance;
@@ -858,6 +859,8 @@ fn emit_retry_scheduled(
 /// CLAT ModelErrorKind 的小写串（catalog §2.6 的 code 口径）。
 fn error_code(kind: ModelErrorKind) -> String {
     let text = match kind {
+        ModelErrorKind::ContextCapacity => "context_capacity",
+        ModelErrorKind::ImageCapacity => "image_capacity",
         ModelErrorKind::Transport => "transport",
         ModelErrorKind::RateLimited => "rate_limited",
         ModelErrorKind::Server => "server",

@@ -367,6 +367,8 @@ pub struct TrustedProjectApplication {
     monitor: Option<Arc<dyn MonitorService>>,
     /// 可选服务：最小 Catalog（无 CompactionPlugin）下为 None。
     compactor: Option<Arc<dyn HistoryCompactor>>,
+    pruner: Option<Arc<crate::plugins::ResultPruner>>,
+    image_offload: Option<Arc<crate::plugins::ImageOffloadPolicy>>,
     /// 可选服务：最小 Catalog（无 TodoPlugin）下为 None。
     todo: Option<Arc<TodoService>>,
     /// 可选服务：最小 Catalog（无 SessionTitlePlugin）下为 None。
@@ -451,3 +453,11 @@ fn session_error(error: crate::session::persistence::SessionError) -> Applicatio
 fn store_error(error: StoreError) -> ApplicationError {
     ApplicationError::new(error.to_string())
 }
+
+#[cfg(test)]
+#[path = "application/phase8_history_tests.rs"]
+mod phase8_history_tests;
+
+#[cfg(test)]
+#[path = "application/phase8_maintenance_tests.rs"]
+mod phase8_maintenance_tests;

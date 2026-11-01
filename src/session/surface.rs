@@ -6,11 +6,12 @@ use crate::session::catalog::is_surface_type;
 use crate::session::event::{SessionEvent, SurfaceOp};
 use std::collections::HashSet;
 
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Surface {
     /// Ordered surface-node seqs (the model-visible view).
     pub(crate) nodes: Vec<u64>,
     pub(crate) replacements: Vec<Replacement>,
+    pub(crate) messages: std::collections::BTreeMap<u64, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,7 +112,7 @@ impl Surface {
         // Non-surface events never carry surface metadata (guarded above)
         // and contribute nothing to the surface list.
         let Some(op) = event.surface_op.as_ref() else {
-            return Ok(());
+            return crate::session::catalog::project_message_event(self, event, earlier);
         };
         match op {
             SurfaceOp::Append => {
@@ -129,17 +130,7 @@ impl Surface {
                 }
                 let shadowed = self.nodes[start_index..=end_index].to_vec();
                 if event.event_type == "tool/result" {
-                    if shadowed.len() != 1 {
-                        return Err("tool/result replace must shadow exactly one node".into());
-                    }
-                    if let Some(previous) = earlier.get(shadowed[0] as usize) {
-                        if previous.event_type != "tool/result" {
-                            return Err("tool/result replace target must be a tool/result".into());
-                        }
-                        if tool_result_rest(&event.data) != tool_result_rest(&previous.data) {
-                            return Err("tool/result replace may only change result content".into());
-                        }
-                    }
+                    validate_tool_replacement(event, earlier, &shadowed)?;
                 } else {
                     let source_set: HashSet<u64> = sources.iter().copied().collect();
                     for node in &shadowed {
@@ -152,6 +143,9 @@ impl Surface {
                     }
                 }
                 self.nodes.splice(start_index..=end_index, [event.seq]);
+                for seq in &shadowed {
+                    self.messages.remove(seq);
+                }
                 self.replacements.push(Replacement {
                     seq: event.seq,
                     start: *start,
@@ -166,22 +160,42 @@ impl Surface {
     /// Project the surface to model-visible message payloads (Value level;
     /// typed adapters come with the ModelItem mapping in stage 3).
     pub(crate) fn derive_messages<'a>(
-        &self,
+        &'a self,
         events: &'a [SessionEvent],
     ) -> Vec<&'a serde_json::Value> {
         self.nodes
             .iter()
             .filter_map(|seq| {
                 let event = events.get(*seq as usize)?;
+                let data = self.messages.get(seq).unwrap_or(&event.data);
                 match event.event_type.as_str() {
-                    "user/message" => Some(&event.data),
-                    "assistant/message" => event.data.get("message"),
-                    "tool/result" => event.data.get("message"),
+                    "user/message" => Some(data),
+                    "assistant/message" => data.get("message"),
+                    "tool/result" => data.get("message"),
                     _ => None,
                 }
             })
             .collect()
     }
+}
+
+fn validate_tool_replacement(
+    event: &SessionEvent,
+    earlier: &[SessionEvent],
+    shadowed: &[u64],
+) -> Result<(), String> {
+    if shadowed.len() != 1 {
+        return Err("tool/result replace must shadow exactly one node".into());
+    }
+    if let Some(previous) = earlier.get(shadowed[0] as usize) {
+        if previous.event_type != "tool/result" {
+            return Err("tool/result replace target must be a tool/result".into());
+        }
+        if tool_result_rest(&event.data) != tool_result_rest(&previous.data) {
+            return Err("tool/result replace may only change result content".into());
+        }
+    }
+    Ok(())
 }
 
 fn tool_result_rest(data: &serde_json::Value) -> serde_json::Value {

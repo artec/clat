@@ -213,6 +213,7 @@ impl OpenAiModel {
             // 短路为 Cancelled 响应，不把半截诊断当 429 上抛。
             super::CancellingBodyRead::Cancelled => return Ok(None),
         };
+        let kind = super::capacity::from_body(&body, kind);
         let mut error = ModelError::with_kind(
             kind,
             format!(
@@ -557,6 +558,12 @@ fn dispatch_sse_data(
 
     let value: Value = serde_json::from_str(data)
         .map_err(|error| ModelError::decode(format!("invalid OpenAI SSE event: {error}")))?;
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        return Err(ModelError::with_kind(
+            super::capacity::from_value(&value, crate::model::ModelErrorKind::Server),
+            error["message"].as_str().unwrap_or("provider stream error"),
+        ));
+    }
     let event_type = value
         .get("type")
         .and_then(Value::as_str)
@@ -666,31 +673,19 @@ fn dispatch_sse_data(
                 finish_reason: reason,
             });
         }
-        "response.incomplete" => {
-            accumulator.usage = parse_usage(value.pointer("/response/usage"));
-            if let Some(usage) = &accumulator.usage {
-                events.emit(ModelEvent::Usage(usage.clone()));
-            }
-            let reason = if value
-                .pointer("/response/incomplete_details/reason")
-                .and_then(Value::as_str)
-                == Some("max_output_tokens")
-            {
-                FinishReason::MaxTokens
-            } else {
-                FinishReason::Incomplete
-            };
-            accumulator.finish_reason = Some(reason.clone());
-            events.emit(ModelEvent::ResponseCompleted {
-                finish_reason: reason,
-            });
-        }
+        "response.incomplete" => record_incomplete(&value, accumulator, events),
         "response.failed" => {
             let message = value
                 .pointer("/response/error/message")
                 .and_then(Value::as_str)
                 .unwrap_or("OpenAI response failed");
-            return Err(ModelError::server(message));
+            return Err(ModelError::with_kind(
+                super::capacity::from_value(
+                    &value["response"],
+                    crate::model::ModelErrorKind::Server,
+                ),
+                message,
+            ));
         }
         "response.cancelled" => {
             accumulator.finish_reason = Some(FinishReason::Cancelled);
@@ -724,6 +719,30 @@ fn dispatch_sse_data(
         )));
     }
     Ok(())
+}
+
+fn record_incomplete(
+    value: &Value,
+    accumulator: &mut OpenAiAccumulator,
+    events: &mut dyn ModelEventSink,
+) {
+    accumulator.usage = parse_usage(value.pointer("/response/usage"));
+    if let Some(usage) = &accumulator.usage {
+        events.emit(ModelEvent::Usage(usage.clone()));
+    }
+    let reason = if value
+        .pointer("/response/incomplete_details/reason")
+        .and_then(Value::as_str)
+        == Some("max_output_tokens")
+    {
+        FinishReason::MaxTokens
+    } else {
+        FinishReason::Incomplete
+    };
+    accumulator.finish_reason = Some(reason.clone());
+    events.emit(ModelEvent::ResponseCompleted {
+        finish_reason: reason,
+    });
 }
 
 fn required_string(value: &Value, key: &str, event_type: &str) -> Result<String, ModelError> {
@@ -1391,5 +1410,34 @@ mod tests {
             ModelEvent::ResponseCompleted { finish_reason }
                 if *finish_reason == FinishReason::Cancelled
         )));
+    }
+}
+
+#[cfg(test)]
+mod phase8_errors {
+    use super::*;
+    #[test]
+    fn phase8_responses_null_error_field_keeps_valid_stream_content() {
+        let mut accumulator = OpenAiAccumulator::default();
+        dispatch_sse_data(
+            r#"{"type":"response.output_text.delta","delta":"hello","error":null}"#,
+            &mut accumulator,
+            &mut Vec::new(),
+            100000,
+        )
+        .unwrap();
+        assert_eq!(accumulator.text, "hello");
+    }
+
+    #[test]
+    fn phase8_responses_stream_capacity_failure_is_not_network_retryable() {
+        let result = dispatch_sse_data(
+            r#"{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"too big"}}}"#,
+            &mut OpenAiAccumulator::default(),
+            &mut Vec::new(),
+            100000,
+        );
+        let error = result.expect_err("capacity failure must propagate");
+        assert_ne!(error.kind(), crate::model::ModelErrorKind::Server);
     }
 }

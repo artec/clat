@@ -15,6 +15,7 @@ use std::sync::Mutex;
 
 const FILE_NAME: &str = "memory.json";
 const UNIT: (&str, u64) = ("memory", 1);
+const MAX_QUERY_BYTES: usize = 4096;
 pub(crate) const DEFAULT_TOP_K: usize = 5;
 pub(crate) const MAX_TOP_K: usize = 10;
 pub(crate) const MAX_INJECTION_BYTES: usize = 8 * 1024;
@@ -301,7 +302,7 @@ impl MemoryService {
         top_k: usize,
         max_bytes: usize,
     ) -> Result<Vec<MemoryHit>, String> {
-        if query.trim().is_empty() || query.len() > 4096 {
+        if query.trim().is_empty() || query.len() > MAX_QUERY_BYTES {
             return Err("memory query must contain 1..=4096 UTF-8 bytes".into());
         }
         let top_k = top_k.clamp(1, MAX_TOP_K);
@@ -360,7 +361,8 @@ impl MemoryService {
     }
 
     pub(crate) fn injection(&self, prompt: &str) -> Result<MemoryInjection, String> {
-        let hits = self.search(prompt, DEFAULT_TOP_K, MAX_INJECTION_BYTES)?;
+        let query = bounded_injection_query(prompt);
+        let hits = self.search(&query, DEFAULT_TOP_K, MAX_INJECTION_BYTES)?;
         if hits.is_empty() {
             return Ok(MemoryInjection {
                 instructions: String::new(),
@@ -602,8 +604,35 @@ fn terms(value: &str) -> Vec<String> {
     terms.into_iter().take(32).collect()
 }
 
+/// Automatic retrieval samples a bounded query; the model and journal retain the whole prompt.
+fn bounded_injection_query(prompt: &str) -> std::borrow::Cow<'_, str> {
+    let prompt = prompt.trim();
+    if prompt.len() <= MAX_QUERY_BYTES {
+        return std::borrow::Cow::Borrowed(prompt);
+    }
+    let mut end = MAX_QUERY_BYTES / 2 - 1;
+    while !prompt.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut start = prompt.len() - MAX_QUERY_BYTES / 2;
+    while !prompt.is_char_boundary(start) {
+        start += 1;
+    }
+    std::borrow::Cow::Owned(format!("{} {}", &prompt[..end], &prompt[start..]))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn phase8_automatic_memory_query_bounds_utf8_without_shortening_model_input() {
+        let original = format!("PROMPT_HEAD{}PROMPT_TAIL", "证🙂".repeat(20000));
+        let query = super::bounded_injection_query(&original);
+        assert!(query.len() <= super::MAX_QUERY_BYTES);
+        assert!(query.starts_with("PROMPT_HEAD"));
+        assert!(query.ends_with("PROMPT_TAIL"));
+        assert_eq!(original.matches("证🙂").count(), 20000);
+    }
+
     use super::*;
 
     fn service(label: &str) -> (MemoryService, PathBuf, PathBuf) {

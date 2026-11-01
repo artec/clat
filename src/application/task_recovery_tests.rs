@@ -68,7 +68,7 @@ impl TestModelScript for ReportScript {
         r: ModelRequest<'_>,
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
-        if r.tools.is_empty() {
+        if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
             return Ok(crate::test_support::response(
                 "report title",
                 FinishReason::Completed,
@@ -274,11 +274,8 @@ impl TestModelScript for CompactTask {
         r: ModelRequest<'_>,
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
-        if r.tools.is_empty() {
-            if r.instructions
-                .unwrap_or_default()
-                .contains("context compaction")
-            {
+        if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
+            if crate::test_support::is_summary_request(&r) {
                 self.summaries.fetch_add(1, Ordering::SeqCst);
             }
             return Ok(crate::test_support::response(
@@ -492,7 +489,7 @@ fn ga1_ordinary_run_cannot_see_or_forge_task_progress_tools() {
             r: ModelRequest<'_>,
             events: &mut dyn ModelEventSink,
         ) -> Result<ModelResponse, ModelError> {
-            if r.tools.is_empty() {
+            if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
                 return Ok(crate::test_support::response(
                     "title",
                     FinishReason::Completed,
@@ -568,7 +565,7 @@ fn ga1_real_run_stops_before_another_model_request_when_intent_commit_fails() {
             r: ModelRequest<'_>,
             events: &mut dyn ModelEventSink,
         ) -> Result<ModelResponse, ModelError> {
-            if r.tools.is_empty() {
+            if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
                 return Ok(crate::test_support::response(
                     "title",
                     FinishReason::Completed,

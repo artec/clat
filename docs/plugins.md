@@ -201,6 +201,16 @@ language intelligence and quota monitoring have explicit absence behavior: their
 services are not mounted, affected APIs return unavailable or omit optional data,
 and normal model selection, notifications and conversation execution continue.
 Compaction, Todo, titles and contribution-only plugins can also be absent.
+The three independent maintenance capabilities are `builtin.compaction`
+(model summaries), `builtin.tool_result_pruner` (pressure-time text trimming)
+and `builtin.compaction_image_offload` (durable historical input-image omission,
+enabled by default). They share no hard dependency on one another. Image offload
+is independent of new user-image input, native image viewing and utility models.
+Existing checkpoints, tool-result replacements and image-offload facts remain
+readable through Session core when their decision plugins are disabled. The
+original journal, attachment files, permissions and Plan/Task constraints remain
+owned by core. Configuration uses the same Host-wide preview/save/manual-restart
+flow; package reload cannot reactivate a disabled capability.
 
 Goal, Task, background Jobs and Scheduler can also be independently disabled
 with `builtin.goal`, `builtin.task`, `builtin.jobs` and `builtin.scheduler`.

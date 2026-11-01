@@ -184,6 +184,8 @@ impl TrustedProjectApplication {
             mcp_status: ports.mcp_status,
             monitor: ports.monitor,
             compactor: ports.compactor,
+            pruner: ports.pruner,
+            image_offload: ports.image_offload,
             todo: ports.todo,
             titler: ports.titler,
             utility: ports.utility,

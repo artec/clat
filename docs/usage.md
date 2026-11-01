@@ -728,8 +728,13 @@ provider quota.
 
 Context pressure is handled separately. Presets seed a context window, and
 automatic compaction checks run both at run/Goal-round startup and before every
-model request inside a long task, near the shared 80% request-pressure line
-(including instructions, visible tools, and output reserve). A single user turn
+model request inside a long task. The common meter includes the effective
+instructions, visible tools, messages and images. For window `W` and output
+reserve `O`, message capacity is `B = W - O`, headroom is
+`H = min(65536, max(512, floor(B * 0.10)))`, the maintenance trigger is
+`T = min(floor(W * 0.80), B - H)`, and recent-text retention is
+`K = floor(B * 0.16)`. Output is reserved once. Invalid capacity fails explicitly;
+the maintenance trigger is separate from the hard request capacity. A single user turn
 can therefore continue through many model/tool exchanges without waiting for a
 new user message to reclaim context. Without a configured or preset context
 window, CLAT does not invent an automatic compaction threshold.
@@ -739,10 +744,13 @@ retains the newest complete tool exchange, and summarizes older complete
 exchanges without splitting a model response's tool-call/result pairs. Earlier
 checkpoints made during that run can be summarized again. Summary input is
 split into bounded, lossless text chunks rather than taking just the first
-2,000 characters of each item. The handoff asks for decisions, observed results,
-evidence references, unresolved issues, and next steps. Summarization remains
+2,000 characters of each item. The checkpoint uses eight sections: Primary Request and Intent, Key Technical
+Concepts, Files and Code, Errors and Fixes, Pending Jobs, Current Work, Next Step,
+and Critical Context. Its body follows the conversation language and preserves
+exact paths, commands, errors, important quotations and completion evidence. Summarization remains
 lossy; original observations are available in the journal. Images in summarized
-exchanges are represented by image notices, not re-sent to the summary model.
+exchanges remain actual image parts when sent to a compatible summary model;
+already offloaded images retain their durable notices.
 
 Internal summary attempts share the run's cancellation signal. Compaction has
 no CLAT-added time limit, cumulative token budget, request-count limit or fixed
@@ -755,7 +763,9 @@ caller cancels, or no safe progress is possible. A summary failure leaves that
 selected history intact; a persistence failure stops execution without repeating
 tools already executed.
 
-`/compact` manually summarizes older user turns while no run is active.
+`/compact` manually selects the largest safe balanced history span with zero
+recent-tail budget while no run is active; the final node group and protected
+system boundaries remain outside the selection.
 Only one manual compaction can be active in a project. Repeating the request is
 rejected immediately; it does not wait for the first request to finish. Host
 state and cancellation are shared across clients regardless of which core entry
@@ -786,6 +796,42 @@ The internal checkpoint carrier is model context, not a new user message. The
 workbench shows a compact history marker instead of a user bubble containing the
 summary. Checkpoints do not enter human input history, message navigation, or
 public conversation search; original user and assistant messages stay available.
+
+Pressure maintenance first uses the optional tool-result pruner, then eligible
+historical image offload, and finally model summarization if still needed.
+`builtin.tool_result_pruner` trims Unicode text over 8,192 code points to a
+4,096-point head and 1,024-point tail, preserving non-text blocks and control
+metadata. The original safe-bounded tool result is journaled first. The prune
+record and content-only replacement commit together; history keeps the original
+result and does not show a second tool execution.
+
+`builtin.compaction_image_offload` is independently configurable and enabled by
+default. It records exact historical input-image occurrences using `image/offload`.
+Current user-turn and steering images and model output images are protected.
+Attachments and original messages remain available; cold replay honors the
+omission even when the plugin is later disabled. Disabled offload never falls
+back to silently dropping images in an adapter. Remaining capacity or modality
+problems fail explicitly. `/context` only reads the durable view.
+
+A provider-confirmed capacity code may trigger request recovery before any text
+or tool increment was delivered. Context overflow permits one repeat only after
+durable maintenance strictly reduced the request. Image recovery must remove an
+eligible retained image on every repeat. Other errors keep ordinary retry rules;
+no recovery repeats a tool or creates new authority. Model switching checks the
+target capacity before publishing its request header. A saved previous route can
+summarize first; failure leaves the previous request header and the newly saved
+Host settings intact.
+
+Automatic memory lookup samples a bounded UTF-8 query from long messages; the
+full original user message, including its tail, stays in the journal and model
+request. The explicit memory-search API keeps its existing query limit.
+
+Summary generation reserves `min(65536, floor(S / 4))` tokens for known summary
+window `S`, or 8,192 for unknown capacity. Each request prices its full effective
+prefix, tools, input, generation and headroom. A matching session/route/prefix
+usage anchor can conservatively raise estimates; stale headers cannot restore
+closed capabilities. Prefix compatibility alone is not evidence of cache hits
+or a measured latency improvement.
 
 ### Attached terminal information dialogs
 
@@ -836,11 +882,11 @@ vendors open image input — officially-declared for `deepseek-flash`,
 `qwen3.8-max`, `qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding`, probe-verified for
 `glm-5.3-flash` — and, for custom configurations, it is unlocked only by a
 passing `/vision-probe`.
-Switching an image-bearing session to a text-only route fails the next run
-before provider I/O with the same actionable guidance (switch back to a vision
-route or start `/new`) instead of forwarding the vendor's 400 — except images
-the visual-context budget already offloaded to notices, which do not block the
-text-only run. Image-only prompts
+When switching to a text-only route, the enabled offload policy can durably omit
+eligible historical input images. Current-turn images and model output images
+remain protected. If any images remain, the next run fails before provider I/O
+with actionable guidance to use a vision route or start `/new`. Disabled offload
+keeps all retained images. Image-only prompts
 are valid. Startup/admission failures restore the text and ordered draft, and
 `Esc` recalls queued image steering with its original sources. If cancellation
 or failure seals the run before a queued steering message is claimed, its exact
@@ -1426,7 +1472,7 @@ hidden exits inside an explicitly launched wrapper or shell, certify a test
 binary/source version, or prove that the assertions cover the intended behavior.
 
 Verification results reserve room for the receipt and shorten diagnostics based
-on the actual serialized JSON size, before the shared result pruner runs. The
+on the actual serialized JSON size, before optional pressure-time pruning. The
 receipt therefore survives long or escape-heavy output. Display truncation and
 scanner completeness are separate facts; a bounded excerpt is not the full log.
 Empty polls keep cumulative evidence without rerunning the process. The durable
@@ -3034,7 +3080,7 @@ never regenerates old suggestions. An explicit retry is offered after failure.
 Suggestions do not enter the conversation journal or model context.
 
 The context ring beside the model opens a usage popover by hover, focus or click.
-When core estimates pressure above its 80% threshold (including output reserve)
+When core estimates pressure above the shared capacity-scaled maintenance threshold
 and there is compressible history, the ring turns red. Open the popup and use
 its explicit compaction button to start the existing model-backed compaction flow.
 Compaction may incur model usage and can lose detail in the model summary; original

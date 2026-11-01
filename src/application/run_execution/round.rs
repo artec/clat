@@ -8,6 +8,7 @@ pub(super) struct RoundExecution {
     recorder: Arc<Mutex<SessionRecorder>>,
     approver: Arc<dyn PermissionApprover>,
     spend_ledger: Arc<crate::model::RunSpendLedger>,
+    maintenance_floor: u64,
 }
 struct ExecutionOutcome {
     outcome: Option<Result<crate::RunOutput, AgentFailure>>,
@@ -86,6 +87,7 @@ impl RoundExecution {
             .and_then(|service| service.begin_round(Arc::clone(&spend_ledger)).err());
         recorder.set_run_ledger(Arc::clone(&spend_ledger));
         Self {
+            maintenance_floor: worker.input.replay_before_seq,
             process_generation,
             file_capture_error,
             subagent_round_error,
@@ -190,7 +192,10 @@ impl RoundExecution {
         worker: &RunWorker,
     ) -> Option<Box<dyn crate::run::RequestContextManager>> {
         Some(Box::new(super::super::compaction::ActiveContext {
-            compactor: worker.deps.compactor.clone()?,
+            compactor: worker.deps.compactor.clone(),
+            pruner: worker.deps.pruner.clone(),
+            image_offload: worker.deps.image_offload.clone(),
+            protected_floor: self.maintenance_floor,
             sessions: Arc::clone(&worker.deps.sessions),
             journal: Arc::clone(&worker.input.journal),
             recorder: Arc::clone(&self.recorder),
@@ -200,7 +205,7 @@ impl RoundExecution {
             turn: worker.input.turn,
             subscribers: Arc::clone(&worker.deps.subscribers),
             ledger: Arc::clone(&self.spend_ledger),
-            checkpoints: Default::default(),
+            checkpoints: worker.deps.sessions.compaction_checkpoints(),
         }))
     }
     fn finish(&self, worker: &mut RunWorker, outcome: ExecutionOutcome) -> ApplicationRunResult {

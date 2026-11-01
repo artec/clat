@@ -122,23 +122,11 @@ fn modality_preflight_counts_user_and_tool_result_images() {
 /// Count estimator invocations rather than relying on machine timing.
 #[test]
 fn image_projection_text_history_does_not_repeat_request_estimation() {
-    let mut items = (0..512)
+    let items = (0..512)
         .map(|index| ModelItem::user_text(format!("history {index}")))
         .collect::<Vec<_>>();
     let original = items.clone();
-    let checks = std::cell::Cell::new(0);
-    let protected_start = items.len() - 1;
-    let report = super::context::offload_older_images(&mut items, protected_start, |_| {
-        checks.set(checks.get() + 1);
-        true // Text alone exceeds the budget; removing images cannot help.
-    });
-    assert_eq!(report, (0, None));
-    assert_eq!(items, original, "text history must remain unchanged");
-    assert_eq!(
-        checks.get(),
-        1,
-        "unchanged history needs one pressure check"
-    );
+    assert_eq!(items, original);
     let options = ModelOptions {
         image_projection: Some(ImageProjectionBudget {
             max_context_tokens: Some(4096),
@@ -154,7 +142,7 @@ fn image_projection_text_history_does_not_repeat_request_estimation() {
 }
 
 #[test]
-fn image_projection_offloads_oldest_recursively_and_protects_latest_turn() {
+fn image_projection_cannot_implicitly_offload_any_turn() {
     let dir = std::env::temp_dir().join(format!(
         "clat-image-offload-order-{}",
         std::time::SystemTime::now()
@@ -199,23 +187,13 @@ fn image_projection_offloads_oldest_recursively_and_protects_latest_turn() {
         }),
         ..ModelOptions::default()
     };
-    let (projected, report) = project_items_for_image_budget(&items, None, &[], &options).unwrap();
-    assert_eq!(report.original_images, 3);
-    assert_eq!(report.retained_images, 1);
-    assert_eq!(report.offloaded_images, 2);
-    assert_eq!(report.first_offloaded_image, Some(1));
-    assert!(matches!(
-        &projected[0],
-        ModelItem::User { content }
-            if content == &[ContentPart::Text(IMAGE_OFFLOAD_PLACEHOLDER.into())]
-    ));
-    assert!(matches!(
-        &projected[1],
-        ModelItem::ToolResult(result)
-            if result.image_parts == [ContentPart::Text(IMAGE_OFFLOAD_PLACEHOLDER.into())]
-    ));
-    assert_eq!(model_item_image_parts(&projected[2]).count(), 1);
-
+    assert!(
+        project_items_for_image_budget(&items, None, &[], &options).is_err(),
+        "adapters cannot silently offload historical images"
+    );
+    let (projected, report) = preview_items_for_image_budget(&items, None, &[], &options);
+    assert_eq!(projected, items);
+    assert_eq!(report.offloaded_images, 0);
     let latest_only = vec![ModelItem::User {
         content: vec![image_part(), image_part()],
     }];
@@ -226,7 +204,7 @@ fn image_projection_offloads_oldest_recursively_and_protects_latest_turn() {
 }
 
 #[test]
-fn image_projection_quantizes_context_threshold_and_is_repeatable() {
+fn image_projection_capacity_rejects_without_durable_offload() {
     let dir = std::env::temp_dir().join(format!(
         "clat-image-offload-quantum-{}",
         std::time::SystemTime::now()
@@ -263,11 +241,12 @@ fn image_projection_quantizes_context_threshold_and_is_repeatable() {
         }),
         ..ModelOptions::default()
     };
-    let first = project_items_for_image_budget(&items, None, &[], &options(5120)).unwrap();
-    let repeated = project_items_for_image_budget(&items, None, &[], &options(5200)).unwrap();
-    assert_eq!(first, repeated, "same 1024-token bucket has one identity");
-    assert_eq!(first.1.offloaded_images, 1);
-    assert_eq!(model_item_image_parts(first.0.last().unwrap()).count(), 1);
+    assert!(project_items_for_image_budget(&items, None, &[], &options(2048)).is_err());
+    assert!(project_items_for_image_budget(&items, None, &[], &options(2100)).is_err());
+    assert_eq!(
+        preview_items_for_image_budget(&items, None, &[], &options(5120)).0,
+        items
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -6,12 +6,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 pub(super) const FALLBACK_INPUT_TOKENS: usize = 24_000;
-const GENERATION_LIMIT: u32 = 8192;
-const RECOVERY_LIMIT: u32 = 16_384;
+const GENERATION_LIMIT: u32 = 65_536;
+const RECOVERY_LIMIT: u32 = 65_536;
 
-fn instructions(characters: usize) -> String {
+fn instructions(tokens: usize) -> String {
     format!(
-        "{SUMMARY_INSTRUCTIONS} Keep the final summary within {characters} characters, including spaces."
+        "{SUMMARY_INSTRUCTIONS} Keep the complete checkpoint within approximately {tokens} tokens; preserve all eight sections."
     )
 }
 
@@ -27,14 +27,14 @@ impl Policy {
         // Generation includes reasoning; the visible summary keeps its separate bound.
         let output = config
             .max_context_tokens
-            .map(|window| (window / 4).clamp(256, GENERATION_LIMIT))
-            .unwrap_or(GENERATION_LIMIT);
+            .map(|window| (window / 4).min(GENERATION_LIMIT))
+            .unwrap_or(8192);
         let input_ceiling = config
             .max_context_tokens
             .map(|window| {
                 (window as usize).saturating_sub(
                     output as usize
-                        + estimate_tokens_str(&instructions(SUMMARY_OUTPUT_LIMIT as usize))
+                        + estimate_tokens_str(&instructions(output as usize))
                         + MARGIN_TOKENS
                         + 32,
                 )
@@ -50,13 +50,13 @@ impl Policy {
         Ok(Self {
             input,
             // Two accepted summaries plus headings must fit the next reduction.
-            summary_limit: (SUMMARY_OUTPUT_LIMIT as usize + MARGIN_TOKENS).min(input / 2 - 64),
+            summary_limit: (output as usize).min(input / 3 - 64),
             output,
             window: config.max_context_tokens,
         })
     }
     fn instructions(&self) -> String {
-        instructions((SUMMARY_OUTPUT_LIMIT as usize).min(self.summary_limit.saturating_sub(8)))
+        instructions(self.summary_limit.saturating_sub(8))
     }
     fn recovery_output(&self, text: &str) -> u32 {
         let items = [ModelItem::user_text(text)];
@@ -86,6 +86,9 @@ pub(super) struct SummaryJob {
     policy: Policy,
     cancel: CancelToken,
     active: bool,
+    config: ModelConfig,
+    instructions: String,
+    tools: Vec<crate::tool::ToolDefinition>,
 }
 impl SummaryJob {
     pub(super) fn new(
@@ -125,11 +128,19 @@ impl SummaryJob {
             policy,
             cancel: request.cancel.clone(),
             active: request.active_checkpoints.is_some(),
+            config: request.config.clone(),
+            instructions: request.instructions.clone(),
+            tools: request.tool_definitions.clone(),
         })
     }
     pub(super) fn execute(mut self, region: &[ModelItem]) -> SummaryResult {
         let mut run = SummaryRun::new(self.model.as_mut(), &self.cancel, self.policy);
-        let summary = run.summarize(region, self.active);
+        let summary =
+            crate::model::modality_preflight(region, &self.config.capabilities, &self.config.model)
+                .map_err(Into::into)
+                .and_then(|()| {
+                    run.summarize_context(region, self.active, &self.instructions, &self.tools)
+                });
         let output_limit = run.max_output;
         let usage = self
             .usage
@@ -149,6 +160,8 @@ pub(super) struct SummaryRun<'a> {
     cancel: &'a CancelToken,
     policy: Policy,
     max_output: u32,
+    system: Option<String>,
+    pub(super) tools: Vec<crate::tool::ToolDefinition>,
 }
 impl<'a> SummaryRun<'a> {
     pub(super) fn new(model: &'a mut dyn Model, cancel: &'a CancelToken, policy: Policy) -> Self {
@@ -157,6 +170,8 @@ impl<'a> SummaryRun<'a> {
             cancel,
             policy,
             max_output: policy.output,
+            system: None,
+            tools: Vec::new(),
         }
     }
     pub(super) fn summarize(
@@ -204,60 +219,31 @@ impl<'a> SummaryRun<'a> {
     }
     fn request(&mut self, text: &str) -> Result<String, PresentedText> {
         if estimate_tokens_str(text) > self.policy.input {
-            return Err(format!(
-                "summary input needs {} tokens, above the per-request budget of {}",
-                estimate_tokens_str(text),
-                self.policy.input
-            )
-            .into());
+            return Err("summary input exceeds the per-request capacity".into());
         }
-        let mut input = text.to_owned();
-        let instructions = self.policy.instructions();
-        let mut output = self.policy.output;
-        for recovery in 0..2 {
-            if self.cancel.is_cancelled() {
-                return Err(UiMessage::new("compaction.cancelled").into());
-            }
-            let items = [ModelItem::user_text(&input)];
-            let options = ModelOptions {
-                output_limit: Some(output),
-                ..Default::default()
-            };
-            self.max_output = self.max_output.max(output);
-            let response = self.model.stream(
-                ModelRequest {
-                    instructions: Some(&instructions),
-                    items: &items,
-                    tools: &[],
-                    options: &options,
-                    cancel: self.cancel,
-                },
-                &mut Vec::new(),
-            );
-            if self.cancel.is_cancelled() {
-                return Err(UiMessage::new("compaction.cancelled").into());
-            }
-            let response = response.map_err(|error| format!("summary request failed: {error}"))?;
-            if let Some(answer) = self.accept(response, recovery, &mut input, &mut output)? {
-                return Ok(answer);
-            }
-        }
-        unreachable!("each recovery attempt either returns or exhausts its bound")
+        self.request_items(
+            vec![ModelItem::user_text(text)],
+            self.system.clone().as_deref(),
+            &self.tools.clone(),
+        )
     }
-    fn accept(
+    pub(super) fn accept(
         &self,
         response: crate::model::ModelResponse,
         recovery: usize,
         input: &mut String,
         output: &mut u32,
     ) -> Result<Option<String>, PresentedText> {
+        if !response.tool_calls.is_empty() {
+            return Err("compaction summary must not call tools".into());
+        }
         if response.finish_reason == FinishReason::Cancelled {
             return Err(UiMessage::new("compaction.provider_cancelled").into());
         }
         let answer = response.text.trim();
         if response.finish_reason == FinishReason::Completed && !answer.is_empty() {
             let tokens = estimate_tokens_str(answer);
-            if answer.chars().count() <= SUMMARY_MAX_CHARS && tokens <= self.policy.summary_limit {
+            if tokens <= self.policy.summary_limit {
                 return Ok(Some(answer.to_owned()));
             }
             if recovery == 0 && tokens <= self.policy.input {
@@ -285,5 +271,98 @@ impl<'a> SummaryRun<'a> {
         Err(UiMessage::new("compaction.incomplete_summary")
             .arg("finish", format!("{:?}", response.finish_reason))
             .into())
+    }
+}
+
+impl SummaryRun<'_> {
+    pub(super) fn directive(&self) -> String {
+        self.policy.instructions()
+    }
+    pub(super) fn output(&self) -> u32 {
+        self.policy.output
+    }
+    pub(super) fn bind_prefix(
+        &mut self,
+        system: &str,
+        tools: &[crate::tool::ToolDefinition],
+    ) -> Result<(), PresentedText> {
+        self.system = (!system.is_empty()).then(|| system.to_owned());
+        self.tools = tools.to_vec();
+        let cost =
+            crate::model::estimate_request_tokens(self.system.as_deref(), &[], tools) as usize;
+        self.policy.input = self
+            .policy
+            .input
+            .checked_sub(cost)
+            .filter(|n| *n >= 256)
+            .ok_or("summary guidance exceeds capacity")?;
+        self.policy.summary_limit = self.policy.summary_limit.min(self.policy.input / 3 - 64);
+        Ok(())
+    }
+    pub(super) fn input_budget(&self) -> usize {
+        self.policy.input
+    }
+    pub(super) fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+    pub(super) fn fits(
+        &self,
+        items: &[ModelItem],
+        system: Option<&str>,
+        tools: &[crate::tool::ToolDefinition],
+        output: u32,
+    ) -> bool {
+        match self.policy.window {
+            Some(window) => {
+                crate::model::estimate_request_tokens(system, items, tools)
+                    .saturating_add(u64::from(output))
+                    .saturating_add(MARGIN_TOKENS as u64)
+                    <= u64::from(window)
+            }
+            None => {
+                crate::model::estimate_request_tokens(system, items, tools)
+                    <= (FALLBACK_INPUT_TOKENS + estimate_tokens_str(&self.directive()) + 32) as u64
+            }
+        }
+    }
+    pub(super) fn available_generation(
+        &self,
+        items: &[ModelItem],
+        system: Option<&str>,
+        tools: &[crate::tool::ToolDefinition],
+        output: u32,
+    ) -> u32 {
+        self.policy.window.map_or(output, |window| {
+            u64::from(window)
+                .saturating_sub(
+                    crate::model::estimate_request_tokens(system, items, tools)
+                        .saturating_add(MARGIN_TOKENS as u64),
+                )
+                .min(u64::from(output)) as u32
+        })
+    }
+    pub(super) fn stream_summary(
+        &mut self,
+        system: Option<&str>,
+        items: &[ModelItem],
+        tools: &[crate::tool::ToolDefinition],
+        output: u32,
+    ) -> Result<crate::model::ModelResponse, PresentedText> {
+        self.max_output = self.max_output.max(output);
+        self.model
+            .stream(
+                ModelRequest {
+                    instructions: system,
+                    items,
+                    tools,
+                    options: &ModelOptions {
+                        output_limit: Some(output),
+                        ..Default::default()
+                    },
+                    cancel: self.cancel,
+                },
+                &mut Vec::new(),
+            )
+            .map_err(|error| format!("summary request failed: {error}").into())
     }
 }

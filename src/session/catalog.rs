@@ -1,6 +1,7 @@
 //! The pinned journal vocabulary: one seat selects validation, surface and replay.
 //! Envelope-only means preserved without interpreting its payload. New required
 //! DSH metadata belongs here; it does not require a replay skip-list change.
+mod maintenance;
 mod run_events;
 pub(crate) mod search;
 mod validation;
@@ -39,6 +40,9 @@ impl JobPhase {
     }
 }
 
+type SurfaceProjector =
+    fn(&mut crate::session::surface::Surface, &SessionEvent, &[SessionEvent]) -> Result<(), String>;
+
 pub(crate) struct EventSpec {
     pub name: &'static str,
     pub surface: bool,
@@ -47,6 +51,7 @@ pub(crate) struct EventSpec {
     pub starts_step: bool,
     pub job_phase: Option<JobPhase>,
     validate: Option<PayloadValidator>,
+    project: Option<SurfaceProjector>,
 }
 
 /// Vocabulary birth/death by format generation (pinned upstream fact: DSH's
@@ -113,16 +118,29 @@ impl EventSpec {
         }
     }
 }
+pub(crate) fn project_message_event(
+    surface: &mut crate::session::surface::Surface,
+    event: &SessionEvent,
+    earlier: &[SessionEvent],
+) -> Result<(), String> {
+    match event_spec(&event.event_type).and_then(|spec| spec.project) {
+        Some(project) => project(surface, event, earlier),
+        None => Ok(()),
+    }
+}
 macro_rules! vocabulary {
+    (@project) => {None};
+    (@project $project:path) => {Some($project)};
     (@job) => {None};
     (@job $phase:ident) => {Some(JobPhase::$phase)};
-    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)?) ),* $(,)?) => {
+    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)? $(; $project:path)?) ),* $(,)?) => {
         pub(crate) const KNOWN_EVENT_TYPES: &[&str] = &[$($name),*];
         const EVENTS: &[EventSpec] = &[$(EventSpec {
             name: $name, validate: $validate, surface: $surface,
             replay: ReplayKind::$replay, retired_in_v2: $retired,
             starts_step: false $(|| $step)?,
             job_phase: vocabulary!(@job $($($job)?)?),
+            project: vocabulary!(@project $($project)?),
         }),*];
     };
 }
@@ -142,7 +160,7 @@ vocabulary! {
     "command/done" => (None, false, Skip, false),
     "command/run" => (None, false, Skip, false),
     "compaction/end" => (Some(validation::compaction), false, Skip, false),
-    "compaction/prune" => (None, false, Skip, false),
+    "compaction/prune" => (Some(maintenance::prune_payload), false, Skip, false; maintenance::prune),
     "compaction/start" => (Some(validation::compaction), false, Skip, false),
     "compaction/summary" => (Some(validation::summary), false, Compaction, false),
     "deliverables/presented" => (None, false, Skip, false),
@@ -153,7 +171,7 @@ vocabulary! {
     "goal/change" => (Some(validation::goal), false, Skip, false),
     "hook/invoked" => (None, false, Skip, false),
     "hook/result" => (None, false, Skip, false),
-    "image/offload" => (None, false, Skip, false),
+    "image/offload" => (Some(maintenance::offload_payload), false, Skip, false; maintenance::offload),
     "job/registered" => (Some(validation::job_registered), false, Skip, false, false, Registered),
     "job/settled" => (Some(validation::job_settled), false, Skip, false, false, Settled),
     "llm/retry" => (None, false, Retry, false),
@@ -223,6 +241,15 @@ pub(crate) fn replay_kind(event_type: &str) -> ReplayKind {
 }
 
 /// A DSH model-context replacement carrier, never a human-authored chat message.
+/// A surface-only content rewrite is maintenance, never a second execution.
+pub(crate) fn is_tool_result_replacement(event: &SessionEvent) -> bool {
+    event_spec(&event.event_type).is_some_and(|spec| spec.replay == ReplayKind::ToolResult)
+        && matches!(
+            event.surface_op,
+            Some(crate::session::event::SurfaceOp::Replace { .. })
+        )
+}
+
 pub(crate) fn is_context_checkpoint(event: &crate::session::event::SessionEvent) -> bool {
     matches!(replay_kind(&event.event_type), ReplayKind::UserMessage)
         && event
@@ -293,3 +320,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod maintenance_tests;

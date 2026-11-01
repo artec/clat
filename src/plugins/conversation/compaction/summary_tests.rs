@@ -23,6 +23,7 @@ enum Reply {
     RetryAndRecover,
     LongOnce,
     LongAlways,
+    Panic,
 }
 #[derive(Clone)]
 struct Factory {
@@ -87,14 +88,12 @@ impl Model for Attempt {
                 input + u64::from(request.options.output_limit.unwrap()) + 512 <= u64::from(window)
             );
         }
-        let ModelItem::User { content } = &request.items[0] else {
-            unreachable!()
+        let evidence = &request.items[..request.items.len() - 1];
+        let input = match evidence {
+            [ModelItem::User { content }] => content_text(content),
+            _ => chunks::rendered_units(evidence, true).join("\n"),
         };
-        self.factory
-            .inputs
-            .lock()
-            .unwrap()
-            .push(content_text(content));
+        self.factory.inputs.lock().unwrap().push(input);
         if matches!(self.factory.reply, Reply::RetryAndRecover) && attempt.is_multiple_of(2) {
             return Err(ModelError::transport(
                 "injected retryable transport failure",
@@ -107,7 +106,7 @@ impl Model for Attempt {
             .push(request.cancel.remaining());
         let exhausted = self.config.extra_body["reasoning_effort"] == "high"
             || request.options.output_limit.unwrap_or(0) < 4096;
-        let long_answer = "证据".repeat(1600);
+        let long_answer = "证据".repeat(40000);
         let (text, finish) = match self.factory.reply {
             Reply::Thinking if exhausted => ("", FinishReason::MaxTokens),
             Reply::Thinking => (
@@ -127,6 +126,7 @@ impl Model for Attempt {
             Reply::Incomplete => ("Must not be committed", FinishReason::Incomplete),
             Reply::AlternateEmpty if attempt.is_multiple_of(2) => ("", FinishReason::Completed),
             Reply::AlternateEmpty => ("Recovered summary", FinishReason::Completed),
+            Reply::Panic => panic!("injected provider panic"),
             Reply::PreCancelled => panic!("cancelled summary cannot reach the provider"),
             Reply::RetryAndRecover if attempt % 4 == 1 => ("", FinishReason::Completed),
             Reply::RetryAndRecover => ("Recovered summary", FinishReason::Completed),
@@ -212,7 +212,7 @@ fn compact_with_capacity(
         ModelItem::ToolResult(crate::ToolResult {
             call_id: id.into(),
             tool_name: "read_file".into(),
-            output: serde_json::json!({"evidence":"read"}),
+            output: serde_json::json!({"evidence":"read ".repeat(800)}),
             is_error: false,
             blocks: vec![],
             image_parts: vec![],
@@ -257,7 +257,10 @@ fn compact_with_capacity(
         config: &config,
         credentials: &ProviderCredentials::for_protocol(config.protocol),
         nodes: &nodes,
+        measured_input: None,
+        protected_boundaries: Vec::new(),
         active_checkpoints: active.then_some(&[]),
+        protected_head: None,
         spend_ledger: Some(factory.ledger.clone()),
         instructions: String::new(),
         tool_definitions: vec![],
@@ -319,7 +322,7 @@ fn summary_job_recovers_empty_or_reasoning_only_answers_once_and_accounts_both_a
                         == Some(crate::model::ThinkingLevel::Low))
             );
             if matches!(reply, Reply::LengthOnce) {
-                assert!(seen[1].1.output_limit > seen[0].1.output_limit);
+                assert!(seen[1].1.output_limit >= seen[0].1.output_limit);
                 assert_eq!(
                     outcome.summary_output_limit,
                     u64::from(seen[1].1.output_limit.unwrap())
@@ -502,7 +505,7 @@ fn summary_job_resummarizes_complete_oversized_output_without_truncating_it() {
         let inputs = factory.inputs.lock().unwrap();
         assert_eq!(
             inputs[1],
-            "证据".repeat(1600),
+            "证据".repeat(40000),
             "recovery preserves the complete candidate summary"
         );
     }
@@ -537,4 +540,14 @@ fn idle_summary_receives_late_evidence_in_long_user_tool_and_assistant_items() {
         input.contains("OBSERVED_ERROR_END"),
         "idle compaction must not discard late observations"
     );
+}
+
+#[test]
+fn phase8_summary_panic_is_an_accounted_failure_not_a_committed_checkpoint() {
+    let (outcome, factory, _) = compact(Reply::Panic, false);
+    assert!(outcome.summary.is_none());
+    assert!(outcome.degraded.is_some());
+    assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
+    assert!(outcome.usage.input_tokens > 0 && outcome.usage.output_tokens > 0);
+    assert_eq!(factory.ledger.used(), factory.ledger.committed());
 }

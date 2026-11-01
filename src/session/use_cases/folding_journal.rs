@@ -152,6 +152,37 @@ impl RunJournal for ProjectionFoldJournal {
         Ok(range)
     }
 
+    fn append_atomic_durable_at(
+        &self,
+        expected: Option<u64>,
+        events: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<crate::session::run_journal::SeqRange, String> {
+        let _lane = self.lane.lock().expect("projection fold lane");
+        if self.inner.committed_seq() != expected {
+            return Err("session changed during context maintenance".into());
+        }
+        let mut built = self.build_events(events)?;
+        let first = expected.map_or(0, |seq| seq + 1);
+        for (offset, event) in built.iter_mut().enumerate() {
+            event.seq = first + offset as u64;
+        }
+        self.projections
+            .lock()
+            .expect("projections")
+            .validate_maintenance(&built)?;
+        let range = self.inner.append_atomic_durable_at(expected, events)?;
+        for (offset, event) in built.iter_mut().enumerate() {
+            event.seq = range.start + offset as u64;
+        }
+        self.pending.lock().expect("fold journal").extend(built);
+        if let Err(error) = self.fold_committed_pending() {
+            eprintln!(
+                "clat: warning: projection refresh failed after durable context transaction: {error}"
+            );
+        }
+        Ok(range)
+    }
+
     fn committed_seq(&self) -> Option<u64> {
         self.inner.committed_seq()
     }

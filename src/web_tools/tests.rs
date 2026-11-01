@@ -247,12 +247,11 @@ fn native_web_rejects_bad_urls_and_unsupported_types() {
 }
 #[test]
 fn native_web_metadata_survives_generic_pruning_and_log_redaction() {
-    use crate::tool::ToolResultTransformer;
     let f = Fixture::new();
     f.reply(200, &"中文证据".repeat(10000), "text/plain", None);
     let tool = f.tool(Operation::Fetch);
     let value = invoke(&tool, json!({"url":"https://example.com/large"})).unwrap();
-    let mut result = crate::ToolResult {
+    let result = crate::ToolResult {
         call_id: "call".into(),
         tool_name: "web_fetch".into(),
         output: value.clone(),
@@ -260,7 +259,11 @@ fn native_web_metadata_survives_generic_pruning_and_log_redaction() {
         blocks: vec![],
         image_parts: vec![],
     };
-    crate::plugins::ResultPruner.transform_result(&mut result);
+    assert!(
+        crate::plugins::ResultPruner
+            .prune(&[json!({"type":"text","text":value.to_string()})])
+            .is_none()
+    );
     assert_eq!(result.output["source"], value["source"]);
     assert_eq!(value["truncated"], true);
     assert_eq!(result.output["status"], 200);

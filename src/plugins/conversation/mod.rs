@@ -4,3 +4,5 @@ pub(super) mod pruner;
 pub(super) mod title;
 pub(super) mod todo;
 pub(crate) mod utility;
+
+pub(crate) mod image_offload;

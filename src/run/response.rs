@@ -8,40 +8,7 @@ impl Run<'_> {
         state: &mut StepState,
         events: &mut dyn EventSink,
     ) -> Result<ModelResponse, RunError> {
-        events.emit(RunEvent::ModelRequested {
-            turn: state.turn,
-            provider: self.model.provider().to_owned(),
-            model: self.model.model_id().to_owned(),
-        });
-        let request = ModelRequest {
-            instructions: input.instructions.as_deref(),
-            items: &input.items,
-            tools: &input.definitions,
-            options: &self.model_options,
-            cancel: &self.cancel,
-        };
-        let mut partial_text = String::new();
-        let mut forwarder = RunModelEventForwarder {
-            turn: state.turn,
-            events,
-            partial_text: &mut partial_text,
-            usage_seen: false,
-        };
-        let mut response = match self.model.stream(request, &mut forwarder) {
-            Ok(response) => response,
-            Err(error) => {
-                if !partial_text.is_empty() {
-                    state.items.push(ModelItem::assistant_text(partial_text));
-                }
-                return Err(state.fail(events, &self.steering, format!("model error: {error}")));
-            }
-        };
-        if let Some(usage) = &response.usage {
-            if !forwarder.usage_seen {
-                forwarder.emit(ModelEvent::Usage(usage.clone()));
-            }
-            state.usage.add_assign(usage);
-        }
+        let mut response = self.stream_with_recovery(input, state, events)?;
         events.emit(RunEvent::ModelResponded {
             turn: state.turn,
             outcome: ModelOutcome {

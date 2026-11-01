@@ -397,6 +397,9 @@ impl ReplayAdapter {
     }
 
     fn tool_finished(&mut self, event: &SessionEvent) -> Option<ReplayEvent> {
+        if crate::session::catalog::is_tool_result_replacement(event) {
+            return None;
+        }
         let message = event.data.get("message")?;
         let block = if message.get("role").and_then(Value::as_str) == Some("tool") {
             message

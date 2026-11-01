@@ -219,6 +219,7 @@ impl OpenAiCompatibleModel {
             // 短路为 Cancelled 响应，不把半截诊断当 429 上抛。
             super::CancellingBodyRead::Cancelled => return Ok(None),
         };
+        let kind = super::capacity::from_body(&text, kind);
         let mut error = ModelError::with_kind(
             kind,
             format!(
@@ -757,6 +758,12 @@ fn dispatch(
     let value: Value = serde_json::from_str(data)
         .map_err(|error| ModelError::decode(format!("invalid compatible SSE event: {error}")))?;
 
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        return Err(ModelError::with_kind(
+            super::capacity::from_value(&value, crate::model::ModelErrorKind::Server),
+            error["message"].as_str().unwrap_or("provider stream error"),
+        ));
+    }
     if accumulator.response_id.is_none() {
         let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
         if id.is_some() {
@@ -765,26 +772,7 @@ fn dispatch(
         }
     }
 
-    if let Some(usage) = value.get("usage") {
-        let parsed = parse_usage(usage);
-        // TC-5（2026-09-02）：Hy 流式每个 chunk 都携带 usage——前段
-        // 全 0、终 chunk 真值（TC-0 实测 fixture
-        // docs/research/tc0-probe/resp-p2-stream.txt）。全零（input==0
-        // && output==0）无信息量——真实请求 prompt ≥1 token，缓存命中
-        // 也计入 prompt_tokens——不落 accumulator、不发事件，免得前端
-        // last_turn_usage 被逐 chunk 零值覆盖（Context 长时间显示 0）。
-        // 单次 usage 形态（DeepSeek/GLM 终 chunk、非流式）全为真值，
-        // 部分零（prompt 真实、output==0）照发——谓词是「全零」。
-        let all_zero = parsed
-            .as_ref()
-            .is_some_and(|usage| usage.input_tokens == 0 && usage.output_tokens == 0);
-        if !all_zero {
-            accumulator.usage = parsed;
-            if let Some(usage) = &accumulator.usage {
-                events.emit(ModelEvent::Usage(usage.clone()));
-            }
-        }
-    }
+    record_stream_usage(&value, accumulator, events);
 
     let Some(choice) = value
         .get("choices")
@@ -857,6 +845,33 @@ fn dispatch(
         )));
     }
     Ok(())
+}
+
+fn record_stream_usage(
+    value: &Value,
+    accumulator: &mut Accumulator,
+    events: &mut dyn ModelEventSink,
+) {
+    if let Some(usage) = value.get("usage") {
+        let parsed = parse_usage(usage);
+        // TC-5（2026-09-02）：Hy 流式每个 chunk 都携带 usage——前段
+        // 全 0、终 chunk 真值（TC-0 实测 fixture
+        // docs/research/tc0-probe/resp-p2-stream.txt）。全零（input==0
+        // && output==0）无信息量——真实请求 prompt ≥1 token，缓存命中
+        // 也计入 prompt_tokens——不落 accumulator、不发事件，免得前端
+        // last_turn_usage 被逐 chunk 零值覆盖（Context 长时间显示 0）。
+        // 单次 usage 形态（DeepSeek/GLM 终 chunk、非流式）全为真值，
+        // 部分零（prompt 真实、output==0）照发——谓词是「全零」。
+        let all_zero = parsed
+            .as_ref()
+            .is_some_and(|usage| usage.input_tokens == 0 && usage.output_tokens == 0);
+        if !all_zero {
+            accumulator.usage = parsed;
+            if let Some(usage) = &accumulator.usage {
+                events.emit(ModelEvent::Usage(usage.clone()));
+            }
+        }
+    }
 }
 
 fn finish(
@@ -2635,5 +2650,34 @@ mod tests {
         assert_eq!(response.text, "checking");
         assert!(response.tool_calls.is_empty());
         assert_eq!(response.finish_reason, FinishReason::Cancelled);
+    }
+}
+
+#[cfg(test)]
+mod phase8_errors {
+    use super::*;
+    #[test]
+    fn phase8_compatible_null_error_field_keeps_valid_stream_content() {
+        let mut accumulator = Accumulator::default();
+        dispatch(
+            r#"{"error":null,"choices":[{"delta":{"content":"hello"}}]}"#,
+            &mut accumulator,
+            &mut Vec::new(),
+            100000,
+        )
+        .unwrap();
+        assert_eq!(accumulator.text, "hello");
+    }
+
+    #[test]
+    fn phase8_compatible_stream_capacity_failure_is_not_network_retryable() {
+        let result = dispatch(
+            r#"{"error":{"code":"context_length_exceeded","message":"too big"}}"#,
+            &mut Accumulator::default(),
+            &mut Vec::new(),
+            100000,
+        );
+        let error = result.expect_err("capacity failure must propagate");
+        assert_ne!(error.kind(), crate::model::ModelErrorKind::Server);
     }
 }

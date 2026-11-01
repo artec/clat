@@ -56,7 +56,7 @@ impl TestModelScript for DiscoveryPrelude {
         r: ModelRequest<'_>,
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
-        if r.tools.is_empty() {
+        if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
             return self.inner.stream(r, events);
         }
         let mut state = self.state.lock().unwrap();
@@ -442,7 +442,7 @@ fn ga3_in_run_compaction_queries_current_view_again_without_reviving_history_aut
             r: ModelRequest<'_>,
             events: &mut dyn ModelEventSink,
         ) -> Result<ModelResponse, ModelError> {
-            if r.tools.is_empty() {
+            if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
                 return self.inner.stream(r, events);
             }
             if self.pending.swap(false, Ordering::SeqCst) {

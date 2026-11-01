@@ -68,7 +68,10 @@ impl ManualCompactionWork {
             .compactor
             .clone()
             .ok_or_else(|| ApplicationError::new("compaction service is not available"))?;
+        let (instructions, definitions) = app.compaction_inputs(&config)?;
         Ok(Self {
+            instructions,
+            definitions,
             sessions: Arc::clone(&app.sessions),
             journal: app.sessions.journal().map_err(session_error)?,
             compactor,
@@ -127,6 +130,8 @@ impl ManualCompactionWork {
 }
 
 struct ManualCompactionWork {
+    instructions: String,
+    definitions: Vec<crate::tool::ToolDefinition>,
     sessions: Arc<SessionService>,
     journal: Arc<dyn RunJournal>,
     compactor: Arc<dyn HistoryCompactor>,
@@ -137,59 +142,19 @@ struct ManualCompactionWork {
 }
 impl ManualCompactionWork {
     fn execute(self) -> Result<CompactReport, PresentedText> {
-        let nodes = self
-            .sessions
-            .surface_nodes()
-            .map_err(|error| error.to_string())?;
-        let compaction_nodes: Vec<CompactionNode> = nodes
-            .iter()
-            .map(|(seq, item)| CompactionNode {
-                seq: *seq,
-                item: item.clone(),
-            })
-            .collect();
-        let outcome = compact_history(
-            self.compactor.as_ref(),
-            &self.config,
-            &self.credentials,
-            &compaction_nodes,
-            true,
-            &self.cancel,
-        );
-        if self.cancel.is_cancelled() {
-            return Err(UiMessage::new("compaction.cancelled").into());
+        commit::IdleCompaction {
+            sessions: &self.sessions,
+            journal: self.journal.as_ref(),
+            compactor: self.compactor.as_ref(),
+            config: &self.config,
+            credentials: &self.credentials,
+            cancel: &self.cancel,
+            turn: self.turn,
+            instructions: self.instructions,
+            definitions: self.definitions,
+            force: true,
         }
-        let summary = outcome.summary.as_deref().ok_or_else(|| {
-            outcome
-                .degraded
-                .clone()
-                .unwrap_or_else(|| "nothing to compact".into())
-        })?;
-
-        let shadowed = &compaction_nodes[..outcome.shadowed_count];
-        // SV 最小适配行（S6 例外，docs/todo/session-v3-execution.md）：
-        // V3 受保护 system 头不得被压缩 shadow——头之前的
-        // 前缀节点（至多首条用户消息）从遮蔽前缀剔除。
-        let shadowed = match self.sessions.last_system_head() {
-            Some((head, _)) => {
-                let skip = shadowed.iter().take_while(|node| node.seq <= head).count();
-                &shadowed[skip..]
-            }
-            None => shadowed,
-        };
-        write_compaction_events(
-            self.journal.as_ref(),
-            shadowed,
-            summary,
-            &outcome,
-            &self.config,
-            self.turn,
-        )?;
-        let _ = self.sessions.sync_active();
-        Ok(CompactReport {
-            shadowed_count: outcome.shadowed_count,
-            degraded: outcome.degraded,
-        })
+        .execute()
     }
 }
 

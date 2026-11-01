@@ -70,21 +70,12 @@ impl Tool for NoisyTool {
 }
 
 #[test]
-fn oversized_tool_results_are_pruned_through_the_pipeline() {
-    use crate::plugins::ResultPruner;
-
+fn oversized_tool_results_remain_raw_without_pressure_maintenance() {
     let project = Project::new(".");
     let permissions = AllowAll;
     let tools = ToolRegistry::new();
     register_test_tool(&tools, NoisyTool);
     let pipeline = ToolExecutionPipeline::new();
-    let _lease = pipeline
-        .register_result_transformer(
-            crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.pruner")),
-            std::sync::Arc::new(ResultPruner),
-        )
-        .map_err(|error| error.to_string())
-        .expect("register pruner");
     let mut model = PruningCheckModel { calls: 0 };
     let mut events = Vec::new();
 
@@ -111,8 +102,7 @@ fn oversized_tool_results_are_pruned_through_the_pipeline() {
             _ => None,
         })
         .expect("ToolFinished");
-    assert_eq!(finished.output["clat_truncated"], json!(true));
-    assert!(!finished.output["head"].as_str().expect("head").is_empty());
+    assert_eq!(finished.output["log"].as_str().unwrap().len(), 20_000);
 }
 
 struct PruningCheckModel {
@@ -152,7 +142,7 @@ impl Model for PruningCheckModel {
         // 第二轮：模型看到的是截断视图而非原始洪流。
         assert!(matches!(
             request.items.last(),
-            Some(ModelItem::ToolResult(result)) if result.output.get("clat_truncated") == Some(&json!(true))
+            Some(ModelItem::ToolResult(result)) if result.output["log"].as_str().is_some_and(|text| text.len()==20_000)
         ));
         Ok(ModelResponse {
             text: "done".into(),
@@ -719,11 +709,6 @@ impl Model for ImageProjectionModel {
             1,
             "the provider sees only the protected latest-turn image"
         );
-        assert!(matches!(
-            &request.items[0],
-            ModelItem::User { content }
-                if content == &[ContentPart::Text(crate::model::IMAGE_OFFLOAD_PLACEHOLDER.into())]
-        ));
         Ok(ModelResponse {
             text: "done".into(),
             tool_calls: Vec::new(),
@@ -793,8 +778,8 @@ fn run_applies_image_projection_before_model_io_and_fails_closed_for_latest_turn
             None,
             &mut events,
         )
-        .expect("old image is deterministically omitted");
-    assert_eq!(model.calls, 1);
+        .expect_err("history requires durable maintenance before model I/O");
+    assert_eq!(model.calls, 0);
 
     let mut never_called = ImageProjectionModel { calls: 0 };
     let error = Run::new(&mut never_called, &tools, &AllowAll, &project)
@@ -955,12 +940,30 @@ fn modality_preflight_passes_when_the_model_accepts_images() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// MS-1 卸载腿：预算压力下被投影替换为占位文本的旧图不在请求
-/// 里，纯文本模型照常出话——MM-2 卸载语义不因预检收紧（改 bug
-/// 不改坏既有好逻辑的锁定腿）。
+/// Already durable offload facts remain compatible with text-only model admission.
 #[test]
 fn offloaded_history_images_do_not_trip_the_modality_preflight() {
     let (dir, image) = image_part_in_temp_dir("offload");
+    let ContentPart::Image { path, media_type } = image else {
+        unreachable!()
+    };
+    let original = crate::session::event::SessionEvent::new(
+        "user/message",
+        0,
+        0,
+        json!({"role":"user","content":[{"type":"image","path":path,"mediaType":media_type}]}),
+    )
+    .append(vec![]);
+    let offload = crate::session::event::SessionEvent::new(
+        "image/offload",
+        1,
+        0,
+        json!({"targets":[{"seq":0,"imageIndexes":[0]}]}),
+    );
+    let events = [original, offload];
+    let surface = crate::session::surface::Surface::fold(&events).unwrap();
+    let mut items = crate::session::adapter::surface_to_model_items(&events, &surface).unwrap();
+    items.push(ModelItem::user_text("text-only follow-up"));
     let options = ModelOptions {
         image_projection: Some(crate::model::ImageProjectionBudget {
             max_context_tokens: None,
@@ -981,14 +984,7 @@ fn offloaded_history_images_do_not_trip_the_modality_preflight() {
     )
     .with_model_options(options)
     .execute_with_items(
-        vec![
-            ModelItem::User {
-                content: vec![image],
-            },
-            ModelItem::User {
-                content: vec![ContentPart::Text("text-only follow-up".into())],
-            },
-        ],
+        items,
         crate::message::MessageContent::text("text-only follow-up"),
         None,
         &mut Vec::new(),

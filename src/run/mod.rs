@@ -13,6 +13,7 @@ use crate::tool::{ToolExecutionPipeline, ToolInvocation, ToolRegistry, ToolResul
 use std::fmt;
 
 mod context;
+mod recovery;
 mod request;
 mod response;
 mod state;
@@ -271,6 +272,8 @@ struct RunModelEventForwarder<'a> {
     events: &'a mut dyn EventSink,
     partial_text: &'a mut String,
     usage_seen: bool,
+    delivered: bool,
+    last_usage: Option<Usage>,
 }
 
 impl ModelEventSink for RunModelEventForwarder<'_> {
@@ -278,8 +281,19 @@ impl ModelEventSink for RunModelEventForwarder<'_> {
         if let ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } = &event {
             self.partial_text.push_str(delta);
         }
-        if matches!(event, ModelEvent::Usage(_)) {
+        if matches!(&event, ModelEvent::TextDelta {delta}|ModelEvent::RefusalDelta {delta} if !delta.is_empty())
+            || matches!(
+                &event,
+                ModelEvent::ToolCallStarted { .. }
+                    | ModelEvent::ToolArgumentsDelta { .. }
+                    | ModelEvent::ToolCallCompleted { .. }
+            )
+        {
+            self.delivered = true;
+        }
+        if let ModelEvent::Usage(usage) = &event {
             self.usage_seen = true;
+            self.last_usage = Some(usage.clone());
         }
         self.events.emit(RunEvent::ModelStream {
             turn: self.turn,
@@ -401,5 +415,7 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+#[cfg(test)]
+mod recovery_tests;
 #[cfg(test)]
 mod tests;

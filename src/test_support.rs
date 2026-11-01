@@ -164,6 +164,10 @@ impl crate::plugin::Plugin for TestProviderPlugin {
     }
 }
 
+pub(crate) fn is_summary_request(request: &ModelRequest<'_>) -> bool {
+    request.items.last().is_some_and(|item|matches!(item,crate::model::ModelItem::User {content} if content.iter().any(|part|matches!(part,crate::model::ContentPart::Text(text) if text.starts_with("You are summarizing an agent task for context compaction.")))))
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum TestBehavior {
@@ -352,10 +356,7 @@ impl Model for TestModel {
                 Ok(response("done", FinishReason::Completed))
             }
             TestBehavior::SlowCompaction => {
-                let is_summary = request.tools.is_empty()
-                    && request
-                        .instructions
-                        .is_some_and(|text| text.contains("context compaction"));
+                let is_summary = is_summary_request(&request);
                 if is_summary {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
                     while std::time::Instant::now() < deadline && !request.cancel.is_cancelled() {
@@ -450,10 +451,7 @@ impl Model for TestModel {
                 }
             }
             TestBehavior::CompactionFailure => {
-                let is_summary = request.tools.is_empty()
-                    && request
-                        .instructions
-                        .is_some_and(|text| text.contains("context compaction"));
+                let is_summary = is_summary_request(&request);
                 if is_summary {
                     Err(ModelError::transport("intentional compaction failure"))
                 } else {

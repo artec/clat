@@ -263,7 +263,7 @@ fn allow_all(
     crate::PermissionDecision::Allow
 }
 
-fn mount(
+pub(super) fn mount(
     project: &Project,
     storage_root: &std::path::Path,
     behavior: TestBehavior,
@@ -271,7 +271,7 @@ fn mount(
     mount_result(project, storage_root, behavior).unwrap()
 }
 
-fn mount_result(
+pub(super) fn mount_result(
     project: &Project,
     storage_root: &std::path::Path,
     behavior: TestBehavior,
@@ -280,14 +280,14 @@ fn mount_result(
         .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
 }
 
-fn run(
+pub(super) fn run(
     application: &mut TrustedProjectApplication,
     prompt: &str,
 ) -> Result<ApplicationRunDone, ApplicationRunFailure> {
     run_with_attachments(application, prompt, Vec::new())
 }
 
-fn run_with_attachments(
+pub(super) fn run_with_attachments(
     application: &mut TrustedProjectApplication,
     prompt: &str,
     attachments: Vec<std::path::PathBuf>,
@@ -626,7 +626,9 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
     );
     application.close().unwrap();
 
-    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let application = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Success)
+    });
     assert_eq!(
         application.utility_settings_view().unwrap(),
         crate::application::UtilitySettingsView {
@@ -4034,6 +4036,9 @@ fn automatic_compaction_is_durable_and_survives_cold_reopen() {
     let fixed = application.context_snapshot().unwrap().total_estimate;
     let window = u32::try_from((fixed + 8_000) * 5 / 4).unwrap();
     configure_test_model_with_budget(&application, window);
+    if let Some(worker) = application.title_worker.as_mut() {
+        worker.shutdown().unwrap();
+    }
     eprintln!("COMPACTION_FIXTURE fixed={fixed} window={window}");
 
     let mut submitted = 0usize;

@@ -27,6 +27,11 @@ const DISPLAY: &[(&str, &str, &str)] = &[
         "extension.builtin.commands.summary",
     ),
     (
+        "builtin.compaction_image_offload",
+        "extension.builtin.compaction_image_offload.name",
+        "extension.builtin.compaction_image_offload.summary",
+    ),
+    (
         "builtin.compaction",
         "extension.builtin.compaction.name",
         "extension.builtin.compaction.summary",

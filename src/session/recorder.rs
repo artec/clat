@@ -483,6 +483,32 @@ impl SessionRecorder {
         )
     }
 
+    /// Capacity recovery records a failed attempt before maintenance; it never fabricates tool output.
+    pub(crate) fn finish_capacity_failure(
+        &mut self,
+        kind: crate::model::ModelErrorKind,
+    ) -> Result<(), String> {
+        let usage = self.stream_usage.take();
+        if let Some(usage) = &usage {
+            self.assistant_stream.push(
+                crate::session::event::now_ms(),
+                serde_json::json!({"type":"usage","usage":usage_value(usage)}),
+            );
+        }
+        self.assistant_stream.push(crate::session::event::now_ms(),serde_json::json!({"type":"finish","reason":{"kind":"error","failure":{"message":"request capacity exceeded","code":match kind {crate::model::ModelErrorKind::ContextCapacity=>"context_capacity",crate::model::ModelErrorKind::ImageCapacity=>"image_capacity",_=>"other"}}}}));
+        self.assistant_attempt();
+        let actual = usage.map(|usage| usage.input_tokens.saturating_add(usage.output_tokens));
+        if actual.is_none()
+            && let Some(ledger) = &self.budget.ledger
+        {
+            ledger.commit_pending();
+        }
+        for event in self.budget.crossing_events(actual, 0) {
+            self.append_quietly(event);
+        }
+        self.prepare_context_boundary()
+    }
+
     /// A compaction boundary closes a complete step, without ending the user turn.
     pub(crate) fn prepare_context_boundary(&mut self) -> Result<(), String> {
         self.close_open_step();

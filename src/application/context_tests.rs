@@ -107,7 +107,7 @@ fn context_reports_normalized_image_count_bytes_tokens_and_survives_cold_replay(
 }
 
 #[test]
-fn context_uses_the_exact_oldest_first_image_projection_across_cold_replay() {
+fn context_is_read_only_and_preserves_images_across_cold_replay() {
     let (storage_root, project_root) = roots("context-image-offload");
     std::fs::create_dir_all(&project_root).unwrap();
     let source = project_root.join("source.png");
@@ -159,15 +159,12 @@ fn context_uses_the_exact_oldest_first_image_projection_across_cold_replay() {
     let live = application.context_snapshot().unwrap();
     assert_estimate_identity(&live);
     assert_eq!(live.image_original_count, 5);
-    assert!(
-        (1..5).contains(&live.image_count),
-        "the newest image stays visible while one or more old images are omitted"
-    );
     assert_eq!(
-        live.image_offloaded_count,
-        live.image_original_count - live.image_count
+        live.image_count, 5,
+        "read-only inspection cannot silently offload images"
     );
-    assert!(live.input_estimate < unbounded.input_estimate);
+    assert_eq!(live.image_offloaded_count, 0);
+    assert_eq!(live.input_estimate, unbounded.input_estimate);
     let expected = (
         live.input_estimate,
         live.history_estimate,

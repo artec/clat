@@ -78,6 +78,17 @@ pub(crate) trait RunJournal: Send + Sync {
         self.flush()?;
         Ok(range)
     }
+    /// Conditional publication; production implementations serialize this with queue admission.
+    fn append_atomic_durable_at(
+        &self,
+        expected: Option<u64>,
+        events: &[NewSessionEvent],
+    ) -> Result<SeqRange, String> {
+        if self.committed_seq() != expected {
+            return Err("session changed during context maintenance".into());
+        }
+        self.append_atomic_durable(events)
+    }
     /// The last durably committed seq, when the journal can report it.
     /// Folding consumers use it to never fold an event ahead of its
     /// commit (fold-after-Committed, plan §11.2).
@@ -315,7 +326,25 @@ impl SessionCoordinator {
     }
 
     fn enqueue_atomic_durable(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
+        self.enqueue_atomic_durable_at(events, None)
+    }
+
+    fn enqueue_atomic_durable_at(
+        &self,
+        events: Vec<SessionEvent>,
+        expected: Option<Option<u64>>,
+    ) -> Result<SeqRange, String> {
         let _transaction = self.transaction.lock().expect("journal transaction");
+        if expected.is_some_and(|expected| {
+            self.inner
+                .lock()
+                .expect("coordinator lock")
+                .next_seq
+                .checked_sub(1)
+                != expected
+        }) {
+            return Err("session changed during context maintenance".into());
+        }
         let range = self.enqueue_atomic_locked(events)?;
         let writer = self.writer.as_ref().expect("admitted writable transaction");
         if let Err(error) = writer.flush() {
@@ -472,24 +501,16 @@ impl RunJournal for JournalAdapter {
     }
 
     fn append_atomic_durable(&self, events: &[NewSessionEvent]) -> Result<SeqRange, String> {
-        let time = crate::session::event::now_ms();
-        let built = events
-            .iter()
-            .map(|new_event| {
-                validate_new_event(new_event)?;
-                Ok(SessionEvent {
-                    event_type: new_event.event_type.clone(),
-                    seq: 0,
-                    time,
-                    data: new_event.data.clone(),
-                    ignorable: new_event.ignorable,
-                    surface_op: new_event.surface_op.clone(),
-                    source_event_seqs: new_event.source_event_seqs.clone(),
-                    extra: serde_json::Map::new(),
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        self.coordinator.enqueue_atomic_durable(built)
+        self.coordinator
+            .enqueue_atomic_durable(build_events(events)?)
+    }
+    fn append_atomic_durable_at(
+        &self,
+        expected: Option<u64>,
+        events: &[NewSessionEvent],
+    ) -> Result<SeqRange, String> {
+        self.coordinator
+            .enqueue_atomic_durable_at(build_events(events)?, Some(expected))
     }
 
     fn committed_seq(&self) -> Option<u64> {
@@ -515,6 +536,26 @@ fn validate_new_event(event: &NewSessionEvent) -> Result<(), String> {
         return Err("event data must be a JSON object".into());
     }
     Ok(())
+}
+
+fn build_events(events: &[NewSessionEvent]) -> Result<Vec<SessionEvent>, String> {
+    let time = crate::session::event::now_ms();
+    events
+        .iter()
+        .map(|new_event| {
+            validate_new_event(new_event)?;
+            Ok(SessionEvent {
+                event_type: new_event.event_type.clone(),
+                seq: 0,
+                time,
+                data: new_event.data.clone(),
+                ignorable: new_event.ignorable,
+                surface_op: new_event.surface_op.clone(),
+                source_event_seqs: new_event.source_event_seqs.clone(),
+                extra: serde_json::Map::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()
 }
 
 #[cfg(test)]
@@ -560,6 +601,43 @@ mod tests {
 
     fn user_message(text: &str) -> NewSessionEvent {
         NewSessionEvent::new("user/message", payloads::user_message(text)).append(Vec::new())
+    }
+
+    #[test]
+    fn phase8_conditional_maintenance_rejects_stale_and_unflushed_revisions_without_writing() {
+        let (backend, key, coordinator, root) = setup("maintenance-revision");
+        let journal = coordinator.journal();
+        journal
+            .append_atomic_durable_at(None, &[turn_start(1), user_message("original")])
+            .unwrap();
+        let expected = journal.committed_seq();
+        journal
+            .append_atomic_durable_at(expected, &[user_message("concurrent winner")])
+            .unwrap();
+        let before = backend.load(&key, false).unwrap().events;
+        assert!(
+            journal
+                .append_atomic_durable_at(expected, &[user_message("stale maintenance")])
+                .is_err()
+        );
+        assert_eq!(backend.load(&key, false).unwrap().events, before);
+        let expected = journal.committed_seq();
+        let pending = user_message("pending real input");
+        journal.append(pending.clone()).unwrap();
+        assert!(
+            journal
+                .append_atomic_durable_at(
+                    expected,
+                    &[user_message("maintenance racing pending input")]
+                )
+                .is_err()
+        );
+        journal.flush().unwrap();
+        let after = backend.load(&key, false).unwrap().events;
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(after.last().unwrap().data, pending.data);
+        coordinator.close().unwrap();
+        crate::test_support::cleanup_tree(&root);
     }
 
     #[test]

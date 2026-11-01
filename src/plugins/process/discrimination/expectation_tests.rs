@@ -11,12 +11,6 @@ fn expected_failure_rejects_an_unrelated_panic_through_the_agent_loop() {
     ));
     let tools = f.manager.require(TOOL_SERVICE).unwrap();
     let pipeline = crate::tool::ToolExecutionPipeline::default();
-    let _pruner = pipeline
-        .register_result_transformer(
-            crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.expectation")),
-            Arc::new(crate::plugins::ResultPruner),
-        )
-        .unwrap();
     let mut args = f.args();
     args["expected_failure"] = json!(EXPECTED);
     let mut model = ExpectedFailureModel { args, calls: 0 };

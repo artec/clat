@@ -9,17 +9,126 @@ pub(super) fn choose_range(
     instructions: &str,
     definitions: &[crate::tool::ToolDefinition],
 ) -> Option<Range<usize>> {
-    match request.active_checkpoints {
-        Some(checkpoints) => active_range(request.nodes, checkpoints),
-        None => choose_cut(
-            request.nodes,
-            threshold,
-            instructions,
-            definitions,
-            request.config,
-        )
-        .map(|cut| 0..cut),
+    let _ = (threshold, instructions, definitions);
+    let range = match request.active_checkpoints {
+        Some(checkpoints) => active_range(request.nodes, checkpoints).and_then(|mut range| {
+            if let Some(head) = request.protected_head {
+                range.start = range.start.max(
+                    request
+                        .nodes
+                        .iter()
+                        .position(|node| node.seq == head)
+                        .map_or(0, |index| index + 1),
+                );
+            }
+            if !request.force {
+                let retain = crate::model::ContextBudget::resolve(request.config)
+                    .ok()
+                    .flatten()?
+                    .retain;
+                range.end = range
+                    .end
+                    .min(historical_range(request.nodes, retain, request.protected_head)?.end);
+                while range.end > range.start
+                    && (!plan::balanced(&request.nodes[range.clone()])
+                        || request
+                            .nodes
+                            .get(range.end)
+                            .is_some_and(|next| next.seq == request.nodes[range.end - 1].seq))
+                {
+                    range.end -= 1;
+                }
+            }
+            (range.start < range.end).then_some(range)
+        }),
+        None => {
+            let retain = if request.force {
+                0
+            } else {
+                crate::model::ContextBudget::resolve(request.config)
+                    .ok()
+                    .flatten()?
+                    .retain
+            };
+            historical_range(request.nodes, retain, request.protected_head)
+        }
+    }?;
+    protected_segment(request.nodes, range, &request.protected_boundaries)
+}
+
+fn protected_segment(
+    nodes: &[CompactionNode],
+    range: Range<usize>,
+    boundaries: &[usize],
+) -> Option<Range<usize>> {
+    let mut edges = vec![range.start];
+    edges.extend(
+        boundaries
+            .iter()
+            .copied()
+            .filter(|index| *index > range.start && *index < range.end),
+    );
+    edges.push(range.end);
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+        .windows(2)
+        .filter_map(|edge| {
+            let mut end = edge[1];
+            let start = edge[0];
+            while end > start
+                && (!plan::balanced(&nodes[start..end])
+                    || nodes
+                        .get(end)
+                        .is_some_and(|next| next.seq == nodes[end - 1].seq))
+            {
+                end -= 1;
+            }
+            (start < end).then_some(start..end)
+        })
+        .max_by_key(|range| {
+            nodes[range.clone()]
+                .iter()
+                .map(|node| estimate_item(&node.item))
+                .sum::<usize>()
+        })
+}
+
+/// DSH's backwards token tail and balanced seq-group boundary. Even zero retains the last group.
+pub(super) fn historical_range(
+    nodes: &[CompactionNode],
+    retain: u64,
+    protected_head: Option<u64>,
+) -> Option<Range<usize>> {
+    let start = protected_head.map_or(0, |head| {
+        nodes
+            .iter()
+            .position(|node| node.seq == head)
+            .map_or(0, |index| index + 1)
+    });
+    let mut accumulated = 0u64;
+    let mut keep = nodes.len();
+    for index in (start..nodes.len()).rev() {
+        accumulated = accumulated.saturating_add(estimate_item(&nodes[index].item) as u64);
+        keep = index;
+        if accumulated >= retain {
+            break;
+        }
     }
+    while keep > start {
+        if nodes
+            .get(keep)
+            .is_some_and(|node| nodes[keep - 1].seq == node.seq)
+        {
+            keep -= 1;
+            continue;
+        }
+        if plan::balanced(&nodes[start..keep]) {
+            return Some(start..keep);
+        }
+        keep -= 1;
+    }
+    None
 }
 
 pub(super) fn active_range(nodes: &[CompactionNode], checkpoints: &[u64]) -> Option<Range<usize>> {
@@ -79,4 +188,45 @@ fn exchange_ends(nodes: &[CompactionNode]) -> Vec<usize> {
         }
     }
     ends
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn phase8_selection_never_crosses_omitted_system_boundaries() {
+        let nodes = (0..5)
+            .map(|seq| CompactionNode {
+                seq,
+                item: ModelItem::user_text("historical evidence ".repeat(100)),
+            })
+            .collect::<Vec<_>>();
+        let request = CompactionRequest {
+            config: &ModelConfig::default(),
+            credentials: &crate::ProviderCredentials::default(),
+            nodes: &nodes,
+            measured_input: None,
+            protected_boundaries: vec![1, 3],
+            active_checkpoints: None,
+            protected_head: Some(99),
+            spend_ledger: None,
+            instructions: String::new(),
+            tool_definitions: vec![],
+            force: true,
+            cancel: CancelToken::default(),
+        };
+        let selected = choose_range(&request, None, "", &[]).unwrap();
+        assert!(selected.end < nodes.len());
+        assert!(
+            !request
+                .protected_boundaries
+                .iter()
+                .any(|boundary| selected.start < *boundary && *boundary < selected.end)
+        );
+        assert_eq!(
+            selected.len(),
+            2,
+            "choose the largest eligible span between protected boundaries"
+        );
+    }
 }

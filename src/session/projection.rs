@@ -20,6 +20,12 @@ pub(crate) trait ProjectionUnit: Send {
     /// Watermark as an i64: -1 means nothing folded yet, so the very
     /// first event (seq 0) folds into a fresh unit.
     fn as_of(&self) -> i64;
+    fn validate_maintenance(&self, _events: &[SessionEvent]) -> Result<(), String> {
+        Ok(())
+    }
+    fn maintenance_events(&self) -> Option<Vec<SessionEvent>> {
+        None
+    }
     fn last_system_head(&self) -> Option<(u64, String)> {
         None
     }
@@ -55,6 +61,19 @@ impl ProjectionRegistry {
                 Box::new(RequestHeaderUnit::default()),
             ],
         }
+    }
+
+    pub(crate) fn validate_maintenance(&self, events: &[SessionEvent]) -> Result<(), String> {
+        for unit in &self.units {
+            unit.validate_maintenance(events)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn maintenance_events(&self) -> Vec<SessionEvent> {
+        self.units
+            .iter()
+            .find_map(|unit| unit.maintenance_events())
+            .unwrap_or_default()
     }
 
     /// Serialized state of one unit by key (checkpoint row value shape).
@@ -706,6 +725,8 @@ impl Default for SurfaceUnit {
 
 #[derive(Serialize, Deserialize)]
 struct SurfaceState {
+    #[serde(default)]
+    messages: std::collections::BTreeMap<u64, Value>,
     nodes: Vec<u64>,
     replacements: Vec<Value>,
     events: Vec<Value>,
@@ -716,7 +737,7 @@ impl ProjectionUnit for SurfaceUnit {
         "surface"
     }
     fn state_version(&self) -> u64 {
-        1
+        2
     }
     fn as_of(&self) -> i64 {
         self.as_of
@@ -735,11 +756,7 @@ impl ProjectionUnit for SurfaceUnit {
         // P1-13).
         let mut events = std::mem::take(&mut self.events);
         let mut surface = std::mem::take(&mut self.surface);
-        let result = if crate::session::catalog::is_surface_type(&event.event_type) {
-            surface.apply_public(event, &events)
-        } else {
-            Ok(())
-        };
+        let result = surface.apply_public(event, &events);
         match result {
             Ok(()) => {
                 events.push(surface_index_event(event));
@@ -758,6 +775,7 @@ impl ProjectionUnit for SurfaceUnit {
     fn snapshot(&self) -> Value {
         json!({
             "nodes": self.surface.nodes,
+            "messages": self.surface.messages,
             "replacements": self.surface.replacements.iter().map(|replacement| json!({
                 "seq": replacement.seq, "start": replacement.start,
                 "end": replacement.end, "shadowed": replacement.shadowed,
@@ -769,6 +787,7 @@ impl ProjectionUnit for SurfaceUnit {
         let state: SurfaceState =
             serde_json::from_value(row.val.clone()).map_err(|error| error.to_string())?;
         self.surface.nodes = state.nodes;
+        self.surface.messages = state.messages;
         self.surface.replacements = state
             .replacements
             .into_iter()
@@ -787,6 +806,33 @@ impl ProjectionUnit for SurfaceUnit {
             &self.events,
             &self.surface,
         ))
+    }
+    fn validate_maintenance(&self, batch: &[SessionEvent]) -> Result<(), String> {
+        let mut surface = self.surface.clone();
+        let mut earlier = self.events.clone();
+        for event in batch {
+            if event.seq != earlier.len() as u64 {
+                return Err("maintenance projection is stale".into());
+            }
+            surface.apply_public(event, &earlier)?;
+            earlier.push(surface_index_event(event));
+        }
+        Ok(())
+    }
+    fn maintenance_events(&self) -> Option<Vec<SessionEvent>> {
+        Some(
+            self.surface
+                .nodes
+                .iter()
+                .filter_map(|seq| {
+                    let mut event = self.events.get(*seq as usize)?.clone();
+                    if let Some(data) = self.surface.messages.get(seq) {
+                        event.data = data.clone();
+                    }
+                    Some(event)
+                })
+                .collect(),
+        )
     }
     fn last_system_head(&self) -> Option<(u64, String)> {
         system_head_state(&self.events)
@@ -892,12 +938,16 @@ impl ProjectionUnit for TranscriptUnit {
         "transcript"
     }
     fn state_version(&self) -> u64 {
-        2
+        3
     }
     fn as_of(&self) -> i64 {
         self.as_of
     }
     fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if crate::session::catalog::is_tool_result_replacement(event) {
+            self.as_of = event.seq as i64;
+            return Ok(());
+        }
         match event.event_type.as_str() {
             "user/message" => self.record_user(event),
             "assistant/message" => {
@@ -1435,12 +1485,16 @@ impl ProjectionUnit for StatsUnit {
         "stats"
     }
     fn state_version(&self) -> u64 {
-        1
+        2
     }
     fn as_of(&self) -> i64 {
         self.as_of
     }
     fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if crate::session::catalog::is_tool_result_replacement(event) {
+            self.as_of = event.seq as i64;
+            return Ok(());
+        }
         match event.event_type.as_str() {
             "turn/end" => self.turns += 1,
             "user/message" | "assistant/message" | "tool/result" => {

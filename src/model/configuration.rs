@@ -1,5 +1,6 @@
 //! configuration implementation behind the stable model contract.
 use super::*;
+use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -35,7 +35,7 @@ impl TestModelScript for Sequence {
         r: ModelRequest<'_>,
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
-        if r.tools.is_empty() {
+        if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
             return Ok(crate::test_support::response(
                 "title",
                 FinishReason::Completed,

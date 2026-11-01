@@ -1,4 +1,7 @@
 {
+  "command.context_maintained": "上下文已維護：裁剪 {pruned} 項工具結果，卸載 {images} 張歷史圖片。原始證據已保留。",
+  "extension.builtin.compaction_image_offload.name": "歷史圖片卸載",
+  "extension.builtin.compaction_image_offload.summary": "請求超限時耐久卸載合格的舊輸入圖片；保留附件，保護目前使用者輪次。",
   "history_nav.latest": "最新訊息",
   "history_nav.running_latest": "工作執行中 · 跳至最新訊息",
   "desktop.menu_view": "檢視",

@@ -19,7 +19,7 @@ impl TrustedProjectApplication {
                 && !self.sessions.is_read_only()
                 && crate::plugins::compaction_recommended(
                     &config,
-                    estimate.total_estimate,
+                    estimate.input_estimate,
                     &nodes,
                     self.sessions.last_system_head().map(|(seq, _)| seq),
                 )

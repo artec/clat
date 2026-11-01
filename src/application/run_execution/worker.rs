@@ -92,8 +92,8 @@ impl RunWorker {
     }
     fn rounds(&mut self) -> ApplicationRunResult {
         loop {
-            self.prepare_round();
-            let mut round = self.execute_round();
+            let preparation = self.prepare_round().err();
+            let mut round = self.execute_round(preparation);
             let accounting = self.account_round(&round.result, round.cancelled);
             let tokens = round.spent_tokens();
             if self.goal_mode && self.continue_goal(&mut round.result, accounting, tokens)? {
@@ -113,50 +113,28 @@ impl RunWorker {
                 });
         }
     }
-    fn prepare_round(&mut self) {
+    fn prepare_round(&mut self) -> Result<(), String> {
         if let Some(service) = &self.deps.subagent_service {
             service.update_turn(self.input.turn);
         }
-        if let Some(compactor) = &self.deps.compactor
-            && self.deps.task_service.cap().is_none()
-        {
-            let note = run_auto_compaction(
-                compactor.as_ref(),
-                self.deps.sessions.as_ref(),
-                self.input.journal.as_ref(),
-                &self.deps.config,
-                &self.deps.credentials,
-                &self.deps.cancel,
-                self.input.turn,
-            );
-            if let Some(note) = note {
-                broadcast_to(
-                    &self.deps.subscribers,
-                    ApplicationEvent::CompactionUpdated(CompactionStatus::Finished {
-                        note: note.0,
-                        succeeded: note.1,
-                    }),
-                );
-            }
-            if let Ok(nodes) = self.deps.sessions.surface_nodes() {
-                self.input.history = nodes.into_iter().map(|(_, item)| item).collect();
-            }
-        }
+        self.prepare_capacity()?;
         self.deps
             .slots
             .plugin_host
             .update_run_metadata(&self.input.session_id.to_string(), &self.input.history);
+        Ok(())
     }
-    fn execute_round(&mut self) -> round::SettledRound {
+    fn execute_round(&mut self, preparation: Option<String>) -> round::SettledRound {
         // Each recorder may replace the protected system head. The next round
         // must follow its current durable position rather than the first request.
         self.durable_request_header.system_head = self.deps.sessions.last_system_head();
-        let context = self.context.round_context(
+        let mut context = self.context.round_context(
             &self.durable_request_header,
             self.header_reason,
             self.first_round,
             self.goal_mode.then(|| self.deps.goal_service.injection()),
         );
+        context.error = preparation.or(context.error);
         self.durable_request_header = context.header.clone();
         RoundExecution::execute(self, context)
     }

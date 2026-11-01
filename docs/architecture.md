@@ -603,7 +603,7 @@ derive two intentionally different views:
 - the bounded **message outline** supplies `{seq, turn, role, preview}` rows
   for navigation without forcing a browser to hold the full transcript.
 
-Tool-result pruning reduces transient model context. Compaction appends a
+Tool-result pruning produces durable model-context replacements after the original result has been persisted. Compaction appends a
 summary marker and shadows older surface ranges without deleting original
 events. Preset context windows seed automatic compaction; manual configuration
 remains authoritative.
@@ -631,8 +631,8 @@ Accepted summary sizes scale down for small windows so two summaries and their
 headings fit the next reduction request.
 
 The visible summary bound is separate from generation tokens, which also leave
-room for reasoning. The prompt uses a character limit compatible with the
-conservative token estimate. Only a completed, nonempty answer can become a
+room for reasoning. The eight-section prompt uses a capacity-scaled token target, with the body in
+the conversation language; it has no fixed 2,048-character body limit. Only a completed, nonempty answer can become a
 replacement. An empty or length-limited answer gets at most one recovery attempt;
 a complete oversized answer can instead be summarized again in full, without
 truncating it. Repeated invalid answers stop that request. Transport retries
@@ -648,7 +648,9 @@ until it fits or no safe reduction remains; it has no fixed pass limit.
 Unapplied attempts record usage on an existing log-only compaction end event;
 successful replacements record it once on the summary event. The existing
 Stats/Compaction/Surface folds and checkpoints consume both paths; there is no
-new durable event vocabulary, session generation, or projection version.
+new durable event vocabulary or session generation. Surface, Transcript and
+Stats cache versions advance because existing maintenance facts now affect their
+folds; the original journal is unchanged.
 
 `application/compaction/alignment.rs` maps durable spans to the live history
 using call/result identities. Replay groups calls in assistant nodes while the
@@ -658,13 +660,18 @@ protected except checkpoints created and identified by this manager. Durable
 source seqs are deduplicated because an assistant event projects several model
 items. Unshadowed live JSON, image parts, and provider state are copied intact,
 instead of replacing rich live results with their redacted journal projection.
-The context and image projection share the quantized request pressure line.
-Manual/startup compaction retains the older user-turn selection policy. Both idle and active
+The shared request meter and scaled DSH budget distinguish maintenance pressure
+from hard request capacity. A usage anchor is process-local and valid only for
+the same Session, route and effective prefix. Manual/startup selection uses token
+retention and balanced node groups; model-less protected nodes divide the surface
+into safe spans before summarization. Seq identifiers are not chronological cutoffs
+after a system-head replacement. Both idle and active
 summary inputs preserve complete rendered text before UTF-8-safe splitting;
 there is no per-item 2,000-character prefix truncation on the idle path. This
 protects late user constraints and tool/error evidence before the model sees it.
-It does not guarantee lossless model-written summaries or image understanding:
-image content is still represented by a placeholder in the text summarizer.
+It does not guarantee lossless model-written summaries or image understanding.
+Compatible summary models receive retained image parts; already offloaded images
+remain truthful notices and cannot be reconstructed from the summary.
 
 `read_file` results are constructed to stay under the shared pruner threshold,
 so the generic head/tail replacement never fires on them: every segment keeps
@@ -679,16 +686,16 @@ continuation always progresses, so no input loops forever on the same
 truncated piece. `max_bytes` stays an upper bound; the applied context-safe
 budget is reported as `content_budget_chars`.
 
-Immediately before each agent request, core derives a detached image projection
-from that surface. It counts user, assistant, and typed tool-result images in
-provider order, enforces the independent 12-block/20,000,000-byte request
-bounds, and compares the full estimated input plus output reserve with a
-1024-token-quantized 80% pressure line. If necessary, older images become one
-fixed path-free notice in oldest-first order. Images at and after the latest
-user turn are protected; if that turn still cannot fit, the run fails before
-provider I/O. The journal and transcript retain the original image blocks.
-`/context`, spend reservation, compaction, and the actual `ModelRequest` share
-this estimator/projection rather than maintaining frontend-specific counts.
+Immediately before each agent request, core validates the durable image view.
+User, assistant and typed tool-result images count in provider order toward the
+independent 12-block/20,000,000-byte limits and full request capacity with output
+reserved once. The optional image-offload policy selects the oldest eligible
+historical input occurrence; Application commits its exact seq/index first and
+then rebuilds the model view. Current real-user/steering images and model output
+images remain protected. No adapter silently drops images when the policy is
+absent or no safe target remains. The journal, transcript and attachment store
+retain original evidence. `/context`, spend, maintenance and ModelRequest share
+the estimator; `/context` only reads existing offload facts.
 
 Provider-specific replay stays opaque to `Run`. For example, OpenAI Responses
 reasoning items travel through `provider_state`, while DeepSeek-compatible
@@ -743,8 +750,8 @@ through frozen execution. Recovery adapters use that identity, never parse a
 human-readable error message; an unrelated error with the same text does not
 acquire recovery authority. Command model views, bounded diagnostic retention,
 passive verification guidance and journal projections share one policy owner in
-`plugins/process/output.rs`. The existing generic result transformer remains the
-only downstream pruning pipeline.
+`plugins/process/output.rs`. Generic result transformers remain separate from
+optional pressure-time pruning, which publishes a durable content-only replacement.
 
 Native read/edit argument failures retain their original error plus bounded,
 value-free `argument_recovery` diagnostics. Read-range validation happens
@@ -853,7 +860,7 @@ observations, not dependency analysis, executable attestation or build freshness
 
 Verification-mode formatting reserves a bounded receipt envelope under the
 shared serialized-result threshold before adding diagnostic excerpts. The
-production pruner remains enabled for every tool; it does not replace these
+optional pressure-time pruner can inspect every tool; it does not replace these
 already-bounded results. The existing tool/result journal projection keeps
 receipt metadata without stdout/stderr, and checkpoint/replay preserves that
 recorded value. Raw output retention, verification relevance and actual Agent
@@ -2061,3 +2068,30 @@ Current `builtin_availability` remains an effective-startup projection; saved
 configuration and pending restart are a separate management view. The existing
 root lease covers all writes, and rejected requests cannot change session facts,
 project trust, workflow authority or active execution.
+
+
+Phase-eight maintenance ownership is explicit. `CompactionPlan` freezes a pure
+selection; Application supplies the target Session, revision, effective guidance
+and tools and validates the candidate's framed size. `append_atomic_durable_at`
+checks the revision under the coordinator transaction lane. Projection admission
+validates the replacement against the current surface before writing. No active
+request changes until durable commit succeeds. Idle, manual, active and targeted
+execution use these same constraints. A stale snapshot, cancellation, unbalanced
+tool exchange or non-shrinking checkpoint cannot authorize a replacement.
+
+The pruner and image-offload plugins own decisions only. Their event payload
+validators and projection hooks live in the Session catalog seat table. Image
+occurrence indices count retained and previously offloaded images; invalid,
+duplicate, non-current or model-output targets reject atomically. The Session
+surface retains projected omissions in checkpoints while display replay keeps
+original attachments. Content-only tool replacements do not produce another
+ToolFinished entry or another Task evidence record.
+
+`RequestContextManager` also owns typed capacity recovery. Providers classify
+explicit machine codes at HTTP and streaming boundaries. A repeat is possible
+only without delivered text/tool increments and after durable progress; context
+recovery is bounded to one repeat, image recovery by strict image-count descent.
+The failed attempt is finalized separately before maintenance reserves summary
+spend. Requests recheck cancellation, modality and spend before redispatch.
+Model switches perform target-capacity acceptance before recorder publication;
+configuration persistence itself never invokes a model.

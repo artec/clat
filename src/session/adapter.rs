@@ -29,17 +29,18 @@ pub(crate) fn surface_to_model_items_with_seq(
         let event = events
             .get(*seq as usize)
             .ok_or_else(|| format!("surface node {seq} has no event"))?;
+        let data = surface.messages.get(seq).unwrap_or(&event.data);
         match event.event_type.as_str() {
             "user/message" => {
                 items.push((
                     *seq,
                     ModelItem::User {
-                        content: content_parts(&event.data["content"]),
+                        content: content_parts(&data["content"]),
                     },
                 ));
             }
             "assistant/message" => {
-                let message = &event.data["message"];
+                let message = &data["message"];
                 let text = content_text(&message["content"]);
                 let reasoning = reasoning_text(&message["content"]);
                 let replay_state = replay_state(message);
@@ -85,40 +86,7 @@ pub(crate) fn surface_to_model_items_with_seq(
                     }
                 }
             }
-            "tool/result" => {
-                let message = &event.data["message"];
-                let result = if message["role"] == "tool" {
-                    message
-                } else {
-                    &message["content"][0]
-                };
-                let blocks = content_blocks(&result["content"])
-                    .into_iter()
-                    .filter(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
-                    .collect();
-                let image_parts = content_parts(&result["content"])
-                    .into_iter()
-                    .filter(|part| matches!(part, crate::model::ContentPart::Image { .. }))
-                    .collect();
-                items.push((
-                    *seq,
-                    ModelItem::ToolResult(crate::tool::ToolResult {
-                        blocks,
-                        image_parts,
-                        call_id: result
-                            .get("toolCallId")
-                            .and_then(Value::as_str)
-                            .ok_or("tool-result block without toolCallId")?
-                            .to_owned(),
-                        tool_name: String::new(),
-                        output: content_text(&result["content"]).into(),
-                        is_error: result
-                            .get("isError")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    }),
-                ));
-            }
+            "tool/result" => items.push((*seq, model_tool_result(data)?)),
             "system/message" => {
                 // The protected system head is a surface node for surface
                 // math (protected-head shadowing, resume state) but never a
@@ -135,6 +103,46 @@ pub(crate) fn surface_to_model_items_with_seq(
         }
     }
     Ok(items)
+}
+
+fn model_tool_result(data: &Value) -> Result<ModelItem, String> {
+    let message = &data["message"];
+    let result = if message["role"] == "tool" {
+        message
+    } else {
+        &message["content"][0]
+    };
+    let blocks = content_blocks(&result["content"])
+        .into_iter()
+        .filter(|block| matches!(block, crate::message::ContentBlock::Image { .. }))
+        .collect();
+    let image_parts = content_parts(&result["content"])
+        .into_iter()
+        .filter(|part| matches!(part, crate::model::ContentPart::Image { .. }))
+        .collect();
+    Ok(ModelItem::ToolResult(crate::tool::ToolResult {
+        blocks,
+        image_parts,
+        call_id: result
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .ok_or("tool-result block without toolCallId")?
+            .to_owned(),
+        tool_name: String::new(),
+        output: content_parts(&result["content"])
+            .into_iter()
+            .filter_map(|part| match part {
+                crate::model::ContentPart::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into(),
+        is_error: result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }))
 }
 
 fn replay_states(replay_state: Value) -> Vec<Value> {
@@ -181,6 +189,9 @@ fn content_parts(blocks: &Value) -> Vec<crate::model::ContentPart> {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
                     parts.push(crate::model::ContentPart::Text(text.to_owned()));
                 }
+            }
+            Some("image") if block["offloaded"] == true => {
+                parts.push(crate::model::ContentPart::Text("[Input image durably offloaded from model context; attachment retained. No visual conclusion is implied.]".into()));
             }
             Some("image") => {
                 let media_type = block.get("mediaType").and_then(Value::as_str);

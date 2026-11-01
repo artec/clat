@@ -15,6 +15,8 @@ mod phase3_tests;
 #[cfg(test)]
 mod phase4_tests;
 #[cfg(test)]
+mod phase8_tests;
+#[cfg(test)]
 mod tests;
 
 pub(super) struct PluginReview {

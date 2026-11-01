@@ -56,14 +56,25 @@ impl TrustedProjectApplication {
             instruction_snapshot.as_ref(),
         );
         let history = self.current_model_history()?;
-        Ok(estimate_snapshot(
+        let mut result = estimate_snapshot(
             &config,
             &run_context,
             &final_system,
             &history,
             &skills,
             invoked_diagnostic,
-        ))
+            self.sessions.measure_request(
+                &config,
+                Some(&final_system),
+                &history,
+                &run_context.tool_definitions,
+            ),
+        );
+        result.image_offloaded_count = self.sessions.offloaded_images();
+        result.image_original_count = result
+            .image_count
+            .saturating_add(result.image_offloaded_count);
+        Ok(result)
     }
 }
 
@@ -74,6 +85,7 @@ fn estimate_snapshot(
     history: &[ModelItem],
     skills: &crate::skills::SkillCatalogSnapshot,
     invoked_diagnostic: Option<super::ContextSkillDiagnostic>,
+    measured: crate::model::RequestMeasurement,
 ) -> super::ContextEstimateSnapshot {
     let tools = &run_context.tool_definitions;
 
@@ -87,23 +99,14 @@ fn estimate_snapshot(
     let goal_total = estimate_instructions(&run_context.instructions.with_goal);
     let system_total = estimate_instructions(final_system);
     let model_options = context_model_options(config);
-    let (projected_history, image_projection) = crate::model::preview_items_for_image_budget(
+    let (_, image_projection) = crate::model::preview_items_for_image_budget(
         history,
         (!final_system.is_empty()).then_some(final_system),
         tools,
         &model_options,
     );
-    let with_history = crate::model::estimate_request_tokens(
-        (!final_system.is_empty()).then_some(final_system),
-        &projected_history,
-        &[],
-    );
-    let input_total = crate::model::estimate_request_tokens(
-        (!final_system.is_empty()).then_some(final_system),
-        &projected_history,
-        tools,
-    );
-    let output_reserve = u64::from(config.output_limit.unwrap_or(4096));
+    let input_total = measured.input;
+    let output_reserve = measured.output;
 
     super::ContextEstimateSnapshot {
         estimator: format!(
@@ -119,8 +122,10 @@ fn estimate_snapshot(
         goal_policy_estimate: goal_total.saturating_sub(invoked_total),
         memory_estimate: run_context.memory_bytes as u64,
         memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
-        tool_schemas_estimate: input_total.saturating_sub(with_history),
-        history_estimate: with_history.saturating_sub(system_total),
+        tool_schemas_estimate: crate::model::estimate_request_tokens(None, &[], tools),
+        history_estimate: input_total
+            .saturating_sub(system_total)
+            .saturating_sub(crate::model::estimate_request_tokens(None, &[], tools)),
         image_count: image_projection.retained_images,
         image_original_count: image_projection.original_images,
         image_offloaded_count: image_projection.offloaded_images,
@@ -129,7 +134,7 @@ fn estimate_snapshot(
         image_token_safety_factor: crate::media::IMAGE_TOKEN_SAFETY_FACTOR,
         output_reserve_estimate: output_reserve,
         input_estimate: input_total,
-        total_estimate: input_total.saturating_add(output_reserve),
+        total_estimate: measured.total(),
         tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
         skill_names: skills
             .entries

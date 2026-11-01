@@ -85,12 +85,6 @@ fn journey(denied: bool) {
     let (f, args) = fixture(false);
     let tools = f.manager.require(TOOL_SERVICE).unwrap();
     let pipeline = crate::tool::ToolExecutionPipeline::default();
-    let _pruner = pipeline
-        .register_result_transformer(
-            crate::plugin::PluginOwner::for_test(crate::plugin::PluginId::new("test.pw-pair")),
-            Arc::new(crate::plugins::ResultPruner),
-        )
-        .unwrap();
     let mut model = ModelProbe {
         calls: 0,
         args,

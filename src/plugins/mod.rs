@@ -37,6 +37,7 @@ pub(crate) use apply_patch::ApplyPatchTool;
 pub(crate) use commands::{BuiltinCommandsPlugin, CommandsPlugin};
 pub(crate) use compaction::{CompactionPlugin, compaction_recommended};
 pub(crate) use context_inspector::ContextInspectorPlugin;
+pub(crate) use conversation::image_offload::{CompactionImageOffloadPlugin, ImageOffloadPolicy};
 pub(crate) use goal::GoalPlugin;
 pub(crate) use instructions::ProjectInstructionsPlugin;
 pub(crate) use language_intelligence::LanguageIntelligencePlugin;
@@ -48,7 +49,6 @@ pub(crate) use plan_mode::PlanModePlugin;
 pub(crate) use process::{ExecToolsPlugin, ProcessServicePlugin, SandboxPlugin};
 pub(crate) use prompt::{DefaultPromptPlugin, PromptRegistryPlugin};
 pub(crate) use providers::{OpenAiCompatiblePlugin, OpenAiResponsesPlugin, ProviderRegistryPlugin};
-#[cfg(test)]
 pub(crate) use pruner::ResultPruner;
 pub(crate) use pruner::{THRESHOLD_CHARS, ToolResultPrunerPlugin};
 pub(crate) use run_scope::RunScopePlugin;
@@ -99,3 +99,5 @@ pub(crate) use instructions::execution_observer as target_instruction_observer;
 pub(crate) use permission::execution_factory as target_permission_factory;
 pub(crate) use plan_mode::execution_tool as target_plan_tool;
 pub(crate) use todo::execution_tool as target_todo_tool;
+
+pub(crate) use conversation::compaction::plan::{CompactionPlan, frame_checkpoint};

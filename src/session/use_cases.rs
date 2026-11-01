@@ -13,6 +13,7 @@ mod background;
 mod folding_journal;
 mod history;
 mod lifecycle;
+mod maintenance;
 mod plans;
 pub(crate) mod query;
 mod task;
@@ -278,6 +279,7 @@ fn committed_admission_from_projections(
 }
 
 pub(crate) struct SessionService {
+    meter: Mutex<crate::model::RequestMeter>,
     background_lane: Arc<Mutex<()>>,
     writers: Arc<Mutex<std::collections::HashMap<SessionKey, std::sync::Weak<ActiveSession>>>>,
     backend: Arc<JsonlBackend>,
@@ -302,6 +304,7 @@ impl SessionService {
             SessionError::Io(format!("cannot open capability-held session root: {error}"))
         })?;
         Ok(Self {
+            meter: Mutex::new(crate::model::RequestMeter::default()),
             background_lane: Arc::new(Mutex::new(())),
             writers: Arc::new(Mutex::new(std::collections::HashMap::new())),
             backend: Arc::new(JsonlBackend::with_root(

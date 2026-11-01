@@ -173,7 +173,10 @@ fn history_compaction_splits_an_oversized_turn_without_losing_rendered_evidence(
         config: &config,
         credentials: &credentials,
         nodes: &[],
-        active_checkpoints: None, // Manual and between-run history compaction.
+        measured_input: None,
+        protected_boundaries: Vec::new(),
+        active_checkpoints: None,
+        protected_head: None, // Manual and between-run history compaction.
         spend_ledger: None,
         instructions: String::new(),
         tool_definitions: Vec::new(),

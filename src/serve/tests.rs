@@ -2469,6 +2469,17 @@ fn session_compact_rpc_is_durable_replayable_and_releases_the_frontend_slot() {
         spawn_serve("serve-session-compact", TestBehavior::Success);
     let mut client = SseClient::connect(handle.addr);
 
+    // Title commits independently advance the journal revision; isolate the
+    // successful compaction contract from that legitimate competing writer.
+    post(
+        handle.addr,
+        TEST_TOKEN,
+        "model.utility.set",
+        r#"{"naming_enabled":false,"suggestions_enabled":false,"automatic_followups":false}"#,
+    )
+    .1
+    .expect("disable unrelated utility writes");
+
     let (_, no_session) = post(
         handle.addr,
         TEST_TOKEN,
@@ -2478,7 +2489,11 @@ fn session_compact_rpc_is_durable_replayable_and_releases_the_frontend_slot() {
     assert_eq!(no_session.unwrap_err(), ErrorCode::BadRequest);
 
     for turn in 0..5 {
-        prompt_send(handle.addr, &format!("history turn {turn}"));
+        // The checkpoint frame must strictly shrink real source content.
+        prompt_send(
+            handle.addr,
+            &format!("history turn {turn} {}", "evidence ".repeat(300)),
+        );
         assert_eq!(settled_outcome_type(&client.wait_settled()), "completed");
     }
 
@@ -2504,7 +2519,10 @@ fn session_compact_rpc_is_durable_replayable_and_releases_the_frontend_slot() {
     let finished_notice = wait_for_compaction_notice(&mut client, "finished");
     assert_eq!(finished_notice["kind"], "compaction");
     assert_eq!(finished_notice["payload"]["status"], "finished");
-    assert_eq!(finished_notice["payload"]["succeeded"], true);
+    assert_eq!(
+        finished_notice["payload"]["succeeded"], true,
+        "{finished_notice}"
+    );
 
     let (_, snapshot) = post(handle.addr, TEST_TOKEN, "workbench.info", "{}");
     let snapshot = snapshot.expect("workbench snapshot");

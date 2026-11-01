@@ -38,7 +38,10 @@ impl Model for SummaryModel {
         if let Some(ledger) = &self.ledger {
             ledger.reserve(estimate.input_tokens.saturating_add(estimate.output_tokens));
         }
-        let result = self.inner.stream(request, events);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.inner.stream(request, events)
+        }))
+        .unwrap_or_else(|_| Err(ModelError::request("summary provider panicked")));
         let spent = result
             .as_ref()
             .ok()

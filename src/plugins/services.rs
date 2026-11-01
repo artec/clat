@@ -23,6 +23,13 @@ pub(crate) const MONITOR_SERVICE_ID: ServiceId = ServiceId::new("core.monitor");
 pub(crate) const TOOL_PIPELINE_SERVICE_ID: ServiceId = ServiceId::new("core.tool_pipeline");
 pub(crate) const RUN_SCOPE_SERVICE_ID: ServiceId = ServiceId::new("core.run_scope");
 pub(crate) const MCP_STATUS_SERVICE_ID: ServiceId = ServiceId::new("core.mcp_status");
+pub(crate) const TOOL_PRUNER_SERVICE_ID: ServiceId = ServiceId::new("core.tool_result_pruner");
+pub(crate) const TOOL_PRUNER_SERVICE: ServiceKey<crate::plugins::ResultPruner> =
+    ServiceKey::new(TOOL_PRUNER_SERVICE_ID);
+pub(crate) const IMAGE_OFFLOAD_SERVICE_ID: ServiceId =
+    ServiceId::new("core.compaction_image_offload");
+pub(crate) const IMAGE_OFFLOAD_SERVICE: ServiceKey<crate::plugins::ImageOffloadPolicy> =
+    ServiceKey::new(IMAGE_OFFLOAD_SERVICE_ID);
 pub(crate) const COMPACTION_SERVICE_ID: ServiceId = ServiceId::new("core.compaction");
 pub(crate) const COMMAND_SERVICE_ID: ServiceId = ServiceId::new("core.commands");
 pub(crate) const DYNAMIC_INSTRUCTIONS_SERVICE_ID: ServiceId =
@@ -614,6 +621,7 @@ pub(crate) trait MonitorService: Send + Sync {
 
 /// One surface node offered to the compactor: the durable seq plus the
 /// model-facing item it projects to.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CompactionNode {
     pub seq: u64,
     pub item: ModelItem,
@@ -626,8 +634,11 @@ pub(crate) struct CompactionRequest<'a> {
     pub config: &'a ModelConfig,
     pub credentials: &'a ProviderCredentials,
     pub nodes: &'a [CompactionNode],
+    pub measured_input: Option<u64>,
+    pub protected_boundaries: Vec<usize>,
     /// Some enables complete-exchange cuts; only these checkpoint users may be replaced.
     pub active_checkpoints: Option<&'a [u64]>,
+    pub protected_head: Option<u64>,
     pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
     pub instructions: String,
     pub tool_definitions: Vec<crate::tool::ToolDefinition>,

@@ -14,7 +14,10 @@ use std::sync::{Arc, Mutex};
 
 mod active;
 mod alignment;
+pub(in crate::application) mod commit;
+pub(in crate::application) mod maintenance;
 mod manual;
+mod recovery;
 pub(super) use active::ActiveContext;
 pub use manual::CompactHandle;
 
@@ -79,6 +82,7 @@ fn write_compaction_events(
     outcome: &CompactionOutcome,
     config: &ModelConfig,
     turn: u64,
+    revision: Option<u64>,
 ) -> Result<u64, String> {
     if shadowed.is_empty() {
         return Err("compaction shadowed an empty range".into());
@@ -120,100 +124,8 @@ fn write_compaction_events(
         )
         .log_only(),
     ];
-    let committed = journal.append_atomic_durable(&family)?;
+    let committed = journal.append_atomic_durable_at(revision, &family)?;
     Ok(committed.start + 2)
-}
-
-fn compact_history(
-    compactor: &dyn HistoryCompactor,
-    config: &ModelConfig,
-    credentials: &ProviderCredentials,
-    nodes: &[CompactionNode],
-    force: bool,
-    cancel: &CancelToken,
-) -> CompactionOutcome {
-    compactor.compact(CompactionRequest {
-        config,
-        credentials,
-        nodes,
-        active_checkpoints: None,
-        spend_ledger: None,
-        instructions: String::new(),
-        tool_definitions: Vec::new(),
-        force,
-        cancel: cancel.clone(),
-    })
-}
-
-/// 自动压缩的 worker 侧执行；返回 `(note, succeeded)` 或 None（无事发生）。
-pub(super) fn run_auto_compaction(
-    compactor: &dyn HistoryCompactor,
-    sessions: &SessionService,
-    journal: &dyn RunJournal,
-    config: &ModelConfig,
-    credentials: &ProviderCredentials,
-    cancel: &CancelToken,
-    turn: u64,
-) -> Option<(PresentedText, bool)> {
-    let nodes = sessions.surface_nodes().ok()?;
-    if nodes.is_empty() {
-        return None;
-    }
-    let compaction_nodes: Vec<CompactionNode> = nodes
-        .iter()
-        .map(|(seq, item)| CompactionNode {
-            seq: *seq,
-            item: item.clone(),
-        })
-        .collect();
-    let outcome = compact_history(
-        compactor,
-        config,
-        credentials,
-        &compaction_nodes,
-        false,
-        cancel,
-    );
-    match &outcome.summary {
-        Some(summary) => {
-            let shadowed = &compaction_nodes[..outcome.shadowed_count.min(compaction_nodes.len())];
-            // SV 最小适配行（S6 例外，docs/todo/session-v3-execution.md）：
-            // V3 受保护 system 头不得被压缩 shadow——头之前的前缀节点
-            // （至多首条用户消息）从遮蔽前缀剔除。
-            let shadowed = match sessions.last_system_head() {
-                Some((head, _)) => {
-                    let skip = shadowed.iter().take_while(|node| node.seq <= head).count();
-                    &shadowed[skip..]
-                }
-                None => shadowed,
-            };
-            let written =
-                write_compaction_events(journal, shadowed, summary, &outcome, config, turn);
-            let _ = sessions.sync_active();
-            match written {
-                Ok(_) => Some((
-                    UiMessage::new("command.compacted_history")
-                        .arg("count", outcome.shadowed_count)
-                        .into(),
-                    true,
-                )),
-                Err(error) => Some((
-                    UiMessage::new("command.compaction_persistence_failed")
-                        .arg("error", error)
-                        .into(),
-                    false,
-                )),
-            }
-        }
-        None => outcome.degraded.as_ref().map(|reason| {
-            (
-                UiMessage::new("command.compaction_degraded")
-                    .arg_message("reason", reason.message())
-                    .into(),
-                false,
-            )
-        }),
-    }
 }
 
 /// 手动压缩结果报告。
@@ -233,4 +145,26 @@ impl CompactReport {
             None => base,
         }
     }
+}
+
+/// Failed candidates still leave durable accounting, without any context replacement.
+fn record_failed_attempt(
+    journal: &dyn RunJournal,
+    turn: u64,
+    outcome: &CompactionOutcome,
+    reason: &str,
+) -> Result<(), String> {
+    if outcome.usage.input_tokens == 0 && outcome.usage.output_tokens == 0 {
+        return Ok(());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut end = payloads::compaction_end(&id, turn, Some(reason));
+    end["usage"] = json!({"inputTokens":outcome.usage.input_tokens,"outputTokens":outcome.usage.output_tokens});
+    journal
+        .append_atomic_durable(&[
+            NewSessionEvent::new("compaction/start", payloads::compaction_start(&id, turn))
+                .log_only(),
+            NewSessionEvent::new("compaction/end", end).log_only(),
+        ])
+        .map(|_| ())
 }

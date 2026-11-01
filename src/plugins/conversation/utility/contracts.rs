@@ -91,6 +91,8 @@ impl UtilityFailure {
 /// 自有 `ModelErrorKind` → 稳定类别词（不是 provider 正文）。
 pub(crate) fn request_failure_kind(kind: crate::model::ModelErrorKind) -> &'static str {
     match kind {
+        crate::model::ModelErrorKind::ContextCapacity => "context_capacity",
+        crate::model::ModelErrorKind::ImageCapacity => "image_capacity",
         crate::model::ModelErrorKind::Transport => "transport",
         crate::model::ModelErrorKind::RateLimited => "rate-limited",
         crate::model::ModelErrorKind::Server => "server",

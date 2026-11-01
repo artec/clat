@@ -78,6 +78,19 @@ pub fn confined_position(
     (fitted != current).then_some(fitted)
 }
 
+/// Menu accelerators share the renderer's bounded application history.
+pub fn navigate_menu(app: &tauri::AppHandle, id: &str) {
+    use tauri::{Emitter, Manager};
+    let delta = match id {
+        "desktop-back" => -1,
+        "desktop-forward" => 1,
+        _ => return,
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("desktop-navigate", delta);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::confined_position;
@@ -98,18 +111,5 @@ mod tests {
             assert!((-400..=200).contains(&fitted.1));
             assert_eq!(confined_position(fitted, (-900, -400), (300, 200)), None);
         }
-    }
-}
-
-/// Menu accelerators share the renderer's bounded application history.
-pub fn navigate_menu(app: &tauri::AppHandle, id: &str) {
-    use tauri::{Emitter, Manager};
-    let delta = match id {
-        "desktop-back" => -1,
-        "desktop-forward" => 1,
-        _ => return,
-    };
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.emit("desktop-navigate", delta);
     }
 }

@@ -105,7 +105,7 @@ impl Run<'_> {
         self.reserve_request(&request)?;
         Ok(request)
     }
-    fn reserve_request(&self, request: &RequestInputs) -> Result<(), String> {
+    pub(super) fn reserve_request(&self, request: &RequestInputs) -> Result<(), String> {
         if let Some(ledger) = &self.spend_ledger {
             if ledger.exceeds_cap() {
                 let used = ledger.used();

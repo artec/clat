@@ -469,7 +469,6 @@ mod edit_tests;
 mod tests {
     use super::*;
     use crate::plugins::SearchTool;
-    use crate::tool::ToolResultTransformer;
     use std::env;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -857,18 +856,11 @@ mod tests {
                 serialized.chars().count() <= crate::plugins::THRESHOLD_CHARS,
                 "every segment must be constructed under the pruner threshold"
             );
-            let mut result = crate::tool::ToolResult {
-                call_id: "call-1".into(),
-                tool_name: "read_file".into(),
-                output: segment.clone(),
-                is_error: false,
-                blocks: Vec::new(),
-                image_parts: Vec::new(),
-            };
-            pruner.transform_result(&mut result);
-            assert_eq!(
-                result.output, *segment,
-                "the production pruner must never rewrite a read_file segment"
+            assert!(
+                pruner
+                    .prune(&[json!({"type":"text","text":serialized})])
+                    .is_none(),
+                "bounded segments must survive pressure pruning"
             );
         }
         crate::test_support::cleanup_tree(&root);

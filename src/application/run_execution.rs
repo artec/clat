@@ -5,11 +5,12 @@
 //! worker exist before that commit, activate it exactly once afterwards, run
 //! all rounds, and release run-scoped resources in reverse order.
 
-use super::compaction::{RecorderHandle, run_auto_compaction};
+use super::compaction::RecorderHandle;
 use super::run_admission::{PreparedRun, committed_error};
 use super::run_context::RunContextSnapshot;
 use super::run_lifecycle::{ApplicationRunDone, ApplicationRunFailure, ApplicationRunResult};
 use super::title::AutotitleJob;
+mod preparation;
 mod round;
 mod terminal;
 mod worker;
@@ -180,6 +181,7 @@ struct RunHostDeps {
 /// Stable dependencies owned by the worker for its entire lifetime. Keeping
 /// the scope and every run-local slot together makes cleanup knowledge local.
 struct RunWorkerDeps {
+    config_store: Arc<dyn crate::plugins::services::ConfigStore>,
     draft_images: crate::application::DraftImages,
     target: Option<Arc<super::target_services::TargetServices>>,
     run_scope: super::composition::MountedRunScope,
@@ -189,6 +191,8 @@ struct RunWorkerDeps {
     jobs: Option<Arc<crate::background_jobs::JobRegistry>>,
     monitor: Option<Arc<dyn crate::plugins::services::MonitorService>>,
     compactor: Option<Arc<dyn crate::plugins::services::HistoryCompactor>>,
+    pruner: Option<Arc<crate::plugins::ResultPruner>>,
+    image_offload: Option<Arc<crate::plugins::ImageOffloadPolicy>>,
     todo_service: Option<Arc<crate::plugins::services::TodoService>>,
     goal_service: super::execution_features::GoalRunPort,
     task_service: super::execution_features::TaskRunPort,
@@ -579,6 +583,7 @@ impl RunWorkerDeps {
         resources: WorkerResources,
     ) -> (Self, Box<dyn EventSink + Send>) {
         let mut deps = RunWorkerDeps {
+            config_store: app.config.clone(),
             draft_images: app.draft_images.clone(),
             target: spec.target.clone(),
             run_scope: resources.run_scope,
@@ -588,6 +593,8 @@ impl RunWorkerDeps {
             jobs: app.jobs.clone(),
             monitor: app.monitor.clone(),
             compactor: app.compactor.clone(),
+            pruner: app.pruner.clone(),
+            image_offload: app.image_offload.clone(),
             todo_service: app.todo.clone(),
             goal_service: app.goal_port(),
             task_service: app.task_port(),
