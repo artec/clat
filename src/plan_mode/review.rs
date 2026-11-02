@@ -79,6 +79,7 @@ impl PlanModeService {
 
 fn review_question(plan: &str) -> AskQuestion {
     AskQuestion {
+        presentation: None,
         question: format!("Approve this plan and leave Plan Mode?\n\n{plan}"),
         options: vec![
             AskOption {

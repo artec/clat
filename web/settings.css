@@ -154,3 +154,5 @@
   #settings-dialog .dev-font-controls { width:100%; }
   #settings-dialog .settings-form { padding:16px; }
 }
+
+#settings-dialog .settings-release-link { display:inline-block; margin-top:16px; }

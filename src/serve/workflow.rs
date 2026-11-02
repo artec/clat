@@ -60,3 +60,18 @@ pub(super) fn dispatch_ready(shared: &Arc<ServeShared>) {
 fn error(reason: &str) -> RpcError {
     RpcError::from(crate::application::workflow_error(reason))
 }
+pub(super) fn apply_model_request(shared: &ServeShared) {
+    let result = shared
+        .app
+        .lock()
+        .expect("application")
+        .apply_pending_model_workflow();
+    if let Err(reason) = result {
+        shared.broadcast(super::state::SseFrame {
+            event: "notice",
+            data: super::shapes::ctl_data(&json!({"kind":"workflow_error","payload":{
+                "message":reason.to_string(),"presentation":reason.presentation()
+            }})),
+        });
+    }
+}

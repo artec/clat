@@ -2,6 +2,13 @@ use super::*;
 use clat_core::client_ports::presentation::{
     LanguageAction, language_command, save_preference, terminal_preferences_path,
 };
+pub(super) fn workflow_tool_name(name: &str) -> UiMessage {
+    match name {
+        "request_plan_mode" => UiMessage::new("web.tool_action.request_plan_mode"),
+        "propose_goal" => UiMessage::new("web.tool_action.propose_goal"),
+        _ => UiMessage::new("common.diagnostic").arg("detail", name),
+    }
+}
 
 const PREFERENCES: [LanguagePreference; 4] = [
     LanguagePreference::System,
@@ -201,6 +208,7 @@ mod tests {
         let (answer_tx, answer_rx) = mpsc::channel();
         app.handle_worker_message(WorkerMessage::AskUserRequest {
             question: AskQuestion {
+                presentation: None,
                 question: "原始问题".into(),
                 options: vec![],
                 allow_custom: true,

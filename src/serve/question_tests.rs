@@ -22,6 +22,7 @@ fn shared() -> (Arc<ServeShared>, std::path::PathBuf, std::path::PathBuf) {
 
 fn question() -> AskQuestion {
     AskQuestion {
+        presentation: None,
         question: "release?".into(),
         options: vec![crate::interaction::AskOption {
             label: "stable".into(),

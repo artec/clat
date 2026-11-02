@@ -726,6 +726,19 @@ walkthroughs are local UI evidence, not native-platform or provider acceptance.
 
 ## Durable task recovery (GA-1)
 
+`scripts/gates.sh model_workflow_ workflow::tests plan_mode_tests run::tests::`
+checks model workflow discovery, Plan clarification and confirmed idle handoffs.
+The scripted Provider receives actual schemas and instructions, including
+configured-absent capabilities. Tests require that confirmation ends the tool
+batch, skipped calls have explicit not-executed results, Goal creation remains
+unarmed, and cancellation, stale versions, unfinished Tasks/Goals and retained
+Plan restrictions cannot grant authority. Separate clarification and approval
+answers must reach the versioned plan in order. Node behavior checks run with
+`node --test web/tests/workflow-questions.test.cjs web/tests/tool-presentation.test.cjs`;
+localized labels must submit stable option values, while legacy questions and
+custom text retain their original content. These are deterministic contract
+checks, not evidence that a real model will choose the tools appropriately.
+
 Shared run-admission changes use `scripts/gates.sh
 application::tests::target_run_tests:: application::tests::mm2_w7_
 application::context_tests:: application::goal_tests::` (on one shell line).

@@ -4,6 +4,8 @@ use crate::test_support::{
 };
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
+#[cfg(feature = "runtime-tests")]
+mod model_requests;
 fn mount(behavior: TestBehavior) -> (TrustedProjectApplication, PathBuf) {
     let (storage, project) = roots("workflow");
     std::fs::create_dir_all(&project).unwrap();

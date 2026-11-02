@@ -26,11 +26,26 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 
 pub(crate) struct GoalPlugin {
     project_root: PathBuf,
+    request: Option<(
+        Arc<crate::interaction::AskUserSlot>,
+        Arc<crate::application::WorkflowState>,
+    )>,
 }
 
 impl GoalPlugin {
     pub(crate) fn new(project_root: PathBuf) -> Self {
-        Self { project_root }
+        Self {
+            project_root,
+            request: None,
+        }
+    }
+    pub(crate) fn with_requests(
+        mut self,
+        asker: Arc<crate::interaction::AskUserSlot>,
+        workflow: Arc<crate::application::WorkflowState>,
+    ) -> Self {
+        self.request = Some((asker, workflow));
+        self
     }
 }
 
@@ -49,6 +64,20 @@ impl Plugin for GoalPlugin {
         let commands = context
             .require(COMMAND_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        if let Some((asker, workflow)) = &self.request {
+            let entry = super::workflow_request::tool(
+                crate::application::ModelRequestPort {
+                    sessions: sessions.clone(),
+                    workflow: workflow.clone(),
+                    asker: asker.clone(),
+                },
+                crate::application::RequestKind::Goal,
+            );
+            let lease = tools
+                .register(context.owner(), entry)
+                .map_err(|e| PluginError::new(e.to_string()))?;
+            context.defer(move || lease.revoke().map_err(|e| DisposeError::new(e.to_string())));
+        }
         let service = Arc::new(GoalService::new(sessions, self.project_root.clone()));
         let tool_lease = tools
             .register(

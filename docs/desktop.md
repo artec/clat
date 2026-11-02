@@ -311,6 +311,25 @@ The app checks on startup and every 24 hours; automatic checking can be disabled
 A page indicator announces available updates. Checking never downloads or installs
 without a user action. The panel exposes download progress, install and cancellation.
 
+In Web/PWA and Desktop, live model-request notices show the vendor of the built-in
+preset (for example, `GLM · glm-5.3`). Custom routes retain their protocol label.
+The label comes from the run's frozen configuration, not the next-run model
+selection; original protocol identifiers in events and journals remain unchanged.
+Older Hosts without run metadata retain the original protocol label.
+
+The navigation rail shows the **current conversation model's** remaining Plan
+allowance when its provider supplies a percentage. It does not enumerate other
+models or accounts. The ring represents the lowest remaining percentage among
+that Plan's windows; hover or keyboard focus opens a card with window percentages,
+provider-reported reset times and time remaining, and the last query time. Unknown
+reset metadata is omitted, and reaching a reset time does not fabricate a new
+quota. Switching conversations/models clears the previous reading while fetching
+the new one; unsupported providers and failed readings hide the ring. Monitoring
+continues through the existing Host monitor, without extra provider requests on hover.
+Desktop updates take priority in the same rail position. The update card uses the
+same hover behavior and shows current/latest versions, package size when known,
+and download progress, with the existing download/install/cancel actions.
+
 In the workbench, an update shortcut appears immediately above Settings in the
 navigation rail when a new version is available. Click it to download; its ring
 shows progress (indeterminate when the total size is unknown), with version,
@@ -469,6 +488,11 @@ The compact workbench composer, extension modules, message timestamps, automatic
 next steps and context/allowance popover are described in [Using CLAT](usage.md#webdesktop-conversation-reading-and-next-steps).
 
 ## Human development tools
+
+Git operation progress appears inside an expanded Operation result section. Successful
+operations hide the section until the next operation; failures, cancellation and
+uncertain outcomes remain available for review. A new operation clears the previous
+operation's displayed result.
 
 Files and Git reuse the shared project list/detail work area; Terminal has its own
 left-navigation page. They use the same Rust client ports as the browser, with no

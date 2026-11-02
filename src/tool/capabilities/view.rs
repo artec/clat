@@ -47,6 +47,11 @@ impl CapabilityView {
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
         self.entries.iter().map(|e| e.definition.clone()).collect()
     }
+    pub(crate) fn contains_owned(&self, owner: PluginId, name: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.owner == owner && entry.definition.name == name)
+    }
     fn epoch(&self) -> String {
         let lives: Vec<bool> = self.entries.iter().map(|e| live(&e.metadata)).collect();
         digest(format!("{}:{:?}", self.revision, lives).as_bytes())

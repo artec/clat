@@ -2,7 +2,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-function harness({staged=false,confirm=true,phase='completed',afterStage=()=>{}}={}){
+function harness({staged=false,confirm=true,phase='completed',afterStage=()=>{},onStart=()=>{}}={}){
   const owner={id:'project',snapshot:{files:[{path:'selected.txt',staged,unstaged:!staged}]},draft:'',edit:0,pending:null,operation:null};
   let current=owner;
   const calls=[],questions=[],errors=[];
@@ -12,7 +12,7 @@ function harness({staged=false,confirm=true,phase='completed',afterStage=()=>{}}
     localStorage:{setItem(){},removeItem(){}},CLATI18n:{present:(_,fallback)=>fallback},
     gitConflicted:f=>Boolean(f.conflict),
     async devOperation(request){
-      calls.push(request);
+      onStart(owner);calls.push(request);
       if(request.action==='stage'){
         if(phase==='completed')owner.snapshot={files:[{path:'selected.txt',staged:true}]};
         await afterStage(owner,()=>{current={...owner,id:'other'};});
@@ -79,4 +79,16 @@ test('main action follows repository facts after commit and push',()=>{
   assert.equal(project({files:[],tracking:{ahead:0,behind:0}}).enabled,false);
   assert.equal(project({files:[]}).enabled,false);
   assert.equal(project(null).enabled,false);
+});
+
+// An operation's phase/result belong to that operation, including after reconciliation.
+test('new operations and reconciled operations cannot expose a previous result or phase',async()=>{
+  for(const reconcile of [false,true]){
+    const seen=[],h=harness({staged:true,onStart:owner=>seen.push({result:owner.result,notice:owner.notice,phase:owner.phase})});
+    h.owner.result={phase:'completed',message:'previous operation'};h.owner.notice={message:'old error'};h.owner.phase='completed';
+    if(reconcile){h.owner.pending={operationId:'existing',action:'generate'};await h.api.reconcile();}
+    else await h.api.start('generate');
+    assert.deepEqual(seen,[{result:null,notice:null,phase:'pending'}]);
+    assert.equal(h.owner.result.phase,'completed');
+  }
 });

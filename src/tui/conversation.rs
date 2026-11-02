@@ -1048,7 +1048,7 @@ fn render_tool_card_localized(
         locale.render(
             &UiMessage::new("tui.tool_heading")
                 .arg("glyph", glyph)
-                .arg("tool", tool),
+                .arg_message("tool", super::localization::workflow_tool_name(tool)),
         ),
         theme::style(role),
     ))];
@@ -1059,6 +1059,11 @@ fn render_tool_card_localized(
         lines.push(Line::from(Span::styled(
             serde_json::to_string_pretty(arguments).unwrap_or_default(),
             theme::style(theme::Role::Dim),
+        )));
+    }
+    if matches!(tool, "request_plan_mode" | "propose_goal") {
+        lines.push(Line::from(locale.render(
+            &UiMessage::new("web.tool_action.identifier").arg("name", tool),
         )));
     }
     match state {

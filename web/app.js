@@ -896,7 +896,7 @@ function handleLive(event) {
       // 开（无正文的纯工具步不产生空气泡）；气泡位置因此落在它之前的
       // 工具卡之后，保持因果顺序。重试（无 model_responded 分隔）继续追
       // 加到同一气泡。
-      addTraceEvent(event.type, [event.provider, event.model].filter(Boolean).join(' · '));
+      addModelRequestTrace(event);
       state.run = state.run || {};
       break;
     case 'model_stream': {
@@ -1403,12 +1403,14 @@ function createQuestionCard(payload) {
   const actions = el('form', 'actions');
   const note = el('div', 'note resolution', () => (CLATI18n.msg("web.shared_with_connected_clients_first_answer_wins", {}, "Shared with connected clients · first answer wins")));
   note.setAttribute('role', 'status');
-  card.append(el('div', 'eyebrow', () => (CLATI18n.msg("web.your_input", {}, "YOUR INPUT"))), el('h3', 'title', () => (question.question)), actions, note);
+  card.append(el('div', 'eyebrow', () => (CLATI18n.msg("web.your_input", {}, "YOUR INPUT"))), el('h3', 'title', () => CLATI18n.present(question.presentation?.question,question.question)), actions, note);
   const options = Array.isArray(question.options) ? question.options : [];
-  for (const option of options) {
-    const button = el('button', 'ghost question-option', () => (option.label));
+  for (const [index,option] of options.entries()) {
+    const label=()=>CLATI18n.present(question.presentation?.options?.[index],option.label);
+    const button = el('button', 'ghost question-option', label);
+    button.dataset.answerValue = option.label;
     button.type = 'button';
-    CLATI18n.attribute(button,'aria-label',()=>option.label);
+    CLATI18n.attribute(button,'aria-label',label);
     if (option.description) button.appendChild(el('span', 'question-description', () => (option.description)));
     button.addEventListener('click', () => submitQuestionAnswer(card, {
       kind: 'selected', value: option.label,
@@ -1483,6 +1485,7 @@ const TOOL_PRESENTATION_KEYS = {
   edit_file: 'edit_file', write_file: 'write_file', apply_patch: 'edit_file',
   run_command: 'run_command', view_image: 'view_image', ask_user: 'ask_user',
   ask_user_question: 'ask_user', update_plan: 'update_plan', exit_plan_mode: 'finish_plan',
+  request_plan_mode: 'request_plan_mode', propose_goal: 'propose_goal',
 };
 function toolDisplayName(name) {
   const raw = String(name || '');
@@ -2311,7 +2314,7 @@ async function refreshWorkbench() {
     observeInputHistory(session.recent_inputs);
     state.runActive = Boolean(info.active_run);
     state.compactionActive = Boolean(info.active_compaction);
-    conversationRounds.active(info.active_run);
+    syncRunPresentation(info);
     renderPendingInputs(info.pending_inputs);
     syncPlanModeBadge();
 

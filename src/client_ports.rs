@@ -55,7 +55,9 @@ pub mod model_setup {
     pub use crate::application::{ModelSetupOperation, ModelSetupView};
 }
 pub mod interaction {
-    pub use crate::interaction::{AskAnswer, AskOption, AskQuestion, UserAsker};
+    pub use crate::interaction::{
+        AskAnswer, AskOption, AskQuestion, AskQuestionPresentation, UserAsker,
+    };
 }
 pub mod draft {
     pub use crate::draft::DraftImageStore;

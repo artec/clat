@@ -1,5 +1,7 @@
 mod actions;
 mod execution;
+pub(crate) mod guidance;
+pub(crate) mod model_requests;
 pub(super) mod state;
 use super::*;
 pub use actions::{WorkflowIntent, WorkflowRequest};

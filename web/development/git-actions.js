@@ -10,6 +10,7 @@ function createGitActions({seat,call,refresh,render,report,result}){
     if(['branch.switch','pull'].includes(action)&&developmentEditor?.docs&&[...developmentEditor.docs.values()].some(doc=>doc.dirty)){report({message:devText('save_before_switch')});return;}
     if(action==='delete_untracked'){try{const path=[owner.path,extra.paths[0]].filter(Boolean).join('/'),stat=await rpc('editor.inspect',{path});await rpc('editor.delete',{operationId:devId(),path,version:stat.version,confirmed:true});await refresh();}catch(error){report(error);}return;}
     const request={operationId:devId(),repositoryId:owner.id,action,expected:owner.snapshot,message:owner.draft,language:owner.language,systemLanguage:navigator.language,...extra};
+    owner.result=null;owner.notice=null;owner.phase='pending';
     owner.operation=request.operationId;owner.pending={operationId:request.operationId,repositoryId:owner.id,action,automatic:action==='generate'||action==='commit'&&!owner.draft.trim()};save(owner);render();const edit=owner.edit;
     let uncertain=true;
     try{const view=await devOperation(request,progress=>{owner.phase=progress.phase;if(seat()===owner)render();});uncertain=Boolean(view.localUnknown);finish(owner,view,edit,action);return view;}
@@ -38,7 +39,7 @@ function createGitActions({seat,call,refresh,render,report,result}){
     if(seat()===owner){result(view);if(view.phase==='unknown'||view.localUnknown)report({message:devText('operation_unknown')});else if(view.phase==='failed'||view.phase==='cancelled')report({message:CLATI18n.present(view.presentation,devText(view.phase==='cancelled'?'cancelled':'failed'))});}
   }
   async function reconcile(owner=seat()){
-    if(!owner.pending||owner.reconciling)return;owner.reconciling=true;owner.operation=owner.pending.operationId;render();
+    if(!owner.pending||owner.reconciling)return;owner.reconciling=true;owner.result=null;owner.notice=null;owner.phase='pending';owner.operation=owner.pending.operationId;render();
     const edit=owner.edit;try{const view=await devOperation(owner.pending,progress=>{owner.phase=progress.phase;if(seat()===owner)render();},true);finish(owner,view,edit,owner.pending.action);if(!view.localUnknown){owner.operation=null;owner.pending=null;save(owner);}}
     catch(error){if(seat()===owner)report(error);}finally{owner.reconciling=false;if(seat()===owner){render();await refresh();}}
   }

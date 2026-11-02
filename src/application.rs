@@ -71,6 +71,7 @@ mod task_recovery_tests;
 mod tasks;
 mod workflow;
 pub use crate::plan_mode::documents::PlanDocument;
+pub(crate) use workflow::model_requests::{ModelRequestPort, RequestKind};
 pub(crate) use workflow::state::{Handoff, WorkflowState};
 pub(crate) use workflow::workflow_error;
 pub use workflow::{WorkflowIntent, WorkflowRequest};
@@ -132,9 +133,9 @@ pub use compaction::{CompactHandle, CompactReport};
 pub use content_views::{GoalViewDto, MemoryEntryDto, MemoryOverviewDto, SubagentStatusDto};
 pub use dto::{
     ContextEstimateSnapshot, ContextSkillDiagnostic, McpServerInfoDto, McpStatusDto,
-    MessageOutlineDto, ProjectSnapshot, SessionSnapshot, SkillEntryDto, SkillsOverviewDto,
-    WORKBENCH_RECENT_INPUTS_LIMIT, WorkbenchModelSnapshot, WorkbenchProjectSnapshot,
-    WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
+    MessageOutlineDto, ProjectSnapshot, RunModelSnapshot, SessionSnapshot, SkillEntryDto,
+    SkillsOverviewDto, WORKBENCH_RECENT_INPUTS_LIMIT, WorkbenchModelSnapshot,
+    WorkbenchProjectSnapshot, WorkbenchSessionSnapshot, WorkbenchSnapshot, WorkspaceInfo,
 };
 pub use host::HostApplication;
 pub(crate) use remote_control::{

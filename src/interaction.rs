@@ -16,14 +16,8 @@ pub struct AskOption {
     pub description: Option<String>,
 }
 
-/// 单问单答的问题（v1：一次调用一问；多问由模型多次调用）。
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct AskQuestion {
-    pub question: String,
-    pub options: Vec<AskOption>,
-    /// 是否提供自由输入。无选项时前端直接进入输入模式。
-    pub allow_custom: bool,
-}
+mod question;
+pub use question::{AskQuestion, AskQuestionPresentation};
 
 /// 前端应答。`Declined`（拒绝/取消/断连）以 isError 工具结果回给模型，
 /// run 继续。

@@ -241,11 +241,14 @@ impl<'a> Run<'a> {
             if let Some(done) = self.finish_response(&response, &mut state, events)? {
                 return Ok(done);
             }
-            for call in response.tool_calls {
+            let mut calls = response.tool_calls.into_iter();
+            while let Some(call) = calls.next() {
                 if self.cancel.is_cancelled() {
                     return Ok(state.cancel(events, &self.steering, response.text.clone()));
                 }
-                if let Some(done) = self.tool_step(call, &response.text, &mut state, events)? {
+                if let Some(done) =
+                    self.tool_step(call, calls.as_slice(), &response.text, &mut state, events)?
+                {
                     return Ok(done);
                 }
             }

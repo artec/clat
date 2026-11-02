@@ -1631,6 +1631,7 @@ fn dsh_ask_dialog(
     };
     PendingAskUser {
         question: crate::interaction::AskQuestion {
+            presentation: None,
             question: question_text,
             options,
             allow_custom,

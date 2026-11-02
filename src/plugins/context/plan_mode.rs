@@ -61,6 +61,22 @@ impl Plugin for PlanModePlugin {
         let tools = context
             .require(TOOL_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;
+        let entry = super::workflow_request::tool(
+            crate::application::ModelRequestPort {
+                sessions: sessions.clone(),
+                workflow: self.workflow.clone(),
+                asker: self.asker.clone(),
+            },
+            crate::application::RequestKind::Plan,
+        );
+        let entry_lease = tools
+            .register(context.owner(), entry)
+            .map_err(|e| PluginError::new(e.to_string()))?;
+        context.defer(move || {
+            entry_lease
+                .revoke()
+                .map_err(|e| DisposeError::new(e.to_string()))
+        });
         let commands = context
             .require(COMMAND_SERVICE)
             .map_err(|error| PluginError::new(error.to_string()))?;

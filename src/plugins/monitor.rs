@@ -210,6 +210,7 @@ mod tests {
                     kind: "quota".into(),
                     value: "87".into(),
                     unit: Some("%".into()),
+                    ..Default::default()
                 }],
             },
         ));

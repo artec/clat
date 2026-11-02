@@ -10,6 +10,16 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/rail-popover.js",
+        include_bytes!("../../web/rail-popover.js"),
+        "application/javascript",
+    ),
+    (
+        "/rail-allowance.js",
+        include_bytes!("../../web/rail-allowance.js"),
+        "application/javascript",
+    ),
+    (
         "/model-setup-form.js",
         include_bytes!("../../web/model-setup-form.js"),
         "application/javascript",
@@ -511,6 +521,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/workspace-tools.js",
     "/composer-popovers.js",
     "/composer-permissions.js",
+    "/rail-allowance.js",
     "/conversation-experience.js",
     "/user-message-reader.js",
     "/conversation-rounds.js",

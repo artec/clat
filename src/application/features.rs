@@ -3,6 +3,13 @@ use super::*;
 impl TrustedProjectApplication {
     pub(super) fn take_workflow_handoff(&self) -> Result<Option<Handoff>, ApplicationError> {
         let mut handoff = self.workflow.handoff.lock().expect("workflow handoff");
+        if let Some(Handoff::Model(request)) = handoff.as_ref() {
+            if request.needs_plan() {
+                self.plan_service()?;
+            } else {
+                self.goal_service()?;
+            }
+        }
         if matches!(
             handoff.as_ref(),
             Some(Handoff::Plan { .. } | Handoff::Goal { plan: Some(_), .. })

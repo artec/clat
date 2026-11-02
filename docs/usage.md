@@ -510,6 +510,26 @@ after the planning worker has completely settled. `/plan
 off` leaves the mode at an idle boundary. Plan Mode is an agent authority guard,
 not an operating-system sandbox.
 
+The model can suggest a workflow through `request_plan_mode` or `propose_goal`
+when the corresponding plugin is enabled. Both show a confirmation question
+with selectable answers and a custom feedback field. Only the explicit confirm
+choice accepts the proposal; typing feedback does not authorize it. Confirmation
+ends the current run before later tools execute. After successful cleanup, CLAT
+enters read-only Plan Mode or creates an **unarmed** Goal with existing default
+limits and human acceptance. Entering Plan does not approve implementation;
+creating a Goal does not start it. Use the existing Goal controls to start it.
+Requests cannot replace unfinished Goals/Tasks, escape existing Plan restrictions,
+or switch the foreground workflow from a non-current automatic target.
+
+In Plan Mode the model is guided to investigate the project first, then use
+`ask_user` for unresolved preferences, scope and important choices that only you
+can decide. TUI shows a question dialog; Web/Desktop show inline question cards.
+Options and custom text answers return to the model as tool history so it can
+revise the plan. Clarification is separate from the final plan approval; clear
+requirements do not require an artificial questionnaire. Disabling native
+interaction removes `ask_user` and its guidance. Headless requests cannot confirm
+a proposed workflow without an interactive client.
+
 These capabilities can be independently disabled in the startup
 `builtin-plugins.json` configuration; see [static composition](plugins.md#static-composition-and-absence-contracts).
 Disabled plugins contribute no tools or commands; controls explain

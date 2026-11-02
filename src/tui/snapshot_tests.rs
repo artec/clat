@@ -3184,6 +3184,7 @@ fn visual_snapshot_steered_transcript_snapshot() {
 
 fn ask_question_fixture() -> crate::AskQuestion {
     crate::AskQuestion {
+        presentation: None,
         question: "Which release channel should we ship?".into(),
         options: vec![
             crate::AskOption {

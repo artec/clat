@@ -16,6 +16,7 @@ mod start;
 /// model steps, while these request-bound workflow facts stay frozen.
 #[derive(Clone)]
 pub(super) struct InstructionLayers {
+    registry_base: String,
     pub(super) base: String,
     pub(super) with_plan: String,
     pub(super) with_skills: String,
@@ -259,8 +260,13 @@ impl ContextSources {
         let invoked_instructions = invoked_skill
             .as_ref()
             .map(crate::skills::InvokedSkill::instructions);
+        let capabilities = tools.capability_view(Some(&tool_access));
+        let tool_definitions: Arc<[crate::tool::ToolDefinition]> =
+            capabilities.definitions().into();
+        let guidance = super::workflow::guidance::instructions(&capabilities);
         let (instructions, workflow_base, workflow_instructions) = InstructionLayers::assemble(
             base,
+            &guidance,
             [
                 plan_instructions.as_deref(),
                 skills.instructions(),
@@ -270,8 +276,6 @@ impl ContextSources {
                 Some(&goal.instructions),
             ],
         );
-        let capabilities = tools.capability_view(Some(&tool_access));
-        let tool_definitions = capabilities.definitions().into();
 
         RunContextSnapshot {
             tool_access,
@@ -309,13 +313,16 @@ impl LayerAssembly {
 }
 impl InstructionLayers {
     fn assemble(
-        base: String,
+        registry_base: String,
+        guidance: &str,
         [plan, skills, invoked, memory, task, goal]: [Option<&str>; 6],
     ) -> (Self, String, Option<String>) {
+        let base =
+            crate::plan_mode::compose_workflow_instructions(registry_base.clone(), Some(guidance));
         let with_plan = crate::plan_mode::compose_workflow_instructions(base.clone(), plan);
         let mut layers = LayerAssembly {
             system: with_plan.clone(),
-            workflow: plan.unwrap_or_default().to_owned(),
+            workflow: crate::plan_mode::compose_workflow_instructions(guidance.to_owned(), plan),
         };
         let with_skills = layers.append(skills);
         let with_invoked = layers.append(invoked);
@@ -326,6 +333,7 @@ impl InstructionLayers {
         let workflow = (!layers.workflow.is_empty()).then_some(layers.workflow);
         (
             Self {
+                registry_base,
                 base,
                 with_plan,
                 with_skills,
@@ -389,7 +397,7 @@ impl RunContextSnapshot {
             }
         }
         round.header.base_system = crate::plan_mode::compose_workflow_instructions(
-            self.instructions.base.clone(),
+            self.instructions.registry_base.clone(),
             round.workflow.as_deref(),
         );
         let snapshot = round
@@ -462,6 +470,7 @@ impl TrustedProjectApplication {
         } else {
             crate::tool::ToolAccessPolicy::all()
         }
+        .without_workflow_requests()
         .with_view_image(
             target.view_image.enabled() && config.capabilities.accepts_image_tool_results(),
         );

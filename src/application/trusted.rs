@@ -642,6 +642,7 @@ impl TrustedProjectApplication {
     /// Enter or leave Plan Mode at an idle application boundary.
     pub fn set_plan_mode(&mut self, active: bool) -> Result<(), ApplicationError> {
         let service = self.plan_service()?.clone();
+        let changed = self.plan_mode_active() != active;
         if self
             .active_run
             .as_ref()
@@ -667,14 +668,18 @@ impl TrustedProjectApplication {
         }
         if self.sessions.active_id().is_some() {
             service.set_pending_birth(false);
-            return service.set_durable(active).map_err(session_error);
+            service.set_durable(active).map_err(session_error)?;
+        } else {
+            if !self.permission_modes_enabled {
+                return Err(ApplicationError::new(
+                    "Plan Mode needs an active session in headless mode",
+                ));
+            }
+            service.set_pending_birth(active);
         }
-        if !self.permission_modes_enabled {
-            return Err(ApplicationError::new(
-                "Plan Mode needs an active session in headless mode",
-            ));
+        if changed {
+            self.cancel_workflow_continuation();
         }
-        service.set_pending_birth(active);
         Ok(())
     }
 

@@ -80,6 +80,14 @@ alongside the existing English fields. Unknown keys use the supplied English fal
 external text remains original. Do not recognize translations by comparing
 English error strings.
 
+Questions may carry an optional `presentation` containing a question descriptor
+and option descriptors in the original option order. Web/Desktop and TUI render
+these with their current locale; the original question, option labels and
+selected answer values remain unchanged. CLAT-owned workflow confirmations use
+this metadata, while model-authored questions and third-party elicitation stay
+original text. Missing metadata preserves older question payloads. Custom text
+is feedback, not a translated confirmation token.
+
 Read-only conversation rejections retain a typed reason through journal acquisition,
 Plan Mode, its slash command and Application/RPC errors. Legacy conversations offer `/update` or
 `/new`; unsupported current-format context offers `/new`. A refusal to write is

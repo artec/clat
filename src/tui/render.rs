@@ -1,4 +1,5 @@
 use super::*;
+mod ask;
 
 impl App {
     /// Resolve presentation inputs before measuring or wrapping text.
@@ -550,7 +551,7 @@ impl App {
         let inner_width = dialog.width.saturating_sub(2 + 2 * POPUP_TEXT_PADDING) as usize;
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        for wrapped in wrap_text(&pending.question.question, inner_width) {
+        for wrapped in wrap_text(&pending.question.question_text(self.locale), inner_width) {
             lines.push(Line::from(wrapped));
         }
         lines.push(Line::from(""));
@@ -562,32 +563,12 @@ impl App {
                 Span::styled("_", theme::style(theme::Role::Faint)),
             ]));
         } else {
-            for (index, option) in pending.question.options.iter().enumerate() {
-                let selected = index == pending.selection;
-                let marker = if selected { "● " } else { "○ " };
-                let mut spans = vec![Span::styled(
-                    marker,
-                    theme::style(if selected {
-                        theme::Role::Selected
-                    } else {
-                        theme::Role::Faint
-                    }),
-                )];
-                spans.push(if selected {
-                    Span::styled(option.label.clone(), theme::style(theme::Role::Selected))
-                } else {
-                    Span::raw(option.label.clone())
-                });
-                lines.push(Line::from(spans));
-                if let Some(description) = &option.description {
-                    for wrapped in wrap_text(description, inner_width.saturating_sub(2)) {
-                        lines.push(Line::from(Span::styled(
-                            format!("   {wrapped}"),
-                            theme::style(theme::Role::Faint),
-                        )));
-                    }
-                }
-            }
+            lines.extend(ask::option_lines(
+                &pending.question,
+                pending.selection,
+                inner_width,
+                self.locale,
+            ));
             if pending.question.allow_custom {
                 lines.push(custom_question_option(
                     pending.selection == pending.question.options.len(),

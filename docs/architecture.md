@@ -922,7 +922,7 @@ system snapshot and source path/scope/digest metadata travel in
 Agent phase 3 is four removable Trusted Project catalog entries rather than one
 new runtime layer:
 
-- `builtin.plan_mode` contributes `/plan`, `exit_plan_mode`, editing and review.
+- `builtin.plan_mode` contributes `/plan`, `request_plan_mode`, `exit_plan_mode`, editing and review.
   Session owns durable plan facts; the core tool registry owns the access slot
   and retains per-run restrictions when the plugin is absent;
 - `builtin.skills` scans bundled/user/project `SKILL.md` layers and installs one
@@ -950,7 +950,7 @@ Agent phase 4 adds three more removable Trusted Project entries:
   run injection, and the read-only `memory_search` tool. Human control-plane
   calls are its only writers;
 - `builtin.goal` owns the one-goal-per-session state machine, `goal/change`
-  projection, `/goal`, verifier-gated `update_goal`, and the explicitly armed
+  projection, `/goal`, unarmed `propose_goal`, verifier-gated `update_goal`, and the explicitly armed
   bounded continuation driver;
 - `builtin.subagent` owns the default-off `/subagents` experiment and
   `delegate_readonly`. A child is a scoped `Run` over a fixed three-tool
@@ -1795,6 +1795,24 @@ when Plan is absent. `PlanModeService` owns document mutation, review arbitratio
 and exact revision approval; historical plan documents and legacy approved-plan
 IDs/digests are pure Session projections. The core tool-registry plugin owns
 `ToolAccessSlot`; permission construction requires it independently of Plan.
+
+Model workflow proposals are process-local handoffs in the same `WorkflowState`.
+The proposal port checks durable Plan/Task/Goal facts before asking, then binds
+explicit human confirmation to Session, workflow version, authority generation
+and cancellation. A tool result alone is insufficient: the request becomes ready
+only after successful persistence, accounting and producer cleanup. Application
+applies it at an idle boundary; cancellation, selection changes and failed cleanup
+discard it. Goal proposals create unarmed goals with default limits and human
+acceptance, never continuation authority. Non-current target and child policies
+exclude new workflow requests. The Run closes skipped batch calls with explicit
+not-executed error results before its terminal event; it neither invokes those
+tools nor invents their effects. Existing journal events carry these results.
+Capability guidance is an additive workflow layer derived from the actual frozen
+tool definitions and their registration owners; an external namesake does not
+acquire native semantics. It reaches both request headers and model instructions.
+Its token cost belongs to the common base prompt, not an active Plan/Goal policy;
+Goal refresh preserves a separate registry base so it does not append the guide
+twice.
 
 Skills, Memory, Subagent and Plan are explicit optional context ports (the Skills
 service/catalog pair must coexist). Empty skill snapshots and memory injection

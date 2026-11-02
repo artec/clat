@@ -6,3 +6,4 @@ pub(super) mod memory;
 pub(super) mod plan_mode;
 pub(super) mod prompt;
 pub(super) mod skills;
+mod workflow_request;

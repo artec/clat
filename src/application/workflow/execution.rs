@@ -74,7 +74,14 @@ impl TrustedProjectApplication {
             .expect("goal interruption") = None;
     }
     pub fn workflow_ready(&self) -> bool {
-        self.workflow.handoff.lock().is_ok_and(|h| h.is_some())
+        self.workflow
+            .handoff
+            .lock()
+            .is_ok_and(|h| match h.as_ref() {
+                Some(Handoff::Model(request)) => request.settled,
+                Some(_) => true,
+                None => false,
+            })
             && self.active_run.as_ref().is_none_or(|h| h.is_finished())
             && self
                 .active_compaction
@@ -92,8 +99,14 @@ impl TrustedProjectApplication {
         let Some(handoff) = handoff else {
             return Ok(None);
         };
+        if let Handoff::Model(request) = handoff {
+            self.apply_confirmed_model_request(request)
+                .map_err(super::workflow_error)?;
+            return Ok(None);
+        }
         let session = match &handoff {
             Handoff::Goal { session, .. } | Handoff::Plan { session, .. } => session,
+            Handoff::Model(_) => unreachable!(),
         };
         if self
             .current_session_id()
@@ -104,6 +117,7 @@ impl TrustedProjectApplication {
             return Ok(None);
         }
         match handoff {
+            Handoff::Model(_) => unreachable!(),
             Handoff::Plan { plan, .. } => {
                 self.enter_workflow_plan(plan)
                     .map_err(ApplicationError::new)?;

@@ -575,9 +575,10 @@ fn project_runtime_catalog(
         Arc::new(crate::plugins::PromptRegistryPlugin),
         Arc::new(crate::plugins::DefaultPromptPlugin),
         Arc::new(crate::plugins::CommandsPlugin),
-        Arc::new(crate::plugins::GoalPlugin::new(
-            input.project.root().to_owned(),
-        )),
+        Arc::new(
+            crate::plugins::GoalPlugin::new(input.project.root().to_owned())
+                .with_requests(input.asker_slot.clone(), input.workflow.clone()),
+        ),
         Arc::new(crate::task::TaskPlugin(input.project.clone())),
         Arc::new(crate::plugins::SubagentPlugin::new(input.project.clone())),
         Arc::new(crate::plugins::BuiltinCommandsPlugin),

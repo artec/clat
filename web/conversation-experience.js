@@ -82,6 +82,7 @@ async function loadRoundFollowups(run, action = 'generate') {
 }
 let usageEpoch = 0, usageValue = null, usageCompactionRequest = false, usageScope = null;
 function syncUsageTrigger() {
+  if(state.switching||!state.connected)workbenchShell?.allowance?.update(null);
   const trigger = document.getElementById('context-usage');
   if (!trigger) return;
   const busy = state.compactionActive || usageCompactionRequest;
@@ -144,7 +145,7 @@ async function refreshUsage() {
     usageScope = owner;
     document.querySelector('.context-ring')?.removeAttribute('data-percent');
   }
-  usageValue=null;
+  usageValue=null;workbenchShell?.allowance?.update(null);
   const pendingPopup=document.querySelector('.context-usage-popover'), pendingRing=document.querySelector('.context-ring');
   if(pendingPopup&&pendingRing)renderUsage(pendingPopup,pendingRing);
   try {
@@ -152,6 +153,7 @@ async function refreshUsage() {
     if(epoch!==usageEpoch || session!==state.sessionId || generation!==state.selectionGeneration)return;
     usageValue=value;
   } catch (_) { if(epoch===usageEpoch)usageValue={unavailable:true}; }
+  workbenchShell?.allowance?.update(usageValue);
   const popup=document.querySelector('.context-usage-popover'),ring=document.querySelector('.context-ring');
   if(popup&&ring)renderUsage(popup,ring);
 }

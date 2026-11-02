@@ -48,6 +48,7 @@ struct Subscriber {
 ///（§7.2-5 订阅重发源；run 终态即随 active_run 清空释放，内存由
 /// B1 花费护栏间接封顶——§7.3 的显式权衡）。
 pub(crate) struct ActiveRun {
+    model: Option<crate::RunModelSnapshot>,
     pub(super) automatic: bool,
     pub rpc_id: String,
     pub started_ms: i64,
@@ -390,6 +391,7 @@ impl ServeShared {
                 return;
             };
             run.replay_before_seq = handle.replay_before_seq();
+            run.model = Some(handle.model_snapshot().clone());
             run.session_id = handle.session_id().map(|id| id.as_str().to_owned());
             std::mem::take(&mut run.notifications)
         };
@@ -504,6 +506,7 @@ impl ServeShared {
             return false;
         }
         inner.active_run = Some(ActiveRun {
+            model: None,
             automatic: false,
             rpc_id: rpc_id.to_owned(),
             started_ms,
@@ -638,10 +641,12 @@ impl ServeShared {
             Some(run) if run.automatic => json!({
                 "prompt_rpc_id": run.rpc_id, "started": run.started_ms,
                 "automatic": true, "session_id": run.session_id,
+                "model": run.model,
             }),
             Some(run) => json!({
                 "prompt_rpc_id": run.rpc_id,
                 "started": run.started_ms,
+                "model": run.model,
             }),
             None => Value::Null,
         }
@@ -666,6 +671,7 @@ impl ServeShared {
     ///（INV-S6）。broadcast 之后再清——晚到的订阅者看到 journal 重放
     /// 而非半截 run，不会拿到 settled 却没有前文。
     fn finish_run(&self, settled_data: String) {
+        super::workflow::apply_model_request(self);
         self.finish_frame("prompt.settled", settled_data);
     }
     pub(super) fn finish_automatic_notice(&self, data: String) {

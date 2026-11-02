@@ -4,9 +4,16 @@ function installDevelopmentGit(){
   const seats=new Map();let repository='project',directory=[],active=false,epoch=0,graph=null;
   function seat(){if(!seats.has(repository))seats.set(repository,gitRepositorySeat(repository));return seats.get(repository);}
   const call=(method,value={},owner=seat())=>rpc(method,{...value,repositoryId:owner.id});
-  const report=error=>devReport(ui.status,error),tabs=createGitTabs(ui,{seat,call,report,openFile});
-  const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),outputBody);ui.commit.parentElement.append(output);
-  const result=view=>{output.hidden=!view;outputBody.textContent=view?[view.message,view.result?.output,view.error].filter(Boolean).join('\n\n'):'';};
+  const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),ui.status,outputBody);ui.commit.parentElement.append(output);
+  function result(view){
+    const owner=seat(),busy=Boolean(owner.operation||owner.preparing),wasHidden=output.hidden;
+    const running=Boolean(owner.preparing||busy&&!view),visible=Boolean(owner.notice||running||view&&view.phase!=='completed');
+    output.hidden=!visible;if(!visible)output.open=false;else if(wasHidden||running)output.open=true;
+    outputBody.hidden=running||!view;CLATI18n.bind(outputBody,'textContent',()=>view?[view.message,view.result?.output,view.error,CLATI18n.present(view.presentation)].filter(Boolean).join('\n\n'):'');
+    ui.status.classList.toggle('error',Boolean(owner.notice));
+    if(owner.notice)devReport(ui.status,owner.notice);else if(running)devStatus(ui.status,'phase_'+(owner.phase||'pending'));else CLATI18n.bind(ui.status,'textContent',()=>'');
+  }
+  const report=error=>{seat().notice=error;result(seat().result);},tabs=createGitTabs(ui,{seat,call,report,openFile});
   const actions=createGitActions({seat,call,refresh,render:renderSubmission,report,result});
   registerView(node,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>devText('refresh'),()=>refresh()),viewAction('branches','branch',()=>devText('branches'),()=>branches(),false),...['fetch','pull','push'].map(key=>viewAction(key,key==='push'?'next':'refresh',()=>devText(key),()=>actions.start(key),false,()=>!seat().operation)),viewAction('backups','restore',()=>devText('restore'),()=>backups(),false)]});
   node.addEventListener('clat:git-selection',()=>{if(seat().snapshot)renderChanges();});
@@ -25,7 +32,7 @@ function installDevelopmentGit(){
     for(const [button,key]of [[ui.commit,primary.key],[ui.generate,'generate_message']]){
       CLATI18n.attribute(button,'title',()=>devText(key,{count:primary.count}));
     }
-    autosize();if(busy)devStatus(ui.status,'phase_'+(owner.phase||'pending'));saveDraft(owner);
+    autosize();result(owner.result);saveDraft(owner);
   }
   async function refresh(){
     if(!devAvailable()){devUnavailable(ui.status);return;}
@@ -33,7 +40,6 @@ function installDevelopmentGit(){
       directory=repositories.repositories;ui.repositoryStatus.hidden=!repositories.truncated;devStatus(ui.repositoryStatus,'repositories_truncated');if(snapshot.error){owner.snapshot=null;renderRepositories();renderSubmission();tabs.overview();report(snapshot.error);return;}
       const changed=owner.snapshot&&JSON.stringify([owner.snapshot.head,owner.snapshot.index,owner.snapshot.status,owner.snapshot.tracking])!==JSON.stringify([snapshot.head,snapshot.index,snapshot.status,snapshot.tracking]);owner.snapshot=snapshot;owner.language=settings.language;directory=repositories.repositories;
       const row=directory.find(r=>r.id===repository);owner.path=row?.path||'';ui.repoName.textContent=owner.path||state.workbench?.project?.root?.split('/').pop()||'';ui.branch.textContent=(snapshot.branch||devText('detached'))+(snapshot.tracking?' · '+snapshot.tracking.behind+'↓ '+snapshot.tracking.ahead+'↑':'');renderSubmission();renderChanges();renderRepositories();
-      if(!owner.operation)ui.status.textContent='';
       if(changed)await tabs.reload();else tabs.refresh();if(version!==epoch||seat()!==owner||!active)return;if(!graph)installGraph(owner);await graph.load();if(version===epoch&&seat()===owner&&active)result(owner.result);
     }catch(error){if(version===epoch&&seat()===owner){report(error);if(!owner.tab)tabs.overview();}}
   }

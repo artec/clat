@@ -58,6 +58,7 @@ pub(super) struct RunExecutionEngine;
 
 #[derive(Clone)]
 pub struct RunHandle {
+    model: super::dto::RunModelSnapshot,
     session_id: Option<crate::SessionId>,
     replay_before_seq: Option<u64>,
     cancel: CancelToken,
@@ -71,8 +72,10 @@ impl RunHandle {
         cancel: CancelToken,
         busy: Arc<AtomicBool>,
         steering: crate::run::SteeringQueue,
+        config: &ModelConfig,
     ) -> Self {
         Self {
+            model: super::dto::RunModelSnapshot::from_config(config),
             session_id: None,
             replay_before_seq: None,
             cancel,
@@ -85,6 +88,11 @@ impl RunHandle {
     /// Admitted session, frozen before execution and any goal continuation.
     pub fn session_id(&self) -> Option<&crate::SessionId> {
         self.session_id.as_ref()
+    }
+
+    /// Actual run route, independent of changes to the next-run selection.
+    pub fn model_snapshot(&self) -> &super::dto::RunModelSnapshot {
+        &self.model
     }
 
     /// Exclusive journal cursor for rebuilding history before this execution.
@@ -181,6 +189,7 @@ struct RunHostDeps {
 /// Stable dependencies owned by the worker for its entire lifetime. Keeping
 /// the scope and every run-local slot together makes cleanup knowledge local.
 struct RunWorkerDeps {
+    workflow: Arc<WorkflowState>,
     config_store: Arc<dyn crate::plugins::services::ConfigStore>,
     draft_images: crate::application::DraftImages,
     target: Option<Arc<super::target_services::TargetServices>>,
@@ -234,7 +243,12 @@ impl RunExecutionEngine {
         } else {
             crate::run::SteeringQueue::new()
         };
-        let handle = RunHandle::for_worker(cancel.clone(), Arc::clone(&busy), steering.clone());
+        let handle = RunHandle::for_worker(
+            cancel.clone(),
+            Arc::clone(&busy),
+            steering.clone(),
+            &spec.config,
+        );
         let mut slots = RunSlots::from_application(application);
         if let Some(target) = spec.target.as_ref() {
             slots.tool_access = target.access.clone();
@@ -583,6 +597,7 @@ impl RunWorkerDeps {
         resources: WorkerResources,
     ) -> (Self, Box<dyn EventSink + Send>) {
         let mut deps = RunWorkerDeps {
+            workflow: app.workflow.clone(),
             config_store: app.config.clone(),
             draft_images: app.draft_images.clone(),
             target: spec.target.clone(),
@@ -620,5 +635,74 @@ impl RunWorkerDeps {
             deps.bind_target(target);
         }
         (deps, spec.events)
+    }
+}
+
+#[cfg(test)]
+mod model_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn run_model_presentation_freezes_builtin_vendor_without_exposing_configuration() {
+        for preset in crate::presets::MODEL_PRESETS {
+            let mut config = ModelConfig::default();
+            preset.apply(&mut config);
+            let expected = match config.vendor() {
+                crate::model::ModelVendor::Glm => "GLM",
+                vendor => vendor.storage_key().expect("built-in vendor"),
+            };
+            let handle = RunHandle::for_worker(
+                CancelToken::new(),
+                Arc::new(AtomicBool::new(true)),
+                crate::run::SteeringQueue::new(),
+                &config,
+            );
+            config.model = "next-run-model".into();
+            config.preset = None;
+            let value = serde_json::to_value(handle.model_snapshot()).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "protocol": preset.protocol.to_string(), "model": preset.model,
+                    "vendor": expected,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn run_model_presentation_does_not_guess_custom_vendor_from_model_or_endpoint() {
+        let mut config = ModelConfig {
+            model: "glm-5.3".into(),
+            endpoint: "https://open.bigmodel.cn/api/coding/paas/v4".into(),
+            ..Default::default()
+        };
+        assert!(
+            super::super::dto::RunModelSnapshot::from_config(&config)
+                .vendor
+                .is_none()
+        );
+        config.preset = Some("unrecognized-preset".into());
+        assert!(
+            super::super::dto::RunModelSnapshot::from_config(&config)
+                .vendor
+                .is_none()
+        );
+        config.preset = crate::presets::MODEL_PRESETS
+            .first()
+            .map(|preset| preset.id.into());
+        assert!(
+            super::super::dto::RunModelSnapshot::from_config(&config)
+                .vendor
+                .is_none()
+        );
+        let preset = &crate::presets::MODEL_PRESETS[0];
+        preset.apply(&mut config);
+        config.endpoint = "https://custom.example/v1".into();
+        assert!(
+            super::super::dto::RunModelSnapshot::from_config(&config)
+                .vendor
+                .is_none()
+        );
     }
 }

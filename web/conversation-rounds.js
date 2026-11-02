@@ -5,6 +5,33 @@ function roundDuration(milliseconds){
   const seconds=Math.floor(milliseconds/1000),minutes=Math.floor(seconds/60);
   return roundText('duration',{minutes,seconds:seconds%60});
 }
+function modelRequestDetail(event, route){
+  const sameRoute=route?.protocol===event.provider&&route?.model===event.model;
+  return [sameRoute&&route.vendor||event.provider,event.model].filter(Boolean).join(' · ');
+}
+function createModelRequestPresentation(){
+  let notices=[],route=null,runId=null;
+  function begin(){notices=[];route=null;runId=null;}
+  function observe(info){
+    const run=info?.active_run;
+    if(!run?.model||!run.prompt_rpc_id||info.session?.id!==state.sessionId)return;
+    if(runId&&runId!==run.prompt_rpc_id)return;
+    runId=run.prompt_rpc_id;route=run.model;
+    for(const notice of notices)notice.paint(modelRequestDetail(notice.event,route));
+  }
+  function add(event,paint){
+    // Keep each event's original protocol/model; only its presentation changes.
+    const notice={event:{provider:event.provider,model:event.model},paint};
+    notices.push(notice);paint(modelRequestDetail(notice.event,route));
+  }
+  return {begin,observe,add};
+}
+const modelRequestPresentation=createModelRequestPresentation();
+function addModelRequestTrace(event){
+  const line=addNoticeLine('',event.type),detail=el('small');
+  line.querySelector('span').append(detail);
+  modelRequestPresentation.add(event,value=>CLATI18n.bind(detail,'textContent',()=> ' · '+value));
+}
 function toolPresentationIcon(name){
   const icons={run_command:'terminal',exec_command:'terminal',write_stdin:'terminal',read_file:'file',list_files:'folder',search:'search',web_search:'globe',web_search_prime:'globe',web_fetch:'globe',edit_file:'edit',write_file:'edit',apply_patch:'edit',view_image:'file',update_plan:'plan',exit_plan_mode:'plan'};
   return icons[name]||'tool'; // External identifiers never imply an action.
@@ -14,7 +41,7 @@ function createConversationRounds(){
   const choices=new Map();
   const key=seat=>(scopeId??'pending')+':'+(seat.nodes.find(n=>n.matches('.msg.user'))?.dataset.seq||seat.id);
   function stop(){clearInterval(timer);timer=null;}
-  function reset(){stop();seats.clear();owners=new WeakMap();live=null;scopeId=null;}
+  function reset(){modelRequestPresentation.begin();stop();seats.clear();owners=new WeakMap();live=null;scopeId=null;}
   function seat(id){
     if(!seats.has(id))seats.set(id,{id,nodes:[],start:null,end:null,ended:false,manual:null,header:null});
     return seats.get(id);
@@ -59,7 +86,7 @@ function createConversationRounds(){
     if(!node||node.classList.contains('compaction-disclosure'))return;
     if(!owners.has(node)){owners.set(node,value);value.nodes.push(node);}
   }
-  function begin(){scopeId=state.sessionId;live=seat('live:'+ ++serial);live.start=Date.now();live.approximate=true;tick();}
+  function begin(){modelRequestPresentation.begin();scopeId=state.sessionId;live=seat('live:'+ ++serial);live.start=Date.now();live.approximate=true;tick();}
   function capture(node){if(live&&!live.ended&&!state.history.replaying&&!state.history.replayTarget){add(live,node);if(!live.header)paint(live);}}
   function finish(){
     if(!live||live.ended)return;const follow=nearEnd();
@@ -85,6 +112,10 @@ function createConversationRounds(){
   return {reset,begin,capture,finish,replay,refresh,stop,tick,active,reveal,preference,scope};
 }
 const conversationRounds=createConversationRounds();
+function syncRunPresentation(info){
+  modelRequestPresentation.observe(info);
+  conversationRounds.active(info.active_run);
+}
 
 function conversationMapTurns(outline){
   const turns=new Map();

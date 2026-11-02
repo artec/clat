@@ -328,6 +328,13 @@ impl RunWorker {
                 failure
             });
         self.settle_inputs(&result);
+        self.publish_completion(result);
+    }
+    fn publish_completion(&self, result: ApplicationRunResult) {
+        self.deps.workflow.settle_model_request(
+            &self.input.session_id,
+            result.as_ref().is_ok_and(|done| !done.cancelled),
+        );
         self.deps.busy.store(false, Ordering::Release);
         let _ = self.deps.completion.send(result);
     }

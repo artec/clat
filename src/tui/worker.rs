@@ -327,6 +327,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             asker.ask(
                 AskQuestion {
+                    presentation: None,
                     question: "ship it?".into(),
                     options: Vec::new(),
                     allow_custom: true,

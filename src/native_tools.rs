@@ -445,6 +445,7 @@ impl Tool for AskUserTool {
         };
         match asker.ask(
             crate::interaction::AskQuestion {
+                presentation: None,
                 question,
                 options,
                 allow_custom,

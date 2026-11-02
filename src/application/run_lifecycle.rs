@@ -203,6 +203,7 @@ impl TrustedProjectApplication {
         if let Some(previous) = self.active_compaction.take() {
             previous.join()?;
         }
+        self.apply_pending_model_workflow()?;
         Ok(())
     }
 

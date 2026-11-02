@@ -301,7 +301,7 @@ function installWorkbenchShell() {
   shell.chat = route => shellChat(shell, route);
   shell.overview = () => shellOverview(shell);
   shell.open = id => { if(id === 'schedules-dialog') { taskCenter.openSchedules(); return; } const seat = shell.surfaces.get(id); if (seat) document.getElementById(seat.trigger)?.click(); };
-  createShellRail(shell); createResourceLibrary(shell); shell.pageHost = createShellPages(shell);
+  createShellRail(shell); shell.allowance=createRailAllowance(); createResourceLibrary(shell); shell.pageHost = createShellPages(shell);
   shell.tools = installWorkspaceTools(shell);
   createShellInspector(shell); createShellComposer(shell);
   registerGlobalViewContexts(shell);createApplicationToolbar(shell);

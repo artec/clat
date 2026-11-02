@@ -6,6 +6,7 @@ impl Run<'_> {
     pub(super) fn tool_step(
         &self,
         call: ToolCall,
+        remaining: &[ToolCall],
         text: &str,
         state: &mut StepState,
         events: &mut dyn EventSink,
@@ -44,6 +45,7 @@ impl Run<'_> {
         let approved = call.name == "exit_plan_mode"
             && !is_error
             && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
+        let boundary = !is_error && tool.ends_run(&output);
         let result = ToolResult {
             blocks: if is_error {
                 Vec::new()
@@ -57,16 +59,36 @@ impl Run<'_> {
             is_error,
         };
         self.publish_result(state, result, events);
-        if approved {
-            self.steering.seal();
-            let text = if text.trim().is_empty() {
-                "Plan approved. Implementation is enabled for the next run."
-            } else {
-                text
-            };
-            return Ok(Some(state.complete(events, text.to_owned())));
+        if approved || boundary {
+            return Ok(Some(
+                self.finish_tool_boundary(state, events, text, remaining, approved),
+            ));
         }
         Ok(None)
+    }
+    fn finish_tool_boundary(
+        &self,
+        state: &mut StepState,
+        events: &mut dyn EventSink,
+        text: &str,
+        remaining: &[ToolCall],
+        approved: bool,
+    ) -> RunOutput {
+        for call in remaining {
+            state.items.push(ModelItem::ToolCall(call.clone()));
+            self.publish_result(state, ToolResult {
+                call_id: call.id.clone(), tool_name: call.name.clone(),
+                output: serde_json::json!({"code":"WORKFLOW_BOUNDARY","error":"Not executed: a confirmed workflow transition ended this run before this call."}),
+                is_error: true, blocks: Vec::new(), image_parts: Vec::new(),
+            }, events);
+        }
+        self.steering.seal();
+        let text = if approved && text.trim().is_empty() {
+            "Plan approved. Implementation is enabled for the next run."
+        } else {
+            text
+        };
+        state.complete(events, text.to_owned())
     }
     fn authorized_tool(
         &self,

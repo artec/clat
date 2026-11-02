@@ -165,6 +165,16 @@ descriptors, all derived from the same startup plan. Aggregated pages retain
 available content when one feature is absent; direct feature operations return
 the existing typed unavailable error.
 
+`builtin.plan_mode` contributes `request_plan_mode` as well as plan review;
+`builtin.goal` contributes `propose_goal` as well as `update_goal`. These proposal
+tools reuse the Host's question bridge. They require human confirmation and a
+successful run boundary: Plan enters read-only policy, while Goal creation keeps
+continuation unarmed. `builtin.native_interaction` separately owns the general
+`ask_user` clarification tool. Model guidance is derived from the frozen visible
+tool catalog, so disabled or policy-hidden capabilities are not advertised.
+No new plugin switch, RPC, configuration level or automatic Host restart is
+introduced by these tools.
+
 Skills, Memory, Subagent, MCP and Plan Mode can each be disabled independently,
 including all five together. For example:
 

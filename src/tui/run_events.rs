@@ -358,7 +358,17 @@ impl App {
             epoch == self.run_epoch && result.as_ref().is_ok_and(|done| !done.cancelled);
         self.settle_finished_run(epoch, result);
         if dispatch_next {
+            self.apply_model_workflow_boundary();
             self.dispatch_next_turn();
+        }
+    }
+    fn apply_model_workflow_boundary(&mut self) {
+        let result = self
+            .application
+            .as_mut()
+            .map(|app| app.apply_pending_model_workflow());
+        if let Some(Err(error)) = result {
+            self.flash_message(error.presentation());
         }
     }
 
@@ -583,12 +593,12 @@ impl App {
 
 fn tool_request_message(name: String, arguments: serde_json::Value) -> UiMessage {
     UiMessage::new("tui.run_tool")
-        .arg("value1", name)
+        .arg_message("value1", localization::workflow_tool_name(&name))
         .arg("value2", arguments.to_string())
 }
 fn tool_denied_message(tool: String, reason: String) -> UiMessage {
     UiMessage::new("tui.run_denied")
-        .arg("tool", tool)
+        .arg_message("tool", localization::workflow_tool_name(&tool))
         .arg("reason", reason)
 }
 fn tool_finished_message(tool: String, error: bool) -> UiMessage {
@@ -597,7 +607,7 @@ fn tool_finished_message(tool: String, error: bool) -> UiMessage {
     } else {
         "tui.run_tool_success"
     })
-    .arg("value1", tool)
+    .arg_message("value1", localization::workflow_tool_name(&tool))
 }
 
 fn model_request_message(provider: String, model: String, turn: String) -> UiMessage {

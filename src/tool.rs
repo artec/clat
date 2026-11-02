@@ -57,6 +57,7 @@ pub(crate) struct ToolAccessPolicy {
     readonly_child: bool,
     view_image_enabled: bool,
     task_progress_enabled: bool,
+    workflow_requests: bool,
 }
 
 impl ToolAccessPolicy {
@@ -67,6 +68,7 @@ impl ToolAccessPolicy {
             readonly_child: false,
             view_image_enabled: false,
             task_progress_enabled: false,
+            workflow_requests: true,
         }
     }
 
@@ -77,6 +79,7 @@ impl ToolAccessPolicy {
             readonly_child: false,
             view_image_enabled: false,
             task_progress_enabled: false,
+            workflow_requests: false,
         }
     }
 
@@ -87,6 +90,10 @@ impl ToolAccessPolicy {
 
     pub(crate) fn with_task_progress(mut self, enabled: bool) -> Self {
         self.task_progress_enabled = enabled;
+        self
+    }
+    pub(crate) fn without_workflow_requests(mut self) -> Self {
+        self.workflow_requests = false;
         self
     }
 
@@ -111,10 +118,18 @@ impl ToolAccessPolicy {
             readonly_child: true,
             view_image_enabled: false,
             task_progress_enabled: false,
+            workflow_requests: false,
         }
     }
 
     pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
+        if matches!(
+            definition.name.as_str(),
+            "request_plan_mode" | "propose_goal"
+        ) && !self.workflow_requests
+        {
+            return false;
+        }
         if is_task_tool(&definition.name) && !self.task_progress_enabled {
             return false;
         }
@@ -140,6 +155,13 @@ impl ToolAccessPolicy {
     }
 
     pub(crate) fn denial_reason(&self, definition: &ToolDefinition) -> &'static str {
+        if matches!(
+            definition.name.as_str(),
+            "request_plan_mode" | "propose_goal"
+        ) && !self.workflow_requests
+        {
+            return "new workflow requests require an ordinary foreground session outside Plan Mode";
+        }
         if self.readonly_child {
             "tool unavailable to a read-only subagent"
         } else if is_task_tool(&definition.name) && !self.task_progress_enabled {
@@ -292,6 +314,11 @@ impl std::error::Error for ToolError {}
 pub(crate) const MAX_TOOL_DESCRIPTION_CHARS: usize = 4096;
 
 pub trait Tool: Send + Sync {
+    /// Successful native workflow proposals end this batch before the next tool.
+    /// This is a control-flow signal, never permission or execution authority.
+    fn ends_run(&self, _output: &Value) -> bool {
+        false
+    }
     /// Freeze native execution authority before permission review.
     fn prepare_execution(&self, _arguments: &Value) -> Option<PreparedTool> {
         None

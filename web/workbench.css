@@ -77,7 +77,8 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .global-rail .shell-button svg { width: var(--rail-icon-size, 22px); height: var(--rail-icon-size, 22px); }
 .global-rail .shell-button svg path { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .global-rail #nav-tasks { --rail-icon-size: 24px; }
-.global-rail #nav-settings { --rail-icon-size: 20px; }
+/* Match the ~18px visible diameter of Help: gear bounds span 20.6/24 units. */
+.global-rail #nav-settings { --rail-icon-size: 19.2px; }
 .global-rail .shell-label, .global-rail .sidebar-expanded-only { display: none; }
 .global-rail .shell-button[aria-current="page"] { color: var(--accent); background: var(--surface-input); }
 .global-rail #nav-workbench[aria-current="page"] { color: var(--primary-ink); background: var(--brand); }
@@ -530,7 +531,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 
 /* A turn has one process disclosure; messages remain in their original slots. */
 .round-process-heading{display:flex;align-items:center;gap:8px;width:calc(100% - 36px);margin:4px 0 20px 36px;padding:8px 0 12px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--text-muted);text-align:start;font:var(--text-size-ui)/1.5 var(--font-ui);cursor:pointer}
-.round-process-heading>svg{width:14px;height:14px;flex:none}
+.round-process-heading>svg{width:1em;height:1em;flex:none}
 .round-process-heading[aria-expanded=true]>svg{transform:rotate(90deg)}
 .round-process-heading[data-running=true]>svg{visibility:hidden}
 .round-process-hidden,.msg.round-hide-reasoning>.reasoning{display:none!important}
@@ -538,12 +539,12 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .compaction-disclosure{margin:14px 0 20px 36px;color:var(--text-muted);font-size:var(--text-size-secondary)}
 .compaction-disclosure>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;padding:6px 0}
 .compaction-disclosure>summary::-webkit-details-marker{display:none}
-.compaction-disclosure>summary>svg{width:15px;height:15px;flex:none}
+.compaction-disclosure>summary>svg{width:1em;height:1em;flex:none}
 .compaction-disclosure-body{padding:12px 16px;border-inline-start:1px solid var(--line);overflow-wrap:anywhere}
 .compaction-disclosure-body>p{margin:0 0 8px}.compaction-disclosure-body>h4{font-weight:500;margin:16px 0 8px}
 #transcript>.tool-card{border:0;border-radius:0;background:transparent}
 #transcript>.tool-card>summary{padding:6px 0}
-#transcript .tool-card>summary>svg{width:18px;height:18px;flex:none;stroke-width:1.65}
+#transcript .tool-card>summary>svg{width:1em;height:1em;flex:none;stroke-width:1.5}
 #transcript>.tool-card>.tool-body{border-inline-start:1px solid var(--line);padding:8px 12px;margin:6px 0 12px 8px}
 @media(max-width:640px){.round-process-heading{width:100%;margin-inline-start:0}.compaction-disclosure{margin-inline-start:0}}
 .round-process-heading:disabled{opacity:1;cursor:default}
@@ -554,7 +555,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .project-group .session-list li[data-running=true] .session-item{padding-inline-end:60px}
 @keyframes session-running-spin{to{transform:rotate(360deg)}}
 .run-activity{display:flex;align-items:center;gap:8px;min-height:28px;margin:6px 0 20px 36px;color:var(--text-muted);font:var(--text-size-ui)/1.6 var(--font-ui)}
-.run-activity>svg{width:18px;height:18px;flex:none;stroke-width:1.65;opacity:.8}
+.run-activity>svg{width:1em;height:1em;flex:none;stroke-width:1.5;opacity:.8}
 .run-activity-label{max-width:100%;overflow-wrap:anywhere}
 @supports (background-clip:text) or (-webkit-background-clip:text){
   .run-activity-label{background-image:linear-gradient(110deg,var(--text-muted) 40%,var(--text) 50%,var(--text-muted) 60%);background-size:300% 100%;background-position:100% 0;background-repeat:no-repeat;background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:activity-spotlight 2.8s ease-in-out infinite}
@@ -580,14 +581,14 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .user-reader-footer button { padding:8px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface-input); }
 @media(forced-colors:active) { .user-message-collapsed .user-message-preview { mask-image:none;-webkit-mask-image:none; }.user-message-collapsed { outline:1px solid ButtonText; } }
 
-.msg.assistant .reasoning summary>svg{width:16px;height:16px;flex:none;stroke-width:1.65;color:var(--text-muted)}
+.msg.assistant .reasoning summary>svg{width:1em;height:1em;flex:none;stroke-width:1.5;color:var(--text-muted)}
 .run-activity .run-loading{animation:run-loading-turn 2s linear infinite}
 .run-activity[data-waiting=true] .run-loading{animation:none}
 @keyframes run-loading-turn{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.run-activity .run-loading{animation:none}}
 
 :is(.message-actions,.reader-actions) .message-action-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:6px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);box-shadow:none}
-:is(.message-actions,.reader-actions) .message-action-icon>svg{width:18px;height:18px;stroke-width:1.65;flex:none}
+:is(.message-actions,.reader-actions) .message-action-icon>svg{width:14px;height:14px;stroke-width:1.5;flex:none}
 :is(.message-actions,.reader-actions) .message-action-icon:hover,:is(.message-actions,.reader-actions) .message-action-icon:focus-visible{background:var(--surface-input);color:var(--text)}
 .message-actions .message-bookmark[aria-pressed=true]{color:var(--accent)}
 .msg:focus-within .message-bookmark{opacity:1}

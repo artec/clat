@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::sync::Mutex;
 #[derive(Clone)]
 pub(crate) enum Handoff {
+    Model(super::model_requests::ConfirmedRequest),
     Goal {
         session: String,
         plan: Option<(String, u64)>,
@@ -29,6 +30,21 @@ impl Default for WorkflowState {
     }
 }
 impl WorkflowState {
+    pub(crate) fn settle_model_request(&self, session: &crate::SessionId, success: bool) {
+        let mut handoff = self.handoff.lock().expect("workflow handoff");
+        if let Some(Handoff::Model(request)) = handoff.as_mut()
+            && request.session() == session
+        {
+            if success {
+                request.settled = true;
+            } else {
+                *handoff = None;
+            }
+        }
+    }
+    pub(super) fn generation_guard(&self) -> std::sync::MutexGuard<'_, String> {
+        self.authority.lock().expect("workflow authority")
+    }
     pub(crate) fn generation(&self) -> String {
         self.authority.lock().expect("workflow authority").clone()
     }

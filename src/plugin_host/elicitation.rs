@@ -23,6 +23,7 @@ pub(super) fn ask_field(
         let (options, allow_custom) = field_options(field);
         match asker.ask(
             AskQuestion {
+                presentation: None,
                 question,
                 options,
                 allow_custom,

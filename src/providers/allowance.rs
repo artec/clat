@@ -8,11 +8,16 @@ pub struct ProviderAllowance {
     pub updated_at: Option<u64>,
     pub items: Vec<AllowanceItem>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct AllowanceItem {
     pub kind: String,
     pub value: String,
     pub unit: Option<String>,
+    /// Provider-reported reset instant, Unix milliseconds. Never inferred from polling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_hours: Option<u64>,
 }
 impl ProviderAllowance {
     pub(crate) fn state(status: &str) -> Self {
@@ -104,6 +109,33 @@ fn numeric(value: &Value) -> Option<f64> {
         .or_else(|| value.as_str()?.parse().ok())
         .filter(|v| v.is_finite())
 }
+fn glm_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
+    let items = body["data"]["limits"]
+        .as_array()?
+        .iter()
+        .filter(|row| row["type"] == "TOKENS_LIMIT")
+        .filter_map(|row| {
+            let remaining = (100.0 - numeric(&row["percentage"])?).clamp(0.0, 100.0);
+            let count = row["number"].as_u64();
+            let window_hours = match row["unit"].as_u64() {
+                Some(3) => count,
+                Some(6) => count.and_then(|n| n.checked_mul(168)),
+                _ => None,
+            }
+            .filter(|hours| *hours > 0);
+            Some(AllowanceItem {
+                kind: "quota".into(),
+                value: remaining.to_string(),
+                unit: Some("%".into()),
+                reset_at: row["nextResetTime"]
+                    .as_u64()
+                    .filter(|time| *time > 0 && *time <= 8_640_000_000_000_000),
+                window_hours,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then_some(items)
+}
 fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
     let mut items = Vec::new();
     match kind {
@@ -115,21 +147,11 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
                     kind: "money".into(),
                     value: value.into(),
                     unit: row["currency"].as_str().map(str::to_owned),
+                    ..Default::default()
                 });
             }
         }
-        "glm" => {
-            let limit = body["data"]["limits"]
-                .as_array()?
-                .iter()
-                .find(|row| row["type"] == "TOKENS_LIMIT")?;
-            let remaining = (100.0 - numeric(&limit["percentage"])?).clamp(0.0, 100.0);
-            items.push(AllowanceItem {
-                kind: "quota".into(),
-                value: remaining.to_string(),
-                unit: Some("%".into()),
-            });
-        }
+        "glm" => items.extend(glm_allowance_items(body)?),
         "kimi" => {
             let detail = body["limits"]
                 .as_array()?
@@ -144,6 +166,12 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
                 kind: "quota".into(),
                 value: (remaining / total * 100.0).clamp(0.0, 100.0).to_string(),
                 unit: Some("%".into()),
+                reset_at: detail["resetTime"]
+                    .as_str()
+                    .and_then(|text| text.parse::<jiff::Timestamp>().ok())
+                    .and_then(|time| u64::try_from(time.as_millisecond()).ok())
+                    .filter(|time| *time > 0 && *time <= 8_640_000_000_000_000),
+                ..Default::default()
             });
         }
         _ => return None,
@@ -160,6 +188,39 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn allowance_preserves_matching_window_resets_without_inventing_missing_metadata() {
+        let body = serde_json::json!({"data":{"limits":[
+            {"type":"TOKENS_LIMIT","percentage":40,"unit":3,"number":5,"nextResetTime":1793600000000u64},
+            {"type":"TOKENS_LIMIT","percentage":"90","unit":6,"number":1},
+            {"type":"TIME_LIMIT","percentage":99,"nextResetTime":1793601000000u64}
+        ]}});
+        let value = parse_allowance("glm", &body).unwrap();
+        assert_eq!(value.items.len(), 2);
+        assert_eq!(value.items[0].value, "60");
+        assert_eq!(value.items[0].reset_at, Some(1793600000000));
+        assert_eq!(value.items[0].window_hours, Some(5));
+        assert_eq!(value.items[1].window_hours, Some(168));
+        let wire = serde_json::to_value(&value).unwrap();
+        assert!(wire["items"][1].get("reset_at").is_none());
+        assert!(value.updated_at.is_none());
+        let legacy = parse_allowance("glm", &serde_json::json!({"data":{"limits":[{"type":"TOKENS_LIMIT","percentage":100,"nextResetTime":-1}]}})).unwrap();
+        assert_eq!(legacy.items[0].value, "0");
+        assert!(legacy.items[0].reset_at.is_none());
+        assert!(legacy.items[0].window_hours.is_none());
+    }
+    #[test]
+    fn kimi_reset_is_optional_and_does_not_change_remaining_percentage() {
+        let data = |time| serde_json::json!({"limits":[{"detail":{"limit":200,"remaining":130,"resetTime":time}}]});
+        let value = parse_allowance("kimi", &data("2026-08-20T00:00:00Z")).unwrap();
+        assert_eq!(value.items[0].value, "65");
+        assert_eq!(value.items[0].reset_at, Some(1787184000000));
+        assert!(
+            parse_allowance("kimi", &data("invalid")).unwrap().items[0]
+                .reset_at
+                .is_none()
+        );
+    }
     #[test]
     fn allowance_keeps_zero_currency_and_quota_units_without_reading_labels() {
         let value = parse_allowance(

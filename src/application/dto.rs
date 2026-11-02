@@ -146,6 +146,40 @@ pub struct WorkbenchModelSnapshot {
     pub image_input: bool,
 }
 
+/// Secret-free presentation frozen from the route actually used by a run.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct RunModelSnapshot {
+    pub protocol: String,
+    pub model: String,
+    pub vendor: Option<String>,
+}
+
+impl RunModelSnapshot {
+    pub(super) fn from_config(config: &ModelConfig) -> Self {
+        let vendor = config
+            .preset
+            .as_deref()
+            .and_then(crate::presets::preset_by_id)
+            .filter(|preset| {
+                preset.model == config.model
+                    && preset.protocol == config.protocol
+                    && preset.endpoint == config.endpoint
+                    && preset.request_path == config.request_path
+            })
+            .and_then(
+                |preset| match crate::model::endpoint_vendor(preset.endpoint) {
+                    crate::model::ModelVendor::Glm => Some("GLM"),
+                    vendor => vendor.storage_key(),
+                },
+            );
+        Self {
+            protocol: config.protocol.to_string(),
+            model: config.model.clone(),
+            vendor: vendor.map(str::to_owned),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProjectSnapshot {
     pub builtin_availability: super::BuiltinAvailabilityMap,
