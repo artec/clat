@@ -146,3 +146,6 @@ web/project-directory-watch.js text eol=lf
 web/model-setup-form.js text eol=lf
 web/model-setup.js text eol=lf
 web/model-setup.css text eol=lf
+
+# Harness2 pinned upstream compatibility patch must retain LF.
+scripts/harness2/upstream-clat.patch text eol=lf

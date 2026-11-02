@@ -66,3 +66,7 @@ docs/ppt/
 # Playwright e2e local run artifacts (desktop shell spec)
 test-results/
 playwright-report/
+
+# External Harness2 research tooling bytecode.
+/scripts/harness2/**/__pycache__/
+/scripts/harness2/__pycache__/

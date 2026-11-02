@@ -72,6 +72,7 @@ python3 -m unittest discover -s scripts -p test_check_test_waits.py -q
 python3 -m unittest discover -s scripts -p test_rust_test_ports.py -q
 python3 -m unittest discover -s scripts -p test_ci_box_sources.py -q
 python3 -m unittest discover -s scripts -p test_ci_windows.py -q
+python3 -m unittest discover -s scripts/harness2/tests -q
 bun install --cwd desktop --frozen-lockfile --ignore-scripts
 bun desktop/node_modules/typescript/bin/tsc --project desktop/tsconfig.json
 bun scripts/i18n-check.ts

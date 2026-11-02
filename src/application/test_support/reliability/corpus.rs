@@ -9,6 +9,28 @@ pub(super) struct Case {
     pub control: bool,
 }
 impl Case {
+    pub(super) fn variant(&self, text: String) -> String {
+        if self.trial < 10 {
+            return text;
+        }
+        text.replace(
+            "artifacts/星河/export-v2.jsonl",
+            &format!(
+                "artifacts/合成{}/out-{}-final.jsonl",
+                self.trial,
+                self.trial + 4
+            ),
+        )
+        .replace("林岚", ["周禾", "许澄", "Mira"][self.trial % 3])
+        .replace("revision=r9", &format!("revision=r{}", self.trial + 11))
+        .replace(
+            "retry-after=17",
+            &format!("retry-after={}", self.trial + 17),
+        )
+        .replace("HEAD_31", &format!("HEAD_{}", self.trial + 31))
+        .replace("TAIL_97", &format!("TAIL_{}", self.trial + 97))
+    }
+
     pub fn id(&self) -> String {
         format!(
             "{}-{}-{}",

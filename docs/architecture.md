@@ -666,6 +666,19 @@ coordinator. Candidate construction proves neither factual support nor semantic
 completeness. Test-only evidence checks report literal source support separately
 from coverage in retained messages and the checkpoint, without granting approval
 or enabling a default semantic gate.
+
+Harness² experiments remain outside the production assembly. A private,
+explicitly armed test bridge reuses Application, Provider, summary planning and
+durable commit paths. Experimental summary guidance is immutable per compactor;
+the same text is charged by capacity planning and appended to model requests.
+It cannot change the selected range, output policy or permissions. The external
+driver owns candidate files, frozen task manifests and independent answers;
+restricted model tools cannot access the checker or arbitrary files/commands.
+Evidence exports observe the actual replacement carrier and include retained
+messages, so a log-only summary or an omitted repetition cannot masquerade as
+context replacement or fact loss. Production always uses the built-in guidance
+unless an independently reviewed source change is adopted. See the
+[research adapter guide](../scripts/harness2/README.md).
 During map/reduce, absence in one part is not a global revocation or a null
 value. Parts complement each other; round-local restrictions retain their scope.
 These instructions still require real-model semantic validation: eight sections

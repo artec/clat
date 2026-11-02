@@ -1,0 +1,35 @@
+--- a/harness2/core/spec.py
++++ b/harness2/core/spec.py
+@@ -30,7 +30,7 @@
+ 
+ ModelId = str
+ 
+-CHANNELS = ("claude_cli", "opencode")
++CHANNELS = ("claude_cli", "opencode", "clat")
+ 
+ 
+ @dataclass(frozen=True)
+@@ -126,7 +126,7 @@
+                     )
+ 
+ 
+-INSTALL_MODES = ("workspace_agents_md", "home_dir_jinja", "workspace_config", "codex_root")
++INSTALL_MODES = ("workspace_agents_md", "home_dir_jinja", "workspace_config", "codex_root", "clat_experiment")
+ 
+ 
+ @dataclass(frozen=True)
+--- a/harness2/core/prompts.py
++++ b/harness2/core/prompts.py
+@@ -630,6 +630,12 @@
+         ]
+     )
+     return {
++        "clat": _SurfaceText(
++            surface_md="Only context/harness/summary_guidance.md is editable. Read evidence with harness2_evidence, then replace the complete guidance with harness2_replace_guidance. Preserve eight sections, never hardcode task answers or change runtime policy. Leave it unchanged if evidence does not support a change. Reply with notes tracing each edit to observed evidence.",
++            inv="Improve general checkpoint fidelity for {deliverable}. {levers}",
++            dom="Improve checkpoint fidelity for this {domain}. {levers}",
++            tts_surface="Only summary_guidance.md is editable.",
++        ),
+         "opencode": _SurfaceText(
+             surface_md=_SURFACE_OPENCODE,
+             inv=_INV_TEMPLATE.replace(

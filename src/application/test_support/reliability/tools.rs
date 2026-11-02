@@ -46,7 +46,12 @@ impl crate::Tool for Resource {
             }
         }
         self.0.reads.lock().unwrap().push(id);
-        let mut result = json!({"id":id,"evidence":format!("HEAD_31\n{}\nTAIL_97",corpus::noise(3000)),"status":"observation_only_not_acceptance"});
+        let case = corpus::Case {
+            family: "tools".into(),
+            trial: self.0.trial.load(Ordering::SeqCst),
+            control: false,
+        };
+        let mut result = json!({"id":id,"evidence":case.variant(format!("HEAD_31\n{}\nTAIL_97",corpus::noise(3000))),"status":"observation_only_not_acceptance"});
         if self.0.ledger.load(Ordering::SeqCst) {
             result["amount"] = json!(17 + id * 3 + self.0.trial.load(Ordering::SeqCst) as u64 * 10);
             result["confirmation"] = json!(if matches!(id, 3 | 6) {

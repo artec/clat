@@ -1,5 +1,22 @@
 # Live-model validation
 
+## Harness² optimization experiments
+
+The opt-in [Harness² research adapter](../scripts/harness2/README.md) executes
+CLAT's existing Application and summary pipeline against frozen synthetic
+long-task scenarios. GLM executes the tasks; DeepSeek proposes summary guidance
+and supplies separately recorded semantic opinions. The adapter is development
+tooling, not a runtime dependency, public RPC or production self-modification
+feature. Its private test entry is inert unless explicitly armed.
+
+Discovery, held-out comparison and the original reliability regressions have
+separate evidence. All started failures remain visible. Neither upstream
+candidate selection, a model opinion nor deterministic offline success is
+evidence that the complete long-task acceptance passed. Follow the adapter guide
+for confinement, temporary credentials, immutable binaries and the full finite
+experiment protocol. Do not apply a candidate to production by selecting a
+successful rollout or tuning against the held-out results.
+
 The normal test suite is deterministic and credential-free. It cannot prove
 that a real provider still accepts CLAT's request shape, streams correctly, or
 continues after a tool call. Run the two gates below whenever provider adapters,

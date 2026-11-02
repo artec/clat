@@ -7,6 +7,8 @@ use std::sync::atomic::AtomicUsize;
 
 pub(super) struct Capture {
     pub out: PathBuf,
+    pub guidance: Option<Arc<str>>,
+    pub allowed_tools: Vec<String>,
     pub next: AtomicUsize,
     pub stage: Mutex<String>,
     pub cancelling: AtomicBool,
@@ -17,6 +19,8 @@ impl Capture {
     pub fn new(out: PathBuf) -> Self {
         Self {
             out,
+            guidance: None,
+            allowed_tools: vec!["phase9_resource".into(), "phase9_publish".into()],
             next: AtomicUsize::new(0),
             stage: Mutex::new("setup".into()),
             cancelling: AtomicBool::new(false),
@@ -77,7 +81,7 @@ impl Plugin for Provider {
         Ok(())
     }
 }
-struct Factory(Arc<Capture>);
+pub(super) struct Factory(pub Arc<Capture>);
 pub(super) fn build(config: &crate::ModelConfig, capture: &Arc<Capture>) -> Box<dyn Model> {
     Factory(capture.clone())
         .build(
@@ -102,7 +106,12 @@ impl ModelFactory for Factory {
         config: &crate::ModelConfig,
         _: &crate::ProviderCredentials,
     ) -> Result<Box<dyn Model>, ModelError> {
-        let key = std::env::var("CLAT_GLM_CODING_PLAN_KEY")
+        let key_name = if config.model.starts_with("deepseek") {
+            "CLAT_HARNESS2_DEEPSEEK_KEY"
+        } else {
+            "CLAT_GLM_CODING_PLAN_KEY"
+        };
+        let key = std::env::var(key_name)
             .map_err(|_| ModelError::request("explicit live credential missing"))?;
         if key.is_empty() {
             return Err(ModelError::request("explicit live credential empty"));
@@ -112,12 +121,14 @@ impl ModelFactory for Factory {
         Ok(Box::new(Observed {
             inner,
             capture: self.0.clone(),
+            output_limit: config.output_limit,
         }))
     }
 }
 struct Observed {
     inner: crate::providers::OpenAiCompatibleModel,
     capture: Arc<Capture>,
+    output_limit: Option<u32>,
 }
 impl Model for Observed {
     fn provider(&self) -> &str {
@@ -133,7 +144,7 @@ impl Model for Observed {
     ) -> Result<ModelResponse, ModelError> {
         if r.tools
             .iter()
-            .any(|t| !matches!(t.name.as_str(), "phase9_resource" | "phase9_publish"))
+            .any(|t| !self.capture.allowed_tools.contains(&t.name))
         {
             self.capture.safety_failure.store(true, Ordering::SeqCst);
             return Err(ModelError::request(
@@ -168,11 +179,15 @@ impl Model for Observed {
             usage: None,
             observations: Vec::new(),
         };
+        let framing_limit = (r.options.output_limit.or(self.output_limit).unwrap_or(8192) as usize)
+            .saturating_mul(1024)
+            .clamp(4 * 1024 * 1024, 64 * 1024 * 1024);
         let (result, wire) =
-            crate::providers::openai_compatible::observation_tests::observe(|| {
-                self.inner.stream(r, &mut tap)
-            });
-        let wire = json!({"request_body":wire.body,"consumed_sse":String::from_utf8_lossy(&wire.bytes),"overflow":wire.overflow,"events":tap.observations});
+            crate::providers::openai_compatible::observation_tests::observe_with_limit(
+                framing_limit,
+                || self.inner.stream(r, &mut tap),
+            );
+        let wire = json!({"request_body":wire.body,"consumed_sse":String::from_utf8_lossy(&wire.bytes),"overflow":wire.overflow,"framing_limit":framing_limit,"events":tap.observations});
         write_new(
             &self
                 .capture

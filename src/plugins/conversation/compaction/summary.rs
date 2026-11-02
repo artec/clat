@@ -9,9 +9,9 @@ pub(super) const FALLBACK_INPUT_TOKENS: usize = 24_000;
 const GENERATION_LIMIT: u32 = 65_536;
 const RECOVERY_LIMIT: u32 = 65_536;
 
-fn instructions(tokens: usize) -> String {
+fn instructions_for(guidance: &str, tokens: usize) -> String {
     format!(
-        "{SUMMARY_INSTRUCTIONS} Keep the complete checkpoint within approximately {tokens} tokens; preserve all eight sections."
+        "{guidance} Keep the complete checkpoint within approximately {tokens} tokens; preserve all eight sections."
     )
 }
 
@@ -20,15 +20,20 @@ pub(crate) fn directive_for_test(config: &ModelConfig) -> String {
     Policy::new(config).unwrap().instructions()
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct Policy {
     input: usize,
     summary_limit: usize,
     output: u32,
     window: Option<u32>,
+    guidance: Arc<str>,
 }
 impl Policy {
+    #[cfg(test)]
     pub(super) fn new(config: &ModelConfig) -> Result<Self, String> {
+        Self::with_guidance(config, Arc::from(SUMMARY_INSTRUCTIONS))
+    }
+    pub(super) fn with_guidance(config: &ModelConfig, guidance: Arc<str>) -> Result<Self, String> {
         // Generation includes reasoning; the visible summary keeps its separate bound.
         let output = config
             .max_context_tokens
@@ -39,7 +44,7 @@ impl Policy {
             .map(|window| {
                 (window as usize).saturating_sub(
                     output as usize
-                        + estimate_tokens_str(&instructions(output as usize))
+                        + estimate_tokens_str(&instructions_for(&guidance, output as usize))
                         + MARGIN_TOKENS
                         + 32,
                 )
@@ -58,10 +63,11 @@ impl Policy {
             summary_limit: (output as usize).min(input / 3 - 64),
             output,
             window: config.max_context_tokens,
+            guidance,
         })
     }
     fn instructions(&self) -> String {
-        instructions(self.summary_limit.saturating_sub(8))
+        instructions_for(&self.guidance, self.summary_limit.saturating_sub(8))
     }
     fn recovery_output(&self, text: &str) -> u32 {
         let items = [ModelItem::user_text(text)];
@@ -99,8 +105,9 @@ impl SummaryJob {
     pub(super) fn new(
         providers: &Arc<ProviderRegistry>,
         request: &CompactionRequest<'_>,
+        guidance: Arc<str>,
     ) -> Result<Self, PresentedText> {
-        let policy = Policy::new(request.config)?;
+        let policy = Policy::with_guidance(request.config, guidance)?;
         let usage = Arc::new(Mutex::new(Usage::default()));
         let build: ModelBuildFn = {
             let providers = providers.clone();
@@ -170,11 +177,12 @@ pub(super) struct SummaryRun<'a> {
 }
 impl<'a> SummaryRun<'a> {
     pub(super) fn new(model: &'a mut dyn Model, cancel: &'a CancelToken, policy: Policy) -> Self {
+        let max_output = policy.output;
         Self {
             model,
             cancel,
             policy,
-            max_output: policy.output,
+            max_output,
             system: None,
             tools: Vec::new(),
         }
@@ -374,3 +382,7 @@ impl SummaryRun<'_> {
             .map_err(|error| format!("summary request failed: {error}").into())
     }
 }
+
+#[cfg(test)]
+#[path = "guidance_tests.rs"]
+mod guidance_tests;

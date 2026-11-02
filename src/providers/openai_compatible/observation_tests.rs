@@ -12,6 +12,7 @@ pub(crate) struct Wire {
     pub body: Option<Value>,
     pub bytes: Vec<u8>,
     pub overflow: bool,
+    limit: usize,
 }
 struct Scope;
 impl Drop for Scope {
@@ -20,9 +21,19 @@ impl Drop for Scope {
     }
 }
 pub(crate) fn observe<T>(run: impl FnOnce() -> T) -> (T, Wire) {
+    observe_with_limit(LIMIT, run)
+}
+pub(crate) fn observe_with_limit<T>(limit: usize, run: impl FnOnce() -> T) -> (T, Wire) {
+    assert!(
+        (LIMIT..=64 * 1024 * 1024).contains(&limit),
+        "invalid test framing allowance"
+    );
     ACTIVE.with(|s| {
         assert!(s.borrow().is_none(), "nested wire capture is not supported");
-        *s.borrow_mut() = Some(Wire::default());
+        *s.borrow_mut() = Some(Wire {
+            limit,
+            ..Default::default()
+        });
     });
     let _scope = Scope;
     let result = run();
@@ -62,7 +73,7 @@ impl<R: BufRead> BufRead for Reader<R> {
             ACTIVE.with(|s| {
                 if let Some(wire) = s.borrow_mut().as_mut() {
                     let amount = amount.min(bytes.len());
-                    let remaining = LIMIT.saturating_sub(wire.bytes.len());
+                    let remaining = wire.limit.saturating_sub(wire.bytes.len());
                     wire.bytes
                         .extend_from_slice(&bytes[..amount.min(remaining)]);
                     wire.overflow |= amount > remaining;
@@ -71,6 +82,24 @@ impl<R: BufRead> BufRead for Reader<R> {
         }
         self.0.consume(amount);
     }
+}
+
+#[test]
+fn wire_observation_can_capture_declared_framing_without_changing_the_legacy_bound() {
+    let raw = vec![b'x'; LIMIT + 1];
+    let (result, wire) = observe_with_limit(LIMIT * 2, || {
+        let mut bytes = Vec::new();
+        Reader(io::Cursor::new(&raw))
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    assert_eq!(result.unwrap(), raw);
+    assert_eq!(wire.bytes, raw);
+    assert!(!wire.overflow);
+    let (result, wire) = observe(|| Reader(io::Cursor::new(&raw)).read_to_end(&mut Vec::new()));
+    assert!(result.is_err());
+    assert!(wire.overflow);
+    assert_eq!(wire.bytes.len(), LIMIT);
 }
 
 #[test]

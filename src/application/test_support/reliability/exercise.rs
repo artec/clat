@@ -3,6 +3,15 @@ use crate::test_support::reopen_after_close;
 pub(super) const IMAGE_BATCHES: [usize; 3] = [5, 5, 1];
 
 pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String> {
+    run_observed(case, out, None, true)
+}
+
+pub(super) fn run_observed(
+    case: &corpus::Case,
+    out: &Path,
+    guidance: Option<Arc<str>>,
+    evaluate: bool,
+) -> Result<Value, String> {
     let directory = out.join(case.id());
     std::fs::create_dir(&directory).unwrap();
     let project = Project::new(directory.join("project"));
@@ -10,7 +19,9 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
     let storage = directory.join("state");
     std::fs::create_dir(&storage).unwrap();
     policy(&storage);
-    let capture = Arc::new(model::Capture::new(directory.clone()));
+    let mut observed = model::Capture::new(directory.clone());
+    observed.guidance = guidance;
+    let capture = Arc::new(observed);
     let state = Arc::new(tools::State::default());
     state.ledger.store(case.family == "tools", Ordering::SeqCst);
     state.trial.store(case.trial, Ordering::SeqCst);
@@ -19,15 +30,22 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
     let mut stages = Vec::new();
     seed(&mut app, case, &capture, &mut stages, project.root());
     let pre = checkpoints(&app);
-    let mut expected = case.expected();
-    expected.as_object_mut().unwrap().remove("head");
-    expected.as_object_mut().unwrap().remove("tail");
-    expected.as_object_mut().unwrap().remove("steer_tag");
-    expected.as_object_mut().unwrap().remove("tool_total");
-    expected
-        .as_object_mut()
-        .unwrap()
-        .remove("unconfirmed_count");
+    let mut expected = if evaluate {
+        case.expected()
+    } else {
+        Value::Null
+    };
+    if let Some(fields) = expected.as_object_mut() {
+        for key in [
+            "head",
+            "tail",
+            "steer_tag",
+            "tool_total",
+            "unconfirmed_count",
+        ] {
+            fields.remove(key);
+        }
+    }
     recall(
         &mut app,
         case,
@@ -45,7 +63,11 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
         &capture,
         &mut stages,
         "recall-active",
-        &case.expected(),
+        &if evaluate {
+            case.expected()
+        } else {
+            Value::Null
+        },
     );
     let before = checkpoints(&app);
     if !case.control {
@@ -65,7 +87,11 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
         &capture,
         &mut stages,
         "recall-manual",
-        &case.expected(),
+        &if evaluate {
+            case.expected()
+        } else {
+            Value::Null
+        },
     );
     cancel_and_steer(&mut app, &capture, &mut stages);
     let id = app.current_session_id().unwrap();
@@ -74,7 +100,7 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
     let offloads = durable_count(&app, "image/offload");
     app.close().unwrap();
     let mut app = reopen_after_close(|| mount(&project, &storage, &capture, &state));
-    app.switch_session(id).unwrap();
+    app.switch_session(id.clone()).unwrap();
     let replay_equal = surface == app.sessions.surface_nodes().unwrap();
     recall(
         &mut app,
@@ -82,7 +108,11 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
         &capture,
         &mut stages,
         "recall-cold",
-        &case.expected(),
+        &if evaluate {
+            case.expected()
+        } else {
+            Value::Null
+        },
     );
     capture.stage("publish");
     turn(
@@ -94,10 +124,14 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
         vec![],
     );
     let artifact = state.artifact.lock().unwrap().clone();
-    let artifact_check = recompute::judge(
-        &artifact.as_ref().map(Value::to_string).unwrap_or_default(),
-        &case.expected(),
-    );
+    let artifact_check = if evaluate {
+        recompute::judge(
+            &artifact.as_ref().map(Value::to_string).unwrap_or_default(),
+            &case.expected(),
+        )
+    } else {
+        Value::Null
+    };
     let mut reads = state.reads.lock().unwrap().clone();
     reads.sort_unstable();
     let checkpoints_ok = case.control || (pre >= 1 && active >= 1 && manual >= 1 && total >= 3);
@@ -124,17 +158,20 @@ pub(super) fn run_case(case: &corpus::Case, out: &Path) -> Result<Value, String>
                     && s["cancelled"] == true
             })
         && (case.family != "images" || case.control || offloads > 0)
-        && artifact_check["passed"] == true
+        && (!evaluate || artifact_check["passed"] == true)
         && reads == (0..8).collect::<Vec<u64>>()
         && state.publishes.load(Ordering::SeqCst) == 1
         && !safety;
     app.close().unwrap();
     let projection_equal = checkpoint_replay(&storage);
+    if !evaluate {
+        harness2::views::export(&storage, &directory, &id.to_string());
+    }
     Ok(
-        json!({"id":case.id(),"status":if passed&&projection_equal{"passed"}else{"failed"},"safety_failure":safety||!projection_equal,"checkpoint_replay_equal":projection_equal,
+        json!({"id":case.id(),"evidence_root":directory,"status":if passed&&projection_equal{"passed"}else{"failed"},"safety_failure":safety||!projection_equal,"checkpoint_replay_equal":projection_equal,
         "pre_checkpoints":pre,"active_checkpoints":active,"manual_checkpoints":manual,"total_checkpoints":total,
         "image_offloads":offloads,"replay_equal":replay_equal,"reads":reads,"publications":state.publishes.load(Ordering::SeqCst),
-        "artifact_check":artifact_check,"stages":stages,"model_requests":capture.next.load(Ordering::SeqCst),"cost":null}),
+        "artifact":artifact,"artifact_check":artifact_check,"stages":stages,"model_requests":capture.next.load(Ordering::SeqCst),"cost":null}),
     )
 }
 
@@ -180,11 +217,20 @@ pub(super) fn mount(
     capture: &Arc<model::Capture>,
     state: &Arc<tools::State>,
 ) -> Result<TrustedProjectApplication, ApplicationError> {
-    BootstrapApplication::open(project.clone(), storage.to_owned())?
+    let mut app = BootstrapApplication::open(project.clone(), storage.to_owned())?
         .authorize_and_mount_with_provider(Arc::new(model::Provider {
             capture: capture.clone(),
             state: state.clone(),
-        }))
+        }))?;
+    if let Some(guidance) = &capture.guidance {
+        app.compactor = Some(crate::plugins::harness2_compactor(
+            app.providers.clone(),
+            app.prompts.clone(),
+            app.tools.clone(),
+            guidance.clone(),
+        ));
+    }
+    Ok(app)
 }
 pub(super) fn configure(app: &TrustedProjectApplication, window: u32) {
     let config = crate::ModelConfig {
@@ -235,17 +281,17 @@ fn seed(
     let evidence_prompt = if images {
         format!(
             "{}\n本轮额外要求：观察本轮最新图片，不回复 ACK，只用一个英文单词回答它的主色。",
-            case.evidence()
+            case.variant(case.evidence())
         )
     } else {
-        case.evidence()
+        case.variant(case.evidence())
     };
     turn(
         app,
         capture,
         stages,
         "initial",
-        &case.initial(),
+        &case.variant(case.initial()),
         if images {
             vec![blue; IMAGE_BATCHES[0]]
         } else {
@@ -257,7 +303,7 @@ fn seed(
         capture,
         stages,
         "correction",
-        &case.correction(),
+        &case.variant(case.correction()),
         if images {
             vec![red; IMAGE_BATCHES[1]]
         } else {
@@ -367,7 +413,9 @@ fn recall(
     let tools = std::mem::replace(&mut app.tools, Arc::new(crate::tool::ToolRegistry::new()));
     let text = turn(app, capture, stages, stage, &case.recall(), vec![]);
     app.tools = tools;
-    stages.last_mut().unwrap()["judge"] = recompute::judge(&text, expected);
+    if !expected.is_null() {
+        stages.last_mut().unwrap()["judge"] = recompute::judge(&text, expected);
+    }
 }
 fn active_turn(
     app: &mut TrustedProjectApplication,

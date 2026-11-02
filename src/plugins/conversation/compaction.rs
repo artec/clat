@@ -72,6 +72,7 @@ impl Plugin for CompactionPlugin {
             prompts: context
                 .require(PROMPT_SERVICE)
                 .map_err(|error| PluginError::new(error.to_string()))?,
+            guidance: Arc::from(SUMMARY_INSTRUCTIONS),
             tools: context
                 .require(TOOL_SERVICE)
                 .map_err(|error| PluginError::new(error.to_string()))?,
@@ -83,6 +84,7 @@ impl Plugin for CompactionPlugin {
 }
 
 struct DefaultHistoryCompactor {
+    guidance: Arc<str>,
     providers: Arc<ProviderRegistry>,
     prompts: Arc<PromptRegistry>,
     tools: Arc<ToolRegistry>,
@@ -127,7 +129,7 @@ impl DefaultHistoryCompactor {
         let plan = plan::CompactionPlan::new(request.nodes, range)?;
         // Empty is an effective snapshot, never a request to restore registry defaults.
         let _ = (&self.prompts, &self.tools);
-        let job = summary::SummaryJob::new(&self.providers, request)
+        let job = summary::SummaryJob::new(&self.providers, request, self.guidance.clone())
             .map_err(|error| error.to_string())?;
         let result = job.execute(&plan.items());
         let accepted = result.summary.and_then(|summary| {
@@ -431,3 +433,22 @@ mod active_tests;
 
 #[cfg(test)]
 mod summary_tests;
+
+#[cfg(all(test, feature = "runtime-tests"))]
+pub(crate) fn harness2_compactor(
+    providers: Arc<ProviderRegistry>,
+    prompts: Arc<PromptRegistry>,
+    tools: Arc<ToolRegistry>,
+    guidance: Arc<str>,
+) -> Arc<dyn HistoryCompactor> {
+    Arc::new(DefaultHistoryCompactor {
+        providers,
+        prompts,
+        tools,
+        guidance,
+    })
+}
+#[cfg(all(test, feature = "runtime-tests"))]
+pub(crate) fn harness2_default_guidance() -> &'static str {
+    SUMMARY_INSTRUCTIONS
+}

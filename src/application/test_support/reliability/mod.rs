@@ -11,6 +11,7 @@ mod corpus;
 mod diagnosis;
 mod exercise;
 mod fidelity;
+mod harness2;
 mod model;
 mod recompute;
 mod semantic_regression;
@@ -130,10 +131,12 @@ fn write_new(path: &Path, value: &Value) {
     }
     let mut file = options.open(path).unwrap();
     let mut text = serde_json::to_string_pretty(value).unwrap();
-    if let Ok(secret) = std::env::var("CLAT_GLM_CODING_PLAN_KEY")
-        && !secret.is_empty()
-    {
-        text = text.replace(&secret, "[REDACTED]");
+    for name in ["CLAT_GLM_CODING_PLAN_KEY", "CLAT_HARNESS2_DEEPSEEK_KEY"] {
+        if let Ok(secret) = std::env::var(name)
+            && !secret.is_empty()
+        {
+            text = text.replace(&secret, "[REDACTED]");
+        }
     }
     file.write_all(text.as_bytes()).unwrap();
 }

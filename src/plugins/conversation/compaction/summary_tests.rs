@@ -31,6 +31,7 @@ struct Factory {
     seen: Arc<Mutex<Vec<(ModelConfig, ModelOptions)>>>,
     calls: Arc<AtomicUsize>,
     inputs: Arc<Mutex<Vec<String>>>,
+    directives: Arc<Mutex<Vec<String>>>,
     time_limits: Arc<Mutex<Vec<Option<std::time::Duration>>>>,
     ledger: Arc<crate::model::RunSpendLedger>,
 }
@@ -88,6 +89,11 @@ impl Model for Attempt {
                 input + u64::from(request.options.output_limit.unwrap()) + 512 <= u64::from(window)
             );
         }
+        self.factory
+            .directives
+            .lock()
+            .unwrap()
+            .push(format!("{:?}", request.items.last()));
         let evidence = &request.items[..request.items.len() - 1];
         let input = match evidence {
             [ModelItem::User { content }] => content_text(content),
@@ -152,6 +158,7 @@ fn factory(reply: Reply) -> Factory {
         seen: Default::default(),
         calls: Default::default(),
         inputs: Default::default(),
+        directives: Default::default(),
         time_limits: Default::default(),
         ledger: Arc::new(crate::model::RunSpendLedger::new(None)),
     }
@@ -191,6 +198,7 @@ fn compact_with_capacity(
         )
         .unwrap();
     let compactor = DefaultHistoryCompactor {
+        guidance: Arc::from(SUMMARY_INSTRUCTIONS),
         providers,
         prompts: Arc::new(PromptRegistry::new()),
         tools: Arc::new(ToolRegistry::new()),
@@ -561,4 +569,43 @@ fn phase8_summary_panic_is_an_accounted_failure_not_a_committed_checkpoint() {
     assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
     assert!(outcome.usage.input_tokens > 0 && outcome.usage.output_tokens > 0);
     assert_eq!(factory.ledger.used(), factory.ledger.committed());
+}
+
+#[test]
+#[cfg(feature = "runtime-tests")]
+fn harness2_candidate_guidance_reaches_real_summary_requests_without_changing_generation() {
+    let config = ModelConfig {
+        max_context_tokens: Some(24000),
+        ..Default::default()
+    };
+    let baseline = summary::directive_for_test(&config);
+    let guidance = Arc::from(format!(
+        "{}\nEXPERIMENT_SOURCE_BINDING",
+        SUMMARY_INSTRUCTIONS
+    ));
+    let policy = summary::Policy::with_guidance(&config, guidance).unwrap();
+    let factory = factory(Reply::Thinking);
+    let mut model = Attempt {
+        factory: factory.clone(),
+        config,
+    };
+    let cancel = CancelToken::new();
+    let mut run = summary::SummaryRun::new(&mut model, &cancel, policy);
+    run.summarize_context(
+        &[ModelItem::user_text("evidence ".repeat(200))],
+        false,
+        "effective guidance",
+        &[],
+    )
+    .unwrap();
+    assert!(
+        factory
+            .directives
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|s| s.contains("EXPERIMENT_SOURCE_BINDING"))
+    );
+    assert!(!baseline.contains("EXPERIMENT_SOURCE_BINDING"));
+    assert_eq!(factory.seen.lock().unwrap()[0].1.output_limit, Some(6000));
 }
