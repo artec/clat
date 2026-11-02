@@ -400,7 +400,7 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.4 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.10 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -419,11 +419,11 @@
       <div class="shot">
         <img src="https://raw.githubusercontent.com/artec/clat/main/screen.png" alt="CLAT desktop app screenshot" loading="lazy">
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.4 实测 13.9 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.10 实测 15.2 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">13.9 MB</div>
+          <div class="stat-number">15.2 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -500,7 +500,7 @@
         <div class="feature-cell">
           <p class="feature-label">04 — Runtime</p>
           <h3>Unlimited turns &amp; auto-compaction</h3>
-          <p>No turn limit — a run continues until the task is done; at 80% of the context window the conversation compacts automatically with the original history preserved. Every ending is explained in place — completed, cancelled, or the exact failure reason — and Esc cancels any time.</p>
+          <p>No turn limit — a run continues until the task is done; in Plan Mode the model plans read-only first and executes only after your approval. At 80% of the context window the conversation compacts automatically with the original history preserved; Esc cancels any time.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">05 — Permissions</p>
@@ -540,7 +540,7 @@
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>
           <h3>Clients &amp; desktop app</h3>
-          <p><code>clat</code> starts a background host: the TUI, web workbench, and WeChat remote attach to the same sessions — close the TUI and the host keeps running. The macOS/Windows desktop app installs standalone, shares Host data, and updates itself. The interface speaks three languages, following the system.</p>
+          <p><code>clat</code> starts a background host with the TUI, web workbench, and WeChat remote on the same sessions; the desktop app installs standalone and shares Host data. The workbench ships a terminal, a code editor, and full Git source control, in three languages.</p>
         </div>
       </div>
     </section>

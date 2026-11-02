@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CLAT — command-line agent</title>
+  <title>克莱艾特 — 命令行智能体</title>
   <meta name="description" content="CLAT：稳如磐石的 Agent 底座，DSH 的 TUI 客户端。Rust 单文件，五家厂商预设开箱即用，多模态看图，签名插件市场 + WASM / MCP 扩展。">
   <!-- 语言记忆：?lang=zh|en 显式指定并记录（优先级最高）；
        记录为英文则跳回英文页，否则留在中文页并记录。
@@ -392,7 +392,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.4 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.10 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -411,11 +411,11 @@
       <div class="shot">
         <img src="https://raw.githubusercontent.com/artec/clat/main/screen.zh.png" alt="CLAT 桌面版截图" loading="lazy">
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.4 实测 13.9 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.10 实测 15.2 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">13.9 MB</div>
+          <div class="stat-number">15.2 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -492,7 +492,7 @@
         <div class="feature-cell">
           <p class="feature-label">04 — 运行</p>
           <h3>无限制轮次与自动压缩</h3>
-          <p>轮次没有上限，任务跑完为止；上下文用到八成自动压缩摘要，原始历史完整保留。运行结束时对话里写明结局——完成、取消，或失败的具体原因；Esc 随时可取消。</p>
+          <p>轮次没有上限，任务跑完为止；计划模式下模型先只读规划、经你批准再动手执行。上下文用到八成自动压缩摘要，原始历史完整保留；Esc 随时可取消。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">05 — 权限</p>
@@ -532,7 +532,7 @@
         <div class="feature-cell">
           <p class="feature-label">12 — 前端</p>
           <h3>多端与桌面版</h3>
-          <p><code>clat</code> 启动后台宿主：TUI、Web 工作台、微信遥控挂接同一批会话，关掉 TUI 宿主照常运行；macOS / Windows 桌面版独立安装、共享数据、自带更新。界面三语（中文简繁 / English），随系统自动切换。</p>
+          <p><code>clat</code> 启动后台宿主，TUI、Web 工作台、微信遥控挂接同一批会话，桌面版独立安装、共享数据；工作台内置终端、代码编辑器与全套 Git 源码管理，界面三语随系统切换。</p>
         </div>
       </div>
     </section>
