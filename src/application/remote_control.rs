@@ -91,7 +91,7 @@ pub(crate) struct WechatPromptStart {
 
 pub(crate) enum WechatPromptStartOutcome {
     Started {
-        handle: RunHandle,
+        handle: Box<RunHandle>,
         binding: crate::im::WechatChatBinding,
         mapping_error: Option<String>,
     },
@@ -733,7 +733,7 @@ impl TrustedProjectApplication {
             )
         };
         Ok(WechatPromptStartOutcome::Started {
-            handle,
+            handle: Box::new(handle),
             binding,
             mapping_error: mapping.err().map(|error| error.to_string()),
         })

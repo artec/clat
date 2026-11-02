@@ -16,7 +16,7 @@ a scrollable region reveals its thumb, which hides after about 1.2 seconds of
 inactivity. Hovering or dragging a custom thumb keeps it visible. High-contrast
 mode keeps scrollbars visible. Visual appearance and interaction are manually reviewed.
 
-The model picker uses a discrete thinking-intensity slider. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Selection is locked during a run and while saving.
+The model picker uses a discrete thinking-intensity slider with a capsule track, an oversized round thumb and in-track stop dots aligned to its travel. Track fill follows the active CLAT theme; the current intensity appears above the track. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Selection is locked during a run and while saving.
 
 The composer toolbar groups add, permission, plan, context usage, model/thinking,
 pending messages and send/stop controls. Toolbar icons share a centered control
@@ -52,7 +52,7 @@ These visual and interaction details are manually accepted on each platform.
 
 ## Conversation and contextual tools
 
-Toolbar Back/Forward also support Cmd+[ / Cmd+] on macOS and Ctrl+[ / Ctrl+] on Windows/browser workbenches. macOS exposes them in the native View menu. They share the toolbar’s application history boundaries and do not navigate while a modal reader/dialog is open.
+Toolbar Back/Forward also support Cmd+[ / Cmd+] on macOS and Ctrl+[ / Ctrl+] on Windows/browser workbenches. macOS exposes them in the native View menu. They share the toolbar’s application history boundaries and do not navigate while a modal reader/dialog is open. The embedded, non-modal About and Updates panel does not block navigation, including when its settings page is hidden.
 
 The outer window shell does not scroll, including during focus and message
 navigation. The toolbar keeps its full height; lists, messages and tool contents
@@ -115,7 +115,11 @@ mounted with its draft, images, file references, reading position and list state
 Click Conversation to return, click the tool tab to revisit, or close the tool
 for the original layout. Esc dismisses temporary UI first, then returns from a
 tool to Conversation without also stopping a run. Back/forward follow view
-changes. Narrow windows show a list, then details with a Back to list action.
+changes. On macOS, **View → Back / Forward** and `⌘[` / `⌘]` use the same bounded
+application history as the toolbar arrows, through a direct native-to-renderer
+navigation dispatch. Browser/Windows shortcuts use `Ctrl+[` / `Ctrl+]` (browser
+macOS uses `⌘[` / `⌘]`). Modal dialogs block these navigation requests.
+Narrow windows show a list, then details with a Back to list action.
 Session changes invalidate the previous tool's ownership. Runs continue while
 the user reads tools; the Conversation tab indicates activity and pending input.
 

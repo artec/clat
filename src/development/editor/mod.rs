@@ -61,10 +61,10 @@ impl DevelopmentService {
                 return Err(error);
             }
         };
-        if method == "editor.save" {
-            if let Some(report) = self.rust_saved(text(value, "path")?) {
-                result["rust_support"] = report;
-            }
+        if method == "editor.save"
+            && let Some(report) = self.rust_saved(text(value, "path")?)
+        {
+            result["rust_support"] = report;
         }
         let mut compact = result.clone();
         if method == "editor.save" {

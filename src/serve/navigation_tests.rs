@@ -9,6 +9,16 @@ fn call(handle: &ServeHandle, method: &str, params: Value) -> Value {
 #[test]
 fn navigation_historical_images_and_bookmarks_follow_the_proven_message_not_selection() {
     let (handle, storage, root) = spawn_serve("navigation-history-library", TestBehavior::Success);
+    // This case verifies reference ownership, not concurrent title generation.
+    // A settled main run does not join the independent title writer; history
+    // correctly refuses a source that changes during its committed scan.
+    call(
+        &handle,
+        "model.utility.set",
+        json!({
+            "naming_enabled":false,"suggestions_enabled":false,"automatic_followups":false,"profile":null
+        }),
+    );
     let mut events = SseClient::connect(handle.addr);
     let draft = open_draft(handle.addr, "navigation-images");
     let scope = draft["draftScopeId"].as_str().unwrap();

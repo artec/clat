@@ -80,14 +80,28 @@ pub fn confined_position(
 
 /// Menu accelerators share the renderer's bounded application history.
 pub fn navigate_menu(app: &tauri::AppHandle, id: &str) {
-    use tauri::{Emitter, Manager};
-    let delta = match id {
-        "desktop-back" => -1,
-        "desktop-forward" => 1,
-        _ => return,
+    use tauri::Manager;
+    let Some(script) = navigation_script(id) else {
+        return;
     };
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.emit("desktop-navigate", delta);
+        // A curated DOM event reaches the same history owner as toolbar clicks.
+        // Do not depend on asynchronous remote-page event-listener registration.
+        if let Err(error) = window.eval(script) {
+            eprintln!("[CLAT] navigation dispatch: {error}");
+        }
+    }
+}
+
+fn navigation_script(id: &str) -> Option<&'static str> {
+    match id {
+        "desktop-back" => {
+            Some("window.dispatchEvent(new CustomEvent('clat:navigate',{detail:-1}));")
+        }
+        "desktop-forward" => {
+            Some("window.dispatchEvent(new CustomEvent('clat:navigate',{detail:1}));")
+        }
+        _ => None,
     }
 }
 

@@ -31,10 +31,10 @@ impl ToolMiddleware for Maintenance {
         // Failed commands can still have edited a manifest. Permission denials
         // never enter this already-authorized middleware.
         let reports = changed_reports(&self.0, before, invocation);
-        if !reports.is_empty() {
-            if let Ok(Value::Object(output)) = &mut result {
-                output.insert("rust_support".into(), json!(reports));
-            }
+        if !reports.is_empty()
+            && let Ok(Value::Object(output)) = &mut result
+        {
+            output.insert("rust_support".into(), json!(reports));
         }
         result
     }

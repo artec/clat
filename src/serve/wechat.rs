@@ -788,7 +788,7 @@ impl WechatBridge {
             } => {
                 self.outbound.typing(target, true);
                 self.shared
-                    .spawn_settler(format!("wechat:{delivery_id}"), completion_rx, handle);
+                    .spawn_settler(format!("wechat:{delivery_id}"), completion_rx, *handle);
                 if let Some(error) = mapping_error {
                     self.volatile_chat_sessions
                         .lock()

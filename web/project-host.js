@@ -1,7 +1,9 @@
 // One app-wide handler, shared with the native menu; never escape app history.
 function installHistoryShortcuts(navigation) {
   const navigate = delta => {
-    if (document.querySelector('dialog[open]:not(.shell-surface)')) return;
+    // Embedded Desktop settings stay open as a non-modal dialog even when hidden.
+    // Only a real top-layer modal should block application navigation.
+    if (document.querySelector('dialog:modal')) return;
     navigation.go(delta);
   };
   window.addEventListener('clat:navigate', event => {

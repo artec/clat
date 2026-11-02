@@ -228,8 +228,10 @@
                 <label class="model-picker-key"><span data-i18n="web.thinking_intensity">Thinking intensity</span>
                   <span class="model-thinking-field">
                     <output id="model-thinking-value"></output>
-                    <input id="model-thinking" type="range" min="0" max="0" step="1" value="0" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled>
-                    <span id="model-thinking-ticks" class="model-thinking-ticks" aria-hidden="true"></span>
+                    <span class="model-thinking-control">
+                      <input id="model-thinking" type="range" min="0" max="0" step="1" value="0" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled>
+                      <span id="model-thinking-ticks" class="model-thinking-ticks" aria-hidden="true"></span>
+                    </span>
                   </span>
                 </label>
                 <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models" data-i18n-aria-label="web.available_models"></div>
