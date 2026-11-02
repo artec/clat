@@ -15,6 +15,10 @@ use std::time::Duration;
 use ureq::http::Response;
 use ureq::{Agent, Body};
 
+#[cfg(test)]
+#[path = "openai_compatible/observation_tests.rs"]
+pub(crate) mod observation_tests;
+
 /// 连接超时：防止 TCP 连接阶段无限阻塞。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -250,12 +254,17 @@ impl Model for OpenAiCompatibleModel {
     ) -> Result<ModelResponse, ModelError> {
         let cancel = request.cancel;
         let body = self.request_body(request)?;
+        #[cfg(test)]
+        observation_tests::request(&body);
         let Some(response) = self.send(&body, cancel)? else {
             return Ok(super::cancelled_response());
         };
         let (_, body) = response.into_parts();
+        let reader = BufReader::new(CancelAwareReader::new(body.into_reader(), cancel));
+        #[cfg(test)]
+        let reader = observation_tests::Reader(reader);
         consume_sse(
-            BufReader::new(CancelAwareReader::new(body.into_reader(), cancel)),
+            reader,
             events,
             cancel,
             // FP-02：聚合帽与 output_limit 联动 + 绝对硬顶。

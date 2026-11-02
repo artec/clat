@@ -461,3 +461,7 @@ mod phase8_history_tests;
 #[cfg(test)]
 #[path = "application/phase8_maintenance_tests.rs"]
 mod phase8_maintenance_tests;
+
+#[cfg(all(test, feature = "runtime-tests"))]
+#[path = "application/test_support/reliability/mod.rs"]
+mod reliability_tests;

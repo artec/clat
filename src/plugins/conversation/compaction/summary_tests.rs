@@ -131,7 +131,12 @@ impl Model for Attempt {
             Reply::RetryAndRecover if attempt % 4 == 1 => ("", FinishReason::Completed),
             Reply::RetryAndRecover => ("Recovered summary", FinishReason::Completed),
         };
-        let mut response = crate::test_support::response(text, finish);
+        let text = if finish == FinishReason::Completed && !text.is_empty() {
+            crate::test_support::checkpoint(text)
+        } else {
+            text.to_owned()
+        };
+        let mut response = crate::test_support::response(&text, finish);
         response.reasoning = Some("Reasoning is not a summary.".into());
         response.usage = Some(Usage {
             input_tokens: 100,
@@ -311,7 +316,10 @@ fn summary_job_recovers_empty_or_reasoning_only_answers_once_and_accounts_both_a
     for reply in [Reply::EmptyOnce, Reply::LengthOnce] {
         for active in [false, true] {
             let (outcome, factory, _) = compact(reply, active);
-            assert_eq!(outcome.summary.as_deref(), Some("Recovered summary"));
+            assert_eq!(
+                outcome.summary.as_deref(),
+                Some(crate::test_support::checkpoint("Recovered summary").as_str())
+            );
             assert_eq!(factory.calls.load(Ordering::SeqCst), 2);
             assert_eq!(outcome.usage.input_tokens, 200);
             assert_eq!(outcome.usage.output_tokens, 100);
@@ -500,12 +508,15 @@ fn summary_job_does_not_report_a_provider_stop_as_user_cancellation() {
 fn summary_job_resummarizes_complete_oversized_output_without_truncating_it() {
     for active in [false, true] {
         let (outcome, factory, _) = compact(Reply::LongOnce, active);
-        assert_eq!(outcome.summary.as_deref(), Some("Recovered short summary"));
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some(crate::test_support::checkpoint("Recovered short summary").as_str())
+        );
         assert_eq!(factory.calls.load(Ordering::SeqCst), 2);
         let inputs = factory.inputs.lock().unwrap();
         assert_eq!(
             inputs[1],
-            "证据".repeat(40000),
+            crate::test_support::checkpoint(&"证据".repeat(40000)),
             "recovery preserves the complete candidate summary"
         );
     }

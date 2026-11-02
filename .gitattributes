@@ -20,6 +20,8 @@ tests/fixtures/market-package/** -text
 # Agent Scenario Harness 对 input/expected/report 做逐字节断言；文本
 # fixture 固定 LF，避免 Windows checkout 把 baseline 变化伪装成能力回归。
 tests/fixtures/agent-scenarios/** text eol=lf
+# The synthetic long-task corpus is embedded and hashed in preregistered reports.
+src/application/test_support/reliability/corpus.rs text eol=lf
 # Embedded zero-build frontend assets retain their exact text shape on Windows.
 web/*.js text eol=lf
 web/*.html text eol=lf

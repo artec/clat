@@ -3,13 +3,13 @@ use super::*;
 use std::collections::HashSet;
 use std::ops::Range;
 
-pub(crate) struct CompactionPlan {
-    pub range: Range<usize>,
-    pub tokens: u64,
-    nodes: Vec<CompactionNode>,
+pub(crate) struct CompactionPlan<'a> {
+    range: Range<usize>,
+    tokens: u64,
+    nodes: &'a [CompactionNode],
 }
-impl CompactionPlan {
-    pub fn new(nodes: &[CompactionNode], range: Range<usize>) -> Result<Self, String> {
+impl<'a> CompactionPlan<'a> {
+    pub fn new(nodes: &'a [CompactionNode], range: Range<usize>) -> Result<Self, String> {
         let selected = nodes
             .get(range.clone())
             .filter(|nodes| !nodes.is_empty())
@@ -28,18 +28,34 @@ impl CompactionPlan {
                 .iter()
                 .map(|node| estimate_item(&node.item) as u64)
                 .sum(),
-            nodes: selected.to_vec(),
+            nodes,
         })
     }
     pub fn items(&self) -> Vec<ModelItem> {
-        self.nodes.iter().map(|node| node.item.clone()).collect()
+        self.nodes[self.range.clone()]
+            .iter()
+            .map(|node| node.item.clone())
+            .collect()
+    }
+    pub fn range(&self) -> Range<usize> {
+        self.range.clone()
+    }
+    pub fn selected_tokens(&self) -> u64 {
+        self.tokens
     }
     pub fn validate_summary(&self, summary: &str) -> Result<(), String> {
-        let replacement = ModelItem::user_text(frame_checkpoint(summary));
-        if summary.trim().is_empty() || estimate_item(&replacement) as u64 >= self.tokens {
-            return Err("summary would not reduce the selected context".into());
-        }
-        Ok(())
+        self.candidate(summary).map(|_| ())
+    }
+    pub fn candidate(
+        &self,
+        summary: &str,
+    ) -> Result<super::candidate::CompactionCandidate<'a>, String> {
+        super::candidate::CompactionCandidate::new(
+            self.nodes,
+            self.range.clone(),
+            self.tokens,
+            summary,
+        )
     }
 }
 

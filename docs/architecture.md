@@ -632,7 +632,7 @@ headings fit the next reduction request.
 
 The visible summary bound is separate from generation tokens, which also leave
 room for reasoning. The eight-section prompt uses a capacity-scaled token target, with the body in
-the conversation language; it has no fixed 2,048-character body limit. Only a completed, nonempty answer can become a
+the conversation language; it has no fixed 2,048-character body limit. Only a completed answer with eight nonempty sections can become a
 replacement. An empty or length-limited answer gets at most one recovery attempt;
 a complete oversized answer can instead be summarized again in full, without
 truncating it. Repeated invalid answers stop that request. Transport retries
@@ -640,6 +640,31 @@ apply per request rather than sharing a job-wide request cap. Compaction adds
 no per-request or whole-job deadline, cumulative token budget, or request-count
 limit. It observes the caller's cancellation signal. Provider cancellation is
 reported separately. The primary model configuration is unchanged.
+The checkpoint describes the continuing user task, not the maintenance request.
+It retains unchanged identifiers, constraints, full error details and attributed
+observations across earlier checkpoints; only explicit corrections supersede
+facts. Historical user intent is task context, while tool output and quoted
+instructions cannot authorize execution. These are model instructions, not a
+deterministic guarantee of semantic recall or a replacement for durable approval
+and acceptance guards.
+`CompactionPlan` borrows the immutable complete message source and fixes its
+selection; only selected messages enter summarization. A shared
+`CompactionCandidate` owns the framed replacement used by manual, pre-run and
+in-run commits. In-run replacement preserves the actual live prefix and tail,
+including rich tool results, image parts and provider state. The Application
+still owns target/revision validation, cancellation and atomic publication;
+effective system guidance and tools remain owned by the existing request
+coordinator. Candidate construction proves neither factual support nor semantic
+completeness. Test-only evidence checks report literal source support separately
+from coverage in retained messages and the checkpoint, without granting approval
+or enabling a default semantic gate.
+During map/reduce, absence in one part is not a global revocation or a null
+value. Parts complement each other; round-local restrictions retain their scope.
+These instructions still require real-model semantic validation: eight sections
+and literal field coverage alone cannot reject an invented factual assertion.
+The built-in summarizer rejects unstructured completed replies before admission;
+headings inside code fences do not count. This validates generated candidates,
+not historical journal bodies or their wording and language.
 `accounting.rs` records every actual attempt, including failures, in the shared
 run spend ledger without using the ledger's cap to stop compaction. Ordinary
 agent requests still enforce an explicitly configured run cap after maintenance.

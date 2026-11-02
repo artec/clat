@@ -236,16 +236,16 @@ impl ActiveContext {
                 .checked_add(outcome.shadowed_count)
                 .ok_or("compaction range overflow")?;
         let plan = crate::plugins::CompactionPlan::new(nodes, range)?;
-        plan.validate_summary(summary)?;
-        let summary = crate::plugins::frame_checkpoint(summary);
-        let (shadowed_range, updated) = match self.replacement(items, nodes, &summary, outcome) {
+        let candidate = plan.candidate(summary)?;
+        let aligned = alignment::live_range(items, candidate.shadowed(), &self.checkpoints);
+        let updated = match aligned.and_then(|range| candidate.replace_live(items, range)) {
             Ok(replacement) => replacement,
             Err(error) => {
                 self.record_unapplied(outcome, &error)?;
                 return Err(error);
             }
         };
-        let shadowed = &nodes[shadowed_range];
+        let shadowed = candidate.shadowed();
         if cost(&updated) >= cost(items) {
             self.record_unapplied(outcome, "summary would not reduce the active context")?;
             return Ok(false);
@@ -253,7 +253,7 @@ impl ActiveContext {
         let seq = write_compaction_events(
             self.journal.as_ref(),
             shadowed,
-            &summary,
+            candidate.checkpoint(),
             outcome,
             &self.config,
             self.turn,
@@ -264,30 +264,9 @@ impl ActiveContext {
         for node in shadowed {
             self.checkpoints.remove(&node.seq);
         }
-        self.checkpoints.insert(seq, summary);
+        self.checkpoints
+            .insert(seq, candidate.checkpoint().to_owned());
         Ok(true)
-    }
-
-    fn replacement(
-        &self,
-        items: &[ModelItem],
-        nodes: &[CompactionNode],
-        summary: &str,
-        outcome: &CompactionOutcome,
-    ) -> Result<(std::ops::Range<usize>, Vec<ModelItem>), String> {
-        let end = outcome
-            .shadowed_start
-            .checked_add(outcome.shadowed_count)
-            .ok_or("compaction range overflow")?;
-        let shadowed_range = outcome.shadowed_start..end;
-        let shadowed = nodes
-            .get(shadowed_range.clone())
-            .ok_or("invalid compaction range")?;
-        let range = alignment::live_range(items, shadowed, &self.checkpoints)?;
-        let mut updated = items[..range.start].to_vec();
-        updated.push(ModelItem::user_text(summary.to_owned()));
-        updated.extend_from_slice(&items[range.end..]);
-        Ok((shadowed_range, updated))
     }
 
     /// Account attempted summaries without publishing a replacement or inventing a model step.

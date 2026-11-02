@@ -683,6 +683,31 @@ still-oversized request, while a maintenance persistence error keeps precedence.
 These contracts establish execution and recovery behavior, not summary quality
 or autonomous task success rates with a real provider.
 
+The opt-in synthetic long-task campaign in [Live validation](live-validation.md#synthetic-long-task-reliability-campaign)
+adds real-model evidence without putting paid requests or private histories in CI.
+Its lightweight contracts run with `scripts/gates.sh reliability_`. They protect
+the frozen roster, critical-fact judge, fixed-resource tool fence, single artifact
+publication, durable maintenance counting and checkpoint-tail observer itself.
+Maintenance counts must come from the journal: the current surface deliberately
+omits log-only summary/offload records. An empty or unarmed sample never counts
+as an executed long-task acceptance.
+The shadow fidelity checks use `scripts/gates.sh fidelity_`. The deterministic
+contract tests run normally; live audits require `CLAT_PHASE9_LIVE=1`, and local
+synthetic-record checks require `CLAT_PHASE9_RECOMPUTE` explicitly. Unarmed
+ignored tests do not read local campaign artifacts or call a model. Shadow
+verdicts are not production compaction admission: exact citations validate
+provenance, not semantic entailment. Coverage must be judged against the full
+replacement request, including unchanged protected nodes, not summary text alone.
+`scripts/gates.sh fidelity_evidence compaction_candidate` covers the shared
+replacement and test-only evidence contracts: intact live tails, source-byte
+ranges, UTF-8 boundaries, candidate/session/revision binding and separate literal
+support/coverage results. Exact text is not proof that a statement remains valid
+or approved. The armed synthetic-record observer folds through the actual
+`user/message` replacement carrier and compares the entire resulting message
+view; stopping at log-only `compaction/summary` would inspect the pre-replacement
+surface and cannot establish coverage. This observer reads captured local
+synthetic evidence without a Host or new model request.
+
 ## Built-in plugin inventory and project services
 
 Use `scripts/gates.sh application::plugin_control::tests:: plugin::tests::

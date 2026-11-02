@@ -15,6 +15,11 @@ fn instructions(tokens: usize) -> String {
     )
 }
 
+#[cfg(all(test, feature = "runtime-tests"))]
+pub(crate) fn directive_for_test(config: &ModelConfig) -> String {
+    Policy::new(config).unwrap().instructions()
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Policy {
     input: usize,
@@ -242,6 +247,9 @@ impl<'a> SummaryRun<'a> {
         }
         let answer = response.text.trim();
         if response.finish_reason == FinishReason::Completed && !answer.is_empty() {
+            if !super::structure::valid(answer) {
+                return Err(UiMessage::new("compaction.invalid_structure").into());
+            }
             let tokens = estimate_tokens_str(answer);
             if tokens <= self.policy.summary_limit {
                 return Ok(Some(answer.to_owned()));

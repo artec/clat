@@ -15,6 +15,8 @@ enum SummaryMode {
     Steering,
 }
 struct LongTask {
+    seeding: std::sync::atomic::AtomicBool,
+    goal_input: std::sync::atomic::AtomicBool,
     main: AtomicUsize,
     summaries: AtomicUsize,
     summary_entered: std::sync::atomic::AtomicBool,
@@ -26,6 +28,8 @@ struct LongTask {
 impl LongTask {
     fn new(mode: SummaryMode) -> Self {
         Self {
+            seeding: std::sync::atomic::AtomicBool::new(false),
+            goal_input: std::sync::atomic::AtomicBool::new(false),
             main: AtomicUsize::new(0),
             summaries: AtomicUsize::new(0),
             summary_entered: std::sync::atomic::AtomicBool::new(false),
@@ -42,6 +46,12 @@ impl TestModelScript for LongTask {
         request: ModelRequest<'_>,
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
+        if self.seeding.load(Ordering::SeqCst) {
+            return Ok(crate::test_support::response(
+                "seed",
+                FinishReason::Completed,
+            ));
+        }
         if request.items.last().is_some_and(|item|matches!(item, ModelItem::User {content} if matches!(content.first(),Some(crate::model::ContentPart::Text(text)) if text.contains("context compaction")))) {
             self.summaries.fetch_add(1, Ordering::SeqCst);
             assert!(
@@ -95,17 +105,21 @@ impl TestModelScript for LongTask {
                 FinishReason::Completed
             };
             return Ok(crate::test_support::response(
-                "Read observations preserved; continue remaining reads.",
+                &crate::test_support::checkpoint("Read observations preserved; continue remaining reads."),
                 finish,
             ));
         }
         let n = self.main.fetch_add(1, Ordering::SeqCst);
         self.snapshots.lock().unwrap().push(request.items.to_vec());
-        assert!(
-            request
-                .items
-                .contains(&ModelItem::user_text("KEEP_USER_INTENT".to_owned()))
-        );
+        if self.goal_input.load(Ordering::SeqCst) {
+            assert!(request.items.iter().any(|item|matches!(item,ModelItem::User{content} if content.iter().any(|p|matches!(p,crate::model::ContentPart::Text(text) if text.contains("KEEP_USER_INTENT")&&text.contains("<round>1/1</round>"))))));
+        } else {
+            assert!(
+                request
+                    .items
+                    .contains(&ModelItem::user_text("KEEP_USER_INTENT".to_owned()))
+            );
+        }
         if n > 0 {
             assert!(
                 matches!(request.items.iter().rev().find(|item| matches!(item, ModelItem::ToolResult(_))), Some(ModelItem::ToolResult(result)) if result.output.is_object()),
@@ -150,11 +164,15 @@ fn fixture(
     )
     .unwrap();
     let script = Arc::new(LongTask::new(mode));
-    let app = mount(
+    let mut app = mount(
         &Project::new(&root),
         &storage,
         TestBehavior::Scripted(script.clone()),
     );
+    // Auxiliary title concurrency has its own gate; this script owns only main/summary steps.
+    if let Some(worker) = app.title_worker.as_mut() {
+        worker.shutdown().unwrap();
+    }
     configure_test_model_with_budget(&app, u32::MAX);
     let fixed = app.context_snapshot().unwrap().total_estimate;
     // The failure case must exceed the frozen request limit, not merely the
@@ -469,4 +487,115 @@ fn active_compaction_steering_during_summary_survives_later_checkpoints() {
             .any(|seqs| seqs.contains(&steering))
     );
     crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn active_compaction_goal_round_keeps_intent_budget_and_unverified_acceptance() {
+    let (mut app, script, storage) = fixture(SummaryMode::Normal, None);
+    script.goal_input.store(true, Ordering::SeqCst);
+    app.goal_create(
+        "KEEP_USER_INTENT",
+        crate::goal::GoalAcceptance::User,
+        crate::goal::GoalLimits {
+            max_rounds: 1,
+            max_tokens: 1_000_000,
+            max_time_secs: 60,
+            max_failures: 2,
+        },
+        true,
+    )
+    .unwrap();
+    let (completion, receiver) = mpsc::channel();
+    let (handle, _) = app
+        .start_goal_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::text(""),
+            approver: allow_all_approver(),
+            asker: None,
+            events: Box::new(Vec::<crate::RunEvent>::new()),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let result = receiver.try_recv().unwrap();
+    let view = app.goal().unwrap().unwrap();
+    let summaries = script.summaries.load(Ordering::SeqCst);
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+    assert!(result.is_ok(), "{result:?}");
+    assert!(summaries >= 2);
+    assert_eq!(view.state.rounds_started, 1);
+    assert_ne!(
+        view.state.phase,
+        crate::goal::GoalPhase::Complete,
+        "summary is not user acceptance"
+    );
+    assert!(
+        !view.armed,
+        "the original round limit must still stop continuation"
+    );
+}
+
+#[test]
+fn active_compaction_automatic_target_never_switches_or_writes_foreground() {
+    use super::super::target_run::{AutomaticSource, TargetRunRequest};
+    let (mut app, script, storage) = fixture(SummaryMode::Normal, None);
+    script.seeding.store(true, Ordering::SeqCst);
+    run(&mut app, "KEEP_USER_INTENT").unwrap();
+    let target = app.current_session_id().unwrap();
+    app.new_session().unwrap();
+    run(&mut app, "foreground must remain untouched").unwrap();
+    let foreground = app.current_session_id().unwrap();
+    let foreground_seq = app.committed_seq();
+    app.control.add_trust(app.project.root()).unwrap();
+    script.seeding.store(false, Ordering::SeqCst);
+    let (mut config, credentials) = app.model_state().unwrap();
+    config.run_token_budget = Some(1_000_000);
+    let (completion, receiver) = mpsc::channel();
+    let handle = app
+        .start_target_run(TargetRunRequest {
+            session: target.clone(),
+            message: crate::message::PendingMessage::from_front_end(
+                "KEEP_USER_INTENT",
+                Some("phase9-target".into()),
+                vec![],
+            ),
+            config,
+            credentials,
+            timeout: Duration::from_secs(15),
+            web_budget: Arc::new(crate::web_tools::PaidCallBudget::new(0)),
+            meter: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
+            approver: allow_all_approver(),
+            asker: None,
+            source: AutomaticSource::Job {
+                job_id: "offline-reliability".into(),
+            },
+            events: Box::new(Vec::<crate::RunEvent>::new()),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let result = receiver.try_recv().unwrap();
+    assert_eq!(app.current_session_id(), Some(foreground));
+    assert_eq!(app.committed_seq(), foreground_seq);
+    let key = SessionKey {
+        project: app.project_key(),
+        id: target,
+    };
+    app.close().unwrap();
+    let backend = crate::session::persistence::JsonlBackend::new(
+        storage.join("sessions"),
+        crate::session::persistence::JsonlCompression::Zstd,
+        false,
+    );
+    let events = backend.load(&key, false).unwrap().events;
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "compaction/summary")
+            .count()
+            >= 2
+    );
+    assert_eq!(script.main.load(Ordering::SeqCst), 8);
 }

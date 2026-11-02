@@ -18,7 +18,17 @@ function setupWebAbout() {
   const button=pageAction('updates_about',()=>selectSettingsCategory('desktop'));button.dataset.settingsCategory='desktop';document.querySelector('.settings-nav').append(button);
   const section=el('section','settings-section');section.dataset.settingsPanel='desktop';section.hidden=true;
   section.append(el('p','page-scope',()=>pageText('host_scope')),el('h3','','CLAT'),el('p','',()=>pageText('web_about')));
-  const link=el('a','',()=>pageText('releases'));link.href='https://github.com/artec/clat/releases';link.target='_blank';link.rel='noopener noreferrer';section.append(link);const version=el('p','settings-note');section.append(version);document.querySelector('.settings-content').append(section);dom['settings-dialog'].addEventListener('clat:page-enter',()=>{void rpc('host.describe',{}).then(value=>{version.textContent='Host · '+value.product_version;}).catch(error=>{version.textContent=error.message;});});
+  const version=el('span'),status=el('p','settings-note');let epoch=0;
+  const card=el('div','settings-card');card.append(settingsControlRow(()=>pageText('connected_host_version'),version));section.append(card,status);
+  const link=el('a','',()=>pageText('releases'));link.href='https://github.com/artec/clat/releases';link.target='_blank';link.rel='noopener noreferrer';section.append(link);document.querySelector('.settings-content').append(section);
+  async function refresh(){
+    const request=++epoch;CLATI18n.bind(version,'textContent',()=>CLATI18n.msg('common.loading'));CLATI18n.bind(status,'textContent',()=>'');
+    try{const value=await rpc('host.describe',{});if(request!==epoch)return;CLATI18n.bind(version,'textContent',()=>value.product_version||'—');}
+    catch(error){if(request!==epoch)return;CLATI18n.bind(version,'textContent',()=>'—');CLATI18n.bind(status,'textContent',()=>CLATI18n.present(error));}
+  }
+  button.addEventListener('click',()=>void refresh());
+  dom['settings-dialog'].addEventListener('clat:page-enter',()=>void refresh());
+  dom['settings-dialog'].addEventListener('clat:page-leave',()=>epoch++);
 }
 function setupProjectPicker() {
   if(!window.__TAURI__)return;

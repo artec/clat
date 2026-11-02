@@ -36,8 +36,13 @@ impl TestModelScript for Sequence {
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
         if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
+            let text = if crate::test_support::is_summary_request(&r) {
+                crate::test_support::checkpoint("title")
+            } else {
+                "title".into()
+            };
             return Ok(crate::test_support::response(
-                "title",
+                &text,
                 FinishReason::Completed,
             ));
         }

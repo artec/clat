@@ -1939,6 +1939,14 @@ with the context summary and any available journal range, distinct record count
 and source-token estimate. These statistics come from existing compaction facts;
 missing legacy fields are omitted, and no current usage is substituted.
 
+Compaction preserves a smaller working context; it does not independently verify
+task completion. Keep critical requirements, pending approvals and acceptance
+evidence explicit during long tasks. A request can still be refused when protected
+user input and the newest complete tool exchange alone exceed the model's capacity.
+That refusal must not silently drop the input or replay a tool. Provider-specific
+long-task validation is described in [Live validation](live-validation.md#synthetic-long-task-reliability-campaign);
+it is separate from deterministic safety and replay tests.
+
 The embedded zero-build PWA has a fixed navigation rail, a content area and an
 optional right extension area. Conversations own their project/session list and
 message detail as a nested workspace. Resources, Tasks, Search, Extensions,

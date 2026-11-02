@@ -100,4 +100,10 @@ pub(crate) use permission::execution_factory as target_permission_factory;
 pub(crate) use plan_mode::execution_tool as target_plan_tool;
 pub(crate) use todo::execution_tool as target_todo_tool;
 
-pub(crate) use conversation::compaction::plan::{CompactionPlan, frame_checkpoint};
+#[cfg(all(test, feature = "runtime-tests"))]
+pub(crate) use conversation::compaction::directive_for_test;
+pub(crate) use conversation::compaction::plan::CompactionPlan;
+#[cfg(test)]
+pub(crate) use conversation::compaction::valid_checkpoint_structure;
+#[cfg(test)]
+pub(crate) use conversation::compaction::{CompactionCandidate, plan::frame_checkpoint};

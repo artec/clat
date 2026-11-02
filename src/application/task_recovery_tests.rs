@@ -279,7 +279,9 @@ impl TestModelScript for CompactTask {
                 self.summaries.fetch_add(1, Ordering::SeqCst);
             }
             return Ok(crate::test_support::response(
-                "Preserve the material observations and continue the task.",
+                &crate::test_support::checkpoint(
+                    "Preserve the material observations and continue the task.",
+                ),
                 FinishReason::Completed,
             ));
         }

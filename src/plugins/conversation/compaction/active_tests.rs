@@ -142,7 +142,7 @@ impl Model for SummaryTranscript {
         };
         self.0.lock().unwrap().push(content_text(content));
         Ok(crate::test_support::response(
-            "bounded summary",
+            &crate::test_support::checkpoint("bounded summary"),
             FinishReason::Completed,
         ))
     }
@@ -190,7 +190,7 @@ fn history_compaction_splits_an_oversized_turn_without_losing_rendered_evidence(
     let summary = run
         .summarize(&region, false)
         .expect("a large completed turn must be summarized in bounded pieces");
-    assert_eq!(summary, "bounded summary");
+    assert_eq!(summary, crate::test_support::checkpoint("bounded summary"));
     let inputs = transcripts.lock().unwrap();
     assert!(inputs.len() >= 4);
     assert!(

@@ -13,7 +13,11 @@ impl TestModelScript for Capture {
             .unwrap()
             .push(format!("{:?} {:?}", request.instructions, request.items));
         Ok(crate::ModelResponse {
-            text: "done".into(),
+            text: if crate::test_support::is_summary_request(&request) {
+                crate::test_support::checkpoint("done")
+            } else {
+                "done".into()
+            },
             tool_calls: vec![],
             finish_reason: crate::model::FinishReason::Completed,
             usage: None,

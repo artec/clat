@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn phase9_summary_rejects_completed_but_unstructured_model_output() {
+    struct Unused;
+    impl Model for Unused {
+        fn provider(&self) -> &str {
+            "test"
+        }
+        fn model_id(&self) -> &str {
+            "test"
+        }
+        fn stream(
+            &mut self,
+            _: ModelRequest<'_>,
+            _: &mut dyn crate::model::ModelEventSink,
+        ) -> Result<crate::ModelResponse, crate::ModelError> {
+            unreachable!()
+        }
+    }
+    let cancel = CancelToken::new();
+    let mut model = Unused;
+    let policy = summary::Policy::new(&ModelConfig::default()).unwrap();
+    let run = summary::SummaryRun::new(&mut model, &cancel, policy);
+    let response = crate::test_support::response(
+        r#"{"answer":"a complete JSON reply is not a checkpoint"}"#,
+        FinishReason::Completed,
+    );
+    assert!(
+        run.accept(response, 0, &mut String::new(), &mut 8192)
+            .is_err(),
+        "complete text must still satisfy the checkpoint structure"
+    );
+}
+
+#[test]
 fn phase8_pressure_prices_input_without_reserving_output_twice() {
     let config = ModelConfig {
         output_limit: Some(8192),

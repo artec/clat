@@ -302,6 +302,9 @@ The core owns staging and runtime leases, so updating installation files cannot
 replace an executing Windows backend. Current/previous and leased runtimes are
 retained. Do not manually delete a running runtime's cache.
 
+The Web/PWA **Settings → Updates & about** page shows the connected Host version
+reported by `host.describe`; it refreshes when entering the page.
+
 ## Desktop updates
 
 The app checks on startup and every 24 hours; automatic checking can be disabled.

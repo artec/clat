@@ -338,7 +338,8 @@ impl Model for TestModel {
                 FinishReason::Completed,
             ));
         }
-        match &self.behavior {
+        let summary_request = is_summary_request(&request);
+        let mut outcome = match &self.behavior {
             TestBehavior::Success => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 events.emit(ModelEvent::TextDelta {
@@ -693,8 +694,28 @@ impl Model for TestModel {
                     })
                 }
             }
+        };
+        if summary_request
+            && !matches!(&self.behavior, TestBehavior::Scripted(_))
+            && let Ok(response) = &mut outcome
+            && response.finish_reason == FinishReason::Completed
+            && response.tool_calls.is_empty()
+            && !response.text.trim().is_empty()
+        {
+            response.text = checkpoint(&response.text);
         }
+        outcome
     }
+}
+
+/// Valid structured model fixture; failure/invalid-format tests use raw model responses.
+pub fn checkpoint(text: &str) -> String {
+    if text.lines().filter(|line| line.starts_with("## ")).count() == 8 {
+        return text.into();
+    }
+    format!(
+        "## Primary Request and Intent\n{text}\n## Key Technical Concepts\n(none)\n## Files and Code\n(none)\n## Errors and Fixes\n(none)\n## Pending Jobs\n(none)\n## Current Work\n(none)\n## Next Step\n(none)\n## Critical Context\n(none)"
+    )
 }
 
 pub fn response(text: &str, finish_reason: FinishReason) -> ModelResponse {

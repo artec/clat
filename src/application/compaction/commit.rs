@@ -91,10 +91,8 @@ impl IdleCompaction<'_> {
             .checked_add(outcome.shadowed_count)
             .ok_or("compaction range overflow")?;
         let plan = crate::plugins::CompactionPlan::new(nodes, outcome.shadowed_start..end)?;
-        plan.validate_summary(summary)?;
-        let shadowed = nodes
-            .get(plan.range.clone())
-            .ok_or("invalid compaction range")?;
+        let candidate = plan.candidate(summary)?;
+        let shadowed = candidate.shadowed();
         if self
             .sessions
             .last_system_head()
@@ -102,11 +100,10 @@ impl IdleCompaction<'_> {
         {
             return Err("compaction would shadow the protected system head".into());
         }
-        let framed = crate::plugins::frame_checkpoint(summary);
         write_compaction_events(
             self.journal,
             shadowed,
-            &framed,
+            candidate.checkpoint(),
             outcome,
             self.config,
             self.turn,
@@ -116,7 +113,7 @@ impl IdleCompaction<'_> {
             .sync_active()
             .map_err(|error| error.to_string())?;
         Ok(CompactReport {
-            shadowed_count: plan.range.len(),
+            shadowed_count: plan.range().len(),
             degraded: outcome.degraded.clone(),
         })
     }

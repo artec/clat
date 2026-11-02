@@ -104,6 +104,112 @@ Run only those relevant to the change:
   Seatbelt/full plus a policy digest, while the second must fail without
   creating the target. Repeat network-disabled against a controlled listener.
 
+## Synthetic long-task reliability campaign
+
+This paid, opt-in campaign uses the existing GLM Coding Plan adapter and
+`glm-5.3-flash`. First verify the route with a minimal text request and a generated
+image. A route/model mismatch stops live execution; do not substitute a provider.
+Keep `CLAT_GLM_CODING_PLAN_KEY` process-local, supplied through a trusted launcher
+rather than command arguments, shell history, saved CLAT settings or reports.
+
+The campaign preregisters three synthetic families (changing requirements,
+tool evidence, and images), three candidate sessions per family and one complete-
+history control per family. Candidates must actually commit pre-round, in-run and
+manual checkpoints, adopt steering, cancel and cold-reopen. No-tool recall probes
+and a separately checked final artifact protect critical facts. Only fixed-ID
+synthetic tools are visible: no arbitrary paths, commands, network requests,
+owner history or judge answers. Controls use a larger declared window to retain
+the original text; they are diagnostic controls, not a performance comparison.
+
+After explicit authorization, set `CLAT_PHASE9_LIVE=1` and
+`CLAT_PHASE9_OUTPUT` to a **new, absolute** private output directory, then run:
+
+```sh
+cargo test -p clat-core --lib \
+  application::reliability_tests::live_glm_long_task_reliability_campaign \
+  -- --ignored --exact --nocapture
+```
+
+The separate `application::reliability_tests::title_race::live_glm_title_race_rejects_stale_summary`
+gate uses another new output directory to order a real auxiliary-title commit
+after a summary snapshot. The stale summary must be rejected without replacing
+conversation content. These paid gates remain default-off, including when CI
+enumerates ignored tests. A `NOT_ARMED` outcome is not live acceptance.
+
+Recompute completed synthetic evidence without a key, model or mounted Host:
+
+```sh
+# CLAT_PHASE9_RECOMPUTE is the absolute path to the completed campaign directory.
+cargo test -p clat-core --lib \
+  application::reliability_tests::recompute::recompute_saved_long_task_campaign \
+  -- --ignored --exact --nocapture
+```
+
+Recomputation checks original journal events, captured responses, adopted
+steering, cancellation, artifact arguments and checkpoint/tail replay. It creates
+a new result file and never overwrites the original results. Every started failure
+stays in the record. Unknown usage and unavailable prices remain unknown; a model's
+self-report does not prove a side effect or acceptance. Agent semantic review and
+human review must be labelled separately. Passing this corpus does not certify
+arbitrary long tasks, other providers, native platforms or frontend appearance.
+Eight-section structure and a smaller request do not prove faithful meaning:
+review unchanged identifiers, conditional restrictions, aggregate coverage and
+source-attributed image facts even when the mechanical probes pass.
+For failure diagnosis, the explicitly armed
+`application::reliability_tests::diagnosis::live_glm_frozen_failure_diagnosis`
+gate freezes eight direct requests from the local synthetic campaign. It does not
+mount a Host or execute returned tools. The separate
+`application::reliability_tests::diagnosis::live_glm_summary_scope_diagnosis`
+gate runs three frozen summaries with the current production directive. Both
+require a new absolute output directory and the same process-local credential.
+The offline `diagnosis_freezes_original_requests_without_reinterpreting_debug_text`
+check verifies reconstructed neutral items against their original captured form.
+These diagnostic gates depend on ignored local evidence and are not CI inputs.
+Set `CLAT_PHASE9_RECOMPUTE` to an existing absolute campaign directory to arm
+local evidence checks; without it they report `NOT_ARMED` before reading files.
+
+The test-only
+`application::reliability_tests::fidelity::live::live_glm_fidelity_shadow_evaluation`
+gate preregisters synthetic positive/negative cases plus separately labelled
+record-derived cases. It checks a lexical reference-risk candidate and a
+source-quoted model review, with no Host mount, tool execution or checkpoint
+publication. Use the same explicit live arming, process-local key and new absolute
+output directory. It never enables a production fidelity gate. A malformed audit
+is a technical failure, not a successful detection. Record-derived labels need
+full-context adjudication before they can be used as accuracy ground truth.
+
+`application::reliability_tests::fidelity::replay::fidelity_replay_captured_verdicts_without_modifying_original_results`
+replays captured audit replies offline when `CLAT_PHASE9_RECOMPUTE` points to the
+shadow output. It checks frozen packet hashes and preserves original labels and
+results. Its single-JSON-fence protocol candidate does not allow prose, multiple
+objects, field-name aliases or approximate evidence quotes. Replaying an old
+reply is not another live sample or evidence of semantic truth.
+
+The locally armed
+`application::reliability_tests::fidelity::evidence::fidelity_evidence_separates_real_fabrication_from_retained_original_coverage`
+check reconstructs an actual captured selection and replacement. It binds quoted
+bytes to the source Session, pre-maintenance revision and candidate, then reports
+literal mismatch separately from retained-message coverage. A correct value
+remaining in the original user message cannot excuse an invented replacement
+value in the checkpoint. The saved omission observer also checks the complete
+message view after the actual replacement carrier, not the log-only summary
+record. These offline checks neither call a model nor turn literal matches into
+semantic acceptance; earlier model-review results do not validate a new packet.
+
+In test builds, a scoped, thread-local observer records the actual serialized
+request body and consumed SSE bytes (4 MiB cap), parsed events and final response.
+Authentication headers are never captured; the private evidence writer redacts
+the temporary test secret again. An independent SSE decoder compares text,
+reasoning, tool arguments and finish reasons. An observed match rules out
+corruption in that particular response, not a historical response whose raw bytes
+were not captured. Diagnostics must distinguish malformed summary rejection,
+missing facts in the input, partial-context absence, and semantic model errors.
+A local chunk without a field does not revoke a value elsewhere; a round-local
+tool ban does not imply a permanent ban or prohibit the requested text reply.
+
+Private-history copies, when separately authorized, stay in the offline lane and
+must never inherit the live credential or provider.
+
 ## GLM 5.3 Flash multimodal campaign
 
 This is a paid, explicit campaign for changes to native image input. It is not
