@@ -54,6 +54,11 @@ These visual and interaction details are manually accepted on each platform.
 
 Toolbar Back/Forward also support Cmd+[ / Cmd+] on macOS and Ctrl+[ / Ctrl+] on Windows/browser workbenches. macOS exposes them in the native View menu. They share the toolbar’s application history boundaries and do not navigate while a modal reader/dialog is open. The embedded, non-modal About and Updates panel does not block navigation, including when its settings page is hidden.
 
+On macOS, entering native fullscreen removes the toolbar space reserved for the
+traffic-light window buttons. Native window events restore that space when
+leaving fullscreen, without requiring a click or focus change. This also applies
+to the welcome page title bar.
+
 The outer window shell does not scroll, including during focus and message
 navigation. The toolbar keeps its full height; lists, messages and tool contents
 scroll inside their own panels.

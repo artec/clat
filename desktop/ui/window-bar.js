@@ -10,6 +10,7 @@
     }
     if (!['macos', 'windows'].includes(info?.platform)) return;
     document.documentElement.dataset.nativeFrame = info.platform;
+    if (info.platform === 'macos') trackFullscreen();
     const style = document.createElement('style');
     style.textContent = `
       .native-window-controls{position:fixed;inset:0 0 auto auto;height:48px;display:flex;z-index:10001;color:inherit}
@@ -18,7 +19,9 @@
       .native-window-controls button[data-window-action="close"]:hover{background:#c42b1c;color:#fff}
       .native-window-controls svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.2}
       .native-fallback-bar{position:fixed;inset:0 0 auto;height:48px;padding:0 150px 0 16px;display:flex;align-items:center;background:Canvas;color:CanvasText;z-index:10000;user-select:none;font:13px system-ui}
-      html[data-native-frame="macos"] .native-fallback-bar{padding-left:100px}
+      html[data-native-frame="macos"]{--native-traffic-space:100px}
+      html[data-native-frame="macos"][data-native-fullscreen="true"]{--native-traffic-space:12px}
+      html[data-native-frame="macos"] .native-fallback-bar{padding-left:var(--native-traffic-space)}
       #native-window-status{position:fixed;inset:48px 12px auto auto;max-width:360px;padding:12px;background:Canvas;color:CanvasText;z-index:10002}
     `;
     document.head.append(style);
@@ -38,6 +41,30 @@
     });
     if (info.platform === 'windows') createControls(act);
   };
+  function trackFullscreen() {
+    let generation = 0, timer;
+    async function refresh() {
+      const request = ++generation;
+      try {
+        // Native macOS fullscreen does not set document.fullscreenElement.
+        const info = await invoke('info');
+        if (request === generation && typeof info.fullscreen === 'boolean') {
+          document.documentElement.dataset.nativeFullscreen = String(info.fullscreen);
+        }
+      } catch (_) { /* Keep the last known frame state if the native query fails. */ }
+    }
+    function schedule() {
+      generation++; clearTimeout(timer); timer = setTimeout(refresh, 80);
+    }
+    window.addEventListener('clat-desktop-fullscreen', event => {
+      if (typeof event.detail !== 'boolean') return;
+      generation++; clearTimeout(timer);
+      document.documentElement.dataset.nativeFullscreen = String(event.detail);
+    });
+    for (const event of ['focus', 'pageshow']) window.addEventListener(event, schedule);
+    window.addEventListener('pagehide', () => { generation++; clearTimeout(timer); });
+    void refresh();
+  }
   function createControls(act) {
     const controls = document.createElement('div'); controls.className = 'native-window-controls';
     for (const [action, key, path] of [

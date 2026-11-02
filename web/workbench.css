@@ -59,7 +59,7 @@ button.breadcrumb-name:hover { color:var(--text); }
 .conversation-indicator { flex:none; }
 .application-toolbar .workbench-tools button[aria-current=true] { color:var(--accent);background:var(--surface-input); }
 #legacy-workbench-actions { display:none; }
-html[data-native-frame="macos"] .application-toolbar { padding-left: 100px; }
+html[data-native-frame="macos"] .application-toolbar { padding-left: var(--native-traffic-space, 100px); }
 html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .shell-content { position:relative;grid-area: content; min-width: 0; min-height: 0; margin-right: var(--canvas-gutter); overflow: hidden; border-radius: var(--canvas-radius); isolation:isolate; background: var(--surface); }
 .conversation-page { display: grid; grid-template-columns: var(--current-sidebar) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "sidebar conversation"; height: 100%; min-width: 0; }

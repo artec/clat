@@ -30,7 +30,10 @@ pub fn desktop_window(
 ) -> Result<Value, UiMessage> {
     crate::commands::guard(&window)?;
     let result = match action {
-        WindowAction::Info => Ok(()),
+        WindowAction::Info => {
+            let fullscreen = window.is_fullscreen().map_err(|e| e.to_string())?;
+            return Ok(json!({"platform":std::env::consts::OS,"fullscreen":fullscreen}));
+        }
         WindowAction::Drag => window.start_dragging(),
         WindowAction::ToggleMaximize => {
             if window.is_maximized().map_err(|e| e.to_string())? {
@@ -62,6 +65,28 @@ pub fn configure<R: tauri::Runtime, M: tauri::Manager<R>>(
     #[cfg(windows)]
     let builder = builder.decorations(false);
     builder
+}
+
+/// Tao emits a native resize/move after the macOS fullscreen transition finishes.
+/// DOM resize can arrive before that point and still observe the previous state.
+pub fn sync_fullscreen(window: &tauri::Window, event: &tauri::WindowEvent) {
+    if !cfg!(target_os = "macos")
+        || !matches!(
+            event,
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)
+        )
+    {
+        return;
+    }
+    use tauri::Manager;
+    if let Ok(fullscreen) = window.is_fullscreen()
+        && let Some(view) = window.get_webview_window(window.label())
+    {
+        let detail = if fullscreen { "true" } else { "false" };
+        let _ = view.eval(format!(
+            "window.dispatchEvent(new CustomEvent('clat-desktop-fullscreen',{{detail:{detail}}}));"
+        ));
+    }
 }
 
 /// A fitting pass must not enqueue a redundant native move: on macOS it can

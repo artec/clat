@@ -304,6 +304,7 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            crate::window_frame::sync_fullscreen(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
                 && !window.state::<Desktop>().quitting.load(Ordering::Acquire)
             {
