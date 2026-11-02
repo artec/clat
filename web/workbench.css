@@ -605,5 +605,5 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-latest-arrow{display:none}
 .back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-running-dots{display:flex}
 .history-status[data-loading=true]>svg{animation:run-loading-turn 2s linear infinite}
-@keyframes history-dot-wave{0%,60%,100%{transform:translateY(0);opacity:.55}30%{transform:translateY(-3px);opacity:1}}
+@keyframes history-dot-wave{0%,50%,100%{transform:translateY(0);opacity:.55}25%{transform:translateY(3px);opacity:1}75%{transform:translateY(-3px);opacity:1}}
 @media(prefers-reduced-motion:reduce){.history-running-dots>i,.history-status[data-loading=true]>svg{animation:none}}

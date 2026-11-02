@@ -82,6 +82,11 @@ const DISPLAY: &[(&str, &str, &str)] = &[
         "extension.builtin.language_intelligence.summary",
     ),
     (
+        "builtin.rust_support",
+        "extension.builtin.rust_support.name",
+        "extension.builtin.rust_support.summary",
+    ),
+    (
         "builtin.mcp_adapter",
         "extension.builtin.mcp_adapter.name",
         "extension.builtin.mcp_adapter.summary",

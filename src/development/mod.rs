@@ -17,6 +17,7 @@ pub use git::GitModel;
 pub use store::OperationView;
 
 pub struct DevelopmentService {
+    rust_support: std::sync::RwLock<Option<std::sync::Weak<crate::rust_support::RustSupport>>>,
     project: Project,
     store: store::Store,
     editor_lane: Mutex<()>,
@@ -39,6 +40,7 @@ impl DevelopmentService {
                 .join(digest(root.to_string_lossy().as_bytes())),
         );
         Self {
+            rust_support: Default::default(),
             lifetime: store.lifetime.clone(),
             git: Arc::new(git::GitService::new(project.clone(), store.clone())),
             terminals: terminal::Terminals::new(project.clone(), store.clone()),
@@ -48,6 +50,23 @@ impl DevelopmentService {
             closed: std::sync::atomic::AtomicBool::new(false),
         }
     }
+    /// Only trusted client ports expose this service. No Agent tool accepts a human flag.
+    pub(crate) fn set_rust_support(
+        &self,
+        service: std::sync::Weak<crate::rust_support::RustSupport>,
+    ) {
+        *self.rust_support.write().expect("Rust support hook") = Some(service);
+    }
+
+    pub(super) fn rust_saved(&self, path: &str) -> Option<Value> {
+        self.rust_support
+            .read()
+            .ok()?
+            .as_ref()?
+            .upgrade()?
+            .saved(path, true, &CancelToken::new())
+    }
+
     /// Only trusted client ports expose this service. No Agent tool accepts a human flag.
     pub fn request(
         self: &Arc<Self>,

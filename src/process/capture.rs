@@ -1,4 +1,4 @@
-//! Bounded, read-only infrastructure capture; no shell or model job ownership.
+//! Bounded infrastructure capture; no shell or model job ownership.
 use super::*;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -12,11 +12,18 @@ pub(crate) struct Captured {
 
 fn read_pipe(
     mut pipe: impl Read + Send + 'static,
-    cap: usize,
+    cap: Option<usize>,
     tx: mpsc::Sender<(bool, Result<Vec<u8>, String>)>,
     stdout: bool,
 ) {
     std::thread::spawn(move || {
+        let Some(cap) = cap else {
+            let result = std::io::copy(&mut pipe, &mut std::io::sink())
+                .map(|_| Vec::new())
+                .map_err(|e| e.to_string());
+            let _ = tx.send((stdout, result));
+            return;
+        };
         let mut data = Vec::new();
         let result = pipe
             .by_ref()
@@ -25,7 +32,7 @@ fn read_pipe(
             .map_err(|e| e.to_string())
             .and_then(|_| {
                 if data.len() > cap {
-                    Err("Git output exceeded byte limit".into())
+                    Err("process output exceeded byte limit".into())
                 } else {
                     Ok(data)
                 }
@@ -35,19 +42,32 @@ fn read_pipe(
 }
 
 pub(crate) fn capture_command(
-    mut command: Command,
+    command: Command,
     cap: usize,
     timeout: Duration,
 ) -> Result<Captured, String> {
+    capture_command_cancellable(command, cap, timeout, &CancelToken::new(), false)
+}
+
+pub(crate) fn capture_command_cancellable(
+    mut command: Command,
+    cap: usize,
+    timeout: Duration,
+    cancel: &CancelToken,
+    discard_stdout: bool,
+) -> Result<Captured, String> {
+    if cancel.is_cancelled() {
+        return Err("process capture cancelled".into());
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.group_spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            "spawn-not-found: Git is not installed".into()
+            "spawn-not-found: executable is not installed".into()
         } else {
-            format!("Git spawn failed: {e}")
+            format!("process spawn failed: {e}")
         }
     })?;
     let (tx, rx) = mpsc::channel();
@@ -56,8 +76,8 @@ pub(crate) fn capture_command(
             .inner()
             .stdout
             .take()
-            .ok_or("Git stdout unavailable")?,
-        cap,
+            .ok_or("process stdout unavailable")?,
+        if discard_stdout { None } else { Some(cap) },
         tx.clone(),
         true,
     );
@@ -66,12 +86,12 @@ pub(crate) fn capture_command(
             .inner()
             .stderr
             .take()
-            .ok_or("Git stderr unavailable")?,
-        cap,
+            .ok_or("process stderr unavailable")?,
+        Some(cap),
         tx,
         false,
     );
-    let result = collect_capture(&mut child, rx, Instant::now() + timeout);
+    let result = collect_capture(&mut child, rx, Instant::now() + timeout, cancel);
     if result.is_err() {
         let _ = terminate_group(&mut child);
     }
@@ -82,9 +102,13 @@ fn collect_capture(
     child: &mut command_group::GroupChild,
     rx: mpsc::Receiver<(bool, Result<Vec<u8>, String>)>,
     deadline: Instant,
+    cancel: &CancelToken,
 ) -> Result<Captured, String> {
     let (mut stdout, mut stderr, mut status) = (None, None, None);
     loop {
+        if cancel.is_cancelled() {
+            return Err("process capture cancelled".into());
+        }
         while let Ok((out, result)) = rx.try_recv() {
             if out {
                 stdout = Some(result?);
@@ -103,7 +127,7 @@ fn collect_capture(
             });
         }
         if Instant::now() >= deadline {
-            return Err("Git query timed out".into());
+            return Err("process query timed out".into());
         }
         std::thread::sleep(Duration::from_millis(5));
     }

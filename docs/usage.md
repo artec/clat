@@ -612,6 +612,15 @@ servers only on demand through CLAT's managed stdio path with
 `sandbox="required"` and `network=false`. Project files cannot choose the
 server executable. Platforms without the required sandbox fail before spawn.
 
+The separate, default-enabled **Rust development support** built-in uses Cargo
+to synchronize `Cargo.lock` offline after a project `Cargo.toml` edit, including
+Agent edits and saves in the project editor. It does not run checks/tests or
+install missing dependencies. It currently requires macOS's enforced filesystem
+and network sandbox; unavailable tooling or enforcement reports a synchronization
+failure while preserving the file save. Disable `builtin.rust_support` in the
+built-in extension configuration and restart the Host to opt out. See
+[Rust development support](plugins.md#rust-development-support) for boundaries.
+
 `/context` takes one read-only snapshot of the next model-facing context and
 reports conservative estimates for base prompt, project instructions, plan
 policy, skill catalog, an armed `/skill` invocation (zero when none is armed),

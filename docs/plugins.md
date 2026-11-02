@@ -115,6 +115,40 @@ atomic private-file publication. Unknown fields/IDs, protected features and stal
 previews are rejected. The file format remains version 1. These methods do not
 alter `plugin.list`, current `builtin_availability`, permissions or durable facts.
 
+### Rust development support
+
+`builtin.rust_support` is an independently switchable built-in, enabled by
+default. It uses the installed Cargo executable after Agent file/patch/command
+operations change a non-ignored `Cargo.toml` inside the project, and after a human
+saves that file in the project editor. It asks Cargo to locate the workspace,
+then runs offline metadata resolution to synchronize `Cargo.lock`. It does not
+implement dependency resolution, install a toolchain, download dependencies, or
+run `cargo check`, tests, build scripts or a build. Existing dependency pins are
+retained where compatible; manifest changes can necessarily change resolution.
+
+Missing Cargo/cache entries, invalid manifests, cancellation or an unsupported
+sandbox produce a separate synchronization failure; a completed editor save is
+still a completed save. Editor status exposes the failure and its diagnostic;
+Agent tool output includes `rust_support` details. Rust maintenance is serialized
+per project, bounded to 30 seconds, and cancelled at plugin shutdown. Commands
+require enforced project-write/network-disabled sandboxing; currently that means
+macOS. Other platforms retain the saved file and report unavailable enforcement,
+without falling back to an unrestricted command. Automatic Agent maintenance
+requires interactive Project Write or Full Access mode; Read Only and classic
+headless file-write approval do not implicitly authorize a Cargo process. Human
+editor saves remain a separate explicit user action. A Cargo workspace outside
+the project is not written.
+Background commands still running after a tool returns and writes made by other
+applications are not watched; use Cargo directly for those changes. Manifest
+discovery respects ignore rules and has depth/file/size limits.
+
+Use **Extensions → Built-ins → Rust development support** to disable it for the
+next Host startup, or add `builtin.rust_support` to `disabled` in
+`builtin-plugins.json`. This does not disable the editor or other languages.
+Rust symbol queries continue through the separate, user-configured
+`builtin.language_intelligence` / `rust-analyzer` integration described in
+[Using CLAT](usage.md); this plugin does not install or reconfigure that server.
+
 ### Static composition and absence contracts
 
 CLAT chooses a fixed composition before running plugins. It does not load native

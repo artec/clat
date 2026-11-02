@@ -531,7 +531,7 @@ fn project_runtime_catalog(
     input: &CompositionInput,
     permission_source: crate::permission::ModeSource,
 ) -> Vec<Arc<dyn Plugin>> {
-    vec![
+    let mut catalog: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(crate::plugins::extension_status::ExtensionStatusPlugin),
         Arc::new(
             crate::plugins::McpAdapterPlugin::with_project_root(
@@ -558,10 +558,6 @@ fn project_runtime_catalog(
                 .with_workflow(input.workflow.clone()),
         ),
         Arc::new(crate::plugins::SkillsPlugin::new(
-            input.project.root().to_owned(),
-            input.storage_root.clone(),
-        )),
-        Arc::new(crate::plugins::LanguageIntelligencePlugin::new(
             input.project.root().to_owned(),
             input.storage_root.clone(),
         )),
@@ -600,6 +596,23 @@ fn project_runtime_catalog(
             input.project.clone(),
         )),
         Arc::new(crate::plugins::MonitorPlugin),
+    ];
+    catalog.extend(project_language_catalog(input));
+    catalog
+}
+
+fn project_language_catalog(input: &CompositionInput) -> Vec<Arc<dyn Plugin>> {
+    vec![
+        Arc::new(crate::plugins::LanguageIntelligencePlugin::new(
+            input.project.root().to_owned(),
+            input.storage_root.clone(),
+        )),
+        Arc::new(crate::rust_support::plugin::RustSupportPlugin::new(
+            input.project.clone(),
+            input
+                .permission_modes
+                .then(|| input.permission_mode.clone()),
+        )),
     ]
 }
 

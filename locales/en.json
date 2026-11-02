@@ -3023,5 +3023,9 @@
   "workflow.model_confirm": "Confirm",
   "workflow.model_decline": "Keep current workflow",
   "web.tool_action.request_plan_mode": "Request planning mode",
-  "web.tool_action.propose_goal": "Propose a goal"
+  "web.tool_action.propose_goal": "Propose a goal",
+  "extension.builtin.rust_support.name": "Rust development support",
+  "extension.builtin.rust_support.summary": "Use Cargo to synchronize lockfiles after manifest edits; language queries use the separately configured language server.",
+  "rust_support.synchronized": "Cargo.lock synchronized offline.",
+  "rust_support.failed": "File saved; Cargo.lock synchronization failed. Check the Rust support details."
 }

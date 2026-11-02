@@ -3023,5 +3023,9 @@
   "workflow.model_confirm": "確認",
   "workflow.model_decline": "保持目前方式",
   "web.tool_action.request_plan_mode": "請求進入計畫模式",
-  "web.tool_action.propose_goal": "提出目標"
+  "web.tool_action.propose_goal": "提出目標",
+  "extension.builtin.rust_support.name": "Rust 開發支援",
+  "extension.builtin.rust_support.summary": "修改 Cargo 清單後同步鎖定檔；語言查詢沿用另外設定的語言伺服器。",
+  "rust_support.synchronized": "已離線同步 Cargo.lock。",
+  "rust_support.failed": "檔案已儲存，但 Cargo.lock 同步失敗，請查看 Rust 支援詳情。"
 }

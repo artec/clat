@@ -3023,5 +3023,9 @@
   "workflow.model_confirm": "确认",
   "workflow.model_decline": "保持当前方式",
   "web.tool_action.request_plan_mode": "请求进入计划模式",
-  "web.tool_action.propose_goal": "提出目标"
+  "web.tool_action.propose_goal": "提出目标",
+  "extension.builtin.rust_support.name": "Rust 开发支持",
+  "extension.builtin.rust_support.summary": "修改 Cargo 清单后同步锁文件；语言查询复用单独配置的语言服务器。",
+  "rust_support.synchronized": "已离线同步 Cargo.lock。",
+  "rust_support.failed": "文件已保存，但 Cargo.lock 同步失败，请查看 Rust 支持详情。"
 }

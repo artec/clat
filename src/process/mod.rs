@@ -32,6 +32,7 @@ pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) use receipt::{Format, VerificationSpec, invocation_digest};
 pub(crate) mod review;
 pub(crate) use capture::capture_command;
+pub(crate) use capture::capture_command_cancellable;
 
 const STREAM_RING_BYTES: usize = 256 * 1024;
 const MANAGED_STDOUT_RING_BYTES: usize = 4 * 1024 * 1024 + 64 * 1024;

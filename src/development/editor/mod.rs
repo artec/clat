@@ -51,7 +51,7 @@ impl DevelopmentService {
             }
             _ => Err("unknown_method".into()),
         };
-        let result = match outcome {
+        let mut result = match outcome {
             Ok(value) => value,
             Err(error) => {
                 receipts
@@ -61,6 +61,11 @@ impl DevelopmentService {
                 return Err(error);
             }
         };
+        if method == "editor.save" {
+            if let Some(report) = self.rust_saved(text(value, "path")?) {
+                result["rust_support"] = report;
+            }
+        }
         let mut compact = result.clone();
         if method == "editor.save" {
             compact

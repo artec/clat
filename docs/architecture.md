@@ -26,6 +26,14 @@ CLAT is organized around a small set of non-negotiable boundaries:
    explicitly configured WASM components do not require a user-side language
    runtime.
 
+Optional language-specific maintenance stays in a scoped built-in plugin.
+`rust_support` uses the existing tool middleware and a weak human-editor hook to
+observe manifest saves; Cargo remains the dependency/lockfile authority. The
+plugin owns serial execution and cancellation, while the shared process capture
+and sandbox modules own bounded child I/O and enforcement. Reports use existing
+tool-result/editor payloads; there is no new journal event kind and no widening
+of the read-only LSP service.
+
 ## System shape
 
 ```text

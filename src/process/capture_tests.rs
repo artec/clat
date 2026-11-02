@@ -29,6 +29,10 @@ fn main() {
         print!("ready");
         return;
     }
+    if std::env::args().nth(1).as_deref() == Some("discard") {
+        std::io::stdout().write_all(&vec![b'x'; 32768]).unwrap();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("limit") {
         std::io::stdout().write_all(&vec![b'x'; 32768]).unwrap();
         std::io::stdout().flush().unwrap();
@@ -53,6 +57,41 @@ fn main() {
     let ready = capture_command(command("ready"), 16, Duration::from_secs(30)).unwrap();
     assert!(ready.status.success());
     assert_eq!(ready.stdout, b"ready");
+    let discard = capture_command_cancellable(
+        command("discard"),
+        16,
+        Duration::from_secs(5),
+        &CancelToken::new(),
+        true,
+    )
+    .unwrap();
+    assert!(discard.status.success());
+    assert!(discard.stdout.is_empty());
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    assert!(
+        capture_command_cancellable(
+            command("timeout"),
+            16,
+            Duration::from_secs(1),
+            &cancel,
+            true
+        )
+        .unwrap_err()
+        .contains("cancelled")
+    );
+    let deadline = CancelToken::with_deadline(Instant::now() + Duration::from_millis(100));
+    assert!(
+        capture_command_cancellable(
+            command("timeout"),
+            16,
+            Duration::from_secs(5),
+            &deadline,
+            true
+        )
+        .unwrap_err()
+        .contains("cancelled")
+    );
     let start = Instant::now();
     let error = capture_command(command("limit"), 1024, Duration::from_secs(2)).unwrap_err();
     assert!(error.contains("byte limit"), "{error}");
