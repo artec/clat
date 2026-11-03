@@ -171,14 +171,22 @@ pub(super) fn improve(m: &Manifest) -> Result<Value, String> {
     let result =
         super::super::super::tests::run(&mut app, &m.mission).map_err(|e| e.error.to_string());
     let close = app.close().map_err(|e| e.to_string());
-    let result = result?;
-    close?;
+    let result = settle(result, close)?;
     if result.cancelled {
         return Err("cancelled improvement cannot publish guidance".into());
     }
     Ok(
         json!({"status":"completed","text":result.output,"guidance":*state.guidance.lock().unwrap(),"reads":state.reads.load(Ordering::SeqCst),"writes":state.writes.load(Ordering::SeqCst)}),
     )
+}
+
+fn settle<T>(result: Result<T, String>, close: Result<(), String>) -> Result<T, String> {
+    match (result, close) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(format!("cleanup failed: {error}")),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; cleanup failed: {cleanup}")),
+    }
 }
 pub(super) fn text_request(m: &Manifest) -> Result<Value, String> {
     let mut capture = model::Capture::new(m.output.clone());
@@ -232,6 +240,18 @@ pub(super) fn text_request(m: &Manifest) -> Result<Value, String> {
 mod tests {
     use super::*;
     use crate::Tool;
+    #[test]
+    fn harness2_editor_does_not_hide_cleanup_failure_behind_model_failure() {
+        let error = settle::<()>(
+            Err("model failed".into()),
+            Err("producer still alive".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("model failed"));
+        assert!(error.contains("producer still alive"));
+        assert_eq!(settle(Ok(7), Ok(())).unwrap(), 7);
+        assert!(settle(Ok(7), Err("cleanup failed".into())).is_err());
+    }
     #[test]
     fn harness2_editor_fixed_ids_and_cancelled_edits_cannot_mutate_the_candidate() {
         let baseline = crate::plugins::harness2_default_guidance().to_owned();

@@ -337,7 +337,7 @@ async function copyMessageText(button, text) {
 
 function copyTextButton(label, source, iconOnly = false) {
   const readLabel=()=>typeof label==='function'?label():label;
-  const button = iconOnly ? el('button','message-action-icon icon-button') : el('button','text-action',readLabel);
+  const button = iconOnly ? el('button','message-action-icon message-copy icon-button') : el('button','text-action',readLabel);
   button.type = 'button';
   button.restoreCopyLabel=()=>{
     CLATI18n.attribute(button,'aria-label',readLabel);
@@ -349,12 +349,13 @@ function copyTextButton(label, source, iconOnly = false) {
   return button;
 }
 
-function addReplyActions(node, source) {
-  if (node.querySelector('[data-action="copy-reply"]')) return;
+function addMessageCopyAction(node, source, reply = false) {
+  const action = reply ? 'copy-reply' : 'copy-message';
+  if (node.querySelector('[data-action="'+action+'"]')) return;
   let actions = node.querySelector(':scope > .message-actions');
   if (!actions) { actions = el('div', 'message-actions'); node.appendChild(actions); }
-  const copy = copyTextButton(CLATI18n.msg('web.copy_reply'), source, true);
-  copy.dataset.action = 'copy-reply'; actions.prepend(copy);
+  const copy = copyTextButton(() => CLATI18n.msg(reply ? 'web.copy_reply' : 'pages.copy'), source, true);
+  copy.dataset.action = action; actions.prepend(copy);
 }
 
 function quoteSelection(text, role, seq) {

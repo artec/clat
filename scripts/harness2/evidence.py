@@ -5,6 +5,7 @@ from pathlib import Path
 
 def verify_evidence(messages, evidence):
     calls={}
+    delivered=set()
     for message in messages:
         for call in message.get("tool_calls",[]):
             function=call.get("function",{})
@@ -23,6 +24,8 @@ def verify_evidence(messages, evidence):
             raise ValueError("experiment evidence was not delivered as complete JSON") from None
         if payload!=dict(id=id,text=evidence[id]):
             raise ValueError("experiment evidence changed before the model request")
+        delivered.add(id)
+    return delivered
 
 
 def maintenance_file(run_dir):
@@ -46,7 +49,11 @@ def trajectory(run_dir):
     lines = []
     for stage in result.get("stages", []):
         lines += ["[ACTION] " + stage["stage"], "[OBSERVATION] " + stage.get("text", "")]
+    if result.get('status')=='failed':
+        lines += ['[INCOMPLETE EXECUTION; NOT A DELIVERABLE]',json.dumps(dict(error=result.get('error'),failure=result.get('failure'),completed_stages=result.get('completed_stages',[])),ensure_ascii=False)]
     # Purpose is established by the durable carrier, never editable prompt wording.
+    if 'evidence_root' not in result:
+        return '\n'.join(lines+['[Durable replacement evidence unavailable]'])
     path=maintenance_file(run_dir)
     if path.exists():
         for view in json.loads(path.read_text())["views"]:

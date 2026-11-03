@@ -45,7 +45,38 @@ experiment files unless explicitly armed. Its manifest is supplied through stdin
 not argv. The Python launcher supplies the per-worker arm; live orchestration
 additionally requires `CLAT_HARNESS2_ARM=1`.
 
-## Live experiment
+## Codex-authored round
+
+The local author channel runs the same pinned Harness² method. GLM Coding Plan
+executes the scenarios. Codex supplies proposals, composition and reflection
+through private files. The round uses training variant 30, held-out variants
+31 and 32, and the original twelve regression cases.
+
+Run the following against a new private output directory, with a frozen
+driver and worker. Supply the GLM credential through a temporary process
+environment and arm live execution with `CLAT_HARNESS2_ARM=1`.
+
+```sh
+../harness2/.venv/bin/python /absolute/frozen-driver/local_campaign.py campaign \
+  --source ../harness2 --binary /absolute/frozen-worker \
+  --output /absolute/private/codex-round --seed-guidance /absolute/seed-guidance.md
+```
+
+Each `AUTHOR_REQUEST` names a directory with a `request.json` containing the
+training evidence and requested action. The author reads the evidence and
+publishes `response.json` atomically in that directory. Its fields are
+`request` (the directory name), `author` (`codex-local`), `notes` (the reply
+in the requested format), and `guidance` (the complete eight-section text).
+An accepted response is bound to its request and response digests. Preserve
+rejections and use the frozen identity when resuming. The campaign exports
+review packets for quote-validated Codex opinions. Publication eligibility
+still requires complete comparative evidence and independent owner review.
+
+## Original paid-model experiment
+
+The commands below reproduce the original frozen protocol with DeepSeek as the
+author and reviewer. Use the Codex-authored entry above for the current round.
+The two protocols keep separate execution identities and review records.
 
 Supply `CLAT_GLM_CODING_PLAN_KEY` and `CLAT_HARNESS2_DEEPSEEK_KEY` from a trusted
 temporary launcher. Never put secrets in command arguments, a shell-history
@@ -61,9 +92,9 @@ use a 1,000,000-token window). These profiles must be preregistered together.
 
 ```sh
 ../harness2/.venv/bin/python scripts/harness2/run.py prepare \
-  --binary /absolute/private/frozen-worker --output /absolute/private/experiment
+  --source ../harness2 --binary /absolute/private/frozen-worker --output /absolute/private/experiment
 ../harness2/.venv/bin/python scripts/harness2/run.py campaign \
-  --binary /absolute/private/frozen-worker --output /absolute/private/experiment
+  --source ../harness2 --binary /absolute/private/frozen-worker --output /absolute/private/experiment
 ```
 
 Run these sequentially. Alternatively run `probe`, `train`, `evaluate`, `review`
@@ -82,6 +113,60 @@ Linux requires a separately confined launcher; unsupported platforms fail closed
 This is not a claim that an official Linux upstream benchmark was executed.
 
 ## Experiment and evidence
+
+The correction protocol uses training variant 20 and fresh held-out variants
+21/22. They change correction scope, quoted evidence attribution and resource
+order, as well as concrete values. The original twelve cases stay as regression
+controls. Task-input hashes are exported by the private worker before live calls;
+the model never receives checker answers. Each new protocol needs a new output
+root, frozen worker and frozen driver. The finite roster remains 75 scenarios.
+
+`train` resumes completed method records without rerunning failed samples. A
+failed upstream selection is labelled as such; its baseline may be provided as
+a composition reference, never as an adopted upstream result. Candidate guidance
+cannot embed the synthetic answer identifiers. The improver additionally receives
+synthetic source-scope illustrations, including actual assistant image observations
+versus unsupported guesses and offload markers.
+
+The private worker independently checks terminal root-lease release, ended model
+observations, allowed tools and journal replay after Application drops. A failed
+model call remains failed even when cleanup is verified. Failed or unknown safety
+stops remaining calls; a verified-safe model failure can remain in the finite
+roster. Model and cleanup errors are both preserved when they occur together.
+The worker retains a stop marker in memory after failed or unknown execution
+safety, so upstream exception handling cannot permit a later model request.
+Resuming discovery also checks the original complete-result hashes and safety.
+
+Evaluation rows are written separately as they complete. `report` independently
+recomputes original results, writes a versioned adjudication and checks the exact
+recall-stage set, explicit null fields and maintenance-export checksum. Semantic
+opinions must cover the exact Session/revision packets with no duplicate reviews;
+counts alone cannot prove coverage. Old evidence without these proofs is not
+retroactively accepted. Existing reports are retained. The production baseline
+requires independent owner semantic review before any replacement.
+Failed exploration reviews only its existing checkpoints; it does not gain a
+successful lifecycle by having no checkpoints. Unified training and non-control
+comparisons still require at least three. The fixed seed orders tasks and pairs;
+it does not make model sampling deterministic.
+Coverage and supported/unsupported/uncertain opinions are reported separately.
+The current review protocol explicitly uses zero-based `sources` array positions,
+separate from journal sequence IDs. Older frozen protocols retain their original
+request identity and strict judgments; this clarification does not regrade them.
+`collect-review --output /absolute/private/experiment` reconstructs opinions from
+existing result/complete records without creating a worker or making requests.
+It writes a new UUID collection; reports identify which collection they use.
+Payment failures and invalid quotations remain failed attempts, not completed
+semantic acceptance. They cannot be hidden by review request counts.
+When separately reviewing those packets, distinguish selected historical progress
+from later retained messages. Omission from a checkpoint is not loss if the fact
+remains in the replacement view; explicit denial of an earlier fact still needs
+adjudication. Original image/request evidence is required to settle pixel claims.
+Correcting a quotation index alone does not establish semantic correctness.
+If a launcher dies after the worker writes a terminal audit, `continuation.py`
+can record an additional interruption proof without manufacturing a missing
+exit receipt. It validates ended requests and the maintenance digest. Such a
+case remains failed and is never rerun; only previously unexecuted cases may
+continue after cleanup is independently verified. Missing proof stops the batch.
 
 The frozen roster contains three training tasks, six held-out tasks with three
 replicates each, and the original twelve reliability regression cases. Planned

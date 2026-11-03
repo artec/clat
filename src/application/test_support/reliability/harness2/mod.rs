@@ -2,6 +2,7 @@
 use super::*;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+mod audit;
 mod editor;
 mod failure;
 mod tests;
@@ -44,11 +45,12 @@ fn harness2_bridge() {
     validate(&manifest).unwrap();
     std::fs::create_dir(&manifest.output).expect("never overwrite earlier evidence");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&manifest)));
-    let value = match result {
+    let mut value = match result {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => failure::record(&manifest, error),
         Err(error) => failure::record(&manifest, panic_text(error)),
     };
+    audit::attach(&manifest, &mut value);
     write_new(&manifest.output.join("result.json"), &value);
 }
 
@@ -58,7 +60,7 @@ fn validate(m: &Manifest) -> Result<(), String> {
     }
     if !matches!(
         m.role.as_str(),
-        "execute" | "improve" | "review" | "probe" | "baseline" | "offline"
+        "execute" | "improve" | "review" | "probe" | "baseline" | "offline" | "corpus"
     ) {
         return Err("unknown bridge role".into());
     }
@@ -101,6 +103,7 @@ fn dispatch(m: &Manifest) -> Result<Value, String> {
         "baseline" => {
             Ok(json!({"status":"completed","guidance":crate::plugins::harness2_default_guidance()}))
         }
+        "corpus" => Ok(corpus_identity()),
         "execute" => exercise::run_observed(
             &corpus::Case {
                 family: m.family.clone(),
@@ -116,6 +119,31 @@ fn dispatch(m: &Manifest) -> Result<Value, String> {
         "review" | "probe" => editor::text_request(m),
         _ => unreachable!(),
     }
+}
+
+fn corpus_identity() -> Value {
+    use sha2::{Digest, Sha256};
+    let mut tasks = BTreeMap::new();
+    for family in ["requirements", "tools", "images"] {
+        for trial in [0, 1, 2, 20, 21, 22, 30, 31, 32] {
+            for control in [false, true] {
+                let case = corpus::Case {
+                    family: family.into(),
+                    trial,
+                    control,
+                };
+                let inputs = json!({"initial":case.variant(case.initial()),"correction":case.variant(case.correction()),
+                    "evidence":case.variant(case.evidence()),"recall":case.recall(),"tool_prompt":case.tool_prompt(),
+                    "resources":(0..8).map(|id| tools::observation(&case,id,family=="tools")).collect::<Vec<_>>(),
+                    "images":{"size":[128,128],"rgb":[[0,0,220],[220,0,0],[0,220,0]],"batches":exercise::IMAGE_BATCHES}});
+                tasks.insert(
+                    case.id(),
+                    format!("{:x}", Sha256::digest(serde_json::to_vec(&inputs).unwrap())),
+                );
+            }
+        }
+    }
+    json!({"status":"completed","tasks":tasks})
 }
 
 fn offline(m: &Manifest) -> Result<Value, String> {

@@ -126,6 +126,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.rename",
     "session.organize",
     "session.compact",
+    "session.rewind.check",
+    "session.rewind.send",
     "model.overrides.set",
     "model.settings.get",
     "model.setup.get",
@@ -1780,6 +1782,7 @@ fn project_mutation(method: &str) -> bool {
             | "session.rename"
             | "session.organize"
             | "session.compact"
+            | "session.rewind.send"
             | "permission.set"
             | "draft.open"
             | "command.run"

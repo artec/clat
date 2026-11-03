@@ -1,20 +1,26 @@
 let liveMessageBase=Infinity, liveMessageNodes=[];
 /* Conversation-only presentation. Core owns timestamps, usage and followup admission. */
 function experienceText(key, params = {}) { return CLATI18n.msg(`experience.${key}`, params); }
+function formatMessageTime(time, now = Date.now()) {
+  const date = new Date(time), today = new Date(now);
+  if (!Number.isFinite(time) || time <= 0 || Number.isNaN(date.getTime())) return experienceText('time_unknown');
+  return date.toDateString() === today.toDateString()
+    ? date.toLocaleTimeString(CLATI18n.locale) : date.toLocaleString(CLATI18n.locale);
+}
 function messageTime(node, time) {
   if (Number.isFinite(time) && time > 0) node.dataset.time = String(time);
   let actions=node.querySelector('.message-actions,.reader-actions');
   if(!actions) {actions=el('div','message-actions');node.append(actions);}
   let stamp = actions.querySelector('.message-time');
-  if (!stamp) { stamp = el('time', 'message-time'); actions.append(stamp); }
-  CLATI18n.bind(stamp, 'textContent', () => Number(node.dataset.time) > 0
-    ? new Date(Number(node.dataset.time)).toLocaleString(CLATI18n.locale) : experienceText('time_unknown'));
-  if(!actions.querySelector('.message-time-toggle')) {
-    const toggle=el('button','text-action message-time-toggle');toggle.type='button';toggle.append(svgIcon('schedule'));
-    CLATI18n.attribute(toggle,'aria-label',()=>experienceText('time'));
-    toggle.onclick=()=>{const shown=node.classList.toggle('time-open');toggle.setAttribute('aria-expanded',String(shown));};actions.append(toggle);
+  if (!stamp) {
+    stamp = el('time', 'message-time'); actions.append(stamp);
+    // Re-evaluate the local calendar date when reading across midnight, without a timer.
+    const refresh = () => { stamp.textContent = formatMessageTime(Number(node.dataset.time)); };
+    node.addEventListener('pointerenter', refresh); node.addEventListener('focusin', refresh);
   }
-  if (Number(node.dataset.time) > 0) stamp.dateTime = new Date(Number(node.dataset.time)).toISOString();
+  CLATI18n.bind(stamp, 'textContent', () => formatMessageTime(Number(node.dataset.time)));
+  const date = new Date(Number(node.dataset.time));
+  if (Number(node.dataset.time) > 0 && !Number.isNaN(date.getTime())) stamp.dateTime = date.toISOString();
 }
 function syncMessageTimes() {
   const outline = new Map(state.history.outline.map(item => [String(item.seq), item]));

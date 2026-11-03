@@ -63,7 +63,14 @@ The outer window shell does not scroll, including during focus and message
 navigation. The toolbar keeps its full height; lists, messages and tool contents
 scroll inside their own panels.
 
-Reply Copy and message Bookmark use compact icon buttons with localized hover labels and accessible names. Copy briefly shows a checkmark on success; bookmarked messages keep the bookmark highlighted. Bookmark controls appear on hover or keyboard focus and remain visible on touch devices.
+Both user questions and Agent replies offer Copy, Bookmark and a timestamp in
+one compact action row. The whole row appears together on message hover or
+keyboard focus, and remains visible on touch devices. Icon sizing and spacing
+are shared between both roles. Copy preserves the original message text and
+briefly shows a checkmark on success; bookmarked messages keep the bookmark
+highlighted when the row is shown. Timestamps from today show only the local
+time; other dates show the full local date and time. Labels and accessible
+names follow the selected interface language.
 
 Git change-group headings keep a stable height when hover actions appear. File counts sit at the right edge normally and move left to make room for those actions on hover or keyboard focus; the file list does not shift vertically.
 
@@ -110,9 +117,16 @@ this file view remains a browser with fixed-snapshot quoting.
 
 Git settings holds the generated commit-message language and the commit graph's
 reference scope in one card with a divider between the two rows. The sparkle button inside the commit-message field generates a
-message for staged changes. A thin divider separates repositories from history;
-when both sections are collapsed, their headers stay at the bottom and the
-resize handle is hidden. Expanding either restores the saved split ratio.
+message for staged changes. A thin divider separates repositories from history.
+Both sections form one bottom-aligned group. The repository list expands to its
+full content height without an internal scrollbar. The handle above the group
+resizes only the scrollable commit graph; opening repositories leaves the graph
+at the bottom. When the graph is collapsed, the group uses only its content
+height and the resize handle is hidden. Reopening the graph restores its saved
+size preference, limited by the space left after the repository list.
+Repository names come from each repository's own path (the project directory
+name for the root repository), so selecting a sub-repository does not rename
+the root entry or mix its name with another repository's branch.
 
 Opening a tool creates one **Conversation / current tool** tab pair. The existing
 Tools menu switches that tool; tabs do not accumulate. Conversation remains

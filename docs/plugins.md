@@ -121,7 +121,9 @@ alter `plugin.list`, current `builtin_availability`, permissions or durable fact
 default. It uses the installed Cargo executable after Agent file/patch/command
 operations change a non-ignored `Cargo.toml` inside the project, and after a human
 saves that file in the project editor. It asks Cargo to locate the workspace,
-then runs offline metadata resolution to synchronize `Cargo.lock`. It does not
+then runs `cargo update --workspace --offline` to synchronize `Cargo.lock`.
+This uses cached registry index data without requiring downloaded crate sources.
+Cargo preserves existing dependency versions where possible. It does not
 implement dependency resolution, install a toolchain, download dependencies, or
 run `cargo check`, tests, build scripts or a build. Existing dependency pins are
 retained where compatible; manifest changes can necessarily change resolution.

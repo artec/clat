@@ -87,7 +87,7 @@ class Judging(unittest.TestCase):
         rows=[]
         for i in range(30):
             for arm in ("base","candidate"):
-                rows.append(dict(split="heldout" if i<18 else "legacy",id=str(i),arm=arm,family=("requirements","tools","images")[i%3],passed=arm=="candidate",safety_failure=False))
+                rows.append(dict(split="heldout" if i<18 else "legacy",id=str(i),arm=arm,family=("requirements","tools","images")[i%3],control=False,passed=arm=="candidate",facts_passed=arm=="candidate",lifecycle=True,structure_verified=True,safety_failure=False))
         self.assertEqual(acceptance(rows,True,True)["verdict"],"ELIGIBLE_FOR_REVIEW")
         self.assertEqual(acceptance(rows,False,True)["verdict"],"KEEP_BASE")
         self.assertEqual(acceptance(rows,True,False)["verdict"],"KEEP_BASE")

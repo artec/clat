@@ -2,15 +2,17 @@
 import json
 
 FAMILIES = ("requirements", "tools", "images")
+CHECKER_VERSION = 4
+RECALL_STAGES = ("recall-pre-tools", "recall-active", "recall-manual", "recall-cold")
 
 
 def training():
-    return {f"{family}-train":dict(family=family,trial=10,control=False) for family in FAMILIES}
+    return {f"{family}-train":dict(family=family,trial=20,control=False) for family in FAMILIES}
 
 
 def heldout():
     return {f"{family}-held-{trial}-r{repeat}":dict(family=family,trial=trial,control=False)
-        for family in FAMILIES for trial in (11,12) for repeat in range(3)}
+        for family in FAMILIES for trial in (21,22) for repeat in range(3)}
 
 
 def legacy():
@@ -42,7 +44,7 @@ def check_object(text, facts):
     if not isinstance(actual,dict):
         return dict(passed=False,error="object required")
     wrong={key:dict(expected=value,actual=actual.get(key)) for key,value in facts.items()
-           if actual.get(key)!=value or type(actual.get(key)) is not type(value)}
+           if key not in actual or actual.get(key)!=value or type(actual.get(key)) is not type(value)}
     extra=sorted(set(actual)-set(facts))
     return dict(passed=not wrong and not extra,wrong=wrong,extra=extra)
 
@@ -63,6 +65,18 @@ def evaluate(result, case):
         if stage.get("stage","").startswith("recall-"):
             recalls.append(dict(stage=stage["stage"],**check_recall(stage.get("text"),case,stage["stage"])))
     artifact=check_object(result.get("artifact"),facts)
-    completed=result.get("status")=="passed" and len(recalls)==4
-    return dict(passed=completed and artifact["passed"] and all(r["passed"] for r in recalls),
-        lifecycle=completed,recalls=recalls,artifact=artifact,safety_failure=result.get("safety_failure",True))
+    stages=[row["stage"] for row in recalls]
+    completed=lifecycle(result,case) and len(stages)==len(RECALL_STAGES) and set(stages)==set(RECALL_STAGES)
+    observations=[s['image_color_correct'] for s in result.get('stages',[]) if 'image_color_correct' in s]
+    images_ok=case['family']!='images' or (len(observations)==1 and observations[0] is True)
+    facts_ok=artifact['passed'] and all(r['passed'] for r in recalls) and images_ok
+    return dict(passed=completed and facts_ok and result.get('safety_failure') is False,
+        lifecycle=completed,facts_passed=facts_ok,image_observation_verified=images_ok,recalls=recalls,artifact=artifact,safety_failure=result.get("safety_failure"),checker_version=CHECKER_VERSION)
+
+
+def lifecycle(result, case):
+    cancelled=[s for s in result.get('stages',[]) if s.get('stage')=='cancel-steer']
+    checkpoints=case['control'] or all(type(result.get(k)) is int and result[k]>=1 for k in ('pre_checkpoints','active_checkpoints','manual_checkpoints'))
+    return (checkpoints and result.get('replay_equal') is True and result.get('checkpoint_replay_equal') is True
+        and result.get('reads')==list(range(8)) and type(result.get('publications')) is int and result['publications']==1
+        and len(cancelled)==1 and all(cancelled[0].get(k) is True for k in ('observed_provider_event','steering_admitted','cancelled')))

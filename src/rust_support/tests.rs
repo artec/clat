@@ -27,10 +27,8 @@ fn fake(project: &Project, failure: bool) -> (RustSupport, Arc<AtomicUsize>) {
         if args[0] == "locate-project" {
             return Ok(root.join("Cargo.toml").to_string_lossy().into_owned());
         }
-        assert_eq!(args[0], "metadata");
+        assert_eq!(&args[..3], &["update", "--workspace", "--offline"]);
         assert!(discard);
-        assert!(args.contains(&"--offline"));
-        assert!(!args.contains(&"--no-deps"));
         assert!(!args.contains(&"--locked"));
         count.fetch_add(1, Ordering::SeqCst);
         if failure {
@@ -143,7 +141,7 @@ fn rust_support_does_not_cross_project_boundary_or_run_after_close_or_in_readonl
     support.runner = Arc::new(move |_, args, _, _| {
         assert_eq!(
             args[0], "locate-project",
-            "metadata must not write an external workspace lockfile"
+            "Cargo must not write an external workspace lockfile"
         );
         Ok(outside.to_string_lossy().into_owned())
     });

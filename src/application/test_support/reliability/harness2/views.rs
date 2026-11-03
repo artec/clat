@@ -23,7 +23,12 @@ pub(in crate::application::reliability_tests) fn export(
             .find(|node| node["seq"] == event.seq)
             .expect("replacement must be visible at this boundary");
         let selected = event.source_event_seqs.clone().unwrap_or_default();
-        views.push(json!({"session":session,"revision":event.seq,"selected_seqs":selected,"before":before,"after":after,"candidate":candidate}));
+        let body = candidate["text"].as_str().unwrap_or_default();
+        let valid = body
+            .split_once("<compacted-summary>")
+            .and_then(|(_, body)| body.strip_suffix("</compacted-summary>"))
+            .is_some_and(|body| crate::plugins::valid_checkpoint_structure(body.trim()));
+        views.push(json!({"session":session,"revision":event.seq,"selected_seqs":selected,"before":before,"after":after,"candidate":candidate,"structure_valid":valid}));
     }
     write_new(
         &output.join("maintenance-views.json"),

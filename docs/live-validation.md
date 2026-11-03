@@ -4,8 +4,12 @@
 
 The opt-in [Harness² research adapter](../scripts/harness2/README.md) executes
 CLAT's existing Application and summary pipeline against frozen synthetic
-long-task scenarios. GLM executes the tasks; DeepSeek proposes summary guidance
-and supplies separately recorded semantic opinions. The adapter is development
+long-task scenarios. GLM executes the tasks. The original paid-model protocol
+used DeepSeek to propose summary guidance and record semantic opinions; the
+current continuation assigns those research roles to Codex. Record the actual
+author and reviewer for each artifact, and preserve the original DeepSeek
+attempts. A Codex-authored opinion is a model opinion, not independent human
+acceptance. The adapter is development
 tooling, not a runtime dependency, public RPC or production self-modification
 feature. Its private test entry is inert unless explicitly armed.
 
@@ -16,6 +20,26 @@ evidence that the complete long-task acceptance passed. Follow the adapter guide
 for confinement, temporary credentials, immutable binaries and the full finite
 experiment protocol. Do not apply a candidate to production by selecting a
 successful rollout or tuning against the held-out results.
+
+Correction campaigns freeze new training and held-out tasks separately from
+the original regression roster. Failed selections, model failures and unverified
+cleanup remain distinct. Versioned read-only adjudication checks original worker
+results and their durable checkpoint exports; repeated stages or repeated model
+reviews cannot replace missing lifecycle or checkpoint coverage. A completed
+model request is not a passed long-task case. Keep the production guidance when
+the finite comparison or independent semantic acceptance is incomplete.
+Review coverage, quotation validity and model opinions are separate results.
+Payment failures or ambiguous source references do not become successful
+reviews. Preserve the original request protocol and any later adjudication;
+never manufacture a missing process-exit receipt after an interrupted launcher.
+Review the selected historical region together with the chronological retained
+messages: later retained progress does not invalidate an earlier checkpoint's
+historical progress. A global denial of an earlier fact is different from a
+region that simply does not contain it. For image omissions, check the complete
+replacement view; a later request to report a color does not preserve the actual
+earlier observation. Pixel claims require the original image/request evidence,
+not a textual image placeholder. New candidates based on inspected held-out
+evidence require a fresh independently held-out set before claiming improvement.
 
 The normal test suite is deterministic and credential-free. It cannot prove
 that a real provider still accepts CLAT's request shape, streams correctly, or

@@ -15,6 +15,7 @@ pub(super) fn dispatch(
         "session.switch" => required_str(params, "id").and_then(|id| select(Some(id), shared)),
         "session.history" => dispatch_history(params, shared),
         "session.rename" => rename(params, shared),
+        "session.rewind.check" | "session.rewind.send" => rewind(method, params, shared),
         "session.compact" => compact(params, shared),
         _ => return None,
     })
@@ -96,4 +97,65 @@ fn compact(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Val
             "session.compact action must be start or cancel",
         )),
     }
+}
+
+fn rewind(
+    method: &str,
+    params: &Map<String, Value>,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    let id = SessionId::new(required_str(params, "id")?);
+    let seq = params
+        .get("seq")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RpcError::bad_request("message sequence required"))?;
+    if !shared.active_run_info().is_null() || !shared.active_compaction_info().is_null() {
+        return if method == "session.rewind.check" {
+            Ok(json!({"eligible":false}))
+        } else {
+            Err(RpcError::busy("conversation is executing"))
+        };
+    }
+    if method == "session.rewind.check" {
+        let revision = with_app(shared, |app| app.rewind_revision(&id, seq))
+            .map_err(app_error)?
+            .map(|(revision, _)| revision);
+        return Ok(json!({"eligible":revision.is_some(),"revision":revision,
+            "generation":shared.selection_generation()}));
+    }
+    if params
+        .get("expected_selection_generation")
+        .and_then(Value::as_u64)
+        != Some(shared.selection_generation())
+    {
+        return Err(RpcError::bad_request("session selection changed"));
+    }
+    let revision = required_str(params, "revision")?;
+    let text = required_str(params, "text")?;
+    if text.trim().is_empty() || text.len() > 64 * 1024 {
+        return Err(RpcError::bad_request(
+            "replacement text must be nonempty and at most 64 KiB",
+        ));
+    }
+    with_app(shared, |app| {
+        let outcome = app.rewind_last_turn(&id, seq, &revision);
+        if outcome.is_ok()
+            || outcome
+                .as_ref()
+                .is_err_and(ApplicationError::selection_changed)
+        {
+            shared.advance_selection_generation();
+        }
+        outcome?;
+        let input_id = uuid::Uuid::new_v4().to_string();
+        let message = crate::message::PendingMessage::from_front_end(
+            &text,
+            Some(input_id.clone()),
+            Vec::new(),
+        );
+        app.enqueue_input(input_id, message, crate::application::InputDraft::default())
+    })
+    .map_err(app_error)?;
+    super::super::inputs::dispatch_ready(shared);
+    Ok(json!({"outcome":"queued"}))
 }

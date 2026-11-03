@@ -34,6 +34,26 @@ impl FileReview {
         .map_err(io_error)
     }
 
+    pub(crate) fn empty_turn(&self, session: &str, turn: u64) -> io::Result<bool> {
+        Ok(self
+            .load(session, turn)?
+            .is_none_or(|ledger| ledger.files.is_empty()))
+    }
+
+    pub(crate) fn discard_empty_turn(&self, session: &str, turn: u64) -> io::Result<()> {
+        let active = self.active.lock().map_err(io_error)?;
+        if active.is_some() || !self.empty_turn(session, turn)? {
+            return Err(io_error(
+                "file review contains active or captured operations",
+            ));
+        }
+        match self.dir.remove_file(name(session, turn)) {
+            Ok(()) => crate::session::root_dir::sync_dir(&self.dir),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn load(&self, session: &str, turn: u64) -> io::Result<Option<Ledger>> {
         let filename = name(session, turn);
         let mut options = cap_std::fs::OpenOptions::new();

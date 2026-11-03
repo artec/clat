@@ -188,7 +188,7 @@ pub(super) fn settled(shared: &Arc<ServeShared>) {
     shared.notify_queue_changed();
 }
 
-fn dispatch_ready(shared: &Arc<ServeShared>) {
+pub(super) fn dispatch_ready(shared: &Arc<ServeShared>) {
     if shared.is_shutting_down() || !shared.active_run_info().is_null() {
         return;
     }

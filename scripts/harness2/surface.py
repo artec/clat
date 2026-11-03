@@ -1,5 +1,6 @@
 """The only editable experiment component is the summary directive."""
 from pathlib import Path
+import re
 
 FILE = "summary_guidance.md"
 def surface_spec():
@@ -17,6 +18,8 @@ def validate_tree(tree):
     for heading in ("Primary Request and Intent", "Key Technical Concepts", "Files and Code", "Errors and Fixes", "Pending Jobs", "Current Work", "Next Step", "Critical Context"):
         if "## " + heading not in tree[FILE]:
             raise ValueError("the eight-section checkpoint contract must remain")
+    if re.search(r"\b(?:ORION|HEAD|TAIL|STEER)[-_]\d+|artifacts/(?:合成\d+|星河)/",tree[FILE]):
+        raise ValueError("general guidance cannot hardcode synthetic task answers")
 
 
 def read_tree(root):

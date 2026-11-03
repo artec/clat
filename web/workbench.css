@@ -354,9 +354,7 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .task-example { display: flex; flex-direction: column; gap: 8px; text-align: start; padding: 20px !important; background: var(--surface-input); border: 1px solid var(--line); color: var(--text); }
 .task-example small { font-size: 12px; color: var(--text-muted); line-height: 1.7; font-weight: 400; }
 @media (max-width:700px) { .task-examples {grid-template-columns:1fr;} }
-.message-bookmark { grid-column: 2; justify-self: start; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; padding: 4px 8px; font-size: 11px; opacity: 0; }
-.msg:hover .message-bookmark, .message-bookmark:focus-visible, .message-bookmark[aria-pressed=true] { opacity: 1; }
-@media (hover:none) {.message-bookmark {opacity:1;} }
+.message-bookmark { grid-column: 2; justify-self: start; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; padding: 4px 8px; font-size: 11px; }
 .task-actions-menu { position: relative; }
 .task-actions-menu > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); padding: 8px 12px; list-style: none; }
 .task-menu-items { position: absolute; inset-inline-end: 0; top: 100%; z-index: 25; display: grid; gap: 4px; min-width: 160px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow); }
@@ -408,10 +406,16 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 #goal-badge { margin-left: 4px; }
 #composer-plan-toggle[aria-pressed="true"] { background: color-mix(in srgb,var(--accent) 18%,transparent); border-radius: 8px; color: var(--signal); }
 #composer-permission-label, #composer-plan-toggle .shell-label { display: none; }
-.message-time { display: block; color: var(--text-muted); font-size: var(--text-size-secondary); opacity: 0; line-height: 1.5; margin-left: 0; }
+.message-time { display: block; color: var(--text-muted); font-size: var(--text-size-secondary); line-height: 1.5; margin-left: 0; padding-inline-start:8px; }
 .message-actions .message-bookmark, .reader-actions [data-action="bookmark"] { margin-left: 0; }
-.message-actions, .reader-actions { align-items: center; flex-wrap: wrap; }
-.msg:hover .message-time, .msg:focus-within .message-time, .reader-message:hover .message-time, .reader-message:focus-within .message-time { opacity: 1; }
+.message-actions, .reader-actions { align-items:center; flex-wrap:wrap; gap:8px; }
+@media (hover:hover) {
+  .msg:not(:hover,:focus-within)>.message-actions,
+  .reader-message:not(:hover,:focus-within)>.reader-actions>:is(.message-action-icon,.message-time) {
+    opacity:0;
+    pointer-events:none;
+  }
+}
 .msg.user .message-actions { justify-content: flex-end; }
 .round-suggestions { display: grid; gap: 3px; margin: 12px 0 20px 36px; padding-top: 12px; border-top: 1px solid var(--line); background: transparent; }
 .round-suggestions .followup-choice { display:flex;align-items:flex-start;gap:9px; padding: 7px 0; text-align: left; font-size: var(--text-size-reading); font-weight: 400; color: var(--text-muted); border: 0; background: transparent; }
@@ -466,10 +470,6 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .usage-popover > .usage-row:first-child > span:first-child { color: var(--accent); }
 .usage-popover h3 { color: var(--accent); font-size: var(--text-size-ui); font-weight: 400; margin: 16px 0 6px; padding-top: 12px; border-top: 1px solid var(--line); }
 .usage-popover small { color: var(--text-muted); font-size: var(--text-size-secondary); }
-.message-time-toggle { display: none; }
-.message-actions:has(> .message-time-toggle:only-child) { padding-top: 0; }
-.msg.time-open .message-time, .reader-message.time-open .message-time { opacity: 1; }
-@media (hover: none) { .message-time-toggle { display: inline-flex; } }
 @media (max-width: 700px) { .round-suggestions { margin-left: 0; } }
 .shell-button[hidden] { display: none !important; }
 
@@ -589,9 +589,9 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 
 :is(.message-actions,.reader-actions) .message-action-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:6px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);box-shadow:none}
 :is(.message-actions,.reader-actions) .message-action-icon>svg{width:14px;height:14px;stroke-width:1.5;flex:none}
+:is(.message-actions,.reader-actions) .message-copy>svg{width:13px;height:13px}
 :is(.message-actions,.reader-actions) .message-action-icon:hover,:is(.message-actions,.reader-actions) .message-action-icon:focus-visible{background:var(--surface-input);color:var(--text)}
 .message-actions .message-bookmark[aria-pressed=true]{color:var(--accent)}
-.msg:focus-within .message-bookmark{opacity:1}
 
 /* History navigation: arrows for navigation, a wave only while the run is active. */
 .back-to-latest,.history-status{box-sizing:border-box;width:34px;height:34px;min-height:34px;padding:7px;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--text-muted);box-shadow:0 3px 12px #0002;cursor:pointer}
@@ -600,10 +600,14 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .back-to-latest>svg,.history-status>svg{display:block;width:18px;height:18px;flex:none;stroke-width:1.65}
 .back-to-latest:hover,.back-to-latest:focus-visible,.history-status:hover{color:var(--text);border-color:var(--line-strong)}
 .history-running-dots{display:none;align-items:center;justify-content:center;gap:3px;width:18px;height:18px}
-.history-running-dots>i{display:block;width:4px;height:4px;border-radius:50%;background:currentColor;animation:history-dot-wave 1.2s ease-in-out infinite}
-.history-running-dots>i:nth-child(2){animation-delay:.15s}.history-running-dots>i:nth-child(3){animation-delay:.3s}
+.history-running-dots>i{display:block;width:4px;height:4px;border-radius:50%;background:currentColor;animation:history-dot-wave 1s ease-in-out infinite backwards}
+.history-running-dots>i:nth-child(2){animation-delay:90ms}.history-running-dots>i:nth-child(3){animation-delay:180ms}
 .back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-latest-arrow{display:none}
 .back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-running-dots{display:flex}
 .history-status[data-loading=true]>svg{animation:run-loading-turn 2s linear infinite}
-@keyframes history-dot-wave{0%,50%,100%{transform:translateY(0);opacity:.55}25%{transform:translateY(3px);opacity:1}75%{transform:translateY(-3px);opacity:1}}
+@keyframes history-dot-wave {
+  0%, 28%, 56%, 100% { transform:translateY(0); opacity:.55; }
+  14% { transform:translateY(3px); opacity:1; }
+  42% { transform:translateY(-3px); opacity:1; }
+}
 @media(prefers-reduced-motion:reduce){.history-running-dots>i,.history-status[data-loading=true]>svg{animation:none}}

@@ -8,7 +8,7 @@ function createGitTabs(ui,{seat,call,openFile,report}){
   }
   function headers(){
     ui.tabs.replaceChildren();for(const tab of seat().tabs.values()){
-      const wrap=el('div','dev-file-tab'+(tab===seat().tab?' is-selected':'')),button=el('button','ghost',()=>tab.file.path.split('/').pop());button.type='button';button.onclick=()=>tab.stale?void open(tab.file,tab.fixed):show(tab);button.ondblclick=()=>{tab.fixed=true;headers();};wrap.classList.toggle('git-preview-tab',!tab.fixed);
+      const wrap=el('div','dev-file-tab'+(tab===seat().tab?' is-selected':'')),button=el('button','editor-tab-label'),name=el('span','editor-tab-name',()=>tab.file.path.split('/').pop());button.type='button';button.append(developmentFileIcon(tab.file.path),name);CLATI18n.attribute(button,'title',()=>tab.file.path);button.onclick=()=>tab.stale?void open(tab.file,tab.fixed):show(tab);button.ondblclick=()=>{tab.fixed=true;headers();};wrap.classList.toggle('is-preview',!tab.fixed);
       const close=navigationIcon(()=>devText('close_file'),'close',()=>{capture();seat().tabs.delete(tab.id);if(seat().tab===tab){seat().tab=[...seat().tabs.values()].at(-1)||null;if(seat().tab)show(seat().tab,false);else overview();}else headers();});wrap.append(button,close);ui.tabs.append(wrap);
     }
   }

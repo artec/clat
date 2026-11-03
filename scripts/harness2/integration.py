@@ -12,6 +12,7 @@ def main():
     parser.add_argument("--source",type=Path,required=True)
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--binary",type=Path)
+    parser.add_argument("--local-author",action='store_true')
     args=parser.parse_args()
     args.output.mkdir(parents=True)
     sys.path.insert(0,str(prepare(args.source.resolve(),args.output / "upstream")))
@@ -24,10 +25,13 @@ def main():
         identity={"method":"offline-scripted"}
         binary_hash="offline-scripted-no-executable"
         executions=0
+        safety_blocked=False
         def run(self,output,role,**fields):
             output=Path(output)
             output.mkdir(parents=True)
             if role=="improve":
+                if args.local_author:
+                    raise AssertionError('local authorship must never call a model worker')
                 return dict(status="completed",text="<notes>Ground identifiers in their source.</notes>\nNO_ENTRY",guidance=GUIDANCE+"\nPreserve the original source attribution.")
             self.executions+=1
             evidence=output / "observations"
@@ -39,11 +43,41 @@ def main():
 
     worker=FakeWorker()
     adapter=ClatAdapter(worker,args.output / "adapter",{"tools-train":dict(family="tools",trial=10,control=False)})
-    proposer=ClatProposer(worker,args.output / "improvements")
+    stop=None
+    if args.local_author:
+        from local_proposer import make_proposer
+        import threading
+        proposer=make_proposer(worker,args.output/'author-requests',seed=GUIDANCE)
+        stop=threading.Event()
+        def respond():
+            while not stop.wait(0.01):
+                for request in (args.output/'author-requests').glob('*/request.json'):
+                    response=request.with_name('response.json')
+                    if not response.exists():
+                        write_new(response,dict(request=request.parent.name,author='codex-local',
+                            notes='<notes>Offline scripted source-grounding proposal.</notes>\nNO_ENTRY',
+                            guidance=GUIDANCE+'\nPreserve original source attribution.'))
+        thread=threading.Thread(target=respond,daemon=True)
+        thread.start()
+    else:
+        proposer=ClatProposer(worker,args.output / "improvements")
     kwargs=dict(adapter=adapter,prop=proposer,runs_root=adapter.spec.runs_root,library_root=args.output / "library",modes=("agg",),seed=42)
-    result=run_domain("tools",["tools-train"],1,**kwargs)
+    try:
+        result=run_domain("tools",["tools-train"],1,**kwargs)
+    finally:
+        if stop:
+            stop.set()
+            thread.join(5)
+            assert not thread.is_alive(),'local author fixture did not exit'
     assert result["failed"]==0,result
     assert worker.executions==4,worker.executions
+    # Upstream deliverability must not turn explicit unknown safety into safe.
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        output=Path(directory)
+        for safety in (None,True,False):
+            (output/'result.json').write_text(json.dumps(dict(artifact={},safety_failure=safety)))
+            assert adapter.delivered(output) is (safety is False)
     for path in adapter.spec.runs_root.rglob("summary.json"):
         record=json.loads(path.read_text())
         ledger=record["modes"]["agg"]["ledger"]

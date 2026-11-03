@@ -11,6 +11,11 @@ ENTRY = "application::reliability_tests::harness2::harness2_bridge"
 KEYS = ("CLAT_GLM_CODING_PLAN_KEY", "CLAT_HARNESS2_DEEPSEEK_KEY")
 
 
+def driver_hash():
+    driver=b"".join(p.name.encode()+p.read_bytes() for p in sorted(Path(__file__).parent.glob("*.py")))
+    return hashlib.sha256(driver).hexdigest()
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
@@ -29,11 +34,14 @@ class Worker:
     def __init__(self, binary, identity=None, *, isolated=True):
         self.binary = Path(binary).resolve(strict=True)
         self.binary_hash = hashlib.sha256(self.binary.read_bytes()).hexdigest()
-        driver = b"".join(p.name.encode()+p.read_bytes() for p in sorted(Path(__file__).parent.glob("*.py")))
-        self.identity = dict(driver=hashlib.sha256(driver).hexdigest(), **(identity or {}))
+        self.driver_hash=driver_hash()
+        self.identity = dict(driver=self.driver_hash, **(identity or {}))
         self.isolated = isolated
+        self.safety_blocked = False
 
     def run(self, output, role, **fields):
+        if self.safety_blocked:
+            raise RuntimeError('execution safety failed or unknown; all model calls stopped')
         output=Path(output).resolve()
         output.parent.mkdir(parents=True,exist_ok=True)
         lock=output.parent / ("."+output.name+".launch-lock")
@@ -42,13 +50,23 @@ class Worker:
         except FileExistsError:
             raise RuntimeError("another launcher owns this experiment identity") from None
         try:
-            return self._run(output,role,**fields)
+            result=self._run(output,role,**fields)
+            if role=='execute' and result.get('safety_failure') is not False:
+                self.safety_blocked=True
+                raise RuntimeError('execution safety failed or unknown; all model calls stopped')
+            return result
+        except BaseException:
+            if role=='execute':
+                self.safety_blocked=True
+            raise
         finally:
             lock.rmdir()
 
     def _run(self, output, role, **fields):
         if hashlib.sha256(self.binary.read_bytes()).hexdigest()!=self.binary_hash:
             raise RuntimeError("frozen executable changed")
+        if driver_hash()!=self.driver_hash:
+            raise RuntimeError("frozen driver changed")
         output = Path(output).resolve()
         manifest = dict(role=role, output=str(output), **fields)
         identity = digest(dict(binary=self.binary_hash, settings=self.identity, manifest=manifest))
@@ -65,7 +83,7 @@ class Worker:
         output.parent.mkdir(parents=True, exist_ok=True)
         env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR") if k in os.environ}
         secret = KEYS[0] if role == "execute" or (role == "probe" and fields.get("family", "").startswith("glm")) else KEYS[1]
-        if role not in ("baseline", "offline") and secret in os.environ:
+        if role not in ("baseline", "offline", "corpus") and secret in os.environ:
             env[secret] = os.environ[secret]
         env.update(CLAT_HARNESS2_LIVE="1", CLAT_LANG="en")
         from isolation import command, HOSTS
@@ -73,7 +91,7 @@ class Worker:
         env["HOME"] = str(output / "home")
         env["TMPDIR"] = str(output)
         host = HOSTS["glm" if secret == KEYS[0] else "deepseek"]
-        with relay(host) if self.isolated and role not in ("baseline","offline") else nullcontext(None) as port:
+        with relay(host) if self.isolated and role not in ("baseline","offline","corpus") else nullcontext(None) as port:
             prefix=command(self.binary,output,role,fields.get("family",""),port) if self.isolated else [str(self.binary)]
             if port:
                 env["https_proxy"]="http://127.0.0.1:"+str(port)

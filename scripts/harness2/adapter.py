@@ -5,6 +5,7 @@ from harness2.core.proposer import Proposer, ProposerError, Reply
 from harness2.core.spec import BenchSpec, BenchPrompts, ChannelSpec
 from protocol import digest, write_new
 from surface import FILE, ClatSubstrate, read_tree, validate_tree
+from cohort import BENCH_NAME
 
 
 class ClatProposer(Proposer):
@@ -16,6 +17,8 @@ class ClatProposer(Proposer):
         context = Path(context_dir)
         guidance = read_tree(context / "harness")[FILE] if (context / "harness").exists() else self.worker.baseline
         evidence = {}
+        from evidence_notes import NOTES
+        evidence["training-source-scope-notes"]=NOTES
         for path in sorted(context.rglob("*")):
             if path.is_symlink():
                 raise ProposerError("symlink in evidence context")
@@ -42,14 +45,17 @@ class ClatProposer(Proposer):
             if not workspace.exists():
                 workspace.mkdir()
                 (workspace / FILE).write_text(result["guidance"], encoding="utf-8")
-            read_tree(workspace)
+            try:
+                read_tree(workspace)
+            except ValueError as error:
+                raise ProposerError(str(error),attempts=1) from None
         reply = Reply(label=label, text=result["text"], ok=True, attempts=1, workspace=workspace)
         self._calls.append(reply)
         return reply
 
 
 class ClatAdapter:
-    def __init__(self, worker, root, tasks):
+    def __init__(self, worker, root, tasks, *, channel=None):
         self.worker, self.root, self.roster = worker, Path(root), tasks
         self.root.mkdir(parents=True,exist_ok=True)
         marker=self.root / "execution-identity.json"
@@ -60,8 +66,8 @@ class ClatAdapter:
         else:
             write_new(marker,identity)
         self.substrate = ClatSubstrate()
-        channel = ChannelSpec("clat", "deepseek-v4-pro")
-        self.spec = BenchSpec(name="clat-long", runs_root=self.root / "method",
+        channel = channel or ChannelSpec("clat", "deepseek-v4-pro")
+        self.spec = BenchSpec(name=BENCH_NAME, runs_root=self.root / "method",
             install_mode="clat_experiment", prompts=BenchPrompts(work="continue a long-running task accurately after structured checkpoints", domain_word="task family"),
             channels={"proposer":channel, "selector":channel}, leak_globs=("answers*", "judged*", "evaluation*"))
         self.base = self.root / "base"
@@ -95,7 +101,7 @@ class ClatAdapter:
 
     def delivered(self, run_dir):
         result = json.loads((Path(run_dir) / "result.json").read_text())
-        return result.get("artifact") is not None and not result.get("safety_failure", True)
+        return result.get("artifact") is not None and result.get("safety_failure") is False
 
     def deliverable_text(self, run_dir):
         result = json.loads((Path(run_dir) / "result.json").read_text())

@@ -1,4 +1,8 @@
 {
+  "web.rewind_edit": "编辑已停止的消息",
+  "web.rewind_send": "发送并重跑",
+  "web.rewind_cancel": "取消",
+  "web.rewind_failed": "未能重新发送，已保留你的编辑。",
   "command.context_maintained": "上下文已维护：裁剪 {pruned} 项工具结果，卸载 {images} 张历史图片。原始证据已保留。",
   "extension.builtin.compaction_image_offload.name": "历史图片卸载",
   "extension.builtin.compaction_image_offload.summary": "请求超限时耐久卸载合格的旧输入图片；保留附件，保护当前用户轮次。",

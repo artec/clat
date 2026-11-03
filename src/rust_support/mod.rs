@@ -111,10 +111,9 @@ impl RustSupport {
         (self.runner)(
             &root,
             &[
-                "metadata",
+                "update",
+                "--workspace",
                 "--offline",
-                "--format-version",
-                "1",
                 "--manifest-path",
                 workspace,
             ],

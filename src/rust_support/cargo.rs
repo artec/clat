@@ -27,6 +27,7 @@ pub(super) fn run(
         .env("CARGO_NET_OFFLINE", "true")
         .env("RUSTUP_AUTO_INSTALL", "0")
         .env("CARGO_TERM_COLOR", "never");
+    // Both workspace discovery and lockfile resolution use fixed Cargo subcommands.
     let output = crate::process::capture_command_cancellable(
         command,
         32 * 1024,
@@ -36,7 +37,8 @@ pub(super) fn run(
     )?;
     if !output.status.success() {
         return Err(format!(
-            "Cargo metadata maintenance failed: {}",
+            "Cargo {} failed: {}",
+            args[0],
             String::from_utf8_lossy(&output.stderr)
         ));
     }

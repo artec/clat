@@ -1076,6 +1076,77 @@ impl TrustedProjectApplication {
             }))
     }
 
+    pub(crate) fn rewind_revision(
+        &self,
+        id: &SessionId,
+        seq: u64,
+    ) -> Result<Option<(String, u64)>, ApplicationError> {
+        if self.current_session_id().as_ref() != Some(id)
+            || self.reject_next_turn_session_switch().is_err()
+            || self.pending_inputs().interrupting
+            || self.plan_mode_active()
+            || self.goal()?.is_some()
+            || self.task_state()?.is_some()
+            || self.has_schedule_rules(Some(id.as_str()))?
+            || self.library_references_tail(id, seq.saturating_sub(1))?
+        {
+            return Ok(None);
+        }
+        let candidate = self
+            .sessions
+            .rewind_revision(&self.session_key(id), seq)
+            .map_err(session_error)?;
+        if let Some((_, turn)) = &candidate
+            && let Some(review) = self.project.file_review()
+            && !review
+                .empty_turn(id.as_str(), *turn)
+                .map_err(|e| ApplicationError::new(e.to_string()))?
+        {
+            return Ok(None);
+        }
+        Ok(candidate)
+    }
+
+    pub(crate) fn rewind_last_turn(
+        &mut self,
+        id: &SessionId,
+        seq: u64,
+        revision: &str,
+    ) -> Result<(), ApplicationError> {
+        let (_, turn) = self
+            .rewind_revision(id, seq)?
+            .filter(|(current, _)| current == revision)
+            .ok_or_else(|| ApplicationError::new("session tail is no longer eligible"))?;
+        if let Some(review) = self.project.file_review() {
+            review
+                .discard_empty_turn(id.as_str(), turn)
+                .map_err(|e| ApplicationError::new(e.to_string()))?;
+        }
+        let view = self
+            .sessions
+            .rewind_tail(&self.session_key(id), seq, revision);
+        // The log can have changed even when publication durability is uncertain.
+        self.emitted_request_header = self.sessions.last_request_header();
+        self.restore_instruction_sources();
+        self.clear_session_transient_inputs();
+        let view = view.map_err(|error| {
+            let changed = self
+                .sessions
+                .rewind_revision(&self.session_key(id), seq)
+                .ok()
+                .flatten()
+                .is_none_or(|(current, _)| current != revision);
+            let error = session_error(error);
+            if changed {
+                error.with_selection_changed()
+            } else {
+                error
+            }
+        })?;
+        self.restore_todo_from(&view);
+        Ok(())
+    }
+
     /// `/resume`：两阶段可回滚切换（审计 P1-08）。
     ///
     /// 1. **Prepare** the target completely — admission + cold restore,

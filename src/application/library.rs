@@ -15,6 +15,27 @@ impl TrustedProjectApplication {
             .map(|entries| json!({"entries":entries}))
             .map_err(ApplicationError::new)
     }
+    pub(super) fn library_references_tail(
+        &self,
+        session: &SessionId,
+        first_seq: u64,
+    ) -> Result<bool, ApplicationError> {
+        let Some(project) = self.workspace_id.as_deref() else {
+            return Ok(false);
+        };
+        let entries = self
+            .control
+            .library(project, None)
+            .map_err(ApplicationError::new)?;
+        Ok(entries.iter().any(|entry| {
+            entry.pointer("/reference/session").and_then(Value::as_str) == Some(session.as_str())
+                && entry
+                    .pointer("/reference/seq")
+                    .and_then(Value::as_u64)
+                    .is_none_or(|seq| seq >= first_seq)
+        }))
+    }
+
     pub fn library_change(
         &self,
         reference: HistoryReference,

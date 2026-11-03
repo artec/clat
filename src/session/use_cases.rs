@@ -16,6 +16,7 @@ mod lifecycle;
 mod maintenance;
 mod plans;
 pub(crate) mod query;
+mod rewind;
 mod task;
 mod utility;
 mod writers;

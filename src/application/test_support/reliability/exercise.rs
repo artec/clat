@@ -464,7 +464,7 @@ fn active_turn(
         stages.last().unwrap(),
     );
 }
-fn cancel_and_steer(
+pub(super) fn cancel_and_steer(
     app: &mut TrustedProjectApplication,
     capture: &model::Capture,
     stages: &mut Vec<Value>,
@@ -500,5 +500,5 @@ fn cancel_and_steer(
     handle.join().unwrap();
     let result = rx.try_recv().unwrap();
     capture.cancelling.store(false, Ordering::SeqCst);
-    stages.push(json!({"stage":"cancel-steer","observed_provider_event":capture.entered.load(Ordering::SeqCst),"steering_admitted":matches!(steering, super::super::SteerOutcome::Queued { .. }),"cancelled":result.as_ref().map(|r|r.cancelled).unwrap_or(true)}));
+    stages.push(json!({"stage":"cancel-steer","observed_provider_event":capture.entered.load(Ordering::SeqCst),"steering_admitted":matches!(steering, super::super::SteerOutcome::Queued { .. }),"cancelled":result.as_ref().map(|r|r.cancelled).ok()}));
 }

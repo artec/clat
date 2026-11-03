@@ -4858,13 +4858,61 @@ fn cancelled_run_closes_the_turn_as_aborted_by_user() {
     handle.join().unwrap();
     let done = receiver.recv().unwrap().expect("cancelled run succeeds");
     assert!(done.cancelled);
-    application.close().unwrap();
-
     let events = load_events(&storage_root);
     let turn_end = events.last().unwrap();
     assert_eq!(turn_end.event_type, "turn/end");
     assert_eq!(turn_end.data["reason"]["kind"], "aborted");
     assert_eq!(turn_end.data["reason"]["reason"], "user");
+    let id = application.current_session_id().unwrap();
+    let user_seq = events
+        .iter()
+        .find(|e| e.event_type == "user/message")
+        .unwrap()
+        .seq;
+    let revision = application
+        .rewind_revision(&id, user_seq)
+        .unwrap()
+        .expect("eligible")
+        .0;
+    assert!(
+        application
+            .rewind_last_turn(&id, user_seq, "stale")
+            .is_err()
+    );
+    application
+        .sessions
+        .inject_persistence_faults(crate::session::persistence::FaultHooks {
+            fail_rewind_before_publish: true,
+            ..Default::default()
+        });
+    assert!(
+        application
+            .rewind_last_turn(&id, user_seq, &revision)
+            .is_err()
+    );
+    assert_eq!(load_events(&storage_root), events);
+    application
+        .rewind_last_turn(&id, user_seq, &revision)
+        .unwrap();
+    assert_eq!(application.current_session_id(), Some(id.clone()));
+    assert!(application.sessions.recent_inputs(10).unwrap().is_empty());
+    application.close().unwrap();
+    let mut reopened = mount(&project, &storage_root, TestBehavior::Success);
+    assert_eq!(reopened.current_session_id(), Some(id));
+    assert!(reopened.sessions.recent_inputs(10).unwrap().is_empty());
+    run(&mut reopened, "corrected request").unwrap();
+    reopened.close().unwrap();
+    let updated = load_events(&storage_root);
+    assert!(
+        !updated
+            .iter()
+            .any(|event| event.data.to_string().contains("cancel me"))
+    );
+    assert!(
+        updated
+            .iter()
+            .any(|event| event.data.to_string().contains("corrected request"))
+    );
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();
 }
 

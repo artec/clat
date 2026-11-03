@@ -10,6 +10,7 @@ use crate::session::event::SessionEvent;
 mod append;
 mod content;
 mod query;
+mod rewind;
 use crate::session::header::{HeaderError, SessionHeader};
 use crate::session::key::SessionKey;
 use crate::session::recovery::interrupted_turn_closers;
@@ -198,6 +199,8 @@ pub(crate) struct LoadedSession {
 pub(crate) struct FaultHooks {
     pub(crate) fail_upgrade_before_publish: bool,
     pub(crate) fail_upgrade_after_publish: bool,
+    #[cfg(test)]
+    pub(crate) fail_rewind_before_publish: bool,
     pub(crate) fail_batch_write: bool,
     pub(crate) fail_batch_fsync: bool,
     pub(crate) fail_rollback_fsync: bool,

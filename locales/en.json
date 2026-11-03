@@ -1,4 +1,8 @@
 {
+  "web.rewind_edit": "Edit stopped message",
+  "web.rewind_send": "Send and rerun",
+  "web.rewind_cancel": "Cancel",
+  "web.rewind_failed": "Could not resend. Your edit is preserved.",
   "command.context_maintained": "Context maintained: trimmed {pruned} tool results and offloaded {images} historical images. Original evidence is retained.",
   "extension.builtin.compaction_image_offload.name": "Historical image offload",
   "extension.builtin.compaction_image_offload.summary": "Durably omit eligible older input images when requests exceed capacity; keep attachments and protect the current user turn.",

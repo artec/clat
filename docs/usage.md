@@ -2617,6 +2617,19 @@ locally for recovery instead of overwriting history. Reconnection reads the Host
 authoritative snapshot. Pending state and operation receipts are process-local;
 they are not a persistent queue across Host restarts.
 
+After explicitly stopping a text-only run in Web/Desktop, hover over its last
+user message. When the Host verifies the stopped turn is eligible, the pencil
+opens an editor inside the bubble. **Send and rerun** replaces the last turn in
+the same conversation and starts the edited text through normal input
+admission. The original message and its response are removed from replay and
+model context. Earlier turns and project files are preserved.
+
+The first version permits only a user-stopped ordinary text turn with no tool
+activity. Attachments, steering, context maintenance, workflow state or
+unrecognized records in the affected turn can make the action unavailable.
+The Host rechecks the selection and journal revision at submission. A stale
+edit cannot replace newer history.
+
 The additive `input.submit`, `input.pending`, `input.update`, `input.recall`,
 `input.delete`, `input.interrupt` and `input.image` methods are advertised in
 `workbench.info.methods`. Mutations use an operation ID; pending items have stable

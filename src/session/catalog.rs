@@ -2,6 +2,7 @@
 //! Envelope-only means preserved without interpreting its payload. New required
 //! DSH metadata belongs here; it does not require a replay skip-list change.
 mod maintenance;
+pub(crate) mod rewind;
 mod run_events;
 pub(crate) mod search;
 mod validation;

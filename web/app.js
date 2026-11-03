@@ -1641,8 +1641,88 @@ function addUserMessage(text, blocks) {
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
   if (attachments) msg.appendChild(attachments);
+  if (text) addMessageCopyAction(msg, () => String(text));
+  if (text && !attachments) attachLastTurnEditor(msg, body, text);
   rememberFindMessage(msg, CLATI18n.msg("web.user_short",{},"User"), () => String(text || ''));
   return appendTranscript(msg);
+}
+
+function attachLastTurnEditor(message, body, original) {
+  const actions = message.querySelector('.message-actions');
+  const pencil = el('button', 'message-rewind-pencil');
+  pencil.type = 'button';
+  pencil.textContent = '✎';
+  CLATI18n.attribute(pencil, 'aria-label', () => CLATI18n.msg('web.rewind_edit'));
+  CLATI18n.attribute(pencil, 'title', () => CLATI18n.msg('web.rewind_edit'));
+  pencil.hidden = true;
+  actions.append(pencil);
+  let receipt = null;
+  let checking = false;
+  message.addEventListener('pointerenter', async () => {
+    if (checking || body.hidden || !message.dataset.seq || !state.sessionId) return;
+    const users = message.parentElement?.querySelectorAll('.msg.user');
+    if (users && users[users.length - 1] !== message) return;
+    checking = true;
+    pencil.hidden = true;
+    const target = { id: state.sessionId, seq: Number(message.dataset.seq) };
+    const generation = state.selectionGeneration;
+    try {
+      const result = await rpc('session.rewind.check', target);
+      if (message.isConnected && generation === state.selectionGeneration && result.eligible) {
+        receipt = { ...target, revision: result.revision, expected_selection_generation: result.generation };
+        pencil.hidden = false;
+      }
+    } catch { /* Hosts without the endpoint keep the action unavailable. */ }
+    finally { checking = false; }
+  });
+  pencil.addEventListener('click', () => {
+    if (!receipt || body.hidden) return;
+    editLastTurn(message, body, pencil, original, receipt);
+  });
+}
+
+function editLastTurn(message, body, pencil, original, receipt) {
+  const editor = el('form', 'body message-rewind-editor');
+  const input = el('textarea');
+  input.value = original;
+  CLATI18n.attribute(input, 'aria-label', () => CLATI18n.msg('web.rewind_edit'));
+  const send = el('button');
+  send.type = 'submit';
+  CLATI18n.bind(send, 'textContent', () => CLATI18n.msg('web.rewind_send'));
+  const cancel = el('button');
+  cancel.type = 'button';
+  CLATI18n.bind(cancel, 'textContent', () => CLATI18n.msg('web.rewind_cancel'));
+  const error = el('p');
+  error.setAttribute('role', 'status');
+  editor.append(input, send, cancel, error);
+  body.after(editor);
+  body.hidden = true;
+  pencil.hidden = true;
+  cancel.addEventListener('click', () => {
+    editor.remove();
+    body.hidden = false;
+    pencil.hidden = false;
+    pencil.focus();
+  });
+  editor.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (send.disabled || !input.value.trim()) return;
+    send.disabled = cancel.disabled = input.disabled = true;
+    try {
+      await rpc('session.rewind.send', { ...receipt, text: input.value });
+      if (message.isConnected) resubscribe();
+    } catch {
+      if (message.isConnected) {
+        CLATI18n.bind(error, 'textContent', () => CLATI18n.msg('web.rewind_failed'));
+        send.disabled = cancel.disabled = input.disabled = false;
+        input.focus();
+      } else if (state.sessionId === receipt.id) {
+        dom.prompt.value += (dom.prompt.value ? '\n\n' : '') + input.value;
+        dom.prompt.dispatchEvent(new Event('input'));
+      }
+    }
+  });
+  input.focus();
 }
 
 function addAssistantMessage() {
@@ -1692,7 +1772,7 @@ function addAssistantMessage() {
       if (bodyRendered) return;
       renderMarkdown(body, bodyChunks.join(''));
       bodyRendered = true;
-      addReplyActions(msg, () => bodyChunks.join(''));
+      addMessageCopyAction(msg, () => bodyChunks.join(''), true);
     },
     appendReasoning(text) {
       show(reasoning);

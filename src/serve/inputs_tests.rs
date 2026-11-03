@@ -444,3 +444,53 @@ fn pending_input_esc_cancels_handoff_without_starting_an_overlapping_worker() {
     assert_eq!(pending(handle.addr)["paused"], true);
     cleanup(handle, &storage, &root);
 }
+
+#[test]
+fn rewind_send_replaces_the_stopped_turn_and_rejects_a_stale_editor() {
+    let (handle, storage, root) = spawn_serve("rewind-send", TestBehavior::Cancel);
+    let addr = handle.addr;
+    let mut events = SseClient::connect(addr);
+    submit(addr, "old-input", "original rewind text");
+    events.wait_for("event", WAIT);
+    input_rpc(addr, "run.cancel", json!({}));
+    events.wait_settled();
+    let session = input_rpc(addr, "session.info", json!({}));
+    let history = input_rpc(addr, "session.history", json!({}));
+    let seq = history["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["text"] == "original rewind text")
+        .unwrap()["seq"]
+        .clone();
+    let target = json!({"id":session["session_id"],"seq":seq});
+    let check = input_rpc(addr, "session.rewind.check", target.clone());
+    assert_eq!(check["eligible"], true);
+    let mut edit = target;
+    edit["revision"] = check["revision"].clone();
+    edit["expected_selection_generation"] = check["generation"].clone();
+    edit["text"] = json!("replacement rewind text");
+    input_rpc(addr, "session.rewind.send", edit.clone());
+    let (_, stale) = post_rpc_json(addr, TEST_TOKEN, "session.rewind.send", &edit.to_string());
+    assert_eq!(stale["ok"], false);
+    let history = input_rpc(addr, "session.history", json!({}));
+    let messages = history["events"].as_array().unwrap();
+    assert!(
+        !messages
+            .iter()
+            .any(|event| event["text"] == "original rewind text")
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|event| event["text"] == "replacement rewind text")
+            .count(),
+        1
+    );
+    assert_eq!(
+        input_rpc(addr, "session.info", json!({}))["session_id"],
+        session["session_id"]
+    );
+    input_rpc(addr, "run.cancel", json!({}));
+    cleanup(handle, &storage, &root);
+}

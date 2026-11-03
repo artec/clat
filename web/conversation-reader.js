@@ -52,7 +52,7 @@ function createConversationReader(parent, reference, {trusted = false, editable 
       }catch(error){status.textContent=error.message;}
     });
     bookmark.dataset.action='bookmark';bookmark.setAttribute('aria-pressed','false');bookmark.classList.add('message-action-icon');
-    actions.append(copyTextButton(pageText('copy'),()=>message.text,true),bookmark);
+    actions.append(copyTextButton(()=>pageText('copy'),()=>message.text,true),bookmark);
     if(message.reference.project!==state.workbench?.project?.root){actions.lastChild.remove();actions.append(el('small','settings-note',()=>pageText('other_project')));}
     for(const attachment of message.attachments || []) actions.append(pageAction('view_attachment',()=>showHistoricalAttachment(message.reference,attachment,trusted)));
     node.append(actions); messageTime(node,message.time);

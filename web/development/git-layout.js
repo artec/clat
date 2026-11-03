@@ -16,11 +16,23 @@ function createGitLayout(node){
 }
 function gitLayoutPreference(node,changes,split,repositories,graph){
   const key='clat.git.layout';let saved={ratio:60,repositories:false,graph:true};try{Object.assign(saved,JSON.parse(localStorage.getItem(key)||'{}'));}catch(_){}
-  const ratio=value=>{saved.ratio=Math.max(25,Math.min(80,Number(value)||60));node.style.setProperty('--git-list-ratio',saved.ratio+'%');split.setAttribute('aria-valuenow',String(Math.round(saved.ratio)));};
+  const bottom=node.querySelector('.git-bottom'),sidebar=changes.parentElement;
+  const available=()=>Math.max(0,sidebar.getBoundingClientRect().bottom-changes.getBoundingClientRect().top);
+  function fit(){
+    if(!graph.open)return;
+    const total=available();if(!total)return;
+    const minimum=graph.querySelector('summary').getBoundingClientRect().height;
+    const maximum=Math.max(minimum,total-repositories.getBoundingClientRect().height-split.getBoundingClientRect().height-64);
+    graph.style.height=Math.max(minimum,Math.min(maximum,total*(1-saved.ratio/100)))+'px';
+  }
+  const ratio=value=>{saved.ratio=Math.max(25,Math.min(80,Number(value)||60));split.setAttribute('aria-valuenow',String(Math.round(saved.ratio)));fit();};
   const store=()=>{try{localStorage.setItem(key,JSON.stringify(saved));}catch(_){}};ratio(saved.ratio);repositories.open=saved.repositories;graph.open=saved.graph;
-  const sync=()=>{const collapsed=!repositories.open&&!graph.open;node.dataset.gitCollapsed=String(collapsed);split.hidden=collapsed;saved.repositories=repositories.open;saved.graph=graph.open;store();};
+  const sync=()=>{node.dataset.gitGraphOpen=String(graph.open);split.hidden=!graph.open;if(!graph.open)graph.style.removeProperty('height');saved.repositories=repositories.open;saved.graph=graph.open;fit();store();};
   repositories.ontoggle=sync;graph.ontoggle=sync;sync();
-  split.onpointerdown=event=>{split.setPointerCapture(event.pointerId);const rect=changes.getBoundingClientRect(),total=rect.height+node.querySelector('.git-bottom').clientHeight;split.onpointermove=e=>ratio((e.clientY-rect.top)/total*100);};
+  // Repository rows keep their natural height; only the graph participates in resizing.
+  const observer=new ResizeObserver(fit);observer.observe(sidebar);observer.observe(repositories);observer.observe(graph.querySelector('summary'));
+  for(const child of sidebar.children){if(child===changes)break;observer.observe(child);}
+  split.onpointerdown=event=>{if(!graph.open)return;split.setPointerCapture(event.pointerId);const total=available(),edge=bottom.getBoundingClientRect().bottom,reposHeight=repositories.getBoundingClientRect().height,divider=split.getBoundingClientRect().height;if(!total)return;split.onpointermove=e=>ratio((1-(edge-e.clientY-reposHeight-divider)/total)*100);};
   split.onpointerup=()=>{split.onpointermove=null;store();};split.onpointercancel=()=>{split.onpointermove=null;store();};
   split.onkeydown=event=>{if(['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();ratio(saved.ratio+(event.key==='ArrowUp'?-5:5));store();}};
 }

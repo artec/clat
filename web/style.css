@@ -784,3 +784,9 @@ details.notice-line > summary { cursor: pointer; }
   .builtin-config-list td:first-child,.builtin-config-list td:last-child{grid-column:1/-1;}
   .builtin-config-list td:first-child{font-weight:600;}
 }
+
+
+.message-rewind-pencil[hidden], .msg.user .body[hidden] { display: none; }
+.message-rewind-pencil { visibility: hidden; }
+.msg.user:hover .message-rewind-pencil, .msg.user:focus-within .message-rewind-pencil { visibility: visible; }
+.message-rewind-editor textarea { display: block; width: 100%; min-height: 6em; resize: vertical; }

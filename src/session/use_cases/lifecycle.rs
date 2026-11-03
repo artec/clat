@@ -210,8 +210,12 @@ impl SessionService {
     /// prepare, repair, projection catch-up, and view construction all
     /// completed in [`Self::arm_session`].
     pub(crate) fn install_armed(&self, armed: ArmedSession) -> SessionView {
+        self.install_armed_with_seed(armed, true)
+    }
+
+    pub(super) fn install_armed_with_seed(&self, armed: ArmedSession, seed: bool) -> SessionView {
         let ArmedSession { active, view } = armed;
-        let seeded = active.coordinator.enqueue_seed_marker_if_needed();
+        let seeded = seed && active.coordinator.enqueue_seed_marker_if_needed();
         // The seed marker must be durable before `Application::open`
         // returns: active replay caches avoid a second disk stream, but later
         // cold-resume readers still observe the journal directly——marker 还在 200ms
