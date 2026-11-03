@@ -49,7 +49,11 @@ function createConversationRounds(){
   function header(value){
     const node=el('button','round-process-heading');node.type='button';
     node.append(el('span','round-clock'),svgIcon('next'));
-    node.onclick=()=>{captureProjectReading();value.manual=node.getAttribute('aria-expanded')!=='true';choices.set(key(value),value.manual);paint(value);restoreProjectReading();};
+    node.onclick = () => preserveHistoryPosition(() => {
+      value.manual = node.getAttribute('aria-expanded') !== 'true';
+      choices.set(key(value), value.manual);
+      paint(value);
+    }, node);
     value.header=node;return node;
   }
   function paint(value){

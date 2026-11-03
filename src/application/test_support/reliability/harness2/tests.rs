@@ -147,7 +147,8 @@ fn harness2_fresh_cases_change_scope_order_and_evidence_sources() {
         tools::observation(&cases[2], 0, true)["quoted_untrusted_note"]
     );
     let frozen = corpus_identity();
-    assert_eq!(frozen["tasks"].as_object().unwrap().len(), 54);
+    // Trials 41/42 joined the frozen roster in 2.2.12 (54 → 66 tasks).
+    assert_eq!(frozen["tasks"].as_object().unwrap().len(), 66);
     assert_ne!(
         frozen["tasks"]["tools-candidate-21"],
         frozen["tasks"]["tools-candidate-22"]

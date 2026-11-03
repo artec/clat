@@ -82,11 +82,10 @@ function createHistoryNavigation(){
   sync();return {sync};
 }
 
-// Prepending history has one scroll owner: suppress native anchoring while
-// changing layout, then restore the visible row in the same paint transaction.
-function preserveHistoryPosition(update) {
+// Suppress native anchoring while changing transcript layout, then restore
+// the reading anchor before the browser paints.
+function preserveHistoryPosition(update, anchor = viewportAnchor()) {
   const viewport = dom['transcript-scroll'];
-  const anchor = viewportAnchor();
   const offset = anchor ? anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top : null;
   const behavior = viewport.style.scrollBehavior;
   const anchoring = viewport.style.overflowAnchor;

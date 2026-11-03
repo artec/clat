@@ -235,11 +235,14 @@ fn fidelity_evidence_coverage_uses_retained_context_without_approving_semantics(
     let missing = all.candidate("short checkpoint").unwrap();
     let missing_view = EvidenceView::new(&missing, "session-a", 9);
     let missing_id = fragment(&missing_view, 0, &texts[0], "FALCON-17");
+    // The shadowed user source's excerpt now travels inside the checkpoint
+    // (2.2.12 evidence frame), so the fact occurs there once. Coverage still
+    // attributes it to the checkpoint, never to retention.
     assert_eq!(
         coverage(&missing_view, &missing_id).unwrap(),
         Coverage {
             retained_nodes: vec![],
-            checkpoint_occurrences: 0
+            checkpoint_occurrences: 1
         }
     );
     let ambiguous = all
@@ -247,11 +250,14 @@ fn fidelity_evidence_coverage_uses_retained_context_without_approving_semantics(
         .unwrap();
     let ambiguous_view = EvidenceView::new(&ambiguous, "session-a", 9);
     let ambiguous_id = fragment(&ambiguous_view, 0, &texts[0], "FALCON-17");
+    // Once from the summary's own claim, once from the excerpted source
+    // (2.2.12 evidence frame); coverage still counts literals only and
+    // endorses neither occurrence.
     assert_eq!(
         coverage(&ambiguous_view, &ambiguous_id)
             .unwrap()
             .checkpoint_occurrences,
-        1,
+        2,
         "literal coverage is not semantic truth or authorization"
     );
 }

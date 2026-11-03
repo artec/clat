@@ -134,9 +134,10 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .empty-state { padding-top: clamp(38px, 12vh, 130px); }
 .empty-state h2 { font-family: var(--font-ui); font-size: clamp(26px, 3vw, 38px); letter-spacing: -.025em; }
 .msg { font-family: var(--font-ui); }
+:is(.msg .body, .reader-message .body, .user-reader-content) { --text-size-reading: 14.5px; }
 .msg .body { font-weight: 300; font-size: var(--text-size-reading); line-height: var(--text-leading); }
 .msg.assistant > .marker { align-self: start; height: 1.8em; margin-top: 6px; }
-.msg.assistant:has(> .reasoning:not(.hidden)) > .marker { height: 24px; margin-top: 2px; }
+.msg.assistant:not(.round-hide-reasoning):has(> .reasoning:not(.hidden)) > .marker { height: 24px; margin-top: 2px; }
 .msg.user .body { border: 0; border-radius: 16px; }
 .work-summary { border-color: var(--line); background: transparent; }
 .composer { width: min(calc(100% - 40px), var(--content-width)); margin-inline: auto; padding-inline: 0; inset-inline: 0; }

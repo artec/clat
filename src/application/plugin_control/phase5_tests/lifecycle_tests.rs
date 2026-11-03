@@ -319,11 +319,15 @@ fn phase5_compaction_and_git_models_run_independently_of_auxiliary_execution() {
             run(&mut app);
         }
         let before = capture.0.lock().unwrap().len();
-        app.compact_session()
-            .unwrap()
-            .join_report()
-            .unwrap()
-            .unwrap();
+        // The synthetic conversation is tiny, so the evidence-framed summary
+        // would not shrink the request; the compactor declines the replacement
+        // instead of publishing a no-op (2.2.12). The summary model is still
+        // dispatched, which is what the assertion below pins.
+        let report = app.compact_session().unwrap().join_report().unwrap();
+        match report {
+            Ok(_) => panic!("a tiny session summary must be declined, not applied"),
+            Err(reason) => assert_eq!(reason.raw, "summary would not reduce the selected context"),
+        }
         assert!(
             capture.0.lock().unwrap().len() > before,
             "compaction still dispatches its own model"
