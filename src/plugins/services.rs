@@ -625,6 +625,7 @@ pub(crate) trait MonitorService: Send + Sync {
 pub(crate) struct CompactionNode {
     pub seq: u64,
     pub item: ModelItem,
+    pub checkpoint: bool,
 }
 
 /// 一次压缩请求。`nodes` 是 surface 投影当前节点序列（post-replace，

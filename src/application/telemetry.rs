@@ -12,7 +12,11 @@ impl TrustedProjectApplication {
                 .map_err(|error| ApplicationError::new(error.to_string()))?;
             let nodes: Vec<_> = nodes
                 .into_iter()
-                .map(|(seq, item)| crate::plugins::services::CompactionNode { seq, item })
+                .map(|(seq, item)| crate::plugins::services::CompactionNode {
+                    seq,
+                    item,
+                    checkpoint: false,
+                })
                 .collect();
             self.compactor.is_some()
                 && config.is_configured()

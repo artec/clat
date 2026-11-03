@@ -42,8 +42,13 @@ impl SessionService {
         );
     }
 
-    pub(crate) fn compaction_nodes(&self) -> Result<Vec<(u64, ModelItem)>, SessionError> {
-        self.surface_nodes()
+    pub(crate) fn compaction_nodes(&self) -> Result<Vec<(u64, ModelItem, bool)>, SessionError> {
+        let checkpoints = self.compaction_checkpoints();
+        Ok(self
+            .surface_nodes()?
+            .into_iter()
+            .map(|(seq, item)| (seq, item, checkpoints.contains_key(&seq)))
+            .collect())
     }
     /// Positions, rather than seq ordering: system replacements can be newer than adjacent history.
     pub(crate) fn compaction_boundaries(&self) -> Result<Vec<usize>, SessionError> {

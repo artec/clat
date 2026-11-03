@@ -160,9 +160,7 @@ fn verify_case(root: &Path, case: &corpus::Case) -> Value {
     json!({"id":case.id(),"passed":passed&&maintenance_valid&&captured_guard.iter().all(|r|r["valid"]==true)&&call_turns_valid,"original_status":original["status"],"pre":pre,"active":active,"manual":manual,"summaries":summaries.len(),"maintenance":maintenance,"captured_guard":captured_guard,"call_turns_valid":call_turns_valid,"offloads":offloads,"checks":checks,"artifact":artifact,"steering":steering,"cancelled":cancelled,"replay":replay,"image_check":images,"reads":reads,"publications":reports.len()})
 }
 pub(super) fn checkpoint_body(text: &str) -> Option<&str> {
-    let (_, body) = text.split_once("<compacted-summary>\n")?;
-    let body = body.strip_suffix("\n</compacted-summary>")?;
-    (crate::plugins::frame_checkpoint(body) == text).then_some(body)
+    crate::plugins::checkpoint_body(text)
 }
 fn captured_summary_guard(out: &Path) -> Vec<Value> {
     std::fs::read_dir(out).unwrap().map(|f|f.unwrap().path()).filter(|p|p.file_name().unwrap().to_string_lossy().ends_with("-start.json")).filter_map(|p|{

@@ -27,14 +27,17 @@ fn result(id: &str) -> ModelItem {
 }
 fn group(seq: u64, ids: &[&str]) -> Vec<CompactionNode> {
     let mut nodes = vec![CompactionNode {
+        checkpoint: false,
         seq,
         item: ModelItem::assistant_text("observed work"),
     }];
     nodes.extend(ids.iter().map(|id| CompactionNode {
+        checkpoint: false,
         seq,
         item: call(id),
     }));
     nodes.extend(ids.iter().enumerate().map(|(index, id)| CompactionNode {
+        checkpoint: false,
         seq: seq + 1 + index as u64,
         item: result(id),
     }));
@@ -42,6 +45,7 @@ fn group(seq: u64, ids: &[&str]) -> Vec<CompactionNode> {
 }
 fn node(seq: u64, text: &str) -> CompactionNode {
     CompactionNode {
+        checkpoint: false,
         seq,
         item: ModelItem::user_text(text),
     }

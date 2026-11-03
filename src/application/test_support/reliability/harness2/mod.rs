@@ -125,7 +125,7 @@ fn corpus_identity() -> Value {
     use sha2::{Digest, Sha256};
     let mut tasks = BTreeMap::new();
     for family in ["requirements", "tools", "images"] {
-        for trial in [0, 1, 2, 20, 21, 22, 30, 31, 32] {
+        for trial in [0, 1, 2, 20, 21, 22, 30, 31, 32, 41, 42] {
             for control in [false, true] {
                 let case = corpus::Case {
                     family: family.into(),

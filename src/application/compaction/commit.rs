@@ -123,7 +123,11 @@ impl IdleCompaction<'_> {
             .map(|nodes| {
                 nodes
                     .into_iter()
-                    .map(|(seq, item)| CompactionNode { seq, item })
+                    .map(|(seq, item, checkpoint)| CompactionNode {
+                        seq,
+                        item,
+                        checkpoint,
+                    })
                     .collect()
             })
             .map_err(|error| error.to_string())

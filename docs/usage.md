@@ -776,8 +776,13 @@ split into bounded, lossless text chunks rather than taking just the first
 2,000 characters of each item. The checkpoint uses eight sections: Primary Request and Intent, Key Technical
 Concepts, Files and Code, Errors and Fixes, Pending Jobs, Current Work, Next Step,
 and Critical Context. Its body follows the conversation language and preserves
-exact paths, commands, errors, important quotations and completion evidence. Summarization remains
-lossy; original observations are available in the journal. Images in summarized
+exact paths, commands, errors, important quotations and completion evidence.
+A checkpoint also carries source excerpts separately from the generated summary.
+CLAT copies short user text, bounded head and tail excerpts of longer user text,
+and small scalar fields from parseable structured tool results with their call
+identity. Later checkpoints carry these excerpts forward. They count toward
+context size, so CLAT declines a replacement that would fail to shrink the
+request. Summarization remains lossy and the journal keeps the full originals. Images in summarized
 exchanges remain actual image parts when sent to a compatible summary model;
 already offloaded images retain their durable notices.
 

@@ -31,6 +31,7 @@ fn replay() -> Vec<CompactionNode> {
     .into_iter()
     .enumerate()
     .map(|(index, item)| CompactionNode {
+        checkpoint: false,
         seq: if index < 3 { 1 } else { index as u64 },
         item,
     })
@@ -109,6 +110,7 @@ fn active_compaction_rejects_shadowing_user_steering_even_with_matching_calls() 
 fn active_compaction_requires_the_exact_owned_checkpoint_before_recompacting_it() {
     let checkpoints = BTreeMap::from([(20, "owned summary".into())]);
     let mut nodes = vec![CompactionNode {
+        checkpoint: false,
         seq: 20,
         item: ModelItem::user_text("owned summary"),
     }];

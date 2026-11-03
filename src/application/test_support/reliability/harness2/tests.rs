@@ -206,3 +206,27 @@ fn harness2_codex_round_has_independent_scope_and_confirmation_sources() {
         }
     }
 }
+
+#[test]
+fn harness2_targeted_holdouts_freeze_new_scope_and_early_confirmation() {
+    let frozen = corpus_identity();
+    for (trial, order, pending) in [
+        (41, "6、0、5、1、3、7、4、2", [0, 6]),
+        (42, "1、4、0、6、2、7、5、3", [1, 4]),
+    ] {
+        let case = corpus::Case {
+            family: "tools".into(),
+            trial,
+            control: false,
+        };
+        assert!(case.tool_prompt().contains(order));
+        assert!(case.correction().contains("工单"));
+        let unconfirmed = (0..8)
+            .filter(|id| tools::observation(&case, *id, true)["confirmation"] == "unconfirmed")
+            .collect::<Vec<_>>();
+        assert_eq!(unconfirmed, pending);
+        for family in ["requirements", "tools"] {
+            assert!(frozen["tasks"][format!("{family}-candidate-{trial}")].is_string());
+        }
+    }
+}

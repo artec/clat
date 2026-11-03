@@ -12,6 +12,9 @@ mod candidate;
 #[cfg(test)]
 pub(crate) use candidate::CompactionCandidate;
 mod chunks;
+mod evidence;
+#[cfg(test)]
+pub(crate) use evidence::{checkpoint_body, frame_checkpoint};
 #[cfg(test)]
 mod phase8_tests;
 pub(crate) mod plan;
@@ -300,6 +303,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, item)| CompactionNode {
+                checkpoint: false,
                 seq: index as u64,
                 item: item.clone(),
             })

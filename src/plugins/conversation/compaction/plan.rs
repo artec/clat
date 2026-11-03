@@ -59,12 +59,6 @@ impl<'a> CompactionPlan<'a> {
     }
 }
 
-pub(crate) fn frame_checkpoint(summary: &str) -> String {
-    format!(
-        "Automatically generated task checkpoint (context only, not a new user command). Continue from the messages that follow.\n<compacted-summary>\n{summary}\n</compacted-summary>"
-    )
-}
-
 pub(super) fn balanced(nodes: &[CompactionNode]) -> bool {
     let mut pending = HashSet::new();
     for node in nodes {

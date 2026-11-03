@@ -70,6 +70,7 @@ fn phase8_summary_directive_requires_all_eight_checkpoint_sections() {
 fn phase8_replaced_system_head_sequence_is_not_a_chronological_cutoff() {
     let nodes = (0..4)
         .map(|seq| CompactionNode {
+            checkpoint: false,
             seq,
             item: ModelItem::user_text(format!("evidence {seq}")),
         })
@@ -83,6 +84,7 @@ fn phase8_replaced_system_head_sequence_is_not_a_chronological_cutoff() {
 #[test]
 fn phase8_checkpoint_shrink_includes_the_complete_frame() {
     let nodes = vec![CompactionNode {
+        checkpoint: false,
         seq: 1,
         item: ModelItem::user_text("source ".repeat(10)),
     }];
@@ -92,6 +94,7 @@ fn phase8_checkpoint_shrink_includes_the_complete_frame() {
         "the framing alone must not grow the selected span"
     );
     let nodes = vec![CompactionNode {
+        checkpoint: false,
         seq: 1,
         item: ModelItem::user_text("source ".repeat(1000)),
     }];

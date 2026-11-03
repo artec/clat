@@ -33,7 +33,11 @@ fn live_glm_checkpoint_retains_global_facts() {
             .unwrap()
             .into_iter()
             .filter(|(seq, _)| ids.contains(seq))
-            .map(|(seq, item)| crate::plugins::services::CompactionNode { seq, item })
+            .map(|(seq, item)| crate::plugins::services::CompactionNode {
+                seq,
+                item,
+                checkpoint: crate::session::catalog::is_context_checkpoint(&events[seq as usize]),
+            })
             .collect::<Vec<_>>();
     assert!(!nodes.iter().any(|n| {
         crate::model::model_item_image_parts(&n.item)
@@ -41,6 +45,7 @@ fn live_glm_checkpoint_retains_global_facts() {
             .is_some()
     }));
     nodes.push(crate::plugins::services::CompactionNode {
+        checkpoint: false,
         seq: events[index].seq + 1,
         item: crate::ModelItem::user_text("preserved tail outside the frozen selection"),
     });

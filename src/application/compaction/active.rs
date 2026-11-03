@@ -164,7 +164,11 @@ impl ActiveContext {
                 .compaction_nodes()
                 .map_err(|error| error.to_string())?
                 .into_iter()
-                .map(|(seq, item)| CompactionNode { seq, item })
+                .map(|(seq, item, checkpoint)| CompactionNode {
+                    seq,
+                    item,
+                    checkpoint,
+                })
                 .collect::<Vec<_>>();
             let revision = self.journal.committed_seq();
             let checkpoints = self.checkpoints.keys().copied().collect::<Vec<_>>();
@@ -225,7 +229,11 @@ impl ActiveContext {
             .compaction_nodes()
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|(seq, item)| CompactionNode { seq, item })
+            .map(|(seq, item, checkpoint)| CompactionNode {
+                seq,
+                item,
+                checkpoint,
+            })
             .collect::<Vec<_>>();
         if current != nodes || self.cancel.is_cancelled() {
             return Err("session changed during context maintenance".into());

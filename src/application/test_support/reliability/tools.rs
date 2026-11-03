@@ -73,6 +73,8 @@ pub(super) fn observation(case: &corpus::Case, id: u64, ledger: bool) -> Value {
         let unconfirmed = match case.trial {
             31 => matches!(id, 1 | 7),
             32 => matches!(id, 0 | 5),
+            41 => matches!(id, 0 | 6),
+            42 => matches!(id, 1 | 4),
             _ => matches!(id, 3 | 6),
         };
         result["confirmation"] = json!(if unconfirmed {

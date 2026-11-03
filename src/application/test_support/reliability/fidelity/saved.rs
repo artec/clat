@@ -180,7 +180,11 @@ pub(super) fn replacement(case: &str, request: usize) -> StoredReplacement {
     );
     let nodes = before
         .into_iter()
-        .map(|(seq, item)| crate::plugins::services::CompactionNode { seq, item })
+        .map(|(seq, item)| crate::plugins::services::CompactionNode {
+            seq,
+            item,
+            checkpoint: crate::session::catalog::is_context_checkpoint(&events[seq as usize]),
+        })
         .collect::<Vec<_>>();
     let start = nodes
         .iter()
@@ -212,15 +216,21 @@ fn fidelity_omission_probe_accounts_for_unchanged_retained_context() {
     assert!(!stored.summary.contains("ORION-702"));
     let plan = crate::plugins::CompactionPlan::new(&stored.nodes, stored.range.clone()).unwrap();
     let candidate = plan.candidate(&stored.summary).unwrap();
+    let mut replacement = candidate.replacement_items();
+    // The frozen journal predates source excerpts. Compare its retained nodes
+    // with the new replacement, using the original frame for the old carrier.
     assert_eq!(
-        candidate.replacement_items(),
-        stored
-            .after
-            .iter()
-            .map(|(_, item)| item.clone())
-            .collect::<Vec<_>>(),
-        "the shared replacement contract must match the real durable fold"
+        crate::plugins::checkpoint_body(candidate.checkpoint()),
+        Some(stored.summary.as_str())
     );
+    replacement[stored.range.start] =
+        crate::ModelItem::user_text(crate::plugins::frame_checkpoint(&stored.summary));
+    let old_view = stored
+        .after
+        .iter()
+        .map(|(_, item)| item.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(replacement, old_view);
     let retained = stored
         .nodes
         .iter()

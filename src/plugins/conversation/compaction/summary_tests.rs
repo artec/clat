@@ -257,6 +257,7 @@ fn compact_with_capacity(
         .into_iter()
         .enumerate()
         .map(|(seq, item)| CompactionNode {
+            checkpoint: false,
             seq: seq as u64,
             item,
         })

@@ -197,6 +197,7 @@ mod tests {
     fn phase8_selection_never_crosses_omitted_system_boundaries() {
         let nodes = (0..5)
             .map(|seq| CompactionNode {
+                checkpoint: false,
                 seq,
                 item: ModelItem::user_text("historical evidence ".repeat(100)),
             })

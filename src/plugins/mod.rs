@@ -106,7 +106,7 @@ pub(crate) use conversation::compaction::plan::CompactionPlan;
 #[cfg(test)]
 pub(crate) use conversation::compaction::valid_checkpoint_structure;
 #[cfg(test)]
-pub(crate) use conversation::compaction::{CompactionCandidate, plan::frame_checkpoint};
+pub(crate) use conversation::compaction::{CompactionCandidate, checkpoint_body, frame_checkpoint};
 
 #[cfg(all(test, feature = "runtime-tests"))]
 pub(crate) use conversation::compaction::{harness2_compactor, harness2_default_guidance};

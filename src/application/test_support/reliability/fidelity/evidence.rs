@@ -158,6 +158,7 @@ fn nodes(texts: &[String]) -> Vec<crate::plugins::services::CompactionNode> {
         .iter()
         .enumerate()
         .map(|(index, text)| crate::plugins::services::CompactionNode {
+            checkpoint: false,
             seq: index as u64,
             item: ModelItem::user_text(text),
         })
