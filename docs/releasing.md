@@ -188,8 +188,9 @@ The script:
 5. signs/notarizes desktop assets locally, creates the signed updater index,
    then signs the shared payload with the CLI key and embeds both index signatures;
 6. verifies both trust roots, version bindings and all four index destinations;
-7. uploads only the expected files, downloads them again to compare with the
-   verified local copies, and publishes only after all checks succeed.
+7. uploads only the verified local files. After a successful upload, it checks
+   the draft asset names via GitHub metadata and publishes the draft. Uploaded
+   assets are not downloaded again.
 
 An interrupted upload/publication can be retried with the same `./publish`.
 Verified local files under `dist-release/<tag>/prepared/` are reused, avoiding

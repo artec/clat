@@ -16,7 +16,8 @@ test('download progress never fabricates a percentage for unknown totals',()=>{
  const {api}=runtime(),info={...available(),updateBusy:true,updatePhase:'downloading',updateReceived:25};
  assert.equal(api.project({info}).ratio,null);assert.equal(api.project({info}).action,null);
  assert.equal(api.project({info:{...info,updateTotal:100}}).ratio,.25);
- assert.equal(api.project({info:{...info,updateTotal:20}}).ratio,1);
+ const allBytes=api.project({info:{...info,updateTotal:20}});
+ assert.equal(allBytes.ratio,1);assert.equal(allBytes.action,null,'receiving all bytes does not verify the package');
 });
 test('native failures preserve retry target while cancellation is not a failure',()=>{
  const {api}=runtime();

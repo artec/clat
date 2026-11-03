@@ -1313,7 +1313,7 @@
   "tui.preset_description_hy3": "透過 Hy Token Plan 使用騰訊 Hy3 輔助模型",
   "tui.preset_description_hy4-preview": "騰訊混元預覽模型（持續啟用思考）",
   "tui.preset_description_kimi-for-coding": "適合日常程式設計工作的高效 Kimi Code 輔助模型",
-  "tui.preset_description_kimi-k3": "透過 Kimi Coding 會員使用 Moonshot 旗艦模型（自動上下文快取）",
+  "tui.preset_description_k3.1-pro": "透過 Kimi Coding 會員使用 Moonshot 旗艦模型（自動上下文快取）",
   "tui.preset_description_qwen3.8-flash": "透過 Qwen Token Plan 使用阿里快速模型（可讀取圖片）",
   "tui.preset_description_qwen3.8-max": "透過 Qwen Token Plan 使用阿里旗艦模型（隱式上下文快取，可讀取圖片）",
   "tui.preset_key_hint": "{name} · 金鑰僅可寫入 · 儲存後啟用預設 · 留空只清除目前金鑰",

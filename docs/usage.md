@@ -908,7 +908,7 @@ stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
 hardcoded per preset, never probed at runtime: six presets across four
 vendors open image input — officially-declared for `deepseek-flash`,
-`qwen3.8-max`, `qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding`, probe-verified for
+`qwen3.8-max`, `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, probe-verified for
 `glm-5.3-flash` — and, for custom configurations, it is unlocked only by a
 passing `/vision-probe`.
 When switching to a text-only route, the enabled offload policy can durably omit
@@ -2486,7 +2486,7 @@ user/assistant messages, 1000 characters per message and 6000 characters total,
 without tools. An unreadable or damaged scheduling file pauses automatic naming,
 but does not disable manual suggestions.
 Built-in DeepSeek, GLM, Qwen, Kimi, and Hy routes use the table-declared
-companion for naming (for example, `kimi-k3` uses `kimi-for-coding` and
+companion for naming (for example, `k3.1-pro` uses `kimi-for-coding` and
 `hy4-preview` uses `hy3`); other models and customized routes use the primary
 model. Companion requests
 keep the same endpoint and credentials, use the companion's model settings,

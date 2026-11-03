@@ -287,7 +287,7 @@ mod tests {
             ("deepseek-v4-pro", "deepseek-flash"),
             ("glm-5.3", "glm-5.3-flash"),
             ("qwen3.8-max", "qwen3.8-flash"),
-            ("kimi-k3", "kimi-for-coding"),
+            ("k3.1-pro", "kimi-for-coding"),
             ("hy4-preview", "hy3"),
         ] {
             let mut config = ModelConfig::default();

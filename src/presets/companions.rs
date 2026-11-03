@@ -7,7 +7,8 @@ use super::{KIMI_WHITELIST_UA, ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS,
 
 /// Kimi Code `kimi-for-coding`（K2.8 Preview，2026-09-11 已全量上线）：
 /// 官方模型表确认同一 Coding 端点、1M 上下文与 low/high/max 档位；
-/// 作为 K3 的 utility 轻档，使用同一能力矩阵与凭据槽。
+/// 作为旗舰（2026-11-03 起 `k3.1-pro`）的 utility 轻档，使用同一能力
+/// 矩阵与凭据槽。负责人裁定：高速版与海外端点不接。
 pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
     id: "kimi-for-coding",
     utility_model: None,

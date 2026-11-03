@@ -31,7 +31,7 @@ The shipped catalog is the source used by both the picker and runtime:
 | GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen3.8 Max | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Qwen3.8 Flash | `qwen3.8-flash` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
-| Kimi K3 | `kimi-k3` | `https://api.kimi.com/coding/v1` | 1M | 128K |
+| Kimi K3.1 Pro | `k3.1-pro` | `https://api.kimi.com/coding/v1` | 1M | 128K |
 | Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 1M | 128K |
 | Hy 4 Preview | `hy4-preview` | `https://api.lkeap.cloud.tencent.com/plan/v3` | 1M | 64K |
 | Hy 3 | `hy3` | `https://api.lkeap.cloud.tencent.com/plan/v3` | 256K | 128K |
@@ -46,7 +46,7 @@ before overriding those fields.
 
 GLM 5.3 Flash is currently the only built-in preset with probe-verified native
 image input; the officially-declared vision presets — `deepseek-flash`,
-`qwen3.8-max`, `qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding` — and
+`qwen3.8-max`, `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding` — and
 GLM 5.3 Flash all enable
 the image attachments described in
 [Using CLAT](usage.md#image-attachments). All other presets remain text-only
@@ -59,7 +59,7 @@ configurations referencing the old ids simply stop resolving to a preset.
 Most presets also declare a companion utility model used only for automatic
 session naming, manual prompt suggestions and automatic Web/Desktop next steps: `deepseek-v4-pro` uses
 `deepseek-flash`, `glm-5.3` uses `glm-5.3-flash`, `qwen3.8-max` uses
-`qwen3.8-flash`, `kimi-k3` uses `kimi-for-coding`, and `hy4-preview` uses
+`qwen3.8-flash`, `k3.1-pro` uses `kimi-for-coding`, and `hy4-preview` uses
 `hy3`; every other preset uses the primary model itself. See
 [Using CLAT](usage.md#companion-utility-and-manual-suggestions) for the
 budget and preview semantics.

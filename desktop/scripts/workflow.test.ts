@@ -101,16 +101,15 @@ test('upload never publishes', async () => {
   await fixture(async (_release, owner) => {
     await withoutLock(owner); const events: string[] = [];
     spyOn(owner, 'draft').mockImplementation(() => remote(owner)); spyOn(owner, 'verify').mockImplementation(async () => { events.push('verified'); });
-    spyOn(owner, 'compareRemote').mockImplementation(async () => { events.push('remote-verified'); });
     spyOn(owner, 'gh').mockImplementation((...args) => { expect(args.slice(0, 2)).toEqual(['release', 'upload']); events.push('upload'); return ''; });
-    await owner.upload(); expect(events).toEqual(['verified', 'upload', 'remote-verified']);
+    await owner.upload(); expect(events).toEqual(['verified', 'upload']);
   });
 });
 test('publication requires local and remote verification', async () => {
   await fixture(async (_release, owner) => {
     await withoutLock(owner); const events: string[] = [];
     spyOn(owner, 'draft').mockImplementation(() => remote(owner)); spyOn(owner, 'verify').mockImplementation(async () => { events.push('local'); });
-    spyOn(owner, 'compareRemote').mockImplementation(async () => { events.push('remote'); });
+    spyOn(owner, 'verifyRemoteInventory').mockImplementation(() => { events.push('remote'); });
     spyOn(owner, 'gh').mockImplementation((...args) => { expect(args).toContain('--draft=false'); events.push('publish'); return ''; });
     await owner.publish(); expect(events).toEqual(['local', 'remote', 'publish']);
   });
@@ -120,7 +119,7 @@ test('failed verification blocks upload and publication', async () => {
     await withoutLock(owner); spyOn(owner, 'draft').mockImplementation(() => remote(owner));
     const gh = spyOn(owner, 'gh'); const verify = spyOn(owner, 'verify').mockRejectedValue(new Error('bad signature'));
     await expect(owner.upload()).rejects.toThrow('bad signature'); await expect(owner.publish()).rejects.toThrow('bad signature'); expect(gh).not.toHaveBeenCalled();
-    verify.mockResolvedValue(undefined); spyOn(owner, 'compareRemote').mockRejectedValue(new Error('remote changed'));
+    verify.mockResolvedValue(undefined); spyOn(owner, 'verifyRemoteInventory').mockImplementation(() => { throw new Error('remote changed'); });
     await expect(owner.publish()).rejects.toThrow('remote changed'); expect(gh).not.toHaveBeenCalled();
   });
 });
@@ -145,11 +144,18 @@ test.skipIf(process.platform !== 'darwin')('invalid source fails before asking p
     const signing = spyOn(release, 'finalize'); await expect(owner.prepare()).rejects.toThrow('source mismatch'); expect(signing).not.toHaveBeenCalled();
   });
 });
-test('changed remote bytes block publication', async () => {
-  await fixture(async (release, owner) => {
-    mkdirSync(join(owner.directory(), 'prepared'), { recursive: true }); writeFileSync(join(owner.directory(), 'prepared/asset'), 'signed-local');
-    spyOn(owner, 'files').mockReturnValue(['asset']); spyOn(owner, 'gh').mockImplementation((...args) => { writeFileSync(join(args[args.indexOf('--dir') + 1]!, 'asset'), 'replaced-remote'); return ''; });
-    await expect(owner.compareRemote({ tagName: 'v2.0.0', isDraft: true, assets: [{ name: 'asset' }] })).rejects.toThrow('不一致'); expect(release.version()).toBe('2.0.0');
+test('prepared publication uploads once and publishes without downloading assets', async () => {
+  await fixture(async (_release, owner) => {
+    await withoutLock(owner);
+    mkdirSync(join(owner.directory(), 'prepared'), { recursive: true });
+    spyOn(owner, 'authenticate').mockImplementation(() => {});
+    spyOn(owner, 'draft').mockImplementation(() => remote(owner));
+    spyOn(owner, 'verify').mockResolvedValue(undefined);
+    const gh = spyOn(owner, 'gh').mockReturnValue('');
+    await owner.complete();
+    expect(gh.mock.calls.map(args => args.slice(0, 2))).toEqual([
+      ['release', 'upload'], ['release', 'edit'],
+    ]);
   });
 });
 test.skipIf(!Bun.which('minisign'))('complete signed inventory and validly signed wrong index reject tampering', async () => {

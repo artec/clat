@@ -354,10 +354,12 @@ same hover behavior and shows current/latest versions, package size when known,
 and download progress, with the existing download/install/cancel actions.
 
 In the workbench, an update shortcut appears immediately above Settings in the
-navigation rail when a new version is available. Click it to download; its ring
-shows progress (indeterminate when the total size is unknown), with version,
-percentage and download size in the tooltip. After verification, click again to
-install and restart. Download completion never starts installation automatically.
+navigation rail when a new version is available. Click the download icon to
+start. While downloading, it becomes the same compact ring used for allowances
+and shows a number from 0 to 99 when the total size is known. With an unknown
+total, the ring spins without a number. The hover card shows version and transfer
+details. Once verification succeeds, a package icon with a checkmark appears.
+Click it to install and restart. Download completion never starts installation automatically.
 Click a busy or failed shortcut to view status, cancel a download or installation
 wait, or retry. Draft protection failures open this status panel immediately.
 Navigation and About share one update operation across project switches; installation

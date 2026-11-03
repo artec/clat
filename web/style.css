@@ -640,7 +640,7 @@ button:disabled { cursor: default; opacity: .45; }
 @media (max-width: 540px) { .model-form-grid { grid-template-columns: 1fr; } }
 .text-action { padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface); font: var(--text-size-secondary)/1.4 var(--font-mono); cursor: pointer; }
 .text-action:hover, .text-action:focus-visible { color: var(--text); border-color: var(--line-strong); }
-.message-actions { grid-column: 2; display: flex; gap: 8px; padding-top: 7px; }
+.message-actions { grid-column: 2; display: flex; padding-top: 7px; }
 .rich-text pre .text-action { display: block; margin-top: 10px; white-space: normal; }
 .selection-quote { position: fixed; z-index: 80; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--text); background: var(--surface-raised); box-shadow: 0 8px 28px rgb(0 0 0 / 18%); cursor: pointer; }
 @media (max-width: 760px) { .message-actions { grid-column: 1; } }

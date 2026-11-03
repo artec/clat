@@ -43,7 +43,7 @@ test.skipIf(!Bun.which('minisign'))('real finalizer publishes only compact asset
 test('remote extra legacy signature blocks publication', async () => {
   await fixture(async (_release, owner) => {
     const gh = spyOn(owner, 'gh');
-    await expect(owner.compareRemote({ ...remote(owner), assets: [...remote(owner).assets, { name: 'obsolete.minisig' }] })).rejects.toThrow('完整发布资产');
+    expect(() => owner.verifyRemoteInventory({ ...remote(owner), assets: [...remote(owner).assets, { name: 'obsolete.minisig' }] })).toThrow('完整发布资产');
     expect(gh).not.toHaveBeenCalled();
   });
 });

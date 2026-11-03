@@ -449,7 +449,9 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     // VP-2B：Qwen Token Plan 两模型（max + flash）连续排布。
     assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-flash"));
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("kimi-k3"));
+    // 2026-11-03：Kimi 旗舰由 kimi-k3 原地升级为 K3.1 Pro（wire id
+    // `k3.1-pro`），预设 id 跟随模型 id（SF-1 同款）。
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("k3.1-pro"));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(
         editor.preset.map(|preset| preset.id),

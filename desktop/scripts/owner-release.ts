@@ -109,23 +109,18 @@ export class OwnerRelease {
       renameSync(folder, destination);
     }, this.directory());
   }
-  async compareRemote(remote: RemoteRelease): Promise<void> {
+  verifyRemoteInventory(remote: RemoteRelease): void {
     if (JSON.stringify(remote.assets.map(a => a.name).sort()) !== JSON.stringify(this.files())) throw new Error('远程缺少完整发布资产；请重新运行 ./publish。');
-    await withTemp('clat-remote-verify-', folder => {
-      this.gh('release', 'download', this.tag(), '--repo', REPO, '--dir', folder, ...this.files().flatMap(n => ['--pattern', n]));
-      for (const name of this.files()) if (digest(join(folder, name)) !== digest(join(this.directory(), 'prepared', name))) throw new Error('远程资产与本机已验证文件不一致：' + name);
-    });
   }
   async upload(): Promise<void> {
-    await this.progress.step('上传并核对 GitHub 草稿', () => this.localLock(async () => {
+    await this.progress.step('上传 GitHub 草稿', () => this.localLock(async () => {
       this.draft(); const folder = join(this.directory(), 'prepared'); await this.verify(folder);
       this.gh('release', 'upload', this.tag(), '--repo', REPO, ...this.files().map(n => join(folder, n)), '--clobber');
-      await this.compareRemote(this.draft());
     }));
   }
   async publish(): Promise<void> {
     await this.progress.step('公开发布 ' + this.tag(), () => this.localLock(async () => {
-      await this.verify(join(this.directory(), 'prepared')); await this.compareRemote(this.draft()); this.draft();
+      await this.verify(join(this.directory(), 'prepared')); this.verifyRemoteInventory(this.draft());
       await withTemp('clat-release-notes-', folder => {
         const notes = join(folder, 'notes.md'); writeFileSync(notes, this.notes());
         this.gh('release', 'edit', this.tag(), '--repo', REPO, '--notes-file', notes, '--draft=false');

@@ -7,9 +7,7 @@ function projectRailAllowance(allowance){
 }
 function createRailAllowance(){
   const button=el('button','shell-button');button.id='nav-allowance';button.type='button';button.hidden=true;
-  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.classList.add('allowance-ring');
-  for(const name of ['ring-track','ring-value']){const circle=document.createElementNS(svg.namespaceURI,'circle');for(const [key,value]of Object.entries({cx:12,cy:12,r:9,pathLength:100}))circle.setAttribute(key,value);circle.setAttribute('class',name);svg.append(circle);}
-  const number=el('span','allowance-number');number.setAttribute('aria-hidden','true');button.append(svg,number);
+  const ring=CLATRailPopover.progressRing();button.append(ring.element);
   document.getElementById('nav-settings').before(button);
   const popup=el('section');popup.id='rail-allowance-popup';let allowance=null,clock=null;
   const text=(key,args)=>CLATI18n.t('rail.'+key,args);
@@ -35,10 +33,10 @@ function createRailAllowance(){
     // A failed refresh cannot keep an old percentage looking current.
     allowance=next;button.hidden=!next;
     if(!next){card.hide();return;}
-    svg.lastChild.setAttribute('stroke-dasharray',next.remaining+' 100');number.textContent=String(Math.floor(next.remaining));button.dataset.low=String(next.remaining<=20);
+    ring.set(next.remaining);button.dataset.low=String(next.remaining<=20);
     CLATI18n.attribute(button,'aria-label',()=>text('remaining_percent',{percent:next.remaining.toLocaleString(CLATI18n.locale,{maximumFractionDigits:1})}));
     if(!popup.hidden){render();card.position();}
   }
-  CLATI18n.onChange(()=>{if(allowance){render();number.textContent=String(Math.floor(allowance.remaining));}});
+  CLATI18n.onChange(()=>{if(allowance)render();});
   return {update};
 }

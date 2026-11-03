@@ -1313,7 +1313,7 @@
   "tui.preset_description_hy3": "Tencent Hy3 companion model via Hy Token Plan",
   "tui.preset_description_hy4-preview": "Tencent Hunyuan preview model (always-on thinking)",
   "tui.preset_description_kimi-for-coding": "Efficient Kimi Code companion for routine coding work",
-  "tui.preset_description_kimi-k3": "Moonshot flagship via Kimi Coding membership (auto context cache)",
+  "tui.preset_description_k3.1-pro": "Moonshot flagship via Kimi Coding membership (auto context cache)",
   "tui.preset_description_qwen3.8-flash": "Alibaba fast tier via Qwen Token Plan (reads images)",
   "tui.preset_description_qwen3.8-max": "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
   "tui.preset_key_hint": "{name} · key write-only · save activates preset · blank clears current key only",

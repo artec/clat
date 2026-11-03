@@ -123,7 +123,15 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 
 /// Official DeepSeek parameters as documented at
 /// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08;
-/// 目录注记刷新 2026-09-10, SF-1)：
+/// 目录注记刷新 2026-09-10, SF-1;2026-11-03 目录复核)：
+///
+/// - 2026-11-03 复核（官方 Models & Pricing 页）：`deepseek-flash`
+///   底层快照为 DeepSeek-V4.1-Flash-1017（2026-10-17 起），模型 id /
+///   端点 / 1M 窗 / 384K 输出 / 视觉均零变化，本预设不动；旧 id
+///   `deepseek-v4-flash` / `…-vision-exp` 在服务端已转为
+///   V4.1-Flash-1017 的别名（按 Flash 计价），不再是"请求失败"；
+///   计价新增峰谷结构（工作日 01:00-04:00、06:00-10:00 UTC 为峰，
+///   周末与中国法定假日全天谷）——均不影响预设钉值
 ///
 /// - model ids `deepseek-flash` (DeepSeek V4.1 Flash, 2026-09-10 发布)
 ///   and `deepseek-v4-pro` (DeepSeek-V4-Pro-0813)。2026-09-10 官方公告：
@@ -191,26 +199,41 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 ///   `usage.prompt_tokens_details.cached_tokens`（新加坡地域部分模型
 ///   暂用顶层 `usage.cached_tokens`，解析两端都支持）
 ///
-/// Official Kimi K3 (Coding 会员) parameters as documented at
-/// <https://platform.kimi.com/docs/overview> and Kimi Help Center
-/// "Kimi Code Membership Benefits"（2026-08 抓取）:
+/// Official Kimi Coding 会员 parameters. 旗舰档 2026-11-03 由 K3 原地
+/// 升级为 K3.1 Pro（负责人令；旧清单 id `kimi-k3` 已不在 Coding 端点
+/// 模型清单中）：
 ///
-/// - model ids `kimi-k3`（旗舰）与 `kimi-for-coding`（K2.8 Preview，均为
-///   1M context、~131K 最大输出；视觉理解）
+/// - Coding 端点模型清单（platform.kimi.com Kimi Code 文档 models 页，
+///   2026-11-03 抓取，共六 id）：`k3.1-pro`（旗舰，K3.1 Pro）、
+///   `k3.1-pro-highspeed`（高速版）、`k3`（上代旗舰）、`k3-256k`、
+///   `kimi-for-coding`（K2.8 Preview）、`kimi-for-coding-highspeed`。
+///   **wire id 是 `k3.1-pro`**——开放平台的 `kimi-k3.1-pro` 拼写不适用
+///   Coding 端点；官方警告模型 id 填错会静默兜底到无思考版 K2.8
+///   Preview，这是本次升级的直接动因。负责人裁定（2026-11-03）：
+///   不接高速版（需 Allegretto 及以上订阅档）、不接海外端点
+///   `api.kimi.ai/coding/v1`
+/// - K3.1 Pro 规格（platform.kimi.com K3.1 Pro quickstart，2026-11-03
+///   抓取）：~3T 参数、1M context、`max_completion_tokens` 默认
+///   131072；`reasoning_effort` 顶层参数、档位 `low`/`high`/`max`
+///   （开放平台默认 max；Coding 端点未传时 K3.1/K3 系列为 high），
+///   思考常开不可关；预设按 pin-中档政策 pin `high`
+/// - 视觉输入官方声明（base64 data URL；不支持公网图片 URL；视频走
+///   files API 的 `ms://` 引用，CLAT 范围外维持不开）→
+///   OFFICIAL_VISION_CAPS；`temperature`/`top_p`/`n`/惩罚项为官方固定
+///   值，预设与旧 K3 条目一致地不传
+/// - 上下文缓存全自动（无需参数），usage 经
+///   `prompt_tokens_details.cached_tokens` 上报；`stream_options.
+///   include_usage` 让流式也回传
 /// - Coding 会员 OpenAI 兼容端点 `https://api.kimi.com/coding/v1`
 ///   （订阅额度计量；开放平台按量端点是 `https://api.moonshot.cn/v1`，
 ///   密钥不通用，预设取 Coding 端点与 GLM Coding Plan 同型）
-/// - `reasoning_effort` 支持 `low`/`high`/`max`（`max` 为官方默认），
-///   顶层参数、无 `thinking` 对象；预设按 pin-中档政策 pin `high`
-/// - 上下文缓存全自动（无需参数，前缀 ≥256 token 生效），usage 经
-///   `prompt_tokens_details.cached_tokens` 上报；`stream_options.
-///   include_usage` 让流式也回传
 /// - **UA 白名单**：Coding 端点按 User-Agent 放行，其它客户端 403
 ///   "Kimi For Coding is currently only available for Coding Agents…"
-///   （cline#10307、kodus-ai#1257 等多方报告）。预设注入社区实测的
-///   白名单 UA `claude-cli/2.1.161`（cc-switch PR #3671 的回退常量；
-///   其白名单实测矩阵：`claude-cli/*`、`claude-code/*`、`Kilo-Code/*`
-///   放行，`codex-cli/*`、`kimi-cli/*`、`openclaw/*` 被拒）；属订阅
+///   （cline#10307、kodus-ai#1257 等多方报告，2026-08 实测）。预设注入
+///   社区实测的白名单 UA `claude-cli/2.1.161`（cc-switch PR #3671 的
+///   回退常量；其白名单实测矩阵：`claude-cli/*`、`claude-code/*`、
+///   `Kilo-Code/*` 放行，`codex-cli/*`、`kimi-cli/*`、`openclaw/*`
+///   被拒）；2026-11-03 复核未获官方放宽信息，维持原注入值。属订阅
 ///   条款边缘操作，用户可在模型编辑器 Extra Headers 覆盖成自己的
 ///   合规选择。
 pub const MODEL_PRESETS: &[ModelPreset] = &[
@@ -223,6 +246,8 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     // V4.1 Flash 标记多模态 → OFFICIAL_VISION_CAPS（VP-2 先例通道：
     // 官方文档声明 → officially-declared）。旧 id 的持久化引用不做
     // 任何回退处理（零用户教法：直接更新；旧 id 失效即失效）。
+    // 2026-11-03 目录复核：底层快照 V4.1-Flash-1017（10-17），id 与
+    // 全部参数零变化，本条目不动（见模块文档复核注记）。
     ModelPreset {
         id: "deepseek-flash",
         utility_model: None,
@@ -373,17 +398,25 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: true,
         user_agent: None,
     },
+    // K3.1 Pro 原地升级（负责人令 2026-11-03）：旧 `kimi-k3` 条目退役
+    // ——旧 id 已不在 Coding 端点模型清单，而端点对错 id 静默兜底到
+    // 无思考版 K2.8 Preview（官方文档警告），故不留兼容别名。持久化
+    // 引用旧 id 的存量配置不再解析为预设（SF-1 同款零回退纪律）。
+    // 端点 / 1M 窗 / 131,072 输出 / effort high（pin-中档政策）/
+    // 顶层 effort 无 thinking 对象 / include_usage / UA 白名单注入
+    // 全部沿用 K3 钉值。
     ModelPreset {
-        id: "kimi-k3",
+        id: "k3.1-pro",
         utility_model: Some("kimi-for-coding"),
         // VP-2（2026-09-03）：Kimi K3 视觉输入为官方声明（负责人按
-        // Moonshot API 文档核实）→ officially-declared。
+        // Moonshot API 文档核实）→ officially-declared。2026-11-03：
+        // K3.1 Pro 视觉同为官方声明（K3.1 Pro quickstart），能力位沿用。
         capabilities: OFFICIAL_VISION_CAPS,
-        name: "Kimi K3",
+        name: "Kimi K3.1 Pro",
         description: "Moonshot flagship via Kimi Coding membership (auto context cache)",
         vendor: "Kimi Coding Plan",
         protocol: ModelProtocol::OpenAiCompatible,
-        model: "kimi-k3",
+        model: "k3.1-pro",
         endpoint: "https://api.kimi.com/coding/v1",
         request_path: "/chat/completions",
         output_limit: 131_072,
@@ -654,16 +687,17 @@ mod tests {
     fn applies_official_kimi_coding_parameters() {
         let mut config = ModelConfig::default();
 
-        preset_by_id("kimi-k3").expect("preset").apply(&mut config);
+        preset_by_id("k3.1-pro").expect("preset").apply(&mut config);
 
-        assert_eq!(config.model, "kimi-k3");
+        assert_eq!(config.model, "k3.1-pro");
         // Coding 会员端点（订阅额度），不是开放平台按量端点。
         assert_eq!(config.endpoint, "https://api.kimi.com/coding/v1");
         assert_eq!(config.request_path, "/chat/completions");
         assert_eq!(config.output_limit, Some(131_072));
-        // K3 官方 low/high/max（默认 max）；pin-中档政策 pin high。
+        // K3.1 Pro 官方 low/high/max（开放平台默认 max；Coding 端点未
+        // 传时为 high）；pin-中档政策 pin high。
         assert_eq!(config.extra_body["reasoning_effort"], "high");
-        // K3 思考强度是顶层参数，无 thinking 对象。
+        // K3.1 Pro 思考强度是顶层参数，无 thinking 对象。
         assert!(config.extra_body.get("thinking").is_none());
         // 缓存全自动；include_usage 让流式也回传 usage。
         assert_eq!(config.extra_body["stream_options"]["include_usage"], true);
@@ -687,7 +721,7 @@ mod tests {
             extra_headers: json!({"X-Custom": "keep-me"}),
             ..ModelConfig::default()
         };
-        preset_by_id("kimi-k3").expect("preset").apply(&mut config);
+        preset_by_id("k3.1-pro").expect("preset").apply(&mut config);
         assert_eq!(config.extra_headers["X-Custom"], "keep-me");
         assert_eq!(
             config.extra_headers["User-Agent"].as_str(),
@@ -698,7 +732,7 @@ mod tests {
             extra_headers: json!("not an object"),
             ..ModelConfig::default()
         };
-        preset_by_id("kimi-k3").expect("preset").apply(&mut junk);
+        preset_by_id("k3.1-pro").expect("preset").apply(&mut junk);
         assert_eq!(
             junk.extra_headers["User-Agent"].as_str(),
             Some("claude-cli/2.1.161")
@@ -710,7 +744,7 @@ mod tests {
     /// 理，自定义值保留。预修复代码（无条件覆写/不清理）上本测试失败。
     #[test]
     fn preset_user_agent_never_clobbers_custom_values() {
-        let kimi = preset_by_id("kimi-k3").expect("kimi");
+        let kimi = preset_by_id("k3.1-pro").expect("kimi");
         let mut config = ModelConfig::default();
         kimi.apply(&mut config);
         // 用户覆盖成自己的 UA（如换一个白名单前缀 claude-code/*）。
@@ -851,9 +885,9 @@ mod tests {
     ///   另有项目所有者第一方确认与真实端点实测，见模块文档证据链）
     /// - qwen3.8-max：1M context / 131,072 output
     ///   （help.aliyun.com/zh/model-studio/qwen3-8-max，2026-08 核验）
-    /// - kimi-k3 / kimi-for-coding：1M context / 131,072 output
-    ///   （platform.kimi.com/docs/overview 与 OpenCode 接入指南，
-    ///   2026-08 核验）
+    /// - k3.1-pro / kimi-for-coding：1M context / 131,072 output
+    ///   （Coding 端点模型清单 + K3.1 Pro quickstart，2026-11-03 核验；
+    ///   K3 时代钉值 2026-08 沿用未变）
     /// - hy4-preview：1M context / 65,536 output（TC-2 ①：官方口径
     ///   1M 总窗口优先（接口分解 ~960K 输入 + 64K 输出，与 TC-0 探针
     ///   一致）；output 为 TC-0 实测钉值——见
@@ -876,7 +910,7 @@ mod tests {
         assert_eq!(qwen.context_window, 1_000_000);
         assert_eq!(qwen.output_limit, 131_072);
 
-        let kimi = preset_by_id("kimi-k3").expect("kimi");
+        let kimi = preset_by_id("k3.1-pro").expect("kimi");
         assert_eq!(kimi.context_window, 1_000_000);
         assert_eq!(kimi.output_limit, 131_072);
 
@@ -917,7 +951,10 @@ mod tests {
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
         assert_eq!(presets_by_vendor("Qwen Token Plan")[1].id, "qwen3.8-flash");
         assert_eq!(presets_by_vendor("Kimi Coding Plan").len(), 2);
-        assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "kimi-k3");
+        assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "k3.1-pro");
+        // 2026-11-03 K3.1 Pro 原地升级：旧 kimi-k3 id 不复现（SF-1
+        // 同款零回退——端点对错 id 静默兜底，不能留兼容别名）。
+        assert!(preset_by_id("kimi-k3").is_none());
         assert_eq!(
             presets_by_vendor("Kimi Coding Plan")[1].id,
             "kimi-for-coding"
@@ -936,7 +973,7 @@ mod tests {
             ("glm-5.3-flash", None),
             ("qwen3.8-max", Some("qwen3.8-flash")),
             ("qwen3.8-flash", None),
-            ("kimi-k3", Some("kimi-for-coding")),
+            ("k3.1-pro", Some("kimi-for-coding")),
             ("kimi-for-coding", None),
             ("hy4-preview", Some("hy3")),
             ("hy3", None),
@@ -951,10 +988,11 @@ mod tests {
     }
 
     /// INV-MM2-1/2（MM-2 W1 红测；VP-2 终态直写 2026-09-03；SF-1
-    /// 刷新 2026-09-10）：全预设 capability matrix 完备且 sourced——
-    /// **恰六个** verified 开图（officially-declared 五条：deepseek-flash
+    /// 刷新 2026-09-10；K3.1 Pro 升级同步 2026-11-03）：全预设
+    /// capability matrix 完备且 sourced——**恰六个** verified 开图
+    ///（officially-declared 五条：deepseek-flash
     /// （SF-1 继承 vision-exp 视觉位）/ qwen3.8-max / qwen3.8-flash /
-    /// kimi-k3 / kimi-for-coding，加 glm-5.3-flash 为 MM-0 探针实证），无中间态
+    /// k3.1-pro / kimi-for-coding，加 glm-5.3-flash 为 MM-0 探针实证），无中间态
     ///（unverified 档已退役）；其余全部纯文本。漏配新预设时哨兵断言红。
     #[test]
     fn capability_matrix_is_complete_sourced_and_fail_closed() {
@@ -978,7 +1016,7 @@ mod tests {
                     | "glm-5.3-flash"
                     | "qwen3.8-max"
                     | "qwen3.8-flash"
-                    | "kimi-k3"
+                    | "k3.1-pro"
                     | "kimi-for-coding"
             );
             assert_eq!(
@@ -993,7 +1031,7 @@ mod tests {
         for id in [
             "deepseek-flash",
             "qwen3.8-max",
-            "kimi-k3",
+            "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
         ] {
@@ -1022,13 +1060,14 @@ mod tests {
     /// VP-2（2026-09-03）判别：officially-declared 存量开图金测——
     /// 四预设的能力位与图片策略逐字段锁定；删任一 verified 翻转
     /// （或误开 tool_result 图）此测试红。（SF-1 2026-09-10：
-    /// vision-exp 位由 deepseek-flash 继承。）
+    /// vision-exp 位由 deepseek-flash 继承；2026-11-03 Kimi 旗舰
+    /// 升级为 k3.1-pro，能力位与图片策略沿用。）
     #[test]
     fn officially_declared_vision_presets_carry_the_declared_matrix() {
         for id in [
             "deepseek-flash",
             "qwen3.8-max",
-            "kimi-k3",
+            "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
         ] {

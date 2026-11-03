@@ -44,20 +44,29 @@ The preset catalog configures the OpenAI-compatible adapter:
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
 | Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
-| Kimi K3 Coding Plan | `kimi-k3` | 1M | 128K | `high` |
+| Kimi K3.1 Pro Coding Plan | `k3.1-pro` | 1M | 128K | `high` |
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
 | Hy 4 Preview · Hy Token Plan | `hy4-preview` | 1M | 64K | — (always on) |
 | Hy 3 · Hy Token Plan | `hy3` | 256K | 128K | — (always on) |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
 six image-input routes are `deepseek-flash`, `qwen3.8-max`,
-`qwen3.8-flash`, `kimi-k3`, and `kimi-for-coding`, plus `glm-5.3-flash`
+`qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, plus `glm-5.3-flash`
 (also verified for image tool results) — the first five declared by
 official vendor documentation, the GLM
 route proven by CLAT's own live probe. The five vendor-declared visual presets
 use a conservative per-request policy of eight images, at most 4 MiB per image;
 custom profiles default to the same limits once image input has been enabled
 by a successful `/vision-probe`. All other presets are text-only.
+
+Kimi note (2026-11-03): the Coding-plan flagship was upgraded in place from
+`kimi-k3` to `k3.1-pro` (K3.1 Pro). The wire id is `k3.1-pro` — the
+open-platform spelling `kimi-k3.1-pro` does not apply to the coding
+endpoint, and the endpoint silently falls back to a non-thinking K2.8
+Preview on unknown ids, so no compatibility alias is kept. Saved
+configurations referencing `kimi-k3` simply stop resolving to a preset.
+The highspeed variant and the overseas `api.kimi.ai/coding/v1` endpoint are
+deliberately not presetted.
 
 DeepSeek note (2026-09-10): the official V4.1 Flash release replaced the
 retired `deepseek-v4-flash` and experimental `deepseek-v4-flash-vision-exp`
@@ -152,8 +161,8 @@ cache and context but does not invent a Token segment.
 
 The preset uses `https://api.kimi.com/coding/v1`, top-level
 `reasoning_effort`, and automatic context caching. Low / High / Max map directly
-to the vendor ladder. `kimi-k3` image input is declared by the official API
-documentation, so attach admission is open on that route.
+to the vendor ladder. `k3.1-pro` (K3.1 Pro) image input is declared by the
+official API documentation, so attach admission is open on that route.
 
 The Coding membership endpoint currently filters clients by a coding-agent
 User-Agent. The preset injects the field-verified compatible value
