@@ -15,6 +15,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
+pub mod discovery;
 mod download;
 mod manifest;
 mod progress;

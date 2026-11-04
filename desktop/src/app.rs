@@ -1,5 +1,4 @@
 use clat_core::client_ports::host::{HostClient, PackagedBackend};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex,
@@ -65,13 +64,9 @@ pub fn connected(app: &tauri::AppHandle, client: HostClient) -> Result<(), Strin
 }
 
 fn initial_preferences(app: &tauri::AppHandle) -> bool {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .and_then(|p| std::fs::read(p.join("preferences.json")).ok())
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| v["autoCheck"].as_bool())
-        .unwrap_or(true)
+    crate::localization::path(app).map_or(true, |path| {
+        clat_core::client_ports::upgrade::discovery::automatic_checks_enabled(&path)
+    })
 }
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {

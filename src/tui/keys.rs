@@ -46,6 +46,7 @@ impl App {
             UiEvent::Dsh(event) => self.handle_dsh_event(event),
             UiEvent::Application(event) => self.handle_application_event(event),
             UiEvent::Native(event) => self.handle_native_event(event),
+            UiEvent::UpdateNotice(version) => self.update_version = version,
         }
         let changed = identity != (self.session_id.clone(), self.native_selection_identity());
         if changed || self.running || self.should_quit {

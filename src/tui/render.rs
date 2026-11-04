@@ -867,14 +867,6 @@ impl App {
                 level,
             )
         };
-        // 首行内容预算按前缀实际显示宽度扣除（standalone "CLAT" 4 列，
-        // native/dsh 在线前缀各 11/10 列）；宽度不足时逐级退化（TUI-L02），
-        // 档位优先于模型名保留。
-        let prefix_width = prefix
-            .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-            .sum::<usize>();
-        let rest_budget = area.width.saturating_sub(2 + 2 + prefix_width as u16) as usize;
         let header = HeaderModel {
             version: self.render_version(),
             state,
@@ -884,22 +876,52 @@ impl App {
                 && !connecting
                 && self.config.capabilities.accepts_image_input(),
         };
+        self.draw_header_lines(frame, area, prefix, second_line, &header);
+    }
+
+    fn draw_header_lines(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        prefix: Vec<Span<'static>>,
+        second_line: String,
+        header: &HeaderModel<'_>,
+    ) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        let prefix_width = prefix.iter().map(Span::width).sum::<usize>();
+        let rest_budget = usize::from(inner.width).saturating_sub(prefix_width);
+        let notice = self.update_version.as_ref().map(|version| {
+            self.locale
+                .render(&UiMessage::new("tui.update_available").arg("version", version.as_str()))
+        });
+        let reserved = notice
+            .as_ref()
+            .map_or(0, |text| UnicodeWidthStr::width(text.as_str()) + 2);
+        let budget = rest_budget.saturating_sub(reserved);
+        let mut rest = compose_header_rest_localized(header, budget, self.locale);
+        let notice = notice.filter(|_| rest.iter().map(Span::width).sum::<usize>() <= budget);
+        if notice.is_none() && reserved != 0 {
+            rest = compose_header_rest_localized(header, rest_budget, self.locale);
+        }
         let mut first_line = prefix;
-        first_line.extend(compose_header_rest_localized(
-            &header,
-            rest_budget,
-            self.locale,
-        ));
+        first_line.extend(rest);
         frame.render_widget(
-            Paragraph::new(vec![Line::from(first_line), Line::from(second_line)])
-                // 水平内边距 1 列：文字与边框字符之间留空，不贴框。
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .padding(Padding::horizontal(1)),
-                ),
+            Paragraph::new(vec![Line::from(first_line), Line::from(second_line)]).block(block),
             area,
         );
+        if let Some(text) = notice {
+            frame.render_widget(
+                Line::from(Span::styled(text, theme::style(theme::Role::Success)))
+                    .alignment(Alignment::Right),
+                Rect {
+                    height: inner.height.min(1),
+                    ..inner
+                },
+            );
+        }
     }
 
     pub(super) fn draw_conversation(&mut self, frame: &mut Frame, area: Rect) {

@@ -758,6 +758,7 @@ dependencies = [
  "clat-wasm-net",
  "command-group",
  "ctrlc",
+ "dirs 7.0.0",
  "globset",
  "hmac",
  "html2text",
@@ -796,7 +797,6 @@ dependencies = [
  "base64 0.22.1",
  "clat-core",
  "font-kit",
- "minisign-verify 0.2.5",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -813,7 +813,6 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
  "tokio",
- "ureq",
  "url",
 ]
 

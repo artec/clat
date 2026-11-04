@@ -1,5 +1,6 @@
 use crate::app::Desktop;
 use clat_core::client_ports::presentation::UiMessage;
+use clat_core::client_ports::upgrade::discovery;
 use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -54,29 +55,6 @@ fn target() -> String {
         std::env::consts::ARCH
     )
 }
-fn fetch_small(url: &str, cap: u64) -> Result<Vec<u8>, UiMessage> {
-    use std::io::Read;
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .build()
-        .new_agent();
-    let mut response = agent
-        .get(url)
-        .call()
-        .map_err(|_| UiMessage::new("update.index_network"))?;
-    let mut bytes = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(cap + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| UiMessage::new("update.index_read"))?;
-    if bytes.len() as u64 > cap {
-        return Err(UiMessage::new("update.index_large"));
-    }
-    Ok(bytes)
-}
-
 async fn checked_update(app: &tauri::AppHandle) -> Result<Option<Update>, UiMessage> {
     let updater = app
         .updater_builder()
@@ -84,12 +62,9 @@ async fn checked_update(app: &tauri::AppHandle) -> Result<Option<Update>, UiMess
         .target(target())
         .build()
         .map_err(|e| e.to_string())?;
-    let metadata = tauri::async_runtime::spawn_blocking(|| {
-        let bytes = fetch_small(crate::policy::ENDPOINT, 1024 * 1024)?;
-        crate::policy::release_metadata(&bytes)
-    })
-    .await
-    .map_err(|_| "index verification worker failed")??;
+    let metadata = tauri::async_runtime::spawn_blocking(discovery::fetch_release_metadata)
+        .await
+        .map_err(|_| "index verification worker failed")??;
     let mut pending = updater
         .restore_update(metadata)
         .map_err(|e| UiMessage::new("update.check_failed").arg("detail", e.to_string()))?;
@@ -219,7 +194,7 @@ pub async fn install(app: &tauri::AppHandle) -> Result<(), UiMessage> {
 
 pub fn start_automatic_checks(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(discovery::INITIAL_DELAY).await;
         loop {
             if app
                 .state::<Desktop>()
@@ -236,7 +211,7 @@ pub fn start_automatic_checks(app: tauri::AppHandle) {
             if should_check {
                 let _ = check(&app).await;
             }
-            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+            tokio::time::sleep(discovery::CHECK_INTERVAL).await;
         }
     });
 }

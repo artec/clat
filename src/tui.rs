@@ -84,6 +84,7 @@ mod run_events;
 mod selection;
 mod status;
 mod suggestion;
+mod update_notice;
 
 #[cfg(all(test, feature = "runtime-tests"))]
 use keys::*;
@@ -456,6 +457,7 @@ struct App {
     discovery: command_picker::DiscoveryUi,
     /// 余额/额度当前值：核心 Monitor 插件经 ApplicationEvent 写回，状态栏读取。
     balance: Option<String>,
+    update_version: Option<String>,
     /// 本会话累计 token 用量，用于状态栏缓存命中百分比。journal 还原
     /// （挂载/切换）+ 运行中流式实时累计 + run 结束以结果权威覆盖。
     session_usage: Usage,
@@ -647,6 +649,7 @@ impl App {
             content_view: None,
             discovery: command_picker::DiscoveryUi::default(),
             balance: None,
+            update_version: None,
             session_usage: Usage::default(),
             usage_routes: BTreeMap::new(),
             run_routes_base: None,
@@ -755,6 +758,7 @@ impl App {
             content_view: None,
             discovery: command_picker::DiscoveryUi::default(),
             balance: None,
+            update_version: None,
             session_usage: Usage::default(),
             usage_routes: BTreeMap::new(),
             run_routes_base: None,
@@ -935,6 +939,7 @@ impl App {
         //   一次必须重绘的deadline"（状态栏 TTL 到期、思考动画换帧），
         //   空闲时一次唤醒都没有。
         let (event_sender, events) = ui_event_channel();
+        let _update_checks = update_notice::start(event_sender.clone());
         self.event_sender = Some(event_sender.clone());
         self.events = Some(events);
 

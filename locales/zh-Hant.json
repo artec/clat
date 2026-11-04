@@ -1050,6 +1050,7 @@
   "tui.generating_a_manual_suggestion": "正在產生手動建議…",
   "tui.goal_help": "查看目標、驗收、階段、預算及停止原因；/goal run 明確續跑",
   "tui.header_loading": "載入中",
+  "tui.update_available": "發現新版 {version}",
   "tui.header_ready": "就緒",
   "tui.header_running": "執行中",
   "tui.header_thinking": "思考",

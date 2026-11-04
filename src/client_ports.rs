@@ -87,6 +87,7 @@ pub mod session {
 }
 
 pub mod upgrade {
+    pub use crate::upgrade::discovery;
     pub use crate::upgrade::{UpgradeOutcome, UpgradeProgress, upgrade_with_progress};
 }
 

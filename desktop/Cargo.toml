@@ -12,8 +12,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 url = "2"
-base64 = "0.22"
-minisign-verify = "0.2.5"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 font-kit = "=0.14.3"
@@ -25,13 +23,13 @@ tauri-plugin-window-state = "=2.5.0"
 tauri-plugin-updater = "=2.14.0"
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["time", "sync", "macros"] }
-ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dev-dependencies]
+base64 = "0.22"
 tauri = { version = "=2.12.5", features = ["test"] }
 
 # Native attributed menu titles reuse the Objective-C crates already used by Tauri.

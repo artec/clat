@@ -214,7 +214,9 @@ Restart running CLAT processes to use the new version.
 installation gets its own confirmation. Failure prints an error and no upgrade
 success line. Output uses ordinary newline-separated text, so redirected logs
 contain no spinner control codes. This command updates the CLI executable;
-Desktop retains its independent updater.
+Desktop retains its independent updater. The TUI uses the same automatic-check
+preference, schedule and signed release index as Desktop. When the index
+announces a newer stable version, the TUI shows it at the right of its title bar.
 
 Upgrades authenticate the asset manifest with the Minisign public key embedded
 in the current binary, verify the SHA-256 digest and release-tag binding, then

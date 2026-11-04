@@ -1050,6 +1050,7 @@
   "tui.generating_a_manual_suggestion": "generating a manual suggestion…",
   "tui.goal_help": "inspect objective, acceptance, phase, budgets and stop reason; /goal run explicitly continues",
   "tui.header_loading": "loading",
+  "tui.update_available": "Update available {version}",
   "tui.header_ready": "ready",
   "tui.header_running": "running",
   "tui.header_thinking": "Thinking",

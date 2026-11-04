@@ -1,12 +1,10 @@
 //! Platform-independent checks; no native installer can bypass these.
 #![cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
-use base64::Engine;
 use clat_core::client_ports::presentation::UiMessage;
+use clat_core::client_ports::upgrade::discovery::newer_formal_version;
 use serde_json::Value;
 
-pub const REPO: &str = "https://github.com/artec/clat";
-pub const ENDPOINT: &str = "https://github.com/artec/clat/releases/latest/download/latest.json";
-pub const PUBLIC_KEY: &str = include_str!("../updater.pub");
+pub use clat_core::client_ports::upgrade::discovery::{PUBLIC_KEY, REPO};
 
 pub fn permitted_page(url: &str) -> bool {
     let Ok(url) = url::Url::parse(url) else {
@@ -24,16 +22,8 @@ pub fn permitted_page(url: &str) -> bool {
 }
 
 pub fn validate_update(value: &Value, current: &str, target: &str) -> Result<String, UiMessage> {
-    let version = value["version"]
-        .as_str()
-        .ok_or(UiMessage::new("update.version_missing"))?;
-    let parsed =
-        semver::Version::parse(version).map_err(|_| UiMessage::new("update.version_invalid"))?;
-    let current = semver::Version::parse(current)
-        .map_err(|_| UiMessage::new("update.current_version_invalid"))?;
-    if parsed <= current || !parsed.pre.is_empty() || !parsed.build.is_empty() {
-        return Err(UiMessage::new("update.newer_formal_required"));
-    }
+    let version = newer_formal_version(value, current)?
+        .ok_or(UiMessage::new("update.newer_formal_required"))?;
     let (os, arch, suffix) = match target {
         "darwin-aarch64" => ("macos", "arm64", ".app.tar.gz"),
         "darwin-x86_64" => ("macos", "x64", ".app.tar.gz"),
@@ -49,61 +39,16 @@ pub fn validate_update(value: &Value, current: &str, target: &str) -> Result<Str
     Ok(version.to_owned())
 }
 
-pub fn release_metadata(bytes: &[u8]) -> Result<Value, UiMessage> {
-    release_metadata_with_key(bytes, PUBLIC_KEY)
-}
-
-pub(crate) fn release_metadata_with_key(bytes: &[u8], key: &str) -> Result<Value, UiMessage> {
-    let envelope: Value =
-        serde_json::from_slice(bytes).map_err(|_| UiMessage::new("update.index_invalid"))?;
-    if envelope["schema_version"] != 1 {
-        return Err(UiMessage::new("update.schema_unsupported"));
-    }
-    let payload = envelope["payload"]
-        .as_str()
-        .ok_or(UiMessage::new("update.payload_missing"))?;
-    let signature = envelope["signatures"]["desktop"]
-        .as_str()
-        .ok_or(UiMessage::new("update.signature_missing"))?;
-    let value =
-        serde_json::from_str(payload).map_err(|_| UiMessage::new("update.signed_index_invalid"))?;
-    verify_index_with_key(payload.as_bytes(), signature, &value, key)?;
-    Ok(value)
-}
+#[cfg(test)]
+pub use clat_core::client_ports::upgrade::discovery::verify_index_with_key;
+#[cfg(all(test, any(target_os = "macos", windows)))]
+pub use clat_core::client_ports::upgrade::discovery::{
+    release_metadata, release_metadata_with_key,
+};
 
 #[cfg(test)]
 pub fn verify_index(bytes: &[u8], signature: &str, expected: &Value) -> Result<(), UiMessage> {
     verify_index_with_key(bytes, signature, expected, PUBLIC_KEY)
-}
-
-pub(crate) fn verify_index_with_key(
-    bytes: &[u8],
-    signature: &str,
-    expected: &Value,
-    public_key: &str,
-) -> Result<(), UiMessage> {
-    let public = base64::engine::general_purpose::STANDARD
-        .decode(public_key.trim())
-        .map_err(|_| UiMessage::new("update.public_key_invalid"))?;
-    let public =
-        std::str::from_utf8(&public).map_err(|_| UiMessage::new("update.public_key_invalid"))?;
-    let key = minisign_verify::PublicKey::decode(public)
-        .map_err(|_| UiMessage::new("update.public_key_invalid"))?;
-    let signature = base64::engine::general_purpose::STANDARD
-        .decode(signature.trim())
-        .map_err(|_| UiMessage::new("update.signature_invalid"))?;
-    let signature =
-        std::str::from_utf8(&signature).map_err(|_| UiMessage::new("update.signature_invalid"))?;
-    let signature = minisign_verify::Signature::decode(signature)
-        .map_err(|_| UiMessage::new("update.signature_invalid"))?;
-    key.verify(bytes, &signature, false)
-        .map_err(|_| UiMessage::new("update.signature_failed"))?;
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| UiMessage::new("update.signed_index_invalid"))?;
-    if &value != expected {
-        return Err(UiMessage::new("update.metadata_mismatch"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

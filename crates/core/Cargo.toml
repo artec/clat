@@ -27,6 +27,7 @@ clat-wasm-net = { path = "../../sdk/wit-proposals/net-runtime" }
 # admission path and are never exposed as a host path.
 aes = "0.8.4"
 base64 = "0.22.1"
+dirs = "=7.0.0"
 # Capability-relative filesystem operations keep project writes bound to an
 # opened directory handle across symlink and directory-replacement races.
 cap-std = "4.0.2"
