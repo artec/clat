@@ -29,9 +29,14 @@ impl ConversationModel {
                 _ => None,
             };
             if let Some(text) = text.filter(|_| !query.is_empty()) {
+                let search_lines = if cache.round_hidden {
+                    cache.lines.as_slice()
+                } else {
+                    rows.as_slice()
+                };
                 let (folded, source_offsets) = folded_source(text);
                 let body_start = match item {
-                    ConversationItem::Assistant { .. } => rows.as_slice().len().saturating_sub(
+                    ConversationItem::Assistant { .. } => search_lines.len().saturating_sub(
                         render_markdown(text, width.saturating_sub(2).max(1)).len(),
                     ),
                     _ => 0,
@@ -41,7 +46,7 @@ impl ConversationModel {
                         break;
                     }
                     let offset = source_offsets[folded_offset];
-                    let line = occurrence_row(&rows.as_slice()[body_start..], &query, occurrence);
+                    let line = occurrence_row(&search_lines[body_start..], &query, occurrence);
                     matches.push(BodyMatch {
                         identity: cache.identity,
                         offset,

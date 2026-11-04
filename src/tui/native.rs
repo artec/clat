@@ -32,6 +32,10 @@ fn image_message_label(text: &str, blocks: &[crate::message::ContentBlock]) -> S
 }
 
 pub(super) enum NativeEvent {
+    WorkflowDetails(u64, u64, String, Result<Value, String>),
+    PlanReviewDetails(u64, u64, String, String, Result<Value, String>),
+    PlanReviewAction(u64, u64, String, String, Result<Value, String>),
+    Allowance(u64, u64, String, String, Result<Value, String>),
     Plugin(u64, u64, u64, super::plugins::PluginReply),
     History(u64, u64, Result<Value, String>),
     Discovery(u64, u64, u64, Result<Value, String>),
@@ -42,6 +46,14 @@ pub(super) enum NativeEvent {
     Offline(u64, String),
     Snapshot(u64, u64, Result<Value, String>),
     Submitted(Result<Value, HostCallError>),
+    SelectedNextTurn {
+        epoch: u64,
+        operation: String,
+        selection: u64,
+        session: String,
+        recall: bool,
+        result: Result<Value, String>,
+    },
     NextTurn(
         u64,
         u64,
@@ -87,7 +99,8 @@ pub(super) struct NativeState {
     /// 在宿主选择世代未变（会话未被切换）时才入史——迟到回执不得把旧会
     /// 话提示词写进新会话历史；steering 只能经 durable claim 后由快照补录。
     pending_history: Option<(u64, String)>,
-    pub(super) next_turn: Vec<String>,
+    pub(super) next_turn: Vec<crate::application::NextTurnItem>,
+    pub(super) selected_queue_retry: Option<super::next_turn::SelectedQueueRetry>,
     pub(super) queue_pending: bool,
     pub(super) queue_retry: Option<(String, String)>,
     pub(super) recall_retry: Option<(String, u64, Option<String>)>,
@@ -157,6 +170,7 @@ impl App {
             pending: None,
             pending_history: None,
             next_turn: Vec::new(),
+            selected_queue_retry: None,
             queue_pending: false,
             queue_retry: None,
             recall_retry: None,
@@ -189,6 +203,7 @@ impl App {
     }
 
     pub(super) fn start_native(&mut self) {
+        self.conversation.stop_live_clock();
         if let Some(native) = &mut self.native {
             native.builtin_availability = Value::Null;
         }
@@ -433,6 +448,18 @@ impl App {
 
     fn native_dialog_event(&mut self, event: NativeEvent) -> Option<NativeEvent> {
         match event {
+            NativeEvent::PlanReviewDetails(epoch, selection, question, request, result) => {
+                self.receive_plan_review_details(epoch, selection, &question, &request, result)
+            }
+            NativeEvent::PlanReviewAction(epoch, selection, question, request, result) => {
+                self.receive_plan_review_action(epoch, selection, &question, &request, result)
+            }
+            NativeEvent::WorkflowDetails(epoch, selection, request, result) => {
+                self.workbench_workflow_reply(epoch, selection, &request, result);
+            }
+            NativeEvent::Allowance(epoch, selection, request, route, result) => {
+                self.workbench_allowance_reply(epoch, selection, &request, &route, result);
+            }
             NativeEvent::Plugin(epoch, selection, request, reply) => {
                 self.plugin_loaded(epoch, selection, request, reply);
             }
@@ -520,6 +547,16 @@ impl App {
                 }
             }
             NativeEvent::Submitted(result) => self.native_submitted(result),
+            NativeEvent::SelectedNextTurn {
+                epoch,
+                operation,
+                selection,
+                session,
+                recall,
+                result,
+            } => {
+                self.selected_next_turn_reply(epoch, operation, selection, session, recall, result)
+            }
             NativeEvent::NextTurn(epoch, selection, session, text, recall, result) => {
                 self.native_next_turn_reply((epoch, selection, session), text, recall, result);
             }
@@ -550,6 +587,7 @@ impl App {
     }
 
     fn native_offline(&mut self, error: String) {
+        self.conversation.stop_live_clock();
         if let Some(native) = &mut self.native {
             native.builtin_availability = Value::Null;
         }
@@ -690,17 +728,11 @@ impl App {
     }
 
     fn native_snapshot(&mut self, value: Value) {
+        let previous_route = self.allowance_route();
         self.update_native_availability(&value);
         if let Some(native) = &mut self.native {
-            native.next_turn = value["next_turn_queue"]
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item["text"].as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
+            native.next_turn =
+                serde_json::from_value(value["next_turn_queue"].clone()).unwrap_or_default();
             native.permissions.plan = value["plan_mode_active"] == true;
             native.permissions.plan_available =
                 value["builtin_availability"]["builtin.plan_mode"]["enabled"] != false;
@@ -714,6 +746,17 @@ impl App {
         self.session_id = value["session"]["id"]
             .as_str()
             .map(|id| SessionId::new(id.to_owned()));
+        if self.running
+            && previous_session_id == self.session_id
+            && value["active_run"]["session_id"].as_str().is_none_or(|id| {
+                self.session_id
+                    .as_ref()
+                    .is_some_and(|current| current.as_str() == id)
+            })
+            && let Some(started) = value["active_run"]["started"].as_u64()
+        {
+            self.conversation.set_live_host_started(started);
+        }
         // HIST-TUI-1/T3 + B8-R2-1 同类：快照携带的 session.recent_inputs 是
         // 当前会话的权威已提交输入。**会话未变**时走 replace_history（游标
         // 值锚迁移、待还原暂存保留）；**会话变了**（其它客户端切换/重连到
@@ -744,6 +787,9 @@ impl App {
             self.config.protocol = protocol;
         }
         self.native_telemetry(&value);
+        if previous_route != self.allowance_route() {
+            self.refresh_workbench_allowance();
+        }
     }
 
     fn native_frame(&mut self, frame: HostEvent) {
@@ -775,6 +821,7 @@ impl App {
                     self.run_route = None;
                     self.conversation
                         .push_user(image_message_label(&message.plain_text(), &message.blocks));
+                    self.refresh_native();
                 }
                 self.handle_run_event(event);
             }
@@ -807,10 +854,40 @@ impl App {
                 self.native.as_mut().unwrap().online = true;
                 self.native.as_mut().unwrap().selection =
                     payload["selection_generation"].as_u64().unwrap_or(0);
+                self.restore_host_followups();
                 self.flash_message(UiMessage::new("tui.host_attached"));
             }
             "prompt.settled" => self.native_prompt_settled(payload),
             "notice" if payload["kind"] == "selection" => self.start_native(),
+            "notice" if payload["kind"] == "monitor" => {
+                self.refresh_native();
+                self.refresh_workbench_allowance();
+            }
+            "notice" if payload["kind"] == "models" => {
+                // A settings change may disable automatic followups. Retire
+                // displayed and in-flight data before reading the Host cache.
+                self.clear_followups();
+                if !self.running && !self.run_start_pending {
+                    self.restore_host_followups();
+                }
+                self.refresh_native();
+            }
+            "notice" if payload["kind"] == "compaction_recorded" => {
+                let data = &payload["payload"];
+                if self
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|id| Some(id.as_str()) == data["session"].as_str())
+                    && let (Some(seq), Some(summary), Ok(disclosure)) = (
+                        data["seq"].as_u64(),
+                        data["summary"].as_str(),
+                        serde_json::from_value(data["disclosure"].clone()),
+                    )
+                {
+                    self.conversation
+                        .record_compaction(seq, summary.to_owned(), disclosure);
+                }
+            }
             "notice" if payload["kind"] == "compaction" => {
                 if let Some(note) = payload["payload"]["note"].as_str() {
                     self.flash_status(note);
@@ -883,7 +960,11 @@ impl App {
         // 录，与 standalone/回放同词汇——不再只剩 `failed`。终态卡携带
         // prompt_rpc_id 主键（F3/CF-R3-2 的去重记忆）。
         let notice = crate::tui::conversation::settled_outcome_notice(&payload);
-        self.conversation.push_presented_turn_end(notice, rpc_id);
+        self.conversation
+            .push_presented_turn_end(notice, rpc_id.clone());
+        if was_running {
+            self.conversation.finish_live_round();
+        }
         // CONT-1（C1/C2）：attached 腿与 standalone 同款——run 真实终态常
         // 驻状态栏；存在可观察未完成待办时给出诚实交代。todo 事实经既有
         // workflow.details RPC（不加新 wire 面）。
@@ -898,8 +979,12 @@ impl App {
         if was_running && matches!(outcome_type.as_str(), "completed" | "failed") {
             self.notify();
         }
+        let should_suggest = was_running && outcome_type == "completed";
         self.apply_settled_accounting(outcome_type);
         self.refresh_native();
+        if should_suggest && let Some(run) = rpc_id {
+            self.start_host_followups(run);
+        }
     }
 }
 

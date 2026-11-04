@@ -161,6 +161,7 @@ impl worker::RunWorker {
         );
         let report = super::super::compaction::commit::IdleCompaction {
             sessions: &self.deps.sessions,
+            subscribers: &self.deps.subscribers,
             journal: self.input.journal.as_ref(),
             compactor,
             config,

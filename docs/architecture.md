@@ -553,6 +553,31 @@ considers it busy. Standalone TUI and serve dispatch through the same core API;
 attached TUI and PWA only own rendering, key/button actions and draft recovery.
 No durable event or `RunEvent` vocabulary is added.
 
+### Last-turn rewind and resubmission
+
+Last-turn editing is owned by the Application and session services, not by a
+frontend transcript. `application/rewind.rs` exposes the eligibility check and
+replacement admission to standalone TUI and the Host. The check binds the
+selected session and user-message sequence to a physical journal revision;
+the Application also rejects unsafe pending-input, workflow and file-review
+states. Only a tail satisfying the session service's rewind rules is eligible.
+
+For an attached client, `session.rewind.check` returns that revision together
+with the Host selection generation. `session.rewind.send` checks the generation
+under the Application lock, then rechecks the session, sequence, eligibility
+and revision before replacement. The session service quiesces the active
+writer, replaces the eligible tail through the persistence backend and re-arms
+the session from disk. Application restores the affected projections and queues
+the edited text through normal input admission; serve dispatches the queued
+input after releasing the lock. Standalone TUI uses the same Application entry
+point and starts the pending input through the normal run path.
+
+Tail replacement and re-enqueue are separate operations, not one atomic
+transaction. A publication or subsequent admission failure can leave the
+outcome uncertain: clients retain the edited text and refresh session history
+before another attempt. The frontend owns editing, confirmation and draft
+recovery; core owns eligibility, persistence, queueing and run admission.
+
 Cancellation is cooperative but propagated across the full call path: model
 SSE reads, native tools, command process trees, MCP waits, WASM execution, and
 plugin-host model/question waits observe the shared token. Components that may

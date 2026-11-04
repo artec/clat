@@ -1,9 +1,9 @@
 //! Ephemeral followups: never journaled, never automatically submitted.
 use super::*;
 use crate::plugins::services::UtilityTask;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct FollowupReply {
     pub run_id: String,
     pub status: String,
@@ -29,7 +29,7 @@ pub struct PreparedFollowups {
     cancel: crate::CancelToken,
 }
 impl TrustedProjectApplication {
-    pub(crate) fn register_followup_run(&self, run: &str, completed: bool) {
+    pub fn register_followup_run(&self, run: &str, completed: bool) {
         if self.utility.is_none() {
             return;
         }
@@ -109,6 +109,13 @@ impl TrustedProjectApplication {
         retry: bool,
     ) -> Result<Option<PreparedFollowups>, ApplicationError> {
         self.utility_service()?;
+        if self.workflow_ready()
+            || !self.next_turn_queue().is_empty()
+            || !self.pending_inputs().items.is_empty()
+            || self.pending_inputs().interrupting
+        {
+            return Ok(None);
+        }
         let snapshot = self.followup_snapshot();
         if snapshot.run_id != run || run.is_empty() {
             return Ok(None);
@@ -141,7 +148,7 @@ impl TrustedProjectApplication {
     }
 }
 impl PreparedFollowups {
-    pub fn generate(self) {
+    pub fn generate(self) -> FollowupReply {
         let _ = self.suggestion.execute(&self.cancel, |result| {
             let result = result.and_then(|output| parse_followups(&output.text));
             let mut store = self.store.lock().expect("followups");
@@ -159,6 +166,14 @@ impl PreparedFollowups {
                 Err(_) => slot.reply.status = "failed".into(),
             }
         });
+        self.store
+            .lock()
+            .expect("followups")
+            .sessions
+            .get(&self.session)
+            .filter(|slot| slot.run == self.run && !self.cancel.is_cancelled())
+            .map(|slot| slot.reply.clone())
+            .unwrap_or_default()
     }
 }
 fn parse_followups(text: &str) -> Result<Vec<String>, String> {

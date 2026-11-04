@@ -122,7 +122,44 @@ impl GitService {
             if staged { "index" } else { "worktree" },
         )?;
         result["previousPath"] = json!(previous);
+        if result["binary"] != true {
+            result["patch"] =
+                json!(self.working_patch(path, previous, staged, status == "??", &result)?);
+        }
         Ok(result)
+    }
+
+    fn working_patch(
+        &self,
+        path: &str,
+        previous: &str,
+        staged: bool,
+        untracked: bool,
+        diff: &Value,
+    ) -> Result<String, String> {
+        if untracked {
+            return Ok(diff["right"]
+                .as_str()
+                .unwrap_or("")
+                .lines()
+                .map(|line| format!("+{line}\n"))
+                .collect());
+        }
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--relative",
+        ];
+        if staged {
+            args.push("--cached");
+        }
+        args.extend(["--", path]);
+        if previous != path {
+            args.push(previous);
+        }
+        String::from_utf8(query(&self.project, &args)?).map_err(|_| "git_encoding".into())
     }
     fn blob(&self, object: &str) -> Result<Vec<u8>, String> {
         if query(&self.project, &["cat-file", "-e", object]).is_err() {

@@ -60,7 +60,7 @@ impl InputQueue {
             .ok_or("input already received")?;
         check(&state.entries[index], version)?;
         transfer(&state.entries[index])?;
-        Ok(state.entries.remove(index).expect("checked input").view)
+        Ok(remove_checked(&mut state, index, id).view)
     }
 
     pub(crate) fn receipt(
@@ -109,7 +109,7 @@ impl InputQueue {
             .position(|e| e.view.id == id)
             .ok_or("input already received")?;
         check(&state.entries[index], version)?;
-        Ok(state.entries.remove(index).expect("checked input"))
+        Ok(remove_checked(&mut state, index, id))
     }
 
     pub(crate) fn entry(&self, id: &str, version: u64) -> Result<Entry, String> {
@@ -122,6 +122,16 @@ impl InputQueue {
         check(entry, version)?;
         Ok(entry.clone())
     }
+}
+
+fn remove_checked(state: &mut State, index: usize, id: &str) -> Entry {
+    if state.initial.as_deref() == Some(id) {
+        state.initial = None;
+    }
+    if state.handoff.as_deref() == Some(id) {
+        state.handoff = None;
+    }
+    state.entries.remove(index).expect("checked input")
 }
 
 fn check(entry: &Entry, version: u64) -> Result<(), String> {

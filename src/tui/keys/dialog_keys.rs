@@ -10,6 +10,14 @@ impl App {
         // ask-user 对话框独占按键（S9）：worker 阻塞等待应答，直到选择、
         // 自定义提交或拒绝。
         if self.pending_ask_user.is_some() {
+            if self
+                .pending_ask_user
+                .as_ref()
+                .is_some_and(|pending| pending.plan_review.is_some())
+            {
+                self.handle_plan_review_key(key);
+                return true;
+            }
             self.handle_ask_dialog_key(key);
             return true;
         }

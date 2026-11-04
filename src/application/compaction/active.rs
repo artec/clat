@@ -258,6 +258,7 @@ impl ActiveContext {
             self.record_unapplied(outcome, "summary would not reduce the active context")?;
             return Ok(false);
         }
+        let session = self.sessions.active_id();
         let seq = write_compaction_events(
             self.journal.as_ref(),
             shadowed,
@@ -273,7 +274,8 @@ impl ActiveContext {
             self.checkpoints.remove(&node.seq);
         }
         self.checkpoints
-            .insert(seq, candidate.checkpoint().to_owned());
+            .insert(seq.replace_seq, candidate.checkpoint().to_owned());
+        seq.notify(session, &self.subscribers);
         Ok(true)
     }
 

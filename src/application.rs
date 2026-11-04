@@ -96,6 +96,7 @@ mod language_intelligence_tests;
 mod memory_tests;
 mod model_settings;
 mod next_turn;
+mod rewind;
 pub use next_turn::NextTurnItem;
 mod plugin_control;
 pub use model_settings::{
@@ -214,7 +215,7 @@ impl ApplicationError {
 
     /// Whether the requested operation committed a new session selection
     /// before reporting a later cleanup/persistence error.
-    pub(crate) fn selection_changed(&self) -> bool {
+    pub fn selection_changed(&self) -> bool {
         self.selection_changed
     }
 
@@ -273,6 +274,13 @@ pub enum ApplicationEvent {
     MonitorUpdated(Option<String>),
     /// 自动压缩的结果提示；绝不携带 RunEvent 语义（协议冻结）。
     CompactionUpdated(CompactionStatus),
+    /// A committed summary, sent after its existing journal family is durable.
+    CompactionRecorded {
+        session: crate::SessionId,
+        seq: u64,
+        summary: String,
+        disclosure: crate::session::replay::CompactionDisclosure,
+    },
     /// 会话标题变化（自动命名/用户改名落盘成功后广播一次）。前端据此
     /// 刷新标题显示，无需重新拉快照。
     TitleUpdated {

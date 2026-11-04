@@ -4438,3 +4438,71 @@ fn serve_e2e_host_native_jobs() {
 
 #[path = "model_setup_tests.rs"]
 mod model_setup;
+
+#[test]
+fn selected_next_turn_requires_scope_and_preserves_other_queued_items() {
+    let (handle, storage, project) =
+        spawn_serve("serve-selected-next-turn", TestBehavior::RunCommandPerTurn);
+    post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "permission.set",
+        r#"{"mode":"read-only"}"#,
+    );
+    let mut client = SseClient::connect(handle.addr);
+    prompt_send(handle.addr, "first task");
+    client.wait_for("approval.requested", WAIT);
+    for (id, text) in [("one", "first queued"), ("two", "second queued")] {
+        let body = serde_json::json!({"clientMessageId":id,"text":text}).to_string();
+        let (_, queued) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.enqueue", &body);
+        assert_eq!(queued["ok"], true, "{queued}");
+    }
+    let (_, info) = post_rpc_json(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    let session = info["value"]["session"]["id"].as_str().unwrap();
+    let generation = info["value"]["selection_generation"].as_u64().unwrap();
+    let request = serde_json::json!({
+        "session":session,"expected_selection_generation":generation,
+        "operationId":"select-1","itemId":"one"
+    })
+    .to_string();
+    let (_, selected) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.select", &request);
+    assert_eq!(
+        selected["value"]["item"]["text"], "first queued",
+        "{selected}"
+    );
+    let (_, retry) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.select", &request);
+    assert_eq!(retry["value"]["item"]["text"], "first queued");
+    let (_, list) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.list", "{}");
+    assert_eq!(list["value"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(list["value"]["items"][0]["id"], "two");
+    let stale = serde_json::json!({
+        "session":session,"expected_selection_generation":generation + 1,
+        "operationId":"select-2","itemId":"two"
+    })
+    .to_string();
+    let (_, refused) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.select", &stale);
+    assert_eq!(refused["ok"], false);
+    let (_, list) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.list", "{}");
+    assert_eq!(list["value"]["items"][0]["id"], "two");
+    post_rpc_json(handle.addr, TEST_TOKEN, "run.cancel", "{}");
+    client.wait_settled();
+    let (_, recalled) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "queue.recall",
+        r#"{"clientMessageId":"clear-last"}"#,
+    );
+    assert_eq!(recalled["value"]["item"]["id"], "two");
+    let (_, switched) = post_rpc_json(handle.addr, TEST_TOKEN, "session.new", "{}");
+    assert_eq!(switched["ok"], true, "{switched}");
+    let (_, replay) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.select", &request);
+    assert_eq!(replay["value"]["item"]["text"], "first queued");
+    let forged = serde_json::json!({
+        "session":"other-session","expected_selection_generation":generation,
+        "operationId":"select-1","itemId":"one"
+    })
+    .to_string();
+    let (_, refused) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.select", &forged);
+    assert_eq!(refused["ok"], false, "receipts must remain session-scoped");
+    cleanup(handle, &storage, &project);
+}

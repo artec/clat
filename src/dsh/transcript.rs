@@ -69,6 +69,19 @@ impl DshTranscript {
         if replay_events.is_empty() {
             return advanced;
         }
+        if replay_events.len() == 1 && model.record_replay_compaction(&replay_events[0]) {
+            return true;
+        }
+        if replay_events.iter().all(|event| {
+            matches!(
+                event,
+                crate::session::replay::ReplayEvent::PermissionChecked { .. }
+                    | crate::session::replay::ReplayEvent::RetryScheduled { .. }
+            )
+        }) {
+            model.apply_replay(&replay_events);
+            return true;
+        }
         // 任何落定事件都会终结流式预览：丢弃开放态项，让权威形态进入。
         model.discard_open_stream_assistant();
         model.apply_replay(&replay_events);
@@ -126,6 +139,79 @@ mod tests {
 
     fn surface(kind: &str, seq: u64, data: serde_json::Value) -> SessionEvent {
         event(kind, seq, data).append(Vec::new())
+    }
+
+    #[test]
+    fn live_retry_preserves_assistant_stream_and_retains_journal_identity() {
+        let mut transcript = DshTranscript::new();
+        let mut model = ConversationModel::new();
+        transcript.apply(
+            &mut model,
+            &event(
+                "assistant/chunk",
+                1,
+                json!({"chunk":{"type":"text-delta","text":"before "}}),
+            ),
+        );
+        transcript.apply(&mut model, &event("llm/retry", 2, json!({"turn":1,"step":1,"retry":1,"maxRetries":3,"delayMs":20,"failure":{"message":"busy","code":"server"}})));
+        transcript.apply(
+            &mut model,
+            &event(
+                "assistant/chunk",
+                3,
+                json!({"chunk":{"type":"text-delta","text":"after"}}),
+            ),
+        );
+        let rows = model.visible_lines(0, 30, 80, ToolCardVisibility::Collapsed);
+        let text = rows
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("before after"), "{text}");
+        assert!(text.contains("busy"), "{text}");
+        assert_eq!(model.first_replay_seq(), Some(2));
+    }
+
+    #[test]
+    fn live_compaction_does_not_discard_unsettled_assistant_chunks() {
+        let mut transcript = DshTranscript::new();
+        let mut model = ConversationModel::new();
+        transcript.apply(
+            &mut model,
+            &event(
+                "assistant/chunk",
+                1,
+                json!({"chunk":{"type":"text-delta","text":"before "}}),
+            ),
+        );
+        transcript.apply(
+            &mut model,
+            &event(
+                "compaction/summary",
+                2,
+                json!({
+                    "compactionId":"c1", "summary":[{"type":"text","text":"summary"}],
+                    "shadowedRange":{"start":1,"end":1}, "shadowedSeqs":[1]
+                }),
+            ),
+        );
+        transcript.apply(
+            &mut model,
+            &event(
+                "assistant/chunk",
+                3,
+                json!({"chunk":{"type":"text-delta","text":"after"}}),
+            ),
+        );
+        let rows = model.visible_lines(0, 30, 80, ToolCardVisibility::Collapsed);
+        let text = rows
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("before after"), "{text}");
+        assert_eq!(model.first_replay_seq(), Some(2));
     }
 
     #[test]

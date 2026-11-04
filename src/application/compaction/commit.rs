@@ -4,6 +4,7 @@ use crate::tool::ToolDefinition;
 
 pub(in crate::application) struct IdleCompaction<'a> {
     pub sessions: &'a SessionService,
+    pub subscribers: &'a Arc<Mutex<Vec<std::sync::mpsc::Sender<ApplicationEvent>>>>,
     pub journal: &'a dyn RunJournal,
     pub compactor: &'a dyn HistoryCompactor,
     pub config: &'a ModelConfig,
@@ -100,7 +101,7 @@ impl IdleCompaction<'_> {
         {
             return Err("compaction would shadow the protected system head".into());
         }
-        write_compaction_events(
+        let committed = write_compaction_events(
             self.journal,
             shadowed,
             candidate.checkpoint(),
@@ -112,6 +113,7 @@ impl IdleCompaction<'_> {
         self.sessions
             .sync_active()
             .map_err(|error| error.to_string())?;
+        committed.notify(session, self.subscribers);
         Ok(CompactReport {
             shadowed_count: plan.range().len(),
             degraded: outcome.degraded.clone(),

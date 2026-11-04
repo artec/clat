@@ -478,6 +478,18 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
             ),
         ]),
         ApplicationEvent::CompactionUpdated(status) => compaction_notice(status),
+        ApplicationEvent::CompactionRecorded {
+            session,
+            seq,
+            summary,
+            disclosure,
+        } => object(vec![
+            ("kind", Value::String("compaction_recorded".into())),
+            (
+                "payload",
+                json!({"session": session.as_str(), "seq": seq, "summary": summary, "disclosure": disclosure}),
+            ),
+        ]),
         ApplicationEvent::TitleUpdated { title } => object(vec![
             ("kind", Value::String("title".into())),
             (

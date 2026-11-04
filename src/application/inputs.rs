@@ -11,6 +11,12 @@ pub(super) struct TransientInputs {
     pub(super) next_turn: std::collections::VecDeque<super::next_turn::NextTurnItem>,
     pub(super) recalled_next_turn:
         std::collections::VecDeque<(String, Option<super::next_turn::NextTurnItem>)>,
+    pub(super) selected_next_turn_receipts: std::collections::VecDeque<(
+        String,
+        String,
+        Option<String>,
+        Option<super::next_turn::NextTurnItem>,
+    )>,
 }
 
 pub(super) struct InputPreparationError {
@@ -164,7 +170,7 @@ impl TrustedProjectApplication {
         }
     }
 
-    pub(crate) fn start_pending_input(
+    pub fn start_pending_input(
         &mut self,
         mut request: ApplicationRunRequest,
     ) -> Result<Option<RunHandle>, ApplicationError> {

@@ -2453,6 +2453,19 @@ fn session_usage_accumulates_live_during_a_run() {
     assert_eq!(harness.app.session_usage.input_tokens, 200);
     assert_eq!(harness.app.session_usage.cached_input_tokens, Some(170));
     assert!(!harness.app.running, "the run finished");
+    // A duplicate terminal event cannot account the same run twice or
+    // launch another round of automatic suggestions.
+    harness.event(UiEvent::Worker(WorkerMessage::Done {
+        epoch: harness.app.run_epoch,
+        result: Ok(crate::ApplicationRunDone {
+            receipt: None,
+            output: "done".into(),
+            turns: 2,
+            usage: usage(200, Some(170)),
+            cancelled: false,
+        }),
+    }));
+    assert_eq!(harness.app.session_usage.input_tokens, 200);
 }
 
 /// W1-13：收尾窗口竞态——run1 封口（busy=false、completion 在途）时用户

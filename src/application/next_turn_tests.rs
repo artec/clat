@@ -234,3 +234,45 @@ fn lost_recall_reply_remains_recoverable_after_session_switch() {
     app.close().unwrap();
     std::fs::remove_dir_all(storage.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn selected_queue_recall_preserves_order_and_replays_receipts() {
+    let (mut app, storage, handle, result, release) = queued_fixture("selected-next-turn");
+    app.enqueue_next_turn("second".into(), "second task".into())
+        .unwrap();
+    app.enqueue_next_turn("third".into(), "third task".into())
+        .unwrap();
+    let selected = app
+        .recall_selected_next_turn("op-1", "second")
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.text, "second task");
+    assert_eq!(
+        app.recall_selected_next_turn("op-1", "second").unwrap(),
+        Some(selected)
+    );
+    assert!(app.recall_selected_next_turn("op-1", "third").is_err());
+    assert_eq!(
+        app.next_turn_queue()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["queued-1", "third"]
+    );
+    assert_eq!(
+        app.recall_selected_next_turn("op-2", "second").unwrap(),
+        None
+    );
+    release.send(()).unwrap();
+    handle.join().unwrap();
+    result
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    assert!(app.recall_next_turn().is_some());
+    assert!(app.recall_next_turn().is_some());
+    app.new_session().unwrap();
+    assert!(app.recall_selected_next_turn("op-1", "second").is_err());
+    app.close().unwrap();
+    std::fs::remove_dir_all(storage.parent().unwrap()).unwrap();
+}

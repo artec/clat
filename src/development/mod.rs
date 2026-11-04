@@ -8,12 +8,14 @@ use std::sync::{Arc, Mutex};
 mod editor;
 mod errors;
 mod git;
+mod git_read;
 use crate::plugin::lifecycle;
 pub(crate) mod plugin;
 mod rename;
 mod store;
 mod terminal;
 pub use git::GitModel;
+pub use git_read::{GitReadClient, GitReadQuery};
 pub use store::OperationView;
 
 pub struct DevelopmentService {

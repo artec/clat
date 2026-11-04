@@ -80,6 +80,53 @@ fn rendered_text(app: &mut App) -> String {
         .join("\n")
 }
 
+#[test]
+fn dsh_live_round_clock_and_fold_share_replay_identity() {
+    let (mut app, _) = dsh_app();
+    app.dsh_reduce_session_event(
+        "session-test",
+        session_event("turn/start", 1, json!({"turn": 1})),
+    );
+    app.dsh_reduce_session_event(
+        "session-test",
+        surface(
+            "user/message",
+            2,
+            json!({"content":[{"type":"text","text":"question"}]}),
+        ),
+    );
+    assert!(app.conversation.live_clock_running());
+    app.dsh_reduce_session_event(
+        "session-test",
+        surface(
+            "assistant/message",
+            3,
+            json!({"turn":1,"step":1,"content":[{"type":"text","text":"answer"}]}),
+        ),
+    );
+    app.dsh_reduce_session_event(
+        "session-test",
+        session_event(
+            "turn/end",
+            4,
+            json!({"turn":1,"reason":{"kind":"completed"}}),
+        ),
+    );
+    assert!(!app.conversation.live_clock_running());
+    app.conversation.set_rounds_context(false);
+    assert_eq!(
+        app.conversation
+            .round_summaries(80, ToolCardVisibility::Collapsed)
+            .len(),
+        1
+    );
+    assert!(
+        app.conversation
+            .toggle_replay_round_at(0, usize::MAX, ToolCardVisibility::Collapsed)
+            .is_some()
+    );
+}
+
 /// §0-2（断线自动重连拍板）：LinkDown → 断线态 + 重连排程；到点
 /// poll 发 Reconnect 任务且单飞；任务在途不重发（判别：删掉排程
 /// 或单飞守卫即红）。
@@ -265,7 +312,7 @@ fn dsh_history_pages_load_on_scroll_with_single_flight_and_stable_anchor() {
     app.conversation_rows = app.conversation.total_lines(app.card_visibility);
     app.conversation_scroll_from_bottom = 3;
     assert!(app.conversation.toggle_reasoning());
-    let lines_before = app.conversation_rows;
+    let anchor = app.conversation.row_anchor(0, app.card_visibility).unwrap();
 
     app.maybe_load_older_conversation();
     app.maybe_load_older_conversation();
@@ -312,11 +359,18 @@ fn dsh_history_pages_load_on_scroll_with_single_flight_and_stable_anchor() {
             has_more: false,
         }),
     );
-    let lines_after = app.conversation_rows;
+    let anchor_row = app
+        .conversation
+        .row_for_anchor(anchor, app.card_visibility)
+        .unwrap();
     assert_eq!(
-        app.conversation_scroll_from_bottom,
-        3 + lines_after.saturating_sub(lines_before),
-        "prepend line count compensates the bottom anchor"
+        app.conversation_start, anchor_row,
+        "the same message remains the reading anchor"
+    );
+    assert!(
+        app.conversation
+            .row_plain_text(anchor_row, 77, app.card_visibility)
+            .contains("newest page")
     );
     assert!(!app.conversation_has_more);
     assert!(!app.conversation_history_loading);

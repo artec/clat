@@ -73,6 +73,32 @@ impl EventSink for RecorderHandle {
     }
 }
 
+struct CompactionCommit {
+    replace_seq: u64,
+    summary: String,
+    disclosure: crate::session::replay::CompactionDisclosure,
+}
+
+impl CompactionCommit {
+    fn notify(
+        self,
+        session: Option<crate::SessionId>,
+        subscribers: &Arc<Mutex<Vec<std::sync::mpsc::Sender<ApplicationEvent>>>>,
+    ) {
+        if let Some(session) = session {
+            broadcast_to(
+                subscribers,
+                ApplicationEvent::CompactionRecorded {
+                    session,
+                    seq: self.replace_seq - 1,
+                    summary: self.summary,
+                    disclosure: self.disclosure,
+                },
+            );
+        }
+    }
+}
+
 /// 事件族 + replace 载体一次原子提交并 flush（plan §13.4；compaction
 /// 事件族与 user/message 的邻接是契约）。
 fn write_compaction_events(
@@ -83,7 +109,7 @@ fn write_compaction_events(
     config: &ModelConfig,
     turn: u64,
     revision: Option<u64>,
-) -> Result<u64, String> {
+) -> Result<CompactionCommit, String> {
     if shadowed.is_empty() {
         return Err("compaction shadowed an empty range".into());
     }
@@ -125,7 +151,11 @@ fn write_compaction_events(
         .log_only(),
     ];
     let committed = journal.append_atomic_durable_at(revision, &family)?;
-    Ok(committed.start + 2)
+    Ok(CompactionCommit {
+        replace_seq: committed.start + 2,
+        summary: summary.to_owned(),
+        disclosure: crate::session::replay::CompactionDisclosure::from_data(&family[1].data),
+    })
 }
 
 /// 手动压缩结果报告。

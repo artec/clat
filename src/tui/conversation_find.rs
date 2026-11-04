@@ -20,10 +20,12 @@ impl App {
             .find(|m| Some((m.identity, m.offset)) == active)
             .or(matches.first());
         if let Some(hit) = hit {
-            self.discovery.find.as_mut().unwrap().active = Some((hit.identity, hit.offset));
+            let target = (hit.identity, hit.offset);
+            let row = self.reveal_find_target(target).unwrap_or(hit.row);
+            self.discovery.find.as_mut().unwrap().active = Some(target);
             let total = self.conversation.total_lines(self.card_visibility);
             self.conversation_scroll_from_bottom =
-                total.saturating_sub(self.conversation_visible_rows() + hit.row);
+                total.saturating_sub(self.conversation_visible_rows() + row);
         }
     }
 
@@ -139,10 +141,22 @@ impl App {
             .unwrap_or(0);
         let index = (index as isize + direction).rem_euclid(matches.len() as isize) as usize;
         let hit = &matches[index];
-        self.discovery.find.as_mut().unwrap().active = Some((hit.identity, hit.offset));
+        let target = (hit.identity, hit.offset);
+        let row = self.reveal_find_target(target).unwrap_or(hit.row);
+        self.discovery.find.as_mut().unwrap().active = Some(target);
         let total = self.conversation.total_lines(self.card_visibility);
         self.conversation_scroll_from_bottom =
-            total.saturating_sub(self.conversation_visible_rows() + hit.row);
+            total.saturating_sub(self.conversation_visible_rows() + row);
+    }
+
+    fn reveal_find_target(&mut self, target: (u64, usize)) -> Option<usize> {
+        if !self.conversation.expand_round_for_identity(target.0) {
+            return None;
+        }
+        self.body_matches()
+            .iter()
+            .find(|hit| (hit.identity, hit.offset) == target)
+            .map(|hit| hit.row)
     }
 
     pub(super) fn draw_conversation_find(&mut self, frame: &mut Frame) {

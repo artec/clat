@@ -3,6 +3,16 @@ use super::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::json;
 
+#[derive(Clone)]
+pub(super) struct SelectedQueueRetry {
+    pub operation: String,
+    pub item_id: String,
+    pub session: String,
+    pub selection: u64,
+    pub recall: bool,
+    pub text: String,
+}
+
 impl App {
     pub(super) fn handle_next_turn_key(&mut self, key: KeyEvent) -> bool {
         let enqueue = key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q');
@@ -45,6 +55,129 @@ impl App {
         true
     }
 
+    pub(super) fn select_next_turn(
+        &mut self,
+        item: &crate::application::NextTurnItem,
+        recall: bool,
+    ) {
+        if let Some(native) = &mut self.native {
+            if !native.online || native.queue_pending {
+                self.flash_message(UiMessage::new("tui.queue_offline"));
+                return;
+            }
+            let Some(session) = self.session_id.as_ref().map(|id| id.as_str().to_owned()) else {
+                return;
+            };
+            if native.selected_queue_retry.as_ref().is_some_and(|retry| {
+                retry.session != session || retry.item_id != item.id || retry.recall != recall
+            }) {
+                self.flash_message(UiMessage::new("tui.queue_retry_pending"));
+                return;
+            }
+            let retry = native
+                .selected_queue_retry
+                .get_or_insert_with(|| SelectedQueueRetry {
+                    operation: uuid::Uuid::new_v4().to_string(),
+                    item_id: item.id.clone(),
+                    session,
+                    selection: native.selection,
+                    recall,
+                    text: item.text.clone(),
+                });
+            retry.selection = native.selection;
+            let retry = retry.clone();
+            let (client, epoch, ui) = (
+                native.client.clone(),
+                native.epoch,
+                self.event_sender.clone(),
+            );
+            let Some(ui) = ui else { return };
+            native.queue_pending = true;
+            thread::spawn(move || {
+                let result = client.call("queue.select", &json!({
+                    "operationId":retry.operation, "itemId":retry.item_id,
+                    "session":retry.session, "expected_selection_generation":retry.selection,
+                })).map_err(|error| error.to_string());
+                let _ = ui.send(UiEvent::Native(native::NativeEvent::SelectedNextTurn {
+                    epoch,
+                    operation: retry.operation,
+                    selection: retry.selection,
+                    session: retry.session,
+                    recall: retry.recall,
+                    result,
+                }));
+            });
+            return;
+        }
+        let Some(application) = &mut self.application else {
+            return;
+        };
+        let operation = uuid::Uuid::new_v4().to_string();
+        match application.recall_selected_next_turn(&operation, &item.id) {
+            Ok(Some(selected)) => {
+                if recall {
+                    self.input.prepend_recalled_line(&selected.text);
+                }
+                self.flash_message(UiMessage::new(if recall {
+                    "tui.queue_recalled"
+                } else {
+                    "tui.queue_removed"
+                }));
+            }
+            Ok(None) => self.flash_message(UiMessage::new("tui.queue_item_missing")),
+            Err(error) => self.flash_message(error.presentation()),
+        }
+    }
+
+    pub(super) fn selected_next_turn_reply(
+        &mut self,
+        epoch: u64,
+        operation: String,
+        selection: u64,
+        session: String,
+        recall: bool,
+        result: Result<serde_json::Value, String>,
+    ) {
+        let Some(native) = &mut self.native else {
+            return;
+        };
+        if !native
+            .selected_queue_retry
+            .as_ref()
+            .is_some_and(|retry| retry.operation == operation)
+        {
+            return;
+        }
+        if result.is_ok() {
+            native.selected_queue_retry = None;
+        }
+        let same_view = native.epoch == epoch && native.selection == selection;
+        if recall && result.as_ref().is_ok_and(|value| value["item"].is_object()) {
+            self.native_next_turn_reply(
+                (epoch, selection, Some(session)),
+                String::new(),
+                true,
+                result,
+            );
+            return;
+        }
+        if native.epoch == epoch {
+            native.queue_pending = false;
+        }
+        if same_view {
+            match result {
+                Ok(value) if value["item"].is_object() => {
+                    self.flash_message(UiMessage::new("tui.queue_removed"))
+                }
+                Ok(_) => self.flash_message(UiMessage::new("tui.queue_item_missing")),
+                Err(error) => self.flash_message(
+                    UiMessage::new("tui.message_queue_operation_failed_value").arg("error", error),
+                ),
+            }
+        }
+        self.refresh_native();
+    }
+
     pub(super) fn dispatch_next_turn(&mut self) {
         if let Some(item) = self
             .application
@@ -56,8 +189,12 @@ impl App {
     }
 
     pub(super) fn next_turn_summary(&self) -> Option<String> {
-        let texts = if let Some(native) = &self.native {
-            native.next_turn.clone()
+        let texts: Vec<String> = if let Some(native) = &self.native {
+            native
+                .next_turn
+                .iter()
+                .map(|item| item.text.clone())
+                .collect()
         } else {
             self.application
                 .as_ref()?

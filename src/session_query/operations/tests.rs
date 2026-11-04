@@ -98,6 +98,46 @@ fn operations_pair_by_turn_and_call_sequence_not_reused_wire_id() {
     assert!(!detail.arguments.unwrap().contains("private-value"));
     assert!(!detail.result.unwrap().contains("never-show"));
 }
+
+#[test]
+fn rust_maintenance_failure_is_independent_of_the_original_operation_result() {
+    let f = Fixture::new();
+    let handle = f.write("/tmp/query-one", "rust-warning", "hello");
+    let output =
+        json!({"bytes":42,"rust_support":[{"status":"failed","error":"Cargo diagnostic"}]});
+    append(
+        &f,
+        handle,
+        1,
+        &[
+            event("turn/start", 1, payloads::turn_start(1)),
+            call(2, 1, "write", "write_file"),
+            event(
+                "tool/result",
+                3,
+                payloads::tool_result(1, 0, "write", payloads::tool_result_content(&output), false),
+            ),
+        ],
+    );
+    let rows = f
+        .service
+        .operations(request(&f, "rust-warning"), &CancelToken::new())
+        .unwrap()
+        .rows;
+    assert_eq!(rows[0].status, "succeeded");
+    assert!(rows[0].rust_sync_failed);
+    let detail = f
+        .service
+        .operation_detail(
+            OperationDetailRequest {
+                reference: f.reference("rust-warning", 0),
+                id: "call:2".into(),
+            },
+            &CancelToken::new(),
+        )
+        .unwrap();
+    assert!(detail.result.unwrap().contains("Cargo diagnostic"));
+}
 #[test]
 fn operations_cursor_freezes_prefix_and_accepts_later_append_without_duplicates() {
     let f = Fixture::new();

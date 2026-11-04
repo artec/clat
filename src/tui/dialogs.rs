@@ -27,6 +27,7 @@ pub(super) struct PendingAskUser {
     pub(super) answer_tx: Sender<crate::interaction::AskAnswer>,
     pub(super) selection: usize,
     pub(super) custom: Option<String>,
+    pub(super) plan_review: Option<super::plan_review::PlanReview>,
 }
 
 /// 信息弹窗（/help、/mcp）的种类。两类共用滚动/翻页/绘制骨架；键位

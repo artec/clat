@@ -49,6 +49,7 @@ impl OperationScan {
                         target,
                         status: "unfinished".into(),
                         result_seq: None,
+                        rust_sync_failed: false,
                     },
                 );
             }
@@ -77,8 +78,12 @@ impl OperationScan {
                     target: String::new(),
                     status: "unknown".into(),
                     result_seq: None,
+                    rust_sync_failed: false,
                 });
                 row.result_seq = Some(seq);
+                row.rust_sync_failed = output["rust_support"].as_array().is_some_and(|reports| {
+                    reports.iter().any(|report| report["status"] == "failed")
+                });
                 if matched.is_some() {
                     row.status = if is_error { "failed" } else { "succeeded" }.into();
                 }

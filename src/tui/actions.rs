@@ -160,6 +160,7 @@ impl App {
             .switch_session_tail(session_id.clone(), CONVERSATION_HISTORY_PAGE_MESSAGES)
             .map_err(|error| error.to_string())?;
         let snapshot = window.snapshot;
+        self.clear_followups();
         self.session_id = Some(session_id);
         self.session_title = snapshot.session_title;
         // 转录从回放重建（G2/G8）；输入历史随会话切换：恢复目标会话
@@ -189,6 +190,7 @@ impl App {
         self.pending_native_steering.clear();
         self.native_steering_claim_credits.clear();
         self.recovered_native_steering.clear();
+        self.restore_local_followups();
         Ok(())
     }
 

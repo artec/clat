@@ -156,6 +156,40 @@ fn pending_input_idle_submission_starts_before_paused_messages_without_reorderin
 }
 
 #[test]
+fn removing_preferred_input_does_not_block_later_inputs() {
+    let queue = InputQueue::default();
+    queued(&queue, "removed");
+    queue.prefer_initial("removed".into());
+    queue.remove("removed", 1).unwrap();
+    queued(&queue, "next");
+    queue.prefer_initial("next".into());
+    assert_eq!(
+        queue.claim(true).unwrap().client_message_id.as_deref(),
+        Some("next")
+    );
+}
+
+#[test]
+fn recalling_preferred_input_preserves_reservation_on_failure_and_releases_it_on_success() {
+    let queue = InputQueue::default();
+    queued(&queue, "original");
+    queue.prefer_initial("original".into());
+    assert!(
+        queue
+            .recall("original", 1, |_| Err("draft unavailable".into()))
+            .is_err()
+    );
+    assert_eq!(queue.snapshot().items[0].id, "original");
+    queue.recall("original", 1, |_| Ok(())).unwrap();
+    queued(&queue, "next");
+    queue.prefer_initial("next".into());
+    assert_eq!(
+        queue.claim(true).unwrap().client_message_id.as_deref(),
+        Some("next")
+    );
+}
+
+#[test]
 fn pending_input_late_receipt_cannot_remove_unclaimed_or_different_content() {
     let queue = InputQueue::default();
     queued(&queue, "human");

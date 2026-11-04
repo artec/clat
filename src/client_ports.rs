@@ -17,6 +17,9 @@ pub mod schedules {
 pub mod web {
     pub use crate::application::{FetchProvider, WebSettingsEdit, WebSettingsView};
 }
+pub mod git_read {
+    pub use crate::development::{GitReadClient, GitReadQuery};
+}
 pub use crate::session::id::SessionId;
 pub use crate::session::use_cases::SessionSummary;
 // AG-DOGFOOD-4 返工 F1（E4）：前端展示面共享 core 的单一脱敏原语
@@ -79,7 +82,9 @@ pub mod session {
         pub use crate::session::path_layout::{encode_segment, project_key};
     }
     pub mod replay {
-        pub use crate::session::replay::{ReplayAdapter, ReplayEvent, ReplayTurnEnd};
+        pub use crate::session::replay::{
+            CompactionDisclosure, ReplayAdapter, ReplayEvent, ReplayRetryFailure, ReplayTurnEnd,
+        };
     }
     pub mod attachments {
         pub use crate::session::attachments::{MAX_IMAGES_PER_MESSAGE, MAX_RAW_BATCH_BYTES};

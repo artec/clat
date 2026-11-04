@@ -83,37 +83,123 @@ impl App {
         }
     }
 
-    /// Preserve the viewport's bottom-relative anchor across a prefix insert.
-    /// The line delta is measured after full item rendering, so multi-line
-    /// Think disclosures and wrapped tool cards participate automatically.
+    /// Preserve item identities across a prefix insert and changes in folding.
     pub(super) fn prepend_conversation_page(
         &mut self,
         events: &[crate::session::replay::ReplayEvent],
         has_more: bool,
     ) {
         let width = conversation_wrap_width(self.conversation_area);
+        self.conversation
+            .set_rounds_context(self.conversation_has_more);
         self.conversation.ensure_rendered(width);
         let before = self.conversation.total_lines(self.card_visibility);
+        let viewport_anchor = self
+            .conversation
+            .row_anchor(self.conversation_start, self.card_visibility);
+        let selection_anchors = self
+            .selection
+            .as_ref()
+            .filter(|selection| selection.kind == SelectionKind::Conversation)
+            .map(|selection| {
+                (
+                    self.conversation
+                        .row_anchor(selection.anchor.row, self.card_visibility),
+                    self.conversation
+                        .row_anchor(selection.head.row, self.card_visibility),
+                )
+            });
         self.conversation.prepend_replay(events);
+        self.conversation.set_rounds_context(has_more);
+        self.conversation.ensure_rendered(width);
+        for anchor in [
+            viewport_anchor,
+            selection_anchors.and_then(|v| v.0),
+            selection_anchors.and_then(|v| v.1),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.conversation.preserve_round_for_identity(anchor.0);
+        }
         self.conversation.ensure_rendered(width);
         let after = self.conversation.total_lines(self.card_visibility);
         let inserted = after.saturating_sub(before);
-        self.conversation_scroll_from_bottom = self
-            .conversation_scroll_from_bottom
-            .saturating_add(inserted);
-        self.conversation_start = self.conversation_start.saturating_add(inserted);
+        let start = viewport_anchor
+            .and_then(|anchor| {
+                self.conversation
+                    .row_for_anchor(anchor, self.card_visibility)
+            })
+            .unwrap_or_else(|| self.conversation_start.saturating_add(inserted));
+        self.conversation_start = start;
+        self.conversation_scroll_from_bottom = after
+            .saturating_sub(self.conversation_visible_rows())
+            .saturating_sub(start);
         self.conversation_rows = after;
+        let mapped_selection = selection_anchors.map(|(anchor, head)| {
+            (
+                anchor.and_then(|a| self.conversation.row_for_anchor(a, self.card_visibility)),
+                head.and_then(|a| self.conversation.row_for_anchor(a, self.card_visibility)),
+            )
+        });
         if let Some(selection) = self
             .selection
             .as_mut()
             .filter(|selection| selection.kind == SelectionKind::Conversation)
         {
-            selection.anchor.row = selection.anchor.row.saturating_add(inserted);
-            selection.head.row = selection.head.row.saturating_add(inserted);
+            selection.anchor.row = mapped_selection
+                .and_then(|v| v.0)
+                .unwrap_or_else(|| selection.anchor.row.saturating_add(inserted));
+            selection.head.row = mapped_selection
+                .and_then(|v| v.1)
+                .unwrap_or_else(|| selection.head.row.saturating_add(inserted));
         }
         self.conversation_has_more = has_more;
         self.conversation_history_loading = false;
         self.conversation_history_windowed = true;
+    }
+
+    pub(super) fn toggle_compaction_at_viewport(&mut self) -> bool {
+        let width = conversation_wrap_width(self.conversation_area);
+        self.conversation.ensure_rendered(width);
+        let Some(anchor) = self.conversation.toggle_compaction_at(
+            self.conversation_start,
+            self.conversation_start + self.conversation_visible_rows(),
+            self.card_visibility,
+        ) else {
+            return false;
+        };
+        self.conversation.ensure_rendered(width);
+        let total = self.conversation.total_lines(self.card_visibility);
+        let start = self.conversation_start.min(anchor);
+        self.conversation_scroll_from_bottom = total
+            .saturating_sub(self.conversation_visible_rows())
+            .saturating_sub(start);
+        self.conversation_rows = total;
+        true
+    }
+
+    pub(super) fn toggle_round_at_viewport(&mut self) -> bool {
+        let width = conversation_wrap_width(self.conversation_area);
+        self.conversation
+            .set_rounds_context(self.conversation_has_more);
+        self.conversation.ensure_rendered(width);
+        let Some(anchor) = self.conversation.toggle_replay_round_at(
+            self.conversation_start,
+            self.conversation_start + self.conversation_visible_rows(),
+            self.card_visibility,
+        ) else {
+            return false;
+        };
+        let relative = anchor.saturating_sub(self.conversation_start);
+        self.conversation.ensure_rendered(width);
+        let total = self.conversation.total_lines(self.card_visibility);
+        let start = anchor.saturating_sub(relative);
+        self.conversation_scroll_from_bottom = total
+            .saturating_sub(self.conversation_visible_rows())
+            .saturating_sub(start);
+        self.conversation_rows = total;
+        true
     }
 
     /// 输入框文本的可用宽度：内容区宽减去行首前缀（`❯ ` / 两个空格）。
@@ -219,6 +305,7 @@ impl App {
             || self.permission_picker.is_some()
             || self.rename_dialog.is_some()
             || self.plugins.dialog.is_some()
+            || self.workbench.is_some()
         {
             frame.render_widget(
                 Block::default().style(Style::default().add_modifier(Modifier::DIM)),
@@ -276,6 +363,7 @@ impl App {
             }
         }
 
+        self.draw_workbench(frame, area);
         self.draw_runtime_dialogs(frame, area);
     }
 
@@ -543,6 +631,14 @@ impl App {
     /// 高亮，描述 dim）+ 自定义行 / 输入回显 + 键位脚注。窄屏降级为
     /// 问题 + 脚注（选项照常可按 ↑↓ 选中）。
     pub(super) fn draw_ask_dialog(&mut self, frame: &mut Frame) {
+        if self
+            .pending_ask_user
+            .as_ref()
+            .is_some_and(|pending| pending.plan_review.is_some())
+        {
+            self.draw_plan_review(frame);
+            return;
+        }
         let Some(pending) = self.pending_ask_user.as_ref() else {
             return;
         };
@@ -925,6 +1021,8 @@ impl App {
     }
 
     pub(super) fn draw_conversation(&mut self, frame: &mut Frame, area: Rect) {
+        self.conversation
+            .set_rounds_context(self.conversation_has_more);
         let block = self.conversation_block(area);
         self.draw_conversation_body(frame, area, block);
     }

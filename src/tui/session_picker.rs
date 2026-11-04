@@ -637,7 +637,7 @@ impl SessionPicker {
 
 /// 活跃时间的稳定呈现：epoch ms → `MM-DD HH:MM`（UTC，纯函数——
 /// 相对时间会随真实时钟漂移，快照需要确定性）。
-fn format_activity(epoch_ms: i64) -> String {
+pub(super) fn format_activity(epoch_ms: i64) -> String {
     let days = epoch_ms.div_euclid(86_400_000);
     let ms_of_day = epoch_ms.rem_euclid(86_400_000);
     let minutes = ms_of_day / 60_000;
@@ -645,6 +645,17 @@ fn format_activity(epoch_ms: i64) -> String {
     format!(
         "{month:02}-{day:02} {:02}:{:02}",
         (minutes / 60) % 24,
+        minutes % 60
+    )
+}
+
+pub(super) fn format_timestamp_utc(epoch_ms: i64) -> String {
+    let days = epoch_ms.div_euclid(86_400_000);
+    let minutes = epoch_ms.rem_euclid(86_400_000) / 60_000;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
+        minutes / 60,
         minutes % 60
     )
 }

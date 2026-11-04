@@ -163,6 +163,39 @@ impl InputBuffer {
         self.cursor = next_boundary(&self.text, self.cursor);
     }
 
+    /// Move between logical lines without changing the draft or its history.
+    pub fn previous_line(&mut self) {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        if start == 0 {
+            return;
+        }
+        let previous_end = start - 1;
+        let previous_start = self.text[..previous_end].rfind('\n').map_or(0, |i| i + 1);
+        let column = self.text[start..self.cursor].chars().count();
+        self.cursor = previous_start
+            + self.text[previous_start..previous_end]
+                .char_indices()
+                .nth(column)
+                .map_or(previous_end - previous_start, |(i, _)| i);
+    }
+
+    pub fn next_line(&mut self) {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        let Some(end) = self.text[self.cursor..].find('\n').map(|i| self.cursor + i) else {
+            return;
+        };
+        let next_start = end + 1;
+        let next_end = self.text[next_start..]
+            .find('\n')
+            .map_or(self.text.len(), |i| next_start + i);
+        let column = self.text[start..self.cursor].chars().count();
+        self.cursor = next_start
+            + self.text[next_start..next_end]
+                .char_indices()
+                .nth(column)
+                .map_or(next_end - next_start, |(i, _)| i);
+    }
+
     pub fn home(&mut self) {
         self.cursor = 0;
     }
@@ -394,6 +427,22 @@ pub(crate) fn normalize_pasted_newlines(text: &str) -> String {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod rewind_navigation_tests {
+    use super::InputBuffer;
+    #[test]
+    fn vertical_edit_moves_between_unicode_lines_without_changing_text() {
+        let mut input = InputBuffer::new(Vec::new());
+        input.insert_str("长行abc\n二\n终点");
+        input.previous_line();
+        input.insert_char('!');
+        assert_eq!(input.text(), "长行abc\n二!\n终点");
+        input.next_line();
+        input.insert_char('?');
+        assert_eq!(input.text(), "长行abc\n二!\n终点?");
+    }
 }
 
 #[cfg(test)]

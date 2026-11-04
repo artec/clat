@@ -104,13 +104,14 @@ impl ManualCompactionWork {
                     &subscribers,
                     ApplicationEvent::CompactionUpdated(CompactionStatus::Started),
                 );
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute()))
-                        .unwrap_or_else(|payload| {
-                            Err(UiMessage::new("compaction.worker_failed")
-                                .arg("error", crate::plugin::panic_message(payload))
-                                .into())
-                        });
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.execute(&subscribers)
+                }))
+                .unwrap_or_else(|payload| {
+                    Err(UiMessage::new("compaction.worker_failed")
+                        .arg("error", crate::plugin::panic_message(payload))
+                        .into())
+                });
                 // CB1-11：结构化结果存入 handle，供 join_report 消费。
                 if let Ok(mut slot) = report_slot.lock() {
                     *slot = Some(result.clone());
@@ -141,9 +142,13 @@ struct ManualCompactionWork {
     turn: u64,
 }
 impl ManualCompactionWork {
-    fn execute(self) -> Result<CompactReport, PresentedText> {
+    fn execute(
+        self,
+        subscribers: &Arc<Mutex<Vec<std::sync::mpsc::Sender<ApplicationEvent>>>>,
+    ) -> Result<CompactReport, PresentedText> {
         commit::IdleCompaction {
             sessions: &self.sessions,
+            subscribers,
             journal: self.journal.as_ref(),
             compactor: self.compactor.as_ref(),
             config: &self.config,

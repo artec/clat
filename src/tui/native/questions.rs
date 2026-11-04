@@ -5,11 +5,23 @@ use std::collections::VecDeque;
 
 #[derive(Default)]
 pub(super) struct NativeQuestions {
-    pending: VecDeque<(String, AskQuestion)>,
+    pending: VecDeque<(String, AskQuestion, Option<Value>)>,
     active: Option<String>,
 }
 
+impl NativeQuestions {
+    pub(in crate::tui) fn active_id(&self) -> Option<&str> {
+        self.active.as_deref()
+    }
+}
+
 impl App {
+    pub(in crate::tui) fn native_active_question(&self) -> Option<&str> {
+        self.native
+            .as_ref()
+            .and_then(|native| native.questions.active_id())
+    }
+
     pub(super) fn clear_native_questions(&mut self) {
         self.pending_ask_user = None;
         self.native.as_mut().unwrap().questions = NativeQuestions::default();
@@ -29,11 +41,37 @@ impl App {
             self.flash_message(UiMessage::new("tui.host_bad_question"));
             return;
         };
+        if let Some(document) = payload.get("plan_review").filter(|value| !value.is_null()) {
+            let session = document["session"].as_str();
+            if session.is_none()
+                || self
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|id| Some(id.as_str()) != session)
+                || session
+                    .and_then(|id| super::super::plan_review::PlanReview::new(document, id))
+                    .is_none()
+            {
+                self.flash_message(UiMessage::new("tui.host_bad_question"));
+                return;
+            }
+        }
         let questions = &mut self.native.as_mut().unwrap().questions;
-        if questions.pending.iter().any(|(pending, _)| pending == id) {
+        if questions
+            .pending
+            .iter()
+            .any(|(pending, _, _)| pending == id)
+        {
             return;
         }
-        questions.pending.push_back((id.into(), question));
+        questions.pending.push_back((
+            id.into(),
+            question,
+            payload
+                .get("plan_review")
+                .filter(|value| !value.is_null())
+                .cloned(),
+        ));
         self.show_native_question();
     }
 
@@ -44,7 +82,7 @@ impl App {
         if native.questions.active.is_some() {
             return;
         }
-        let Some((id, question)) = native.questions.pending.front().cloned() else {
+        let Some((id, question, plan)) = native.questions.pending.front().cloned() else {
             return;
         };
         native.questions.active = Some(id.clone());
@@ -54,6 +92,9 @@ impl App {
             question,
             answer_tx,
         });
+        if let Some(plan) = plan {
+            self.install_native_plan_review(&plan);
+        }
         thread::spawn(move || {
             // Dropping this local dialog is not a decline on another client's behalf.
             let Ok(answer) = receiver.recv_timeout(Duration::from_secs(600)) else {
@@ -66,9 +107,9 @@ impl App {
         });
     }
 
-    fn native_question_resolved(&mut self, id: &str) {
+    pub(in crate::tui) fn native_question_resolved(&mut self, id: &str) {
         let questions = &mut self.native.as_mut().unwrap().questions;
-        questions.pending.retain(|(pending, _)| pending != id);
+        questions.pending.retain(|(pending, _, _)| pending != id);
         if questions.active.as_deref() == Some(id) {
             questions.active = None;
             self.pending_ask_user = None;

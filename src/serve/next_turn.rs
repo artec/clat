@@ -21,6 +21,31 @@ pub(super) fn dispatch(
         let mut app = shared.app.lock().expect("application lock");
         match method {
             "queue.list" => return Ok(json!({"items": app.next_turn_queue()})),
+            "queue.select" => {
+                let generation = params
+                    .get("expected_selection_generation")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| RpcError::bad_request("selection generation is required"))?;
+                let session = params
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::bad_request("session is required"))?;
+                if generation != shared.selection_generation()
+                    || app.current_session_id().as_ref().map(|id| id.as_str()) != Some(session)
+                {
+                    return Err(RpcError::busy("session selection changed"));
+                }
+                let operation = params
+                    .get("operationId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::bad_request("operationId is required"))?;
+                let item = params
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::bad_request("itemId is required"))?;
+                json!({"item": app.recall_selected_next_turn(operation, item)
+                    .map_err(|error| RpcError::bad_request(error.to_string()))?})
+            }
             "queue.recall" => {
                 let id = params
                     .get("clientMessageId")

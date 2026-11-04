@@ -160,6 +160,7 @@ impl App {
         // 先落目标会话：Typert mux 的 follow 目标从 current_session 取。
         if let Some(dsh) = self.dsh.as_mut() {
             dsh.current_session = Some(session.clone());
+            dsh.pending_round_start = None;
         }
         // DV-10 收尾（TUI 时序修复，负责人 dogfood 病历 2026-09-07）：
         // Typert 世代的 History = page + controller.follow——mux 必须

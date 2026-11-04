@@ -2,6 +2,11 @@
 use super::*;
 pub use crate::development::{DevelopmentService, GitModel, OperationView};
 impl TrustedProjectApplication {
+    /// Cloneable background reader with no Git mutation or network operations.
+    pub fn git_read_client(&self) -> Result<crate::development::GitReadClient, ApplicationError> {
+        self.development()
+            .map(crate::development::GitReadClient::new)
+    }
     pub fn development(&self) -> Result<Arc<DevelopmentService>, ApplicationError> {
         self.development
             .clone()

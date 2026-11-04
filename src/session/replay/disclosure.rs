@@ -15,7 +15,7 @@ pub struct CompactionDisclosure {
 }
 
 impl CompactionDisclosure {
-    pub(super) fn from_data(data: &Value) -> Self {
+    pub(crate) fn from_data(data: &Value) -> Self {
         let range = data.get("shadowedRange").and_then(|range| {
             let start = range.get("start")?.as_u64()?;
             let end = range.get("end")?.as_u64()?;

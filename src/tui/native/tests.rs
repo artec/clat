@@ -7,6 +7,56 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
+fn model_settings_notice_retires_old_followups_and_stale_replies() {
+    let (mut app, storage) = shell();
+    let session = SessionId::new("current");
+    app.session_id = Some(session.clone());
+    app.followup_owner = Some(session.clone());
+    app.conversation.set_followups(vec!["old".into()]);
+    let old_epoch = app.followup_epoch;
+    let identity = app.native_selection_identity();
+    app.native_control("notice", json!({"kind":"models","payload":null}));
+    assert!(app.followup_epoch > old_epoch);
+    app.accept_followups(
+        old_epoch,
+        session,
+        identity,
+        crate::application::FollowupReply {
+            run_id: "old-run".into(),
+            status: "ready".into(),
+            items: vec!["late".into()],
+        },
+    );
+    assert!(!app.handle_followups_key(KeyEvent::from(KeyCode::F(8))));
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn compaction_notice_is_scoped_to_selected_session() {
+    let (mut app, storage) = shell();
+    app.session_id = Some(SessionId::new("current"));
+    let notice = |session: &str| {
+        json!({"kind":"compaction_recorded","payload":{
+            "session":session, "seq":42, "summary":"summary", "disclosure":{"id":"c1","records":3}
+        }})
+    };
+    app.native_control("notice", notice("different"));
+    assert!(app.conversation.is_empty());
+    app.native_control("notice", notice("current"));
+    assert!(!app.conversation.is_empty());
+    let width = 80;
+    app.conversation.ensure_rendered(width);
+    assert_eq!(
+        app.conversation
+            .toggle_compaction_at(0, 1, conversation::ToolCardVisibility::Collapsed),
+        Some(0)
+    );
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
 fn native_history_pages_decode_and_reject_old_connection_or_selection() {
     let (mut app, storage) = shell();
     let current =
@@ -781,6 +831,72 @@ fn question_notice(id: &str) -> Value {
 }
 
 #[test]
+fn native_plan_review_rejects_foreign_session_and_stale_details() {
+    let (mut app, storage) = shell();
+    let (tx, _rx) = mpsc::sync_channel(16);
+    app.event_sender = Some(tx);
+    app.native.as_mut().unwrap().online = true;
+    app.session_id = Some(SessionId::new("current"));
+    let document =
+        json!({"id":"p1","session":"current","revision":1,"title":"Plan","text":"review me"});
+    let mut foreign = question_notice("foreign");
+    foreign["payload"]["plan_review"] =
+        json!({"id":"p1","session":"other","revision":1,"title":"Plan","text":"wrong session"});
+    app.native_control("notice", foreign);
+    assert!(
+        app.pending_ask_user.is_none(),
+        "foreign plans cannot fall back to ordinary approval"
+    );
+    let mut notice = question_notice("review");
+    notice["payload"]["plan_review"] = document.clone();
+    app.native_control("notice", notice);
+    let review = app
+        .pending_ask_user
+        .as_ref()
+        .unwrap()
+        .plan_review
+        .as_ref()
+        .unwrap();
+    let request = review.request.clone();
+    assert!(review.loading);
+    let details = json!({"session":"current","version":7,"generation":"g1","review":document,"documents":[document]});
+    app.handle_native_event(NativeEvent::PlanReviewDetails(
+        0,
+        1,
+        "review".into(),
+        request.clone(),
+        Ok(details.clone()),
+    ));
+    assert!(
+        app.pending_ask_user
+            .as_ref()
+            .unwrap()
+            .plan_review
+            .as_ref()
+            .unwrap()
+            .loading
+    );
+    app.handle_native_event(NativeEvent::PlanReviewDetails(
+        0,
+        0,
+        "review".into(),
+        request,
+        Ok(details),
+    ));
+    let review = app
+        .pending_ask_user
+        .as_ref()
+        .unwrap()
+        .plan_review
+        .as_ref()
+        .unwrap();
+    assert!(!review.loading && !review.failed);
+    assert_eq!(review.version, Some(7));
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
 fn native_question_queue_deduplicates_and_resolution_never_closes_another_question() {
     let (mut app, storage) = shell();
     let (tx, rx) = mpsc::sync_channel(16);
@@ -1504,6 +1620,39 @@ fn phase5_native_absent_or_unknown_utility_never_launches_suggestion_or_changes_
         assert!(received.try_recv().is_err());
         assert_eq!(app.input.text(), "keep original draft");
     }
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn selected_queue_reply_retains_session_ownership_and_retry_identity() {
+    let (mut app, storage) = shell();
+    app.session_id = Some(SessionId::new("new-session"));
+    let native = app.native.as_mut().unwrap();
+    native.epoch = 2;
+    native.selection = 3;
+    native.selected_queue_retry = Some(crate::tui::next_turn::SelectedQueueRetry {
+        operation: "selected-op".into(),
+        item_id: "queued-id".into(),
+        session: "old-session".into(),
+        selection: 2,
+        recall: true,
+        text: "old queued text".into(),
+    });
+    app.input.insert_str("new draft");
+    app.handle_native_event(NativeEvent::SelectedNextTurn {
+        epoch: 1,
+        operation: "selected-op".into(),
+        selection: 2,
+        session: "old-session".into(),
+        recall: true,
+        result: Ok(json!({"item":{"id":"queued-id","text":"old queued text"}})),
+    });
+    assert_eq!(app.input.text(), "new draft");
+    assert_eq!(app.native.as_ref().unwrap().queue_recovered.len(), 1);
+    assert!(app.native.as_ref().unwrap().selected_queue_retry.is_none());
+    app.native_snapshot(json!({"session":{"id":"old-session"},"next_turn_queue":[]}));
+    assert_eq!(app.input.text(), "old queued text\nnew draft");
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }

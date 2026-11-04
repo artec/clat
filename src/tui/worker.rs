@@ -11,11 +11,43 @@ use std::time::Duration;
 /// TUI-local event multiplexing. It carries core facts and terminal input;
 /// it does not assemble or execute business runtime components.
 pub(crate) enum UiEvent {
+    RewindCheck {
+        request: String,
+        session: crate::SessionId,
+        identity: Option<(u64, u64)>,
+        result: Result<super::workbench::rewind::RewindCheck, String>,
+    },
+    RewindSend {
+        request: String,
+        session: crate::SessionId,
+        identity: (u64, u64),
+        result: Result<serde_json::Value, String>,
+    },
+    OperationsRead {
+        request: String,
+        identity: Option<(u64, u64)>,
+        session: Option<crate::SessionId>,
+        project: std::path::PathBuf,
+        result: Result<serde_json::Value, String>,
+    },
+    GitRead {
+        request: String,
+        identity: Option<(u64, u64)>,
+        session: Option<crate::SessionId>,
+        project: std::path::PathBuf,
+        result: Result<serde_json::Value, String>,
+    },
     Terminal(crossterm::event::Event),
     Worker(WorkerMessage),
     Application(ApplicationEvent),
     Native(super::native::NativeEvent),
     UpdateNotice(Option<String>),
+    Followups {
+        epoch: u64,
+        session: crate::SessionId,
+        native_identity: Option<(u64, u64)>,
+        reply: crate::application::FollowupReply,
+    },
     /// dsh 模式第四源（D-2 §1.3）：连接/WS/HTTP 三线程的 DshEvent 经
     /// 转发线程汇入——dsh 生命周期与本地 run worker 不同构，独立成源
     /// 防两边状态机互相污染（设计否决记录 1）。

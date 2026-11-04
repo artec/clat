@@ -1,8 +1,8 @@
 //! Process-local human followups. Only normal run admission creates durable facts.
 use super::{ApplicationError, ApplicationRunRequest, RunHandle, TrustedProjectApplication};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct NextTurnItem {
     pub id: String,
     pub text: String,
@@ -120,6 +120,71 @@ impl TrustedProjectApplication {
             .push_back((id, item.clone()));
         if self.transient_inputs.recalled_next_turn.len() > 64 {
             self.transient_inputs.recalled_next_turn.pop_front();
+        }
+        Ok(item)
+    }
+
+    /// Return a selected-item receipt only for its original session and target.
+    pub fn selected_next_turn_receipt(
+        &self,
+        operation_id: &str,
+        item_id: &str,
+        session: &str,
+    ) -> Option<Option<NextTurnItem>> {
+        self.transient_inputs
+            .selected_next_turn_receipts
+            .iter()
+            .find(|(id, item, owner, _)| {
+                id == operation_id && item == item_id && owner.as_deref() == Some(session)
+            })
+            .map(|(_, _, _, result)| result.clone())
+    }
+
+    /// Remove only the requested queued item and replay the same result on retries.
+    pub fn recall_selected_next_turn(
+        &mut self,
+        operation_id: &str,
+        item_id: &str,
+    ) -> Result<Option<NextTurnItem>, ApplicationError> {
+        if operation_id.is_empty()
+            || operation_id.len() > 200
+            || item_id.is_empty()
+            || item_id.len() > 200
+        {
+            return Err(ApplicationError::new(
+                "queue operation requires bounded identifiers",
+            ));
+        }
+        let session = self.current_session_id().map(|id| id.to_string());
+        if let Some((_, previous_item_id, previous_session, result)) = self
+            .transient_inputs
+            .selected_next_turn_receipts
+            .iter()
+            .find(|(id, _, _, _)| id == operation_id)
+        {
+            if previous_item_id != item_id || previous_session != &session {
+                return Err(ApplicationError::new("queue operation id already used"));
+            }
+            return Ok(result.clone());
+        }
+        let item = self
+            .transient_inputs
+            .next_turn
+            .iter()
+            .position(|item| item.id == item_id)
+            .and_then(|position| self.transient_inputs.next_turn.remove(position));
+        self.transient_inputs
+            .selected_next_turn_receipts
+            .push_back((
+                operation_id.to_owned(),
+                item_id.to_owned(),
+                session,
+                item.clone(),
+            ));
+        if self.transient_inputs.selected_next_turn_receipts.len() > 64 {
+            self.transient_inputs
+                .selected_next_turn_receipts
+                .pop_front();
         }
         Ok(item)
     }

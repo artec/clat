@@ -193,6 +193,41 @@ fn fixture(
 }
 
 #[test]
+fn committed_compaction_notifications_match_durable_replay() {
+    let (mut app, _, storage) = fixture(SummaryMode::Normal, None);
+    let (sender, receiver) = mpsc::channel();
+    app.subscribe(sender);
+    run(&mut app, "KEEP_USER_INTENT").unwrap();
+    let session = app.current_session_id().unwrap();
+    let recorded = receiver
+        .try_iter()
+        .filter_map(|event| match event {
+            ApplicationEvent::CompactionRecorded {
+                session,
+                seq,
+                summary,
+                disclosure,
+            } => Some((session, seq, summary, disclosure)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        recorded.len() >= 2,
+        "each committed reduction must be reported"
+    );
+    app.close().unwrap();
+    let replay = crate::session::replay::ReplayAdapter::fold(&load_events(&storage));
+    for (owner, seq, summary, disclosure) in &recorded {
+        assert_eq!(owner, &session);
+        assert!(replay.iter().any(|event| matches!(event,
+            crate::session::replay::ReplayEvent::Compaction { seq: replay_seq, summary_text, disclosure: Some(data), .. }
+            if replay_seq == seq && summary_text == summary && data == disclosure
+        )), "live disclosure must match its durable summary event");
+    }
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
 fn active_compaction_single_turn_parallel_tools_recompact_and_cold_replay() {
     let (mut app, script, storage) = fixture(SummaryMode::Normal, None);
     let result = run(&mut app, "KEEP_USER_INTENT").expect("long task completes");
@@ -359,7 +394,15 @@ fn active_compaction_cancel_stops_without_another_model_or_tool_request() {
 #[test]
 fn active_compaction_persistence_failure_never_switches_surface_or_replays_tools() {
     let (mut app, script, storage) = fixture(SummaryMode::Persistence, None);
+    let (sender, receiver) = mpsc::channel();
+    app.subscribe(sender);
     let result = run(&mut app, "KEEP_USER_INTENT");
+    assert!(
+        !receiver
+            .try_iter()
+            .any(|event| matches!(event, ApplicationEvent::CompactionRecorded { .. })),
+        "a failed durable write must not publish a success disclosure"
+    );
     assert!(result.is_err());
     assert!(script.summaries.load(Ordering::SeqCst) >= 1);
     let nodes = app.sessions.surface_nodes().unwrap();

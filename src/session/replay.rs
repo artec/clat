@@ -147,6 +147,18 @@ pub enum ReplayEvent {
 }
 
 impl ReplayEvent {
+    pub fn time_ms(&self) -> i64 {
+        match self {
+            Self::UserMessage { time_ms, .. }
+            | Self::AssistantMessage { time_ms, .. }
+            | Self::PermissionChecked { time_ms, .. }
+            | Self::ToolRequested { time_ms, .. }
+            | Self::ToolFinished { time_ms, .. }
+            | Self::RetryScheduled { time_ms, .. }
+            | Self::TurnEnded { time_ms, .. }
+            | Self::Compaction { time_ms, .. } => *time_ms,
+        }
+    }
     pub fn seq(&self) -> u64 {
         match self {
             Self::UserMessage { seq, .. }

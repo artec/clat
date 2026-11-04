@@ -221,6 +221,7 @@ pub(crate) struct DshState {
     current_effort: Option<String>,
     transcript: DshTranscript,
     current_session: Option<String>,
+    pending_round_start: Option<(u64, i64)>,
     pub(crate) session_tail: String,
     /// 词汇违规计数（INV-D8 呈现：状态栏 flash + 标题栏 ⚠）。
     pub(crate) unknown_events: usize,
@@ -318,6 +319,7 @@ impl DshState {
             current_effort: None,
             transcript: DshTranscript::new(),
             current_session: None,
+            pending_round_start: None,
             session_tail: String::new(),
             unknown_events: 0,
             banner: None,
@@ -699,6 +701,7 @@ impl App {
             && dsh.connected
         {
             dsh.connected = false;
+            dsh.pending_round_start = None;
             dsh.reconnect_at = Some(Instant::now() + DSH_RECONNECT_INTERVAL);
             dsh.banner = Some(
                 UiMessage::new("tui.message_disconnected_value_reconnecting")
@@ -709,6 +712,7 @@ impl App {
         }
         // running 归约以 turn 帧为准；断线期间无帧可依，先落 false。
         self.running = false;
+        self.conversation.stop_live_clock();
         self.phases.finish();
         if let Some(message) = flash {
             self.flash_status(message);
@@ -1208,10 +1212,17 @@ impl App {
             "turn/start" => {
                 self.running = true;
                 self.phases.model_requested();
+                dsh.pending_round_start = event
+                    .data
+                    .get("turn")
+                    .and_then(Value::as_u64)
+                    .filter(|turn| *turn != 0)
+                    .map(|turn| (turn, event.time));
             }
             "turn/end" => {
                 self.running = false;
                 self.phases.finish();
+                dsh.pending_round_start = None;
                 // 铃（2026-08-24 负责人 dogfood：dsh 模式此前 turn 结束
                 // 不响——本地 run 结束响、dsh 只有审批/问答弹框响，后台
                 // 等待落空）。aborted = 用户主动取消，同本地语义不响；
@@ -1266,6 +1277,27 @@ impl App {
         }
         if event.event_type != "session/title" {
             dsh.transcript.apply(&mut self.conversation, &event);
+        }
+        if matches!(event.event_type.as_str(), "turn/start" | "user/message")
+            && let Some((turn, started)) = dsh.pending_round_start
+        {
+            if self.conversation.begin_live_replay_round(turn) {
+                if let Ok(started) = u64::try_from(started) {
+                    self.conversation.set_live_host_started(started);
+                }
+                dsh.pending_round_start = None;
+            } else if event.event_type == "user/message" {
+                dsh.pending_round_start = None;
+            }
+        }
+        if matches!(
+            event.event_type.as_str(),
+            "assistant/chunk" | "assistant/message" | "tool/call"
+        ) {
+            dsh.pending_round_start = None;
+        }
+        if event.event_type == "turn/end" {
+            self.conversation.finish_live_round();
         }
         if ring_bell {
             self.notify();
@@ -1639,6 +1671,7 @@ fn dsh_ask_dialog(
         answer_tx,
         selection: 0,
         custom: None,
+        plan_review: None,
     }
 }
 

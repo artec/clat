@@ -47,7 +47,9 @@ impl App {
                     answer_tx,
                     selection: 0,
                     custom,
+                    plan_review: None,
                 });
+                self.detect_local_plan_review();
                 // AFK 提醒：同权限框——run 在等你的回答。
                 self.notify();
                 self.flash_message(UiMessage::new("tui.question_wait"));
@@ -232,6 +234,13 @@ impl App {
     pub(super) fn handle_run_event(&mut self, event: RunEvent) {
         // 转录装配的唯一 live 入口（G8）：状态行闪烁等呈现逻辑之外，
         // 事件先喂会话模型。
+        if let RunEvent::RunStarted { message, .. } = &event {
+            if self.workflow_starting {
+                self.conversation.push_user(message.plain_text());
+                self.workflow_starting = false;
+            }
+            self.conversation.begin_live_round();
+        }
         self.conversation.apply_run_event(&event);
         // CF1（返工 2026-10-13）：取消请求标志的生命周期绑定真实 run
         // 事件。attached 模式没有本地 Done/settle 路径——终态与下一
@@ -354,12 +363,21 @@ impl App {
     }
 
     fn finish_run(&mut self, epoch: u64, result: crate::ApplicationRunResult) {
-        let dispatch_next =
-            epoch == self.run_epoch && result.as_ref().is_ok_and(|done| !done.cancelled);
+        let dispatch_next = epoch == self.run_epoch
+            && self.running
+            && result.as_ref().is_ok_and(|done| !done.cancelled);
+        if epoch != self.run_epoch || !self.running {
+            return;
+        }
         self.settle_finished_run(epoch, result);
+        self.conversation.finish_live_round();
+        if self.dispatch_review_handoff() {
+            return;
+        }
         if dispatch_next {
             self.apply_model_workflow_boundary();
             self.dispatch_next_turn();
+            self.start_local_followups();
         }
     }
     fn apply_model_workflow_boundary(&mut self) {

@@ -24,7 +24,9 @@ use serde_json::Value;
 use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 mod find;
+mod rounds;
 pub(crate) use find::BodyMatch;
+pub(crate) use rounds::RoundSummary;
 
 /// 工具卡状态：`Pending`（○ 模型已发起）→ `Settled`（● 已有结果）或
 /// `Denied`（权限拒绝——journal 拒绝路径无 tool/call，回放侧以
@@ -59,6 +61,18 @@ pub(crate) enum ConversationItem {
     /// 与旧 TranscriptUnit 的 keeps-everything 语义平价）。
     Compaction {
         text: String,
+        seq: u64,
+        disclosure: Option<crate::session::replay::CompactionDisclosure>,
+        expanded: bool,
+    },
+    /// Presentation of a permission decision or a retry, without changing journal data.
+    ProcessNotice {
+        message: UiMessage,
+        foldable: bool,
+    },
+    Followups {
+        items: Vec<String>,
+        selected: Option<usize>,
     },
     /// run 终态通知（B7 起生产构造并渲染；先入模型保证 live/replay 同形）。
     #[allow(dead_code)]
@@ -75,6 +89,12 @@ pub(crate) enum ConversationItem {
 #[derive(Clone, Debug, Default)]
 struct ItemCache {
     identity: u64,
+    replay_seq: Option<u64>,
+    replay_turn: Option<u64>,
+    replay_time_ms: Option<i64>,
+    round_hidden: bool,
+    round_hide_reasoning: bool,
+    round_header: Option<rounds::RoundHeader>,
     dirty: bool,
     width: Option<usize>,
     /// 流式 assistant 项渲染时使用的活动帧字形（None=落定 ⏺）。帧变
@@ -135,6 +155,9 @@ pub(crate) struct ConversationModel {
     /// It tracks the earliest replay event even when that event is a
     /// non-rendered permission/retry record.
     first_replay_seq: Option<u64>,
+    round_history_more: Option<bool>,
+    round_expanded: std::collections::BTreeMap<u64, bool>,
+    live_rounds: Vec<rounds::LiveRound>,
     /// 未 claim 的 steering 回显尾部区（纯视图状态，INV-SV1）：FIFO 与
     /// core 队列同序，渲染在全部 items 之后（流式 assistant 仍是最后
     /// 一个 item，续写不被打断，INV-SV6）。claim → `confirm`（front 出
@@ -184,11 +207,56 @@ impl ConversationModel {
     }
 
     pub(crate) fn push_user(&mut self, text: String) {
+        self.clear_followups();
         self.push_item(ConversationItem::User { text });
     }
 
-    pub(crate) fn push_compaction(&mut self, text: String) {
-        self.push_item(ConversationItem::Compaction { text });
+    pub(crate) fn clear_followups(&mut self) {
+        self.items
+            .retain(|(item, _)| !matches!(item, ConversationItem::Followups { .. }));
+    }
+
+    pub(crate) fn set_followups(&mut self, items: Vec<String>) {
+        self.clear_followups();
+        if !items.is_empty() {
+            self.push_item(ConversationItem::Followups {
+                items,
+                selected: None,
+            });
+        }
+    }
+
+    pub(crate) fn followups_key(
+        &mut self,
+        key: crossterm::event::KeyCode,
+    ) -> Option<Option<String>> {
+        use crossterm::event::KeyCode;
+        let (item, cache) = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|(item, _)| matches!(item, ConversationItem::Followups { .. }))?;
+        let ConversationItem::Followups { items, selected } = item else {
+            unreachable!()
+        };
+        match key {
+            KeyCode::F(8) => *selected = Some(0),
+            KeyCode::Esc if selected.is_some() => *selected = None,
+            KeyCode::Up if selected.is_some() => {
+                *selected = Some(selected.unwrap().saturating_sub(1))
+            }
+            KeyCode::Down if selected.is_some() => {
+                *selected = Some((selected.unwrap() + 1).min(items.len() - 1))
+            }
+            KeyCode::Enter if selected.is_some() => {
+                let text = items[selected.unwrap()].clone();
+                self.clear_followups();
+                return Some(Some(text));
+            }
+            _ => return None,
+        }
+        cache.dirty = true;
+        Some(None)
     }
 
     pub(crate) fn push_turn_end(&mut self, text: String) {
@@ -413,6 +481,45 @@ impl ConversationModel {
         }
     }
 
+    fn push_process_notice(&mut self, message: UiMessage, foldable: bool) {
+        let item = ConversationItem::ProcessNotice { message, foldable };
+        if self.assistant_open {
+            let index = self.items.len().saturating_sub(1);
+            self.items.insert(index, (item, ItemCache::fresh()));
+        } else {
+            self.push_item(item);
+        }
+    }
+
+    fn permission_notice(&mut self, tool: &str, decision: &crate::PermissionDecision) {
+        let message = match decision {
+            crate::PermissionDecision::Allow => return,
+            crate::PermissionDecision::Ask { reason } => {
+                UiMessage::new("tui.permission_asked").arg("reason", reason.as_str())
+            }
+            // Replay retains the request reason, not the user's rejection reason.
+            // The denied tool card carries the available error details separately.
+            crate::PermissionDecision::Deny { .. }
+            | crate::PermissionDecision::Unavailable { .. } => {
+                UiMessage::new("tui.permission_denied_generic")
+            }
+        };
+        self.push_process_notice(
+            message.arg_message("tool", super::localization::workflow_tool_name(tool)),
+            false,
+        );
+    }
+
+    fn retry_notice(&mut self, retry: usize, max: usize, reason: &str) {
+        self.push_process_notice(
+            UiMessage::new("tui.retry_notice")
+                .arg("retry", retry)
+                .arg("max", max)
+                .arg("reason", reason),
+            true,
+        );
+    }
+
     // ---- live 入口 ----
 
     pub(crate) fn apply_run_event(&mut self, event: &RunEvent) {
@@ -422,49 +529,7 @@ impl ConversationModel {
             } => {
                 self.open_assistant(provider.clone(), model.clone());
             }
-            RunEvent::ModelStream { event, .. } => match event {
-                ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } => {
-                    self.append_assistant(|item| {
-                        if let ConversationItem::Assistant {
-                            text,
-                            reasoning_running,
-                            ..
-                        } = item
-                        {
-                            *reasoning_running = false;
-                            text.push_str(delta);
-                        }
-                    });
-                }
-                ModelEvent::ReasoningDelta { delta }
-                | ModelEvent::ReasoningSummaryDelta { delta } => {
-                    self.append_assistant(|item| {
-                        if let ConversationItem::Assistant {
-                            reasoning,
-                            reasoning_running,
-                            ..
-                        } = item
-                        {
-                            *reasoning_running = true;
-                            reasoning.get_or_insert_with(String::new).push_str(delta);
-                        }
-                    });
-                }
-                ModelEvent::ToolCallCompleted { call } => {
-                    self.append_assistant(|item| {
-                        if let ConversationItem::Assistant {
-                            tool_calls,
-                            reasoning_running,
-                            ..
-                        } = item
-                        {
-                            *reasoning_running = false;
-                            tool_calls.push(call.clone());
-                        }
-                    });
-                }
-                _ => {}
-            },
+            RunEvent::ModelStream { event, .. } => self.apply_model_stream(event),
             RunEvent::ToolRequested { call } => {
                 self.open_tool_card(call.id.clone(), call.name.clone(), call.arguments.clone());
             }
@@ -476,6 +541,9 @@ impl ConversationModel {
                         is_error: result.is_error,
                     },
                 );
+            }
+            RunEvent::PermissionChecked { tool, decision } => {
+                self.permission_notice(tool, decision)
             }
             RunEvent::PermissionDenied { reason, .. } => {
                 if let Some(call_id) = self.last_call_id.clone() {
@@ -498,6 +566,59 @@ impl ConversationModel {
         }
     }
 
+    fn apply_model_stream(&mut self, event: &ModelEvent) {
+        match event {
+            ModelEvent::TextDelta { delta } | ModelEvent::RefusalDelta { delta } => {
+                self.append_assistant(|item| {
+                    if let ConversationItem::Assistant {
+                        text,
+                        reasoning_running,
+                        ..
+                    } = item
+                    {
+                        *reasoning_running = false;
+                        text.push_str(delta);
+                    }
+                });
+            }
+            ModelEvent::ReasoningDelta { delta } | ModelEvent::ReasoningSummaryDelta { delta } => {
+                self.append_assistant(|item| {
+                    if let ConversationItem::Assistant {
+                        reasoning,
+                        reasoning_running,
+                        ..
+                    } = item
+                    {
+                        *reasoning_running = true;
+                        reasoning.get_or_insert_with(String::new).push_str(delta);
+                    }
+                });
+            }
+            ModelEvent::RetryScheduled {
+                retry,
+                max_retries,
+                failure,
+                ..
+            } => {
+                self.retry_notice(*retry, *max_retries, &failure.message);
+            }
+            ModelEvent::ToolCallCompleted { call } => {
+                self.append_assistant(|item| {
+                    if let ConversationItem::Assistant {
+                        tool_calls,
+                        reasoning_running,
+                        ..
+                    } = item
+                    {
+                        *reasoning_running = false;
+                        tool_calls.push(call.clone());
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
     // ---- replay 入口 ----
 
     pub(crate) fn from_replay(events: &[ReplayEvent]) -> Self {
@@ -508,56 +629,161 @@ impl ConversationModel {
 
     pub(crate) fn apply_replay(&mut self, events: &[ReplayEvent]) {
         for event in events {
+            let inserted_before_stream = self.assistant_open
+                && matches!(
+                    event,
+                    ReplayEvent::PermissionChecked {
+                        decision: crate::PermissionDecision::Ask { .. }
+                            | crate::PermissionDecision::Deny { .. }
+                            | crate::PermissionDecision::Unavailable { .. },
+                        ..
+                    } | ReplayEvent::RetryScheduled { .. }
+                );
+            let first_new_item = self
+                .items
+                .len()
+                .saturating_sub(usize::from(inserted_before_stream));
             self.first_replay_seq = Some(
                 self.first_replay_seq
                     .map_or(event.seq(), |first| first.min(event.seq())),
             );
-            match event {
-                ReplayEvent::UserMessage { text, .. } => self.push_user(text.clone()),
-                ReplayEvent::AssistantMessage {
-                    reasoning,
-                    text,
-                    tool_calls,
-                    provider,
-                    model,
-                    ..
-                } => {
-                    self.push_item(ConversationItem::Assistant {
-                        text: text.clone(),
-                        reasoning: reasoning.clone(),
-                        reasoning_running: false,
-                        tool_calls: tool_calls.clone(),
-                        provider: provider.clone(),
-                        model: model.clone(),
-                    });
-                }
-                ReplayEvent::ToolRequested { call, .. } => {
-                    self.open_tool_card(call.id.clone(), call.name.clone(), call.arguments.clone());
-                }
-                ReplayEvent::ToolFinished {
-                    call_id,
-                    output,
-                    is_error,
-                    ..
-                } => {
-                    self.settle_tool_card(
-                        call_id,
-                        CardState::Settled {
-                            output: output.clone(),
-                            is_error: *is_error,
-                        },
-                    );
-                }
-                ReplayEvent::Compaction { summary_text, .. } => {
-                    self.push_compaction(summary_text.clone());
-                }
-                ReplayEvent::TurnEnded { reason, .. } => {
-                    self.push_turn_end_message(turn_end_notice_message(reason));
-                }
-                // 权限与重试只影响状态行，不进转录。
-                ReplayEvent::PermissionChecked { .. } | ReplayEvent::RetryScheduled { .. } => {}
+            self.apply_replay_item(event);
+            let end_new_items = if inserted_before_stream {
+                first_new_item + 1
+            } else {
+                self.items.len()
+            };
+            for (_, cache) in &mut self.items[first_new_item..end_new_items] {
+                cache.replay_seq = Some(event.seq());
+                cache.replay_turn = (event.turn() != 0).then_some(event.turn());
+                cache.replay_time_ms = (event.time_ms() > 0).then_some(event.time_ms());
             }
         }
+    }
+
+    fn apply_replay_item(&mut self, event: &ReplayEvent) {
+        match event {
+            ReplayEvent::UserMessage { text, .. } => self.push_user(text.clone()),
+            ReplayEvent::AssistantMessage {
+                reasoning,
+                text,
+                tool_calls,
+                provider,
+                model,
+                ..
+            } => {
+                self.push_item(ConversationItem::Assistant {
+                    text: text.clone(),
+                    reasoning: reasoning.clone(),
+                    reasoning_running: false,
+                    tool_calls: tool_calls.clone(),
+                    provider: provider.clone(),
+                    model: model.clone(),
+                });
+            }
+            ReplayEvent::ToolRequested { call, .. } => {
+                self.open_tool_card(call.id.clone(), call.name.clone(), call.arguments.clone());
+            }
+            ReplayEvent::ToolFinished {
+                call_id,
+                output,
+                is_error,
+                ..
+            } => {
+                self.settle_tool_card(
+                    call_id,
+                    CardState::Settled {
+                        output: output.clone(),
+                        is_error: *is_error,
+                    },
+                );
+            }
+            ReplayEvent::Compaction {
+                seq,
+                summary_text,
+                disclosure,
+                ..
+            } => {
+                let exists = self
+                    .items
+                    .iter()
+                    .any(|(item, _)| compaction_matches(item, *seq, disclosure.as_ref()));
+                if !exists {
+                    self.push_item(ConversationItem::Compaction {
+                        text: summary_text.clone(),
+                        seq: *seq,
+                        disclosure: disclosure.clone(),
+                        expanded: false,
+                    });
+                }
+            }
+            ReplayEvent::TurnEnded { reason, .. } => {
+                self.push_turn_end_message(turn_end_notice_message(reason));
+            }
+            ReplayEvent::PermissionChecked { tool, decision, .. } => {
+                self.permission_notice(tool, decision)
+            }
+            ReplayEvent::RetryScheduled {
+                retry,
+                max_retries,
+                failure,
+                ..
+            } => self.retry_notice(*retry, *max_retries, &failure.message),
+        }
+    }
+
+    pub(crate) fn record_compaction(
+        &mut self,
+        seq: u64,
+        summary: String,
+        disclosure: crate::session::replay::CompactionDisclosure,
+    ) {
+        if self
+            .items
+            .iter()
+            .any(|(item, _)| compaction_matches(item, seq, Some(&disclosure)))
+        {
+            return;
+        }
+        let item = ConversationItem::Compaction {
+            text: summary,
+            seq,
+            disclosure: Some(disclosure),
+            expanded: false,
+        };
+        // Application notices and run deltas travel through separate channels.
+        // A delayed completion must not close the next assistant's open stream.
+        if self.assistant_open {
+            let index = self.items.len().saturating_sub(1);
+            self.items.insert(index, (item, ItemCache::fresh()));
+        } else {
+            self.push_item(item);
+        }
+    }
+
+    pub(crate) fn record_replay_compaction(&mut self, event: &ReplayEvent) -> bool {
+        let ReplayEvent::Compaction {
+            seq,
+            turn,
+            time_ms,
+            summary_text,
+            disclosure: Some(disclosure),
+        } = event
+        else {
+            return false;
+        };
+        self.record_compaction(*seq, summary_text.clone(), disclosure.clone());
+        if let Some((_, cache)) = self
+            .items
+            .iter_mut()
+            .find(|(item, _)| compaction_matches(item, *seq, Some(disclosure)))
+        {
+            cache.replay_seq = Some(*seq);
+            cache.replay_turn = (*turn != 0).then_some(*turn);
+            cache.replay_time_ms = (*time_ms > 0).then_some(*time_ms);
+        }
+        self.first_replay_seq = Some(self.first_replay_seq.map_or(*seq, |first| first.min(*seq)));
+        true
     }
 
     /// Prepend one complete, message-aligned history page without disturbing
@@ -571,6 +797,18 @@ impl ConversationModel {
         let mut prefix = Self::new();
         prefix.reasoning_expanded = self.reasoning_expanded;
         prefix.apply_replay(events);
+        prefix.items.retain(|(item, _)| {
+            let ConversationItem::Compaction {
+                seq, disclosure, ..
+            } = item
+            else {
+                return true;
+            };
+            !self
+                .items
+                .iter()
+                .any(|(existing, _)| compaction_matches(existing, *seq, disclosure.as_ref()))
+        });
         prefix.items.append(&mut self.items);
         self.items = prefix.items;
         self.first_replay_seq = match (prefix.first_replay_seq, self.first_replay_seq) {
@@ -589,6 +827,7 @@ impl ConversationModel {
     /// 其（内容, 宽度）生命周期内只渲染一次。行数 = Σ(item 行数 + 分隔
     /// 空行)；零行项（B5 hidden 卡、B7 前的通知）不占分隔行。
     pub(crate) fn ensure_rendered(&mut self, width: usize) {
+        self.refresh_replay_rounds();
         let open_index = self.open_assistant_index();
         for index in 0..self.items.len() {
             let marker = if Some(index) == open_index {
@@ -601,13 +840,17 @@ impl ConversationModel {
                 cache.dirty || cache.width != Some(width) || cache.marker != marker
             };
             if needs {
-                let rendered = render_item(
+                let mut rendered = render_item(
                     &self.items[index].0,
                     width,
                     marker,
                     self.reasoning_expanded,
+                    self.items[index].1.round_hide_reasoning,
                     self.locale,
                 );
+                if let Some(header) = &self.items[index].1.round_header {
+                    rendered.push(header.line(self.locale));
+                }
                 let (_, cache) = &mut self.items[index];
                 cache.lines = rendered;
                 cache.width = Some(width);
@@ -673,16 +916,28 @@ impl ConversationModel {
         self.reasoning_expanded
     }
 
-    /// 卡片行数（不物化：折叠 = min(len, budget) + 可能的 1 行标记）。
-    fn card_row_count(cache: &ItemCache, visibility: ToolCardVisibility) -> usize {
-        match visibility {
-            ToolCardVisibility::Hidden => 0,
-            ToolCardVisibility::Expanded => cache.lines.len(),
-            ToolCardVisibility::Collapsed => {
-                let len = cache.lines.len();
-                len.min(MAX_TOOL_OUTPUT_LINES) + usize::from(len > MAX_TOOL_OUTPUT_LINES)
+    /// Toggle the compaction disclosure at the viewport's current row.
+    pub(crate) fn toggle_compaction_at(
+        &mut self,
+        start: usize,
+        end: usize,
+        visibility: ToolCardVisibility,
+    ) -> Option<usize> {
+        let mut row = 0;
+        for (item, cache) in &mut self.items {
+            let count = item_row_count(item, cache, visibility);
+            if count > 0
+                && row < end
+                && row + count > start
+                && let ConversationItem::Compaction { expanded, .. } = item
+            {
+                *expanded = !*expanded;
+                cache.dirty = true;
+                return Some(row);
             }
+            row += count + usize::from(count > 0);
         }
+        None
     }
 
     /// 空会话（无 items 且无 pending）：draw 以 LOGO 欢迎页接管会话区。
@@ -699,10 +954,7 @@ impl ConversationModel {
             .items
             .iter()
             .map(|(item, cache)| {
-                let rows = match item {
-                    ConversationItem::ToolCard { .. } => Self::card_row_count(cache, visibility),
-                    _ => cache.lines.len(),
-                };
+                let rows = item_row_count(item, cache, visibility);
                 rows + usize::from(rows > 0)
             })
             .sum::<usize>();
@@ -860,12 +1112,55 @@ fn item_rows<'a>(
     visibility: ToolCardVisibility,
     locale: LocaleContext,
 ) -> Rows<'a> {
+    if cache.round_hidden {
+        return Rows::Borrowed(&[]);
+    }
     match item {
-        ConversationItem::ToolCard { .. } => {
+        ConversationItem::ToolCard { state, tool, .. } => {
+            let visibility = card_visibility(tool, state, visibility);
             Rows::Owned(card_display_lines(cache, visibility, locale))
         }
         _ => Rows::Borrowed(&cache.lines),
     }
+}
+
+fn card_visibility(
+    tool: &str,
+    state: &CardState,
+    visibility: ToolCardVisibility,
+) -> ToolCardVisibility {
+    if matches!(tool, "ask_user" | "exit_plan_mode") {
+        ToolCardVisibility::Expanded
+    } else if matches!(
+        state,
+        CardState::Denied { .. } | CardState::Settled { is_error: true, .. }
+    ) && visibility == ToolCardVisibility::Hidden
+    {
+        ToolCardVisibility::Collapsed
+    } else {
+        visibility
+    }
+}
+
+fn item_row_count(
+    item: &ConversationItem,
+    cache: &ItemCache,
+    visibility: ToolCardVisibility,
+) -> usize {
+    if cache.round_hidden {
+        return 0;
+    }
+    if let ConversationItem::ToolCard { state, tool, .. } = item {
+        return match card_visibility(tool, state, visibility) {
+            ToolCardVisibility::Hidden => 0,
+            ToolCardVisibility::Expanded => cache.lines.len(),
+            ToolCardVisibility::Collapsed => {
+                cache.lines.len().min(MAX_TOOL_OUTPUT_LINES)
+                    + usize::from(cache.lines.len() > MAX_TOOL_OUTPUT_LINES)
+            }
+        };
+    }
+    cache.lines.len()
 }
 
 fn render_item(
@@ -873,12 +1168,17 @@ fn render_item(
     width: usize,
     stream_marker: Option<&'static str>,
     reasoning_expanded: bool,
+    hide_reasoning: bool,
     locale: LocaleContext,
 ) -> Vec<Line<'static>> {
     match item {
-        ConversationItem::User { text } | ConversationItem::Compaction { text } => {
-            render_user_block(text, width)
-        }
+        ConversationItem::User { text } => render_user_block(text, width),
+        ConversationItem::Compaction {
+            text,
+            disclosure,
+            expanded,
+            ..
+        } => render_compaction(text, disclosure.as_ref(), *expanded, width, locale),
         ConversationItem::Assistant {
             text,
             reasoning,
@@ -886,7 +1186,11 @@ fn render_item(
             ..
         } => render_assistant(
             text,
-            reasoning.as_deref(),
+            if hide_reasoning {
+                None
+            } else {
+                reasoning.as_deref()
+            },
             *reasoning_running,
             reasoning_expanded,
             width,
@@ -899,6 +1203,15 @@ fn render_item(
             state,
             ..
         } => render_tool_card_localized(tool, arguments, state, width, locale),
+        ConversationItem::ProcessNotice { message, .. } => {
+            wrap_text(&locale.render(message), width.max(1))
+                .into_iter()
+                .map(|line| Line::from(Span::styled(line, theme::style(theme::Role::Dim))))
+                .collect()
+        }
+        ConversationItem::Followups { items, selected } => {
+            render_followups(items, *selected, width, locale)
+        }
         // run 终态通知（G7）：dim 单行，每个停止都解释自己。
         ConversationItem::TurnEnd {
             text, presentation, ..
@@ -913,6 +1226,95 @@ fn render_item(
             theme::style(theme::Role::Dim),
         ))],
     }
+}
+
+fn render_followups(
+    items: &[String],
+    selected: Option<usize>,
+    width: usize,
+    locale: LocaleContext,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        locale.text("tui.followups_title").to_owned(),
+        theme::style(theme::Role::Faint),
+    ))];
+    for (index, text) in items.iter().enumerate() {
+        let marker = if selected == Some(index) {
+            "› "
+        } else {
+            "  "
+        };
+        for (line_index, line) in wrap_text(text, width.saturating_sub(2).max(1))
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(Line::from(format!(
+                "{}{line}",
+                if line_index == 0 { marker } else { "  " }
+            )));
+        }
+    }
+    lines
+}
+
+fn compaction_matches(
+    item: &ConversationItem,
+    seq: u64,
+    disclosure: Option<&crate::session::replay::CompactionDisclosure>,
+) -> bool {
+    let ConversationItem::Compaction {
+        seq: existing_seq,
+        disclosure: existing,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    *existing_seq == seq
+        || disclosure
+            .and_then(|data| data.id.as_ref())
+            .is_some_and(|id| existing.as_ref().and_then(|data| data.id.as_ref()) == Some(id))
+}
+
+fn render_compaction(
+    text: &str,
+    disclosure: Option<&crate::session::replay::CompactionDisclosure>,
+    expanded: bool,
+    width: usize,
+    locale: LocaleContext,
+) -> Vec<Line<'static>> {
+    let label = match disclosure.and_then(|value| value.records) {
+        Some(count) => {
+            locale.render(&UiMessage::new("round.compacted_records").arg("count", count))
+        }
+        None => locale.text("round.compacted").to_owned(),
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{} {label}", if expanded { "▾" } else { "▸" }),
+        theme::style(theme::Role::Dim),
+    ))];
+    if !expanded {
+        return lines;
+    }
+    if let Some(value) = disclosure {
+        if let Some((start, end)) = value.range {
+            lines.push(Line::from(
+                locale.render(
+                    &UiMessage::new("round.range")
+                        .arg("start", start)
+                        .arg("end", end),
+                ),
+            ));
+        }
+        if let Some(count) = value.estimated_tokens {
+            lines.push(Line::from(
+                locale.render(&UiMessage::new("round.tokens").arg("count", count)),
+            ));
+        }
+    }
+    lines.push(Line::from(locale.text("round.summary").to_owned()));
+    lines.extend(render_markdown(text, width.max(1)));
+    lines
 }
 
 /// 终态原因 → 通知文本。终态是封闭集之外的兜底已在回放适配器侧
@@ -1324,6 +1726,143 @@ fn reasoning_summary(
 
 #[cfg(all(test, feature = "runtime-tests"))]
 mod tests {
+    #[test]
+    fn followup_selection_requires_explicit_confirmation_and_new_turn_clears_it() {
+        use crossterm::event::KeyCode;
+        let mut model = super::ConversationModel::new();
+        model.set_followups(vec!["one".into(), "two".into(), "three".into()]);
+        assert_eq!(model.followups_key(KeyCode::Down), None);
+        assert_eq!(model.followups_key(KeyCode::F(8)), Some(None));
+        assert_eq!(model.followups_key(KeyCode::Down), Some(None));
+        assert_eq!(model.followups_key(KeyCode::Esc), Some(None));
+        assert_eq!(model.followups_key(KeyCode::Enter), None);
+        assert_eq!(model.followups_key(KeyCode::F(8)), Some(None));
+        assert_eq!(model.followups_key(KeyCode::Down), Some(None));
+        assert_eq!(
+            model.followups_key(KeyCode::Enter),
+            Some(Some("two".into()))
+        );
+        assert_eq!(model.followups_key(KeyCode::F(8)), None);
+        model.set_followups(vec!["stale".into()]);
+        model.push_user("new turn".into());
+        assert_eq!(model.followups_key(KeyCode::F(8)), None);
+    }
+
+    #[test]
+    fn live_compaction_is_deduplicated_against_both_replay_and_older_pages() {
+        use crate::session::replay::{CompactionDisclosure, ReplayEvent};
+        let data = CompactionDisclosure {
+            id: Some("same-compaction".into()),
+            records: Some(3),
+            ..Default::default()
+        };
+        let event = ReplayEvent::Compaction {
+            seq: 42,
+            turn: 1,
+            time_ms: 100,
+            summary_text: "summary".into(),
+            disclosure: Some(data.clone()),
+        };
+        let mut model = super::ConversationModel::new();
+        model.record_compaction(42, "summary".into(), data.clone());
+        model.record_compaction(42, "summary".into(), data);
+        model.apply_replay(std::slice::from_ref(&event));
+        model.prepend_replay(&[event]);
+        assert_eq!(model.items.len(), 1);
+        assert!(
+            matches!(&model.items[0].0, super::ConversationItem::Compaction { text, .. } if text == "summary")
+        );
+    }
+
+    #[test]
+    fn delayed_compaction_notice_preserves_open_assistant_stream() {
+        use crate::session::replay::CompactionDisclosure;
+        let mut model = super::ConversationModel::new();
+        model.open_stream_assistant("provider", "model");
+        model.append_stream_text("before ");
+        model.record_compaction(42, "summary".into(), CompactionDisclosure::default());
+        model.append_stream_text("after");
+        assert!(matches!(
+            &model.items[0].0,
+            super::ConversationItem::Compaction { .. }
+        ));
+        assert!(
+            matches!(&model.items[1].0, super::ConversationItem::Assistant { text, .. } if text == "before after")
+        );
+    }
+
+    #[test]
+    fn replay_preserves_compaction_disclosure_and_legacy_absence() {
+        use crate::session::replay::{CompactionDisclosure, ReplayEvent};
+        let disclosure = CompactionDisclosure {
+            id: Some("compact-1".into()),
+            range: Some((2, 9)),
+            records: Some(4),
+            estimated_tokens: Some(123),
+        };
+        let events = [
+            ReplayEvent::Compaction {
+                seq: 10,
+                turn: 1,
+                time_ms: 1,
+                summary_text: "summary".into(),
+                disclosure: Some(disclosure.clone()),
+            },
+            ReplayEvent::Compaction {
+                seq: 11,
+                turn: 1,
+                time_ms: 2,
+                summary_text: "old summary".into(),
+                disclosure: None,
+            },
+        ];
+        let mut model = super::ConversationModel::from_replay(&events);
+        assert_eq!(model.items[0].1.replay_seq, Some(10));
+        assert_eq!(model.items[0].1.replay_turn, Some(1));
+        assert!(matches!(&model.items[0].0,
+            super::ConversationItem::Compaction { disclosure: Some(value), .. } if value == &disclosure));
+        assert!(matches!(
+            &model.items[1].0,
+            super::ConversationItem::Compaction {
+                disclosure: None,
+                ..
+            }
+        ));
+        model.ensure_rendered(80);
+        assert_eq!(model.items[0].1.lines.len(), 1);
+        assert_eq!(
+            model.toggle_compaction_at(0, 1, super::ToolCardVisibility::Collapsed),
+            Some(0)
+        );
+        model.ensure_rendered(80);
+        let lines = model.items[0]
+            .1
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert!(lines.iter().any(|line| line.contains("123")));
+        assert!(lines.iter().any(|line| line.contains("summary")));
+        assert_eq!(
+            model.toggle_compaction_at(0, 1, super::ToolCardVisibility::Collapsed),
+            Some(0)
+        );
+        model.ensure_rendered(80);
+        assert_eq!(model.items[0].1.lines.len(), 1);
+        model.apply_replay(&events);
+        assert_eq!(
+            model.items.len(),
+            2,
+            "replayed compactions must not duplicate"
+        );
+        model.prepend_replay(&events);
+        assert_eq!(
+            model.items.len(),
+            2,
+            "overlapping history must not duplicate"
+        );
+    }
+
     use super::*;
     use crate::test_support::{
         SharedEvents, TestBehavior, TestProviderPlugin, configure_test_model, roots,
@@ -1771,9 +2310,16 @@ mod tests {
         model
             .items
             .iter()
+            .filter(|(item, _)| !matches!(item, ConversationItem::Followups { .. }))
             .map(|(item, _)| match item {
                 ConversationItem::User { text } => Fact::User(text.clone()),
-                ConversationItem::Compaction { text } => Fact::User(format!("<compaction> {text}")),
+                ConversationItem::Compaction { text, .. } => {
+                    Fact::User(format!("<compaction> {text}"))
+                }
+                ConversationItem::Followups { .. } => unreachable!(),
+                ConversationItem::ProcessNotice { message, .. } => {
+                    Fact::User(format!("<process> {}", message.english()))
+                }
                 ConversationItem::Assistant {
                     text,
                     reasoning,

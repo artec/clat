@@ -41,16 +41,55 @@ impl App {
     pub(super) fn handle_ui_event(&mut self, event: UiEvent) {
         let identity = (self.session_id.clone(), self.native_selection_identity());
         match event {
+            UiEvent::RewindCheck {
+                request,
+                session,
+                identity,
+                result,
+            } => self.rewind_checked(&request, &session, identity, result),
+            UiEvent::RewindSend {
+                request,
+                session,
+                identity,
+                result,
+            } => self.rewind_sent(&request, &session, identity, result),
+            UiEvent::OperationsRead {
+                request,
+                identity,
+                session,
+                project,
+                result,
+            } => self.workbench_operations_reply(&request, identity, session, &project, result),
+            UiEvent::GitRead {
+                request,
+                identity,
+                session,
+                project,
+                result,
+            } => self.workbench_git_reply(&request, identity, session, &project, result),
             UiEvent::Terminal(event) => self.handle_terminal_event(event),
             UiEvent::Worker(message) => self.handle_worker_message(message),
             UiEvent::Dsh(event) => self.handle_dsh_event(event),
             UiEvent::Application(event) => self.handle_application_event(event),
             UiEvent::Native(event) => self.handle_native_event(event),
             UiEvent::UpdateNotice(version) => self.update_version = version,
+            UiEvent::Followups {
+                epoch,
+                session,
+                native_identity,
+                reply,
+            } => self.accept_followups(epoch, session, native_identity, reply),
         }
         let changed = identity != (self.session_id.clone(), self.native_selection_identity());
+        if changed {
+            self.preserve_rewind_draft();
+            self.workbench = None;
+        }
         if changed || self.running || self.should_quit {
             self.suggestions.invalidate();
+            if self.running || self.should_quit || self.followup_owner != self.session_id {
+                self.clear_followups();
+            }
         }
         self.invalidate_edited_suggestion();
     }
@@ -65,21 +104,20 @@ impl App {
             ApplicationEvent::ModelsUpdated => self.refresh_model_settings(),
             ApplicationEvent::MonitorUpdated(value) => {
                 self.balance = value;
+                self.refresh_workbench_allowance();
             }
-            ApplicationEvent::CompactionUpdated(status) => match status {
-                CompactionStatus::Started => {
-                    self.flash_message(UiMessage::new("tui.compacting_progress"))
+            ApplicationEvent::CompactionRecorded {
+                session,
+                seq,
+                summary,
+                disclosure,
+            } => {
+                if self.session_id.as_ref() == Some(&session) {
+                    self.conversation
+                        .record_compaction(seq, summary, disclosure);
                 }
-                CompactionStatus::Finished { note, succeeded } => {
-                    self.flash_status(note);
-                    // 仅当历史确实收缩（成功且 replace 事件族耐久落盘）时，
-                    // 压缩前的水位才过期（TUI-L05：失败/nothing-to-compact
-                    // 保留原读数，直到下一次 run 上报新的 usage）。
-                    if succeeded {
-                        self.last_turn_usage = None;
-                    }
-                }
-            },
+            }
+            ApplicationEvent::CompactionUpdated(status) => self.handle_compaction_status(status),
             // A4-1（W1-21）：MCP/WASM 启动失败一次性响亮提示（详情 /mcp）。
             ApplicationEvent::McpStartupNotice { failures } => {
                 self.flash_message(
@@ -130,12 +168,33 @@ impl App {
         }
     }
 
+    fn handle_compaction_status(&mut self, status: CompactionStatus) {
+        match status {
+            CompactionStatus::Started => {
+                self.flash_message(UiMessage::new("tui.compacting_progress"))
+            }
+            CompactionStatus::Finished { note, succeeded } => {
+                self.flash_status(note);
+                if succeeded {
+                    self.last_turn_usage = None;
+                }
+            }
+        }
+    }
+
     fn refresh_model_settings(&mut self) {
         if let Some(application) = &self.application
             && let Ok((config, credentials)) = application.model_state()
         {
             self.config = config;
             self.credentials = credentials;
+        }
+        if self.followup_owner.is_some()
+            && self.application.as_ref().is_some_and(|app| {
+                !matches!(app.followup_snapshot().status.as_str(), "ready" | "pending")
+            })
+        {
+            self.clear_followups();
         }
         self.flash_message(UiMessage::new("tui.model_updated"));
     }
@@ -196,7 +255,11 @@ impl App {
             Event::Paste(text) => self.handle_paste(&text),
             // 帮助弹窗模态期间吞掉鼠标：后面无可选内容，避免选区高亮
             // 盖住对话框边框（同确权门的做法）。
-            Event::Mouse(mouse) if self.info_dialog.is_none() && self.plugins.dialog.is_none() => {
+            Event::Mouse(mouse)
+                if self.info_dialog.is_none()
+                    && self.plugins.dialog.is_none()
+                    && self.workbench.is_none() =>
+            {
                 self.handle_mouse(mouse)
             }
             _ => {}
@@ -214,6 +277,10 @@ impl App {
         if self.phases.phase.is_some() {
             let frame = now + SPINNER_FRAME;
             deadline = Some(deadline.map_or(frame, |current| current.min(frame)));
+        }
+        if self.conversation.live_clock_running() {
+            let clock = now + Duration::from_secs(1);
+            deadline = Some(deadline.map_or(clock, |current| current.min(clock)));
         }
         // 加载中每帧轮询后台挂载：没有这条 deadline，空闲时主循环会
         // 无限挂起在 recv 上，交接永远不被发现。
@@ -249,6 +316,18 @@ impl App {
             return;
         }
         if self.handle_conversation_find_key(key) || self.handle_command_picker_key(key) {
+            return;
+        }
+        if self.handle_workbench_key(key) {
+            return;
+        }
+        if self.handle_followups_key(key) {
+            return;
+        }
+        if key.code == KeyCode::F(7) && self.toggle_round_at_viewport() {
+            return;
+        }
+        if key.code == KeyCode::F(9) && self.toggle_compaction_at_viewport() {
             return;
         }
         let opens = key.code == KeyCode::Char('/')
@@ -574,6 +653,9 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
+        if self.rewind_paste(text) {
+            return;
+        }
         if self.plugin_paste(text) {
             return;
         }

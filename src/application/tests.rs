@@ -2067,6 +2067,7 @@ fn rename_facade_gates_journals_and_broadcasts() {
                     | ApplicationEvent::BackgroundJobChanged { .. }
                     | ApplicationEvent::ModelsUpdated
                     | ApplicationEvent::CompactionUpdated(_)
+                    | ApplicationEvent::CompactionRecorded { .. }
                     | ApplicationEvent::TitleUpdated { .. }
                     | ApplicationEvent::McpStartupNotice { .. }
                     | ApplicationEvent::LanguageIntelligenceNotice { .. }
@@ -4882,6 +4883,39 @@ fn cancelled_run_closes_the_turn_as_aborted_by_user() {
             .rewind_last_turn(&id, user_seq, "stale")
             .is_err()
     );
+    assert!(
+        application
+            .rewind_and_enqueue(&id, user_seq, &revision, "replacement".into(), " ")
+            .is_err()
+    );
+    assert_eq!(
+        load_events(&storage_root),
+        events,
+        "invalid replacement cannot alter the journal"
+    );
+    application
+        .enqueue_input(
+            "queued".into(),
+            crate::message::PendingMessage::from_front_end(
+                "keep queued",
+                Some("queued".into()),
+                Vec::new(),
+            ),
+            InputDraft::default(),
+        )
+        .unwrap();
+    assert!(
+        application
+            .rewind_and_enqueue(&id, user_seq, &revision, "replacement".into(), "new text")
+            .is_err()
+    );
+    assert_eq!(application.pending_inputs().items[0].text, "keep queued");
+    assert_eq!(
+        load_events(&storage_root),
+        events,
+        "a pending next turn blocks replacement"
+    );
+    application.delete_pending_input("queued", 1).unwrap();
     application
         .sessions
         .inject_persistence_faults(crate::session::persistence::FaultHooks {
@@ -6469,6 +6503,50 @@ fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
     app.set_utility_for_test(Arc::new(Utility(count.clone())));
     app.register_followup_run("completed-1", true);
     let before = app.committed_seq();
+    app.transient_inputs
+        .next_turn
+        .push_back(super::next_turn::NextTurnItem {
+            id: "queued".into(),
+            text: "continue work".into(),
+        });
+    assert!(
+        app.prepare_followups("completed-1", false)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    app.transient_inputs.next_turn.clear();
+    app.transient_inputs
+        .queue
+        .enqueue(
+            "pending".into(),
+            crate::message::PendingMessage::from_front_end(
+                "continue",
+                Some("pending".into()),
+                vec![],
+            ),
+            InputDraft::default(),
+        )
+        .unwrap();
+    assert!(
+        app.prepare_followups("completed-1", false)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    app.transient_inputs.queue = Default::default();
+    *app.workflow.handoff.lock().unwrap() = Some(super::workflow::state::Handoff::Plan {
+        session: app.current_session_id().unwrap().to_string(),
+        plan: None,
+    });
+    assert!(app.workflow_ready());
+    assert!(
+        app.prepare_followups("completed-1", false)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    *app.workflow.handoff.lock().unwrap() = None;
     let first = app
         .prepare_followups("completed-1", false)
         .unwrap()

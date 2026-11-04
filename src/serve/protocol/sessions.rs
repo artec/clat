@@ -117,19 +117,18 @@ fn rewind(
         };
     }
     if method == "session.rewind.check" {
-        let revision = with_app(shared, |app| app.rewind_revision(&id, seq))
-            .map_err(app_error)?
-            .map(|(revision, _)| revision);
-        return Ok(json!({"eligible":revision.is_some(),"revision":revision,
-            "generation":shared.selection_generation()}));
+        let (revision, generation) = with_app(shared, |app| {
+            app.check_last_turn_rewind(&id, seq)
+                .map(|revision| (revision, shared.selection_generation()))
+        })
+        .map_err(app_error)?;
+        return Ok(
+            json!({"eligible":revision.is_some(),"revision":revision,"generation":generation}),
+        );
     }
-    if params
+    let expected_generation = params
         .get("expected_selection_generation")
-        .and_then(Value::as_u64)
-        != Some(shared.selection_generation())
-    {
-        return Err(RpcError::bad_request("session selection changed"));
-    }
+        .and_then(Value::as_u64);
     let revision = required_str(params, "revision")?;
     let text = required_str(params, "text")?;
     if text.trim().is_empty() || text.len() > 64 * 1024 {
@@ -138,7 +137,11 @@ fn rewind(
         ));
     }
     with_app(shared, |app| {
-        let outcome = app.rewind_last_turn(&id, seq, &revision);
+        if expected_generation != Some(shared.selection_generation()) {
+            return Err(RpcError::bad_request("session selection changed"));
+        }
+        let outcome =
+            app.rewind_and_enqueue(&id, seq, &revision, uuid::Uuid::new_v4().to_string(), &text);
         if outcome.is_ok()
             || outcome
                 .as_ref()
@@ -146,16 +149,8 @@ fn rewind(
         {
             shared.advance_selection_generation();
         }
-        outcome?;
-        let input_id = uuid::Uuid::new_v4().to_string();
-        let message = crate::message::PendingMessage::from_front_end(
-            &text,
-            Some(input_id.clone()),
-            Vec::new(),
-        );
-        app.enqueue_input(input_id, message, crate::application::InputDraft::default())
-    })
-    .map_err(app_error)?;
+        outcome.map_err(app_error)
+    })?;
     super::super::inputs::dispatch_ready(shared);
     Ok(json!({"outcome":"queued"}))
 }

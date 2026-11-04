@@ -91,6 +91,65 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.base);
     }
 }
+
+#[test]
+fn git_read_client_queries_both_diff_sides_without_mutating_repository() {
+    let f = Fixture::new();
+    f.repository();
+    fs::write(f.project.join("file.txt"), "staged\n").unwrap();
+    f.git(&["add", "--", "file.txt"]);
+    fs::write(f.project.join("file.txt"), "unstaged\n").unwrap();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let index = fs::read(f.project.join(".git/index")).unwrap();
+    let client = GitReadClient::new(f.service.clone());
+    let repos = client.query(GitReadQuery::Repositories, json!({})).unwrap();
+    assert!(
+        repos["repositories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "project")
+    );
+    let snapshot = client
+        .query(GitReadQuery::Snapshot, json!({"repositoryId":"project"}))
+        .unwrap();
+    let file = snapshot["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "file.txt")
+        .unwrap();
+    assert_eq!(file["staged"], true);
+    assert_eq!(file["unstaged"], true);
+    let staged = client
+        .query(
+            GitReadQuery::Diff,
+            json!({"repositoryId":"project", "path":"file.txt", "staged":true}),
+        )
+        .unwrap();
+    let unstaged = client
+        .query(
+            GitReadQuery::Diff,
+            json!({"repositoryId":"project", "path":"file.txt", "staged":false}),
+        )
+        .unwrap();
+    assert_eq!(staged["left"], "before\n");
+    assert_eq!(staged["right"], "staged\n");
+    assert!(staged["patch"].as_str().unwrap().contains("+staged"));
+    assert_eq!(unstaged["left"], "staged\n");
+    assert_eq!(unstaged["right"], "unstaged\n");
+    assert!(unstaged["patch"].as_str().unwrap().contains("+unstaged"));
+    let history = client
+        .query(GitReadQuery::History, json!({"repositoryId":"project"}))
+        .unwrap();
+    assert_eq!(history["commits"][0]["id"], head);
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(f.project.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        fs::read_to_string(f.project.join("file.txt")).unwrap(),
+        "unstaged\n"
+    );
+}
 #[test]
 fn development_editor_preserves_bom_crlf_and_fences_external_writer() {
     let f = Fixture::new();

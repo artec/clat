@@ -283,6 +283,10 @@ The main screen has three surfaces:
 | `↑` / `↓` | recall input history; if none, scroll the conversation |
 | `PageUp` / `PageDown` | scroll the conversation |
 | `Shift+Tab` | cycle the active vendor's reasoning level |
+| `F6` | open the workbench for loaded conversation turns, the next-turn queue, cached plan allowance, plans and goals, read-only Git, and operation history; in the turn list, Enter jumps to the start of the selected turn |
+| `F7` | expand or collapse the completed turn in the conversation viewport |
+| `F9` | expand or collapse the first compaction disclosure in the conversation viewport |
+| `F8` | select an automatically suggested next step; Enter adds it to the draft without sending |
 | `Ctrl+R` | expand or collapse Think details in the conversation |
 | `Ctrl+O` | cycle tool cards through collapsed, expanded and hidden states |
 | `Ctrl+F` | find original user/agent body text in the loaded conversation window; query limit 256 characters |
@@ -2558,13 +2562,64 @@ this is not yet a replacement for the traditional TUI. Plain `clat` opens this
 attached mode by default — it discovers or starts the background host before
 showing the TUI — while `clat standalone` keeps the traditional in-process TUI.
 
+During a live foreground turn, the transcript shows elapsed time and keeps the
+process visible. After the run has actually settled, F7 can expand or collapse
+that turn; steering messages, failure details and the final reply remain visible.
+A disconnected run is not treated as completed. F6 lists loaded replay turns
+and turns observed in the current terminal session.
+Completed rounds retain permission-denial and question details; retry notices
+are included in the expandable process. Some older journals record the reason
+for asking permission rather than the user's rejection reason; the tool result
+retains whatever failure details are available.
+A successfully committed context summary appears as a separate disclosure;
+F9 reveals the available summary and recorded scope. Failed or cancelled
+attempts do not create a success disclosure, and reopening the conversation
+uses the same journal identity to avoid duplicates.
+
+The F6 workbench offers **Edit last prompt** for a final user-aborted,
+text-only turn that passes the same side-effect and pending-input checks as
+Web. Edit the text, press Enter to review, then Enter again to replace and
+resend; Esc cancels. Shift+Enter inserts a newline. Other turns cannot be
+rewound, and an uncertain result reloads the conversation while preserving
+the edited text in the composer. Existing composer drafts are retained.
+
 ### Next-turn queue
 
 On CLAT standalone and attached terminals, `Ctrl+Q` queues the composer text;
 `Alt+Q` recalls the newest queued item. The status bar shows the count and first
-item. These terminal and legacy `queue.*` operations retain their after-run,
-text-only contract. Terminal Enter still sends steering to the next model-request
+item. The F6 workbench also lists queued items. Enter opens the full text; use
+Left/Right and Enter to recall it into the current draft or choose removal.
+Removal requires a second Enter to confirm. R and D followed by Y remain available
+as shortcuts. When a Host reply is uncertain, reopen the same item and repeat the action
+to recover its receipt. These terminal and legacy `queue.*` operations retain
+their after-run, text-only contract. Terminal Enter still sends steering to the next model-request
 boundary. Web/Desktop uses the separate pending-input interface below.
+
+The F6 plan-allowance panel reads the current model's existing monitor cache;
+opening it does not request the provider. Available quota windows show the
+remaining percentage and known reset and query times (UTC). A model or session
+change discards the previous view; unavailable or unsupported quotas are not
+presented as zero.
+
+The F6 plans and goals panel lists the current session's plan revisions, goal,
+and to-dos. Select an entry and press Enter to read its full text; use the arrow
+keys or Page Up/Down to scroll and Esc to return to the list. The goal detail
+also shows its known status, progress, latest result and any blocking reason.
+
+When a planning run requests review, the terminal shows the exact plan revision.
+Use Page Up/Down to read it, the arrow keys to choose Continue revising, Approve
+only, or Approve and execute, and Enter to confirm. An outdated revision must be
+refreshed and reviewed again. Approve and execute starts the goal only after the
+planning run settles; Approve only does not start a goal. Esc declines the review.
+
+The F6 Git panel selects a repository and shows staged changes, unstaged changes,
+or recent commits. Select a changed file to read its comparison; Git queries run
+in the background and do not stage, commit, fetch, pull, or push.
+
+The F6 operation-history panel reads the current session. T cycles the turn
+filter, S cycles result status, and Page Up/Down changes pages. Enter opens the
+recorded arguments and result. A failed Cargo.lock maintenance step is shown
+independently of the original file operation's result.
 
 The web and desktop composer uses an arrow icon to send. While a run is active,
 the arrow remains available with a draft; an empty composer shows the square stop
@@ -3135,6 +3190,8 @@ non-durable and bounded in Host memory (latest result for up to 64 conversations
 per mounted project); refresh can read existing results, while a Host restart
 never regenerates old suggestions. An explicit retry is offered after failure.
 Suggestions do not enter the conversation journal or model context.
+Disabling automatic suggestions also clears the displayed TUI suggestions;
+an older in-flight reply cannot restore them.
 
 The context ring beside the model opens a usage popover by hover, focus or click.
 When core estimates pressure above the shared capacity-scaled maintenance threshold

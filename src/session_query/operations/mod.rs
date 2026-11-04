@@ -35,6 +35,9 @@ pub struct OperationRow {
     pub target: String,
     pub status: String,
     pub result_seq: Option<u64>,
+    /// A successful file operation can independently report failed Cargo maintenance.
+    #[serde(default)]
+    pub rust_sync_failed: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OperationsPage {

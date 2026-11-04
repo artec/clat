@@ -170,6 +170,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "queue.list",
     "queue.enqueue",
     "queue.recall",
+    "queue.select",
     "run.cancel",
     "approval.respond",
     "question.respond",
@@ -478,6 +479,18 @@ fn dispatch_guarded_project(
         {
             return receipt;
         }
+        if method == "queue.select"
+            && let Some(operation) = params.get("operationId").and_then(Value::as_str)
+            && let Some(item) = params.get("itemId").and_then(Value::as_str)
+            && let Some(session) = params.get("session").and_then(Value::as_str)
+            && let Some(receipt) = shared
+                .app
+                .lock()
+                .expect("application lock")
+                .selected_next_turn_receipt(operation, item, session)
+        {
+            return Ok(json!({"item": receipt}));
+        }
         if method == "queue.recall"
             && let Some(id) = params.get("clientMessageId").and_then(Value::as_str)
             && let Some(item) = shared
@@ -504,7 +517,10 @@ fn dispatch_guarded_project(
             shared,
         );
     }
-    if matches!(method, "queue.list" | "queue.enqueue" | "queue.recall") {
+    if matches!(
+        method,
+        "queue.list" | "queue.enqueue" | "queue.recall" | "queue.select"
+    ) {
         return super::next_turn::dispatch(
             method,
             params
@@ -1790,6 +1806,7 @@ fn project_mutation(method: &str) -> bool {
             | "steer.send"
             | "queue.enqueue"
             | "queue.recall"
+            | "queue.select"
             | "run.cancel"
             | "model.overrides.set"
             | "turn.restore"

@@ -18,6 +18,7 @@ mod command_picker;
 pub(crate) mod conversation;
 mod conversation_find;
 mod dsh_events;
+mod followups;
 mod input;
 mod logo;
 mod markdown;
@@ -25,9 +26,11 @@ mod model_editor;
 mod native;
 mod next_turn;
 mod permission_picker;
+mod plan_review;
 mod plugins;
 mod session_picker;
 mod theme;
+mod workbench;
 mod worker;
 
 use crate::{
@@ -361,8 +364,12 @@ struct App {
     /// the worker and terminal input is gated; the structured draft remains
     /// untouched until startup has actually succeeded.
     run_start_pending: bool,
+    workflow_handoff_session: Option<SessionId>,
+    workflow_starting: bool,
     /// Client-local single-flight request and optional composer preview.
     suggestions: suggestion::SuggestionState,
+    followup_epoch: u64,
+    followup_owner: Option<SessionId>,
     /// Narrows `run_start_pending` to the one handoff that can race a native
     /// `SteeringApplied` event. Ordinary initial attachment admission must not
     /// turn a stale prior-run event into an early-claim credit.
@@ -440,6 +447,7 @@ struct App {
     /// 恒取满额高度，内容再少也是整屏框、上下边距形同虚设）。
     plugins: plugins::PluginUi,
     info_dialog: Option<InfoDialog>,
+    workbench: Option<workbench::Workbench>,
     /// 绘制期计算的最大滚动位（info 弹窗每帧刷新，按键翻页用它钳制）。
     /// 首帧绘制先于任何按键，键处理器读到的总是有效值。
     info_scroll_max: usize,
@@ -609,7 +617,11 @@ impl App {
             session_picker: None,
             running: false,
             run_start_pending: false,
+            workflow_handoff_session: None,
+            workflow_starting: false,
             suggestions: Default::default(),
+            followup_epoch: 0,
+            followup_owner: None,
             steering_admission_pending: false,
             quit_after_run_start: false,
             events: None,
@@ -641,6 +653,7 @@ impl App {
             should_quit: false,
             plugins: plugins::PluginUi::default(),
             info_dialog: None,
+            workbench: None,
             info_scroll_max: 0,
             info_page: 1,
             mcp_view: None,
@@ -718,7 +731,11 @@ impl App {
             session_picker: None,
             running: false,
             run_start_pending: false,
+            workflow_handoff_session: None,
+            workflow_starting: false,
             suggestions: Default::default(),
+            followup_epoch: 0,
+            followup_owner: None,
             steering_admission_pending: false,
             quit_after_run_start: false,
             events: None,
@@ -750,6 +767,7 @@ impl App {
             should_quit: false,
             plugins: plugins::PluginUi::default(),
             info_dialog: None,
+            workbench: None,
             info_scroll_max: 0,
             info_page: 1,
             mcp_view: None,
