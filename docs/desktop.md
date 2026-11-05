@@ -126,6 +126,7 @@ resizes only the scrollable commit graph; opening repositories leaves the graph
 at the bottom. When the graph is collapsed, the group uses only its content
 height and the resize handle is hidden. Reopening the graph restores its saved
 size preference, limited by the space left after the repository list.
+Selecting a commit expands its changed files; selecting it again collapses them.
 Repository names come from each repository's own path (the project directory
 name for the root repository), so selecting a sub-repository does not rename
 the root entry or mix its name with another repository's branch.
