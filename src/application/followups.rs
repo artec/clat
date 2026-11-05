@@ -64,7 +64,10 @@ impl TrustedProjectApplication {
         }
     }
     pub fn followup_snapshot(&self) -> FollowupReply {
-        if self.utility.is_none() {
+        if self.utility.is_none()
+            || !self.pending_inputs().items.is_empty()
+            || self.pending_inputs().interrupting
+        {
             return FollowupReply::default();
         }
         let Some(session) = self.current_session_id() else {

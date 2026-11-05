@@ -56,6 +56,7 @@ pub(super) fn dispatch(
         .input_queue()
         .clone();
     if let Some(value) = queue.receipt(operation, &digest).map_err(|e| failed(&e))? {
+        dispatch_ready(shared);
         return Ok(value);
     }
     let value = match method {
@@ -163,7 +164,11 @@ fn mutate(
     result.map_err(RpcError::from)
 }
 
-fn snapshot(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+pub(super) fn snapshot(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    // Reopening a desktop reattaches to the same Host. Reconcile previously
+    // authorized inputs under the same admission lock, without unpausing Stop.
+    let _mutation = shared.rpc_mutations.lock().expect("project RPC mutation");
+    dispatch_ready(shared);
     shared
         .app
         .lock()
@@ -189,7 +194,10 @@ pub(super) fn settled(shared: &Arc<ServeShared>) {
 }
 
 pub(super) fn dispatch_ready(shared: &Arc<ServeShared>) {
-    if shared.is_shutting_down() || !shared.active_run_info().is_null() {
+    if shared.is_shutting_down()
+        || !shared.active_run_info().is_null()
+        || !shared.active_compaction_info().is_null()
+    {
         return;
     }
     let queue = shared.app.lock().expect("application").pending_inputs();

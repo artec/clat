@@ -47,6 +47,7 @@ function renderPendingInputs(value) {
   const badge = pendingInputTrigger.querySelector('.pending-input-count');
   badge.hidden = !pendingInputStore.items.length; badge.textContent = String(pendingInputStore.items.length);
   pendingInputTrigger.setAttribute('aria-busy', String(pendingInputStore.interrupting || optimisticInputInterrupt !== null));
+  if (pendingInputStore.items.length || pendingInputStore.interrupting) clearRoundFollowups();
   for (const item of pendingInputStore.items) rememberInputReferences(item);
   for (const [key, preview] of inputPreviews) {
     if (!pendingInputStore.items.some(item => JSON.parse(key)[0] === item.id && JSON.parse(key)[1] === item.version)) {
@@ -104,7 +105,7 @@ function renderPendingInputRow(item, index) {
   const recall = pendingButton('recall', () => recallPendingInput(item), 'corner-up-left');
   const remove = pendingButton('delete', () => performInputAction('delete', item), 'trash-2');
   for (const button of [interrupt, edit, recall, remove]) { button.disabled = item.phase !== 'queued' || inputOperations.has(item.id); actions.append(button); }
-  interrupt.disabled ||= pendingInputStore.interrupting || optimisticInputInterrupt !== null;
+  interrupt.disabled ||= !state.runActive || pendingInputStore.interrupting || optimisticInputInterrupt !== null;
   if (item.phase !== 'queued') actions.append(el('small', '', () => inputText(item.phase === 'interrupting' ? 'interrupting' : 'receiving')));
   row.append(actions); return row;
 }

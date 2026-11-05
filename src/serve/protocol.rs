@@ -1446,6 +1446,7 @@ fn dispatch_tasks(
 }
 
 fn workbench_info(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    let pending_inputs = super::inputs::snapshot(shared)?;
     let snapshot = with_app(shared, |app| app.workbench_snapshot()).map_err(app_error)?;
     let mut value = super::shapes::workbench_snapshot_json(
         &snapshot,
@@ -1454,8 +1455,7 @@ fn workbench_info(shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
         RPC_METHODS,
     );
     value["next_turn_queue"] = super::next_turn::value(shared)["items"].clone();
-    value["pending_inputs"] = serde_json::to_value(with_app(shared, |app| app.pending_inputs()))
-        .map_err(|e| RpcError::internal(e.to_string()))?;
+    value["pending_inputs"] = pending_inputs;
     value["selection_generation"] = json!(shared.selection_generation());
     Ok(value)
 }

@@ -2390,6 +2390,7 @@
   "input.step_hint": "每個模型步驟接收一則",
   "input.paused": "已暫停 · 傳送訊息後繼續",
   "input.empty": "暫無待發訊息",
+  "input.not_running": "任務已結束，無法插話。請傳送訊息繼續。",
   "input.interrupt": "立即插話",
   "input.edit": "修改",
   "input.recall": "取回輸入框",

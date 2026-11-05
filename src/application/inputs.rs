@@ -84,6 +84,15 @@ impl TrustedProjectApplication {
 
     pub fn interrupt_pending_input(&self, id: &str, version: u64) -> Result<(), ApplicationError> {
         self.check_input_run()?;
+        if self
+            .active_run
+            .as_ref()
+            .is_none_or(|run| run.is_finished() || run.steering().is_sealed())
+        {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "input.not_running",
+            )));
+        }
         self.transient_inputs
             .queue
             .interrupt(id, version)

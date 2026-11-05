@@ -2673,16 +2673,21 @@ removed staging files do not consume that message's capacity.
 **Interrupt now** reserves the selected pending message, requests cancellation,
 waits for the current worker and tools to stop, and automatically continues in
 the same conversation with that message first. Remaining queue order is retained.
-Only one such handoff runs at a time. UI feedback is immediate; actual stop time
+Only one such handoff runs at a time. Interrupt is available only while a run
+is still accepting input; the Host also rejects late interrupt requests. UI feedback is immediate; actual stop time
 depends on provider/tool cancellation support. Completed file changes are not
 rolled back and completed tools are not automatically repeated.
 
 Outside an open popup, Esc stops execution and also cancels an outstanding
 automatic handoff. Manual stop or failure pauses the queue without discarding
 its messages. Sending again, or explicitly choosing a pending message to run,
-resumes it. Claimed messages cannot be edited or deleted; a late edit is kept
+resumes it. After the run ends, use Send to resume a paused queue. Claimed messages cannot be edited or deleted; a late edit is kept
 locally for recovery instead of overwriting history. Reconnection reads the Host's
-authoritative snapshot. Pending state and operation receipts are process-local;
+authoritative snapshot and reconciles already-authorized idle inputs. Retrying an
+acknowledged input also rechecks dispatch without admitting it twice. Explicitly
+paused queues stay paused until the user resumes them. Pending inputs suppress
+cached next-step suggestions as well as new suggestion generation.
+Pending state and operation receipts are process-local;
 they are not a persistent queue across Host restarts.
 
 After explicitly stopping a text-only run in Web/Desktop, hover over its last

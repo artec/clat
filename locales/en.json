@@ -2390,6 +2390,7 @@
   "input.step_hint": "One message is received at each model step",
   "input.paused": "Paused · send a message to continue",
   "input.empty": "No pending messages",
+  "input.not_running": "There is no running task to interrupt. Send a message to continue.",
   "input.interrupt": "Interrupt now",
   "input.edit": "Edit",
   "input.recall": "Return to input",

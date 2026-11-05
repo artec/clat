@@ -47,6 +47,7 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
 }
 async function performInputAction(action, item, extra = {}) {
   if (inputOperations.has(item.id)) return;
+  if (action === 'interrupt' && !state.runActive) { await refreshPendingInputs(); return; }
   const owner = composerScope, editor = pendingInputEditor(item.id);
   if(action==='interrupt')optimisticInputInterrupt=item.id;
   const retryKey = JSON.stringify([owner, action, item.id, item.version, extra]);
@@ -56,7 +57,7 @@ async function performInputAction(action, item, extra = {}) {
     const result = await rpc('input.' + action, { id: item.id, version: item.version, operationId: inputRetryOperations.get(retryKey), expected_selection_generation: state.selectionGeneration, ...extra });
     inputRetryOperations.delete(retryKey);
     if (action === 'update' && editor) pendingInputEditors.delete(editor.key);
-    if (action === 'interrupt' && composerOwns(owner)) updateRunState(inputText('interrupting'));
+    if (action === 'interrupt' && composerOwns(owner) && state.runActive) updateRunState(inputText('interrupting'));
     return result;
   } catch (error) { if (composerOwns(owner)) updateRunState(error.message); }
   finally { inputOperations.delete(item.id);if(action==='interrupt')optimisticInputInterrupt=null;if (composerOwns(owner)) await refreshPendingInputs(); }

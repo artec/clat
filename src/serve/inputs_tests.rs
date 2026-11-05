@@ -494,3 +494,88 @@ fn rewind_send_replaces_the_stopped_turn_and_rejects_a_stale_editor() {
     input_rpc(addr, "run.cancel", json!({}));
     cleanup(handle, &storage, &root);
 }
+
+#[test]
+fn pending_input_after_completed_run_starts_again() {
+    let (handle, storage, root) = spawn_serve("inputs-after-completion", TestBehavior::Success);
+    let mut events = SseClient::connect(handle.addr);
+    submit(handle.addr, "first-done", "first task");
+    assert_eq!(settled_outcome_type(&events.wait_settled()), "completed");
+    submit(handle.addr, "second-done", "second task");
+    assert_eq!(settled_outcome_type(&events.wait_settled()), "completed");
+    assert_eq!(count_keyed_user_messages(&storage, "second-done"), 1);
+    assert!(pending(handle.addr)["items"].as_array().unwrap().is_empty());
+    cleanup(handle, &storage, &root);
+}
+
+#[test]
+fn pending_input_reconnect_reconciles_idle_authorized_queue_without_duplicate_delivery() {
+    for method in ["input.submit", "input.pending", "workbench.info"] {
+        let (storage, root, project) = setup("inputs-reconnect-reconcile");
+        prepare_storage(&project, &storage, TestBehavior::Success);
+        let application = BootstrapApplication::open(project, storage.clone())
+            .unwrap()
+            .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+            .unwrap();
+        crate::test_support::configure_test_model(&application);
+        let shared = Arc::new(ServeShared::new(
+            Arc::new(Mutex::new(application)),
+            "unit".into(),
+            0,
+        ));
+        let params = json!({"text":"pending at the end of the old run", "clientMessageId":"reconnect-input", "operationId":"reconnect-operation"});
+        // Admission and its receipt survive a closed desktop. No active worker owns the queue.
+        shared
+            .app
+            .lock()
+            .unwrap()
+            .enqueue_input(
+                "reconnect-input".into(),
+                crate::message::PendingMessage::from_front_end(
+                    "pending at the end of the old run",
+                    Some("reconnect-input".into()),
+                    vec![],
+                ),
+                Default::default(),
+            )
+            .unwrap();
+        shared.app.lock().unwrap().input_queue().remember(
+            "reconnect-operation".into(),
+            format!("input.submit:{}", serde_json::to_string(&params).unwrap()),
+            json!({"outcome":"queued"}),
+        );
+        if method != "input.submit" {
+            shared
+                .app
+                .lock()
+                .unwrap()
+                .input_queue()
+                .interrupt("reconnect-input", 1)
+                .unwrap();
+            protocol::dispatch(method, &json!({}), &shared).unwrap();
+        } else {
+            protocol::dispatch("input.submit", &params, &shared).unwrap();
+        }
+        assert_eq!(
+            count_keyed_user_messages(&storage, "reconnect-input"),
+            1,
+            "reconnect or retry must wake the authorized idle queue"
+        );
+        protocol::dispatch("input.pending", &json!({}), &shared).unwrap();
+        assert_eq!(count_keyed_user_messages(&storage, "reconnect-input"), 1);
+        shared.mark_shutting_down();
+        shared.drain_workers();
+        let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+        Arc::try_unwrap(shared.app)
+            .ok()
+            .expect("sole application owner")
+            .into_inner()
+            .unwrap()
+            .close()
+            .unwrap();
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&root);
+    }
+}

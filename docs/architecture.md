@@ -2201,3 +2201,15 @@ not touch project files or session storage and does not cancel running work.
 Explicit `workspace.open` restores the entry through HostApplication, including
 when the same project already has a mounted route. Old registry records without
 the flag remain listed. Both Web/Desktop project menus share this control path.
+
+### Pending-input reconciliation on desktop reattachment
+
+The Host retains pending input and idempotent operation receipts across desktop
+window restarts. `input.pending` and `workbench.info` reconcile the authorized
+queue under the project RPC mutation lock before returning state. Replaying a
+matching input operation receipt also rechecks dispatch. Admission still uses
+the ordinary Run path and its committed client-message identity, so a retry
+cannot insert the message twice. Active Runs and compactions exclude dispatch;
+manual Stop and failed-start pauses remain explicit user boundaries. Core rejects
+interrupt intents once a Run is finished or sealed, before changing queue/handoff
+state. Followup snapshots hide cached suggestions while pending input exists.

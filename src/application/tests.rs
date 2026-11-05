@@ -6558,6 +6558,23 @@ fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
     );
     first.generate();
     assert_eq!(app.followup_snapshot().items, ["first", "second", "third"]);
+    app.input_queue()
+        .enqueue(
+            "late-input".into(),
+            crate::message::PendingMessage::from_front_end(
+                "continue",
+                Some("late-input".into()),
+                vec![],
+            ),
+            InputDraft::default(),
+        )
+        .unwrap();
+    assert!(
+        app.followup_snapshot().items.is_empty(),
+        "cached suggestions must not mask pending work"
+    );
+    app.input_queue().remove("late-input", 1).unwrap();
+
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(app.committed_seq(), before);
     assert!(
@@ -6648,6 +6665,26 @@ fn pending_input_postcommit_start_failure_pauses_rest_without_repeating_received
         1
     );
     app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn pending_input_idle_interrupt_does_not_create_a_handoff() {
+    let (storage, root) = roots("input-idle-interrupt");
+    std::fs::create_dir_all(&root).unwrap();
+    let app = mount(&Project::new(&root), &storage, TestBehavior::Success);
+    app.enqueue_input(
+        "queued".into(),
+        crate::message::PendingMessage::from_front_end("continue", Some("queued".into()), vec![]),
+        InputDraft::default(),
+    )
+    .unwrap();
+    assert!(app.interrupt_pending_input("queued", 1).is_err());
+    let view = app.pending_inputs();
+    assert!(!view.interrupting);
+    assert_eq!(view.items[0].phase, "queued");
+    drop(app);
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
 }
