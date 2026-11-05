@@ -3350,6 +3350,12 @@ On narrow windows select a row to read its detail, then use Back to list.
 Page switches retain queries, filters, selection and reading position; returning
 to the conversation restores its transcript and unsent draft.
 
+The conversation sidebar and Settings → Projects share a **Remove from CLAT**
+project action. After confirmation, the project disappears from these lists.
+Its directory, files, session history and identity remain intact. Selecting the
+directory again restores its project entry and access to its existing conversations.
+Removing an entry does not stop active work in that project.
+
 Resources keeps Files, Materials and Bookmarks within the current project, with
 file previews, attachment previews, source messages, snapshot references and
 bookmark removal in the detail area. Its sidebar search retains the localized

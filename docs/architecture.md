@@ -2190,3 +2190,14 @@ The failed attempt is finalized separately before maintenance reserves summary
 spend. Requests recheck cancellation, modality and spend before redispatch.
 Model switches perform target-capacity acceptance before recorder publication;
 configuration persistence itself never invokes a model.
+
+### Project list removal
+
+Explicit `workspace.update` intents may set the optional `removed` organization
+flag. ControlStorage persists this flag in the workspace registry, retaining the
+project ID, path, trust, session ownership and selection. Host project-directory
+projections exclude removed entries, including mounted projects. Removal does
+not touch project files or session storage and does not cancel running work.
+Explicit `workspace.open` restores the entry through HostApplication, including
+when the same project already has a mounted route. Old registry records without
+the flag remain listed. Both Web/Desktop project menus share this control path.

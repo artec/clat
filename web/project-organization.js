@@ -29,7 +29,7 @@
     function menu(row,anchor,event,extra=[]){
       if(!event&&activeAnchor===anchor){closeMenu();return;}
       closeMenu();activeAnchor=anchor;row=current(row);const wasPinned=!!row.pinned,popup=node('div','session-context-menu');popup.setAttribute('role','menu');
-      const items=[['rename','edit',()=>rename(row)], [wasPinned?'unpin':'pin',wasPinned?'unpin':'pin',()=>update(row,{pinned:!wasPinned})],['reset','restore',()=>update(row,{reset_title:true})],...extra];
+      const items=[['rename','edit',()=>rename(row)], [wasPinned?'unpin':'pin',wasPinned?'unpin':'pin',()=>update(row,{pinned:!wasPinned})],['reset','restore',()=>update(row,{reset_title:true})],['remove','trash',()=>window.confirm(text('remove_confirm',{name:row.title||row.root}))?update(row,{removed:true}):false],...extra];
       const error=node('p','error');error.setAttribute('role','alert');
       function close(){popup.remove();document.removeEventListener('pointerdown',outside,true);document.removeEventListener('keydown',key,true);if(closeMenu===close){closeMenu=()=>{};activeAnchor=null;}}
       function outside(e){if(!popup.contains(e.target)&&!anchor.contains(e.target))close();}

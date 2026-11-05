@@ -12,7 +12,7 @@ function installInteractionDock() {
     if (model.current?.anchor.closest('.schedule-interactions')) workbenchShell.open('schedules-dialog');
     model.current?.anchor.scrollIntoView({block:'center', behavior:'smooth'});
   });
-  const collapse = shellButton('interaction-collapse', 'collapse', () => shellText('collapse_interaction'), () => {
+  const collapse = shellButton('interaction-collapse', 'panel-collapse', () => shellText('collapse_interaction'), () => {
     model.collapsed = !model.collapsed; render();
   });
   header.append(count, previous, next, origin, collapse); dock.append(header, content);
@@ -31,6 +31,8 @@ function installInteractionDock() {
     }));
     previous.disabled = next.disabled = model.entries.length < 2;
     collapse.setAttribute('aria-expanded', String(!model.collapsed));
+    collapse.querySelector('svg').replaceWith(svgIcon(model.collapsed ? 'panel-expand' : 'panel-collapse'));
+    for (const attr of ['title','aria-label']) CLATI18n.attribute(collapse,attr,()=>shellText(model.collapsed?'expand_interaction':'collapse_interaction'));
     document.getElementById('nav-workbench').dataset.pending = String(model.entries.length > 0);
     document.getElementById('nav-tasks').dataset.pending = String(model.entries.some(entry => entry.anchor.closest('.schedule-interactions')));
     context.changed();

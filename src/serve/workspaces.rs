@@ -315,6 +315,10 @@ impl WorkspaceHost {
                 .as_ref()
                 == Some(&root)
             {
+                projects
+                    .application
+                    .restore_workspace_listing(&root)
+                    .map_err(|error| RpcError::bad_request(error.to_string()))?;
                 shared.touch();
                 return Ok(json!({"id": id, "api_prefix": format!("/workspace/{id}")}));
             }
@@ -350,6 +354,10 @@ impl WorkspaceHost {
             projects.application.attach(Project::new(root))
         }
         .map_err(|error| RpcError::bad_request(error.to_string()))?;
+        projects
+            .application
+            .restore_workspace_listing(app.lock().expect("application lock").project().root())
+            .map_err(|error| RpcError::bad_request(error.to_string()))?;
         let shared = self.shared_for(projects, app);
         let id = uuid::Uuid::new_v4().to_string();
         *shared

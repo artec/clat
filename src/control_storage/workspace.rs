@@ -32,6 +32,9 @@ pub struct WorkspaceRecord {
     /// CLAT display organization; never changes the ownership/restore order.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Removed from the project list; session ownership and files stay intact.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
     /// 有序所有权账：数组顺序即显示顺序（投影，可对账修复）。
     #[serde(default, rename = "sessionIds")]
     pub session_ids: Vec<String>,
@@ -204,6 +207,7 @@ impl WorkspaceRegistry {
                 path: path.to_owned(),
                 title: title.to_owned(),
                 pinned: false,
+                removed: false,
                 session_ids,
                 created_at: now.clone(),
                 updated_at: now,

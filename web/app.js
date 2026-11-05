@@ -243,6 +243,8 @@ const ICON_PATHS = {
   'save-all': ['M8 3h10l3 3v12H7V3zM11 3v5h6V3M10 18v-6h8v6M3 7v14h14'],
   'file-plus': ['M5 3h9l5 5v13H5zM14 3v6h5M8 14h8M12 10v8'],
   'folder-plus': ['M3 7h7l2-3h9v16H3zM8 13h8M12 9v8'],
+  'panel-collapse': ['M4 4h16v16H4z', 'M4 9h16', 'm9 15 3-3 3 3'],
+  'panel-expand': ['M4 4h16v16H4z', 'M4 9h16', 'm9 13 3 3 3-3'],
   'collapse-all': ['M4 3h14v14H4zM8 21h13V8M7 10h8'],
   'activity-log': ['M3 11a9 9 0 1 1 3 8', 'M3 4v7h7', 'M12 7v5l3 2'],
   'task-list': ['M9 6h12M9 12h12M9 18h12', 'm2 6 2 2 3-4m-5 8 2 2 3-4m-5 8 2 2 3-4'],

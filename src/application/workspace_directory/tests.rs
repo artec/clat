@@ -248,3 +248,59 @@ fn project_pinning_is_a_stable_display_projection_not_restore_order() {
     drop(host);
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn removed_project_keeps_files_and_session_identity_and_can_be_readded() {
+    let (root, mut host, first, _) = fixture("directory-remove");
+    let app = host.attach(first.clone()).unwrap();
+    app.lock().unwrap().ensure_registered().unwrap();
+    let before = host.workspace_directory().remove(0);
+    host.storage
+        .control
+        .register_workspace(&before.root, &before.title, &["retained-session".into()])
+        .unwrap();
+    let marker = first.root().join("keep.txt");
+    std::fs::write(&marker, "keep project files").unwrap();
+    let record = host.storage.control.workspace_infos();
+    host.update_workspace(
+        before.project_id.as_deref(),
+        None,
+        super::super::WorkspaceUpdate {
+            removed: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    host.update_workspace(
+        before.project_id.as_deref(),
+        None,
+        super::super::WorkspaceUpdate {
+            removed: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        host.workspace_directory().is_empty(),
+        "mounted removed projects must stay absent"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "keep project files"
+    );
+    let stored = host.storage.control.workspace_infos();
+    assert_eq!(stored[0].0, record[0].0);
+    assert_eq!(stored[0].1.session_ids, record[0].1.session_ids);
+    assert!(stored[0].1.removed);
+    host.restore_workspace_listing(first.root().canonicalize().unwrap().as_path())
+        .unwrap();
+    assert_eq!(host.workspace_directory()[0].project_id, before.project_id);
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "keep project files"
+    );
+    drop(app);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}

@@ -18,6 +18,10 @@ pub struct WorkspaceDirectoryEntry {
 
 impl HostApplication {
     pub fn workspace_directory(&self) -> Vec<WorkspaceDirectoryEntry> {
+        self.workspace_directory_view(false)
+    }
+
+    fn workspace_directory_view(&self, include_removed: bool) -> Vec<WorkspaceDirectoryEntry> {
         // Release the control snapshot lock before acquiring any project lock.
         // Keep registry ordering; unregistered mounted projects append at the end.
         let mut entries: Vec<_> = self
@@ -25,6 +29,7 @@ impl HostApplication {
             .control
             .workspace_infos()
             .into_iter()
+            .filter(|(_, record)| include_removed || !record.removed)
             .map(|(id, record)| WorkspaceDirectoryEntry {
                 project_id: Some(id),
                 root: record.path,
@@ -38,6 +43,13 @@ impl HostApplication {
             .collect();
         for application in self.projects.values() {
             let app = application.lock().expect("application lock");
+            if !include_removed
+                && app
+                    .project_display_record()
+                    .is_some_and(|(_, record)| record.removed)
+            {
+                continue;
+            }
             let live = app.workspace_directory_entry();
             if let Some(entry) = entries.iter_mut().find(|entry| entry.root == live.root) {
                 entry.mounted = true;
@@ -50,6 +62,32 @@ impl HostApplication {
         }
         entries.sort_by_key(|entry| !entry.pinned);
         entries
+    }
+
+    /// Explicitly reopening a removed project restores only its list entry.
+    pub fn restore_workspace_listing(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<(), super::ApplicationError> {
+        let path = root.to_string_lossy();
+        if self
+            .storage
+            .control
+            .workspace_record(&path)
+            .is_some_and(|(_, record)| record.removed)
+        {
+            self.storage
+                .control
+                .update_workspace_organization(
+                    &path,
+                    &super::WorkspaceUpdate {
+                        removed: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| super::ApplicationError::new(error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Explicit authenticated client intent. Roots must already be mounted;
@@ -75,14 +113,20 @@ impl HostApplication {
             _ => None,
         }
         .ok_or_else(|| organization_error("project_org.unknown_project"))?;
-        self.storage
+        let mut row = self
+            .workspace_directory_view(true)
+            .into_iter()
+            .find(|row| row.root == root)
+            .ok_or_else(|| organization_error("project_org.unknown_project"))?;
+        let (id, record) = self
+            .storage
             .control
             .update_workspace_organization(&root, &edit)
             .map_err(|error| super::ApplicationError::new(error.to_string()))?;
-        self.workspace_directory()
-            .into_iter()
-            .find(|row| row.root == root)
-            .ok_or_else(|| organization_error("project_org.unknown_project"))
+        row.project_id = Some(id);
+        row.title = record.title;
+        row.pinned = record.pinned;
+        Ok(row)
     }
 }
 

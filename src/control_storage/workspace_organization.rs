@@ -9,12 +9,16 @@ pub struct WorkspaceUpdate {
     #[serde(default)]
     pub reset_title: bool,
     pub pinned: Option<bool>,
+    pub removed: Option<bool>,
 }
 
 impl WorkspaceUpdate {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if (self.reset_title && self.title.is_some())
-            || (!self.reset_title && self.title.is_none() && self.pinned.is_none())
+            || (!self.reset_title
+                && self.title.is_none()
+                && self.pinned.is_none()
+                && self.removed.is_none())
         {
             return Err("project_org.invalid_update");
         }
@@ -62,10 +66,12 @@ impl WorkspaceRegistry {
                 .to_owned()
         };
         let pinned = edit.pinned.unwrap_or(record.pinned);
-        if title != record.title || pinned != record.pinned {
+        let removed = edit.removed.unwrap_or(record.removed);
+        if title != record.title || pinned != record.pinned || removed != record.removed {
             self.touch(id.clone(), |record| {
                 record.title = title;
                 record.pinned = pinned;
+                record.removed = removed;
             });
         }
         (id, self.find_by_path(path).expect("registered").1)
