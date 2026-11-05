@@ -72,13 +72,15 @@ fn next_step(body: &Value) -> (Vec<Value>, Option<String>) {
     if is_title {
         return (Vec::new(), Some("ag5 joint title".into()));
     }
+    // Request-tail context is also a user-role message; identify this fixture's
+    // actual prompts rather than treating the last user-role item as the turn.
     let latest_user = messages
         .iter()
         .rev()
-        .find(|message| message["role"] == "user")
-        .and_then(|message| message["content"].as_str())
-        .unwrap_or_default()
-        .to_owned();
+        .filter(|message| message["role"] == "user")
+        .filter_map(|message| message["content"].as_str())
+        .find(|text| *text == TASK || *text == "continue")
+        .expect("scripted request contains a scenario prompt");
     let has_tool = |id: &str| {
         messages.iter().any(|message| {
             message["role"] == "tool" && message["tool_call_id"].as_str() == Some(id)
@@ -179,6 +181,29 @@ fn next_step(body: &Value) -> (Vec<Value>, Option<String>) {
         ],
         None,
     )
+}
+
+#[test]
+fn scripted_provider_recognizes_continuation_before_request_tail() {
+    let body = serde_json::json!({"messages": [
+        {"role": "user", "content": TASK},
+        {"role": "assistant", "tool_calls": [
+            {"function": {"name": "todo_write"}},
+            {"function": {"name": "todo_write"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call-ag5-edit-fail"},
+        {"role": "user", "content": "continue"},
+        {"role": "user", "content": "current request context"}
+    ]});
+    let (calls, final_text) = next_step(&body);
+    assert!(final_text.is_none());
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("call-ag5-cont-todos")
+    );
 }
 
 fn serve_provider_request(stream: &mut TcpStream) {
@@ -328,6 +353,7 @@ fn spawn_real_serve(home: &Path, project: &Path) -> (Child, u16) {
         .env("HOME", home)
         .env("USERPROFILE", home)
         .env("CI", "1")
+        .env("CLAT_LANG", "en")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
