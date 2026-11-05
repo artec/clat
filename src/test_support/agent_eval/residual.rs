@@ -110,10 +110,12 @@ impl TestModelScript for ProbeScript {
         match state.steps {
             1 => {
                 let scratch = request
-                    .instructions
+                    .options
+                    .request_tail
+                    .as_deref()
                     .unwrap_or_default()
-                    .split_once("use the private scratch directory ")
-                    .and_then(|(_, tail)| tail.split_once(". It is removed"))
+                    .split_once("use the active private scratch directory ")
+                    .and_then(|(_, tail)| tail.split_once(" for temporary scripts"))
                     .map(|(path, _)| PathBuf::from(path))
                     .ok_or_else(|| crate::ModelError::request("missing run scratch guidance"))?;
                 if !scratch.is_dir() {
@@ -219,7 +221,8 @@ fn application_teardown_reaps_owned_group_and_removes_scratch() {
     });
     let closed = app.close();
     assert!(closed.is_ok(), "Application close: {closed:?}");
-    assert!(outcome.unwrap().is_ok(), "probe run failed");
+    let outcome = outcome.unwrap();
+    assert!(outcome.is_ok(), "probe run failed: {:?}", outcome.err());
     let witness = script.witness.lock().unwrap();
     assert_eq!(witness.steps, 2);
     assert_eq!(witness.pids.len(), 2);

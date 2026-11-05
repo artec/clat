@@ -902,6 +902,15 @@ through EOF. Child stderr is inherited so a future reset exposes Host panics
 instead of hiding them behind an SSE error. No reconnection retry masks the
 first failed subscription.
 
+The AG5 fixture captures outbound requests and checks actual submitted text
+separately from runtime guidance: a wire `user` role alone does not identify a
+user command. Each prompt must occur once, the current scratch guidance must
+occur once at the request tail, and cold replay must contain only the submitted
+user history. Its SSE reader fails on EOF rather than spinning, and a child
+guard reaps the isolated Host when assertions unwind. Run the entire integration
+target with `cargo test -p clat --test ag5_joint_real_host`; the scratch cleanup
+probe is `application_teardown_reaps_owned_group_and_removes_scratch`.
+
 ## Desktop verification
 
 Desktop is an optional native client and does not add GUI dependencies to default

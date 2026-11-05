@@ -23,6 +23,7 @@ use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[path = "support/serve_stdout.rs"]
@@ -206,7 +207,7 @@ fn scripted_provider_recognizes_continuation_before_request_tail() {
     );
 }
 
-fn serve_provider_request(stream: &mut TcpStream) {
+fn serve_provider_request(stream: &mut TcpStream, requests: &Mutex<Vec<Value>>) {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") && head.len() < 1 << 20 {
@@ -230,6 +231,7 @@ fn serve_provider_request(stream: &mut TcpStream) {
         body
     };
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    requests.lock().unwrap().push(body.clone());
     let (calls, final_text) = next_step(&body);
     if std::env::var_os("AG5_DUMP_MESSAGES").is_some() {
         for (index, message) in body["messages"]
@@ -326,7 +328,9 @@ fn read_chunked_body(stream: &mut TcpStream) -> Vec<u8> {
     }
 }
 
-fn spawn_scripted_provider() -> u16 {
+fn spawn_scripted_provider() -> (u16, Arc<Mutex<Vec<Value>>>) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
     let listener = TcpListener::bind("127.0.0.1:0").expect("provider bind");
     let port = listener.local_addr().unwrap().port();
     std::thread::Builder::new()
@@ -335,31 +339,41 @@ fn spawn_scripted_provider() -> u16 {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
-                serve_provider_request(&mut stream);
+                serve_provider_request(&mut stream, &captured);
             }
         })
         .expect("provider thread");
-    port
+    (port, requests)
 }
 
 // ---------------------------------------------------------------------------
 // 真实宿主子进程与最小 HTTP/SSE 消费者（与 ag4 联合测试同基座）。
 // ---------------------------------------------------------------------------
 
-fn spawn_real_serve(home: &Path, project: &Path) -> (Child, u16) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_clat"))
-        .args(["serve", "--port", "0", "--no-open", "--token", TOKEN])
-        .current_dir(project)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("CI", "1")
-        .env("CLAT_LANG", "en")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn real clat serve");
-    let stdout = child.stdout.take().expect("serve stdout");
+struct ServeChild(Child);
+
+impl Drop for ServeChild {
+    fn drop(&mut self) {
+        kill_serve(self);
+    }
+}
+
+fn spawn_real_serve(home: &Path, project: &Path) -> (ServeChild, u16) {
+    let mut child = ServeChild(
+        Command::new(env!("CARGO_BIN_EXE_clat"))
+            .args(["serve", "--port", "0", "--no-open", "--token", TOKEN])
+            .current_dir(project)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("CI", "1")
+            .env("CLAT_LANG", "en")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn real clat serve"),
+    );
+    let stdout = child.0.stdout.take().expect("serve stdout");
     let (tx, rx) = std::sync::mpsc::channel::<Option<u16>>();
     std::thread::Builder::new()
         .name("clat-ag5-serve-stdout".into())
@@ -377,7 +391,8 @@ fn spawn_real_serve(home: &Path, project: &Path) -> (Child, u16) {
     (child, port)
 }
 
-fn kill_serve(child: &mut Child) {
+fn kill_serve(serve: &mut ServeChild) {
+    let child = &mut serve.0;
     let _ = child.kill();
     let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().map_or(true, |status| status.is_none()) {
@@ -414,27 +429,34 @@ impl SseStream {
     }
 
     fn next_frame(&mut self) -> (String, Value) {
-        let mut event = String::new();
-        let mut data = String::new();
-        loop {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).expect("sse frame line");
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                if event.is_empty() {
-                    continue;
-                }
-                let value = serde_json::from_str(&data).expect("sse data json");
-                return (event.clone(), value);
+        read_frame(&mut self.reader)
+    }
+}
+
+fn read_frame(reader: &mut impl std::io::BufRead) -> (String, Value) {
+    let mut event = String::new();
+    let mut data = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(
+            reader.read_line(&mut line).expect("sse frame line") > 0,
+            "SSE closed before a complete frame"
+        );
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            if event.is_empty() {
+                continue;
             }
-            if let Some(rest) = line.strip_prefix("event: ") {
-                event = rest.to_owned();
-            } else if let Some(rest) = line.strip_prefix("data: ") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(rest);
+            let value = serde_json::from_str(&data).expect("sse data json");
+            return (event.clone(), value);
+        }
+        if let Some(rest) = line.strip_prefix("event: ") {
+            event = rest.to_owned();
+        } else if let Some(rest) = line.strip_prefix("data: ") {
+            if !data.is_empty() {
+                data.push('\n');
             }
+            data.push_str(rest);
         }
     }
 }
@@ -551,6 +573,80 @@ fn assert_once_in_order(needle: &str, hay: &[String], label: &str) {
     assert_eq!(count, 1, "{label} must appear exactly once: {hay:?}");
 }
 
+fn assert_request_history(requests: &[Value]) {
+    let mut continuation_requests = 0;
+    let mut scratch_by_run = [
+        std::collections::BTreeSet::new(),
+        std::collections::BTreeSet::new(),
+    ];
+    for request in requests {
+        let messages = request["messages"].as_array().unwrap();
+        let users: Vec<_> = messages
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .map(|m| m["content"].as_str().expect("fixture text"))
+            .collect();
+        if !users.contains(&TASK) {
+            continue;
+        } // Auxiliary title request.
+        let continuing = users.contains(&"continue");
+        continuation_requests += usize::from(continuing);
+        assert_eq!(users.iter().filter(|text| **text == TASK).count(), 1);
+        assert_eq!(
+            users.iter().filter(|text| **text == "continue").count(),
+            usize::from(continuing)
+        );
+        let tails: Vec<_> = users
+            .iter()
+            .filter(|text| text.starts_with("Host run context:"))
+            .collect();
+        assert_eq!(
+            tails.len(),
+            1,
+            "one current scratch instruction per request"
+        );
+        assert_eq!(messages.last().unwrap()["content"], *tails[0]);
+        scratch_by_run[usize::from(continuing)].insert((*tails[0]).to_owned());
+        let runtime = users
+            .iter()
+            .filter(|text| text.starts_with("CLAT runtime context (not a new user command):"))
+            .count();
+        assert!(runtime <= 1);
+        assert_eq!(
+            users.len(),
+            2 + usize::from(continuing) + runtime,
+            "unexpected user-role content: {users:?}"
+        );
+    }
+    assert_eq!(
+        continuation_requests, 2,
+        "continuation tool call and final answer both captured"
+    );
+    assert_eq!(scratch_by_run[0].len(), 1);
+    assert_eq!(scratch_by_run[1].len(), 1);
+    assert!(
+        scratch_by_run[0].is_disjoint(&scratch_by_run[1]),
+        "prior scratch guidance must expire"
+    );
+}
+
+#[test]
+#[should_panic(expected = "SSE closed before a complete frame")]
+fn closed_sse_stream_fails_without_spinning() {
+    // A second read errors so deleting the EOF check fails promptly too.
+    struct Closed(bool);
+    impl std::io::Read for Closed {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            if std::mem::replace(&mut self.0, true) {
+                Err(std::io::Error::other("unexpected read after EOF"))
+            } else {
+                Ok(0)
+            }
+        }
+    }
+    read_frame(&mut BufReader::new(Closed(false)));
+}
+
 #[test]
 fn joint_real_host_pairing_terminals_and_cold_recovery() {
     let base = std::env::temp_dir().join(format!(
@@ -566,7 +662,7 @@ fn joint_real_host_pairing_terminals_and_cold_recovery() {
     std::fs::create_dir_all(&project).expect("project");
 
     // 1) 脚本 provider + 真实模型路由落盘（子进程同 HOME 继承）。
-    let provider_port = spawn_scripted_provider();
+    let (provider_port, requests) = spawn_scripted_provider();
     let bootstrap =
         BootstrapApplication::open(Project::new(&project), home.join(".clat")).expect("open");
     let application = bootstrap
@@ -653,6 +749,7 @@ fn joint_real_host_pairing_terminals_and_cold_recovery() {
         run2.requested_ids
     );
     assert_once_in_order(RUN2_FINAL, &run2.assistant_deltas, "run 2 final text");
+    assert_request_history(&requests.lock().unwrap());
     // C4：两次 settled 的 prompt_rpc_id 互异。
     let rpc1 = run1.settled["prompt_rpc_id"].as_str().expect("rpc id 1");
     let rpc2 = run2.settled["prompt_rpc_id"].as_str().expect("rpc id 2");
@@ -697,6 +794,11 @@ fn joint_real_host_pairing_terminals_and_cold_recovery() {
         }
     }
     assert!(done, "cold host must finish replay and subscribe again");
+    assert_eq!(
+        replay_user,
+        [TASK, "continue"],
+        "only submitted user messages are durable"
+    );
     // O2/O3：正文真实序（journal 为权威）。
     let task_index = replay_user
         .iter()
