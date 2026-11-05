@@ -7,6 +7,51 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
+fn rewind_selection_notice_before_receipt_does_not_restore_submitted_text() {
+    let (mut app, storage) = shell();
+    let session = SessionId::new("current");
+    app.session_id = Some(session.clone());
+    let (sender, _receiver) = crate::tui::ui_event_channel();
+    app.event_sender = Some(sender);
+    app.input.insert_str("existing draft");
+    app.prepare_pending_rewind_test(session.clone());
+    let identity = app.native_selection_identity().unwrap();
+    app.native_control("notice", json!({"kind":"selection"}));
+    assert_eq!(app.native_selection_identity(), Some(identity));
+    assert!(app.rewind_submission_pending());
+    app.rewind_sent(
+        "request",
+        &session,
+        identity,
+        Ok(json!({"outcome":"queued"})),
+    );
+    assert_eq!(app.input.text(), "existing draft");
+    assert!(app.workbench.is_none());
+    assert_ne!(app.native_selection_identity(), Some(identity));
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
+fn rewind_uncertain_receipt_preserves_the_edited_text() {
+    let (mut app, storage) = shell();
+    let session = SessionId::new("current");
+    app.session_id = Some(session.clone());
+    let (sender, _receiver) = crate::tui::ui_event_channel();
+    app.event_sender = Some(sender);
+    app.input.insert_str("existing draft");
+    app.prepare_pending_rewind_test(session.clone());
+    let identity = app.native_selection_identity().unwrap();
+    app.native_control("notice", json!({"kind":"selection"}));
+    app.rewind_sent("request", &session, identity, Err("connection lost".into()));
+    assert_eq!(app.input.text(), "existing draft\n\nedited");
+    assert!(app.workbench.is_none());
+    assert_ne!(app.native_selection_identity(), Some(identity));
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
 fn model_settings_notice_retires_old_followups_and_stale_replies() {
     let (mut app, storage) = shell();
     let session = SessionId::new("current");
@@ -27,7 +72,7 @@ fn model_settings_notice_retires_old_followups_and_stale_replies() {
             items: vec!["late".into()],
         },
     );
-    assert!(!app.handle_followups_key(KeyEvent::from(KeyCode::F(8))));
+    assert!(app.handle_followups_key(KeyEvent::from(KeyCode::F(8))));
     drop(app);
     crate::test_support::cleanup_tree(&storage);
 }

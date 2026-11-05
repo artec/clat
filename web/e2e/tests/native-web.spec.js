@@ -12,6 +12,7 @@ test('native Web settings save through Host without losing Chinese draft or expo
   await expect(panel.locator('input[type="password"]')).toHaveValue('');
   const view=await page.evaluate(()=>rpc('web.settings.get',{}));
   expect(view.search_available).toBe(true);
+  expect(view.credential_set).toBe(true);
   expect(JSON.stringify(view)).not.toContain('native-web-test-key-only');
   for(const [locale,title] of [['zh-Hans','联网'],['zh-Hant','網路'],['en','Web']]){
     await page.evaluate(async(locale)=>{await CLATI18n.setLanguage(locale);},locale);
@@ -20,5 +21,6 @@ test('native Web settings save through Host without losing Chinese draft or expo
   }
   await panel.locator('input[type="checkbox"]').last().check();
   await panel.locator('button.primary').click();
-  await expect.poll(()=>page.evaluate(async()=> (await rpc('web.settings.get',{})).search_available)).toBe(false);
+  await expect.poll(()=>page.evaluate(async()=> (await rpc('web.settings.get',{})).credential_set)).toBe(false);
+  expect(await page.evaluate(async()=> (await rpc('web.settings.get',{})).search_available)).toBe(true);
 });

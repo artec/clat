@@ -4,14 +4,16 @@ fn native_web_configuration_is_shared_secret_write_only_and_discoverable() {
     let (storage, project) = roots("native-web-application");
     std::fs::create_dir_all(&project).unwrap();
     let app = mount(&Project::new(&project), &storage, TestBehavior::Success);
-    assert!(!app.web_settings().unwrap().search_available);
+    let defaults = app.web_settings().unwrap();
+    assert!(defaults.search_available);
+    assert!(!defaults.credential_set);
     assert!(app.command_catalog().iter().any(|c| c.name == "web"));
     let before = app
         .capability_query(&json!({"name":"web_search","limit":1}))
         .unwrap();
     assert_eq!(
         before["candidates"][0]["availability"]["state"],
-        "not_configured"
+        "available"
     );
     app.save_web_settings(crate::web_tools::WebSettingsEdit {
         fetch_provider: crate::web_tools::FetchProvider::Http,
@@ -30,7 +32,7 @@ fn native_web_configuration_is_shared_secret_write_only_and_discoverable() {
     let app = host
         .authorize_and_attach(Project::new(&other), ProjectAuthorization::grant())
         .unwrap();
-    assert!(app.lock().unwrap().web_settings().unwrap().search_available);
+    assert!(app.lock().unwrap().web_settings().unwrap().credential_set);
     assert!(
         !serde_json::to_string(&app.lock().unwrap().web_settings().unwrap())
             .unwrap()
@@ -53,7 +55,7 @@ fn native_web_configuration_is_shared_secret_write_only_and_discoverable() {
             .unwrap()
             .web_settings()
             .unwrap()
-            .search_available
+            .credential_set
     );
     drop(app);
     host.close().unwrap();

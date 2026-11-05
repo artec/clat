@@ -26,10 +26,10 @@ impl CommandHandler for Handler {
             .web_settings()
             .map_err(|e| CommandError::presented(e.presentation()))?;
         if args.is_empty() {
-            let key = if result.search_available {
-                "webtool.available"
+            let key = if result.credential_set {
+                "webtool.search_deepseek"
             } else {
-                "webtool.not_configured"
+                "webtool.search_public"
             };
             return Ok(CommandOutcome::Status(UiMessage::new(key).into()));
         }

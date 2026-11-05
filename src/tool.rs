@@ -870,11 +870,14 @@ impl ToolRegistry {
     }
 
     pub(crate) fn definitions_for(&self, access: &ToolAccessPolicy) -> Vec<ToolDefinition> {
-        self.definitions()
+        let mut definitions = self
+            .definitions()
             .into_iter()
             .filter(|definition| access.allows(definition))
             .map(|definition| access.model_definition(definition))
-            .collect()
+            .collect::<Vec<_>>();
+        access::sort_model_definitions(&mut definitions);
+        definitions
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {

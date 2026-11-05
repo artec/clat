@@ -503,7 +503,9 @@ Browser bridge tests are not evidence of the native OS picker or update installe
 ## Reading typography
 
 The workbench uses system sans-serif text with a shared reading scale: conversation
-and historical message bodies use 14.5px text with a 1.7 line-height ratio. Navigation,
+and historical message bodies use 15px text at weight 400 with a 1.7 line-height ratio. Message
+bodies request grayscale font smoothing on supported macOS browsers and WebViews.
+Other platforms use their native font rendering. Navigation,
 forms and management-page copy use 14px, secondary information 13px, and code
 blocks and tool output 13px monospace. Live conversations, history and task
 readers share Markdown paragraph, list, table and code styles. Markdown emphasis

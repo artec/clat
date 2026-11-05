@@ -78,10 +78,8 @@ fn invoke(tool: &dyn Tool, args: Value) -> Result<Value, ToolError> {
     tool.invoke(&args, &Project::new("."), &CancelToken::new())
 }
 #[test]
-fn native_web_missing_credentials_and_pre_cancel_dispatch_nothing() {
+fn native_web_pre_cancel_dispatches_nothing() {
     let f = Fixture::new();
-    let error = invoke(&f.tool(Operation::Search), json!({"query":"CLAT"})).unwrap_err();
-    assert_eq!(error.recovery().unwrap()["code"], "credential_missing");
     let cancel = CancelToken::new();
     cancel.cancel();
     let error = f
@@ -95,6 +93,55 @@ fn native_web_missing_credentials_and_pre_cancel_dispatch_nothing() {
     assert_eq!(error.recovery().unwrap()["code"], "cancelled");
     assert_eq!(f.calls(), 0);
 }
+#[test]
+fn native_web_default_search_returns_public_sources_without_a_key() {
+    let f = Fixture::new();
+    assert!(f.service.view().unwrap().search_available);
+    f.reply(200, r#"<table>
+        <tr><td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Frust">Rust &amp; tools</a></td></tr>
+        <tr><td class="result-snippet">A <b>short</b> snippet.</td></tr>
+        <tr><td><a class="result-link" href="https://127.0.0.1/private">Private</a></td></tr>
+        </table>"#, "text/html", None);
+    let result = invoke(&f.tool(Operation::Search), json!({"query":"Rust & tools"})).unwrap();
+    assert_eq!(result["provider"], "duckduckgo");
+    assert_eq!(result["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        result["sources"][0]["source"]["url"],
+        "https://example.com/rust"
+    );
+    assert_eq!(result["sources"][0]["source"]["title"], "Rust & tools");
+    assert_eq!(result["sources"][0]["text"], "A short snippet.");
+    let requests = f.wire.requests.lock().unwrap();
+    let request = &requests[0];
+    assert!(
+        request
+            .headers
+            .iter()
+            .all(|(name, _)| name != "authorization")
+    );
+    let url = url::Url::parse(&request.url).unwrap();
+    assert_eq!(
+        url.query_pairs().collect::<Vec<_>>(),
+        vec![("q".into(), "Rust & tools".into())]
+    );
+}
+
+#[test]
+fn native_web_challenge_is_an_error_and_explicit_no_results_is_empty() {
+    let f = Fixture::new();
+    f.reply(200, "<form id='challenge-form'></form>", "text/html", None);
+    let error = invoke(&f.tool(Operation::Search), json!({"query":"CLAT"})).unwrap_err();
+    assert_eq!(error.recovery().unwrap()["code"], "public_search_blocked");
+    f.reply(
+        200,
+        "<div class='no-results'>No results</div>",
+        "text/html",
+        None,
+    );
+    let value = invoke(&f.tool(Operation::Search), json!({"query":"CLAT"})).unwrap();
+    assert_eq!(value["sources"], json!([]));
+}
+
 #[test]
 fn native_web_search_is_direct_and_does_not_send_original_prompt() {
     let f = Fixture::new();
@@ -415,13 +462,13 @@ fn native_web_availability_is_observed_without_network_and_snapshots_are_stable(
     let tool = f.tool(Operation::Search);
     assert_eq!(
         tool.capability_availability(),
-        Some(("not_configured", "credential_missing"))
+        Some(("available", "public_search"))
     );
     let prepared = tool.prepare_execution(&json!({"query":"CLAT"})).unwrap();
     f.configure(FetchProvider::Http, Some("key"));
     assert_eq!(
         prepared.tool.capability_availability(),
-        Some(("not_configured", "credential_missing"))
+        Some(("available", "public_search"))
     );
     assert_eq!(
         tool.capability_availability(),

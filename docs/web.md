@@ -11,7 +11,8 @@ required. Existing Web plugins remain independently configurable.
 Open **Settings → Web** in the workbench. Save a dedicated DeepSeek API key,
 or explicitly choose to use the saved DeepSeek model key for the official
 Web API. Reads return configuration status, never credential bytes. Search
-and DeepSeek Fetch may incur charges from the provider.
+and DeepSeek Fetch may incur charges from the provider. Without a configured
+key, native search uses DuckDuckGo Lite.
 
 Terminal clients share the same settings:
 
@@ -35,10 +36,12 @@ next call; a call already prepared for permission review retains its snapshot.
 
 ### Search and retrieve
 
-`web_search` sends the explicit query to the DeepSeek Search API, with ten
-results by default. It does not send the original user prompt or invoke an
-auxiliary model. Missing credentials return configuration guidance without a
-network request. There is no automatic retry or paid-provider fallback.
+`web_search` sends only the search query and returns up to ten results by
+default. It uses DuckDuckGo Lite without a key, or DeepSeek Search when a Web
+key is configured. Both routes query a search service directly without a
+separate model request. DuckDuckGo can rate-limit or challenge requests.
+CLAT reports that condition as a search error and preserves the configured
+provider for subsequent calls.
 
 `web_fetch` defaults to anonymous HTTP(S). Only public domain-name addresses
 are supported: private/special addresses, IP literals, credentials in URLs and

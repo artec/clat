@@ -21,12 +21,11 @@ impl Run<'_> {
         for item in std::mem::take(&mut response.provider_state) {
             state.items.push(ModelItem::ProviderState(item));
         }
-        let has_tools = !response.tool_calls.is_empty();
-        if !response.text.is_empty() || (has_tools && response.reasoning.is_some()) {
-            let reasoning = has_tools.then_some(response.reasoning.clone()).flatten();
+        // Preserve the original response; each provider owns replay policy.
+        if !response.text.is_empty() || response.reasoning.is_some() {
             state.items.push(ModelItem::assistant_with_reasoning(
                 response.text.clone(),
-                reasoning,
+                response.reasoning.clone(),
             ));
         }
         Ok(response)

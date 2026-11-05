@@ -165,6 +165,7 @@ impl AgentRuntime for DefaultAgentRuntime {
             image_projection: Some(crate::model::ImageProjectionBudget::for_config(
                 &request.config,
             )),
+            request_tail: request.request_tail,
             ..ModelOptions::default()
         };
         // 档位说明注入系统指令（DSH renderPolicyContext 对应物）：让模

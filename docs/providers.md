@@ -96,11 +96,14 @@ them unset. Usage parsing recognizes DeepSeek's cache-hit token field. Native
 image input is officially declared on `deepseek-flash` itself, so attach
 admission is open on that route.
 
-DeepSeek streams chain-of-thought as `delta.reasoning_content`. CLAT accumulates
-it and attaches it only to an assistant item that made tool calls. On the next
-request, the adapter emits one assistant message containing its text,
-reasoning, and tool calls, followed by the matching tool results. Plain answer
-turns drop reasoning replay because the API ignores it there.
+DeepSeek streams chain-of-thought as `delta.reasoning_content`. Core retains
+that original content on every assistant item, including plain answers.
+Following the [official thinking-mode guide](https://api-docs.deepseek.com/guides/thinking_mode/),
+requests to the official endpoint carrying tools replay reasoning from every
+loaded assistant turn, even when that turn did not call a tool. Tool calls
+remain grouped with their assistant message and followed by the matching
+results. Without tools, plain-answer reasoning is omitted. Missing historical
+reasoning is never synthesized.
 
 ### GLM Coding Plan
 
@@ -114,6 +117,14 @@ sends enabled preserved thinking:
   "reasoning_effort": "high"
 }
 ```
+
+Following the [official preserved-thinking guide](https://docs.z.ai/guides/capabilities/thinking-mode),
+CLAT returns complete, unmodified reasoning from all loaded assistant turns
+when preserved thinking is active, including answers without tool calls.
+The official Coding endpoint enables this by default; an effective
+`thinking.clear_thinking: true` disables plain-answer replay. Request overrides
+are evaluated after merging configuration, so the replay policy follows the
+parameters actually sent.
 
 GLM 5.3 does not accept disabled reasoning. The status monitor reports Coding
 Plan quota when the provider endpoint makes it available.
@@ -327,6 +338,14 @@ remaining time.
 Map/reduce consumers share one retry wrapper, so the attempt cap covers the
 whole operation instead of resetting for each subrequest.
 
+## Interactive tool arguments
+
+Both HTTP adapters require one complete JSON object for `ask_user`.
+Malformed input becomes a failed tool result with instructions to retry.
+The native tool validates field types, option labels and size limits before
+showing a question. DeepSeek thinking mode ignores temperature, so this
+recovery does not depend on sampling settings.
+
 ## Cancellation
 
 Providers check the shared token between SSE reads and before decoding a
@@ -336,6 +355,29 @@ arguments instead of reporting misleading malformed JSON.
 Parent cancellation always wins over an internal deadline. Run cancellation
 also propagates to native tools, MCP requests, WASM execution, and plugin-host
 sampling so the provider layer is not an isolated cancellation island.
+
+## Prompt cache policy
+
+DeepSeek, Qwen and Kimi presets use their endpoint's automatic caching rather
+than injecting one vendor's explicit cache controls into another vendor's API.
+GLM additionally uses preserved thinking as described above. Unknown compatible
+endpoints retain the conservative tool-turn-only reasoning replay policy.
+The Responses adapter preserves native opaque reasoning state; it does not
+substitute compatible-API `reasoning_content` for that state.
+
+Stable instructions and tool definitions precede growing conversation history.
+The core orders ordinary tools first and optional run tools last, by name
+within each group. Both HTTP adapters append transient host context, such as
+the active scratch directory, after projecting history. That context is counted
+against the input budget and regenerated for the next run.
+Instructions, model/permission/skill changes and context compaction can change
+the reusable prefix. A new conversation or an expired server cache can have a
+low hit rate; enabling caching does not promise a particular hit percentage.
+See the [DeepSeek cache guide](https://api-docs.deepseek.com/guides/kv_cache/),
+[Qwen cache guide](https://www.alibabacloud.com/help/en/model-studio/context-cache)
+and [OpenAI cache guide](https://developers.openai.com/api/docs/guides/prompt-caching).
+Optional cache lifetimes and paid explicit writes are not enabled by default;
+endpoint-specific options remain available through model configuration.
 
 ## Usage accounting
 

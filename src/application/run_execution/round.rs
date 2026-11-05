@@ -182,7 +182,8 @@ impl RoundExecution {
                 events: recorder_sink,
                 tool_access: worker.context.tool_access.clone(),
                 tool_definitions: Arc::clone(&worker.context.tool_definitions),
-                workflow_instructions: worker.deps.process_service.workflow(workflow),
+                workflow_instructions: workflow,
+                request_tail: worker.deps.process_service.scratch_guidance(),
                 permission_mode: worker.deps.permission_mode_snapshot,
             })
         }))

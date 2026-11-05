@@ -45,7 +45,15 @@ impl CapabilityView {
         }
     }
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
-        self.entries.iter().map(|e| e.definition.clone()).collect()
+        let mut definitions = self
+            .entries
+            .iter()
+            .map(|e| e.definition.clone())
+            .collect::<Vec<_>>();
+        if self.model {
+            super::super::access::sort_model_definitions(&mut definitions);
+        }
+        definitions
     }
     pub(crate) fn contains_owned(&self, owner: PluginId, name: &str) -> bool {
         self.entries

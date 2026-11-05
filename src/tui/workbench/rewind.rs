@@ -13,6 +13,7 @@ pub(super) struct RewindState {
     original: String,
     input: InputBuffer,
     loading: bool,
+    submitting: bool,
     failed: bool,
     confirming: bool,
 }
@@ -65,6 +66,28 @@ fn check_host_rewind(
 }
 
 impl App {
+    pub(in crate::tui) fn rewind_submission_pending(&self) -> bool {
+        self.workbench
+            .as_ref()
+            .is_some_and(|view| matches!(view.view, View::Rewind) && view.rewind.submitting)
+    }
+
+    #[cfg(all(test, feature = "runtime-tests"))]
+    pub(in crate::tui) fn prepare_pending_rewind_test(&mut self, session: SessionId) {
+        let mut rewind = RewindState {
+            session: Some(session),
+            request: "request".into(),
+            loading: true,
+            submitting: true,
+            ..Default::default()
+        };
+        rewind.input.insert_str("edited");
+        self.workbench = Some(Workbench {
+            view: View::Rewind,
+            rewind,
+            ..Default::default()
+        });
+    }
     pub(super) fn open_rewind(&mut self) {
         let identity = self.native_selection_identity();
         let Some(view) = self.workbench.as_mut() else {
@@ -127,6 +150,7 @@ impl App {
     fn rewind_failed(&mut self) {
         if let Some(view) = self.workbench.as_mut() {
             view.rewind.loading = false;
+            view.rewind.submitting = false;
             view.rewind.failed = true;
         }
     }
@@ -278,6 +302,7 @@ impl App {
         let request = uuid::Uuid::new_v4().to_string();
         state.request.clone_from(&request);
         state.loading = true;
+        state.submitting = true;
         if let Some((client, epoch, selection)) = self.native_plugin_context() {
             let Some(sender) = self.event_sender.clone() else {
                 self.rewind_failed();

@@ -412,7 +412,8 @@ promise a particular cold-build duration.
 
 ### Release dependency cache
 
-The six-platform `plugin-performance` CI matrix uses the same native runner
+The six-platform `plugin-performance` CI matrix (manual `perf` dispatch; see the
+native checks note above) uses the same native runner
 labels as the release inventory. Its four macOS/Windows targets and Release use
 the same rust-cache prefix `v4-product-native` and shared key `product-<target>`.
 Compiler/environment and
@@ -469,8 +470,10 @@ or PR base-to-tested-merge diff. Rust/core, native resources/configuration,
 toolchain/workflow and unknown inputs retain all four native checks; webpage-only
 changes select web tests, and script-only changes select tooling (including all
 four native-platform Bun suites in CI). Missing history selects all checks.
-Ordinary Linux and Windows product gates and the six-platform compile/performance
-matrix are unchanged. Native checks do not generate installers.
+Ordinary Linux and Windows product gates are unchanged; the six-platform
+compile/performance matrix runs only through a manual dispatch of the CI
+workflow with the `perf` input checked (2026-11-05: run it once before each
+release). Native checks do not generate installers.
 
 CI native-platform jobs, manual Desktop checks and Release cache readers agree on
 `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`. This reduces debug

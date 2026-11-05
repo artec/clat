@@ -24,9 +24,9 @@ impl SessionService {
         &self,
         config: &crate::ModelConfig,
         instructions: Option<&str>,
-        items: &[ModelItem],
         tools: &[crate::ToolDefinition],
         usage: &crate::Usage,
+        estimated_input: u64,
     ) {
         let session = self
             .active_id()
@@ -36,9 +36,9 @@ impl SessionService {
             &session,
             config,
             instructions,
-            items,
             tools,
             usage,
+            estimated_input,
         );
     }
 

@@ -261,6 +261,9 @@ loads one earlier message-aligned page and keeps the current reading line in
 place. A slim line above the transcript shows when earlier messages remain or
 are being loaded.
 
+User messages show their local time for today and an approximate age for older
+messages. Messages without a reliable timestamp have no time label.
+
 The main screen has three surfaces:
 
 - **Conversation** — durable user and assistant messages, tool activity, and a
@@ -286,7 +289,7 @@ The main screen has three surfaces:
 | `F6` | open the workbench for loaded conversation turns, the next-turn queue, cached plan allowance, plans and goals, read-only Git, and operation history; in the turn list, Enter jumps to the start of the selected turn |
 | `F7` | expand or collapse the completed turn in the conversation viewport |
 | `F9` | expand or collapse the first compaction disclosure in the conversation viewport |
-| `F8` | select an automatically suggested next step; Enter adds it to the draft without sending |
+| `F8` | select an available automatic next-step suggestion; Enter adds it to the draft without sending; when none is available, show a status message |
 | `Ctrl+R` | expand or collapse Think details in the conversation |
 | `Ctrl+O` | cycle tool cards through collapsed, expanded and hidden states |
 | `Ctrl+F` | find original user/agent body text in the loaded conversation window; query limit 256 characters |
@@ -626,6 +629,8 @@ and network sandbox; unavailable tooling or enforcement reports a synchronizatio
 failure while preserving the file save. Disable `builtin.rust_support` in the
 built-in extension configuration and restart the Host to opt out. See
 [Rust development support](plugins.md#rust-development-support) for boundaries.
+Cargo discovery uses the Host's PATH first, followed by the configured
+`CARGO_HOME/bin` and the user's `.cargo/bin` when available.
 
 `/context` takes one read-only snapshot of the next model-facing context and
 reports conservative estimates for base prompt, project instructions, plan
@@ -2581,7 +2586,8 @@ text-only turn that passes the same side-effect and pending-input checks as
 Web. Edit the text, press Enter to review, then Enter again to replace and
 resend; Esc cancels. Shift+Enter inserts a newline. Other turns cannot be
 rewound, and an uncertain result reloads the conversation while preserving
-the edited text in the composer. Existing composer drafts are retained.
+the edited text in the composer. Existing composer drafts are retained; a successful
+resend does not add the sent text to the draft.
 
 ### Next-turn queue
 
@@ -3170,8 +3176,12 @@ that reference and a returned record `id`. Both RPCs require the current
 referenced project/session. List pages freeze a committed prefix; refreshing starts
 from current facts, while older page cursors do not absorb later appends.
 
-Message actions reveal the journal date/time on hover or keyboard focus (available from message actions
-on touch devices). Missing timestamps are unavailable, never replaced
+In the active conversation transcript, assistant copy, bookmark and timestamp
+actions appear only on the round's final nonempty answer after it ends. Running
+and intermediate assistant messages keep these actions hidden, including when
+the process is expanded. User messages retain their message actions. Hover or
+keyboard focus reveals the available actions; touch devices show them directly.
+Missing timestamps are unavailable, never replaced
 by the page-load time. Bookmark precedes the timestamp in message actions.
 Scrollbars across lists, conversation panels, side modules and nested Markdown
 use transparent tracks in both themes, with theme-aware draggable thumbs.

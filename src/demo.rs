@@ -87,6 +87,7 @@ pub fn run_demo(
             tool_access,
             tool_definitions,
             workflow_instructions: None,
+            request_tail: None,
             permission_mode: None,
         })
         .map_err(|failure| failure.error);

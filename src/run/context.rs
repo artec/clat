@@ -9,6 +9,7 @@ pub(crate) trait RequestContextManager: Send {
         _items: &[ModelItem],
         _tools: &[ToolDefinition],
         _usage: &Usage,
+        _tail_tokens: u64,
     ) {
     }
     fn failed_capacity_attempt(

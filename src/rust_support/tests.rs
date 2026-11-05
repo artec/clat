@@ -254,6 +254,46 @@ fn rust_support_disabled_composition_preserves_agent_edit_without_maintenance() 
 
 #[cfg(target_os = "macos")]
 #[test]
+fn rust_support_gui_path_finds_cargo_and_syncs_lockfile() {
+    const CHILD: &str = "CLAT_TEST_RUST_SUPPORT_GUI_PATH_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        rust_support_real_offline_cargo_updates_lock_version_without_compiling();
+        return;
+    }
+    let cargo =
+        std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo/bin/cargo");
+    assert!(
+        cargo.is_file(),
+        "test requires a rustup Cargo at {}",
+        cargo.display()
+    );
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "rust_support_gui_path_finds_cargo_and_syncs_lockfile",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env_remove("CARGO_HOME");
+    let output = crate::process::capture_command_cancellable(
+        command,
+        32 * 1024,
+        std::time::Duration::from_secs(60),
+        &CancelToken::new(),
+        false,
+    )
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn rust_support_real_offline_cargo_updates_lock_version_without_compiling() {
     let (root, project) = fixture();
     let support = RustSupport::new(

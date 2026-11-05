@@ -27,8 +27,10 @@ fn execute(args: Vec<String>, locale: LocaleContext) -> Result<String, String> {
         .map_err(|e| locale.render(&e.presentation_or_fallback()))?;
     if args.is_empty() || args == ["status"] {
         return Ok(locale
-            .text(if view["search_available"] == true {
-                "webtool.available"
+            .text(if view["credential_set"] == true {
+                "webtool.search_deepseek"
+            } else if view["search_available"] == true {
+                "webtool.search_public"
             } else {
                 "webtool.not_configured"
             })

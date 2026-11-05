@@ -121,6 +121,7 @@ impl Run<'_> {
                     &request.items,
                     &request.definitions,
                 )
+                .saturating_add(self.model_options.request_tail_tokens())
                 .saturating_add(output_limit),
             );
         }

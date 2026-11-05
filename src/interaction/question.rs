@@ -40,6 +40,72 @@ impl AskQuestion {
     }
 }
 
+/// Model-facing argument contract. Frontend question DTOs remain backward compatible.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AskUserInput {
+    question: String,
+    #[serde(default)]
+    options: Vec<AskUserOption>,
+    #[serde(default = "allow_custom_default")]
+    allow_custom: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskUserOption {
+    label: String,
+    description: Option<String>,
+}
+
+fn allow_custom_default() -> bool {
+    true
+}
+
+impl AskUserInput {
+    pub(crate) fn into_question(self) -> Result<AskQuestion, &'static str> {
+        if !nonblank_within(&self.question, 2000) {
+            return Err("question must be a non-empty string of at most 2000 characters");
+        }
+        if self.options.len() > 4 || (!self.allow_custom && self.options.is_empty()) {
+            return Err(
+                "provide up to four options and allow custom answers if there are no options",
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut options = Vec::new();
+        for option in self.options {
+            if !nonblank_within(&option.label, 100) || !seen.insert(option.label.trim().to_owned())
+            {
+                return Err(
+                    "option labels must be distinct non-empty strings of at most 100 characters",
+                );
+            }
+            if option
+                .description
+                .as_ref()
+                .is_some_and(|text| text.chars().count() > 400)
+            {
+                return Err("option descriptions must be at most 400 characters");
+            }
+            options.push(AskOption {
+                label: option.label,
+                description: option.description,
+            });
+        }
+        Ok(AskQuestion {
+            question: self.question,
+            options,
+            allow_custom: self.allow_custom,
+            presentation: None,
+        })
+    }
+}
+
+fn nonblank_within(text: &str, max: usize) -> bool {
+    !text.trim().is_empty() && text.chars().count() <= max
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

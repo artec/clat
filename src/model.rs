@@ -97,6 +97,8 @@ pub struct ModelOptions {
     /// Agent-request image projection. Internal text-only requests (title,
     /// compaction, MCP sampling) leave this disabled.
     pub image_projection: Option<ImageProjectionBudget>,
+    /// Transient host context appended by the provider after mapping history.
+    pub request_tail: Option<String>,
 }
 
 /// FP-02：单次模型响应的累计字节预算（text/reasoning/tool 参数等

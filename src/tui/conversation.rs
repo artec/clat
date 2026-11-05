@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 mod find;
 mod rounds;
+mod timestamp;
 pub(crate) use find::BodyMatch;
 pub(crate) use rounds::RoundSummary;
 
@@ -92,6 +93,7 @@ struct ItemCache {
     replay_seq: Option<u64>,
     replay_turn: Option<u64>,
     replay_time_ms: Option<i64>,
+    rendered_day: Option<jiff::civil::Date>,
     round_hidden: bool,
     round_hide_reasoning: bool,
     round_header: Option<rounds::RoundHeader>,
@@ -209,6 +211,9 @@ impl ConversationModel {
     pub(crate) fn push_user(&mut self, text: String) {
         self.clear_followups();
         self.push_item(ConversationItem::User { text });
+        if let Some((_, cache)) = self.items.last_mut() {
+            cache.replay_time_ms = Some(jiff::Timestamp::now().as_millisecond());
+        }
     }
 
     pub(crate) fn clear_followups(&mut self) {
@@ -828,6 +833,7 @@ impl ConversationModel {
     /// 空行)；零行项（B5 hidden 卡、B7 前的通知）不占分隔行。
     pub(crate) fn ensure_rendered(&mut self, width: usize) {
         self.refresh_replay_rounds();
+        let now = jiff::Zoned::now();
         let open_index = self.open_assistant_index();
         for index in 0..self.items.len() {
             let marker = if Some(index) == open_index {
@@ -837,7 +843,11 @@ impl ConversationModel {
             };
             let needs = {
                 let (_, cache) = &self.items[index];
-                cache.dirty || cache.width != Some(width) || cache.marker != marker
+                cache.dirty
+                    || cache.width != Some(width)
+                    || cache.marker != marker
+                    || (matches!(self.items[index].0, ConversationItem::User { .. })
+                        && cache.rendered_day != Some(now.date()))
             };
             if needs {
                 let mut rendered = render_item(
@@ -848,6 +858,15 @@ impl ConversationModel {
                     self.items[index].1.round_hide_reasoning,
                     self.locale,
                 );
+                if matches!(self.items[index].0, ConversationItem::User { .. }) {
+                    timestamp::append(
+                        &mut rendered,
+                        width,
+                        self.items[index].1.replay_time_ms,
+                        &now,
+                        self.locale,
+                    );
+                }
                 if let Some(header) = &self.items[index].1.round_header {
                     rendered.push(header.line(self.locale));
                 }
@@ -855,6 +874,7 @@ impl ConversationModel {
                 cache.lines = rendered;
                 cache.width = Some(width);
                 cache.marker = marker;
+                cache.rendered_day = Some(now.date());
                 cache.dirty = false;
             }
         }

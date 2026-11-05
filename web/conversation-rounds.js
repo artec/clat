@@ -74,6 +74,7 @@ function createConversationRounds(){
       const hiding=!expanded&&!pinned&&node!==final;
       if(hiding&&node.contains(document.activeElement))value.header.focus({preventScroll:true});
       node.classList.toggle('round-process-hidden',hiding);
+      node.classList.toggle('round-final-answer',node===final);
       if(!expanded&&node===final&&node.querySelector('.reasoning')?.contains(document.activeElement))value.header.focus({preventScroll:true});
       node.classList.toggle('round-hide-reasoning',!expanded&&node===final);
     }

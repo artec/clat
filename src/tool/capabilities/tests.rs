@@ -265,6 +265,28 @@ fn ga3_cancel_limits_lifetime_and_concurrent_close_are_fail_closed() {
 }
 
 #[test]
+fn model_tool_prefix_survives_registration_order_and_optional_tools() {
+    fn definitions(names: &[&str], policy: ToolAccessPolicy) -> Vec<ToolDefinition> {
+        let registry = ToolRegistry::new();
+        let _leases = names
+            .iter()
+            .map(|name| register(&registry, name, json!({})))
+            .collect::<Vec<_>>();
+        registry.capability_view(Some(&policy)).definitions()
+    }
+
+    let base = definitions(&["zebra", "aardvark"], ToolAccessPolicy::all());
+    let extended = definitions(
+        &["view_image", "aardvark", "delegate_readonly", "zebra"],
+        ToolAccessPolicy::all()
+            .with_subagents(true)
+            .with_view_image(true),
+    );
+    assert_eq!(extended.len(), base.len() + 2);
+    assert_eq!(&extended[..base.len()], base);
+}
+
+#[test]
 fn ga3_all_policy_views_share_exact_model_definitions_for_name_pages_and_alternatives() {
     let registry = ToolRegistry::new();
     let leases: Vec<_> = [

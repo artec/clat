@@ -71,13 +71,10 @@ impl OpenAiModel {
         // OpenAI 协议模型不经 ModelConfig 构造（api_key 直连），图片
         // 策略取规范化请求口径（png/jpeg × 8 × 4MiB）；MM-3 的 8MiB
         // 仅是 pre-normalization 源图上限，不放宽 provider 出口。
-        body.insert(
-            "input".into(),
-            Value::Array(map_input_items(
-                request.items,
-                &crate::model::ImageRequestPolicy::default(),
-            )?),
-        );
+        let mut input =
+            map_input_items(request.items, &crate::model::ImageRequestPolicy::default())?;
+        super::append_request_tail(&mut input, request.options);
+        body.insert("input".into(), Value::Array(input));
 
         if let Some(instructions) = request.instructions {
             body.insert(
@@ -626,11 +623,12 @@ fn dispatch_sse_data(
             let call_id = required_string(&value, "call_id", &event_type)?;
             let name = required_string(&value, "name", &event_type)?;
             let raw_arguments = required_string(&value, "arguments", &event_type)?;
-            let arguments = serde_json::from_str(&raw_arguments).map_err(|error| {
-                ModelError::decode(format!(
-                    "OpenAI returned invalid JSON arguments for tool `{name}`: {error}"
-                ))
-            })?;
+            let arguments =
+                super::decode_tool_arguments(&name, &raw_arguments).map_err(|error| {
+                    ModelError::decode(format!(
+                        "OpenAI returned invalid JSON arguments for tool `{name}`: {error}"
+                    ))
+                })?;
             let call = ToolCall {
                 id: call_id,
                 name,
@@ -920,6 +918,7 @@ mod tests {
         }];
         let options = ModelOptions {
             parallel_tool_calls: Some(true),
+            request_tail: Some("Host run context: scratch-b".into()),
             ..ModelOptions::default()
         };
 
@@ -939,6 +938,12 @@ mod tests {
         assert_eq!(body["tools"][0]["strict"], true);
         assert_eq!(body["tools"][0]["parameters"]["type"], "object");
         assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(body["instructions"], "Use tools when useful");
+        assert_eq!(body["input"][0]["content"], "echo hello");
+        assert_eq!(
+            body["input"][1],
+            json!({"role":"user","content":"Host run context: scratch-b"})
+        );
     }
 
     /// M3：图片消息的 Responses 序列化——`input_image` data URL；纯

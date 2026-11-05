@@ -20,7 +20,7 @@ impl TrustedProjectApplication {
             self.current_session_id(),
             self.web_settings().ok().map(|v| (
                 v.fetch_provider,
-                v.search_available,
+                v.credential_set,
                 v.fetch_available
             ))
         );

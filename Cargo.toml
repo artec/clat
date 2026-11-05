@@ -10,7 +10,7 @@ license-file = "LICENSE"
 # 构建 clat 本体不需要）。根包隐式属于本 workspace。
 # 版本唯一权威：升版本只改这里一处（两包经 version.workspace 继承）。
 [workspace.package]
-version = "2.2.13"
+version = "2.2.14"
 
 [workspace]
 default-members = [".", "crates/core"]
@@ -48,6 +48,7 @@ command-group = "5.0.1"
 crossterm = "0.29"
 ctrlc = { version = "3", features = ["termination"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+jiff = "=0.2.38"
 hmac = "0.12"
 ratatui = "0.30.2"
 serde = { version = "1", features = ["derive"] }

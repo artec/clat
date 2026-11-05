@@ -155,6 +155,10 @@ impl App {
 
     pub(super) fn handle_followups_key(&mut self, key: KeyEvent) -> bool {
         let Some(choice) = self.conversation.followups_key(key.code) else {
+            if key.code == KeyCode::F(8) {
+                self.flash_message(UiMessage::new("tui.no_followups"));
+                return true;
+            }
             return false;
         };
         if let Some(text) = choice {
@@ -201,6 +205,7 @@ mod tests {
         app.handle_ui_event(UiEvent::Application(ApplicationEvent::ModelsUpdated));
         assert!(app.followup_owner.is_none());
         assert!(app.followup_epoch > epoch);
-        assert!(!app.handle_followups_key(KeyEvent::from(KeyCode::F(8))));
+        assert!(app.handle_followups_key(KeyEvent::from(KeyCode::F(8))));
+        assert!(app.status_presentation.is_some());
     }
 }

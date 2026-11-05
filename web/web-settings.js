@@ -24,7 +24,7 @@ function installWebSettings() {
   async function refresh(){const request=++generation;try{const view=await rpc('web.settings.get',{});if(request!==generation)return;
     if(!dirty){provider.value=view.fetch_provider;source.value=view.use_model_key?'model':'independent';visibility();}
     CLATI18n.bind(fetchState,'textContent',()=>pageText(view.fetch_available?'fetch_configured':'fetch_unconfigured'));
-    CLATI18n.bind(searchState,'textContent',()=>msg(view.search_available?'available':'not_configured'));
+    CLATI18n.bind(searchState,'textContent',()=>msg(view.credential_set?'search_deepseek':view.search_available?'search_public':'not_configured'));
   }catch(error){if(request===generation)CLATI18n.bind(status,'textContent',()=>error.message);}}
   dom['settings-dialog'].addEventListener('clat:settings-leave',()=>{generation++;key.value='';clear.checked=false;});
   dom['settings-dialog'].addEventListener('clat:settings-saved',event=>{if(event.detail===panel)dirty=false;});

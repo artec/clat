@@ -48,6 +48,14 @@ pub(crate) fn modality_preflight(
     Ok(())
 }
 
+impl ModelOptions {
+    pub(crate) fn request_tail_tokens(&self) -> u64 {
+        self.request_tail
+            .as_deref()
+            .map_or(0, |text| 16 + estimate_tokens_conservative(text) as u64)
+    }
+}
+
 /// Conservative per-item estimate shared by request preflight, compaction,
 /// `/context`, steering, and goal continuation. Keeping ToolResult images in
 /// this walker closes the otherwise easy-to-miss recursive visual-cost gap.
@@ -170,6 +178,7 @@ pub(crate) fn image_projection_is_over_budget(
         };
         ContextBudget::resolve(&config).map_or(true, |_| {
             estimate_request_tokens(instructions, items, tools)
+                .saturating_add(options.request_tail_tokens())
                 > limit.saturating_sub(u64::from(options.output_limit.unwrap_or(4096)))
         })
     })

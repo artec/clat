@@ -153,6 +153,22 @@ pub(crate) fn serialize_request_body(body: &Value, adapter: &str) -> Result<Stri
     serialize_request_body_with_limit(body, adapter, MAX_PROVIDER_REQUEST_BODY_BYTES)
 }
 
+/// Replay malformed ask_user calls with an empty object. The tool rejects it
+/// before showing a prompt and returns a correction to the model.
+fn decode_tool_arguments(name: &str, raw: &str) -> Result<Value, serde_json::Error> {
+    if name == "ask_user" && serde_json::from_str::<crate::interaction::AskUserInput>(raw).is_err()
+    {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(raw)
+}
+
+fn append_request_tail(items: &mut Vec<serde_json::Value>, options: &crate::model::ModelOptions) {
+    if let Some(context) = &options.request_tail {
+        items.push(serde_json::json!({"role":"user","content":context}));
+    }
+}
+
 fn serialize_request_body_with_limit(
     body: &Value,
     adapter: &str,

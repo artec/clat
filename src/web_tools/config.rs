@@ -77,7 +77,7 @@ impl WebService {
             fetch_provider: s.fetch_provider,
             use_model_key: s.use_model_key,
             credential_set: set,
-            search_available: set,
+            search_available: true,
             fetch_available: s.fetch_provider == FetchProvider::Http || set,
         })
     }

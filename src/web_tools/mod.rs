@@ -5,6 +5,7 @@ mod config;
 pub(crate) use budget::PaidCallBudget;
 pub(crate) mod plugin;
 mod provider;
+mod public_search;
 mod tools;
 use crate::{CancelToken, ToolError, i18n::UiMessage};
 pub(crate) use config::WebService;

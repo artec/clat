@@ -369,24 +369,24 @@ impl Tool for AskUserTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "ask_user".into(),
-            description: "Ask the human user a single question and wait for the answer. Use it only for user-owned choices (preferences, approvals, direction) or genuine ambiguity you cannot resolve from the repository; never for facts you can look up yourself. Provide 2-4 short options when the choice is enumerable; free-text answers are always available.".into(),
+            description: "Ask the human user a single question and wait for the answer. Use it only for user-owned choices (preferences, approvals, direction) or genuine ambiguity you cannot resolve from the repository; never for facts you can look up yourself. Provide 2-4 short options when the choice is enumerable; free-text answers are available by default. Arguments must be exactly one JSON object matching the schema. Use double quotes and escape line breaks or quotes inside strings. Do not add Markdown fences, comments, trailing commas, or text after the object.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "question": {
-                        "type": "string",
+                        "type": "string", "minLength": 1, "maxLength": 2000,
                         "description": "The question to show the user, self-contained"
                     },
                     "options": {
-                        "type": "array",
+                        "type": "array", "maxItems": 4,
                         "description": "Selectable answers; omit for open-ended questions",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "label": { "type": "string", "description": "Short answer returned to the model" },
-                                "description": { "type": "string", "description": "Optional context shown to the human" }
+                                "label": { "type": "string", "minLength": 1, "maxLength": 100, "description": "Short answer returned to the model" },
+                                "description": { "type": "string", "maxLength": 400, "description": "Optional context shown to the human" }
                             },
-                            "required": ["label"]
+                            "required": ["label"], "additionalProperties": false
                         }
                     },
                     "allow_custom": {
@@ -394,7 +394,7 @@ impl Tool for AskUserTool {
                         "description": "Whether the user may type a custom answer (default true)"
                     }
                 },
-                "required": ["question"]
+                "required": ["question"], "additionalProperties": false
             }),
             effect: ToolEffect::Pure,
             strict: false,
@@ -407,51 +407,21 @@ impl Tool for AskUserTool {
         _project: &Project,
         cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
-        let question = arguments
-            .get("question")
-            .and_then(Value::as_str)
-            .filter(|text| !text.trim().is_empty())
-            .ok_or_else(|| ToolError::new("ask_user: `question` must be a non-empty string"))?
-            .to_owned();
-        let mut options = Vec::new();
-        if let Some(list) = arguments.get("options").and_then(Value::as_array) {
-            for option in list {
-                let label = option
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.trim().is_empty())
-                    .ok_or_else(|| {
-                        ToolError::new("ask_user: every option needs a non-empty `label`")
-                    })?
-                    .to_owned();
-                options.push(crate::interaction::AskOption {
-                    label,
-                    description: option
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                });
-            }
-        }
-        let allow_custom = arguments
-            .get("allow_custom")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
+        let question =
+            serde_json::from_value::<crate::interaction::AskUserInput>(arguments.clone())
+                .map_err(|_| {
+                    ask_user_invalid(
+                        "provide question and optional options and allow_custom fields",
+                    )
+                })
+                .and_then(|input| input.into_question().map_err(ask_user_invalid))?;
 
         let Some(asker) = self.slot.asker() else {
             return Err(ToolError::new(
                 "ask_user: no interactive frontend is attached (headless run); proceed without asking or state what you would have asked",
             ));
         };
-        match asker.ask(
-            crate::interaction::AskQuestion {
-                presentation: None,
-                question,
-                options,
-                allow_custom,
-            },
-            cancel,
-        ) {
+        match asker.ask(question, cancel) {
             crate::interaction::AskAnswer::Selected(label)
             | crate::interaction::AskAnswer::Custom(label) => Ok(json!({ "answer": label })),
             crate::interaction::AskAnswer::Declined => Err(ToolError::new(
@@ -459,6 +429,12 @@ impl Tool for AskUserTool {
             )),
         }
     }
+}
+
+fn ask_user_invalid(reason: &str) -> ToolError {
+    ToolError::new(format!(
+        "ask_user: invalid arguments ({reason}). Retry with one valid JSON object matching the schema, or ask the question in your reply."
+    ))
 }
 
 #[cfg(test)]
@@ -2125,6 +2101,15 @@ mod tests {
             "option without label is rejected before the frontend"
         );
 
+        for invalid in [
+            json!({"question":"q","options":"yes"}),
+            json!({"question":"q","allow_custom":"false"}),
+            json!({"question":"q","allow_custom":false}),
+            json!({"question":"q","unknown":true}),
+            json!({"question":"q","options":[{"label":"yes"},{"label":"yes"}]}),
+        ] {
+            assert!(tool.invoke(&invalid, &project, &cancel).is_err());
+        }
         slot.install(None);
     }
 

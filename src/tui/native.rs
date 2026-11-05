@@ -858,7 +858,11 @@ impl App {
                 self.flash_message(UiMessage::new("tui.host_attached"));
             }
             "prompt.settled" => self.native_prompt_settled(payload),
-            "notice" if payload["kind"] == "selection" => self.start_native(),
+            "notice" if payload["kind"] == "selection" => {
+                if !self.rewind_submission_pending() {
+                    self.start_native();
+                }
+            }
             "notice" if payload["kind"] == "monitor" => {
                 self.refresh_native();
                 self.refresh_workbench_allowance();

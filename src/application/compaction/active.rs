@@ -31,9 +31,12 @@ impl RequestContextManager for ActiveContext {
         items: &[ModelItem],
         tools: &[ToolDefinition],
         usage: &Usage,
+        tail_tokens: u64,
     ) {
+        let estimated_input = crate::model::estimate_request_tokens(instructions, items, tools)
+            .saturating_add(tail_tokens);
         self.sessions
-            .observe_request(&self.config, instructions, items, tools, usage);
+            .observe_request(&self.config, instructions, tools, usage, estimated_input);
     }
 
     fn failed_capacity_attempt(
@@ -73,6 +76,7 @@ impl RequestContextManager for ActiveContext {
             sessions
                 .measure_request(&config, instructions, items, definitions)
                 .input
+                .saturating_add(options.request_tail_tokens())
         };
         if self.cancel.is_cancelled() {
             return Ok(());

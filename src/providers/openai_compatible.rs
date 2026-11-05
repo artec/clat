@@ -19,6 +19,8 @@ use ureq::{Agent, Body};
 #[path = "openai_compatible/observation_tests.rs"]
 pub(crate) mod observation_tests;
 
+mod messages;
+
 /// 连接超时：防止 TCP 连接阶段无限阻塞。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -87,14 +89,6 @@ impl OpenAiCompatibleModel {
         // 流式 usage 开关（stream_options.include_usage）是厂商差异：
         // DeepSeek 需要它才回传 usage（官方 harness 常开），GLM 流式
         // 默认携带。由各厂商预设的 extra_body 提供，通用通道不注入。
-        body.insert(
-            "messages".into(),
-            Value::Array(map_messages(
-                request.instructions,
-                request.items,
-                &self.config.image_policy,
-            )?),
-        );
 
         if !request.tools.is_empty() {
             let tools = request
@@ -136,6 +130,15 @@ impl OpenAiCompatibleModel {
                 body.insert(key.clone(), value.clone());
             }
         }
+        let replay_plain = messages::replay_plain_reasoning(&self.config.endpoint, &body);
+        let mut mapped = messages::map_messages(
+            request.instructions,
+            request.items,
+            &self.config.image_policy,
+            replay_plain,
+        )?;
+        super::append_request_tail(&mut mapped, request.options);
+        body.insert("messages".into(), Value::Array(mapped));
         Ok(Value::Object(body))
     }
 
@@ -271,130 +274,6 @@ impl Model for OpenAiCompatibleModel {
             crate::model::aggregate_response_budget(request.options.output_limit),
         )
     }
-}
-
-/// Maps the neutral conversation items to chat-completion messages.
-///
-/// DeepSeek's thinking mode streams `reasoning_content` alongside `content`
-/// and requires it to be replayed on assistant messages that carry tool
-/// calls (it is ignored on plain answer turns, so those never include it).
-/// One model turn with several tool calls must therefore become a single
-/// assistant message carrying the reasoning and all of its `tool_calls`,
-/// followed by the turn's tool results — even though the item stream
-/// interleaves them. The turn is emitted when it ends (a new user or
-/// assistant item, or the end of the list).
-fn map_messages(
-    instructions: Option<&str>,
-    items: &[ModelItem],
-    policy: &crate::model::ImageRequestPolicy,
-) -> Result<Vec<Value>, ModelError> {
-    /// An assistant turn that is still collecting tool calls and results.
-    struct PendingAssistant {
-        /// `None` means the turn had no `Assistant` item (a bare tool-call
-        /// turn), which is replayed with a null content.
-        content: Option<String>,
-        reasoning: Option<String>,
-        calls: Vec<Value>,
-        results: Vec<Value>,
-    }
-
-    fn flush(messages: &mut Vec<Value>, pending: &mut Option<PendingAssistant>) {
-        let Some(pending) = pending.take() else {
-            return;
-        };
-        if pending.calls.is_empty() {
-            // Plain answer turn: reasoning is never replayed here.
-            messages.push(json!({
-                "role": "assistant",
-                "content": pending.content.unwrap_or_default(),
-            }));
-            return;
-        }
-        let mut message = json!({
-            "role": "assistant",
-            // 官方 harness 规则：无文本的工具调用轮回传 ""——NEVER
-            // null。官方示例按原文重放空串，部分网关直接拒绝 null。
-            "content": pending.content.unwrap_or_default(),
-            "tool_calls": pending.calls,
-        });
-        if let Some(reasoning) = pending.reasoning.filter(|value| !value.is_empty()) {
-            message["reasoning_content"] = json!(reasoning);
-        }
-        messages.push(message);
-        messages.extend(pending.results);
-    }
-
-    let mut messages = Vec::new();
-    if let Some(instructions) = instructions {
-        messages.push(json!({"role": "system", "content": instructions}));
-    }
-    let mut pending: Option<PendingAssistant> = None;
-    let protected_start = items
-        .iter()
-        .rposition(|item| matches!(item, ModelItem::User { .. }))
-        .unwrap_or(items.len());
-    for (index, item) in items.iter().enumerate() {
-        let image_failure = if index >= protected_start {
-            ImageFailureMode::RejectCurrent
-        } else {
-            ImageFailureMode::DegradeHistory
-        };
-        match item {
-            ModelItem::User { content } => {
-                flush(&mut messages, &mut pending);
-                messages.push(json!({
-                    "role": "user",
-                    "content": user_content_with_mode(content, policy, image_failure)?,
-                }));
-            }
-            ModelItem::Assistant { content, reasoning } => {
-                flush(&mut messages, &mut pending);
-                pending = Some(PendingAssistant {
-                    content: Some(content_text(content)),
-                    reasoning: reasoning.clone(),
-                    calls: Vec::new(),
-                    results: Vec::new(),
-                });
-            }
-            ModelItem::ToolCall(call) => {
-                let calls = &mut pending
-                    .get_or_insert_with(|| PendingAssistant {
-                        content: None,
-                        reasoning: None,
-                        calls: Vec::new(),
-                        results: Vec::new(),
-                    })
-                    .calls;
-                calls.push(json!({
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.name,
-                        "arguments": serde_json::to_string(&call.arguments)
-                            .map_err(|error| ModelError::request(format!("invalid tool arguments: {error}")))?,
-                    }
-                }));
-            }
-            ModelItem::ToolResult(result) => {
-                let result_message = json!({
-                    "role": "tool",
-                    "tool_call_id": result.call_id,
-                    "content": tool_result_content(result, policy, image_failure)?,
-                });
-                match &mut pending {
-                    // The result belongs to the turn that is still open; it
-                    // is emitted right after the turn's assistant message.
-                    Some(turn) => turn.results.push(result_message),
-                    // Defensive: an orphan result (no open turn) is emitted
-                    // as-is.
-                    None => messages.push(result_message),
-                }
-            }
-            ModelItem::ProviderState(_) => {}
-        }
-    }
-    flush(&mut messages, &mut pending);
-    Ok(messages)
 }
 
 /// Chat-completions tool results may carry the same direct image parts as a
@@ -899,7 +778,7 @@ fn finish(
             } else {
                 builder.arguments.trim()
             };
-            let arguments = serde_json::from_str(raw).map_err(|error| {
+            let arguments = super::decode_tool_arguments(&builder.name, raw).map_err(|error| {
                 ModelError::decode(format!(
                     "compatible provider returned invalid JSON arguments for `{}`: {error}",
                     builder.name
@@ -999,7 +878,18 @@ fn extract_error_message(body: &str) -> String {
 }
 
 #[cfg(test)]
+mod cache_tests;
+
+#[cfg(test)]
 mod tests {
+    fn map_messages(
+        instructions: Option<&str>,
+        items: &[ModelItem],
+        policy: &crate::model::ImageRequestPolicy,
+    ) -> Result<Vec<Value>, ModelError> {
+        messages::map_messages(instructions, items, policy, false)
+    }
+
     use super::*;
     use crate::{ModelOptions, ToolDefinition, ToolEffect};
     use std::io::{BufRead, BufReader, Cursor, Read, Write};
@@ -2167,6 +2057,48 @@ mod tests {
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].name, "read_file");
         assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+    }
+
+    #[test]
+    fn malformed_ask_user_arguments_finish_as_a_correctable_tool_call() {
+        for raw in [
+            r#"{"question":"continue?"} trailing"#,
+            r#"{"question":"first","question":"second"}"#,
+        ] {
+            let delta = json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"ask-1","function":{"name":"ask_user","arguments":raw}},
+                {"index":1,"id":"read-1","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+            ]},"finish_reason":"tool_calls"}]});
+            let stream = format!("data: {delta}\n\ndata: [DONE]\n\n");
+            let response = consume_sse(
+                BufReader::new(stream.as_bytes()),
+                &mut Vec::new(),
+                &CancelToken::new(),
+                usize::MAX,
+            )
+            .unwrap();
+            assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+            assert_eq!(response.tool_calls[0].id, "ask-1");
+            let tool = crate::native_tools::native_interaction_tools(
+                crate::interaction::AskUserSlot::shared(),
+            );
+            let error = tool[0]
+                .invoke(
+                    &response.tool_calls[0].arguments,
+                    &crate::Project::new("."),
+                    &CancelToken::new(),
+                )
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Retry with one valid JSON object")
+            );
+            assert_eq!(
+                response.tool_calls[1].arguments,
+                json!({"path":"README.md"})
+            );
+        }
     }
 
     #[test]

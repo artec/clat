@@ -989,6 +989,12 @@ snapshot; its component estimates are incremental calls to the same
 The snapshot's Plan → Skills → Memory → Goal instruction layers, tool view, and
 durable header assembly have one owner in `application/run_context.rs`;
 `/context` consumes those layers instead of reconstructing workflow policy.
+Run-scoped scratch guidance travels separately from system instructions and
+durable history. The model adapters append it to the projected request after
+resolving the real user message and its attachments. Active context maintenance
+and spend reservation count those extra input tokens. The tool registry uses the
+same deterministic order for the frozen model view and the default Run view,
+placing optional run tools after ordinary tools.
 
 Agent phase 4 adds three more removable Trusted Project entries:
 

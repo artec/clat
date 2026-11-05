@@ -17,6 +17,7 @@ pub struct AskOption {
 }
 
 mod question;
+pub(crate) use question::AskUserInput;
 pub use question::{AskQuestion, AskQuestionPresentation};
 
 /// 前端应答。`Declined`（拒绝/取消/断连）以 isError 工具结果回给模型，

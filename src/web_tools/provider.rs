@@ -39,6 +39,25 @@ impl WebService {
                 .filter(|n| (1..=50).contains(n))
                 .ok_or_else(|| WebError::new("invalid_query"))?,
         };
+        if snapshot.key.is_none() {
+            return super::public_search::search(
+                self.transport(),
+                query.trim(),
+                count as usize,
+                cancel,
+            );
+        }
+        self.search_deepseek(query, count, snapshot, cancel, quota)
+    }
+
+    fn search_deepseek(
+        &self,
+        query: &str,
+        count: u64,
+        snapshot: &Snapshot,
+        cancel: &CancelToken,
+        quota: Option<&PaidCallBudget>,
+    ) -> Result<Value, WebError> {
         let response = self.api(
             "search",
             json!({"query":query,"count":count,"need_content":false}),

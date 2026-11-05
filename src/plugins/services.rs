@@ -559,6 +559,7 @@ pub(crate) struct AgentRequest {
     /// projection never reconstructs visibility from mutable sources.
     pub tool_definitions: Arc<[crate::tool::ToolDefinition]>,
     pub workflow_instructions: Option<String>,
+    pub request_tail: Option<String>,
     /// run 起点的权限档位快照——仅供系统指令注入说明；权限决策读共
     /// 享 cell，不受此快照限制。None = Classic（exec）——不注入。
     pub permission_mode: Option<crate::permission::PermissionMode>,

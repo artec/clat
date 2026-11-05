@@ -25,6 +25,7 @@ impl Run<'_> {
                         &input.items,
                         &input.definitions,
                         usage,
+                        self.model_options.request_tail_tokens(),
                     );
                 }
                 return Ok(response);

@@ -37,16 +37,16 @@ impl RequestMeter {
         session: &str,
         config: &ModelConfig,
         instructions: Option<&str>,
-        items: &[ModelItem],
         tools: &[ToolDefinition],
         usage: &Usage,
+        estimated_input: u64,
     ) {
         if usage.input_tokens == 0 {
             return;
         }
         self.anchor = Some(Anchor {
             key: key(session, config, instructions, tools),
-            items: estimate_request_tokens(instructions, items, tools),
+            items: estimated_input,
             actual: usage.input_tokens,
         });
     }
@@ -81,16 +81,17 @@ mod tests {
         let mut config = ModelConfig::default();
         let items = [ModelItem::user_text("hello")];
         let baseline = RequestMeasurement::new(&config, Some("current"), &items, &[]).input;
+        let estimated_tail = 120;
         meter.observe(
             "a",
             &config,
             Some("current"),
-            &items,
             &[],
             &Usage {
-                input_tokens: baseline + 1000,
+                input_tokens: baseline + estimated_tail + 1000,
                 ..Default::default()
             },
+            baseline + estimated_tail,
         );
         assert_eq!(
             meter

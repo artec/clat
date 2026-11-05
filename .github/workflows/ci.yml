@@ -4,10 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  # 六平台插件性能基线平时不跑（2026-11-05 负责人裁定：push 墙钟由其
+  # 最慢腿 34min 主导，不值）。发布前手动到 Actions 页 Run workflow
+  # 勾选 perf 跑一次全基线；push/PR 路径零变化。
+  workflow_dispatch:
+    inputs:
+      perf:
+        description: "Run the 6-platform plugin performance baseline"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # 手动基线跑（可长达 34 分钟）不得被后续 push 的自动取消杀掉。
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -118,6 +128,9 @@ jobs:
 
   plugin-performance:
     name: Plugin performance (${{ matrix.target }})
+    # 仅手动开启（workflow_dispatch 勾选 perf）；push/PR 一律跳过。
+    # job 键名是 scripts/test_ci_windows.py 的切分锚点，不得改名。
+    if: github.event_name == 'workflow_dispatch' && inputs.perf == true
     needs: desktop-plan
     env:
       # CI needs assertions and real native links, not full variable/type DWARF.

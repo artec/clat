@@ -5204,9 +5204,7 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .expect("tool catalog")
         .iter()
         .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    // SC-2：SkillsPlugin 因 `/skill` 命令进入 COMMAND_SERVICE 依赖层，
-    // 挂载拓扑把 exit_plan_mode 排到 skill 之前（层内保持目录序）。
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         tool_names,
         [
@@ -5248,8 +5246,10 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "update_goal",
             "view_image",
             "todo_write",
-        ],
-        "request/header freezes the complete model-visible native catalog order"
+        ]
+        .into_iter()
+        .collect(),
+        "request/header freezes the complete model-visible native catalog"
     );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();

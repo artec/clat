@@ -1776,7 +1776,7 @@ impl Model for ReasoningToolModel {
                 usage: None,
                 provider_response_id: None,
                 provider_state: vec![],
-                reasoning: Some("final answers need no replay".into()),
+                reasoning: Some("final answer reasoning".into()),
             });
         }
         Ok(ModelResponse {
@@ -1796,7 +1796,7 @@ impl Model for ReasoningToolModel {
 }
 
 #[test]
-fn reasoning_is_kept_on_tool_turns_and_dropped_on_answer_turns() {
+fn reasoning_is_kept_on_tool_and_answer_turns_for_provider_replay() {
     let project = Project::new(".");
     let permissions = AllowAll;
     let tools = ToolRegistry::new();
@@ -1815,7 +1815,7 @@ fn reasoning_is_kept_on_tool_turns_and_dropped_on_answer_turns() {
         ModelItem::Assistant { reasoning: Some(reasoning), .. }
             if reasoning == "why I use the tool"
     )));
-    // ...while the final answer turn drops it (providers ignore it there).
+    // Final answer reasoning must survive settlement for provider-owned replay.
     let final_assistant = output
         .items
         .iter()
@@ -1823,10 +1823,8 @@ fn reasoning_is_kept_on_tool_turns_and_dropped_on_answer_turns() {
         .find(|item| matches!(item, ModelItem::Assistant { .. }));
     assert!(matches!(
         final_assistant,
-        Some(ModelItem::Assistant {
-            reasoning: None,
-            ..
-        })
+        Some(ModelItem::Assistant { reasoning: Some(reasoning), .. })
+            if reasoning == "final answer reasoning"
     ));
 }
 
