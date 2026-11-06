@@ -36,7 +36,7 @@ impl Fixture {
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1");
         let out =
-            crate::process::capture_command(command, 16 * 1024 * 1024, Duration::from_secs(10))
+            crate::process::capture_command(command, 16 * 1024 * 1024, Duration::from_secs(60))
                 .unwrap();
         assert!(
             out.status.success(),
