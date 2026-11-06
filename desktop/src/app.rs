@@ -138,22 +138,6 @@ fn create_window(app: &tauri::App) -> tauri::Result<()> {
         .initialization_script(include_str!("../ui/update-rail.js"))
         .initialization_script(include_str!("../ui/bridge.js"))
         .initialization_script(include_str!("../ui/background.js"))
-        .on_page_load(|window, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Finished
-                && payload.url().host_str() == Some("127.0.0.1")
-            {
-                let app = window.app_handle().clone();
-                let address = payload.url().to_string();
-                std::thread::spawn(move || {
-                    if let Err(error) = crate::startup::remember(&app, &address) {
-                        *app.state::<Desktop>()
-                            .connection_error
-                            .lock()
-                            .expect("connection state") = Some(error);
-                    }
-                });
-            }
-        })
         .on_new_window(move |url, _| {
             if matches!(url.scheme(), "http" | "https")
                 && !crate::policy::permitted_page(url.as_str())

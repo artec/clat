@@ -48,6 +48,27 @@ fn remember(rows: &mut Vec<Recent>, row: Recent, opened: bool) {
     rows.insert(0, row);
     rows.truncate(3);
 }
+fn persist_conversation(
+    path: &std::path::Path,
+    rows: &mut Vec<Recent>,
+    row: Recent,
+    opened: bool,
+) -> Result<bool, String> {
+    let root = row.root.clone();
+    let mut next = rows.clone();
+    remember(&mut next, row, opened);
+    let changed = next != *rows;
+    if changed || opened {
+        let patch = if opened {
+            serde_json::json!({"recentConversations": next, "lastProject": root})
+        } else {
+            serde_json::json!({"recentConversations": next})
+        };
+        save_ui_preferences(path, &patch)?;
+        *rows = next;
+    }
+    Ok(changed)
+}
 pub fn load(app: &tauri::AppHandle) -> Vec<Recent> {
     crate::localization::path(app)
         .ok()
@@ -162,18 +183,13 @@ pub fn desktop_remember_conversation(
         .rows
         .lock()
         .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
-    let mut next = rows.clone();
-    remember(&mut next, row, opened);
-    if next == *rows {
-        return Ok(());
-    }
-    save_ui_preferences(
-        &crate::localization::path(&app)?,
-        &serde_json::json!({"recentConversations":next}),
-    )?;
-    *rows = next;
+    let changed = persist_conversation(&crate::localization::path(&app)?, &mut rows, row, opened)?;
     drop(rows);
-    refresh(&app).map_err(|e| UiMessage::new("desktop.tray_failed").arg("reason", e.to_string()))
+    if changed {
+        refresh(&app)
+            .map_err(|e| UiMessage::new("desktop.tray_failed").arg("reason", e.to_string()))?;
+    }
+    Ok(())
 }
 #[tauri::command]
 pub fn desktop_take_tray_intent(
@@ -311,6 +327,35 @@ mod tests {
             title: session.into(),
             project_title: String::new(),
         }
+    }
+    #[test]
+    fn active_conversation_updates_restart_project_without_metadata_stealing_it() {
+        let root = std::env::temp_dir().join(format!(
+            "clat-tray-resume-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("preferences.json");
+        save_ui_preferences(&path, &serde_json::json!({"language":"zh-Hans"})).unwrap();
+        let mut rows = Vec::new();
+        persist_conversation(&path, &mut rows, row("/first", "1"), true).unwrap();
+        persist_conversation(&path, &mut rows, row("/second", "2"), true).unwrap();
+        persist_conversation(&path, &mut rows, row("/first", "1"), false).unwrap();
+        let saved = load_ui_preferences(&path).unwrap();
+        assert_eq!(saved["lastProject"], "/second");
+        assert_eq!(saved["recentConversations"][0]["session"], "2");
+        assert_eq!(saved["language"], "zh-Hans");
+        save_ui_preferences(&path, &serde_json::json!({"lastProject":"/first"})).unwrap();
+        assert!(!persist_conversation(&path, &mut rows, row("/second", "2"), true).unwrap());
+        assert_eq!(
+            load_ui_preferences(&path).unwrap()["lastProject"],
+            "/second"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn project_alias_refresh_preserves_recent_identity_and_order() {

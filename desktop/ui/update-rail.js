@@ -11,7 +11,7 @@
   function installStyle() {
     const style = document.createElement('style'); style.textContent = `
       #nav-update{position:relative;color:var(--accent)}#nav-update[hidden],#desktop-update-popup[hidden]{display:none!important}
-      #nav-update>svg{width:22px;height:22px}#nav-update>svg[hidden]{display:none!important}
+      #nav-update>svg{width:22px;height:22px;color:var(--success)}#nav-update>svg[hidden]{display:none!important}
       #nav-update[data-failed=true]::after{content:'';position:absolute;right:3px;top:3px;width:6px;height:6px;border-radius:50%;background:var(--danger)}
       #nav-update:focus-visible,#desktop-update-popup button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       #desktop-update-popup p{margin:8px 0}#desktop-update-popup .update-popup-actions{display:flex;gap:8px;flex-wrap:wrap}#desktop-update-popup button{min-height:32px}

@@ -231,6 +231,8 @@ grayscale surfaces and CLAT blue, including the `#0c416f` primary button color.
 This is a single startup attempt: disconnection or **Stop shared background**
 does not automatically restart the Host. Opening a project restores its normal
 Host-owned session state without sending a prompt or restarting prior work.
+Switching conversations across projects also updates the desktop's remembered
+project, so reopening after an update returns to the active project's session.
 The initial window shows a CLAT logo while discovery, project restoration and
 workbench navigation are pending. It reveals project selection only when needed
 or when an error requires recovery, rather than flashing that page on every launch.

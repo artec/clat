@@ -123,33 +123,6 @@ pub fn restore(app: &tauri::AppHandle) {
     state.startup.finish();
 }
 
-pub fn remember(app: &tauri::AppHandle, address: &str) -> Result<(), PresentedText> {
-    let state = app.state::<crate::app::Desktop>();
-    let _guard = state
-        .connection
-        .lock()
-        .map_err(|_| "connection state unavailable")?;
-    if app
-        .get_webview_window("main")
-        .and_then(|w| w.url().ok())
-        .as_ref()
-        .map(|u| u.as_str())
-        != Some(address)
-    {
-        return Ok(());
-    }
-    let host = state
-        .host
-        .lock()
-        .map_err(|_| "host state unavailable")?
-        .clone();
-    let Some(host) = host else {
-        return Ok(());
-    };
-    let scoped = host.for_browser_url(address)?;
-    save_project(app, &scoped)
-}
-
 pub fn save_project(
     app: &tauri::AppHandle,
     client: &clat_core::client_ports::host::HostClient,
