@@ -3181,6 +3181,9 @@ const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
     // vendor README 的文档引证（canvas 字体查证的 WebKit 缺陷说明），
     // 非运行时目的地；离线 bundle 不发任何网络请求。
     "https://bugs.webkit.org/show_bug.cgi?id=316777",
+    // web/tests 夹具里"远程 URL 必须被拒"的反例；RFC 2606 保留域
+    // 永不解析，仅存在于测试源码，非运行时目的地。
+    "https://example.com",
 ];
 
 #[test]

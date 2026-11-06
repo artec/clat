@@ -89,7 +89,7 @@ impl RemotePrompts<'_> {
                 armed,
             );
         match readiness {
-            RemoteChatReadiness::Ready(ticket) => Ok(Some(ticket)),
+            RemoteChatReadiness::Ready(ticket) => Ok(Some(*ticket)),
             RemoteChatReadiness::Unmapped => {
                 (self.notify)(UiMessage::new("remote.chat_unmapped"));
                 Ok(None)
@@ -515,15 +515,32 @@ mod tests {
                 bridge.submit(ticket, id, text.into(), Vec::new())
             })
         };
-        let image = bridge.stage_image("first", 0, &crate::test_support::png_bytes(2, 2, [42, 21, 9]), "png").unwrap();
+        let image = bridge
+            .stage_image(
+                "first",
+                0,
+                &crate::test_support::png_bytes(2, 2, [42, 21, 9]),
+                "png",
+            )
+            .unwrap();
         let temporary_path = image.staged.clone();
         assert!(temporary_path.exists());
-        assert!(matches!(dispatch_delivery(&shared, &route, "first", None, |_| {
-            let ticket = bridge.prepare("first")?.expect("armed chat");
-            bridge.submit(ticket, "first", "first".into(), vec![image])
-        }), DeliveryResult::Handled));
-        assert!(!temporary_path.exists(), "staged image is released after admission");
-        let admission = app.lock().unwrap().committed_admission(&RemoteChannel::Test.delivery_key("first")).unwrap();
+        assert!(matches!(
+            dispatch_delivery(&shared, &route, "first", None, |_| {
+                let ticket = bridge.prepare("first")?.expect("armed chat");
+                bridge.submit(ticket, "first", "first".into(), vec![image])
+            }),
+            DeliveryResult::Handled
+        ));
+        assert!(
+            !temporary_path.exists(),
+            "staged image is released after admission"
+        );
+        let admission = app
+            .lock()
+            .unwrap()
+            .committed_admission(&RemoteChannel::Test.delivery_key("first"))
+            .unwrap();
         assert_eq!(admission.receipt.attachment_ids.len(), 1);
         gate.wait_entered();
         std::thread::scope(|scope| {

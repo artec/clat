@@ -63,7 +63,7 @@ impl RemoteConversations {
         route: RemoteRoute,
         binding: RemoteChatBinding,
     ) -> Result<(), String> {
-        if route.channel != binding.channel || &*route.user != binding.user_id {
+        if route.channel != binding.channel || *route.user != binding.user_id {
             return Err("remote fallback owner mismatch".into());
         }
         let mut routes = self

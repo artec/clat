@@ -43,7 +43,7 @@ pub(crate) enum RemoteDeliveryDisposition {
 
 #[derive(Clone, Debug)]
 pub(crate) enum RemoteChatReadiness {
-    Ready(RemoteChatTicket),
+    Ready(Box<RemoteChatTicket>),
     Unmapped,
     Revoked,
 }
@@ -367,7 +367,7 @@ impl TrustedProjectApplication {
         if initial_binding.is_none() && initial_pending_digest.is_none() && !allow_new {
             return RemoteChatReadiness::Unmapped;
         }
-        RemoteChatReadiness::Ready(RemoteChatTicket {
+        RemoteChatReadiness::Ready(Box::new(RemoteChatTicket {
             channel,
             user_id: user_id.to_owned(),
             chat_id: chat_id.to_owned(),
@@ -376,7 +376,7 @@ impl TrustedProjectApplication {
             allow_new,
             initial_binding,
             initial_pending_digest,
-        })
+        }))
     }
 
     pub(crate) fn remote_chat_status(
@@ -723,15 +723,15 @@ impl TrustedProjectApplication {
             {
                 return Ok(outcome);
             }
-        } else if intent != ChatMappingIntent::Existing {
-            if let Some(outcome) = self.recover_or_create_remote_session(
+        } else if intent != ChatMappingIntent::Existing
+            && let Some(outcome) = self.recover_or_create_remote_session(
                 ticket,
                 intent,
                 incoming_digest,
                 selection_changed,
-            )? {
-                return Ok(outcome);
-            }
+            )?
+        {
+            return Ok(outcome);
         }
         self.start_remote_admission(ticket, intent, incoming_digest, request)
     }
@@ -1001,7 +1001,7 @@ mod tests {
             None,
             true,
         ) {
-            RemoteChatReadiness::Ready(ticket) => ticket,
+            RemoteChatReadiness::Ready(ticket) => *ticket,
             _ => panic!("authorized chat must be ready"),
         };
         let first_ticket = ticket();
@@ -1031,7 +1031,7 @@ mod tests {
             None,
             true,
         ) {
-            RemoteChatReadiness::Ready(ticket) => ticket,
+            RemoteChatReadiness::Ready(ticket) => *ticket,
             _ => panic!("authorized chat must remain ready"),
         };
         app.control.fail_remote_intent_for_test(2);
@@ -1054,7 +1054,7 @@ mod tests {
         let recovery =
             match app.prepare_remote_chat(RemoteChannel::Test, "user", "chat", "task", None, false)
             {
-                RemoteChatReadiness::Ready(ticket) => ticket,
+                RemoteChatReadiness::Ready(ticket) => *ticket,
                 _ => panic!("retained intent must permit retry"),
             };
         let recovered = app.start_remote_prompt(recovery, make_request());
@@ -1138,7 +1138,7 @@ mod tests {
                 panic!("authorized chat must be ready")
             };
             let RemotePromptStartOutcome::Started { handle, .. } =
-                app.start_remote_prompt(ticket, request).outcome
+                app.start_remote_prompt(*ticket, request).outcome
             else {
                 panic!("remote run must start")
             };
@@ -1244,7 +1244,7 @@ mod tests {
         app.set_wechat_allowlist("same-user", false).unwrap();
         let (completion, _received) = mpsc::channel();
         let revoked = app.start_remote_prompt(
-            revoked_ticket,
+            *revoked_ticket,
             ApplicationRunRequest {
                 message: crate::message::PendingMessage::text("must not run"),
                 approver: Arc::new(
@@ -1310,7 +1310,7 @@ mod tests {
         let delivery_id = ticket.delivery_id.clone();
         let (completion, received) = mpsc::channel();
         let result = app.start_remote_prompt(
-            ticket,
+            *ticket,
             ApplicationRunRequest {
                 message: crate::message::PendingMessage::from_front_end(
                     "remote task",
