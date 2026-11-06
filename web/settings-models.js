@@ -14,7 +14,6 @@ function renderSettingsPresets(view) {
     const active = !view.active_profile && presets.some(preset => preset.id === view.current.preset);
     row.active.hidden = !active;
     if (!row.edited && active) row.select.value = view.current.preset;
-    row.syncBadge();
   }
   for (const [vendor, row] of settingsPresetRows) if (!groups.has(vendor)) { row.element.remove(); settingsPresetRows.delete(vendor); }
 }
@@ -23,17 +22,13 @@ function settingsPresetRow(vendor, presets) {
   const active = el('small', '', () => settingsUi('active_model'));
   heading.append(el('strong', '', vendor), active);
   const controls = el('div', 'model-vendor-controls'), select = el('select'), key = el('input');
-  for (const preset of presets) { const option = el('option', '', () => preset.name + (preset.image_input ? ' · ' + CLATI18n.msg('web.accepts_images') : '')); option.value = preset.id; select.append(option); }
+  for (const preset of presets) { const option = el('option', '', modelCapabilityName(preset.name, preset.image_input)); option.value = preset.id; select.append(option); }
   CLATI18n.attribute(select, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.model_id'));
   key.type = 'password'; key.autocomplete = 'new-password'; key.maxLength = 4096;
   CLATI18n.attribute(key, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.api_key'));
   CLATI18n.attribute(key, 'placeholder', () => settingsUi('preset_key_hint'));
-  const badge=el('span','vision-capability');badge.append(svgIcon('vision'));
-  CLATI18n.attribute(badge,'title',()=>CLATI18n.msg('web.accepts_images'));
-  CLATI18n.attribute(badge,'aria-label',()=>CLATI18n.msg('web.accepts_images'));
-  const syncBadge=()=>{badge.hidden=!presets.find(preset=>preset.id===select.value)?.image_input;};
-  const row = { element, active, select, edited: false, syncBadge };
-  select.onchange = () => { row.edited = true; syncBadge(); };
+  const row = { element, active, select, edited: false };
+  select.onchange = () => { row.edited = true; };
   const apply = el('button', 'secondary', () => settingsUi('apply_preset')); apply.type = 'button';
   apply.onclick = () => modelAction(apply, async () => {
     const params = { id: select.value };
@@ -42,15 +37,7 @@ function settingsPresetRow(vendor, presets) {
     try { await rpc('model.preset.select', params); row.edited = false; }
     finally { select.disabled = false; }
   });
-  controls.append(select, badge, key, apply); element.append(heading, controls);syncBadge();
-  const visionModels=el('div','model-vendor-vision-models');
-  for (const preset of presets.filter(item=>item.image_input)) {
-    const item=el('span','model-vendor-vision-model');
-    item.append(svgIcon('vision'),el('span','',preset.name));
-    CLATI18n.attribute(item,'title',()=>CLATI18n.msg('web.accepts_images'));
-    visionModels.append(item);
-  }
-  if (visionModels.childElementCount) element.append(visionModels);
+  controls.append(select, key, apply); element.append(heading, controls);
   return row;
 }
 

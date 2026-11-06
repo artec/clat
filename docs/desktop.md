@@ -535,7 +535,7 @@ contents, including unsaved changes. Local Markdown file links in conversation r
 offer to open a file within the current project or copy its absolute or relative path;
 outside the project only copying the absolute path is available. The editor continues
 to enforce the project boundary. Model lists mark image-capable
-routes with an eye icon, and adding or sending images with a known text-only model is
+routes with `⧉` after the model name, and adding or sending images with a known text-only model is
 blocked with a prompt to choose an image-capable model. Terminal appearance is configurable in Settings, with a live glyph preview and local system font selection. No font files are
 bundled. See [usage](usage.md#project-editor-git-and-terminals)
 for workflows and recovery boundaries. Native macOS/Windows font, IME, keyboard and

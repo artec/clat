@@ -384,6 +384,10 @@ function renderModelIdentity(target, name, imageInput) {
   target.appendChild(badge);
 }
 
+function modelCapabilityName(name, imageInput) {
+  return name + (imageInput ? ' ⧉' : '');
+}
+
 const EVENT_LABELS = {
   run_started: CLATI18n.msg("web.run_started", {}, "Run started"),
   model_requested: CLATI18n.msg("web.model_request_started", {}, "Model request started"),
@@ -3247,10 +3251,9 @@ function appendModelChoiceGroup(label, choices) {
     button.type = 'button';
     button.setAttribute('role', 'radio');
     button.setAttribute('aria-checked', String(choice.active));
-    CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg("web.dynamic_use_value", {value1:(choice.label)}, "Use {value1}"));
+    CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg("web.dynamic_use_value", {value1:(choice.label)}, "Use {value1}") + (choice.imageInput ? ' · ' + CLATI18n.msg('web.accepts_images') : ''));
     const copy = el('span');
-    const title = el('strong', 'model-choice-title');
-    renderModelIdentity(title, choice.label, choice.imageInput);
+    const title = el('strong', '', modelCapabilityName(choice.label, choice.imageInput));
     copy.append(title, el('small', '', () => (choice.detail)));
     button.append(copy, el('span', 'model-choice-mark', () => (choice.active ? '●' : '')));
     button.addEventListener('click', () => selectModelChoice(choice));
@@ -3300,9 +3303,7 @@ function renderUtilitySettings(settings, profiles = []) {
 
 function renderModelProfile(name, active, imageInput) {
   const row = el('div', 'model-profile-row');
-  const title=el('strong','model-profile-title');
-  renderModelIdentity(title, name + (active ? CLATI18n.t('web.active_suffix') : ''), imageInput);
-  row.appendChild(title);
+  row.appendChild(el('strong', '', () => modelCapabilityName(name, imageInput) + (active ? CLATI18n.t('web.active_suffix') : '')));
   for (const action of ['Edit','Delete']) {
     const label=CLATI18n.msg(action==='Edit'?'web.edit_short':'web.delete_short',{},action);
     const button = el('button', 'ghost', () => (label));
