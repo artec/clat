@@ -65,7 +65,7 @@ fn model_settings_image_capability_matches_preset_and_saved_profile() {
     assert_eq!(view.profile_image_input.get("unverified"), Some(&false));
     drop(app);
     drop(host);
-    std::fs::remove_dir_all(root).unwrap();
+    crate::test_support::cleanup_tree(&root);
 }
 
 #[test]

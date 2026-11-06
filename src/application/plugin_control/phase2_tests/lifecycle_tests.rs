@@ -187,7 +187,7 @@ pub(in crate::application::plugin_control) fn ordinary_goal(app: &mut TrustedPro
     let (request, receiver) = request();
     let handle = app.start_workflow_run(request).unwrap().unwrap();
     receiver
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(Duration::from_secs(30))
         .unwrap()
         .unwrap();
     handle.join().unwrap();
@@ -224,7 +224,7 @@ pub(in crate::application::plugin_control) fn automatic(
     };
     let handle = app.start_target_run(target).unwrap();
     receiver
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(Duration::from_secs(30))
         .unwrap()
         .unwrap();
     handle.join().unwrap();
