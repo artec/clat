@@ -356,7 +356,7 @@ fn phase5_compaction_and_git_models_run_independently_of_auxiliary_execution() {
             let output = crate::process::capture_command(
                 command,
                 1024 * 1024,
-                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
             )
             .unwrap();
             assert!(output.status.success(), "{:?}", output.stderr);

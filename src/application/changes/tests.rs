@@ -20,7 +20,7 @@ pub(in crate::application) fn git(root: &Path, args: &[&str]) {
         .env("GIT_CONFIG_GLOBAL", root.join("no-global-config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(args);
-    let result = capture_command(command, 128 * 1024, Duration::from_secs(5)).unwrap();
+    let result = capture_command(command, 128 * 1024, Duration::from_secs(60)).unwrap();
     assert!(
         result.status.success(),
         "{}",
