@@ -65,7 +65,7 @@ fn proposed(name: &'static str) -> (TrustedProjectApplication, PathBuf) {
     r.events = Box::new(SharedEvents(events.clone()));
     app.start_run(r).unwrap().join().unwrap();
     assert!(
-        !rx.recv_timeout(Duration::from_secs(10))
+        !rx.recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap()
             .cancelled
@@ -238,7 +238,7 @@ fn model_workflow_real_persistence_failure_discards_a_confirmed_request() {
     }));
     let (r, rx) = request(Some(Arc::new(asker)));
     app.start_run(r).unwrap().join().unwrap();
-    let result = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let result = rx.recv_timeout(crate::test_support::HANG).unwrap();
     app.sessions
         .inject_persistence_faults(crate::session::persistence::FaultHooks::default());
     assert!(result.is_err());
@@ -500,7 +500,7 @@ fn model_workflow_plan_clarification_answer_reaches_the_plan_before_separate_app
     let answers = Arc::new(ClarificationAnswers(AtomicUsize::new(0)));
     let (r, rx) = request(Some(answers.clone()));
     app.start_run(r).unwrap().join().unwrap();
-    rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
     assert_eq!(script.0.load(Ordering::SeqCst), 2);
     assert_eq!(answers.0.load(Ordering::SeqCst), 2);
     let approved = app.plan_state().approved.unwrap();

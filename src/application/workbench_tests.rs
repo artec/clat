@@ -87,7 +87,7 @@ fn active_run_refuses_file_recovery_and_session_organization_before_mutation() {
         if gate
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(crate::test_support::HANG)
             .is_ok()
         {
             crate::PermissionDecision::Allow
@@ -107,7 +107,7 @@ fn active_run_refuses_file_recovery_and_session_organization_before_mutation() {
             completion,
         })
         .unwrap();
-    waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+    waiting.recv_timeout(crate::test_support::HANG).unwrap();
     let id = app.current_session_id().unwrap();
     let revision = app.turn_changes(None, None).unwrap()["revision"]
         .as_str()

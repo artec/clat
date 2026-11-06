@@ -356,7 +356,7 @@ fn builtin_config_save_during_live_run_does_not_cancel_or_change_session() {
     assert_eq!(attached.lock().unwrap().current_session_id(), session);
     gate.release();
     let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     assert!(!result.cancelled);

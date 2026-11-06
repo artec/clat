@@ -54,7 +54,7 @@ pub(super) fn run(app: &mut TrustedProjectApplication, resume: TaskResume) -> Ap
             },
         )
         .unwrap();
-    let result = rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    let result = rx.recv_timeout(crate::test_support::HANG).unwrap();
     handle.join().unwrap();
     result
 }
@@ -407,7 +407,7 @@ fn ga1_approval_denial_has_no_execution_intent_or_file_effect() {
             },
         )
         .unwrap();
-    let result = rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    let result = rx.recv_timeout(crate::test_support::HANG).unwrap();
     handle.join().unwrap();
     result.unwrap();
     assert!(app.task_state().unwrap().unwrap().operations.is_empty());
@@ -549,9 +549,7 @@ fn ga1_ordinary_run_cannot_see_or_forge_task_progress_tools() {
             completion,
         })
         .unwrap();
-    rx.recv_timeout(std::time::Duration::from_secs(60))
-        .unwrap()
-        .unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
     handle.join().unwrap();
     assert_eq!(app.task_state().unwrap().unwrap(), before);
     app.close().unwrap();
@@ -621,11 +619,7 @@ fn ga1_real_run_stops_before_another_model_request_when_intent_commit_fails() {
             },
         )
         .unwrap();
-    assert!(
-        rx.recv_timeout(std::time::Duration::from_secs(60))
-            .unwrap()
-            .is_err()
-    );
+    assert!(rx.recv_timeout(crate::test_support::HANG).unwrap().is_err());
     handle.join().unwrap();
     app.sessions
         .inject_persistence_faults(crate::session::persistence::FaultHooks::default());
@@ -719,9 +713,7 @@ fn ga1_rework_stale_skill_pre_admission_failure_does_not_strand_task() {
     );
     let second_error = match second {
         Ok((h, _)) => {
-            rx.recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap()
-                .unwrap();
+            rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
             h.join().unwrap();
             let state = app.task_state().unwrap().unwrap();
             assert_eq!(state.runs[0], reserved);
@@ -811,7 +803,7 @@ fn ga1_rework_goal_cannot_bypass_an_unresolved_task_operation() {
             completion,
         });
         if let Ok((h, _)) = started {
-            let result = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let result = rx.recv_timeout(crate::test_support::HANG).unwrap();
             h.join().unwrap();
             eprintln!("Goal Run executed despite unresolved operation: {result:?}");
             bypass = true;

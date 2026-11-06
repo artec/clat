@@ -24,6 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 pub(crate) mod execution_observation;
+pub mod heavy;
+pub use heavy::{HANG, heavy};
 mod tool_once;
 pub use tool_once::ToolOnceScript;
 pub mod mcp_discovery;

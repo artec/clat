@@ -50,7 +50,7 @@ fn queued_fixture(
             completion,
         })
         .unwrap();
-    wait.recv_timeout(Duration::from_secs(10)).unwrap();
+    wait.recv_timeout(crate::test_support::HANG).unwrap();
     app.enqueue_next_turn("queued-1".into(), "next task".into())
         .unwrap();
     (app, storage, handle, result, release)
@@ -101,12 +101,14 @@ fn next_turn_is_not_steering_and_dispatches_as_an_ordinary_turn() {
     release.send(()).unwrap();
     handle.join().unwrap();
     result
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     let (request, done) = queued_request();
     app.start_next_turn(request).unwrap().join().unwrap();
-    done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    done.recv_timeout(crate::test_support::HANG)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         app.next_turn_queue()[0].text,
         "third task",
@@ -114,7 +116,9 @@ fn next_turn_is_not_steering_and_dispatches_as_an_ordinary_turn() {
     );
     let (request, done) = queued_request();
     app.start_next_turn(request).unwrap().join().unwrap();
-    done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    done.recv_timeout(crate::test_support::HANG)
+        .unwrap()
+        .unwrap();
     assert!(app.next_turn_queue().is_empty());
     let events = load_events(&storage);
     assert_eq!(
@@ -142,7 +146,7 @@ fn next_turn_cancel_and_startup_failure_retain_input_and_block_session_switch() 
     handle.cancel();
     handle.join().unwrap();
     result
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     assert_eq!(app.next_turn_queue()[0].text, "next task");
@@ -185,7 +189,7 @@ fn next_turn_post_commit_failure_never_resends_and_recall_retry_never_eats_anoth
     release.send(()).unwrap();
     handle.join().unwrap();
     result
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     app.fail_next_run_start_receive = true;
@@ -222,7 +226,7 @@ fn lost_recall_reply_remains_recoverable_after_session_switch() {
     release.send(()).unwrap();
     handle.join().unwrap();
     result
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     app.new_session().unwrap();
@@ -266,7 +270,7 @@ fn selected_queue_recall_preserves_order_and_replays_receipts() {
     release.send(()).unwrap();
     handle.join().unwrap();
     result
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     assert!(app.recall_next_turn().is_some());

@@ -69,7 +69,7 @@ fn disabled_image_input_preserves_historical_context_and_native_view_image() {
         let handle = app.start_run(request).unwrap();
         handle.join().unwrap();
         receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         assert_eq!(app.context_snapshot().unwrap().image_count, 1);
@@ -182,7 +182,7 @@ fn rejected_images_preserve_running_text_turn_and_explicit_cancellation() {
         gate.release();
         handle.join().unwrap();
         let done = receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         assert_eq!(done.cancelled, cancel);

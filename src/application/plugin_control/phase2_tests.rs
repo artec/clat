@@ -63,7 +63,7 @@ pub(super) fn run(app: &mut crate::TrustedProjectApplication) {
     let (request, receiver) = request();
     let handle = app.start_run(request).unwrap();
     receiver
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     handle.join().unwrap();

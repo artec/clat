@@ -146,9 +146,7 @@ fn setup_concurrent_clients_cannot_overwrite_the_same_configuration_version() {
         let mut request = custom(&revision);
         request["profile"]["name"] = json!(name);
         workers.push(std::thread::spawn(move || {
-            ready
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            ready.recv_timeout(crate::test_support::HANG).unwrap();
             app.lock().unwrap().model_setup_start(request, true)
         }));
     }

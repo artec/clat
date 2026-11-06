@@ -47,7 +47,7 @@ fn seed(app: &mut TrustedProjectApplication) {
     let h = app.start_run(r).unwrap();
     h.join().unwrap();
     receiver
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
 }
@@ -145,7 +145,7 @@ fn approval_waits_for_planning_worker_to_settle_before_goal_admission() {
     let (entered, waiting) = mpsc::channel();
     let (r, result) = request(Some(Arc::new(WaitingAsker(entered))));
     let handle = app.start_run(r).unwrap();
-    waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+    waiting.recv_timeout(crate::test_support::HANG).unwrap();
     let snapshot = app.workflow_details().unwrap();
     let doc = &snapshot["documents"][0];
     action(
@@ -162,7 +162,7 @@ fn approval_waits_for_planning_worker_to_settle_before_goal_admission() {
     }
     handle.join().unwrap();
     result
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     assert!(app.workflow_ready());
@@ -171,7 +171,7 @@ fn approval_waits_for_planning_worker_to_settle_before_goal_admission() {
     assert_eq!(goal_handle.session_id(), app.current_session_id().as_ref());
     app.cancel_active_run();
     goal_handle.join().unwrap();
-    let _ = result.recv_timeout(Duration::from_secs(30)).unwrap();
+    let _ = result.recv_timeout(crate::test_support::HANG).unwrap();
     assert!(!app.workflow_ready());
     assert!(app.goal().unwrap().is_some());
     app.close().unwrap();
@@ -267,7 +267,7 @@ fn active_goal_queue_keeps_authority_but_manual_stop_revokes_interrupt_resume() 
     app.cancel_active_run();
     gate.release();
     handle.join().unwrap();
-    let _ = result.recv_timeout(Duration::from_secs(30)).unwrap();
+    let _ = result.recv_timeout(crate::test_support::HANG).unwrap();
     app.workflow_input_settled(true);
     assert!(!app.workflow_ready());
     assert!(!app.goal().unwrap().unwrap().armed);
@@ -348,7 +348,7 @@ fn failed_goal_spawn_keeps_approval_and_retries_the_same_bound_goal() {
     let handle = app.start_workflow_run(r).unwrap().unwrap();
     app.cancel_active_run();
     handle.join().unwrap();
-    let _ = result.recv_timeout(Duration::from_secs(30)).unwrap();
+    let _ = result.recv_timeout(crate::test_support::HANG).unwrap();
     assert_eq!(app.goal().unwrap().unwrap().state.id, first.state.id);
     app.close().unwrap();
     crate::test_support::cleanup_tree(root.parent().unwrap());

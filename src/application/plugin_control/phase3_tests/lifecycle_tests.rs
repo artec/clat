@@ -38,7 +38,7 @@ fn all_nine_absent_cancel_live_run_and_resume_session_after_restart() {
     app.cancel_active_run();
     gate.release();
     assert!(
-        rx.recv_timeout(std::time::Duration::from_secs(10))
+        rx.recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap()
             .cancelled
@@ -233,9 +233,7 @@ fn ordinary_process_execution_survives_without_all_execution_features() {
     let (mut req, rx) = request();
     req.events = Box::new(crate::test_support::SharedEvents(events.clone()));
     let handle = app.start_run(req).unwrap();
-    rx.recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap()
-        .unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
     handle.join().unwrap();
     assert!(events.lock().unwrap().iter().any(|event|matches!(event,crate::RunEvent::ToolFinished{result} if result.tool_name=="exec_command"&&!result.is_error&&result.output.to_string().contains("phase3-process"))));
     assert!(app.task_reader().unwrap().list().is_object());

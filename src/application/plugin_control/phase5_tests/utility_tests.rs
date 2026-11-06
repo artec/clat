@@ -25,7 +25,7 @@ impl UtilityModel for BlockingUtility {
         self.release
             .lock()
             .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap();
         // Deliberately ignore cancellation and return a diagnostic-producing failure.
         Err(UtilityFailure::RouteUnavailable)
@@ -103,7 +103,7 @@ fn phase5_inflight_suggestion_retains_real_lease_and_cannot_write_after_close() 
         app.prepare_prompt_suggestion().unwrap()
     };
     let worker = std::thread::spawn(move || prepared.generate(&crate::CancelToken::new()));
-    rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap();
     drop(attached);
     assert!(host.close().is_err(), "actual producer is still running");
     drop(host);

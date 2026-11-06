@@ -408,7 +408,7 @@ fn phase5_title_timeout_retains_lease_and_suppresses_late_commit() {
             self.release
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(crate::test_support::HANG)
                 .unwrap();
             Ok(crate::plugins::services::GeneratedTitle {
                 title: "late".into(),
@@ -472,7 +472,7 @@ fn phase5_title_timeout_retains_lease_and_suppresses_late_commit() {
             credentials: ProviderCredentials::for_protocol(ModelConfig::default().protocol),
         })
         .unwrap();
-    rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap();
     utility.revoke();
     drop(lease);
     assert!(worker.shutdown().is_err());

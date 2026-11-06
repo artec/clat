@@ -1197,7 +1197,7 @@ mod tests {
         gate.release();
         handle.join().unwrap();
         let result = received
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1339,7 +1339,7 @@ mod tests {
         assert_eq!(binding.channel, RemoteChannel::Test);
         handle.join().unwrap();
         received
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         assert!(

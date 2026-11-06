@@ -299,9 +299,7 @@ fn task_without_jobs_check(disabled: &[&str]) {
         resume.accept_changes = true;
         let (req, rx) = request();
         let (handle, _) = app.start_task_run(resume, req).unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
+        rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
         handle.join().unwrap();
         assert!(app.task_state().unwrap().unwrap().runs[0].settled);
         assert_eq!(

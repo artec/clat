@@ -138,7 +138,7 @@ fn target_run_uses_original_session_tools_permissions_and_receipt_without_select
         let handle = app.start_target_run(request).unwrap();
         handle.join().unwrap();
         let done = receiver
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         assert_eq!(done.output, "target done");
@@ -244,7 +244,7 @@ fn target_run_activation_failure_preserves_committed_phase_and_foreground() {
     app.start_target_run(request).unwrap().join().unwrap();
     assert!(
         receive
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .is_ok()
     );
@@ -298,7 +298,7 @@ fn target_run_never_claims_steering_or_attachments_from_another_selected_session
         scheduled_at: 1,
     };
     let handle = app.start_target_run(request).unwrap();
-    observe.recv_timeout(Duration::from_secs(3)).unwrap();
+    observe.recv_timeout(crate::test_support::HANG).unwrap();
     let message = crate::message::PendingMessage::from_front_end(
         "PRIVATE-WRONG-SESSION",
         Some("other-client".into()),
@@ -314,7 +314,7 @@ fn target_run_never_claims_steering_or_attachments_from_another_selected_session
     handle.join().unwrap();
     assert!(
         result
-            .recv_timeout(Duration::from_secs(3))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap()
             .cancelled
@@ -427,7 +427,7 @@ fn phase5_target_images_use_target_authority_and_transformer() {
     let handle = app.start_target_run(request).unwrap();
     handle.join().unwrap();
     receiver
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     assert_eq!(app.current_session_id(), Some(sessions[1].clone()));

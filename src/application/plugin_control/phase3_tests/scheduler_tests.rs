@@ -306,7 +306,7 @@ fn jobs_absence_leaves_job_rules_untouched_and_time_rules_execute_independently(
                     },
                 )
                 .unwrap();
-            let result = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let result = rx.recv_timeout(crate::test_support::HANG).unwrap();
             handle.join().unwrap();
             assert!(result.is_ok());
             app.settle_automatic(

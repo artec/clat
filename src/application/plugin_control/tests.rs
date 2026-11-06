@@ -417,7 +417,7 @@ fn plugin_mutation_refuses_a_run_in_any_project_without_changing_registry_or_too
     );
     handle.cancel();
     handle.join().unwrap();
-    rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
     drop(first);
     drop(second);
     host.close().unwrap();
@@ -616,7 +616,7 @@ fn static_configuration_survives_settings_writes_and_reopen_without_mounting_dis
         run.join().unwrap();
         assert!(
             received
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(crate::test_support::HANG)
                 .unwrap()
                 .is_ok()
         );

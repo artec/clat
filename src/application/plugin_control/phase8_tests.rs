@@ -7,6 +7,7 @@ const FEATURES: [&str; 3] = [
 ];
 #[test]
 fn phase8_eight_isolated_hosts_keep_optional_maintenance_independent_across_reopen() {
+    let _heavy = crate::test_support::heavy();
     for mask in 0..8 {
         let (root, _) = crate::test_support::roots("phase8-hosts");
         let project = Project::new(root.join("project"));

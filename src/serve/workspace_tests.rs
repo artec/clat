@@ -20,6 +20,7 @@ fn workspace_directory_rpc_is_authenticated_and_preserves_existing_routes() {
 
 #[test]
 fn sequential_workspace_visits_over_capacity_preserve_connected_project() {
+    let _heavy = crate::test_support::heavy();
     use crate::host_client::HostClient;
     let (handle, storage, project) = spawn_serve("workspace-capacity", TestBehavior::Success);
     let client = HostClient::connect(handle.addr.port(), TEST_TOKEN.into(), &storage).unwrap();

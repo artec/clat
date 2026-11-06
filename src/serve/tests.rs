@@ -3837,6 +3837,7 @@ fn ag8_joint_two_clients_one_host_one_session() {
 
 #[test]
 fn ag8_recent_inputs_wire_excludes_commands_and_is_bounded() {
+    let _heavy = crate::test_support::heavy();
     let (handle, storage_root, project_root) =
         spawn_serve("ag8-recent-inputs-bounded", TestBehavior::Success);
 

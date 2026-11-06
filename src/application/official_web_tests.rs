@@ -433,11 +433,11 @@ fn official_web_application_cancel_and_close_reap_the_adapter() {
         .unwrap();
     backend
         .started
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_support::HANG)
         .expect("HTTP started");
     handle.cancel();
     receiver
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_support::HANG)
         .expect("run cancellation completes")
         .ok();
     handle.join().unwrap();

@@ -375,7 +375,7 @@ fn disabled_plan_preserves_existing_approved_goal_guidance_without_new_approval(
         let (request, receiver) = request();
         let handle = app.start_workflow_run(request).unwrap().unwrap();
         receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         handle.join().unwrap();
@@ -434,7 +434,7 @@ fn disabled_plan_workflow_request_cannot_cancel_a_live_run_or_write_a_receipt() 
     assert!(!app.workflow_ready());
     gate.release();
     let done = receiver
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     handle.join().unwrap();
@@ -465,7 +465,7 @@ fn all_absent_features_still_allow_cancelling_a_live_run_and_reopening() {
     app.cancel_active_run();
     gate.release();
     let done = receiver
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     handle.join().unwrap();

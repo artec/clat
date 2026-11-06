@@ -133,6 +133,25 @@ and captured stdout/stderr while avoiding an unbounded test-process wait; timeou
 or output overflow terminates the child process group rather than adding an
 exception to the wait inventory.
 
+### Heavy tests and the shared hang bound (2026-11-07)
+
+libtest caps test *threads*, not the work tests spawn: a test that enumerates
+thousands of combinations, opens many hosts in one body, compiles rustc/WASM
+artifacts or drives long git chains can pin a whole runner and starve parallel
+neighbours past their wait budgets (the 2026-11 C-series, root cause in the
+case register's G4 row). Two standing rules:
+
+- **Heavy tests take the gate.** Any test expected to run longer than ~8s in
+  isolation, or that amplifies beyond one thread (compiler invocations,
+  repeated host mounts, real subprocess chains), starts with
+  `let _heavy = crate::test_support::heavy();`. At most one gated test runs
+  per test binary; light tests are unaffected.
+- **Wait budgets are one constant, not scattered literals.** Test-side
+  `recv_timeout`/subprocess-capture deadlines use `crate::test_support::HANG`
+  (60s). It is a hang bound only — never a performance contract. Performance
+  regressions are caught by measurement, not by shaving timeouts; do not
+  "fix" a red by lowering it, and do not widen budgets case by case.
+
 The quick path runs only matching library tests. It does not also build the
 CLI/integration binaries or run clippy, Windows cross compilation, rustdoc,
 npm or browser E2E. Test output is concise. No matching tests, ignored-only

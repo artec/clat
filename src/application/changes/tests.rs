@@ -1,7 +1,6 @@
 use super::*;
 use crate::process::capture_command;
 use std::process::Command;
-use std::time::Duration;
 
 fn fixture(name: &str) -> (std::path::PathBuf, WorkspaceReview) {
     let (_, root) = crate::test_support::roots(name);
@@ -20,7 +19,7 @@ pub(in crate::application) fn git(root: &Path, args: &[&str]) {
         .env("GIT_CONFIG_GLOBAL", root.join("no-global-config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(args);
-    let result = capture_command(command, 128 * 1024, Duration::from_secs(60)).unwrap();
+    let result = capture_command(command, 128 * 1024, crate::test_support::HANG).unwrap();
     assert!(
         result.status.success(),
         "{}",

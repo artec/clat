@@ -115,7 +115,7 @@ fn automatic_task_requires_exact_authorization_runs_in_origin_and_cannot_replay(
             },
         )
         .unwrap();
-    let result = receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    let result = receive.recv_timeout(crate::test_support::HANG).unwrap();
     assert!(result.is_ok(), "{result:?}");
     handle.join().unwrap();
     app.settle_automatic(
@@ -210,7 +210,7 @@ fn automatic_model_change_and_committed_unknown_recovery_never_dispatch() {
         .unwrap();
     handle.join().unwrap();
     receive
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .unwrap();
     app.recover_automatic().unwrap();
@@ -399,7 +399,7 @@ fn automatic_job_followup_requires_its_own_grant_and_never_inherits_child_work()
             },
         )
         .unwrap();
-    let result = receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    let result = receive.recv_timeout(crate::test_support::HANG).unwrap();
     assert!(result.is_ok(), "{result:?}");
     h.join().unwrap();
     app.settle_automatic(&claim, &result, meter.load(Ordering::Acquire), 0, 1)

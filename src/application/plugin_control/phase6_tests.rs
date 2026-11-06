@@ -151,9 +151,7 @@ fn zero_model_adapters_keep_host_configuration_and_session_control_without_dispa
     let (request, receive) = super::phase2_tests::request();
     let failure = match app.start_run(request) {
         Ok(worker) => {
-            let result = receive
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
+            let result = receive.recv_timeout(crate::test_support::HANG).unwrap();
             worker.join().unwrap();
             result
                 .expect_err("missing adapters cannot dispatch a model")

@@ -241,9 +241,7 @@ fn phase5_image_input_and_history_survive_disabled_native_image_tool() {
         );
         let handle = app.start_run(request).unwrap();
         handle.join().unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
+        rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
         assert!(!app.view_image.enabled());
         assert!(app.tools.get("view_image").is_none());
         assert_eq!(app.context_snapshot().unwrap().image_count, 1);

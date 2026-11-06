@@ -7,6 +7,7 @@ const FEATURES: [&str; 3] = [
 ];
 #[test]
 fn phase5_eight_host_compositions_preserve_plain_execution_and_availability() {
+    let _heavy = crate::test_support::heavy();
     for mask in 0..8 {
         let (root, _) = crate::test_support::roots("phase5-combinations");
         let project = Project::new(root.join("project"));

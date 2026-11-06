@@ -478,6 +478,7 @@ fn summary_job_reduces_large_history_even_with_small_or_unknown_windows() {
 
 #[test]
 fn summary_job_transport_retries_apply_per_request_and_preserve_total_usage() {
+    let _heavy = crate::test_support::heavy();
     let (outcome, factory, _) = compact(Reply::RetryAndRecover, false);
     assert!(outcome.summary.is_some(), "{:?}", outcome.degraded);
     assert!(factory.calls.load(Ordering::SeqCst) > 8);

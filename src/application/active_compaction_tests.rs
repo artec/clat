@@ -361,7 +361,7 @@ fn active_compaction_cancel_stops_without_another_model_or_tool_request() {
     handle.cancel();
     handle.join().unwrap();
     let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .expect("normal cancellation");
     assert!(result.cancelled);
@@ -492,7 +492,7 @@ fn active_compaction_steering_during_summary_survives_later_checkpoints() {
     script.summary_released.store(true, Ordering::SeqCst);
     handle.join().unwrap();
     receiver
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_support::HANG)
         .unwrap()
         .expect("complete with steering");
     assert!(script.summaries.load(Ordering::SeqCst) > 1);

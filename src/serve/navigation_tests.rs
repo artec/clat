@@ -98,6 +98,7 @@ fn navigation_historical_images_and_bookmarks_follow_the_proven_message_not_sele
 
 #[test]
 fn navigation_bound_cancel_cannot_stop_an_unrelated_conversation() {
+    let _heavy = crate::test_support::heavy();
     let (handle, storage, root) = spawn_serve(
         "navigation-cancel-target",
         TestBehavior::TimedDeltas {

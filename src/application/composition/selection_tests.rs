@@ -13,6 +13,7 @@ impl Plugin for DescriptorOnly {
 }
 #[test]
 fn all_32768_optional_capability_combinations_plan_without_side_effects() {
+    let _heavy = crate::test_support::heavy();
     let (storage, root) = crate::test_support::roots("all-plugin-plans");
     std::fs::create_dir_all(&root).unwrap();
     let app = crate::BootstrapApplication::open(Project::new(&root), storage.clone())
@@ -45,6 +46,7 @@ fn all_32768_optional_capability_combinations_plan_without_side_effects() {
         "builtin.view_image",
         "builtin.compaction_image_offload",
     ];
+    let contract = project_service_contract();
     for mask in 0..32768 {
         let config = crate::plugin::selection::Configuration {
             disabled: ids
@@ -54,13 +56,9 @@ fn all_32768_optional_capability_combinations_plan_without_side_effects() {
                 .map(|(_, id)| id.to_string())
                 .collect(),
         };
-        let selection = crate::plugin::selection::Selection::resolve(
-            &catalog,
-            &project_service_contract(),
-            &config,
-        )
-        .unwrap();
-        assert_preview_matches(&catalog, &config, &selection);
+        let selection =
+            crate::plugin::selection::Selection::resolve(&catalog, &contract, &config).unwrap();
+        assert_preview_matches(&catalog, &contract, &config, &selection);
         for (bit, id) in ids.iter().enumerate() {
             let entry = selection
                 .entries
@@ -82,16 +80,14 @@ fn all_32768_optional_capability_combinations_plan_without_side_effects() {
 
 fn assert_preview_matches(
     catalog: &[Arc<dyn Plugin>],
+    contract: &[crate::plugin::selection::Requirement],
     config: &crate::plugin::selection::Configuration,
     selection: &crate::plugin::selection::Selection,
 ) {
     let descriptors: Vec<_> = catalog.iter().map(|plugin| plugin.descriptor()).collect();
-    let preview = crate::plugin::selection::Selection::from_descriptors(
-        &descriptors,
-        &project_service_contract(),
-        config,
-    )
-    .unwrap();
+    let preview =
+        crate::plugin::selection::Selection::from_descriptors(&descriptors, contract, config)
+            .unwrap();
     for (active, planned) in selection.entries.iter().zip(&preview.entries) {
         assert_eq!(active.descriptor.id, planned.descriptor.id);
         assert_eq!(active.disabled_by, planned.disabled_by);

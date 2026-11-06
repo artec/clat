@@ -342,8 +342,8 @@ fn run_prompt(
         .expect("start run");
     handle.join().expect("run worker");
     receiver
-        .recv_timeout(Duration::from_secs(10))
-        .expect("run completion within 10 seconds")
+        .recv_timeout(crate::test_support::HANG)
+        .expect("run completion within 60 seconds")
 }
 
 fn load_events(storage_root: &std::path::Path) -> Vec<crate::session::event::SessionEvent> {

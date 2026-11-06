@@ -171,7 +171,7 @@ fn manual_compaction_cancel_keeps_slot_until_summary_worker_really_stops() {
         release: release.clone(),
     }));
     let handle = app.compact_session().unwrap();
-    let reached = receiver.recv_timeout(Duration::from_secs(5));
+    let reached = receiver.recv_timeout(crate::test_support::HANG);
     let cancelled = app.cancel_compaction();
     let still_busy = app.compaction_started_at().is_some() && !handle.is_finished();
     let refused_switch = app.new_session().is_err();

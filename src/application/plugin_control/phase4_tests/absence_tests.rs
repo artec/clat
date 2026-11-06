@@ -1,6 +1,7 @@
 use super::*;
 #[test]
 fn all_four_phase4_host_compositions_keep_native_tools_and_plain_runs() {
+    let _heavy = crate::test_support::heavy();
     for mask in 0..4 {
         let (root, _) = crate::test_support::roots("phase4-combinations");
         let project = Project::new(root.join("project"));
@@ -141,7 +142,7 @@ fn native_execution_check(disabled: &[&str]) {
         let handle = app.start_run(request).unwrap();
         handle.join().unwrap();
         receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_support::HANG)
             .unwrap()
             .unwrap();
         let events = events.lock().unwrap();

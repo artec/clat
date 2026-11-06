@@ -36,7 +36,7 @@ impl Fixture {
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1");
         let out =
-            crate::process::capture_command(command, 16 * 1024 * 1024, Duration::from_secs(60))
+            crate::process::capture_command(command, 16 * 1024 * 1024, crate::test_support::HANG)
                 .unwrap();
         assert!(
             out.status.success(),
@@ -940,7 +940,7 @@ fn windows_terminal_redirected_child() -> bool {
             "--nocapture",
         ])
         .env(CHILD, "1");
-    let output = crate::process::capture_command(command, 256 * 1024, Duration::from_secs(60))
+    let output = crate::process::capture_command(command, 256 * 1024, crate::test_support::HANG)
         .expect("redirected ConPTY child must finish within time/output limits");
     assert!(
         output.status.success(),
