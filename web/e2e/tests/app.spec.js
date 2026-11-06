@@ -298,23 +298,24 @@ test('WEB-3 retains answers interactive cards errors and retry signals in event 
   await expect(liveFailed.locator('.tool-state')).toHaveText('Failed');
 });
 
-test('settings categories isolate panels and composer links select their destination', async ({ page }, testInfo) => {
+test('settings categories and composer controls open their destinations', async ({ page }, testInfo) => {
   await openWorkbench(page, hostInfo('success'));
   await page.click('#nav-settings');
-  for (const category of ['appearance', 'projects', 'models', 'utility', 'permissions', 'wechat']) {
+  for (const category of ['appearance', 'projects', 'models', 'utility', 'permissions', 'remote']) {
     await page.click(`[data-settings-category="${category}"]`);
-    await expect(page.locator('[data-settings-panel]:visible')).toHaveCount(1);
     await expect(page.locator(`[data-settings-panel="${category}"]`)).toBeVisible();
   }
   await page.click('#nav-workbench');
   await page.click('#composer-permission');
-  await expect(page.locator('[data-settings-panel="permissions"]')).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Permission mode' })).toBeVisible();
+  await page.keyboard.press('Escape');
   await page.click('#nav-workbench');
   await page.click('#model-picker-trigger');
   await page.click('#model-picker-manage');
   await expect(page.locator('[data-settings-panel="models"]')).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Back to list' }).click();
   await page.click('[data-settings-category="permissions"]');
   await expect(page.locator('[data-settings-panel="permissions"]')).toBeVisible();
 
@@ -1055,7 +1056,7 @@ test('settings expose the default-deny WeChat binding surface', async ({ page })
   await openWorkbench(page, entry);
 
   await page.click('#nav-settings');
-  await page.click('[data-settings-category="wechat"]');
+  await page.click('[data-settings-category="remote"]');
   await expect(page.locator('#settings-dialog')).toBeVisible(LIVE);
 
   await expect(page.locator('#wechat-status')).toHaveText('Not bound', LIVE);
@@ -1066,6 +1067,29 @@ test('settings expose the default-deny WeChat binding surface', async ({ page })
   await expect(page.locator('#wechat-unbind')).toBeDisabled();
   await expect(page.locator('#wechat-qr')).toBeHidden();
   await expect(page.locator('#wechat-pairing')).toBeHidden();
+  for (const language of ['zh-Hans', 'zh-Hant', 'en']) {
+    const expected = await page.evaluate(async language => {
+      await CLATI18n.setLanguage(language);
+      return CLATI18n.t('web.not_bound');
+    }, language);
+    await expect(page.locator('#wechat-status')).toHaveText(expected);
+    await expect(page.locator('#wechat-pair')).toBeDisabled();
+    await expect(page.locator('#wechat-qr')).toBeHidden();
+  }
+  await page.evaluate(() => {
+    const original = rpc;
+    globalThis.remoteNavigationCalls = [];
+    rpc = async (method, params) => {
+      globalThis.remoteNavigationCalls.push(method);
+      return original(method, params);
+    };
+    openSettings('wechat');
+  });
+  await expect(page.locator('[data-settings-panel="remote"]')).toBeVisible();
+  const calls = await page.evaluate(() => globalThis.remoteNavigationCalls);
+  expect(calls).not.toContain('wechat.binding.start');
+  expect(calls).not.toContain('wechat.binding.unbind');
+  expect(calls).not.toContain('wechat.pairing.create');
 });
 
 // —— 验收③：run 进行中 F5 → 视图完整恢复、流式继续（INV-W3）——

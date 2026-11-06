@@ -201,6 +201,7 @@ impl TrustedProjectApplication {
             startup_diagnostic: None,
             transient_inputs: Default::default(),
             active_run: None,
+            active_remote_route: None,
             active_compaction: None,
             active_vision_probe: None,
             permission_mode,

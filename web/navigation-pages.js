@@ -33,7 +33,7 @@ function pageSettingsLeave() {
     if(input.value){const section=input.closest('[data-settings-panel]');if(section&&!section.querySelector('.secret-cleared-note'))section.append(el('p','settings-note secret-cleared-note',()=>pageText('secrets_cleared')));}
     input.value = '';
   }
-  state.wechatBindingPoll++; wechatSensitiveEpoch++; clearWechatQr();
+  state.wechatBindingPoll++; wechatSensitiveEpoch++; wechatStatusEpoch++; clearWechatQr();
   dom['wechat-pairing-code'].textContent = ''; hide(dom['wechat-pairing']);
   settings.dispatchEvent(new Event('clat:settings-leave'));
 }

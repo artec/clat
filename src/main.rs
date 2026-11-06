@@ -69,12 +69,18 @@ where
     for warning in language.warnings {
         eprintln!("{}", language.context.render(&warning));
     }
-    dispatch(args.into_iter(), language.context, language.preference)
+    dispatch(
+        args.into_iter(),
+        language.context,
+        language.preference,
+        explicit,
+    )
 }
 fn dispatch<I>(
     mut args: I,
     locale: LocaleContext,
     preference: clat::client_ports::presentation::LanguagePreference,
+    explicit_language: Option<String>,
 ) -> ExitCode
 where
     I: Iterator<Item = String>,
@@ -99,7 +105,7 @@ where
         Some("exec") => run_exec_command(args, locale),
         Some("dsh") => run_dsh_command(args, locale),
         Some("attach") => run_attach_command(args, locale),
-        Some("serve") => run_serve_command(args, locale),
+        Some("serve") => run_serve_command(args, locale, explicit_language),
         Some("wechat") => run_wechat_command(args, locale),
         Some("plugin") => run_plugin_command(args, locale),
         Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check"), locale),
@@ -211,7 +217,11 @@ where
 /// HTTP+SSE 前端。
 /// 信号处理器在进程边界安装一次：Ctrl-C 以及 Unix SIGTERM/SIGHUP
 /// 第一次触发优雅关停（accept 循环完整走关停序列），第二次强退。
-fn run_serve_command<I>(args: I, locale: LocaleContext) -> ExitCode
+fn run_serve_command<I>(
+    args: I,
+    locale: LocaleContext,
+    explicit_language: Option<String>,
+) -> ExitCode
 where
     I: Iterator<Item = String>,
 {
@@ -236,7 +246,8 @@ where
     {
         eprintln!("{}", locale.text("cli.signal_serve"));
     }
-    match clat::serve::run_serve_with_locale(parsed, shutdown, locale) {
+    match clat::serve::run_serve_with_terminal_language(parsed, shutdown, locale, explicit_language)
+    {
         0 => ExitCode::SUCCESS,
         1 => ExitCode::FAILURE,
         _ => ExitCode::from(130),

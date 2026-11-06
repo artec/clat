@@ -430,15 +430,16 @@ reverse project teardown. The Application keeps trust, session selection,
 admission, and active-worker policy; it cannot ask the manager for additional
 services after mount.
 
-`application/remote_control.rs` is the application owner for WeChat remote
-control. It exposes closed outcomes for machine binding and poll checkpoints,
-pairing and delivery admission, and chat/session start or steering. In
-particular, the frontend cannot compose pending mapping intents, admission
-owner scans, session switching, or mapping compensation itself.
-`control_storage/im.rs` remains the sole owner of the 0600 atomic `im.json`
-unit, while `im/ilink` owns the official wire and `serve/wechat` owns commands,
-approval presentation, media download, the bounded outbox, and process-local
-run claims. No transport or frontend lock enters the application port.
+`application/remote_control.rs` owns remote chat/session admission and recovery,
+as well as the WeChat binding and poll checkpoints. Channel-scoped storage
+operations preserve the private atomic `im.json` unit and its existing WeChat
+format. `serve/remote*` coordinates normalized deliveries, commands, approvals,
+run claims, staged attachments and steering; `remote/` owns shared identities,
+temporary conversation state, event projection and the bounded outbox.
+`im/ilink` and `serve/wechat` handle the official wire, media conversion and
+reply routing. An active run records its remote channel, user and chat so that
+another source cannot steer, stop, or revoke it merely by selecting its session.
+WeChat remains the only production channel.
 
 ## Agent run lifecycle
 

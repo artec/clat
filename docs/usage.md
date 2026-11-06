@@ -1679,8 +1679,11 @@ file permissions, but authorizes no sender. The pairing code expires after 60
 minutes, succeeds once, and rate-limits repeated failures. You can replace a
 confirmed binding with `clat wechat bind --replace`. To revoke the credential,
 every paired user, chat mapping, cursor, and delivery receipt together, stop
-serve and run `clat wechat unbind --confirm`. The Workbench settings surface
-offers the same binding, pairing, status, and unbind lifecycle.
+serve and run `clat wechat unbind --confirm`. In Workbench, **Settings →
+Integrations → Remote** contains the same WeChat binding, pairing, status, and
+unbind controls. Existing links to the WeChat settings destination open the
+Remote page at its WeChat section; opening or leaving it does not bind or
+unbind an account.
 
 After pairing, use these standalone chat commands:
 
@@ -1698,11 +1701,14 @@ input, and then pass through the normal attachment admission limits. Text that
 looks like a path or URL grants no file authority.
 
 Replies, selected run status, typing state, and permission requests are
-projected back to the paired chat. The queue retains at most 128 already
+projected back to the paired chat. Remote notices use the Host terminal language
+when rendered; an explicit `--lang` or `CLAT_LANG` retains its usual precedence,
+and otherwise a saved terminal language change applies to subsequent notices.
+There is no separate remote-user language setting. The queue retains at most 128
 Unicode-safe chunks; under backpressure it keeps the newest chunks and the next
 text reply reports how many older status chunks were dropped. Chat mappings,
 the poll cursor, and replay receipts survive a graceful restart. An invalid
-iLink credential cancels the active run, clears the binding fail-closed, and
+iLink credential cancels an active run owned by that WeChat channel, clears the binding fail-closed, and
 requires a new QR binding. See [Permissions](permissions.md#wechat-approval)
 before approving tools from a phone.
 
@@ -1853,9 +1859,9 @@ does not move the content. Dragging keeps the scrollbar visible; high-contrast
 system modes retain visible scrollbars.
 
 Settings groups General and appearance / Projects under Workbench; Models /
-Companion / Permissions under Capabilities; WeChat / Web under Integrations; and
+Companion / Permissions under Capabilities; Remote / Web under Integrations; and
 Updates and about under Application. Notification preferences are in General. The composer permission
-control opens Permissions directly; Manage model profiles opens Models.
+control opens the session permission selector; Manage model profiles opens Models.
 Conversations are grouped beneath their project names. Each project can be
 collapsed independently and has a new-conversation action. Recent sessions appear
 first; Show more reveals the rest, and searching shows all matching session
@@ -3124,7 +3130,7 @@ promise delivery after the browser closes.
 
 Extensions separates Installed from Discover, preserving existing consent,
 configuration, update and rollback flows. Public previews are distinguished from
-installable packages. WeChat settings lists paired and manually authorized users;
+installable packages. The WeChat section of Remote settings lists paired and manually authorized users;
 complete revocation removes both grant sources. Web settings separates fetch mode
 from search credentials. Configuration is not a successful connectivity check.
 Help uses the shared searchable list/detail layout. Each main page, workspace tool

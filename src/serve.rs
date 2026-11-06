@@ -34,6 +34,9 @@ mod page_queries;
 mod plugins;
 pub(crate) mod protocol;
 mod questions;
+mod remote;
+mod remote_prompt;
+mod remote_steering;
 mod schedules;
 pub(crate) mod shapes;
 mod sse;
@@ -182,6 +185,27 @@ pub fn run_serve_with_locale(
     shutdown: Arc<AtomicBool>,
     locale: crate::i18n::LocaleContext,
 ) -> i32 {
+    run_serve_with_remote_locale(args, shutdown, locale, remote::RemoteLocale::fixed(locale))
+}
+
+/// Resolve remote messages from the current terminal preference while preserving
+/// a command-line language override for the lifetime of this Host.
+pub fn run_serve_with_terminal_language(
+    args: ServeArgs,
+    shutdown: Arc<AtomicBool>,
+    locale: crate::i18n::LocaleContext,
+    explicit: Option<String>,
+) -> i32 {
+    let remote_locale = remote::RemoteLocale::terminal(explicit, locale);
+    run_serve_with_remote_locale(args, shutdown, locale, remote_locale)
+}
+
+fn run_serve_with_remote_locale(
+    args: ServeArgs,
+    shutdown: Arc<AtomicBool>,
+    locale: crate::i18n::LocaleContext,
+    remote_locale: remote::RemoteLocale,
+) -> i32 {
     // NETISO-1（R1-F2）：严格测试专用环境武装入口——`CLAT_NETISO_ALLOWLIST`
     // 未设置时零效果，普通用户契约不变；设置时本 serve 进程的所有
     // provider HTTP 出站被限制在授权字面环回监听器内（含重定向/代理）。
@@ -200,13 +224,14 @@ pub fn run_serve_with_locale(
             return 1;
         }
     };
-    let handle = match serve_with_with_queue(
+    let handle = match serve_with_with_queue_locale(
         project,
         None,
         args,
         |bootstrap| bootstrap.with_permission_modes().into_trusted(),
         shutdown,
         state::SUBSCRIBER_QUEUE_FRAMES,
+        remote_locale,
     ) {
         Ok(handle) => handle,
         Err(error) => {
@@ -352,6 +377,7 @@ impl ServeHandle {
 /// 组装并启动 serve（测试缝：`into_trusted` 注入 TestProvider，与
 /// exec 的 `exec_with` 同款）。绑定成功即返回句柄；accept 循环在
 /// 后台线程，随 `shutdown` 旗退出。
+#[cfg(test)]
 pub(crate) fn serve_with_with_queue<F>(
     project: Project,
     storage_root: Option<PathBuf>,
@@ -359,6 +385,29 @@ pub(crate) fn serve_with_with_queue<F>(
     into_trusted: F,
     shutdown: Arc<AtomicBool>,
     queue_frames: usize,
+) -> Result<ServeHandle, crate::i18n::PresentedText>
+where
+    F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
+{
+    serve_with_with_queue_locale(
+        project,
+        storage_root,
+        args,
+        into_trusted,
+        shutdown,
+        queue_frames,
+        remote::RemoteLocale::fixed(crate::i18n::LocaleContext::default()),
+    )
+}
+
+fn serve_with_with_queue_locale<F>(
+    project: Project,
+    storage_root: Option<PathBuf>,
+    args: ServeArgs,
+    into_trusted: F,
+    shutdown: Arc<AtomicBool>,
+    queue_frames: usize,
+    remote_locale: remote::RemoteLocale,
 ) -> Result<ServeHandle, crate::i18n::PresentedText>
 where
     F: FnOnce(BootstrapApplication) -> Result<TrustedProjectApplication, crate::ApplicationError>,
@@ -401,7 +450,7 @@ where
     host.pin_runtime()?;
     let shared = host.route("default").expect("default project");
     let app = Arc::clone(&shared.app);
-    start_wechat_bridge(&shared, &app, &shutdown, wechat_credentials)?;
+    start_wechat_bridge(&shared, &app, &shutdown, wechat_credentials, remote_locale)?;
     host.publish_endpoint(&storage_root, addr.port())?;
 
     drop(app);
@@ -469,12 +518,14 @@ fn start_wechat_bridge(
     app: &Arc<Mutex<TrustedProjectApplication>>,
     shutdown: &Arc<AtomicBool>,
     wechat_credentials: Option<crate::im::ilink::Credentials>,
+    locale: remote::RemoteLocale,
 ) -> Result<(), String> {
     if let Some(credentials) = wechat_credentials {
         let (bridge, outbox_worker) = wechat::WechatBridge::spawn(
             Arc::clone(shared),
             credentials.clone(),
             Arc::clone(shutdown),
+            locale,
         )?;
         let handler: Arc<dyn crate::im::AuthorizedMessageHandler> = bridge;
         let poller = match crate::im::spawn_wechat_host(

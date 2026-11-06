@@ -35,9 +35,27 @@ test('late setting saves retain newer input and leaving clears a delayed pairing
  await openWorkbench(page,hostInfo('workbench'));await page.click('#nav-settings');await page.click('[data-settings-category=utility]');
  await page.evaluate(()=>{const original=rpc;globalThis.releaseUtility=null;rpc=async(method,params)=>method==='model.utility.set'?new Promise(resolve=>{globalThis.releaseUtility=()=>resolve({});}):original(method,params);});
  const naming=page.locator('#utility-naming-enabled');await expect(naming).toBeChecked(LIVE);await naming.uncheck();await page.click('#utility-settings-save');await expect.poll(()=>page.evaluate(()=>!!globalThis.releaseUtility)).toBe(true);await naming.check();await page.evaluate(()=>globalThis.releaseUtility());await expect(page.locator('#utility-settings-save')).toBeEnabled(LIVE);await expect(naming).toBeChecked();await expect(page.locator('[data-settings-panel=utility]')).toHaveAttribute('data-unsaved','true');
- await page.click('[data-settings-category=wechat]');
+ await page.click('[data-settings-category=remote]');
  await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>method==='wechat.pairing.create'?new Promise(resolve=>{globalThis.releasePair=()=>resolve({code:'private-delayed-code'});}):original(method,params);dom['wechat-pair'].disabled=false;});
- await page.click('#wechat-pair');await expect.poll(()=>page.evaluate(()=>!!globalThis.releasePair)).toBe(true);await page.click('#nav-help');await page.evaluate(()=>globalThis.releasePair());await page.click('#nav-settings');await page.click('[data-settings-category=wechat]');await expect(page.locator('#wechat-pairing-code')).toBeEmpty();
+ await page.click('#wechat-pair');await expect.poll(()=>page.evaluate(()=>!!globalThis.releasePair)).toBe(true);await page.click('#nav-help');await page.evaluate(()=>globalThis.releasePair());await page.click('#nav-settings');await page.click('[data-settings-category=remote]');await expect(page.locator('[data-settings-panel=remote]')).toBeVisible();await expect(page.locator('#wechat-pairing-code')).toBeEmpty();
+ await page.click('[data-settings-category=appearance]');
+ await page.evaluate(()=>{const original=rpc;globalThis.remoteRead=0;globalThis.remoteUsers=[{user_id:'user-a',paired:true,manual:true,sessions:[]}];globalThis.revokedUser=null;rpc=async(method,params)=>{
+   if(method==='wechat.binding.status'){if(++globalThis.remoteRead===1)return new Promise(resolve=>{globalThis.releaseOldStatus=()=>resolve({bound:true,paired_users:1,mapped_chats:0});});return {bound:false,paired_users:0,mapped_chats:0};}
+   if(method==='wechat.users.list')return {users:globalThis.remoteUsers};
+   if(method==='wechat.user.revoke'){globalThis.revokedUser=params.userId;globalThis.remoteUsers=[];return {};}
+   return original(method,params);
+ };});
+ await page.click('[data-settings-category=remote]');await expect.poll(()=>page.evaluate(()=>!!globalThis.releaseOldStatus)).toBe(true);
+ await page.click('[data-settings-category=appearance]');await page.click('[data-settings-category=remote]');
+ await expect.poll(()=>page.evaluate(()=>globalThis.remoteRead)).toBeGreaterThanOrEqual(2);
+ await expect(page.locator('#wechat-pair')).toBeDisabled();await expect(page.locator('[data-settings-panel=remote]')).toContainText('user-a');
+ await page.evaluate(()=>globalThis.releaseOldStatus());await expect(page.locator('#wechat-pair')).toBeDisabled();
+ page.once('dialog',dialog=>dialog.accept());await page.locator('[data-settings-panel=remote] [data-action=revoke]').click();
+ await expect.poll(()=>page.evaluate(()=>globalThis.revokedUser)).toBe('user-a');await expect(page.locator('[data-settings-panel=remote]')).not.toContainText('user-a');
+ await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>method==='wechat.binding.start'?{qr_svg:'<svg xmlns="http://www.w3.org/2000/svg"/>'}:method==='wechat.binding.poll'?{state:'need_verify_code'}:original(method,params);});
+ await page.click('#wechat-bind');await expect(page.locator('#wechat-verify-code')).toBeVisible();
+ for(const language of ['zh-Hans','zh-Hant','en']){const expected=await page.evaluate(async language=>{await CLATI18n.setLanguage(language);return CLATI18n.t('web.enter_the_verification_code_shown_by_wechat');},language);await expect(page.locator('#wechat-qr-state')).toHaveText(expected);}
+ await page.fill('#wechat-verify-code','1234');await page.click('[data-settings-category=appearance]');await expect(page.locator('#wechat-qr')).toBeHidden();await expect(page.locator('#wechat-verify-code')).toHaveValue('');
 });
 
 test('run now executes its authorized conversation without changing the regular schedule',async({page})=>{

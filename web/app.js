@@ -3060,6 +3060,7 @@ function updateFullAccessConfirmation() {
 
 let currentSettingsCategory = 'appearance';
 function selectSettingsCategory(category) {
+  if (category === 'wechat') category = 'remote';
   if(currentSettingsCategory !== category) { pageSettingsLeave(); for(const input of dom['settings-dialog'].querySelectorAll('input[type=password]')) input.value = ''; }
   settingsLayout?.capture(currentSettingsCategory);
   currentSettingsCategory = category;refreshViewContext();
@@ -3074,6 +3075,10 @@ function selectSettingsCategory(category) {
   if (category === 'projects') {
     renderWorkspaceDirectory(context.organization.rows());
     void refreshWorkspaces();
+  }
+  if (category === 'remote' && pageIsOpen(dom['settings-dialog'])) {
+    void refreshWechatStatus();
+    dom['settings-dialog'].dispatchEvent(new Event('clat:remote-enter'));
   }
 }
 
@@ -3479,7 +3484,7 @@ dom['permission-save'].addEventListener('click', async () => {
   }
 });
 
-let wechatSensitiveEpoch=0;
+let wechatSensitiveEpoch=0, wechatStatusEpoch=0;
 function clearWechatQr() {
   if (state.wechatQrUrl) URL.revokeObjectURL(state.wechatQrUrl);
   state.wechatQrUrl = null;
@@ -3490,9 +3495,11 @@ function clearWechatQr() {
 }
 
 async function refreshWechatStatus() {
+  const request = ++wechatStatusEpoch;
   CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   try {
     const status = await rpc('wechat.binding.status', {});
+    if (request !== wechatStatusEpoch) return;
     CLATI18n.bind(dom['wechat-status'], "textContent", () => status.bound ? CLATI18n.msg("web.bound_short",{},"Bound") : CLATI18n.msg("web.not_bound", {}, "Not bound"));
     CLATI18n.bind(dom['wechat-counts'], "textContent", () => CLATI18n.msg("web.dynamic_value_paired_value_chats", {value1:(status.paired_users || 0),value2:(status.mapped_chats || 0)}, "{value1} paired · {value2} chats"));
     dom['wechat-bind'].dataset.bound = String(Boolean(status.bound));
@@ -3500,6 +3507,7 @@ async function refreshWechatStatus() {
     dom['wechat-pair'].disabled = !status.bound;
     dom['wechat-unbind'].disabled = !status.bound;
   } catch (error) {
+    if (request !== wechatStatusEpoch) return;
     CLATI18n.bind(dom['wechat-status'], "textContent", () => CLATI18n.msg("web.unavailable_short",{},"Unavailable"));
     CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
@@ -3512,15 +3520,15 @@ async function pollWechatBinding(pollId, verifyCode) {
     const value = await rpc('wechat.binding.poll', params);
     if (pollId !== state.wechatBindingPoll) return;
     const labels = {
-      waiting: CLATI18n.msg("web.waiting_for_scan", {}, "Waiting for scan…"),
-      scanned: CLATI18n.msg("web.scanned_confirm_on_the_phone", {}, "Scanned; confirm on the phone…"),
-      need_verify_code: CLATI18n.msg("web.enter_the_verification_code_shown_by_wechat", {}, "Enter the verification code shown by WeChat."),
-      verify_code_blocked: CLATI18n.msg("web.verification_was_blocked_wait_before_trying_again", {}, "Verification was blocked. Wait before trying again."),
-      expired: CLATI18n.msg("web.qr_code_expired_start_a_new_binding", {}, "QR code expired. Start a new binding."),
-      already_bound: CLATI18n.msg("web.the_account_is_already_bound_and_returned_no_new_credential", {}, "The account is already bound and returned no new credential."),
-      confirmed: CLATI18n.msg("web.binding_confirmed_create_a_one_time_user_pairing_code_next", {}, "Binding confirmed. Create a one-time user pairing code next."),
+      waiting: "web.waiting_for_scan",
+      scanned: "web.scanned_confirm_on_the_phone",
+      need_verify_code: "web.enter_the_verification_code_shown_by_wechat",
+      verify_code_blocked: "web.verification_was_blocked_wait_before_trying_again",
+      expired: "web.qr_code_expired_start_a_new_binding",
+      already_bound: "web.the_account_is_already_bound_and_returned_no_new_credential",
+      confirmed: "web.binding_confirmed_create_a_one_time_user_pairing_code_next",
     };
-    CLATI18n.bind(dom['wechat-qr-state'], "textContent", () => labels[value.state] || value.state);
+    CLATI18n.bind(dom['wechat-qr-state'], "textContent", () => labels[value.state] ? CLATI18n.msg(labels[value.state]) : value.state);
     if (value.state === 'need_verify_code') {
       show(dom['wechat-verify-row']);
       dom['wechat-verify-code'].focus();
@@ -3557,7 +3565,7 @@ dom['wechat-bind'].addEventListener('click', async () => {
     const pollId = ++state.wechatBindingPoll;
     pollWechatBinding(pollId);
   } catch (error) {
-    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
+    if(epoch===wechatSensitiveEpoch) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   } finally {
     dom['wechat-bind'].disabled = false;
   }
@@ -3575,28 +3583,30 @@ dom['wechat-verify-submit'].addEventListener('click', () => {
 
 dom['wechat-pair'].addEventListener('click', async () => {
   CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
+  const epoch=wechatSensitiveEpoch;
   try {
-    const epoch=wechatSensitiveEpoch;
     const value = await rpc('wechat.pairing.create', {});
     if(epoch!==wechatSensitiveEpoch)return;
     CLATI18n.bind(dom['wechat-pairing-code'], "textContent", () => value.code);
     show(dom['wechat-pairing']);
   } catch (error) {
-    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
+    if(epoch===wechatSensitiveEpoch) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 });
 
 dom['wechat-unbind'].addEventListener('click', async () => {
   if (!window.confirm(CLATI18n.msg("web.remove_the_wechat_credential_paired_users_and_chat_mappings", {}, "Remove the WeChat credential, paired users, and chat mappings?"))) return;
   CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
+  const epoch=wechatSensitiveEpoch;
   try {
     await rpc('wechat.binding.unbind', { confirm: 'unbind-wechat' });
+    if(epoch!==wechatSensitiveEpoch)return;
     state.wechatBindingPoll += 1;
     clearWechatQr();
     hide(dom['wechat-pairing']);
     await refreshWechatStatus();
   } catch (error) {
-    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
+    if(epoch===wechatSensitiveEpoch) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 });
 
@@ -3841,6 +3851,7 @@ async function uploadDraftImage(image, epoch) {
 }
 
 async function addDraftFiles(files) {
+  if (state.workbench?.model?.image_input === false) { updateRunState(CLATI18n.msg('web.model_images_unsupported')); return; }
   if (!builtinReady("builtin.draft_images")) { updateRunState(CLATI18n.view(()=>builtinUnavailableReason("builtin.draft_images"))); return; }
   if(state.desktopUpdateLocked)return;
   if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
@@ -3992,6 +4003,7 @@ async function submitConfiguredPrompt() {
   const text = dom.prompt.value.trim();
   const composerGeneration = state.composerGeneration;
   const images = state.draft.images;
+  if (images.length && state.workbench?.model?.image_input === false) { updateRunState(CLATI18n.msg('web.model_images_unsupported')); return; }
   const draftEpoch = state.draft.epoch;
   const owner = composerScope;
   if (!text && images.length === 0) return;

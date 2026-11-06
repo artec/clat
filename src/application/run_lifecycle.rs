@@ -147,6 +147,7 @@ impl TrustedProjectApplication {
         if let Some(header) = emitted_header_value {
             self.emitted_request_header = Some(header);
         }
+        self.active_remote_route = None;
         self.active_run = Some(handle.clone());
         Ok(handle)
     }

@@ -1,6 +1,8 @@
 //! Client presentation only. Runtime facts, model input and logs have no locale.
 mod preferences;
 mod text;
+mod tool_action;
+pub use tool_action::tool_action;
 mod views;
 pub use text::PresentedText;
 mod template;
@@ -13,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
+pub(crate) use terminal::resolve_terminal_sources;
 pub use terminal::*;
 
 pub const MANIFEST: &str = include_str!("../../locales/manifest.json");

@@ -43,6 +43,7 @@ impl TrustedProjectApplication {
         )?;
         match self.start_target_bound(request, target.clone(), deadline) {
             Ok(handle) => {
+                self.active_remote_route = None;
                 self.active_run = Some(handle.clone());
                 Ok(handle)
             }

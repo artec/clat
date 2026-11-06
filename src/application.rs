@@ -140,8 +140,8 @@ pub use dto::{
 };
 pub use host::HostApplication;
 pub(crate) use remote_control::{
-    WechatChatReadiness, WechatChatStatus, WechatChatTicket, WechatDeliveryDisposition,
-    WechatNewChatOutcome, WechatPromptStartOutcome, WechatSteerOutcome,
+    RemoteChatReadiness, RemoteChatStatus, RemoteChatTicket, RemoteDeliveryDisposition,
+    RemoteNewChatOutcome, RemotePromptStartOutcome, RemoteSteerOutcome,
 };
 pub use run_execution::RunHandle;
 pub use run_lifecycle::{
@@ -421,6 +421,7 @@ pub struct TrustedProjectApplication {
     startup_diagnostic: Option<String>,
     transient_inputs: inputs::TransientInputs,
     active_run: Option<RunHandle>,
+    active_remote_route: Option<crate::remote::RemoteRoute>,
     active_compaction: Option<CompactHandle>,
     /// VP-1：进行中的视觉探针句柄（同一时刻至多一个；重启/新会话不
     /// 保留——探针是一次性动作，判定经事件回流后句柄即退役）。

@@ -21,6 +21,7 @@ use std::time::Duration;
 /// so the same batch can be retried.
 pub(crate) trait AuthorizedMessageHandler: Send + Sync {
     fn handle(&self, message: &InboundMessage) -> Result<(), String>;
+    fn locale(&self) -> crate::i18n::LocaleContext;
 }
 
 pub(crate) fn spawn_wechat_host(
@@ -177,8 +178,12 @@ fn handle_pairing_delivery(
         if matches!(
             app.lock()
                 .expect("application lock")
-                .classify_wechat_delivery(user_id, &delivery_id),
-            crate::application::WechatDeliveryDisposition::Accept
+                .classify_remote_delivery(
+                    crate::remote::RemoteChannel::Wechat,
+                    user_id,
+                    &delivery_id
+                ),
+            crate::application::RemoteDeliveryDisposition::Accept
         ) {
             handler.handle(message)?;
         }
@@ -190,23 +195,27 @@ fn handle_pairing_delivery(
         .expect("application lock")
         .submit_wechat_pairing_code(&delivery_id, user_id, code)
         .map_err(|error| error.to_string())?;
-    let reply = match outcome {
-        PairingAttempt::Paired => "配对成功。绑定只授权当前微信用户，不扩大 CLAT 工具权限。".into(),
-        PairingAttempt::AlreadyPaired => "当前微信用户已经配对。".into(),
-        PairingAttempt::Invalid { remaining_attempts } => {
-            format!("配对码无效；当前 5 分钟窗口还可尝试 {remaining_attempts} 次。")
-        }
-        PairingAttempt::Expired => "配对码已过期，请在电脑端重新生成。".into(),
-        PairingAttempt::Unavailable => "当前没有可用配对码，请先在电脑端生成。".into(),
-        PairingAttempt::RateLimited { retry_after_ms } => format!(
-            "配对尝试过多，请约 {} 秒后重试。",
-            retry_after_ms.div_ceil(1000)
-        ),
-    };
+    let reply = handler.locale().render(&pairing_reply(outcome));
     if !message.context_token.is_empty() {
         send_reply(client, credentials, message, &reply)?;
     }
     Ok(())
+}
+
+fn pairing_reply(outcome: PairingAttempt) -> crate::i18n::UiMessage {
+    use crate::i18n::UiMessage;
+    match outcome {
+        PairingAttempt::Paired => UiMessage::new("remote.pair_success"),
+        PairingAttempt::AlreadyPaired => UiMessage::new("remote.pair_already"),
+        PairingAttempt::Invalid { remaining_attempts } => {
+            UiMessage::new("remote.pair_invalid").arg("count", remaining_attempts)
+        }
+        PairingAttempt::Expired => UiMessage::new("remote.pair_expired"),
+        PairingAttempt::Unavailable => UiMessage::new("remote.pair_unavailable"),
+        PairingAttempt::RateLimited { retry_after_ms } => {
+            UiMessage::new("remote.pair_limited").arg("seconds", retry_after_ms.div_ceil(1000))
+        }
+    }
 }
 
 fn pairing_code(text: &str) -> Option<&str> {
@@ -286,6 +295,22 @@ fn sleep_cancelable(shutdown: &AtomicBool, duration: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_feedback_uses_requested_language_and_preserves_attempt_count() {
+        let notice = pairing_reply(PairingAttempt::Invalid {
+            remaining_attempts: 3,
+        });
+        for locale in [
+            crate::i18n::Locale::English,
+            crate::i18n::Locale::Simplified,
+            crate::i18n::Locale::Traditional,
+        ] {
+            let rendered = crate::i18n::LocaleContext::new(locale).render(&notice);
+            assert!(rendered.contains('3'));
+            assert!(!rendered.contains("[missing translation]"));
+        }
+    }
     use crate::im::ilink::{InboundItem, Request, Response, TextItem, Transport, WireId};
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;
@@ -328,6 +353,10 @@ mod tests {
         );
         assert!(!first.contains("secret"));
         assert_eq!(first.len(), "ilink:".len() + 64);
+        assert_eq!(
+            first,
+            "ilink:2d3438fbdd6d7ba1ed4db645333524032eababc282f5ed9e5bc3c4436c40c856"
+        );
     }
 
     #[test]
@@ -341,6 +370,10 @@ mod tests {
 
         assert_ne!(delivery_id(&first).unwrap(), delivery_id(&second).unwrap());
         assert_eq!(delivery_id(&first).unwrap(), delivery_id(&first).unwrap());
+        assert_eq!(
+            delivery_id(&first).unwrap(),
+            "ilink:c63d69ecd51a56903c76e126ef6f24d21093d955dc89ccdc7dcccb6dd1a1ccb8"
+        );
     }
 
     #[test]
@@ -354,6 +387,10 @@ mod tests {
     struct CountingHandler(AtomicUsize);
 
     impl AuthorizedMessageHandler for CountingHandler {
+        fn locale(&self) -> crate::i18n::LocaleContext {
+            crate::i18n::LocaleContext::default()
+        }
+
         fn handle(&self, _message: &InboundMessage) -> Result<(), String> {
             self.0.fetch_add(1, Ordering::AcqRel);
             Ok(())
@@ -388,15 +425,23 @@ mod tests {
     }
 
     impl AuthorizedMessageHandler for DurableOnceHandler {
+        fn locale(&self) -> crate::i18n::LocaleContext {
+            crate::i18n::LocaleContext::default()
+        }
+
         fn handle(&self, message: &InboundMessage) -> Result<(), String> {
             let delivery = delivery_id(message)?;
             let application = self.app.lock().expect("application lock");
             if matches!(
-                application.classify_wechat_delivery(&message.from_user_id, &delivery),
-                crate::application::WechatDeliveryDisposition::Accept
+                application.classify_remote_delivery(
+                    crate::remote::RemoteChannel::Wechat,
+                    &message.from_user_id,
+                    &delivery
+                ),
+                crate::application::RemoteDeliveryDisposition::Accept
             ) {
                 application
-                    .commit_wechat_delivery(&delivery)
+                    .commit_remote_delivery(crate::remote::RemoteChannel::Wechat, &delivery)
                     .map_err(|error| error.to_string())?;
                 self.commits.fetch_add(1, Ordering::AcqRel);
             }

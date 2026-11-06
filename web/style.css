@@ -281,6 +281,7 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.assistant .body { color: var(--text); }
 .msg.assistant:has(.body:empty):has(.reasoning.hidden) { display: none; }
 .rich-text { font-size: var(--text-size-reading); font-weight: 300; line-height: var(--text-leading); }
+.msg.user .rich-text { font-weight: 400; }
 .rich-text strong, .rich-text b { font-weight: var(--text-weight-emphasis); }
 .msg .rich-text.is-rendered { white-space: normal; }
 .rich-text > :first-child { margin-top: 0; }

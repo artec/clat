@@ -13,4 +13,6 @@ mod state;
 pub(crate) use binding::{BindingSession, BindingStep};
 pub(crate) use host::{AuthorizedMessageHandler, delivery_id, spawn_wechat_host};
 pub(crate) use qr::{qr_svg, qr_terminal};
-pub(crate) use state::{PairingAttempt, PairingChallenge, WechatBindingStatus, WechatChatBinding};
+#[cfg(test)]
+pub(crate) use state::WechatChatBinding;
+pub(crate) use state::{PairingAttempt, PairingChallenge, WechatBindingStatus};

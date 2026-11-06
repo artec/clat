@@ -1,16 +1,19 @@
 /* Settings map public state and explicit operations, never implement authority. */
 function setupWechatUsers() {
-  const panel=document.querySelector('[data-settings-panel=wechat]');
+  const panel=document.querySelector('[data-settings-panel=remote]');
   const section=el('section','settings-group-block');const list=el('div','settings-card');section.append(el('h3','',()=>pageText('authorized_users')),list);panel.append(section);
   let epoch=0;
-  async function refresh(){const request=++epoch;try{const data=await rpc('wechat.users.list',{});if(request!==epoch||!pageIsOpen(dom['settings-dialog']))return;
+  const active=()=>currentSettingsCategory==='remote'&&pageIsOpen(dom['settings-dialog']);
+  async function refresh(){const request=++epoch;try{const data=await rpc('wechat.users.list',{});if(request!==epoch||!active())return;
     list.replaceChildren();for(const user of data.users){const row=el('article','project-setting-row'),copy=el('div');copy.append(el('strong','',user.user_id),el('small','',()=>[user.paired?pageText('paired_grant'):'',user.manual?pageText('manual_grant'):''].filter(Boolean).join(' · ')));
       if(user.sessions.length)copy.append(el('small','',user.sessions.join(' · ')));
-      row.append(copy,pageAction('revoke',async()=>{if(!window.confirm(pageText('revoke_confirm')))return;try{await rpc('wechat.user.revoke',{userId:user.user_id});await refresh();await refreshWechatStatus();}catch(error){list.append(el('p','error',error.message));}}));list.append(row);}
+      row.append(copy,pageAction('revoke',async()=>{if(!window.confirm(pageText('revoke_confirm')))return;const request=epoch;try{await rpc('wechat.user.revoke',{userId:user.user_id});if(request!==epoch||!active())return;const refreshed=request+1;await refresh();if(refreshed===epoch&&active())await refreshWechatStatus();}catch(error){if(request===epoch&&active())list.append(el('p','error',error.message));}}));list.append(row);}
     if(!data.users.length)list.append(pageEmpty('no_authorized_users'));
-  }catch(error){if(request===epoch)list.replaceChildren(el('p','error',error.message),pageAction('retry',()=>void refresh()));}}
+  }catch(error){if(request===epoch&&active())list.replaceChildren(el('p','error',error.message),pageAction('retry',()=>void refresh()));}}
   const heading=el('div','settings-group-heading');heading.append(section.querySelector('h3'),pageAction('refresh',()=>void refresh()));section.prepend(heading);
-  dom['settings-dialog'].addEventListener('clat:page-enter',()=>void refresh());
+  dom['settings-dialog'].addEventListener('clat:page-enter',()=>{if(currentSettingsCategory==='remote')void refresh();});
+  dom['settings-dialog'].addEventListener('clat:remote-enter',()=>void refresh());
+  dom['settings-dialog'].addEventListener('clat:settings-leave',()=>epoch++);
   dom['settings-dialog'].addEventListener('clat:page-leave',()=>epoch++);
 }
 function setupWebAbout() {

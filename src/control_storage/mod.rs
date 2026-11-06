@@ -13,6 +13,7 @@ pub(crate) mod json_file;
 mod library;
 mod models;
 pub(crate) mod projcache;
+mod remote;
 mod schedules;
 pub(crate) mod sentinel;
 mod session_flags;
@@ -87,6 +88,8 @@ pub(crate) struct ControlStorage {
     builtin_write_fault: std::sync::atomic::AtomicU8,
     #[cfg(test)]
     fail_next_chat_mapping_save: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_remote_intent: std::sync::atomic::AtomicU8,
 }
 
 impl ControlStorage {
@@ -141,6 +144,8 @@ impl ControlStorage {
             }),
             #[cfg(test)]
             fail_next_chat_mapping_save: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_remote_intent: std::sync::atomic::AtomicU8::new(0),
         };
         if report.changed {
             let state = storage.lock();
@@ -261,14 +266,8 @@ impl ControlStorage {
         &self,
         now_ms: i64,
     ) -> Result<crate::im::PairingChallenge, ControlError> {
-        let mut state = self.lock();
-        let backup = state.clone();
-        let result = im::create_pairing_challenge(&mut state.im, now_ms)?;
-        if let Err(error) = self.save_im(&state) {
-            *state = backup;
-            return Err(error);
-        }
-        Ok(result)
+        self.remote(crate::remote::RemoteChannel::Wechat)
+            .create_pairing(now_ms)
     }
 
     pub(crate) fn attempt_wechat_pairing(
@@ -278,14 +277,8 @@ impl ControlStorage {
         code: &str,
         now_ms: i64,
     ) -> Result<crate::im::PairingAttempt, ControlError> {
-        let mut state = self.lock();
-        let backup = state.clone();
-        let result = im::attempt_pairing(&mut state.im, delivery_id, user_id, code, now_ms)?;
-        if let Err(error) = self.save_im(&state) {
-            *state = backup;
-            return Err(error);
-        }
-        Ok(result)
+        self.remote(crate::remote::RemoteChannel::Wechat)
+            .attempt_pairing(delivery_id, user_id, code, now_ms)
     }
 
     pub(crate) fn set_wechat_allowed_user(
@@ -303,6 +296,7 @@ impl ControlStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn is_wechat_user_authorized(&self, user_id: &str) -> bool {
         im::is_authorized(&self.lock().im, user_id)
     }
@@ -348,6 +342,7 @@ impl ControlStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn bind_wechat_chat(
         &self,
         user_id: &str,
@@ -364,6 +359,7 @@ impl ControlStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_wechat_chat_mapping(
         &self,
         delivery_id: &str,
@@ -373,6 +369,7 @@ impl ControlStorage {
         im::pending_chat_mapping(&self.lock().im, delivery_id, user_id, chat_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn arm_wechat_chat_mapping(
         &self,
         delivery_id: &str,
@@ -398,6 +395,7 @@ impl ControlStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_wechat_chat_mapping(
         &self,
         delivery_id: &str,
@@ -423,28 +421,13 @@ impl ControlStorage {
         Ok(())
     }
 
-    pub(crate) fn abort_wechat_chat_mapping(
-        &self,
-        delivery_id: &str,
-        user_id: &str,
-        chat_id: &str,
-    ) -> Result<(), ControlError> {
-        let mut state = self.lock();
-        let backup = state.clone();
-        im::abort_chat_mapping(&mut state.im, delivery_id, user_id, chat_id)?;
-        if let Err(error) = self.save_im(&state) {
-            *state = backup;
-            return Err(error);
-        }
-        Ok(())
-    }
-
     #[cfg(test)]
     pub(crate) fn inject_next_chat_mapping_save_failure(&self) {
         self.fail_next_chat_mapping_save
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
+    #[cfg(test)]
     pub(crate) fn wechat_chat_binding(
         &self,
         chat_id: &str,
@@ -452,42 +435,12 @@ impl ControlStorage {
         im::chat_binding(&self.lock().im, chat_id)
     }
 
-    pub(crate) fn clear_wechat_chat_binding(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-    ) -> Result<(), ControlError> {
-        let mut state = self.lock();
-        let backup = state.clone();
-        im::clear_chat_binding(&mut state.im, user_id, chat_id)?;
-        #[cfg(test)]
-        if self
-            .fail_next_chat_mapping_save
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            *state = backup;
-            return Err(control_error("injected im.json chat mapping write failure"));
-        }
-        if let Err(error) = self.save_im(&state) {
-            *state = backup;
-            return Err(error);
-        }
-        Ok(())
-    }
-
     #[cfg(test)]
     pub(crate) fn is_wechat_delivery_handled(&self, delivery_id: &str) -> bool {
         im::is_delivery_handled(&self.lock().im, delivery_id)
     }
 
-    pub(crate) fn wechat_delivery_state(&self, user_id: &str, delivery_id: &str) -> (bool, bool) {
-        let state = self.lock();
-        (
-            im::is_authorized(&state.im, user_id),
-            im::is_delivery_handled(&state.im, delivery_id),
-        )
-    }
-
+    #[cfg(test)]
     pub(crate) fn mark_wechat_delivery_handled(
         &self,
         delivery_id: &str,
@@ -1129,6 +1082,7 @@ mod tests {
         assert_eq!(
             storage.wechat_chat_binding("chat-a"),
             Some(crate::im::WechatChatBinding {
+                channel: crate::remote::RemoteChannel::Wechat,
                 user_id: "remote-a".into(),
                 session_id: session,
             })
@@ -1168,6 +1122,105 @@ mod tests {
             !storage.is_wechat_delivery_handled("command-delivery"),
             "unbind clears replay authority from the old credential"
         );
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn pairing_challenges_and_receipts_are_channel_scoped() {
+        use crate::remote::{PairingAttempt, RemoteChannel};
+        let root = temp_root("remote-pairing-isolation");
+        sentinel::initialize(&root).unwrap();
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        storage
+            .save_wechat_binding(
+                &crate::im::ilink::Credentials::new(
+                    "token".into(),
+                    "bot".into(),
+                    None,
+                    "https://ilinkai.weixin.qq.com".into(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        storage.init_test_remote("other").unwrap();
+        let wechat = storage.remote(RemoteChannel::Wechat);
+        let test = storage.remote(RemoteChannel::Test);
+        let wx_code = wechat.create_pairing(100).unwrap().code;
+        let test_code = test.create_pairing(100).unwrap().code;
+        assert_eq!(
+            test.attempt_pairing("same-id", "user", &test_code, 101)
+                .unwrap(),
+            PairingAttempt::Paired
+        );
+        assert!(!wechat.authorized("user"));
+        assert_eq!(
+            wechat
+                .attempt_pairing("same-id", "user", &wx_code, 101)
+                .unwrap(),
+            PairingAttempt::Paired
+        );
+        assert_eq!(
+            test.attempt_pairing("same-id", "user", &test_code, 102)
+                .unwrap(),
+            PairingAttempt::Paired
+        );
+        drop(storage);
+        let reopened = ControlStorage::open_ready(&root).unwrap();
+        assert!(reopened.remote(RemoteChannel::Wechat).authorized("user"));
+        assert!(reopened.remote(RemoteChannel::Test).authorized("user"));
+        drop(reopened);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn legacy_wechat_state_survives_save_and_reopen() {
+        let root = temp_root("wechat-v1-roundtrip");
+        sentinel::initialize(&root).unwrap();
+        let legacy = serde_json::json!({
+            "unit": {"name":"im", "version":1},
+            "wechat": {
+                "binding":{"token":"token","botId":"bot","origin":"https://ilinkai.weixin.qq.com","boundAt":"2026-01-01"},
+                "cursor":"old-cursor", "allowedUsers":["user"],
+                "pairedUsers":{"user":{"pairedAt":"2026-01-01"}},
+                "chatSessions":{"chat":{"userId":"user","sessionId":"session","updatedAt":"2026-01-01"}},
+                "pendingChatMappings":{"pending":{"userId":"user","chatId":"chat","requestDigest":"a".repeat(64),"createdAtMs":1}},
+                "pairing":{"salt":"b".repeat(32),"digest":"c".repeat(64),"expiresAtMs":100,"createdAt":"2026-01-01"},
+                "pairingFailures":{"user":{"windowStartedMs":1,"failures":1}},
+                "pairingReceipts":{"receipt":{"userId":"user","requestDigest":"d".repeat(64),"outcome":{"kind":"paired"},"createdAtMs":1}},
+                "handledDeliveries":{"old-delivery":1}
+            }
+        });
+        std::fs::write(root.join("im.json"), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        storage
+            .remote(crate::remote::RemoteChannel::Wechat)
+            .commit_delivery("new-delivery", 2)
+            .unwrap();
+        drop(storage);
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        assert!(storage.wechat_binding_status().bound);
+        assert!(storage.is_wechat_user_authorized("user"));
+        assert_eq!(
+            storage
+                .wechat_chat_binding("chat")
+                .unwrap()
+                .session_id
+                .as_str(),
+            "session"
+        );
+        assert!(
+            storage
+                .pending_wechat_chat_mapping("pending", "user", "chat")
+                .is_some()
+        );
+        assert!(storage.is_wechat_delivery_handled("old-delivery"));
+        assert!(storage.is_wechat_delivery_handled("new-delivery"));
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("im.json")).unwrap()).unwrap();
+        let mut expected = legacy;
+        expected["wechat"]["handledDeliveries"]["new-delivery"] = 2.into();
+        assert_eq!(saved, expected, "saving preserves all v1 fields and values");
+        drop(storage);
         crate::test_support::cleanup_tree(&root);
     }
 

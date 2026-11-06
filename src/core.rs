@@ -36,6 +36,7 @@ pub mod project;
 mod project_instructions;
 mod providers;
 mod redact;
+mod remote;
 pub mod run;
 mod rust_support;
 mod sandbox;

@@ -11,7 +11,7 @@ pub fn terminal_language(explicit: Option<&str>) -> Result<TerminalLanguage, UiM
         terminal_preferences_path().and_then(|p| load_preference(&p))
     })
 }
-pub(super) fn resolve_terminal_sources(
+pub(crate) fn resolve_terminal_sources(
     explicit: Option<&str>,
     environment: Option<&str>,
     read: impl FnOnce() -> Result<LanguagePreference, String>,
