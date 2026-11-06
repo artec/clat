@@ -17,6 +17,8 @@ pub struct ModelSettingsView {
     pub current: ModelRouteView,
     pub active_profile: Option<String>,
     pub profiles: Vec<String>,
+    #[serde(default)]
+    pub profile_image_input: std::collections::BTreeMap<String, bool>,
     pub presets: Vec<ModelPresetView>,
     pub utility: UtilitySettingsView,
 }
@@ -45,6 +47,8 @@ pub struct ModelPresetView {
     pub id: String,
     pub name: String,
     pub vendor: String,
+    #[serde(default)]
+    pub image_input: bool,
 }
 
 /// Deliberately not ModelConfig: headers, bodies, auth prefixes and credentials
@@ -180,20 +184,33 @@ impl TrustedProjectApplication {
             .lock()
             .expect("model updates");
         let (config, credentials) = self.model_state()?;
+        let profiles = self.list_model_profiles()?;
+        let profile_image_input = profiles
+            .iter()
+            .filter_map(|profile| {
+                self.load_model_profile(&profile.name)
+                    .ok()
+                    .flatten()
+                    .map(|(config, _)| {
+                        (
+                            profile.name.clone(),
+                            config.capabilities.accepts_image_input(),
+                        )
+                    })
+            })
+            .collect();
         Ok(ModelSettingsView {
             current: route_view(&config, &credentials),
             active_profile: self.active_model_profile()?,
-            profiles: self
-                .list_model_profiles()?
-                .into_iter()
-                .map(|item| item.name)
-                .collect(),
+            profiles: profiles.into_iter().map(|item| item.name).collect(),
+            profile_image_input,
             presets: crate::presets::MODEL_PRESETS
                 .iter()
                 .map(|preset| ModelPresetView {
                     id: preset.id.into(),
                     name: preset.name.into(),
                     vendor: preset.vendor.into(),
+                    image_input: preset.owned_capabilities().accepts_image_input(),
                 })
                 .collect(),
             utility: self.utility_settings_view_locked()?,

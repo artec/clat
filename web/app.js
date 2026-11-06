@@ -30,7 +30,51 @@ function el(tag, cls, text) {
 
 // A deliberately small Markdown surface: no raw HTML, remote images, or
 // arbitrary URL schemes. The DOM is assembled from text nodes only.
-const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\(https?:\/\/[^\s)\n]+\))/g;
+const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^\s)\n]+\))/g;
+
+// File operations always go through the project editor's path fence.
+function localMarkdownPath(destination, projectRoot) {
+  if (!projectRoot || /^(?!file:)[a-z][a-z0-9+.-]*:(?!\d+(?::\d+)?(?:#|$))/i.test(destination) && !/^[a-z]:[\\/]/i.test(destination)) return null;
+  let value;
+  try {
+    if (/^file:/i.test(destination)) {
+      const url = new URL(destination); if (url.host && url.host !== 'localhost') return null;
+      value = decodeURIComponent(url.pathname).replace(/^\/(?=[a-z]:\/)/i, '');
+    } else value = decodeURIComponent(destination.split('#')[0]);
+  } catch (_) { return null; }
+  value = value.replace(/:\d+(?::\d+)?$/, '').replace(/\\/g, '/');
+  const root = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const absolute = value.startsWith('/') || /^[a-z]:\//i.test(value);
+  if (absolute) {
+    const compare = /^[a-z]:\//i.test(root) ? s => s.toLowerCase() : s => s;
+    if (!compare(value).startsWith(compare(root + '/'))) return { relative: null, absolute: value };
+    value = value.slice(root.length + 1);
+  }
+  const parts = [];
+  for (const part of value.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { if (!parts.length) return null; parts.pop(); }
+    else parts.push(part);
+  }
+  if (!parts.length) return null;
+  const relative = parts.join('/');
+  return { relative, absolute: root + '/' + relative };
+}
+
+function localMarkdownLink(label, destination) {
+  const node = el('button', 'markdown-file-link', label); node.type = 'button';
+  node.onclick = () => {
+    const path = localMarkdownPath(destination, state.workbench?.project?.root);
+    if (!path) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
+    editorPopup([
+      {key:'open_file',icon:'open',disabled:!path.relative,run:()=>{document.getElementById('files-open').click();return developmentEditor?.openFile(path.relative,{fixed:true});}},
+      {key:'copy_absolute_path',icon:'copy',run:()=>navigator.clipboard.writeText(path.absolute)},
+      {key:'copy_path',icon:'copy',disabled:!path.relative,run:()=>navigator.clipboard.writeText(path.relative)},
+    ],node);
+  };
+  CLATI18n.attribute(node,'title',()=>CLATI18n.msg('web.local_file_actions'));
+  return node;
+}
 
 function appendInlineMarkdown(parent, text) {
   let offset = 0;
@@ -50,7 +94,8 @@ function appendInlineMarkdown(parent, text) {
         node.href = url;
         node.target = '_blank';
         node.rel = 'noopener noreferrer';
-      } else node = document.createTextNode(token);
+      } else if (parts && localMarkdownPath(url, state.workbench?.project?.root)) node = localMarkdownLink(parts[1], url);
+      else node = document.createTextNode(token);
     }
     parent.append(node);
     offset = match.index + token.length;
@@ -3126,7 +3171,7 @@ async function refreshModelSettings() {
     renderModelPicker(view);
     renderSettingsPresets(view);
     modelField('profiles').replaceChildren();
-    for (const name of view.profiles) renderModelProfile(name, name === view.active_profile);
+    for (const name of view.profiles) renderModelProfile(name, name === view.active_profile, view.profile_image_input?.[name]);
     // 表单代次围栏（与 profile 编辑器同款）：用户已动过的表单不被
     // 迟到的读取重绘——策态（#suggest 门）仍随最新数据更新。
     if (utilityFormGenerationAtIssue === utilityFormGeneration && !dom['utility-profile'].closest('[data-settings-panel]').dataset.unsaved) {
@@ -3179,6 +3224,7 @@ function renderModelPicker(view) {
     method: 'model.preset.select',
     params: { id: preset.id },
     preset: true,
+    imageInput: preset.image_input,
   }));
   appendModelChoiceGroup(CLATI18n.msg("web.built_in_presets", {}, "Built-in presets"), presets);
   const profiles = (view.profiles || []).map((name) => ({
@@ -3188,6 +3234,7 @@ function renderModelPicker(view) {
     method: 'model.profile.activate',
     params: { name },
     preset: false,
+    imageInput: view.profile_image_input?.[name],
   }));
   appendModelChoiceGroup(CLATI18n.msg("web.saved_profiles", {}, "Saved profiles"), profiles);
 }
@@ -3202,7 +3249,9 @@ function appendModelChoiceGroup(label, choices) {
     button.setAttribute('aria-checked', String(choice.active));
     CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg("web.dynamic_use_value", {value1:(choice.label)}, "Use {value1}"));
     const copy = el('span');
-    copy.append(el('strong', '', () => (choice.label)), el('small', '', () => (choice.detail)));
+    const title = el('strong', 'model-choice-title');
+    renderModelIdentity(title, choice.label, choice.imageInput);
+    copy.append(title, el('small', '', () => (choice.detail)));
     button.append(copy, el('span', 'model-choice-mark', () => (choice.active ? '●' : '')));
     button.addEventListener('click', () => selectModelChoice(choice));
     dom['model-picker-list'].appendChild(button);
@@ -3249,9 +3298,11 @@ function renderUtilitySettings(settings, profiles = []) {
   select.value = chosen;
 }
 
-function renderModelProfile(name, active) {
+function renderModelProfile(name, active, imageInput) {
   const row = el('div', 'model-profile-row');
-  row.appendChild(el('strong', '', () => (name + (active ? CLATI18n.t('web.active_suffix') : ''))));
+  const title=el('strong','model-profile-title');
+  renderModelIdentity(title, name + (active ? CLATI18n.t('web.active_suffix') : ''), imageInput);
+  row.appendChild(title);
   for (const action of ['Edit','Delete']) {
     const label=CLATI18n.msg(action==='Edit'?'web.edit_short':'web.delete_short',{},action);
     const button = el('button', 'ghost', () => (label));
@@ -4186,7 +4237,11 @@ if (composerSeat && composer && typeof ResizeObserver === 'function') {
   mapObserver.observe(dom['message-map-track']);
 }
 
-dom['attachment-open'].addEventListener('click', () => dom['attachment-input'].click());
+function openImagePicker() {
+  if (state.workbench?.model?.image_input === false) { updateRunState(CLATI18n.msg('web.model_images_unsupported')); return; }
+  dom['attachment-input'].click();
+}
+dom['attachment-open'].addEventListener('click', openImagePicker);
 dom['attachment-input'].addEventListener('change', async () => {
   await addDraftFiles(dom['attachment-input'].files);
   dom['attachment-input'].value = '';

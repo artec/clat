@@ -25,6 +25,50 @@ pub(super) fn fixture_with_behavior(
 }
 
 #[test]
+fn model_settings_image_capability_matches_preset_and_saved_profile() {
+    let (root, mut host, first, _) = fixture("profile-image-capabilities");
+    let project = host.attach(first).unwrap();
+    let app = project.lock().unwrap();
+    let preset = crate::presets::MODEL_PRESETS
+        .iter()
+        .find(|item| item.owned_capabilities().accepts_image_input())
+        .unwrap();
+    let text_preset = crate::presets::MODEL_PRESETS
+        .iter()
+        .find(|item| !item.owned_capabilities().accepts_image_input())
+        .unwrap();
+    let mut config = crate::ModelConfig::default();
+    preset.apply(&mut config);
+    let credentials = crate::ProviderCredentials::for_protocol(config.protocol);
+    app.save_model_profile("vision", &config, &credentials)
+        .unwrap();
+    config.capabilities.image_input_verified = false;
+    app.save_model_profile("unverified", &config, &credentials)
+        .unwrap();
+    let view = app.model_settings_view().unwrap();
+    assert!(
+        view.presets
+            .iter()
+            .find(|row| row.id == preset.id)
+            .unwrap()
+            .image_input
+    );
+    assert!(
+        !view
+            .presets
+            .iter()
+            .find(|row| row.id == text_preset.id)
+            .unwrap()
+            .image_input
+    );
+    assert_eq!(view.profile_image_input.get("vision"), Some(&true));
+    assert_eq!(view.profile_image_input.get("unverified"), Some(&false));
+    drop(app);
+    drop(host);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn model_profile_auth_patch_preserves_secrets_and_rejects_invalid_writes() {
     let (root, mut host, first, _) = fixture("profile-auth");
     let project = host.attach(first).unwrap();

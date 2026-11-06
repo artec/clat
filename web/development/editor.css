@@ -1,4 +1,6 @@
 /* Compact project editor, sharing the navigation/sidebar and Git tab primitives. */
+.dev-editor-mount:has(.editor-markdown-preview){overflow:auto;padding:20px 24px}
+.editor-markdown-preview{max-width:900px;margin:20px auto;overflow-wrap:anywhere;color:var(--text)}
 .workspace-tool.dev-editor{grid-template-rows:minmax(0,1fr)}
 .editor-sidebar{grid-area:1 / 1;position:relative;inset:auto;transform:none;box-shadow:none;display:flex;flex-direction:column;min-height:0;min-width:0;width:auto;background:var(--sidebar-bg);border-right:0;overflow:hidden}
 .editor-head-actions{justify-content:flex-end;padding:0 12px 10px}

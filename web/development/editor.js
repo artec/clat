@@ -1,21 +1,27 @@
 /* Project document tabs keep their own CodeMirror states and undo histories. */
 function createDevelopmentEditor(){
   const docs=new Map();let selected=null,view=null,active=false,openEpoch=0;
-  const ui=createEditorLayout({create:directory=>createFile(directory),refresh:()=>refresh(),collapse:()=>tree.collapse(),recover:()=>drafts.recover(true),save:()=>save(selected),saveAll,canSave:()=>Boolean(selected?.dirty&&!selected.readonly&&!selected.saving),canSaveAll:()=>[...docs.values()].some(doc=>doc.dirty&&!doc.readonly&&!doc.saving),canFind:()=>Boolean(view),find:()=>view?.search(),menu:()=>fileMenu(tree.directory())});
+  const ui=createEditorLayout({create:directory=>createFile(directory),refresh:()=>refresh(),collapse:()=>tree.collapse(),recover:()=>drafts.recover(true),save:()=>save(selected),saveAll,canSave:()=>Boolean(selected?.dirty&&!selected.readonly&&!selected.saving),canSaveAll:()=>[...docs.values()].some(doc=>doc.dirty&&!doc.readonly&&!doc.saving),canFind:()=>Boolean(view),find:()=>view?.search(),menu:()=>fileMenu(selected ? false : tree.directory(),selected?.path)});
   const {node,status,list,toolbar,mount,tabs,breadcrumb,footer}=ui;
   const controller={node,docs,get selected(){return selected;},openFile,save,saveAll,refresh,createFile,selection:()=>view?view.view.state.selection.main:null,flush:()=>drafts.flush()};
   const drafts=createDevelopmentDrafts({docs,status,activate});const queueDraft=drafts.queue,recover=drafts.recover;
   const tree=installEditorTree(ui,{active:()=>active&&devAvailable(),recheck,openFile,menu:(entry,source,x,y)=>{tree.select(entry.path,Boolean(entry.directory));editorMenu(fileMenu(Boolean(entry.directory)),source,x,y);}});
-  function fileMenu(directory){return [
+  function fileMenu(directory,menuPath=tree.path()){return [
     {key:'new_file',icon:'file-plus',run:()=>createFile(false)},
     {key:'new_folder',icon:'folder-plus',run:()=>createFile(true)},
     {key:'rename',icon:'edit',disabled:!tree.path(),run:rename},
     {key:'delete',icon:'trash',disabled:!tree.path(),run:remove},
     {key:'quote',icon:'chat',disabled:directory||!tree.path(),run:async()=>{if(tree.path()!==selected?.path)await openFile(tree.path(),{fixed:true});if(selected?.path===tree.path())await quote();}},
+    ...(!directory && /\.md$/i.test(menuPath||'') ? [{key:'markdown_preview',icon:'vision',run:async()=>{if(menuPath!==selected?.path)await openFile(menuPath,{fixed:true});if(selected?.path===menuPath)previewMarkdown(selected);}}] : []),
     {key:'terminal_here',icon:'terminal',run:terminalHere},
     {key:'copy_path',icon:'copy',disabled:!tree.path(),run:()=>navigator.clipboard.writeText(tree.path())},
   ];}
   function stash(){if(selected&&view){selected.state=view.state();selected.top=view.view.scrollDOM.scrollTop;selected.left=view.view.scrollDOM.scrollLeft;}view?.destroy();view=null;}
+  function previewMarkdown(doc){
+    controller.clearConflict?.();stash();mount.replaceChildren();
+    const preview=el('div','editor-markdown-preview rich-text'),back=devButton('back_editor',()=>activate(doc));
+    renderMarkdown(preview,doc.text);mount.append(back,preview);footer.replaceChildren();
+  }
   function renderTabs(){
     refreshViewContext();
     renderEditorTabs({tabs,docs,selected,activate,closeDoc,render:renderTabs});editorBreadcrumb(breadcrumb,selected,tree.reveal);

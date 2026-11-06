@@ -261,7 +261,7 @@ function createShellComposer(shell) {
     menu.append(block);
   };
   group(() => shellText('add_content'), [
-    ['add-image', 'vision', () => CLATI18n.msg('web.add_images'), () => dom['attachment-input'].click()],
+    ['add-image', 'vision', () => CLATI18n.msg('web.add_images'), () => openImagePicker()],
     ['add-project-file', 'open', () => shellText('reference_file'), () => document.getElementById('files-open').click()],
   ]);
   group(() => shellText('work_mode'), [

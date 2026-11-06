@@ -72,6 +72,9 @@
 #settings-dialog .model-vendor-controls { display:flex; flex-wrap:wrap; gap:10px; }
 #settings-dialog .model-vendor-controls > :is(select,input) { flex:1 1 190px; width:0; }
 #settings-dialog .model-vendor-controls > button { flex:none; }
+#settings-dialog .model-vendor-vision-models { display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:10px; color:var(--text-muted); font-size:var(--text-size-secondary); }
+#settings-dialog .model-vendor-vision-model { display:inline-flex; align-items:center; gap:5px; }
+#settings-dialog .model-vendor-vision-model svg { width:14px; height:14px; color:var(--signal); }
 #settings-dialog .model-profiles { margin:0; border:0; }
 #settings-dialog .model-profile-row strong { flex:1;min-width:0;overflow-wrap:anywhere;font-size:13px;font-weight:500; }
 #settings-dialog .model-profile-row { display:flex;align-items:center;gap:8px; margin:0; padding:14px 0; border:0; border-bottom:1px solid var(--line); border-radius:0; background:transparent; }

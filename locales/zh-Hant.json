@@ -1,4 +1,8 @@
 {
+  "dev.markdown_preview": "預覽 Markdown",
+  "dev.copy_absolute_path": "複製絕對路徑",
+  "web.local_file_actions": "檔案操作",
+  "web.local_link_unavailable": "檔案不在目前專案中或路徑無效。",
   "web.model_images_unsupported": "目前模型不支援圖片，請更換支援圖片的模型。",
   "web.rewind_edit": "編輯已停止的訊息",
   "web.rewind_send": "傳送並重跑",

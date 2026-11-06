@@ -1,4 +1,8 @@
 {
+  "dev.markdown_preview": "预览 Markdown",
+  "dev.copy_absolute_path": "复制绝对路径",
+  "web.local_file_actions": "文件操作",
+  "web.local_link_unavailable": "文件不在当前项目中或路径无效。",
   "web.model_images_unsupported": "当前模型不支持图片，请更换支持图片的模型。",
   "web.rewind_edit": "编辑已停止的消息",
   "web.rewind_send": "发送并重跑",

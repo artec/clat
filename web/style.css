@@ -224,6 +224,8 @@ button:disabled { cursor: default; opacity: .45; }
 .model-identity .model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vision-capability { display: inline-grid; flex: 0 0 auto; place-items: center; width: 18px; height: 18px; border: 1px solid color-mix(in srgb, var(--signal) 42%, var(--line)); border-radius: 5px; color: var(--signal); background: color-mix(in srgb, var(--signal) 8%, transparent); }
 .vision-capability svg { width: 12px; height: 12px; stroke-width: 1.8; }
+.vision-capability[hidden] { display: none; }
+.model-choice-title, .model-profile-title { display: flex !important; align-items: center; gap: 6px; min-width: 0; }
 .conn-status[data-state="live"] { color: var(--text-muted); }
 .conn-status[data-state="reconnecting"] { color: var(--warning); }
 .conn-status[data-state="failed"] { color: var(--danger); }
@@ -281,6 +283,7 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.assistant .body { color: var(--text); }
 .msg.assistant:has(.body:empty):has(.reasoning.hidden) { display: none; }
 .rich-text { font-size: var(--text-size-reading); font-weight: 300; line-height: var(--text-leading); }
+.markdown-file-link { color:var(--signal); text-decoration:underline; font:inherit; padding:0; border:0; background:transparent; cursor:pointer; }
 .msg.user .rich-text { font-weight: 400; }
 .rich-text strong, .rich-text b { font-weight: var(--text-weight-emphasis); }
 .msg .rich-text.is-rendered { white-space: normal; }

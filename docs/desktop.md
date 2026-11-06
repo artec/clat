@@ -530,7 +530,13 @@ Files and Git reuse the shared project list/detail work area; Terminal has its o
 left-navigation page. They use the same Rust client ports as the browser, with no
 Desktop-only save/Git/process implementation. Project editor state survives conversation
 switches. Unsaved text can be quoted as an explicitly unsaved snapshot without saving
-the file. Terminal appearance is configurable in Settings, with a live glyph preview and local system font selection. No font files are
+the file. A Markdown file's action menu opens a rendered preview of the current editor
+contents, including unsaved changes. Local Markdown file links in conversation replies
+offer to open a file within the current project or copy its absolute or relative path;
+outside the project only copying the absolute path is available. The editor continues
+to enforce the project boundary. Model lists mark image-capable
+routes with an eye icon, and adding or sending images with a known text-only model is
+blocked with a prompt to choose an image-capable model. Terminal appearance is configurable in Settings, with a live glyph preview and local system font selection. No font files are
 bundled. See [usage](usage.md#project-editor-git-and-terminals)
 for workflows and recovery boundaries. Native macOS/Windows font, IME, keyboard and
 interactive terminal behavior is manually accepted separately from compilation.

@@ -1,4 +1,8 @@
 {
+  "dev.markdown_preview": "Preview Markdown",
+  "dev.copy_absolute_path": "Copy absolute path",
+  "web.local_file_actions": "File actions",
+  "web.local_link_unavailable": "This file is outside the current project or its path is invalid.",
   "web.model_images_unsupported": "The current model does not support images. Choose a model that supports images.",
   "web.rewind_edit": "Edit stopped message",
   "web.rewind_send": "Send and rerun",
