@@ -1729,6 +1729,28 @@ function editLastTurn(message, body, pencil, original, receipt) {
   input.focus();
 }
 
+// Coalesce stream updates and retain the source for final rendering and copying.
+function streamingMarkdown(container, source) {
+  let timer = null;
+  function flush() {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    const viewport = dom['transcript-scroll'];
+    const follow = container.isConnected && nearEnd() &&
+      !(findActive && !document.getElementById('find-bar').classList.contains('hidden'));
+    renderMarkdown(container, source());
+    if (follow) viewport.scrollTop = viewport.scrollHeight;
+  }
+  return {
+    schedule() {
+      if (timer !== null) return;
+      // Longer output is refreshed less often to keep input responsive.
+      timer = setTimeout(flush, Math.min(1000, 80 + Math.floor(source().length / 1000) * 20));
+    },
+    flush,
+  };
+}
+
 function addAssistantMessage() {
   const msg = el('article', 'msg assistant');
   CLATI18n.attribute(msg,'aria-label',()=>CLATI18n.msg("web.agent_reply", {}, "Agent reply"));
@@ -1736,11 +1758,9 @@ function addAssistantMessage() {
   marker.appendChild(svgIcon('agent'));
   msg.append(marker);
   const body = el('div', 'body rich-text');
-  let bodyText = document.createTextNode('');
   const bodyChunks = [];
   rememberFindMessage(msg, CLATI18n.msg("web.agent_short",{},"Agent"), () => bodyChunks.join(''));
   let bodyRendered = false;
-  body.appendChild(bodyText);
   const reasoning = el('details', 'reasoning hidden');
   const reasoningSummary = el('summary');
   const reasoningTitle = el('span', 'reasoning-title', () => (CLATI18n.msg("web.think_short",{},"Think")));
@@ -1750,44 +1770,39 @@ function addAssistantMessage() {
   reasoningSummary.append(
     svgIcon('brain'), reasoningTitle, reasoningDot, reasoningPreview, reasoningRunning,
   );
-  const reasoningCopy = el('pre', 'reasoning-copy');
-  const reasoningText = document.createTextNode('');
-  reasoningCopy.appendChild(reasoningText);
+  const reasoningCopy = el('div', 'reasoning-copy rich-text');
+  let reasoningText = '';
+  const bodyStream = streamingMarkdown(body, () => bodyChunks.join(''));
+  const reasoningStream = streamingMarkdown(reasoningCopy, () => reasoningText);
   reasoning.append(reasoningSummary, reasoningCopy);
   msg.append(reasoning, body);
   appendTranscript(msg);
   return {
     node: msg,
-    // `textContent += delta` serializes and reparses the entire growing
-    // transcript on every stream chunk. Native Text append keeps long local
-    // streams linear, so attachment fetch completion and input remain live.
     appendBody(text) {
-      if (bodyRendered) {
-        bodyText = document.createTextNode(bodyChunks.join(''));
-        body.replaceChildren(bodyText);
-        body.classList.remove('is-rendered');
-        bodyRendered = false;
-      }
       bodyChunks.push(text);
-      bodyText.appendData(text);
+      bodyRendered = false;
+      bodyStream.schedule();
       updateConversationFind();
     },
     finishBody() {
       if (bodyRendered) return;
-      renderMarkdown(body, bodyChunks.join(''));
+      bodyStream.flush();
       bodyRendered = true;
       addMessageCopyAction(msg, () => bodyChunks.join(''), true);
     },
     appendReasoning(text) {
       show(reasoning);
-      reasoningText.appendData(text);
+      reasoningText += text;
+      reasoningStream.schedule();
       reasoning.dataset.running = 'true';
-      const lines = reasoningText.data.split(/\r?\n/).filter((line) => line.trim());
-      CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(lines.at(-1) || reasoningText.data));
+      const lines = reasoningText.split(/\r?\n/).filter((line) => line.trim());
+      CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(lines.at(-1) || reasoningText));
     },
     setReasoning(text) {
       show(reasoning);
-      reasoningText.data = text;
+      reasoningText = text;
+      reasoningStream.flush();
       delete reasoning.dataset.running;
       CLATI18n.bind(reasoningRunning, "textContent", () => '');
       CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(text.split(/\r?\n/).find((line) => line.trim()) || text));
@@ -1799,7 +1814,8 @@ function addAssistantMessage() {
     finishReasoning() {
       delete reasoning.dataset.running;
       CLATI18n.bind(reasoningRunning, "textContent", () => '');
-      const first = reasoningText.data.split(/\r?\n/).find((line) => line.trim());
+      reasoningStream.flush();
+      const first = reasoningText.split(/\r?\n/).find((line) => line.trim());
       if (first) CLATI18n.bind(reasoningPreview, "textContent", () => toolPreview(first));
     },
   };

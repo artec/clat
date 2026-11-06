@@ -1176,8 +1176,10 @@ test('message Markdown is readable without turning model text into executable HT
     window.web2Bubble = bubble;
   });
   const body = page.locator('[data-web2="markdown"] .body');
-  await expect(body).toHaveText('**streaming**');
-  await expect(body.locator('strong')).toHaveCount(0);
+  await expect(body.locator('strong')).toHaveText('streaming', LIVE);
+  await page.evaluate(() => window.web2Bubble.appendReasoning('**thinking**'));
+  await expect(page.locator('[data-web2="markdown"] .reasoning-copy strong')).toHaveText('thinking', LIVE);
+  await page.evaluate(() => window.web2Bubble.finishReasoning());
   await page.evaluate(() => {
     window.web2Bubble.appendBody('\n\n## Result\n- one\n- two\n\n```js\nconst x = 1\n```'
       + '\n\n<script id="web2-attack">alert(1)</script>'
@@ -1286,7 +1288,7 @@ test('Think disclosure follows the latest live line, then the first settled line
   await expect(reasoning.locator('.reasoning-preview')).toHaveText('first thought', LIVE);
   await revealWorkRecord(reasoning);
   await reasoning.locator('summary').click();
-  await expect(reasoning.locator('.reasoning-copy')).toHaveText('first thought\nlatest thought', LIVE);
+  await expect(reasoning.locator('.reasoning-copy')).toHaveText('first thought latest thought', LIVE);
   await expect(page.locator('.msg.user[data-seq]')).toHaveCount(1, LIVE);
   await expect(page.locator('.msg.assistant[data-seq]')).toHaveCount(1, LIVE);
   expect(historyRequests).toBe(0);
@@ -1297,7 +1299,7 @@ test('Think disclosure follows the latest live line, then the first settled line
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   const replayed = page.locator('.msg.assistant .reasoning').last();
   await expect(replayed.locator('.reasoning-preview')).toHaveText('first thought', LIVE);
-  await expect(replayed.locator('.reasoning-copy')).toHaveText('first thought\nlatest thought', LIVE);
+  await expect(replayed.locator('.reasoning-copy')).toHaveText('first thought latest thought', LIVE);
 });
 
 // —— 验收④：双标签页——同 run 双观察；首答即赢；次答者见 not-pending ——

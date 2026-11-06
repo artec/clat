@@ -2006,9 +2006,9 @@ Browser storage is limited to presentation preferences and a
 private HttpOnly session cookie; session content, run state, permission mode, model state,
 and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
-Message bodies render a safe Markdown subset (headings, lists, tables, quotes,
-fenced and inline code, emphasis, links, and rules) after a response settles; active
-streams remain plain text. Raw HTML and remote Markdown images are never
+Assistant replies and reasoning render a safe Markdown subset (headings, lists,
+tables, quotes, fenced and inline code, emphasis, links, and rules) during
+streaming and on completion. Raw HTML and remote Markdown images are never
 interpreted, and only HTTP(S) links become clickable.
 
 Unsent PWA text stays with its project/session in this page's memory; switching
