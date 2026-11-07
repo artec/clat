@@ -385,7 +385,7 @@ model → safety → extensions → experiments → meta):
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
 | `/mem`, `/memory ...` | open a read-only memory dialog; add/edit/delete confirms in the status bar |
-| `/goal ...` | open the current goal dialog, or explicitly control a bounded goal |
+| `/goal ...` | open the current goal dialog, or explicitly control a goal |
 | `/sub`, `/subagents on|off` | open the subagent status dialog, or enable/disable the experiment |
 | `/vision-probe` | run the one-shot vision probe against the current custom model |
 | `/help` | open the command and key reference |
@@ -679,8 +679,7 @@ Each session may have one current goal:
 
 ```text
 /goal show
-/goal create <objective> [--run] [--rounds N] [--tokens N]
-             [--seconds N] [--failures N]
+/goal create <objective> [--run]
              [--accept user|file-exists:path|file-contains:path:text]
 /goal run | pause | resume | complete [summary] | cancel
 ```
@@ -690,14 +689,20 @@ goal. In the CLI, `--run` and `/goal run` explicitly arm continuation. Web/Deskt
 also provide typed **Approve and execute** and composer Goal controls. Restart,
 session switch, an ordinary user prompt, cancellation, or a terminal goal state
 removes that process-local authority. Goal state itself is durable and uses
-revision/CAS transitions. Goals can run for up to 8 rounds, one hour, and
-3 failed rounds or rejected completion candidates. New goals have no default
-aggregate token limit. Set a positive limit with `--tokens N` or in the composer
-work mode menu. Blank or `--tokens 0` means unlimited for that goal. Existing
-goals retain their recorded limit, and any configured model run budget still
-applies. The limit counts input and output tokens, independently of price. `user` acceptance can only
+revision/CAS transitions. Goal execution has no local cumulative token,
+round, elapsed-time or failure-count limit. The Goal token-limit input has been
+removed. Stored limits in older goals are historical metadata and do not
+prevent continuation. Goal execution also bypasses a model profile's aggregate
+run-token cap. Token, elapsed-time, round and failure counters remain visible
+for accounting. A manual stop records usage without counting a failed round.
+Provider quota exhaustion or an execution error ends the current attempt;
+the user can continue that same goal after resolving it. Legacy limit arguments
+in older commands and clients are accepted for compatibility and have no effect.
+Goals with `user` acceptance can only
 be completed by `/goal complete` or the explicit Web/Desktop **Accept result**
-action. **Give feedback and continue** stores the feedback durably and resumes
+action. While awaiting acceptance, the goal strip provides acceptance and
+feedback actions. The strip disappears after acceptance, and the completed goal
+remains visible in **Plans and goals**. **Give feedback and continue** stores the feedback durably and resumes
 the same goal with that context. A model completion candidate for a human-acceptance goal stops execution
 at Awaiting acceptance; it is not counted as a failed verification. Typed pending
 input at a model boundary preserves an already-running goal. An explicit pending
@@ -1593,8 +1598,12 @@ configuration. Re-enabling does not catch up old auxiliary jobs: new completed
 turns trigger future automatic work. The Extensions view explains effective
 availability, including the dependent session-title plugin.
 Continuous session naming is on by default; it coalesces duplicate notifications
-for the same ended turn and never changes a user-owned title. Generated titles
-follow a bounded contract: the model is asked for a short script-aware title
+for the same ended turn and never changes a user-owned title. Before the model
+supplies a title, the conversation uses a short preview of the first message
+(up to 32 display columns, with an ellipsis when clipped). The preview does
+not change the original message. Generated titles summarize the recent topic
+in the model's own words; a long line copied verbatim from the conversation is
+discarded. The model is asked for a short title suited to the conversation's language
 (about 6 words in non-CJK languages, 12 CJK characters), and whatever it
 returns is accepted only within a hard cap of **48 display columns** (24 CJK
 characters / 48 Latin letters). Compliant titles are stored whole — never cut.
@@ -2215,8 +2224,9 @@ linked to a different goal cannot be attached through this action.
 In Web and Desktop, choose **+ → Goal**, enter the objective and send it.
 The bottom work mode control shows **Goal** while drafting. Open that control
 to set an optional token limit. After sending, the goal strip offers pause,
-continue, delete and details. Deletion clears the current goal while retaining
-its recorded history. The **Plans and goals** view still shows plan documents
+continue, delete and details. The conversation shows the objective once when
+the goal starts. Continuing the goal adds execution progress to that conversation.
+Deletion clears the current goal while retaining its recorded history. The **Plans and goals** view still shows plan documents
 and goal progress. Goal controls use typed, session-bound, idempotent Host
 operations and goal ID/revision checks. Existing TUI commands and
 legacy approval keep their contracts. Plans/goals survive restart, while the
@@ -2675,7 +2685,17 @@ request receives one pending message. It does not wait for the whole task to
 finish. Text, staged images and fixed file references travel together. A message
 leaves the pending list only after durable admission.
 
-The queue icon next to Send shows the pending count. At zero it is disabled;
+An interjection accepted while a run is active is visible immediately: the web
+transcript shows it as a dimmed user message at the tail, and the same node
+settles into a regular message when the model claims it at the next request
+boundary (`steering_applied`). If the run ends before the claim, the dimmed
+message is removed — the pending list still shows the message, and on hosts
+without the pending-input interface the text returns to the composer. The
+in-flight model request itself is never interrupted by an interjection.
+
+The submission confirmation disappears when the message leaves the pending
+list or after a few seconds. The queue icon next to Send continues to show the
+pending count. At zero it is disabled;
 with pending messages, click or explicit keyboard activation opens the same
 popup surface as context usage. Pointer departure does not dismiss it; click
 the trigger again, click outside or press Esc to close. The popup aligns to the

@@ -97,8 +97,7 @@ impl Plugin for GoalPlugin {
                 context.owner(),
                 CommandSpec {
                     names: vec!["goal".into()],
-                    description: "create, inspect, control, or explicitly run one bounded goal"
-                        .into(),
+                    description: "create, inspect, control, or explicitly run one goal".into(),
                     takes_args: true,
                     group: crate::command::CommandGroup::Experiments,
                     order: 12,
@@ -248,7 +247,6 @@ impl CommandHandler for GoalCommand {
 struct CreateArgs {
     objective: String,
     acceptance: GoalAcceptance,
-    limits: GoalLimits,
     run: bool,
 }
 
@@ -256,7 +254,6 @@ fn parse_create(value: &str) -> Result<CreateArgs, CommandError> {
     let mut words = value.split_whitespace().peekable();
     let mut objective = Vec::new();
     let mut acceptance = GoalAcceptance::User;
-    let mut limits = GoalLimits::default();
     let mut run = false;
     while let Some(word) = words.next() {
         if !word.starts_with("--") {
@@ -265,10 +262,14 @@ fn parse_create(value: &str) -> Result<CreateArgs, CommandError> {
         }
         match word {
             "--run" => run = true,
-            "--rounds" => limits.max_rounds = parse_next(&mut words, "--rounds")?,
-            "--tokens" => limits.max_tokens = parse_next(&mut words, "--tokens")?,
-            "--seconds" => limits.max_time_secs = parse_next(&mut words, "--seconds")?,
-            "--failures" => limits.max_failures = parse_next(&mut words, "--failures")?,
+            // Accept old command scripts while discarding retired cap settings.
+            "--rounds" | "--tokens" | "--seconds" | "--failures" => {
+                words
+                    .next()
+                    .ok_or_else(usage)?
+                    .parse::<u64>()
+                    .map_err(|_| usage())?;
+            }
             "--accept" => {
                 let spec = words.next().ok_or_else(usage)?;
                 acceptance = parse_acceptance(spec)?;
@@ -283,16 +284,8 @@ fn parse_create(value: &str) -> Result<CreateArgs, CommandError> {
     Ok(CreateArgs {
         objective,
         acceptance,
-        limits,
         run,
     })
-}
-
-fn parse_next<T: std::str::FromStr>(
-    words: &mut std::iter::Peekable<std::str::SplitWhitespace<'_>>,
-    _name: &str,
-) -> Result<T, CommandError> {
-    words.next().ok_or_else(usage)?.parse().map_err(|_| usage())
 }
 
 fn parse_acceptance(value: &str) -> Result<GoalAcceptance, CommandError> {
@@ -339,18 +332,15 @@ fn goal_json(view: &crate::goal::GoalView) -> Value {
 fn render_goal(view: &crate::goal::GoalView) -> String {
     let state = &view.state;
     format!(
-        "{} rev={} phase={} activation={} rounds={}/{} tokens={} failures={}/{} elapsed={}ms/{}ms\n{}{}",
+        "{} rev={} phase={} activation={} rounds={} tokens={} failures={} elapsed={}ms\n{}{}",
         state.id,
         state.revision,
         state.phase.as_str(),
         if view.armed { "armed" } else { "disarmed" },
         state.rounds_started,
-        state.limits.max_rounds,
-        state.token_usage(),
+        state.tokens_used,
         state.failures,
-        state.limits.max_failures,
         state.elapsed_ms,
-        state.limits.max_time_secs.saturating_mul(1000),
         state.objective,
         state
             .blocked_reason
@@ -379,7 +369,7 @@ fn create_goal(
         .goal_create(
             &parsed.objective,
             parsed.acceptance,
-            parsed.limits,
+            GoalLimits::default(),
             parsed.run,
         )
         .map_err(failed)?;
@@ -409,13 +399,9 @@ mod tests {
     use crate::session::persistence::JsonlCompression;
 
     #[test]
-    fn create_parser_keeps_bounds_and_acceptance_explicit() {
-        let parsed = parse_create(
-            "ship release --rounds 3 --tokens 5000 --seconds 60 --failures 2 --accept file-exists:done.txt --run",
-        )
-        .unwrap();
+    fn create_parser_keeps_acceptance_explicit() {
+        let parsed = parse_create("ship release --accept file-exists:done.txt --run").unwrap();
         assert_eq!(parsed.objective, "ship release");
-        assert_eq!(parsed.limits.max_rounds, 3);
         assert!(parsed.run);
         assert_eq!(
             parsed.acceptance,

@@ -69,7 +69,7 @@ function renderWorkflowGoal(view,goal){
     overview.append(el('p','picker-hint',help));
     detail.append(overview);return;
   }
-  detail.append(el('h2','',()=>goal?.objective||workflowText('no_goal')),el('p','',()=>workflowText(workflowGoalStatus(value))));
+  detail.append(el('h2','workflow-objective',()=>goal.objective),el('p','workflow-goal-state',()=>workflowText(workflowGoalStatus(value))));
   const action=verb=>view.act({action:'goal',verb,id:goal.id,revision:goal.revision,summary:null}),actions=el('div','file-range');
   if(goal.phase!=='complete')actions.append(
     workflowViewButton(view,'continue_goal',()=>action('start'),value.plan_mode||value.busy||Boolean(value.handoff)),
@@ -82,11 +82,15 @@ function renderWorkflowGoal(view,goal){
     detail.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));
   }
   detail.append(actions);
-  if(goal.lastResult)detail.append(el('h3','',()=>workflowText('latest_result')),el('pre','review-diff',()=>goal.lastResult));
+  if(goal.lastResult){
+    const result=el('div','rich-text workflow-result');
+    renderMarkdown(result,goal.lastResult);
+    detail.append(el('h3','workflow-result-heading',()=>workflowText('latest_result')),result);
+  }
   if(goal.blockedReason)detail.append(el('p','picker-hint',()=>goal.blockedReason.code==='awaiting-user-acceptance'?workflowText('acceptance_help'):goal.blockedReason.message));
   const linked=value.documents.findLast(doc=>doc.goal_id===goal.id);
   if(linked)detail.append(workflowViewButton(view,'view_plan',()=>view.select('plan:'+linked.id+':'+linked.revision)));
-  detail.append(el('p','picker-hint',()=>CLATI18n.msg(goal.limits.maxTokens ? 'workflow.goal_progress' : 'workflow.goal_progress_unlimited',{rounds:goal.roundsStarted,maxRounds:goal.limits.maxRounds,tokens:goal.tokensUsed,...(goal.limits.maxTokens ? {maxTokens:goal.limits.maxTokens} : {})})));
+  detail.append(el('p','picker-hint',()=>CLATI18n.msg('workflow.goal_progress',{rounds:goal.roundsStarted,tokens:goal.tokensUsed})));
 }
 function renderWorkflowGoalFeedback(view,goal){
   view.editing=true;const form=el('form','workflow-goal-form'),input=el('textarea','');input.rows=4;

@@ -43,6 +43,7 @@ function installConversationExperience() {
   installUsagePopover(row.querySelector('.composer-actions'));
   installComposerPermissions();
   installModelPickerPopup();
+  installComposerGoalBar();
 }
 let roundFollowupPanel = null;
 function renderRoundFollowups(value) {
@@ -100,9 +101,11 @@ function syncUsageTrigger() {
   CLATI18n.attribute(trigger,'aria-label',()=>experienceText(key));
 }
 function paintUsageRing(ring, percent) {
+  const target = percent === null ? 0 : Math.max(0, percent);
+  if (ring._targetPercent === percent && ring.hasAttribute('data-percent')) return;
   if (ring._frame) cancelAnimationFrame(ring._frame);
   const previous = Number(ring.dataset.percent);
-  const target = percent === null ? 0 : Math.max(0, percent);
+  ring._targetPercent = percent;
   const draw = value => {
     ring.style.setProperty('--usage', `${Math.min(100,value) * 3.6}deg`);
     ring.dataset.percent = String(value);
@@ -148,9 +151,10 @@ async function refreshUsage() {
   const owner = JSON.stringify([session,generation,state.workbench?.model]);
   if (owner !== usageScope) {
     usageScope = owner;
-    document.querySelector('.context-ring')?.removeAttribute('data-percent');
+    const ring=document.querySelector('.context-ring');
+    if(ring){if(ring._frame)cancelAnimationFrame(ring._frame);ring.removeAttribute('data-percent');ring._targetPercent=undefined;}
+    usageValue=null;workbenchShell?.allowance?.update(null);
   }
-  usageValue=null;workbenchShell?.allowance?.update(null);
   const pendingPopup=document.querySelector('.context-usage-popover'), pendingRing=document.querySelector('.context-ring');
   if(pendingPopup&&pendingRing)renderUsage(pendingPopup,pendingRing);
   try {

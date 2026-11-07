@@ -1327,7 +1327,9 @@ impl App {
         };
         self.run_epoch += 1;
         let epoch = self.run_epoch;
-        self.conversation.push_user(prompt);
+        if !prompt.is_empty() {
+            self.conversation.push_user(prompt);
+        }
         self.conversation_scroll_from_bottom = 0;
         self.run_handle = Some(handle);
         self.running = true;

@@ -1855,7 +1855,7 @@ explicit human confirmation to Session, workflow version, authority generation
 and cancellation. A tool result alone is insufficient: the request becomes ready
 only after successful persistence, accounting and producer cleanup. Application
 applies it at an idle boundary; cancellation, selection changes and failed cleanup
-discard it. Goal proposals create unarmed goals with default limits and human
+discard it. Goal proposals create unarmed goals with human
 acceptance, never continuation authority. Non-current target and child policies
 exclude new workflow requests. The Run closes skipped batch calls with explicit
 not-executed error results before its terminal event; it neither invokes those
@@ -2214,3 +2214,11 @@ cannot insert the message twice. Active Runs and compactions exclude dispatch;
 manual Stop and failed-start pauses remain explicit user boundaries. Core rejects
 interrupt intents once a Run is finished or sealed, before changing queue/handoff
 state. Followup snapshots hide cached suggestions while pending input exists.
+
+
+Goal continuation has no local aggregate token, round, elapsed-time or failure
+cap. Usage is recorded durably. Legacy Goal limit fields remain decodable but
+do not participate in eligibility, request ledgers, cancellation deadlines or
+Plan-to-Goal binding. Goal requests use a ledger without an aggregate run-token
+cap. Actual provider failures end the current attempt and disarm continuation.
+Human stop, verification and durable permission facts retain their lifecycle roles.

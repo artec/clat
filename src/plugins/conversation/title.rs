@@ -89,7 +89,7 @@ impl SessionTitler for DefaultSessionTitler {
         // 拒绝（超长原始输出/清洗为空/无合规前缀）时返回空标题，
         // 调用方保留旧标题并记 evidence（INV-F1 语义）。
         Ok(GeneratedTitle {
-            title: sanitize_title(&output.text),
+            title: sanitize_title_outcome(&output.text, conversation).unwrap_or_default(),
             provider: output.provider,
             model: output.model,
         })
@@ -99,14 +99,15 @@ impl SessionTitler for DefaultSessionTitler {
 /// 取首个非空行、剥包裹引号/Markdown、剥控制序列并折叠空白；宽度合规
 /// 的标题原样通过，超限按 grapheme/词边界截断，无合规前缀返回空（调用
 /// 方保留旧标题并记一行有界 evidence）。
-pub(crate) fn sanitize_title(raw: &str) -> String {
-    sanitize_title_outcome(raw).unwrap_or_default()
+#[cfg(test)]
+fn sanitize_title(raw: &str) -> String {
+    sanitize_title_outcome(raw, "").unwrap_or_default()
 }
 
 /// 清洗结果：`Ok` 携带合规标题；`Err` 携带自有拒绝原因（进 evidence）。
 pub(crate) type TitleSanitizeResult = Result<String, &'static str>;
 
-pub(crate) fn sanitize_title_outcome(raw: &str) -> TitleSanitizeResult {
+fn sanitize_title_outcome(raw: &str, conversation: &str) -> TitleSanitizeResult {
     // 资源护栏独立于宽度契约：超长原始输出不进入任何处理。
     if raw.len() > TITLE_RAW_MAX_BYTES {
         return Err("raw title output exceeds the bounded size");
@@ -124,8 +125,24 @@ pub(crate) fn sanitize_title_outcome(raw: &str) -> TitleSanitizeResult {
     if cleaned.is_empty() {
         return Err("generated title sanitized to empty");
     }
+    if copies_conversation_line(&cleaned, conversation) {
+        return Err("generated title repeats the conversation");
+    }
     cut_within_width(&cleaned, TITLE_MAX_WIDTH)
         .ok_or("no compliant prefix within the title width cap")
+}
+
+fn copies_conversation_line(title: &str, conversation: &str) -> bool {
+    // A short input can itself be a good title. Reject longer verbatim
+    // dialogue before truncation could turn it into an apparently valid title.
+    title.width() > 24
+        && conversation.lines().any(|line| {
+            let text = line
+                .strip_prefix("user: ")
+                .or_else(|| line.strip_prefix("assistant: "))
+                .unwrap_or(line);
+            scrub_title_text(text) == title
+        })
 }
 
 /// 剥终端控制序列（OSC/CSI/ESC）与双向/不可见控制字符，空白折叠为单空格
@@ -386,19 +403,19 @@ mod tests {
     #[test]
     fn sanitize_outcome_distinguishes_rejection_reasons() {
         assert_eq!(
-            sanitize_title_outcome(&"x".repeat(4097)),
+            sanitize_title_outcome(&"x".repeat(4097), ""),
             Err("raw title output exceeds the bounded size")
         );
         assert_eq!(
-            sanitize_title_outcome("   \"\"   "),
+            sanitize_title_outcome("   \"\"   ", ""),
             Err("generated title sanitized to empty")
         );
         assert_eq!(
-            sanitize_title_outcome(&"a".repeat(64)),
+            sanitize_title_outcome(&"a".repeat(64), ""),
             Err("no compliant prefix within the title width cap")
         );
         assert_eq!(
-            sanitize_title_outcome("Fix the login bug"),
+            sanitize_title_outcome("Fix the login bug", ""),
             Ok("Fix the login bug".to_owned())
         );
     }
@@ -567,6 +584,22 @@ mod tests {
         // TITLE-CUT-1：完整短语（17 列 ≤ 上限）必须原样通过；旧码在此
         // 断言 "Fix the login bu"（把错截当真值），本断言在旧码上红。
         assert_eq!(title.title, "Fix the login bug");
+    }
+
+    #[test]
+    fn generation_rejects_a_verbatim_long_user_sentence() {
+        let sentence = "我想让插话不打断正在运行的任务";
+        let titler = test_support::test_titler(CannedFactory(sentence));
+        let config = ModelConfig::default();
+        let credentials = ProviderCredentials::for_protocol(config.protocol);
+        let conversation = format!("user: {sentence}\nassistant: 可以先检查运行状态。");
+        let generated = titler
+            .generate_title(&config, &credentials, &conversation, &CancelToken::new())
+            .expect("the model request itself succeeded");
+        assert!(
+            generated.title.is_empty(),
+            "a copied sentence is not a title"
+        );
     }
 
     /// 不变量（2026-08-19 退出延迟）：自动标题请求必须携带 deadline

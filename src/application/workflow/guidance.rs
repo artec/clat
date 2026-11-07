@@ -8,10 +8,10 @@ pub(crate) fn instructions(tools: &CapabilityView) -> String {
         guidance.push("For complex changes with unresolved scope or design choices, consider request_plan_mode. Explain the benefit and let the user choose; do not add planning ceremony to straightforward work. A confirmed request ends this run and switches policy only at the idle boundary. It is not implementation approval.");
     }
     if has("builtin.goal", "propose_goal") {
-        guidance.push("For a clear objective needing bounded multi-round continuation, consider propose_goal. Confirmation creates an unarmed durable goal with default limits and human acceptance; it does not start execution. The user starts it through the existing Goal controls. Do not propose a replacement for an unfinished Goal/Task.");
+        guidance.push("For a clear objective needing multi-round continuation, consider propose_goal. Confirmation creates an unarmed durable goal with human acceptance; it does not start execution. The user starts it through the existing Goal controls. Do not propose a replacement for an unfinished Goal/Task.");
     }
     if has("builtin.goal", "update_goal") {
-        guidance.push("When a durable Goal is present, use update_goal with its exact current revision for progress, blockers or a completion candidate. Existing budgets, verifier and explicit continuation authority remain binding; your tool call cannot grant new execution or acceptance authority.");
+        guidance.push("When a durable Goal is present, use update_goal with its exact current revision for progress, blockers or a completion candidate. The verifier and explicit continuation authority remain binding; your tool call cannot grant new execution or acceptance authority.");
     }
     if has("builtin.native_interaction", "ask_user") {
         guidance.push("Use ask_user for user-owned preferences, scope, priorities and consequential choices that repository investigation cannot resolve. In Plan Mode, investigate first, then ask focused questions with concise options and free-text input where useful. Incorporate answers and corrections into the plan and its acceptance criteria. Do not force questions when requirements are clear, repeat answered questions, or treat clarification answers as plan approval or Goal start authorization. If interaction is declined or unavailable, explain remaining uncertainty rather than inventing consent.");

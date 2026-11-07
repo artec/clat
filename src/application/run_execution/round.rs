@@ -68,14 +68,10 @@ impl RoundExecution {
             reason,
         );
         recorder.attach_aux_usage(Arc::clone(&worker.deps.sampling_usage));
-        let configured = worker.deps.config.effective_run_token_budget();
-        let budget = match worker
-            .goal_mode
-            .then(|| worker.deps.goal_service.remaining_tokens())
-            .flatten()
-        {
-            Some(cap) => Some(configured.map_or(cap, |configured| configured.min(cap))),
-            None => configured,
+        let budget = if worker.goal_mode {
+            None
+        } else {
+            worker.deps.config.effective_run_token_budget()
         };
         let budget = match worker.deps.task_service.cap() {
             Some(cap) => Some(budget.map_or(cap, |b| b.min(cap))),
@@ -176,7 +172,7 @@ impl RoundExecution {
                 spend_ledger: Some(Arc::clone(&self.spend_ledger)),
                 credentials: worker.deps.credentials.clone(),
                 history_items: worker.input.history.clone(),
-                message: worker.input.message.clone(),
+                message: worker.input.display_message.clone(),
                 client_message_id: worker.input.client_message_id.clone(),
                 cancel: worker.deps.cancel.clone(),
                 steering: worker.deps.steering.clone(),

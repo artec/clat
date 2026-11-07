@@ -37,7 +37,12 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   bindFileReferenceSubmission(owner, text, params);
   params.references = (pendingFileReferences.get(owner) || []).filter(ref => text.includes(ref.quote)).map(({path,version,quote}) => ({path,version,quote}));
   params.expected_selection_generation = state.selectionGeneration;
+  const deferredIntoRun = state.runActive;
   await rpc('input.submit', params);
+  // INV-OE1：run 进行中的提交是 deferred 插话——立即乐观回显，等下一
+  // 模型请求边界 claim（steering_applied）原地转正。等待期间 run 已终结
+  // 则不回显：条目转为空闲队列，由下一 run_started 正常入转录。
+  if (deferredIntoRun && state.runActive) echoOptimisticSteering(params.clientMessageId, text);
   if (composerOwns(owner)) {
     clearOwnedSubmittedText(owner, composerGeneration);
     if (images.length && draftEpoch === state.draft.epoch) clearDraft();

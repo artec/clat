@@ -8,6 +8,8 @@ use crate::session::event::SessionEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) trait ProjectionUnit: Send {
     fn key(&self) -> &'static str;
@@ -923,10 +925,13 @@ impl TranscriptUnit {
         if crate::session::catalog::is_context_checkpoint(event) {
             return;
         }
+        let Some(text) = transcript_user_text(event) else {
+            return;
+        };
         self.entries.push(TranscriptEntry {
             seq: event.seq,
             kind: "user".into(),
-            text: transcript_user_text(&event.data["content"]),
+            text,
             is_error: false,
             shadowed: None,
         });
@@ -938,7 +943,7 @@ impl ProjectionUnit for TranscriptUnit {
         "transcript"
     }
     fn state_version(&self) -> u64 {
-        3
+        4
     }
     fn as_of(&self) -> i64 {
         self.as_of
@@ -1063,7 +1068,7 @@ impl ProjectionUnit for MessageOutlineUnit {
     }
 
     fn state_version(&self) -> u64 {
-        3
+        4
     }
 
     fn as_of(&self) -> i64 {
@@ -1078,13 +1083,17 @@ impl ProjectionUnit for MessageOutlineUnit {
                 }
             }
             "user/message" if !crate::session::catalog::is_context_checkpoint(event) => {
+                let Some(text) = transcript_user_text(event) else {
+                    self.as_of = event.seq as i64;
+                    return Ok(());
+                };
                 self.entries.push(MessageOutlineEntry {
                     renderable: true,
                     seq: event.seq,
                     time_ms: event.time,
                     turn: self.turn,
                     role: "user".into(),
-                    preview: preview_lines(&transcript_user_text(&event.data["content"]), 1),
+                    preview: preview_lines(&text, 1),
                 })
             }
             "assistant/message" => self.entries.push(MessageOutlineEntry {
@@ -1162,7 +1171,7 @@ impl TitleTracker {
         self.0.fold(event)
     }
     pub(crate) fn explicit_title(&self) -> Option<String> {
-        self.0.title.clone().filter(|s| !s.is_empty())
+        self.0.explicit_title().map(str::to_owned)
     }
 }
 
@@ -1174,6 +1183,7 @@ struct TitleUnit {
     event_seq: Option<u64>,
     /// First user message text — the derived fallback title's source.
     first_user_text: Option<String>,
+    first_user_is_goal: bool,
     /// Seq of that first user/message (provider titles cite it).
     first_user_seq: Option<u64>,
     as_of: i64,
@@ -1186,6 +1196,7 @@ impl Default for TitleUnit {
             source: None,
             event_seq: None,
             first_user_text: None,
+            first_user_is_goal: false,
             first_user_seq: None,
             as_of: -1,
         }
@@ -1197,7 +1208,7 @@ impl ProjectionUnit for TitleUnit {
         "title"
     }
     fn state_version(&self) -> u64 {
-        2
+        3
     }
     fn as_of(&self) -> i64 {
         self.as_of
@@ -1217,13 +1228,20 @@ impl ProjectionUnit for TitleUnit {
                     .map(str::to_owned);
                 self.event_seq = Some(event.seq);
             }
-            "user/message" => {
-                if self.first_user_text.is_none()
-                    && let Some(text) = event
+            "user/message" if self.first_user_text.is_none() => {
+                use crate::goal::GoalRoundDisplay;
+                let text = match crate::goal::goal_round_display(&event.data) {
+                    Some(GoalRoundDisplay::Continuation) => None,
+                    Some(GoalRoundDisplay::Initial(text)) => {
+                        self.first_user_is_goal = true;
+                        Some(text)
+                    }
+                    None => event
                         .data
                         .pointer("/content/0/text")
-                        .and_then(Value::as_str)
-                {
+                        .and_then(Value::as_str),
+                };
+                if let Some(text) = text {
                     self.first_user_text = Some(text.to_owned());
                     self.first_user_seq = Some(event.seq);
                 }
@@ -1236,6 +1254,8 @@ impl ProjectionUnit for TitleUnit {
     fn snapshot(&self) -> Value {
         json!({
             "title": self.effective_title(),
+            "explicitTitle": self.title,
+            "firstUserIsGoal": self.first_user_is_goal,
             "source": self.source,
             "eventSeq": self.event_seq,
             "firstUserText": self.first_user_text,
@@ -1245,7 +1265,7 @@ impl ProjectionUnit for TitleUnit {
     fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
         self.title = row
             .val
-            .get("title")
+            .get("explicitTitle")
             .and_then(Value::as_str)
             .map(str::to_owned);
         self.source = row
@@ -1259,6 +1279,7 @@ impl ProjectionUnit for TitleUnit {
             .get("firstUserText")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        self.first_user_is_goal = row.val["firstUserIsGoal"].as_bool().unwrap_or_default();
         self.first_user_seq = row.val.get("firstUserSeq").and_then(Value::as_u64);
         self.as_of = row.seq;
         Ok(())
@@ -1266,28 +1287,82 @@ impl ProjectionUnit for TitleUnit {
 }
 
 impl TitleUnit {
+    fn explicit_title(&self) -> Option<&str> {
+        explicit_session_title(
+            self.title.as_deref(),
+            self.source.as_deref(),
+            self.first_user_is_goal,
+        )
+    }
+
     /// The visible title: an explicit `session/title` event, else the
     /// first-user-message fallback (catalog §2.2 — the fallback is derived,
     /// never written as a second fact).
     fn effective_title(&self) -> Option<String> {
-        if let Some(title) = self.title.as_ref().filter(|title| !title.is_empty()) {
-            return Some(title.clone());
+        if let Some(title) = self.explicit_title() {
+            return Some(title.to_owned());
         }
-        self.first_user_text
-            .as_ref()
-            .map(|text| fallback_title(text))
-            .filter(|title| !title.is_empty())
+        nonempty_fallback(self.first_user_text.as_deref())
     }
 }
 
-/// First non-empty line, truncated to 60 chars on char boundaries.
+fn explicit_session_title<'a>(
+    title: Option<&'a str>,
+    source: Option<&str>,
+    first_user_is_goal: bool,
+) -> Option<&'a str> {
+    title.filter(|title| {
+        !title.is_empty()
+            && !(first_user_is_goal
+                && source == Some("provider")
+                && *title == crate::goal::LEGACY_GOAL_TITLE)
+    })
+}
+
+/// The session list reads checkpoints without restoring or replaying the log.
+/// Re-derive fallback previews even when the cached display string is old.
+pub(crate) fn checkpoint_title(row: &CheckpointRow) -> Option<String> {
+    let state = &row.val;
+    let stored = state
+        .get("explicitTitle")
+        .or_else(|| state["eventSeq"].as_u64().and_then(|_| state.get("title")))
+        .and_then(Value::as_str);
+    explicit_session_title(
+        stored,
+        state["source"].as_str(),
+        state["firstUserIsGoal"].as_bool().unwrap_or_default(),
+    )
+    .map(str::to_owned)
+    .or_else(|| nonempty_fallback(state["firstUserText"].as_str()))
+}
+
+fn nonempty_fallback(text: Option<&str>) -> Option<String> {
+    text.map(fallback_title).filter(|title| !title.is_empty())
+}
+
+/// A temporary first-line preview, not a generated or persisted title.
 pub(crate) fn fallback_title(content: &str) -> String {
+    const MAX_COLUMNS: usize = 32;
+    const MAX_BYTES: usize = 128;
     let first_line = content
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or("");
-    first_line.chars().take(60).collect()
+    if first_line.len() <= MAX_BYTES && first_line.width() <= MAX_COLUMNS {
+        return first_line.to_owned();
+    }
+    let mut end = 0;
+    let mut columns = 0;
+    for cluster in first_line.graphemes(true) {
+        let next = end + cluster.len();
+        columns += cluster.width();
+        if columns + "…".width() > MAX_COLUMNS || next + "…".len() > MAX_BYTES {
+            break;
+        }
+        end = next;
+    }
+    format!("{}…", first_line[..end].trim_end())
 }
 
 /// 权限档位投影（DSH `sandbox/mode` 的 latest-wins fold，形态对齐
@@ -1350,7 +1425,7 @@ impl ProjectionUnit for PermissionModeUnit {
 }
 
 /// 用户标题清洗（N4，/rename 提交前）：取首个非空行、剥控制字符（含
-/// ANSI/OSC 引导符）、压缩空白、上限 60 字符（与 fallback_title 对齐）。
+/// ANSI/OSC 引导符）、压缩空白、上限 60 字符。
 /// 清洗后为空即调用方拒绝。对照 DSH normalize（maxTitleBytes 80）。
 pub(crate) fn sanitize_user_title(raw: &str) -> String {
     let mut cleaned = String::with_capacity(raw.len());
@@ -1660,7 +1735,13 @@ fn content_text(blocks: &Value) -> String {
 /// transcript 的用户行文本（M2）：文本 blocks 拼接 + 每个 image block
 /// 追加一个占位标记（文件名可读性优先于完整路径；字节与 base64 都
 /// 不属于转录）。
-fn transcript_user_text(blocks: &Value) -> String {
+fn transcript_user_text(event: &SessionEvent) -> Option<String> {
+    match crate::goal::goal_round_display(&event.data) {
+        Some(crate::goal::GoalRoundDisplay::Initial(text)) => return Some(text.to_owned()),
+        Some(crate::goal::GoalRoundDisplay::Continuation) => return None,
+        None => {}
+    }
+    let blocks = &event.data["content"];
     let mut text = content_text(blocks);
     if let Some(blocks) = blocks.as_array() {
         for block in blocks
@@ -1682,7 +1763,7 @@ fn transcript_user_text(blocks: &Value) -> String {
             text.push_str(&format!("📷[{name}]"));
         }
     }
-    text
+    Some(text)
 }
 
 #[cfg(test)]
@@ -1806,6 +1887,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fallback_title_is_a_short_preview_even_after_checkpoint_restore() {
+        use unicode_width::UnicodeWidthStr;
+
+        let prompt = "希望插话不打断正在运行的任务，并且让模型在当前轮次自然接续原来的工作。";
+        let mut unit = TitleUnit::default();
+        unit.fold(&SessionEvent::new(
+            "user/message",
+            0,
+            1,
+            payloads::user_message(prompt),
+        ))
+        .unwrap();
+        let title = unit.effective_title().unwrap();
+        let prefix = title.strip_suffix('…').expect("long input needs a preview");
+        assert!(!prefix.is_empty() && prompt.starts_with(prefix));
+        assert!(title.width() <= 32);
+        let row = CheckpointRow {
+            ver: unit.state_version(),
+            seq: unit.as_of(),
+            val: unit.snapshot(),
+        };
+        let mut restored = TitleUnit::default();
+        restored.restore(&row).unwrap();
+        assert_eq!(restored.effective_title(), Some(title));
+        assert_eq!(restored.first_user_text.as_deref(), Some(prompt));
+    }
+
     /// N4（/rename 清洗）：首个非空行、剥控制字符（含 ESC）、压空白、
     /// 60 字符上限；清洗后为空即调用方拒绝。期望值从规格推导。
     #[test]
@@ -1824,7 +1933,7 @@ mod tests {
         assert_eq!(sanitize_user_title("\u{7}\u{1b}"), "");
         // 首行之前的空行不算内容，取其后的首个非空行。
         assert_eq!(sanitize_user_title("\n\nreal title\nlater"), "real title");
-        // 上限与 fallback_title 对齐（60 字符，字符边界截断）。
+        // 手工标题上限 60 字符（字符边界截断）。
         assert_eq!(sanitize_user_title(&"x".repeat(80)), "x".repeat(60));
         assert_eq!(sanitize_user_title(&"中".repeat(80)).chars().count(), 60);
     }

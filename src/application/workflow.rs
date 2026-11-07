@@ -24,7 +24,6 @@ impl TrustedProjectApplication {
                 && self.plan_mode.is_some()
                 && !goal.armed
                 && goal_state.phase != crate::goal::GoalPhase::Complete
-                && !crate::goal::budget_exhausted(goal_state)
         });
         let links =
             continuation.map(|target| execution::PlanGoalLinks::new(&documents, &target.id));
@@ -65,7 +64,7 @@ impl TrustedProjectApplication {
             "approved_plan":plan.approved.map(|p|json!({"text":p.text,"digest":p.digest,"event_seq":p.event_seq})),
             "goal":goal,"task":task,"todos":todos.iter().take(100).map(|t|json!({"content":t.content,"status":t.status.as_str()})).collect::<Vec<_>>(),
             "todos_truncated":todos.len()>100,"busy":busy,
-            "presentation":crate::i18n::UiMessage::new("web.workflow_facts_note"),"note":"Plan Mode is policy; approved plan is durable text; todo is model-maintained; Goal is bounded durable execution state. These are distinct."}),
+            "presentation":crate::i18n::UiMessage::new("web.workflow_facts_note"),"note":"Plan Mode is policy; approved plan is durable text; todo is model-maintained; Goal is durable execution state. These are distinct."}),
         )
     }
 }
@@ -81,8 +80,6 @@ pub(crate) fn workflow_error(reason: impl Into<String>) -> ApplicationError {
         "workflow.unfinished_goal"
     } else if reason.contains("already complete") || reason.contains("goal was ended") {
         "workflow.goal_ended"
-    } else if reason.contains("budget is exhausted") {
-        "workflow.goal_limit"
     } else if reason.contains("projection") || reason.contains("regular file") {
         "workflow.projection_unavailable"
     } else if reason.contains("changed") || reason.contains("revision") {

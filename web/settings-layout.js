@@ -59,7 +59,7 @@ function installSettingsLayout() {
   const groups = [
     ['workbench', [['appearance','settings'],['terminal','terminal'],['projects','folder']]],
     ['capabilities', [['models','wasm'],['utility','sparkles'],['permissions','permission-write']]],
-    ['integrations', [['web','search'],['remote','chat'],['git','branch']]],
+    ['integrations', [['web','search'],['remote','remote'],['git','branch']]],
     ['application', [['desktop','info']]],
   ];
   function filter() {

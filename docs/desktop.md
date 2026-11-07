@@ -156,14 +156,14 @@ paused goal and resumes that same goal.
 
 The plans/goals tool has a grouped list of plan revisions, the current goal and
 model-maintained to-dos. Create a goal with **+ → Goal** in the composer and
-send the objective. The work mode control shows the selected mode and offers an
-optional token limit. The strip attached above the input shows the current
+send the objective. The work mode control shows the selected mode. The strip attached above the input shows the current
 objective and offers pause, continue, delete and details. In goal details, a
 human-acceptance goal stops at
 **Awaiting acceptance** when the agent submits its result; it is completed only
-by an explicit acceptance. **Give feedback and continue** records the feedback
-and resumes the same goal. Existing machine verifiers and execution limits still
-apply. Restart restores documents and progress, never silently rearms execution.
+by an explicit acceptance. At that point the goal strip offers acceptance and
+feedback actions. After acceptance the strip disappears; the completed goal
+remains visible in **Plans and goals**. **Give feedback and continue** records the feedback
+and resumes the same goal. Goal continuation has no local cumulative execution cap. Restart restores documents and progress, never silently rearms execution.
 Visual appearance and all interaction are accepted manually on macOS/Windows.
 
 The installed display name is **CLAT**: `CLAT.app` on macOS, and CLAT in the

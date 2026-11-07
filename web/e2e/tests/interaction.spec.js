@@ -36,6 +36,154 @@ test(`UX-1 late acknowledged ${steering ? 'steering' : 'prompt'} never reappears
 });
 }
 
+test('queued input feedback clears on receipt or expiry without hiding newer status', async ({ page }) => {
+  await open(page);
+  await page.clock.install();
+  const submit = () => page.evaluate(async () => {
+    state.runActive = true; state.switching = false; state.compactionActive = false;
+    state.workbench = { ...state.workbench, methods: ['input.submit'] };
+    dom.prompt.value = 'queued feedback test'; state.composerGeneration += 1;
+    const original = rpc;
+    let item;
+    rpc = (method, params) => {
+      if (method === 'input.submit') {
+        item = { id: params.clientMessageId, version: 1, text: params.text, draft: { uploads: [], references: [] } };
+        return Promise.resolve({ outcome: 'queued' });
+      }
+      if (method === 'input.pending') return Promise.resolve({ items: [item], paused: false, interrupting: false });
+      return original(method, params);
+    };
+    try { await submitPrompt(); }
+    finally { rpc = original; }
+    return item.id;
+  });
+  const status = page.locator('#run-state');
+  const id = await submit();
+  await expect(status).toHaveAttribute('data-presentation', 'input.accepted');
+  await page.evaluate(id => {
+    const original = rpc;
+    rpc = (method, params) => method === 'input.pending'
+      ? Promise.reject(new Error('pending refresh unavailable'))
+      : original(method, params);
+    try { handleLive({ type: 'steering_applied', client_message_id: id, text: 'queued feedback test' }); }
+    finally { rpc = original; }
+  }, id);
+  await expect(status).toBeEmpty({ timeout: 1000 });
+
+  await submit();
+  await expect(status).toHaveAttribute('data-presentation', 'input.accepted');
+  await page.evaluate(() => {
+    const original = rpc;
+    rpc = (method, params) => method === 'input.pending'
+      ? Promise.resolve({ items: [], paused: false, interrupting: false })
+      : original(method, params);
+    try { handleLive({ type: 'steering_applied', client_message_id: 'other-input', text: 'another interjection' }); }
+    finally { rpc = original; }
+  });
+  await expect(status).toBeEmpty({ timeout: 1000 });
+
+  await submit();
+  await expect(status).toHaveAttribute('data-presentation', 'input.accepted');
+  await page.clock.fastForward(5000);
+  await expect(status).toBeEmpty();
+  await expect(page.locator('#pending-input-trigger')).toBeEnabled();
+
+  await submit();
+  await page.evaluate(() => updateRunState(CLATI18n.msg('input.failed')));
+  await page.clock.fastForward(5000);
+  await expect(status).toHaveAttribute('data-presentation', 'input.failed');
+});
+
+// 乐观回显（docs/todo/web-steering-optimistic-echo-2026-11-07.md）：插话被
+// 接受即在转录出现 dim provisional 用户块，claim（steering_applied）原地
+// 转正，未 claim 的 run 终态移除。三腿分别在 legacy steer.send 与现代
+// input.submit 路径上锁定 INV-OE1/2/3。
+test('UX-1b queued text steering echoes into the transcript immediately and settles in place when claimed', async ({ page }) => {
+  await open(page);
+  const result = await page.evaluate(async () => {
+    state.runActive = true; state.switching = false; state.compactionActive = false;
+    // owner 并行 WIP 护栏：dismissAcceptedInputFeedback 尚未定义时注入 no-op
+    // stub（仅本页生效）；真实定义落地后 typeof 守卫自动让位于真实现。
+    if (typeof dismissAcceptedInputFeedback !== 'function') window.dismissAcceptedInputFeedback = () => {};
+    dom.prompt.value = 'mid-run interjection echo'; state.composerGeneration += 1; saveComposerText();
+    const original = rpc;
+    let sentId = null;
+    rpc = (method, params) => {
+      if (method !== 'steer.send') return original(method, params);
+      sentId = params.clientMessageId;
+      return Promise.resolve({ outcome: 'queued' });
+    };
+    await submitPrompt();
+    rpc = original;
+    const provisional = document.querySelector('.msg.user.provisional');
+    const echoed = Boolean(provisional) && provisional.textContent.includes('mid-run interjection echo');
+    handleLive({ type: 'steering_applied', client_message_id: sentId, text: 'mid-run interjection echo' });
+    const matches = [...document.querySelectorAll('.msg.user')]
+      .filter((node) => node.textContent.includes('mid-run interjection echo'));
+    return {
+      echoed,
+      settledInPlace: matches.length === 1 && !matches[0].classList.contains('provisional'),
+      promptCleared: dom.prompt.value === '',
+    };
+  });
+  expect(result.echoed).toBe(true);
+  expect(result.settledInPlace).toBe(true);
+  expect(result.promptCleared).toBe(true);
+});
+
+test('UX-1c unclaimed steering echo leaves the transcript when the run ends and restores the draft', async ({ page }) => {
+  await open(page);
+  const result = await page.evaluate(async () => {
+    state.runActive = true; state.switching = false; state.compactionActive = false;
+    dom.prompt.value = 'never claimed interjection'; state.composerGeneration += 1; saveComposerText();
+    const original = rpc;
+    rpc = (method) => (method === 'steer.send' ? Promise.resolve({ outcome: 'queued' }) : original(method));
+    await submitPrompt();
+    rpc = original;
+    const echoed = [...document.querySelectorAll('.msg.user.provisional')]
+      .some((node) => node.textContent.includes('never claimed interjection'));
+    handleLive({ type: 'run_completed' });
+    const ghost = [...document.querySelectorAll('.msg.user')]
+      .some((node) => node.textContent.includes('never claimed interjection'));
+    return { echoed, ghost, restored: dom.prompt.value.includes('never claimed interjection') };
+  });
+  expect(result.echoed).toBe(true);
+  expect(result.ghost).toBe(false);
+  expect(result.restored).toBe(true);
+});
+
+test('UX-1d deferred pending-input steering echoes immediately and is swept at run end', async ({ page }) => {
+  await open(page);
+  const result = await page.evaluate(async () => {
+    state.runActive = true; state.switching = false; state.compactionActive = false;
+    state.workbench = { ...(state.workbench || {}), methods: [...((state.workbench && state.workbench.methods) || []), 'input.submit'] };
+    const original = rpc;
+    const queue = [];
+    rpc = (method, params) => {
+      if (method === 'input.submit') {
+        queue.push({ id: params.clientMessageId, version: 1, text: params.text, draft: { uploads: [], references: [] } });
+        return Promise.resolve({});
+      }
+      if (method === 'input.pending') return Promise.resolve({ items: [...queue], paused: false, interrupting: false });
+      return original(method, params);
+    };
+    dom.prompt.value = 'deferred input echo'; state.composerGeneration += 1; saveComposerText();
+    await submitPrompt();
+    rpc = original;
+    const provisional = document.querySelector('.msg.user.provisional');
+    const echoed = Boolean(provisional) && provisional.textContent.includes('deferred input echo');
+    handleLive({ type: 'run_completed' });
+    const ghost = [...document.querySelectorAll('.msg.user')]
+      .some((node) => node.textContent.includes('deferred input echo'));
+    // 现代 input.submit 路径：条目留在 Host 队列（不由前端退草稿）。
+    return { echoed, stillQueued: queue.length === 1, ghost, promptCleared: dom.prompt.value === '' };
+  });
+  expect(result.echoed).toBe(true);
+  expect(result.stillQueued).toBe(true);
+  expect(result.ghost).toBe(false);
+  expect(result.promptCleared).toBe(true);
+});
+
 test('UX-2 commands select without running and dedicated navigation opens its UI', async ({ page }) => {
   await open(page);
   await page.fill('#prompt', '/new');

@@ -38,7 +38,7 @@ impl TrustedProjectApplication {
             })
     }
 
-    /// Start the explicitly armed bounded goal driver. The caller supplies
+    /// Start the explicitly armed goal driver. The caller supplies
     /// normal frontend channels, but core owns the exact synthetic prompt and
     /// its durable `source.kind=goal` admission record.
     pub fn start_goal_run(
@@ -59,17 +59,8 @@ impl TrustedProjectApplication {
             .map_err(ApplicationError::new)?;
         // goal 续轮是 core 合成消息：覆盖客户端载荷，无幂等键。
         request.message = crate::message::PendingMessage::text(round.prompt.clone());
-        let visible_prompt = round.prompt.clone();
-        let remaining = self
-            .goal_service()?
-            .remaining_time()
-            .ok_or_else(|| ApplicationError::new("no current goal time budget"))?;
-        if remaining.is_zero() {
-            self.disarm_goal();
-            return Err(ApplicationError::new("goal time budget is exhausted"));
-        }
-        let cancel = CancelToken::with_deadline(std::time::Instant::now() + remaining);
-        let catalog = run_catalog(cancel, Arc::clone(&request.approver));
+        let visible_prompt = round.display_text.clone().unwrap_or_default();
+        let catalog = run_catalog(CancelToken::new(), Arc::clone(&request.approver));
         match self.start_run_with_catalog(request, catalog, Some(round)) {
             Ok(handle) => Ok((handle, visible_prompt)),
             Err(error) => {

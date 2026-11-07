@@ -49,6 +49,7 @@ function renderPendingInputs(value) {
   pendingInputTrigger.setAttribute('aria-busy', String(pendingInputStore.interrupting || optimisticInputInterrupt !== null));
   if (pendingInputStore.items.length || pendingInputStore.interrupting) clearRoundFollowups();
   for (const item of pendingInputStore.items) rememberInputReferences(item);
+  reconcileOptimisticSteering(pendingInputStore.items);
   for (const [key, preview] of inputPreviews) {
     if (!pendingInputStore.items.some(item => JSON.parse(key)[0] === item.id && JSON.parse(key)[1] === item.version)) {
       preview.then(value => URL.revokeObjectURL(value.url)).catch(() => {}); inputPreviews.delete(key);

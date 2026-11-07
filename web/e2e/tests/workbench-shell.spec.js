@@ -231,17 +231,18 @@ test('composer creates a Goal and controls the same durable objective after paus
   expect((await facts()).plan_mode).toBe(true);
   expect((await facts()).goal.goal).toBeNull();
   await expect(page.locator('#composer-plan-toggle[data-mode="goal"]')).toBeVisible(LIVE);
-  await page.click('#composer-plan-toggle');
-  await page.fill('#composer-goal-budget', '3000000');
   await page.fill('#prompt', objective);
   await page.locator('#prompt').press('Enter');
   await expect(bar).toContainText('src/example.rs', LIVE);
+  const objectiveMessages = page.locator('.msg.user').filter({hasText:'核对第二行的结果'});
+  await expect(objectiveMessages).toHaveCount(1, LIVE);
+  await expect(objectiveMessages).not.toContainText('<goal_round>');
   await expect(page.locator('#prompt')).toHaveValue('', LIVE);
   await expect(pause).toBeEnabled(LIVE);
   const created = await facts();
   expect(created.plan_mode).toBe(false);
   expect(created.goal.goal.objective).toBe(objective);
-  expect(created.goal.goal.limits.maxTokens).toBe(3_000_000);
+  expect(created.goal.goal.limits.maxTokens).toBe(0);
   expect(created.goal.armed).toBe(true);
 
   await pause.click();
@@ -256,6 +257,8 @@ test('composer creates a Goal and controls the same durable objective after paus
   await expect(pause).toBeEnabled(LIVE);
   await expect.poll(async () => (await facts()).goal.goal.roundsStarted, LIVE).toBe(2);
   expect((await facts()).goal.goal.id).toBe(created.goal.goal.id);
+  await expect(objectiveMessages).toHaveCount(1, LIVE);
+  await expect(page.locator('.msg.user')).toHaveCount(2, LIVE);
 
   page.once('dialog', d => d.dismiss());
   await remove.click();
@@ -270,6 +273,26 @@ test('composer creates a Goal and controls the same durable objective after paus
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   await expect(bar).toBeHidden();
   expect((await facts()).goal.goal).toBeNull();
+  await expect(objectiveMessages).toHaveCount(1, LIVE);
+});
+
+test('goal result renders Markdown while retaining its text', async ({page}) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.evaluate(async () => {
+    await rpc('command.run', {command:'/goal create Review the result'});
+    const original = rpc;
+    rpc = async (method, params) => {
+      const value = await original(method, params);
+      if (method === 'workflow.details' && value.goal?.goal) {
+        value.goal.goal.lastResult = '## Summary\n\n**Done**\n\n| File | Result |\n| --- | --- |\n| src/main.rs | verified |';
+      }
+      return value;
+    };
+    document.getElementById('workflow-open').click();
+  });
+  const result = page.locator('#workflow-details .workflow-result');
+  await expect(result.locator('strong')).toHaveText('Done', LIVE);
+  await expect(result.locator('table')).toContainText('src/main.rs');
 });
 
 test('approving a plan links it to the existing paused goal instead of creating a new one', async ({page}) => {

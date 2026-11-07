@@ -2,9 +2,8 @@
 //!
 //! The DSH goal vocabulary is the reference: one current goal, whole-value
 //! `goal/change` facts, revision/CAS mutations, four durable phases, and an
-//! activation bit that is deliberately not replayed. CLAT extends the whole
-//! snapshot with acceptance and bounded-resource accounting required by its
-//! R5-B product contract; the compatibility mapping documents that extension.
+//! activation bit that is deliberately not replayed. CLAT records acceptance
+//! and execution accounting in the snapshot.
 
 use crate::session::event::payloads;
 use crate::session::id::SessionId;
@@ -16,9 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const MAX_GOAL_ROUNDS: u32 = 8;
-pub const MAX_GOAL_SECONDS: u64 = 3_600;
-pub const MAX_GOAL_FAILURES: u32 = 3;
+mod prompt;
+use prompt::render_round_prompt;
+pub(crate) use prompt::{GoalRoundDisplay, LEGACY_GOAL_TITLE, goal_round_display};
+
 const MAX_OBJECTIVE_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 16 * 1024;
 const MAX_ACCEPTANCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -59,47 +59,16 @@ pub enum GoalAcceptance {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Legacy journal fields. Default goals write zeros and execution uses observed
+/// usage, phase and explicit activation, independent of these historical values.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct GoalLimits {
     pub max_rounds: u32,
-    /// Zero means no Goal-wide token limit. Positive values are explicit limits.
     pub max_tokens: u64,
     pub max_time_secs: u64,
     pub max_failures: u32,
-}
-
-impl Default for GoalLimits {
-    fn default() -> Self {
-        Self {
-            max_rounds: MAX_GOAL_ROUNDS,
-            max_tokens: 0,
-            max_time_secs: MAX_GOAL_SECONDS,
-            max_failures: MAX_GOAL_FAILURES,
-        }
-    }
-}
-
-impl GoalLimits {
-    pub(crate) fn token_cap(&self) -> Option<u64> {
-        (self.max_tokens > 0).then_some(self.max_tokens)
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.max_rounds == 0 || self.max_rounds > MAX_GOAL_ROUNDS {
-            return Err(format!("goal max rounds must be 1..={MAX_GOAL_ROUNDS}"));
-        }
-        if self.max_time_secs == 0 || self.max_time_secs > MAX_GOAL_SECONDS {
-            return Err(format!(
-                "goal max time must be 1..={MAX_GOAL_SECONDS} seconds"
-            ));
-        }
-        if self.max_failures == 0 || self.max_failures > MAX_GOAL_FAILURES {
-            return Err(format!("goal max failures must be 1..={MAX_GOAL_FAILURES}"));
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -141,8 +110,19 @@ pub struct GoalView {
 #[derive(Clone, Debug)]
 pub(crate) struct GoalRound {
     pub prompt: String,
+    pub display_text: Option<String>,
     pub message: Value,
     pub started_at: Instant,
+}
+
+impl GoalRound {
+    pub(crate) fn display_message(&self) -> crate::message::MessageContent {
+        self.display_text
+            .as_ref()
+            .map_or_else(Default::default, |text| {
+                crate::message::MessageContent::text(text.clone())
+            })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -245,7 +225,6 @@ impl GoalService {
         binding: Option<(&str, &[NewSessionEvent])>,
     ) -> Result<GoalView, String> {
         validate_objective(objective)?;
-        limits.validate()?;
         validate_acceptance(&acceptance)?;
         let _lane = self
             .write_lane
@@ -320,12 +299,6 @@ impl GoalService {
             ) {
                 return Err("a complete goal cannot be resumed".into());
             }
-            if state.rounds_started >= state.limits.max_rounds
-                || token_budget_exhausted(state)
-                || state.elapsed_ms >= state.limits.max_time_secs.saturating_mul(1000)
-            {
-                return Err("goal budget is exhausted".into());
-            }
             state.phase = GoalPhase::Active;
             state.blocked_reason = None;
             // Resume changes durable eligibility only. Starting continuation
@@ -339,9 +312,6 @@ impl GoalService {
         require_revision(&view.state, expected_revision)?;
         if view.state.phase != GoalPhase::Active {
             return Err("only an active goal can be armed".into());
-        }
-        if budget_exhausted(&view.state) {
-            return Err("goal budget is exhausted".into());
         }
         match self.sessions.active_id() {
             Some(session) => self.set_armed(session, true)?,
@@ -419,16 +389,7 @@ impl GoalService {
                 }
                 state.failures = state.failures.saturating_add(1);
                 state.last_result = Some(format!("acceptance failed: {durable_error}"));
-                if state.failures >= state.limits.max_failures {
-                    state.phase = GoalPhase::Blocked;
-                    state.blocked_reason = Some(GoalBlockReason {
-                        code: "acceptance-failed".into(),
-                        message: durable_error.clone(),
-                    });
-                    Ok(false)
-                } else {
-                    Ok(true)
-                }
+                Ok(true)
             })?;
             return Err(format!(
                 "goal acceptance failed and was recorded at revision {}: {error}",
@@ -573,13 +534,14 @@ impl GoalService {
         if !view.armed {
             return Err("goal continuation is disarmed; use /goal run".into());
         }
-        if view.state.phase != GoalPhase::Active || budget_exhausted(&view.state) {
+        if view.state.phase != GoalPhase::Active {
             return Err("goal is not eligible for another round".into());
         }
-        let round = view.state.rounds_started.saturating_add(1);
-        if round > view.state.limits.max_rounds {
-            return Err("goal round budget is exhausted".into());
-        }
+        let round = view
+            .state
+            .rounds_started
+            .checked_add(1)
+            .ok_or("goal round counter overflow")?;
         let prompt = render_round_prompt(&view.state, round);
         let mut message = payloads::user_message(&prompt);
         message["source"] = json!({
@@ -590,6 +552,7 @@ impl GoalService {
         });
         Ok(GoalRound {
             prompt,
+            display_text: (round == 1).then_some(view.state.objective),
             message,
             started_at: Instant::now(),
         })
@@ -616,35 +579,13 @@ impl GoalService {
         state.elapsed_ms = state
             .elapsed_ms
             .saturating_add(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
-        if !succeeded {
+        if !succeeded && !cancelled {
             state.failures = state.failures.saturating_add(1);
         }
         if !result.trim().is_empty() {
             state.last_result = Some(truncate_utf8(result.trim(), MAX_RESULT_BYTES));
         }
-        let mut keep_armed = view.armed && !cancelled;
-        if state.phase == GoalPhase::Active {
-            if state.failures >= state.limits.max_failures {
-                state.phase = GoalPhase::Blocked;
-                state.blocked_reason = Some(GoalBlockReason {
-                    code: "failure-limit".into(),
-                    message: format!(
-                        "Goal reached its configured limit of {} failed rounds.",
-                        state.limits.max_failures
-                    ),
-                });
-                keep_armed = false;
-            } else if state.rounds_started >= state.limits.max_rounds
-                || token_budget_exhausted(&state)
-                || state.elapsed_ms >= state.limits.max_time_secs.saturating_mul(1000)
-            {
-                state.phase = GoalPhase::Paused;
-                state.blocked_reason = None;
-                keep_armed = false;
-            }
-        } else {
-            keep_armed = false;
-        }
+        let keep_armed = view.armed && succeeded && !cancelled && state.phase == GoalPhase::Active;
         state.revision = state
             .revision
             .checked_add(1)
@@ -663,30 +604,6 @@ impl GoalService {
         })
     }
 
-    pub(crate) fn remaining_tokens(&self) -> Option<u64> {
-        match self.current() {
-            Ok(Some(view)) => view
-                .state
-                .limits
-                .token_cap()
-                .map(|cap| cap.saturating_sub(view.state.tokens_used)),
-            // A missing or unreadable goal is not an unlimited goal.
-            _ => Some(0),
-        }
-    }
-
-    pub(crate) fn remaining_time(&self) -> Option<Duration> {
-        self.current().ok().flatten().map(|view| {
-            Duration::from_millis(
-                view.state
-                    .limits
-                    .max_time_secs
-                    .saturating_mul(1000)
-                    .saturating_sub(view.state.elapsed_ms),
-            )
-        })
-    }
-
     pub(crate) fn injection(&self) -> Result<GoalInjection, String> {
         let Some(view) = self.current()? else {
             return Ok(GoalInjection::default());
@@ -696,7 +613,8 @@ impl GoalService {
             "CLAT active goal context (durable, not a new user command):\n\
              id={} revision={} phase={} armed={}\n\
              objective: {}\n\
-             rounds={}/{} tokens={} elapsedMs={}/{} failures={}/{}\n\
+             rounds={} tokens={} elapsedMs={} failures={}\n\
+             Execution counters are accounting only. There is no local Goal token, round, time or failure-count cap. Historical limit fields are inactive. \
              Use update_goal with the exact current revision for progress, blocked, or a completion candidate. \
              A completion candidate is accepted only by its configured verifier; user-only acceptance requires /goal complete.",
             state.id,
@@ -705,12 +623,9 @@ impl GoalService {
             view.armed,
             state.objective,
             state.rounds_started,
-            state.limits.max_rounds,
-            state.token_usage(),
+            state.tokens_used,
             state.elapsed_ms,
-            state.limits.max_time_secs.saturating_mul(1000),
             state.failures,
-            state.limits.max_failures,
         );
         let instructions = match state.last_result.as_deref() {
             Some(progress) => format!(
@@ -726,7 +641,7 @@ impl GoalService {
                 "phase": state.phase.as_str(),
                 "armed": view.armed,
                 "roundsStarted": state.rounds_started,
-                "limits": state.limits,
+                "limits": GoalLimits::default(),
             }),
         })
     }
@@ -901,7 +816,7 @@ pub(crate) fn fold_goal_event(
             || source["goalId"].as_str() != Some(state.id.as_str())
             || source["revision"].as_u64() != Some(state.revision)
             || round != u64::from(state.rounds_started) + 1
-            || round > u64::from(state.limits.max_rounds)
+            || round > u64::from(u32::MAX)
         {
             return Err("goal round is not the next admitted round of the current goal".into());
         }
@@ -983,10 +898,6 @@ fn validate_state(state: &GoalState) -> Result<(), String> {
     }
     validate_objective(&state.objective)?;
     validate_acceptance(&state.acceptance)?;
-    state.limits.validate()?;
-    if state.rounds_started > state.limits.max_rounds || state.failures > MAX_GOAL_FAILURES {
-        return Err("goal counters exceed their structural bounds".into());
-    }
     if (state.phase == GoalPhase::Blocked) != state.blocked_reason.is_some() {
         return Err("blockedReason must be present exactly for blocked goals".into());
     }
@@ -1068,29 +979,6 @@ fn require_revision(state: &GoalState, expected: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn token_budget_exhausted(state: &GoalState) -> bool {
-    state
-        .limits
-        .token_cap()
-        .is_some_and(|cap| state.tokens_used >= cap)
-}
-
-impl GoalState {
-    pub(crate) fn token_usage(&self) -> String {
-        match self.limits.token_cap() {
-            Some(cap) => format!("{} / {cap}", self.tokens_used),
-            None => self.tokens_used.to_string(),
-        }
-    }
-}
-
-pub(crate) fn budget_exhausted(state: &GoalState) -> bool {
-    state.rounds_started >= state.limits.max_rounds
-        || token_budget_exhausted(state)
-        || state.elapsed_ms >= state.limits.max_time_secs.saturating_mul(1000)
-        || state.failures >= state.limits.max_failures
-}
-
 fn normalize_result(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -1120,13 +1008,6 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     value[..end].to_owned()
-}
-
-fn render_round_prompt(state: &GoalState, round: u32) -> String {
-    format!(
-        "<goal_round>\n<goal_id>{}</goal_id>\n<revision>{}</revision>\n<round>{}/{}</round>\n<objective>{}</objective>\nContinue the goal. Use update_goal with the exact revision to record progress, block with a concrete reason, or submit completion when the verifier is satisfied.\n</goal_round>",
-        state.id, state.revision, round, state.limits.max_rounds, state.objective
-    )
 }
 
 #[cfg(test)]
@@ -1209,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_and_budget_shapes_fail_closed() {
+    fn transition_shapes_fail_closed() {
         let mut current = Some(state());
         let mut invalid = state();
         invalid.revision = 3;
@@ -1222,11 +1103,6 @@ mod tests {
             )
             .is_err()
         );
-        let limits = GoalLimits {
-            max_rounds: MAX_GOAL_ROUNDS + 1,
-            ..GoalLimits::default()
-        };
-        assert!(limits.validate().is_err());
         assert!(validate_relative_path("src/lib.rs").is_ok());
         assert!(validate_relative_path("../escape").is_err());
         assert!(validate_relative_path("./not-canonical").is_err());
@@ -1245,5 +1121,64 @@ mod tests {
             "clearedAt": 2,
         });
         assert!(validate_change_payload(&malformed_clear).is_err());
+    }
+
+    #[test]
+    fn legacy_goal_can_resume_after_exceeding_recorded_time_tokens_and_failures() {
+        let (storage, project) = crate::test_support::roots("goal-legacy-limits");
+        std::fs::create_dir_all(&project).unwrap();
+        let sessions = Arc::new(
+            SessionService::new(
+                storage.clone(),
+                crate::session::persistence::JsonlCompression::None,
+            )
+            .unwrap(),
+        );
+        sessions
+            .new_session(&crate::session::key::ProjectKey::from_cwd(
+                &project.to_string_lossy(),
+            ))
+            .unwrap();
+        let service = GoalService::new(sessions.clone(), project);
+        let original = service
+            .create(
+                "continue the existing work",
+                GoalAcceptance::User,
+                GoalLimits {
+                    max_rounds: 1,
+                    max_tokens: 1_000_000,
+                    max_time_secs: 3600,
+                    max_failures: 1,
+                },
+                true,
+            )
+            .unwrap();
+        for _ in 0..4 {
+            let current = service.current().unwrap().unwrap();
+            service.arm(current.state.revision).unwrap();
+            let end = service
+                .finish_round(
+                    500_000,
+                    Duration::from_secs(901),
+                    false,
+                    false,
+                    "provider failed",
+                )
+                .unwrap();
+            assert_eq!(end, GoalContinuation::Stop);
+        }
+        let stopped = service.current().unwrap().unwrap();
+        assert!(!stopped.armed);
+        let paused = service.pause(stopped.state.revision).unwrap();
+        let resumed = service.resume(paused.state.revision).unwrap();
+        assert_eq!(resumed.state.id, original.state.id);
+        assert_eq!(resumed.state.tokens_used, 2_000_000);
+        assert_eq!(resumed.state.elapsed_ms, 3_604_000);
+        assert_eq!(resumed.state.failures, 4);
+        assert!(!resumed.armed);
+        service.arm(resumed.state.revision).unwrap();
+        assert!(service.next_round().is_ok());
+        sessions.quiesce_active().unwrap();
+        crate::test_support::cleanup_tree(storage.parent().unwrap());
     }
 }

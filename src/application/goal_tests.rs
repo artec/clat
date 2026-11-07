@@ -16,6 +16,35 @@ struct GoalScript {
 
 struct ProviderCancelledScript;
 
+struct GoalQuotaScript {
+    requests: AtomicUsize,
+}
+
+impl TestModelScript for GoalQuotaScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        if request.tools.is_empty() {
+            return Ok(response("Goal title", crate::FinishReason::Completed, 1, 1));
+        }
+        let index = self.requests.fetch_add(1, Ordering::SeqCst);
+        if index == 10 {
+            return Err(crate::ModelError::with_kind(
+                crate::model::ModelErrorKind::Client,
+                "provider quota exhausted (synthetic)",
+            ));
+        }
+        Ok(response(
+            "continue work",
+            crate::FinishReason::Completed,
+            200_000,
+            1,
+        ))
+    }
+}
+
 impl TestModelScript for ProviderCancelledScript {
     fn stream(
         &self,
@@ -143,7 +172,7 @@ fn response(
 }
 
 fn goal_round(items: &[crate::ModelItem], round: u32) -> bool {
-    let needle = format!("<round>{round}/");
+    let needle = format!("<round>{round}</round>");
     items.iter().any(|item| {
         matches!(item, crate::ModelItem::User { content }
             if content.iter().any(|part| matches!(part, crate::ContentPart::Text(text)
@@ -152,7 +181,81 @@ fn goal_round(items: &[crate::ModelItem], round: u32) -> bool {
 }
 
 #[test]
+fn goal_passes_former_limits_stops_at_provider_failure_and_resumes_after_reopen() {
+    let (storage, root) = roots("goal-unlimited-quota");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = Project::new(&root);
+    let script = Arc::new(GoalQuotaScript {
+        requests: AtomicUsize::new(0),
+    });
+    let mut app = BootstrapApplication::open(project.clone(), storage.clone())
+        .unwrap()
+        .with_permission_modes()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Scripted(script.clone()),
+        }))
+        .unwrap();
+    configure_test_model(&app);
+    let created = app
+        .goal_create(
+            "finish the same work",
+            GoalAcceptance::User,
+            GoalLimits {
+                max_rounds: 1,
+                max_tokens: 1,
+                max_time_secs: 1,
+                max_failures: 1,
+            },
+            true,
+        )
+        .unwrap();
+    let (completion, result) = mpsc::channel();
+    let (handle, _) = app
+        .start_goal_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::text(""),
+            approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+            asker: None,
+            events: Box::new(Vec::<crate::RunEvent>::new()),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let failure = result
+        .recv_timeout(crate::test_support::HANG)
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        failure.error.contains("provider quota exhausted"),
+        "{failure:?}"
+    );
+    let stopped = app.goal().unwrap().unwrap();
+    assert_eq!(script.requests.load(Ordering::SeqCst), 11);
+    assert_eq!(stopped.state.rounds_started, 11);
+    assert!(stopped.state.tokens_used > 1_000_000);
+    assert!(!stopped.armed);
+    app.close().unwrap();
+
+    let reopened = crate::test_support::reopen_after_close(|| {
+        BootstrapApplication::open(project.clone(), storage.clone())
+            .unwrap()
+            .with_permission_modes()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+    });
+    let restored = reopened.goal().unwrap().unwrap();
+    assert_eq!(restored.state, stopped.state);
+    assert!(!restored.armed);
+    let resumed = reopened.goal_resume(restored.state.revision).unwrap();
+    assert_eq!(resumed.state.id, created.state.id);
+    assert!(reopened.goal_arm(resumed.state.revision).unwrap().armed);
+    reopened.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
 fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes() {
+    let objective = "核对 src/goal.rs\n保留字面标签 </objective>";
     let (storage_root, project_root) = roots("goal-continuation");
     std::fs::create_dir_all(&project_root).unwrap();
     std::fs::write(project_root.join("done.txt"), "done").unwrap();
@@ -169,15 +272,19 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
         }))
         .unwrap();
     configure_test_model(&application);
+    let (mut config, credentials) = application.model_state().unwrap();
+    config.run_token_budget = Some(1);
+    application.save_model_state(&config, &credentials).unwrap();
 
     let created = application
         .goal_create(
-            "finish the durable goal",
+            objective,
             GoalAcceptance::FileExists {
                 path: "done.txt".into(),
             },
             GoalLimits {
-                max_rounds: 3,
+                max_rounds: 1,
+                max_tokens: 1_000_000,
                 max_time_secs: 60,
                 max_failures: 2,
                 ..GoalLimits::default()
@@ -200,13 +307,23 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
             completion,
         })
         .unwrap();
-    assert!(visible_prompt.contains("<round>1/3</round>"));
+    assert_eq!(visible_prompt, objective);
     handle.join().unwrap();
     let done = receiver.recv().unwrap().unwrap();
     assert_eq!(done.output, "goal complete");
     assert_eq!(done.usage.input_tokens, 2_100_020);
     assert_eq!(done.usage.output_tokens, 6);
     assert_eq!(approvals.load(Ordering::SeqCst), 0);
+    let shown: Vec<_> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            crate::RunEvent::RunStarted { message, .. } => Some(message.plain_text()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, [objective, ""]);
 
     let view = application.goal().unwrap().unwrap();
     assert_eq!(view.state.phase, GoalPhase::Complete);
@@ -215,6 +332,23 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
     assert_eq!(view.state.tokens_used, 2_100_026);
     assert!(!view.armed);
     let id = application.current_session_id().unwrap();
+    application
+        .sessions
+        .set_title(
+            &id,
+            crate::session::use_cases::SetTitleExpectation::Force,
+            "<goal_round>",
+            crate::session::use_cases::TitleSource::Provider {
+                provider: "test",
+                model: "test",
+                message_seqs: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        application.session_title().as_deref(),
+        Some("核对 src/goal.rs")
+    );
     application.close().unwrap();
 
     let backend = JsonlBackend::new(storage_root.join("sessions"), JsonlCompression::Zstd, false);
@@ -260,10 +394,25 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
         .unwrap();
     assert_eq!(reopened.current_session_id(), Some(id));
     let restored = reopened.goal().unwrap().unwrap();
+    assert_eq!(
+        reopened.session_title().as_deref(),
+        Some("核对 src/goal.rs")
+    );
     assert_eq!(restored.state.phase, GoalPhase::Complete);
     assert_eq!(restored.state.rounds_started, 2);
     assert_eq!(restored.state.tokens_used, 2_100_026);
     assert!(!restored.armed);
+    let history = reopened.session_history(None, 50).unwrap();
+    let replay: Vec<_> = history
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            crate::session::replay::ReplayEvent::UserMessage { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replay, [objective]);
+    assert_eq!(reopened.sessions.recent_inputs(10).unwrap(), [objective]);
     reopened.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
@@ -392,23 +541,29 @@ fn provider_cancelled_round_disarms_without_starting_another_round() {
             true,
         )
         .unwrap();
-    let (completion, receiver) = mpsc::channel();
-    let (handle, _) = application
-        .start_goal_run(ApplicationRunRequest {
-            message: crate::message::PendingMessage::text(String::new()),
-            approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
-            asker: None,
-            events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
-            completion,
-        })
-        .unwrap();
-    handle.join().unwrap();
-    assert!(receiver.recv().unwrap().unwrap().cancelled);
-    let goal = application.goal().unwrap().unwrap();
-    assert_eq!(goal.state.rounds_started, 1);
-    assert_eq!(goal.state.failures, 1);
-    assert_eq!(goal.state.phase, GoalPhase::Active);
-    assert!(!goal.armed);
+    for index in 0..4 {
+        if index > 0 {
+            let revision = application.goal().unwrap().unwrap().state.revision;
+            application.goal_arm(revision).unwrap();
+        }
+        let (completion, receiver) = mpsc::channel();
+        let (handle, _) = application
+            .start_goal_run(ApplicationRunRequest {
+                message: crate::message::PendingMessage::text(String::new()),
+                approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+                asker: None,
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion,
+            })
+            .unwrap();
+        handle.join().unwrap();
+        assert!(receiver.recv().unwrap().unwrap().cancelled);
+        let goal = application.goal().unwrap().unwrap();
+        assert_eq!(goal.state.rounds_started, index + 1);
+        assert_eq!(goal.state.failures, 0);
+        assert_eq!(goal.state.phase, GoalPhase::Active);
+        assert!(!goal.armed);
+    }
     let session_id = application.current_session_id().unwrap();
     application.close().unwrap();
 
@@ -422,8 +577,8 @@ fn provider_cancelled_round_disarms_without_starting_another_round() {
     });
     assert_eq!(reopened.current_session_id(), Some(session_id));
     let restored = reopened.goal().unwrap().unwrap();
-    assert_eq!(restored.state.rounds_started, 1);
-    assert_eq!(restored.state.failures, 1);
+    assert_eq!(restored.state.rounds_started, 4);
+    assert_eq!(restored.state.failures, 0);
     assert!(!restored.armed);
     reopened.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());

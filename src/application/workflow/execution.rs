@@ -75,9 +75,6 @@ impl TrustedProjectApplication {
         {
             return Err("goal changed; refresh before acting".into());
         }
-        if crate::goal::budget_exhausted(&goal.state) {
-            return Err("goal budget is exhausted".into());
-        }
         let documents = self.sessions.plan_documents()?.plans;
         if documents
             .iter()
@@ -302,7 +299,7 @@ impl TrustedProjectApplication {
     pub(super) fn workflow_create_goal(
         &mut self,
         objective: &str,
-        max_tokens: Option<u64>,
+        _max_tokens: Option<u64>,
     ) -> Result<Value, String> {
         self.reject_session_switch_while_busy()
             .map_err(|e| e.to_string())?;
@@ -334,10 +331,7 @@ impl TrustedProjectApplication {
         self.goal_create(
             objective,
             crate::goal::GoalAcceptance::User,
-            crate::goal::GoalLimits {
-                max_tokens: max_tokens.unwrap_or_default(),
-                ..Default::default()
-            },
+            Default::default(),
             false,
         )
         .map_err(|e| e.to_string())?;

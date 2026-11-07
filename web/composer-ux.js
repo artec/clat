@@ -96,8 +96,77 @@ function composerSubmissionParams(text, images) {
 }
 
 const pendingTextSteering = new Map();
+// 乐观回显注册表（docs/todo/web-steering-optimistic-echo-2026-11-07.md）。
+// 插话被接受（queued / input.submit 入队）即在转录尾部出现 dim 的
+// provisional 用户块；claim（steering_applied）原地转正，未 claim 的
+// run 终态移除。纯视图态：不持久化、不进事件；legacy steer.send 与现代
+// input.submit 两条提交路径共用同一套结算/丢弃语义。
+const optimisticSteering = new Map();
+
+/// INV-OE2：claim 原地升级。命中返回 true（调用方不再 push 正式节点，
+/// 避免同一插话双节点）；未命中（他端发送 / 重放 / 未回显路径）返回
+/// false，调用方维持现状 addUserMessage。
+function settleOptimisticSteering(clientMessageId) {
+  const provisional = optimisticSteering.get(clientMessageId);
+  if (!provisional) return false;
+  optimisticSteering.delete(clientMessageId);
+  provisional.node.classList.remove('provisional');
+  return true;
+}
+
+/// INV-OE3：未 claim 而终结——移除幽灵节点并退出 live 序列（seq 绑定
+/// 依赖 liveMessageNodes 与 journal 项一一对应）。
+function discardOptimisticSteering(clientMessageId) {
+  const provisional = optimisticSteering.get(clientMessageId);
+  if (!provisional) return;
+  optimisticSteering.delete(clientMessageId);
+  const index = liveMessageNodes.indexOf(provisional.node);
+  if (index !== -1) liveMessageNodes.splice(index, 1);
+  provisional.node.remove();
+}
+
+/// run 终态扫尾：注册表剩余条目全部移除（legacy 的 restoreTextSteering
+/// 已逐条处置自己的条目；这里兜底现代 input.submit 路径——其条目仍留在
+/// Host 队列里，但本轮未投递，转录不再显示，下一 run_started 重新渲染）。
+function finishOptimisticSteering() {
+  for (const id of [...optimisticSteering.keys()]) discardOptimisticSteering(id);
+}
+
+/// 队列权威快照对账（renderPendingInputs 每次刷新调用）：条目已离队
+/// （claim 走 settle 已自清；被删除/召回）→ 移除回显；条目文本被编辑 →
+/// 原地刷新，回显与队列永不漂移。
+function reconcileOptimisticSteering(items) {
+  for (const [id, provisional] of optimisticSteering) {
+    const item = items.find((entry) => entry.id === id);
+    if (!item) { discardOptimisticSteering(id); continue; }
+    if (typeof item.text === 'string' && item.text !== provisional.text) {
+      provisional.text = item.text;
+      const body = provisional.node.querySelector('.body');
+      if (body) renderMarkdown(body, item.text);
+    }
+  }
+}
+
+/// INV-OE6：转录重建（replay.begin）/新 run 清注册表（节点已随重建
+/// 消失或已由终态扫尾处置）。
+function resetOptimisticSteering() {
+  optimisticSteering.clear();
+}
+
+/// INV-OE1：接受即回显——转录尾部 dim provisional 用户块（流式
+/// assistant / 工具卡之后，INV-OE4），入 liveMessageNodes 以便 claim 后
+/// seq 绑定（INV-OE6）。幂等：同一 id 只回显一次。
+function echoOptimisticSteering(clientMessageId, text) {
+  if (!clientMessageId || optimisticSteering.has(clientMessageId)) return;
+  const node = addUserMessage(text, null);
+  node.classList.add('provisional');
+  optimisticSteering.set(clientMessageId, { node, text });
+  liveMessageNodes.push(node);
+  scrollIfNearEnd();
+}
 
 function restoreTextSteering(id, entry) {
+  discardOptimisticSteering(id);
   pendingTextSteering.delete(id);
   const canonical = composerOwnerAliases.get(entry.owner) || entry.owner;
   const current = composerOwns(entry.owner) ? dom.prompt.value : (composerDrafts.get(canonical)?.text || '');
@@ -138,7 +207,11 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
     if (!value || value.outcome !== 'queued') pendingTextSteering.delete(clientMessageId);
     else if (pendingTextSteering.has(clientMessageId)) {
       entry.accepted = true;
+      // run 已在等待期间终结：退还编辑框、移除回显；否则立即乐观回显
+      // （INV-OE1）。claim 已先到时 entry 已被 steering_applied 分支删除，
+      // has() 为 false，天然不重复回显。
       if (entry.ended) restoreTextSteering(clientMessageId, entry);
+      else echoOptimisticSteering(clientMessageId, text);
     }
   }
   if (!composerOwns(owner) || draftEpoch !== state.draft.epoch) return;
@@ -146,7 +219,9 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
     updateRunState(CLATI18n.msg("web.run_ended_before_steering_was_accepted_draft_retained", {}, "run ended before steering was accepted; draft retained"));
     return;
   }
-  addNoticeLine(CLATI18n.msg("web.steering_queued", {}, "steering queued"));
+  // 文本路径的发送反馈就是回显本体（INV-OE1）；「排队」通知行只保留给
+  // 图片 draft-hold 路径（INV-OE5）。
+  if (images.length > 0) addNoticeLine(CLATI18n.msg("web.steering_queued", {}, "steering queued"));
   if (images.length > 0 && state.draft.clientMessageId === clientMessageId) {
     state.draft.queuedClientMessageId = clientMessageId;
     for (const image of images) image.status = 'queued';

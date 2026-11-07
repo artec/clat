@@ -277,7 +277,6 @@ function createShellComposer(shell) {
   dom['attachment-open'].before(trigger);
   (dom['composer-permission'].closest('.permission-seat') || dom['composer-permission']).after(plan);
   const popover = attachComposerPopup(trigger, trigger, menu, syncComposerGoal, 'left');
-  installComposerGoalBar();
 }
 
 async function toggleShellPlan() {

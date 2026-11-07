@@ -236,7 +236,9 @@ impl App {
         // 事件先喂会话模型。
         if let RunEvent::RunStarted { message, .. } = &event {
             if self.workflow_starting {
-                self.conversation.push_user(message.plain_text());
+                if !message.is_empty() {
+                    self.conversation.push_user(message.plain_text());
+                }
                 self.workflow_starting = false;
             }
             self.conversation.begin_live_round();

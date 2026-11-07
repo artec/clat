@@ -1191,8 +1191,10 @@ fn dispatch_covers_the_full_method_set() {
 
 #[test]
 fn command_run_starts_and_settles_an_explicit_web_goal_continuation() {
-    let (handle, storage_root, project_root) =
-        spawn_serve("serve-goal-command", TestBehavior::Success);
+    let (handle, storage_root, project_root) = spawn_serve(
+        "serve-goal-command",
+        TestBehavior::Scripted(Arc::new(crate::test_support::GoalCandidateScript)),
+    );
     let mut client = SseClient::connect(handle.addr);
     let (status, result) = post(
         handle.addr,
@@ -1214,7 +1216,11 @@ fn command_run_starts_and_settles_an_explicit_web_goal_continuation() {
     assert_eq!(status, 200);
     let shown = shown.unwrap();
     assert_eq!(shown["kind"], "goal");
-    assert_eq!(shown["goal"]["goal"]["phase"], "paused");
+    assert_eq!(shown["goal"]["goal"]["phase"], "blocked");
+    assert_eq!(
+        shown["goal"]["goal"]["blockedReason"]["code"],
+        "awaiting-user-acceptance"
+    );
     assert_eq!(shown["goal"]["armed"], false);
     cleanup(handle, &storage_root, &project_root);
 }

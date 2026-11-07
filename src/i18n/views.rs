@@ -60,13 +60,9 @@ impl GoalViewDto {
             .arg("revision", state.revision)
             .arg("objective", state.objective.clone())
             .arg("rounds", state.rounds_started)
-            .arg("max_rounds", state.limits.max_rounds)
             .arg("tokens", state.tokens_used)
-            .arg("max_tokens", state.limits.max_tokens)
             .arg("failures", state.failures)
-            .arg("max_failures", state.limits.max_failures)
-            .arg("elapsed", state.elapsed_ms)
-            .arg("max_ms", state.limits.max_time_secs.saturating_mul(1000)),
+            .arg("elapsed", state.elapsed_ms),
         ];
         if let Some(reason) = &state.blocked_reason {
             parts.push(

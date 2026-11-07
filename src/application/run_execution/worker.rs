@@ -221,6 +221,7 @@ impl RunWorker {
                     "goal continuation could not read turn state: {error}"
                 ))
             })?;
+        let display_message = next.display_message();
         let batch = [
             NewSessionEvent::new("turn/start", payloads::turn_start(next_turn)),
             NewSessionEvent::new("user/message", next.message).append(Vec::new()),
@@ -249,7 +250,7 @@ impl RunWorker {
             .map(|(_, item)| item)
             .collect();
         self.input.turn = next_turn;
-        self.input.message = crate::message::MessageContent::text(next.prompt);
+        self.input.display_message = display_message;
         self.input.client_message_id = None;
         self.first_round = false;
         Ok(())

@@ -95,10 +95,16 @@ impl RunAdmission {
                     .collect(),
             ))
         });
-        let mut blocks = message.content.blocks.clone();
-        blocks.extend(images.iter().map(|image| ContentBlock::Image {
-            attachment: image.descriptor.clone(),
-        }));
+        let display_message = match &origin {
+            AdmissionOrigin::Goal(round) => round.display_message(),
+            _ => {
+                let mut blocks = message.content.blocks.clone();
+                blocks.extend(images.iter().map(|image| ContentBlock::Image {
+                    attachment: image.descriptor.clone(),
+                }));
+                MessageContent::from_blocks(blocks)
+            }
+        };
         Ok(AdmittedRun {
             prepared: PreparedRun {
                 replay_before_seq: range.end_inclusive,
@@ -110,7 +116,7 @@ impl RunAdmission {
                     AdmissionOrigin::Goal(round) => Some(round.started_at),
                     _ => None,
                 },
-                message: MessageContent::from_blocks(blocks),
+                display_message,
                 client_message_id: message.client_message_id.clone(),
                 receipt,
                 _committed: (),
@@ -151,7 +157,7 @@ pub(super) struct PreparedRun {
     pub(super) history: Vec<ModelItem>,
     pub(super) journal: Arc<dyn RunJournal>,
     pub(super) goal_round_started: Option<std::time::Instant>,
-    pub(super) message: MessageContent,
+    pub(super) display_message: MessageContent,
     pub(super) client_message_id: Option<crate::message::ClientMessageId>,
     pub(super) receipt: Option<Box<AdmissionReceipt>>,
 }

@@ -87,8 +87,8 @@ it remains off unless `serve` is started with `--im wechat`.
   optional user-configured read-only LSP navigation (`definition`, `references`,
   `implementation`, `hover`) through CLAT-managed sandboxed stdio; and `/context`
   for a one-shot estimate of the model-facing context breakdown.
-- **Bounded agent intelligence** — explicit local project/user memory with no
-  model writes; one durable CAS goal per session with user-armed, capped
+- **Agent intelligence** — explicit local project/user memory with no
+  model writes; one durable CAS goal per session with user-armed
   continuation; and a default-off, depth-1 explorer/reviewer experiment whose
   children are confined to three project-relative read tools.
 - **Models** — built-in DeepSeek, GLM, Qwen, Kimi, and Tencent Hy presets;

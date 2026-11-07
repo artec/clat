@@ -459,15 +459,23 @@ fn replay_user_message(event: &SessionEvent, turn: u64) -> Option<ReplayEvent> {
     if crate::session::catalog::is_context_checkpoint(event) {
         return None;
     }
-    let text = event
-        .data
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|blocks| blocks_text(blocks))
-        .unwrap_or_default();
-    // MM-1A：content blocks 与客户端幂等键从 journal 词汇经
-    // adapter 的统一解析产出（live 同源，逐字段相同）。
-    let content_blocks = crate::session::adapter::content_blocks(&event.data["content"]);
+    let (text, content_blocks) = match crate::goal::goal_round_display(&event.data) {
+        Some(crate::goal::GoalRoundDisplay::Continuation) => return None,
+        Some(crate::goal::GoalRoundDisplay::Initial(text)) => (
+            text.to_owned(),
+            crate::message::MessageContent::text(text).blocks,
+        ),
+        None => {
+            let blocks = &event.data["content"];
+            (
+                blocks
+                    .as_array()
+                    .map(|blocks| blocks_text(blocks))
+                    .unwrap_or_default(),
+                crate::session::adapter::content_blocks(blocks),
+            )
+        }
+    };
     let client_message_id = event
         .data
         .get("clientMessageId")

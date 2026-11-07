@@ -16,7 +16,9 @@ pub(super) fn mount(project: &Project, state: &std::path::Path) -> HostApplicati
             .unwrap()
             .with_permission_modes()
             .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
-                behavior: TestBehavior::Success,
+                behavior: TestBehavior::Scripted(Arc::new(
+                    crate::test_support::GoalCandidateScript,
+                )),
             }))
             .unwrap(),
     )

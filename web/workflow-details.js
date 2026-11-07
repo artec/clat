@@ -93,5 +93,9 @@ function installWorkflowDetails(){
   page.addEventListener('clat:tool-refresh',()=>{if(!view.acting)void load();});
   window.addEventListener('clat:workflow-changed',()=>{if(toolViewIsOpen(page))void load();});
   page.addEventListener('clat:tool-reset',()=>{view.epoch++;view.intent++;view.value=null;view.selection=null;view.signature='';view.editing=false;});
-  workflowController={open,goal:()=>afterEnter(()=>view.select('goal')),plan:text=>afterEnter(()=>{const doc=view.value?.documents.findLast(doc=>doc.text===text);if(doc)view.select('plan:'+doc.id+':'+doc.revision);})};
+  workflowController={open,goal:()=>afterEnter(()=>view.select('goal')),feedback:id=>afterEnter(()=>{
+    view.select('goal');
+    const goal=view.value?.goal?.goal;
+    if(goal?.id===id&&goal.blockedReason?.code==='awaiting-user-acceptance'&&!view.value.busy&&!view.value.handoff&&!view.value.plan_mode&&builtinEnabled(view.value,'builtin.goal'))renderWorkflowGoalFeedback(view,goal);
+  }),plan:text=>afterEnter(()=>{const doc=view.value?.documents.findLast(doc=>doc.text===text);if(doc)view.select('plan:'+doc.id+':'+doc.revision);})};
 }

@@ -1,4 +1,4 @@
-/* The composer owns unsent Goal mode and its optional budget. Host owns all goal facts. */
+/* The composer owns unsent Goal mode. Host owns all goal facts. */
 let composerGoalDraft = null;
 let composerGoalBar = null;
 let composerGoalPending = null;
@@ -9,6 +9,12 @@ function composerWorkflow() {
   const value = shell?.workflow;
   return state.connected && value?.session === state.sessionId &&
     shell.workflowStream === state.stream && shell.workflowSelection === state.selectionGeneration ? value : null;
+}
+
+function composerWorkMode(value) {
+  if (composerGoalDraft) return 'goal';
+  if (value?.plan_mode) return 'plan';
+  return value?.goal?.armed ? 'goal' : 'normal';
 }
 
 function goalComposerLocked() {
@@ -23,7 +29,7 @@ function canComposeGoal(value) {
 }
 
 function setComposerGoalMode(active) {
-  composerGoalDraft = active ? (composerGoalDraft || {budget: ''}) : null;
+  composerGoalDraft = active ? (composerGoalDraft || {}) : null;
   state.composerGeneration++;
   saveComposerText();
   syncInteractionControls();
@@ -42,18 +48,12 @@ async function submitComposerGoal() {
   const objective = dom.prompt.value.trim();
   if (!objective || !canComposeGoal(value)) return;
   if (state.draft.images.length) { updateRunState(workflowText('goal_text_only')); return; }
-  const budget = draft.budget === '' ? null : Number(draft.budget);
-  if (budget !== null && (!Number.isSafeInteger(budget) || budget < 1)) {
-    updateRunState(workflowText('goal_budget_invalid'));
-    return;
-  }
   composerGoalPending = owner;
   syncInteractionControls();
   try {
     if (!await modelSetup.ensure() || !composerOwns(owner) || draft !== composerGoalDraft ||
         generation !== state.composerGeneration || value.session !== state.sessionId) return;
     const intent = {action:'create_goal', objective};
-    if (budget !== null) intent.max_tokens = budget;
     const result = await sendWorkflowIntent(intent, value);
     if (result !== undefined) settleComposerGoalDraft(owner, generation, draft);
   } catch (error) {
@@ -73,9 +73,11 @@ function installComposerGoalBar() {
   details.querySelector('.shell-label').replaceWith(status, objective);
   const pause = shellButton('composer-goal-pause','pause',()=>workflowText('pause_goal'),()=>act('pause'));
   const start = shellButton('composer-goal-start','play',()=>workflowText('continue_goal'),()=>act('start'));
+  const accept = shellButton('composer-goal-accept','check',()=>workflowText('accept_goal'),()=>act('complete'));
+  const feedback = shellButton('composer-goal-feedback','chat',()=>workflowText('feedback_continue'),()=>workflowController.feedback(composerWorkflow()?.goal?.goal?.id));
   const remove = shellButton('composer-goal-remove','trash',()=>workflowText('delete_goal'),()=>act('clear'));
   const expand = shellButton('composer-goal-details','open',()=>CLATI18n.msg('web.goal_details'),()=>workflowController.goal());
-  bar.append(details,remove,pause,start,expand);
+  bar.append(details,remove,pause,start,accept,feedback,expand);
   dom['composer-shell'].before(bar);
   let acting = false;
   async function act(verb) {
@@ -96,19 +98,23 @@ function installComposerGoalBar() {
   }
   function render() {
     const value = composerWorkflow(), goal = value?.goal?.goal;
-    bar.hidden = !goal;
-    if (!goal) return;
+    bar.hidden = !goal || goal.phase === 'complete';
+    if (bar.hidden) return;
     const blocked = acting || goalComposerLocked() || !builtinReady(goalPlugin);
     const armed = value.goal.armed;
     const busy = value.busy || state.runActive;
     const pausing = goal.phase === 'active' && armed;
+    const awaiting = goal.blockedReason?.code === 'awaiting-user-acceptance';
     bar.dataset.goalId = goal.id;
     CLATI18n.bind(status,'textContent',()=>workflowText(workflowGoalStatus(value)));
     objective.textContent = goal.objective;
     details.title = goal.objective;
     pause.hidden = !pausing; pause.disabled = blocked;
-    start.hidden = pausing || goal.phase === 'complete';
+    start.hidden = pausing || awaiting || goal.phase === 'complete';
     start.disabled = blocked || busy || value.handoff || value.plan_mode;
+    accept.hidden = feedback.hidden = !awaiting;
+    accept.disabled = blocked || busy || Boolean(value.handoff);
+    feedback.disabled = blocked || busy || Boolean(value.handoff) || value.plan_mode;
     remove.disabled = blocked || (busy && !armed);
     for (const button of [pause,start,remove]) {
       CLATI18n.attribute(button,'title',()=>!builtinReady(goalPlugin) ? builtinUnavailableReason(goalPlugin) :
@@ -122,7 +128,7 @@ function syncComposerGoal() {
   const value = composerWorkflow();
   const trigger = document.getElementById('composer-plan-toggle');
   if (trigger) {
-    const mode = composerGoalDraft ? 'goal' : value?.plan_mode ? 'plan' : 'normal';
+    const mode = composerWorkMode(value);
     if (trigger.dataset.mode !== mode) {
       trigger.dataset.mode = mode;
       trigger.querySelector('svg').replaceWith(svgIcon(mode === 'goal' ? 'goal' : 'plan'));
@@ -146,7 +152,20 @@ function syncComposerGoal() {
   }
   CLATI18n.attribute(dom.prompt,'placeholder',()=>composerGoalDraft ?
     workflowText('goal_objective') : CLATI18n.msg('web.describe_the_outcome_you_want'));
+  const popup = document.getElementById('work-mode-menu');
+  if (popup && !popup.hidden) syncWorkModeRows(popup, value);
   composerGoalBar?.render();
+}
+
+function syncWorkModeRows(popup, value) {
+  const current = composerWorkMode(value);
+  for (const row of popup.querySelectorAll('[data-work-mode]')) {
+    const mode = row.dataset.workMode;
+    if (mode === 'plan' || value?.plan_mode) disableBuiltin(row,value,'builtin.plan_mode');
+    else row.disabled = false;
+    if (mode === 'goal') row.disabled = !canComposeGoal(value);
+    row.setAttribute('aria-pressed', String(mode === current));
+  }
 }
 
 function installWorkModeMenu(trigger) {
@@ -168,26 +187,18 @@ function installWorkModeMenu(trigger) {
   function render(){
     popup.replaceChildren(el('h3','',()=>workflowText('work_mode')));
     const value=composerWorkflow();
-    const modeNow=composerGoalDraft?'goal':value?.plan_mode?'plan':'normal';
     for(const [mode,key,icon]of [['normal','normal','chat'],['plan',state.runActive?'stop_and_plan':'planning','plan'],['goal','goal_mode','goal']]){
       const row=shellButton('',icon,()=>workflowText(key),()=>void setMode(mode),false);
-      if(mode==='plan'||value?.plan_mode)disableBuiltin(row,value,'builtin.plan_mode');
-      if(mode==='goal')row.disabled=!canComposeGoal(value);
-      row.dataset.workMode=mode;row.setAttribute('aria-pressed',String(mode===modeNow));popup.append(row);
+      const check = svgIcon('check');
+      check.classList.add('work-mode-check');
+      row.dataset.workMode=mode;
+      row.append(check);
+      popup.append(row);
     }
-    if(composerGoalDraft)popup.append(composerGoalBudgetField(composerGoalDraft));
+    syncWorkModeRows(popup, value);
     if(retainedPlan(value))popup.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));
     popup.append(shellButton('work-mode-details','tools',()=>workflowText('open_workflow'),()=>{controller.close();workflowController.open();},false));
   }
   controller=attachComposerPopup(trigger,trigger,popup,render,'left');trigger.addEventListener('click',()=>controller.toggle());
   return controller;
-}
-
-function composerGoalBudgetField(draft) {
-  // Bind the label text separately so live locale changes preserve the field.
-  const field=el('label','composer-goal-budget'), input=el('input');
-  input.id='composer-goal-budget';input.type='number';input.min='1';input.max=String(Number.MAX_SAFE_INTEGER);input.step='1';input.value=draft.budget;
-  input.oninput=()=>{draft.budget=input.validity.badInput?'invalid':input.value;state.composerGeneration++;saveComposerText();};
-  field.append(el('span','',()=>workflowText('goal_budget')),input);
-  return field;
 }

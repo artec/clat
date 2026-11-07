@@ -380,7 +380,12 @@ fn disabled_plan_preserves_existing_approved_goal_guidance_without_new_approval(
             .unwrap()
             .unwrap();
         handle.join().unwrap();
-        assert_eq!(app.goal().unwrap().unwrap().state.rounds_started, 8);
+        let goal = app.goal().unwrap().unwrap();
+        assert_eq!(goal.state.rounds_started, 1);
+        assert_eq!(
+            goal.state.blocked_reason.as_ref().unwrap().code,
+            "awaiting-user-acceptance"
+        );
         assert_eq!(
             app.plan_state().approved.as_ref().unwrap().event_seq,
             approved.event_seq

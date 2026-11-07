@@ -20,7 +20,7 @@ impl Tool for WorkflowRequestTool {
             ),
             RequestKind::Goal => (
                 "propose_goal",
-                "Propose a durable bounded goal when continued multi-round work would help. Provide the concrete objective. Human confirmation creates an UNARMED goal after this run ends, with existing default limits and human acceptance. The user must separately start it through the existing Goal controls. Never claim it is running or approved for completion. Use update_goal for an existing goal.",
+                "Propose a durable goal when continued multi-round work would help. Provide the concrete objective. Human confirmation creates an UNARMED goal after this run ends, with human acceptance. The user must separately start it through the existing Goal controls. Never claim it is running or approved for completion. Use update_goal for an existing goal.",
             ),
         };
         ToolDefinition {

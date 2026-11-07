@@ -132,35 +132,9 @@ impl MemoryOverviewDto {
 
 impl GoalViewDto {
     pub fn to_text(&self) -> String {
-        let Some(state) = &self.goal else {
-            return "No current goal.".into();
-        };
-        let mut text = format!(
-            "Goal · {} · {}\n{} · rev {}\n\n{}\n\nRounds: {} / {}\nTokens: {}\nFailures: {} / {}\nElapsed: {} / {} ms",
-            state.phase.as_str(),
-            if self.armed { "armed" } else { "disarmed" },
-            state.id,
-            state.revision,
-            state.objective,
-            state.rounds_started,
-            state.limits.max_rounds,
-            state.token_usage(),
-            state.failures,
-            state.limits.max_failures,
-            state.elapsed_ms,
-            state.limits.max_time_secs.saturating_mul(1000),
-        );
-        if let Some(reason) = &state.blocked_reason {
-            text.push_str(&format!(
-                "\n\nBlocked · {}\n{}",
-                reason.code, reason.message
-            ));
-        }
-        if let Some(result) = &state.last_result {
-            text.push_str(&format!("\n\nLast result\n{result}"));
-        }
-        text.push_str(&format!("\n\nAcceptance: {:?}\n\n/goal run: explicitly start bounded execution\n/goal resume: state only, not execution\n/goal clear: remove goal state, not chat history", state.acceptance));
-        text
+        self.localized_text(crate::i18n::LocaleContext::new(
+            crate::i18n::Locale::English,
+        ))
     }
 }
 
@@ -234,9 +208,9 @@ mod tests {
             "blocked",
             "disarmed",
             "first\nsecond",
-            "1 / 2",
-            "20 / 64",
-            "100 / 8000 ms",
+            "Rounds: 1",
+            "Tokens: 20",
+            "Elapsed: 100 ms",
             "need input",
             "checked",
         ] {

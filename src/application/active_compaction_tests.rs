@@ -111,8 +111,15 @@ impl TestModelScript for LongTask {
         }
         let n = self.main.fetch_add(1, Ordering::SeqCst);
         self.snapshots.lock().unwrap().push(request.items.to_vec());
-        if self.goal_input.load(Ordering::SeqCst) {
-            assert!(request.items.iter().any(|item|matches!(item,ModelItem::User{content} if content.iter().any(|p|matches!(p,crate::model::ContentPart::Text(text) if text.contains("KEEP_USER_INTENT")&&text.contains("<round>1/1</round>"))))));
+        let goal = self.goal_input.load(Ordering::SeqCst);
+        if goal && n == 8 {
+            return Ok(crate::test_support::response(
+                "awaiting review",
+                FinishReason::Completed,
+            ));
+        }
+        if goal {
+            assert!(request.items.iter().any(|item|matches!(item,ModelItem::User{content} if content.iter().any(|p|matches!(p,crate::model::ContentPart::Text(text) if text.contains("KEEP_USER_INTENT")&&text.contains("<round>1</round>"))))));
         } else {
             assert!(
                 request
@@ -144,6 +151,14 @@ impl TestModelScript for LongTask {
             for call in &reply.tool_calls {
                 events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
             }
+        } else if goal {
+            reply.text.clear();
+            reply.finish_reason = FinishReason::ToolCalls;
+            reply.tool_calls.push(crate::ToolCall {
+                id: "goal-review".into(),
+                name: "update_goal".into(),
+                arguments: json!({"operation":"complete","expected_revision":1,"summary":"ready for review"}),
+            });
         } else {
             events.emit(ModelEvent::TextDelta {
                 delta: reply.text.clone(),
@@ -533,7 +548,7 @@ fn active_compaction_steering_during_summary_survives_later_checkpoints() {
 }
 
 #[test]
-fn active_compaction_goal_round_keeps_intent_budget_and_unverified_acceptance() {
+fn active_compaction_goal_round_keeps_intent_and_waits_for_user_acceptance() {
     let (mut app, script, storage) = fixture(SummaryMode::Normal, None);
     script.goal_input.store(true, Ordering::SeqCst);
     app.goal_create(
@@ -567,15 +582,12 @@ fn active_compaction_goal_round_keeps_intent_budget_and_unverified_acceptance() 
     assert!(result.is_ok(), "{result:?}");
     assert!(summaries >= 2);
     assert_eq!(view.state.rounds_started, 1);
-    assert_ne!(
+    assert_eq!(
         view.state.phase,
-        crate::goal::GoalPhase::Complete,
-        "summary is not user acceptance"
+        crate::goal::GoalPhase::Blocked,
+        "a completion candidate waits for human acceptance"
     );
-    assert!(
-        !view.armed,
-        "the original round limit must still stop continuation"
-    );
+    assert!(!view.armed);
 }
 
 #[test]

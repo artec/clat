@@ -819,8 +819,11 @@ impl App {
                     self.run_usage_acc = Usage::default();
                     self.run_routes_base = Some(self.usage_routes.clone());
                     self.run_route = None;
-                    self.conversation
-                        .push_user(image_message_label(&message.plain_text(), &message.blocks));
+                    let text = message.plain_text();
+                    if !text.is_empty() || message.has_images() {
+                        self.conversation
+                            .push_user(image_message_label(&text, &message.blocks));
+                    }
                     self.refresh_native();
                 }
                 self.handle_run_event(event);

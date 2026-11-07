@@ -16,10 +16,10 @@ pub struct ModelOutcome {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunEvent {
-    /// 初始消息事件（MM-1A typed 化）：`message` 是被接纳内容的唯一
-    /// 载体（含图片 descriptor）；wire 的 `prompt` 字段只是它的文本
-    /// 投影。`client_message_id` 存在时 = 客户端幂等键，随同一条
-    /// user/message durable event 落 journal。
+    /// Starts a run. `message` is the display input (including image
+    /// descriptors), and wire `prompt` is its text projection. A Goal
+    /// continuation has no display input. Model input comes from the journal
+    /// surface. A client message ID identifies the admitted durable input.
     RunStarted {
         project: PathBuf,
         message: MessageContent,

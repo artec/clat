@@ -410,7 +410,8 @@ For agent phase 4, keep correctness gates separate from effectiveness claims:
 
 - add one project and one user memory, restart, verify project isolation and
   stale-source display, and confirm no model answer creates a new record;
-- create a two-round file-acceptance goal with narrow limits, arm it explicitly,
+- create a file-acceptance goal, continue beyond the former round and token
+  thresholds, arm it explicitly,
   cancel once, restart, and confirm the durable counters restore while the arm
   remains off;
 - with `/subagents on`, delegate one explorer read, confirm the child sees only

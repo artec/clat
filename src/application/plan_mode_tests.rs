@@ -318,6 +318,9 @@ impl TestModelScript for PlanApprovalHandoffScript {
                     .collect::<Vec<_>>();
                 assert!(names.contains(&"write_file"));
                 assert!(names.contains(&"edit_file"));
+                if instructions.contains("phase=active armed=true") {
+                    return crate::test_support::GoalCandidateScript.stream(request, events);
+                }
                 events.emit(crate::ModelEvent::TextDelta {
                     delta: "implementation unlocked".into(),
                 });
@@ -331,6 +334,12 @@ impl TestModelScript for PlanApprovalHandoffScript {
                     reasoning: None,
                 })
             }
+            2 if request.items.iter().any(|item| {
+                matches!(item, crate::ModelItem::ToolResult(result) if result.tool_name == "update_goal")
+            }) => Ok(crate::test_support::response(
+                "implementation unlocked",
+                crate::FinishReason::Completed,
+            )),
             _ => Err(crate::ModelError::request(
                 "unexpected request in Plan Mode handoff script",
             )),
@@ -610,7 +619,7 @@ fn pu_approved_plan_is_announced_and_injected_into_a_real_goal_round() {
         receiver.recv().unwrap().unwrap().output,
         "implementation unlocked"
     );
-    assert_eq!(script.step.load(Ordering::SeqCst), 2);
+    assert_eq!(script.step.load(Ordering::SeqCst), 3);
     assert!(!app.goal().unwrap().unwrap().armed);
     assert!(app.plan_service().unwrap().state().approved.is_some());
     app.close().unwrap();

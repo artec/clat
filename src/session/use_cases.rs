@@ -406,9 +406,7 @@ impl SessionService {
                     let title = record
                         .rows
                         .get("title")
-                        .and_then(|row| row.val.get("title"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
+                        .and_then(crate::session::projection::checkpoint_title);
                     (
                         title,
                         stats

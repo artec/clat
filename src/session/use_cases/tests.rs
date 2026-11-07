@@ -2149,7 +2149,8 @@ fn new_resume_and_list_round_trip_with_checkpoints() {
     let (service, root) = service("roundtrip");
     let project = project();
     let summary = service.new_session(&project).expect("new");
-    run_turn(&service, "hello world").expect("run");
+    let prompt = "希望插话不打断正在运行的任务，并且让模型在当前轮次自然接续原来的工作。";
+    run_turn(&service, prompt).expect("run");
     service.sync_active().expect("sync");
     let key = SessionKey {
         project: project.clone(),
@@ -2163,7 +2164,7 @@ fn new_resume_and_list_round_trip_with_checkpoints() {
     assert!(
         view.transcript
             .iter()
-            .any(|line| line.kind == "user" && line.text == "hello world")
+            .any(|line| line.kind == "user" && line.text == prompt)
     );
     assert_eq!(view.turns, 1);
     assert!(!view.model_items.is_empty());
@@ -2181,9 +2182,15 @@ fn new_resume_and_list_round_trip_with_checkpoints() {
     assert_eq!(seed_markers, 1, "untouched reopens do not grow the log");
 
     // List reads the checkpoint: title/stats present without decoding
-    // log bodies.
+    // log bodies. Simulate a checkpoint written with the old preview rule.
+    let mut checkpoint = service.checkpoints.load(&key).expect("checkpoint");
+    checkpoint.rows.get_mut("title").expect("title row").val["title"] =
+        serde_json::Value::from(prompt);
+    service.checkpoints.save(&key, &checkpoint).expect("save");
     let summaries = service.list_sessions(&project).expect("list");
     assert_eq!(summaries.len(), 1);
+    assert_ne!(summaries[0].title.as_deref(), Some(prompt));
+    assert_eq!(summaries[0].title, view.title);
     assert_eq!(summaries[0].turns, 1);
     assert!(
         summaries[0].last_activity_ms >= summaries[0].created_at_ms

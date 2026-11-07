@@ -53,3 +53,43 @@ impl TestModelScript for ToolOnceScript {
         })
     }
 }
+
+/// A finite Goal fixture ends by submitting a real completion candidate.
+/// Ordinary text runs and utility requests still complete normally.
+pub struct GoalCandidateScript;
+
+impl TestModelScript for GoalCandidateScript {
+    fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        let goal = request
+            .instructions
+            .unwrap_or_default()
+            .split_once("CLAT active goal context (durable, not a new user command):\n")
+            .map(|(_, goal)| goal.lines().next().unwrap_or_default());
+        let revision = goal
+            .filter(|goal| goal.contains("phase=active armed=true"))
+            .and_then(|goal| {
+                goal.split_whitespace()
+                    .find_map(|word| word.strip_prefix("revision="))
+            })
+            .and_then(|revision| revision.parse::<u64>().ok());
+        if let Some(revision) = revision {
+            return ToolOnceScript {
+                call: ToolCall {
+                    id: format!("goal-review-{revision}"),
+                    name: "update_goal".into(),
+                    arguments: json!({
+                        "operation": "complete",
+                        "expected_revision": revision,
+                        "summary": "ready for human review"
+                    }),
+                },
+            }
+            .stream(request, events);
+        }
+        Ok(response("done", FinishReason::Completed))
+    }
+}

@@ -10,7 +10,20 @@ pub(crate) fn document(event: &SessionEvent) -> Option<SearchDocument> {
     if is_context_checkpoint(event) {
         return None;
     }
-    let (kind, blocks) = match replay_kind(&event.event_type) {
+    let replay = replay_kind(&event.event_type);
+    if replay == ReplayKind::UserMessage {
+        match crate::goal::goal_round_display(&event.data) {
+            Some(crate::goal::GoalRoundDisplay::Continuation) => return None,
+            Some(crate::goal::GoalRoundDisplay::Initial(text)) => {
+                return Some(SearchDocument {
+                    kind: "user",
+                    text: crate::redact::redact_secrets(text),
+                });
+            }
+            None => {}
+        }
+    }
+    let (kind, blocks) = match replay {
         ReplayKind::UserMessage => ("user", &event.data["content"]),
         ReplayKind::AssistantMessage => ("assistant", &event.data["message"]["content"]),
         ReplayKind::ToolResult => {

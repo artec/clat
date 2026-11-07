@@ -143,6 +143,9 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .msg.assistant > .marker { align-self: start; height: 1.8em; margin-top: 6px; }
 .msg.assistant:not(.round-hide-reasoning):has(> .reasoning:not(.hidden)) > .marker { height: 24px; margin-top: 2px; }
 .msg.user .body { border: 0; border-radius: 16px; }
+/* 插话乐观回显（docs/todo/web-steering-optimistic-echo-2026-11-07.md）：被接受
+   但未被模型 claim 的用户块 dim 呈现；steering_applied 原地转正即恢复。 */
+.msg.user.provisional { opacity: .55; }
 .work-summary { border-color: var(--line); background: transparent; }
 .composer { width: min(calc(100% - 40px), var(--content-width)); margin-inline: auto; padding-inline: 0; inset-inline: 0; }
 .composer-shell { padding: 14px 16px 10px; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--surface-input); box-shadow: none; }
@@ -418,13 +421,12 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .composer-goal-bar .shell-button { flex: none; min-height: 32px; padding: 4px 7px; }
 .composer-goal-bar .shell-button > svg { width: 16px; height: 16px; flex: none; }
 .composer-goal-bar > .shell-button > .shell-label { display: none; }
+.composer-goal-bar > :is(#composer-goal-accept, #composer-goal-feedback) > .shell-label { display: inline; }
 .composer-goal-bar #goal-badge { flex: 1; min-width: 0; overflow: hidden; font-size: var(--text-size-secondary); }
 .composer-goal-status { flex: none; font-weight: 500; }
 .composer-goal-objective { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 .composer-row #composer-plan-toggle:is([data-mode="goal"], [data-mode="plan"]) { width: auto; padding-inline: 7px; gap: 5px; }
 #composer-plan-toggle:is([data-mode="goal"], [data-mode="plan"]) .shell-label { display: inline; }
-.composer-goal-budget { display: grid; gap: 6px; padding: 8px; font-size: var(--text-size-secondary); }
-.composer-goal-budget input { min-width: 0; }
 #composer-plan-toggle[aria-pressed="true"] { background: color-mix(in srgb,var(--accent) 18%,transparent); border-radius: 8px; color: var(--signal); }
 #composer-permission-label, #composer-plan-toggle[data-mode="normal"] .shell-label { display: none; }
 .message-time { display: block; color: var(--text-muted); font-size: var(--text-size-secondary); line-height: 1.5; padding-inline-start:4px; }
@@ -506,6 +508,21 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .workspace-tool { display:grid;grid-template-columns:var(--current-sidebar) minmax(0,1fr);grid-template-rows:minmax(0,1fr);width:100%;height:100%;min-width:0;min-height:0;max-width:none;max-height:none;margin:0;padding:0;border:0;border-radius:inherit;background:var(--surface);overflow:hidden;box-shadow:none; }
 .workspace-tool .review-files,.workspace-tool .review-patch { max-height:none; }
 .workspace-tool .review-diff { max-height:none;white-space:pre-wrap;overflow-wrap:anywhere; }
+@media (min-width: 641px) {
+  #workflow-details .navigation-toolbar { display:none; }
+}
+#workflow-details .navigation-body { padding:20px 24px 32px; }
+#workflow-details .workflow-objective {
+  margin:0 0 12px;
+  font-size:var(--text-size-reading);
+  font-weight:400;
+  line-height:1.7;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+#workflow-details .workflow-goal-state { margin:0 0 12px; color:var(--text-muted); font-size:var(--text-size-secondary); }
+#workflow-details .workflow-result-heading { margin:24px 0 12px; font-size:var(--text-size-ui); font-weight:500; }
+#workflow-details .workflow-result { max-width:100%; font-weight:400; overflow-wrap:anywhere; }
 .workspace-tool .navigation-list { border:0; }
 /* Tool landing states follow the project editor's quiet, centered empty view. */
 .workspace-tool .navigation-overview {
@@ -528,6 +545,8 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .file-tree-children { margin-inline-start: 14px; border-inline-start: 1px solid var(--line); padding-inline-start: 6px; }
 .file-tree-row > .review-file { width: 100%; }
 .work-mode-menu .shell-button { width: 100%; }
+.work-mode-menu .work-mode-check { width: 16px; height: 16px; margin-inline-start: auto; visibility: hidden; }
+.work-mode-menu [aria-pressed="true"] > .work-mode-check { visibility: visible; }
 .work-mode-menu { min-width: 240px; }
 .work-mode-menu > h3:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .workflow-goal-form { display: grid; gap: 16px; max-width: 720px; }

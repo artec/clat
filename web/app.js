@@ -308,6 +308,7 @@ const ICON_PATHS = {
   play: ['m8 5 12 7-12 7z'],
   trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
   terminal: ['M6 4h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z', 'm7.5 8.5 3.5 3.5-3.5 3.5M14 15.5h3'],
+  remote: ['M7 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM9 18h2', 'M17 5a6 6 0 0 1 4 6M17 8a3 3 0 0 1 1.5 3'],
   'terminal-take-input': ['M9 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2', 'M3 12h12m-4-4 4 4-4 4m5 0h2'],
   'terminal-clear-screen': ['M13 5H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6M3 9h10', 'm18 3 1.2 3.8L23 8l-3.8 1.2L18 13l-1.2-3.8L13 8l3.8-1.2Z'],
   chat: ['M4 4h16v12H9l-5 4V4Z', 'M8 8h8M8 12h5'],
@@ -809,6 +810,7 @@ function handleFrame(frame) {
       // ORDER-1/CONT-1：转录重建即清配对注册表与终态去重记忆，随后
       // replay/live 重建等价逻辑序（O3）。
       clearToolCardScope();
+      resetOptimisticSteering();
       state.runOutcomeNoted = null;
       state.settledRpcIds.clear();
       state.accountedKeys.clear();
@@ -932,6 +934,7 @@ function handleLive(event) {
       conversationRounds.begin();
       void refreshWorkbench();
       liveMessageBase=state.history.outline.at(-1)?.seq ?? -1; liveMessageNodes=[];
+      resetOptimisticSteering();
       invalidateSuggestion(); clearRoundFollowups();
       state.runActive = true;
       runActivity.set(CLATI18n.msg('web.running'));
@@ -944,7 +947,9 @@ function handleLive(event) {
       updateRunDetail();
       syncInteractionControls();
       state.run = null;
-      liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks));
+      if (event.prompt || event.content_blocks?.length) {
+        liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks));
+      }
       break;
     case 'model_requested':
       runActivity.set(CLATI18n.msg('web.thinking_in_progress'));
@@ -1013,10 +1018,15 @@ function handleLive(event) {
       break;
     }
     case 'steering_applied':
+      dismissAcceptedInputFeedback(event.client_message_id);
       void refreshPendingInputs();
       pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
-      liveMessageNodes.push(addUserMessage(event.text || '', event.content_blocks));
+      // INV-OE2：乐观回显命中则原地转正；未命中（他端发送 / 重放路径）
+      // 维持现状 push 正式节点。
+      if (!settleOptimisticSteering(event.client_message_id)) {
+        liveMessageNodes.push(addUserMessage(event.text || '', event.content_blocks));
+      }
       addNoticeLine('', event.type);
       break;
     case 'run_completed':
@@ -1040,6 +1050,9 @@ function finishRun(event) {
   state.run = null;
   conversationRounds.finish();
   const restoredText = finishTextSteering();
+  // INV-OE3：未 claim 的乐观回显在终态一并移除（现代 input.submit 路径
+  // 的条目仍留在 Host 队列，由队列 UI 继续展示，下一 run 重新入转录）。
+  finishOptimisticSteering();
   const restoredDraft = restoreQueuedDraft() || restoredText;
   updateRunState(restoredDraft ? CLATI18n.msg("web.run_ended_before_steering_was_applied_draft_restored", {}, "run ended before steering was applied; draft restored") : '');
   updateRunDetail();

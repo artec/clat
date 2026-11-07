@@ -27,7 +27,7 @@ pub(crate) mod execution_observation;
 pub mod heavy;
 pub use heavy::{HANG, heavy};
 mod tool_once;
-pub use tool_once::ToolOnceScript;
+pub use tool_once::{GoalCandidateScript, ToolOnceScript};
 pub mod mcp_discovery;
 pub mod netiso;
 pub mod network;
