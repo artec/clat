@@ -61,8 +61,10 @@ impl ThinkingLevel {
 /// Kimi（月之暗面）与 Qwen（阿里云百炼）提供思考档位（额度监控暂无
 /// 官方文档支撑，状态栏只显示 usage 派生的 Cache/Context），Tencent
 /// （Hy Token Plan）只提供 key 记忆与 usage 派生状态——TC-0 探针实证
-/// `reasoning_effort` 在 hy4-preview 上无可复现效果（无效值也不报
-/// 错，网关接受但忽略），思考档位留空、不发送无效果参数，其它端点
+/// `reasoning_effort` 在 Hy Token Plan 订阅端点上无可复现效果（无效
+/// 值也不报错，网关接受但忽略；2026-11-07 GA 后官方调用指南在
+/// TokenHub 平台 `/v1` 端点文档化了该参数，但 plan/v3 订阅端点未经
+/// 重新探针，结论维持），思考档位留空、不发送无效果参数，其它端点
 /// 一律 `Other`（不提供该功能，显示层隐藏相关内容）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelVendor {
@@ -103,9 +105,13 @@ pub fn endpoint_vendor(endpoint: &str) -> ModelVendor {
     } else if endpoint.contains("aliyuncs.com") || endpoint.contains("dashscope") {
         // Qwen Token Plan 专用 MaaS 域名与百炼按量域名。
         ModelVendor::Qwen
-    } else if endpoint.contains("lkeap.cloud.tencent.com") {
-        // Tencent Hy Token Plan 的 OpenAI 兼容端点
-        // （api.lkeap.cloud.tencent.com/plan/v3）。
+    } else if endpoint.contains("tokenhub.tencentmaas.com")
+        || endpoint.contains("lkeap.cloud.tencent.com")
+    {
+        // Tencent Hy Token Plan 的 OpenAI 兼容端点。官方套餐文档
+        // （2026-11-04 更新）主推 tokenhub.tencentmaas.com/plan/v3，
+        // 预设 2026-11-07 随新；旧 lkeap 域名并存，为存量自定义配置
+        // 保留推导（key 记忆槽与思考显示不因域名拼写漂移）。
         ModelVendor::Tencent
     } else {
         ModelVendor::Other
@@ -125,10 +131,13 @@ pub fn thinking_levels(vendor: ModelVendor) -> &'static [ThinkingLevel] {
         // Qwen3.8-Max 官方档位 low/medium/xhigh（默认 xhigh），CLAT 三档
         // 经 wire_effort 映射后各有效果（见 wire_effort 注释）。
         ModelVendor::Qwen => &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
-        // Tencent hy4-preview：思考服务端常开（reasoning_content 恒在），
-        // 但 TC-0 探针实证 reasoning_effort 无可复现效果且无效值被
-        // 静默接受（docs/research/tc0-probe/）——档位循环会是"切换无
-        // 效果"的谎话，留空 = Shift+Tab 对该厂商无效（同 Other）。
+        // Tencent hy4（GA；原 hy4-preview）：思考服务端常开
+        //（reasoning_content 恒在），但 TC-0 探针实证 reasoning_effort
+        // 无可复现效果且无效值被静默接受（docs/research/tc0-probe/）
+        // ——档位循环会是"切换无效果"的谎话，留空 = Shift+Tab 对该
+        // 厂商无效（同 Other）。GA 调用指南在 TokenHub 平台 API
+        // 文档化了 effort（默认 high），plan/v3 订阅端点待重新探针
+        // 后再评估开档。
         ModelVendor::Tencent => &[],
         ModelVendor::Other => &[],
     }

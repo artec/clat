@@ -458,14 +458,13 @@ fn cycling_preset_applies_official_deepseek_parameters() {
         Some("kimi-for-coding")
     );
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4-preview"));
+    // 2026-11-07：Tencent 旗舰由 hy4-preview 原地升级为 GA hy4（id 跟
+    // 随模型 id），端点随官方文档换 tokenhub.tencentmaas.com 拼写。
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4"));
     // TC-1：循环经过 Tencent 预设——endpoint 为 Hy Token Plan 专用
     // 端点、extra_body 干净（探针实证不发无效果参数）。
     let (config, _) = editor.build().unwrap();
-    assert_eq!(
-        config.endpoint,
-        "https://api.lkeap.cloud.tencent.com/plan/v3"
-    );
+    assert_eq!(config.endpoint, "https://tokenhub.tencentmaas.com/plan/v3");
     assert_eq!(config.extra_body, serde_json::json!({}));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("hy3"));

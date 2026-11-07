@@ -41,8 +41,8 @@ pub(super) fn vendor_help() -> Vec<VendorHelp> {
         ),
         (
             "Hy Token Plan",
-            "https://console.cloud.tencent.com/lkeap/api",
-            "https://cloud.tencent.com/document/product/1772",
+            "https://console.cloud.tencent.com/tokenhub/tokenplan/hy",
+            "https://cloud.tencent.com/document/product/1823",
         ),
     ]
     .map(|(vendor, keys_url, help_url)| VendorHelp {

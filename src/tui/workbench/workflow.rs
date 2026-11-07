@@ -263,8 +263,13 @@ mod tests {
         let entries = workflow_entries(&value, locale);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].text.contains(locale.text("workflow.blocked")));
-        assert!(entries[0].text.contains("2/8"));
-        assert!(entries[0].text.contains("150/1000"));
+        // 上限移除后进度行不再带分母（d9c8b65b/82d7b3df）：按实际值渲染。
+        let progress = locale.render(
+            &UiMessage::new("workflow.goal_progress")
+                .arg("rounds", 2)
+                .arg("tokens", 150),
+        );
+        assert!(entries[0].text.contains(&progress));
         assert!(entries[0].text.contains("diagnostic"));
         assert!(entries[0].text.contains("partial"));
     }

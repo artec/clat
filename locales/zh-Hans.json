@@ -1348,7 +1348,7 @@
   "tui.preset_description_glm-5.3": "通过 GLM Coding Plan 使用智谱旗舰编程模型",
   "tui.preset_description_glm-5.3-flash": "通过 GLM Coding Plan 使用智谱多模态视觉模型（可读取图片）",
   "tui.preset_description_hy3": "通过 Hy Token Plan 使用腾讯 Hy3 伴生模型",
-  "tui.preset_description_hy4-preview": "腾讯混元预览模型（始终开启思考）",
+  "tui.preset_description_hy4": "腾讯混元旗舰模型（始终开启思考）",
   "tui.preset_description_kimi-for-coding": "适合日常编程工作的高效 Kimi Code 伴生模型",
   "tui.preset_description_k3.1-pro": "通过 Kimi Coding 会员使用月之暗面旗舰模型（自动上下文缓存）",
   "tui.preset_description_qwen3.8-flash": "通过 Qwen Token Plan 使用阿里快速模型（可读取图片）",

@@ -163,7 +163,12 @@ function syncWorkModeRows(popup, value) {
     const mode = row.dataset.workMode;
     if (mode === 'plan' || value?.plan_mode) disableBuiltin(row,value,'builtin.plan_mode');
     else row.disabled = false;
-    if (mode === 'goal') row.disabled = !canComposeGoal(value);
+    if (mode === 'goal') {
+      row.disabled = !canComposeGoal(value);
+      // 老行为（eda98b39 的 disableBuiltin）保留：goal 行禁用时悬停仍给原因。
+      if (row.disabled && !builtinReady(goalPlugin))
+        CLATI18n.attribute(row, 'title', () => builtinUnavailableReason(goalPlugin));
+    }
     row.setAttribute('aria-pressed', String(mode === current));
   }
 }

@@ -287,7 +287,6 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
                 max_tokens: 1_000_000,
                 max_time_secs: 60,
                 max_failures: 2,
-                ..GoalLimits::default()
             },
             true,
         )

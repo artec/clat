@@ -309,7 +309,7 @@ fn provider_credentials_preserve_the_legacy_json_array_contract() {
 /// 注入。
 #[test]
 fn server_always_on_thinking_displays_without_ladder_or_wire_params() {
-    let preset = crate::presets::preset_by_id("hy4-preview").unwrap();
+    let preset = crate::presets::preset_by_id("hy4").unwrap();
     let mut config = ModelConfig::default();
     preset.apply(&mut config);
 

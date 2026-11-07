@@ -289,7 +289,7 @@ mod tests {
             ("glm-5.3", "glm-5.3-flash"),
             ("qwen3.8-max", "qwen3.8-flash"),
             ("k3.1-pro", "kimi-for-coding"),
-            ("hy4-preview", "hy3"),
+            ("hy4", "hy3"),
         ] {
             let mut config = ModelConfig::default();
             preset_by_id(main).unwrap().apply(&mut config);

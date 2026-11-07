@@ -152,7 +152,7 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 #prompt { min-height: 62px; font-family: var(--font-ui); font-size: var(--text-size-reading); }
 .composer-row { gap: 4px; flex-wrap: wrap; }
 .composer-actions { margin-left: auto; }
-.composer-row { --composer-icon-size: 20px; --composer-control-size: 36px; }
+.composer-row { --composer-icon-size: 20px; --composer-model-icon-size: 16px; --composer-control-size: 36px; }
 .composer-row :is(#composer-add, #composer-permission, #composer-plan-toggle, #context-usage, #pending-input-trigger) {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
   width: var(--composer-control-size); height: var(--composer-control-size); min-height: var(--composer-control-size);
@@ -164,7 +164,7 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .composer-row #composer-add > svg { width: 18px; height: 18px; }
 .composer-row :is(.usage-seat, .model-picker-seat):not([hidden]) { display: flex; align-items: center; align-self: center; }
 .composer-actions .model-picker-trigger { height: var(--composer-control-size); line-height: 1; }
-.composer-actions .model-picker-trigger > svg:first-child { display: block; width: var(--composer-icon-size); height: var(--composer-icon-size); }
+.composer-actions .model-picker-trigger > svg:first-child { display: block; width: var(--composer-model-icon-size); height: var(--composer-model-icon-size); }
 .composer-actions .model-picker-trigger .picker-chevron { display: block; width: 12px; height: 12px; }
 .composer-row [aria-haspopup="dialog"][aria-expanded="true"] { background: var(--surface-raised); }
 #composer-permission[data-mode="read-only"] { color: var(--accent); }

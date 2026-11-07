@@ -2422,9 +2422,10 @@ fn model_state_migrates_merges_and_survives_reload_and_switches() {
 /// - fail-closed 文本模型（无 preset 的 custom 配置）+ 图片 → 整轮
 ///   失败，错误可行动（点名换视觉模型 GLM 5.3 Flash / 移除图片），
 ///   且**任何 journal 写入之前**失败（load_events 为空——零痕迹）；
-/// - 纯文本预设（hy4-preview：端点对图片静默弃图，TC-0 实证——
-///   CLAT 侧门承担拦截责任；旧 kimi-k3 doc-only 档已随 VP-2 升级为
-///   官方声明，不再有 unverified 预设腿）同样拒绝；
+/// - 纯文本预设（hy4：Token Plan 端点暂不支持多模态——官方模型
+///   清单 2026-11-04 注记；TC-0 时代即静默弃图——CLAT 侧门承担
+///   拦截责任；旧 kimi-k3 doc-only 档已随 VP-2 升级为官方声明，
+///   不再有 unverified 预设腿）同样拒绝；
 /// - probe-verified 的 glm-5.3-flash 放行（run 完成且 journal 带图）。
 ///
 /// 删 prepare_run 的能力门即红（前两腿变成功）。
@@ -2518,12 +2519,13 @@ fn image_attachments_are_gated_by_verified_model_capability() {
         "the rejected round materializes no session at all"
     );
 
-    // —— 2. 纯文本预设（hy4-preview：端点对图片静默弃图，TC-0 实证
-    // —— CLAT 侧门承担拦截责任）同样拒绝。——
+    // —— 2. 纯文本预设（hy4：Token Plan 端点暂不支持多模态——官方
+    // 模型清单 2026-11-04 注记；TC-0 时代即静默弃图——CLAT 侧门
+    // 承担拦截责任）同样拒绝。——
     save_config(
         &mut application,
         crate::model::ModelConfig {
-            preset: Some("hy4-preview".into()),
+            preset: Some("hy4".into()),
             ..crate::model::ModelConfig::default()
         },
     );

@@ -2529,7 +2529,7 @@ without tools. An unreadable or damaged scheduling file pauses automatic naming,
 but does not disable manual suggestions.
 Built-in DeepSeek, GLM, Qwen, Kimi, and Hy routes use the table-declared
 companion for naming (for example, `k3.1-pro` uses `kimi-for-coding` and
-`hy4-preview` uses `hy3`); other models and customized routes use the primary
+`hy4` uses `hy3`); other models and customized routes use the primary
 model. Companion requests
 keep the same endpoint and credentials, use the companion's model settings,
 and record the actual model in the title's source. Like suggestions, they

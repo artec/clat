@@ -46,7 +46,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
 | Kimi K3.1 Pro Coding Plan | `k3.1-pro` | 1M | 128K | `high` |
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
-| Hy 4 Preview · Hy Token Plan | `hy4-preview` | 1M | 64K | — (always on) |
+| Hy 4 · Hy Token Plan | `hy4` | 1M | 64K | — (always on) |
 | Hy 3 · Hy Token Plan | `hy3` | 256K | 128K | — (always on) |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
@@ -186,14 +186,27 @@ the remaining percentage when available.
 
 ### Tencent Hy Token Plan
 
-The preset uses `https://api.lkeap.cloud.tencent.com/plan/v3` with `hy4-preview`
-— the subscription endpoint for Tencent's own Hunyuan models (the separate
-"general" Token Plan aggregating third-party open models is deliberately not
-covered; those vendors already have direct presets). Generate the key in the
-TokenHub console; the same key and URL serve both plans and deduct by model id.
+The preset uses `https://tokenhub.tencentmaas.com/plan/v3` with `hy4`
+(GA) — the subscription endpoint for Tencent's own Hunyuan models (the
+separate "general" Token Plan aggregating third-party open models is
+deliberately not covered; those vendors already have direct presets).
+Generate the key in the TokenHub console; the same key and URL serve both
+plans and deduct by model id.
 
-All parameters are pinned by the TC-0 live probe
-(`docs/research/tc0-probe/`, 2026-09-02):
+Hy note (2026-11-07): the GA release upgraded the preset in place from
+`hy4-preview` to `hy4`; the endpoint spelling follows the official plan
+docs (`tokenhub.tencentmaas.com`, with the legacy `lkeap.cloud.tencent.com`
+host kept for vendor detection of saved custom configurations). The GA
+calling guide documents a `reasoning_effort` parameter (default `high`) on
+the TokenHub platform API, but the plan subscription endpoint has not been
+re-probed, so the preset keeps sending no thinking parameters. Saved
+configurations referencing `hy4-preview` simply stop resolving to a
+preset. The GA vision capability is not enabled: the plan's official model
+list still notes that multimodal input is not supported on this endpoint.
+
+All other parameters are pinned by the TC-0 live probe
+(`docs/research/tc0-probe/`, 2026-09-02) and confirmed unchanged by the GA
+spec table (1024k total window, 960k max input, 64k max output):
 
 - Thinking is always on server-side: every response carries
   `reasoning_content`, and a `thinking: {"type":"disabled"}` request is silently

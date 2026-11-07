@@ -14,8 +14,8 @@ test('a real section read failure stays visible while independent content surviv
  assert.equal(content.jobs.length,0);assert.equal(content.rules[0].id,'still-visible');assert.equal(content.deliveries.length,1);assert.equal(content.errors[0],failure);
 });
 test('the work-mode goal action follows Goal availability independently of Plan',()=>{
- const nodes=[];const element=()=>({dataset:{},disabled:false,setAttribute(){},addEventListener(){},append(){},replaceChildren(){}});
- const scope={window:new EventTarget(),state:{runActive:false},workbenchShell:{workflow:{plan_mode:false,builtin_availability:{'builtin.goal':{enabled:false,reason:{key:'disabled'}},'builtin.plan_mode':{enabled:true}}}},workflowText:k=>k,workflowGoalStatus:()=> 'paused',el:element,CLATI18n:{attribute:(node,key,read)=>node[key]=read(),present:v=>v?.key||'',msg:k=>k},shellButton:()=>{const node=element();nodes.push(node);return node;},attachComposerPopup:(_,__,___,render)=>{render();return {toggle(){},close(){}};}};
+ const nodes=[];const element=()=>{const children=[];return {dataset:{},disabled:false,setAttribute(){},addEventListener(){},append:(...added)=>children.push(...added),replaceChildren(){children.length=0;},querySelectorAll:()=>children};};
+ const scope={window:new EventTarget(),state:{runActive:false},workbenchShell:{workflow:{plan_mode:false,builtin_availability:{'builtin.goal':{enabled:false,reason:{key:'disabled'}},'builtin.plan_mode':{enabled:true}}}},workflowText:k=>k,workflowGoalStatus:()=> 'paused',el:element,svgIcon:()=>({classList:{add(){}}}),CLATI18n:{attribute:(node,key,read)=>node[key]=read(),present:v=>v?.key||'',msg:k=>k},shellButton:()=>{const node=element();nodes.push(node);return node;},attachComposerPopup:(_,__,___,render)=>{render();return {toggle(){},close(){}};}};
  vm.createContext(scope);vm.runInContext(fs.readFileSync(path.join(__dirname,'../workflow-details.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../work-mode.js'),'utf8'),scope);
  scope.installWorkModeMenu(element());
  assert.equal(nodes.find(n=>n.dataset.workMode==='goal').disabled,true);

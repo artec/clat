@@ -1348,7 +1348,7 @@
   "tui.preset_description_glm-5.3": "Zhipu flagship coding model via GLM Coding Plan",
   "tui.preset_description_glm-5.3-flash": "Zhipu multimodal vision model via GLM Coding Plan (reads images)",
   "tui.preset_description_hy3": "Tencent Hy3 companion model via Hy Token Plan",
-  "tui.preset_description_hy4-preview": "Tencent Hunyuan preview model (always-on thinking)",
+  "tui.preset_description_hy4": "Tencent Hunyuan flagship model (always-on thinking)",
   "tui.preset_description_kimi-for-coding": "Efficient Kimi Code companion for routine coding work",
   "tui.preset_description_k3.1-pro": "Moonshot flagship via Kimi Coding membership (auto context cache)",
   "tui.preset_description_qwen3.8-flash": "Alibaba fast tier via Qwen Token Plan (reads images)",

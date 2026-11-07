@@ -8,7 +8,7 @@ use crate::{ImageRequestPolicy, Modality, ModelCapabilities, ModelConfig, ModelP
 use serde_json::{Value, json};
 
 mod companions;
-use companions::{HY3, HY4_PREVIEW, KIMI_FOR_CODING};
+use companions::{HY3, HY4, KIMI_FOR_CODING};
 
 /// INV-MM2-1 预设侧能力矩阵（const 友好的静态切片；`apply` 时转入
 /// owned `ModelCapabilities` 持久化）。`image_input_verified` 依据
@@ -428,7 +428,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         user_agent: Some(KIMI_WHITELIST_UA),
     },
     KIMI_FOR_CODING,
-    HY4_PREVIEW,
+    HY4,
     HY3,
 ];
 
@@ -817,9 +817,9 @@ mod tests {
         // 值存在过（非设计常数，钉值纪律反证无合法用户值撞上）→ 归入
         // "我们种的"已知值家族，随当前预设重种。pre-fix（家族不含
         // 950K）本腿红：两次 apply 后仍是 950,000。
-        let hy = preset_by_id("hy4-preview").expect("hy4");
+        let hy = preset_by_id("hy4").expect("hy4");
         let mut zombied = ModelConfig {
-            preset: Some("hy4-preview".into()),
+            preset: Some("hy4".into()),
             max_context_tokens: Some(950_000),
             ..ModelConfig::default()
         };
@@ -832,7 +832,7 @@ mod tests {
         // 跨模型腿：带着僵尸值换预设，同样重种为新预设窗口（ curing
         // "跨模型钉死"）。
         let mut carried = ModelConfig {
-            preset: Some("hy4-preview".into()),
+            preset: Some("hy4".into()),
             max_context_tokens: Some(950_000),
             ..ModelConfig::default()
         };
@@ -845,7 +845,7 @@ mod tests {
         // 正常用户值（非设计常数违背例）不动：500,000 是干净整数，
         // 视为手填，永不覆盖。
         let mut user_value = ModelConfig {
-            preset: Some("hy4-preview".into()),
+            preset: Some("hy4".into()),
             max_context_tokens: Some(500_000),
             ..ModelConfig::default()
         };
@@ -888,10 +888,11 @@ mod tests {
     /// - k3.1-pro / kimi-for-coding：1M context / 131,072 output
     ///   （Coding 端点模型清单 + K3.1 Pro quickstart，2026-11-03 核验；
     ///   K3 时代钉值 2026-08 沿用未变）
-    /// - hy4-preview：1M context / 65,536 output（TC-2 ①：官方口径
+    /// - hy4：1M context / 65,536 output（TC-2 ①：官方口径
     ///   1M 总窗口优先（接口分解 ~960K 输入 + 64K 输出，与 TC-0 探针
     ///   一致）；output 为 TC-0 实测钉值——见
-    ///   docs/research/tc0-probe/manifest.json）
+    ///   docs/research/tc0-probe/manifest.json。2026-11-07 GA：官方
+    ///   调用指南规格表 1024k/960k/64k 同口径，钉值沿用）
     #[test]
     fn official_context_windows_and_output_limits() {
         let flash = preset_by_id("deepseek-flash").expect("flash");
@@ -918,7 +919,7 @@ mod tests {
         assert_eq!(kimi_utility.context_window, 1_000_000);
         assert_eq!(kimi_utility.output_limit, 131_072);
 
-        let hy = preset_by_id("hy4-preview").expect("hy");
+        let hy = preset_by_id("hy4").expect("hy");
         assert_eq!(hy.context_window, 1_000_000);
         assert_eq!(hy.output_limit, 65_536);
 
@@ -960,7 +961,10 @@ mod tests {
             "kimi-for-coding"
         );
         assert_eq!(presets_by_vendor("Hy Token Plan").len(), 2);
-        assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4-preview");
+        assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4");
+        // 2026-11-07 GA 原地升级：旧 hy4-preview id 不复现（SF-1 同款
+        // 零回退；官方清单虽保留旧 id，预设目录只挂 canonical 正式版）。
+        assert!(preset_by_id("hy4-preview").is_none());
         assert_eq!(presets_by_vendor("Hy Token Plan")[1].id, "hy3");
     }
 
@@ -975,7 +979,7 @@ mod tests {
             ("qwen3.8-flash", None),
             ("k3.1-pro", Some("kimi-for-coding")),
             ("kimi-for-coding", None),
-            ("hy4-preview", Some("hy3")),
+            ("hy4", Some("hy3")),
             ("hy3", None),
         ];
         for (id, utility_model) in expected {
@@ -1051,7 +1055,7 @@ mod tests {
             vec![Modality::Text, Modality::Image]
         );
         // 纯文本预设不含 Image 模态。
-        for id in ["deepseek-v4-pro", "glm-5.3", "hy4-preview", "hy3"] {
+        for id in ["deepseek-v4-pro", "glm-5.3", "hy4", "hy3"] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
@@ -1130,19 +1134,21 @@ mod tests {
         assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
     }
 
-    /// TC-1：Tencent Hy4 preview 预设参数金测——全部字段以 TC-0 探针
-    /// 钉死（docs/research/tc0-probe/manifest.json）。判别：删预设里的
-    /// 任一钉值（或误加 thinking/UA 参数）此测试红。
+    /// TC-1：Tencent Hy4 预设参数金测——字段以 TC-0 探针
+    /// （docs/research/tc0-probe/manifest.json）与 GA 官方文档
+    /// （2026-11-07 调用指南规格表/模型清单）共同钉死。判别：删预设
+    /// 里的任一钉值（或误加 thinking/UA 参数）此测试红。
     #[test]
     fn applies_official_tencent_hy_parameters() {
-        let preset = preset_by_id("hy4-preview").expect("preset exists");
-        assert_eq!(preset.model, "hy4-preview");
+        let preset = preset_by_id("hy4").expect("preset exists");
+        assert_eq!(preset.model, "hy4");
         assert_eq!(preset.vendor, "Hy Token Plan");
-        // Hy Token Plan 专用端点（不是通用 Token Plan，也不是 lkeap
-        // 按量域名）。
+        // Hy Token Plan 专用端点（不是通用 Token Plan，也不是按量
+        // 域名）；2026-11-04 官方套餐文档主推 tokenhub.tencentmaas.com
+        // 拼写（旧 lkeap 域名并存，预设随新——负责人令 2026-11-07）。
         assert_eq!(
             preset.endpoint,
-            "https://api.lkeap.cloud.tencent.com/plan/v3"
+            "https://tokenhub.tencentmaas.com/plan/v3"
         );
         assert_eq!(preset.request_path, "/chat/completions");
         // TC-2 ①：官方口径 1M 总窗口（GLM 同款钉法；接口分解
