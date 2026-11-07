@@ -38,7 +38,7 @@ pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
 ///   `api.lkeap.cloud.tencent.com/plan/v3` 并存，预设随新；厂商识别
 ///   两个域名都推导为 ModelVendor::Tencent——旧域名只为存量自定义
 ///   配置保留）。负责人裁定只接 Hy Token Plan，不接通用 Token Plan
-///  （多模型聚合，DeepSeek/GLM/Kimi/MiniMax 已有直连预设）；Hy3 作为
+///   （多模型聚合，DeepSeek/GLM/Kimi/MiniMax 已有直连预设）；Hy3 作为
 ///   utility 伴生预设复用该端点；
 /// - vendor "Hy Token Plan"（TC-2 ②裁定维持）：归队 GLM Coding Plan /
 ///   Qwen Token Plan / Kimi Coding Plan 的计划名命名模式；
@@ -51,7 +51,7 @@ pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
 ///   忽略，TC-0 实证）。GA 调用指南在 TokenHub 平台 API 上文档化了
 ///   `reasoning_effort`（hy4/hy4-preview/hy3 默认 high），但那是
 ///   `/v1` 按量端点；plan/v3 订阅端点未经重新探针，TC-0 结论
-///  （effort 无可复现效果、无效值静默接受）仍是我们对该端点的最近
+///   （effort 无可复现效果、无效值静默接受）仍是我们对该端点的最近
 ///   实证 → 预设不发 thinking 对象、不发 reasoning_effort（服务端
 ///   默认即 high，语义等价），Shift+Tab 维持无档位（待对 plan/v3
 ///   重新探针后再评估开档）；
@@ -68,15 +68,15 @@ pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
 ///   include_usage=false。GA 指南另文档化 `stream_options.
 ///   include_usage` 路径，未采纳（现端点行为已带 usage，零参数
 ///   优先，待探针复核）；
-/// - 纯文本：**端点对图片部件静默丢弃**（200 + 模型自述看不见图，
-///   probe fixture image-silent-drop）——CLAT 侧 text-only fail-closed
-///   是承担拦截责任的一侧。GA 宣传首次引入视觉理解，但 Token Plan
-///   官方模型清单（2026-11-04）注明"暂不支持多模态（图片/视频）"，
-///   探针复核前维持 TEXT_CAPS。
+/// - 多模态：**支持视觉输入**（2026-11-07 负责人裁定：此前判 text-only
+///   系误判——11-04 Token Plan 清单的"暂不支持多模态"与 image-silent-drop
+///   探针结论一并被推翻）。能力位走 OFFICIAL_VISION_CAPS（VP-2
+///   officially-declared 通道：input [Text, Image] + verified、图片策略
+///   保守档 png+jpeg/≤8 张/≤4MiB）；hy3 伴生预设维持 TEXT_CAPS。
 pub(super) const HY4: ModelPreset = ModelPreset {
     id: "hy4",
     utility_model: Some("hy3"),
-    capabilities: TEXT_CAPS,
+    capabilities: OFFICIAL_VISION_CAPS,
     name: "Hy 4",
     description: "Tencent Hunyuan flagship model (always-on thinking)",
     vendor: "Hy Token Plan",

@@ -170,6 +170,50 @@ pub(crate) fn is_summary_request(request: &ModelRequest<'_>) -> bool {
     request.items.last().is_some_and(|item|matches!(item,crate::model::ModelItem::User {content} if content.iter().any(|part|matches!(part,crate::model::ContentPart::Text(text) if text.starts_with("You are summarizing an agent task for context compaction.")))))
 }
 
+/// goal 批次（d9c8b65b）起续轮以 `<goal_round>` 用户消息下发（prompt.rs），
+/// revision 在消息内。上限移除后（maxRounds=0 无限），只回文本的脚本会让
+/// goal 永不完成→无限续轮（GOAL-REG-1）。脚本据此提交一次完成调用。
+pub(crate) fn goal_round_completion(request: &ModelRequest<'_>) -> Option<ToolCall> {
+    // 一次会话只提交一次：任何 update_goal 结果（成功或被拒）都在 items 里，
+    // 之后回文本收尾——goal 会进入完成评审或 blocked 待验收，两者对
+    // 续轮引擎都是终态，继续追交只会空转烧预算（GOAL-REG-1）。
+    if request.items.iter().any(|item| {
+        matches!(item, crate::model::ModelItem::ToolResult(result)
+            if result.tool_name == "update_goal")
+    }) {
+        return None;
+    }
+    let revision = request.items.iter().rev().find_map(|item| match item {
+        crate::model::ModelItem::User { content }
+            if content.iter().any(|part| {
+                matches!(part,
+                crate::model::ContentPart::Text(text) if text.starts_with("<goal_round>"))
+            }) =>
+        {
+            content.iter().find_map(|part| match part {
+                crate::model::ContentPart::Text(text) => text
+                    .split("<revision>")
+                    .nth(1)?
+                    .split('<')
+                    .next()?
+                    .parse::<u64>()
+                    .ok(),
+                _ => None,
+            })
+        }
+        _ => None,
+    })?;
+    Some(ToolCall {
+        id: format!("goal-round-complete-{revision}"),
+        name: "update_goal".into(),
+        arguments: json!({
+            "operation": "complete",
+            "expected_revision": revision,
+            "summary": "goal round complete",
+        }),
+    })
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum TestBehavior {

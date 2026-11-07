@@ -1014,6 +1014,7 @@ mod tests {
                 preset.id
             );
             // INV-MM2-2 的唯一放行位（officially-declared 或探针实证）。
+            // hy4 于 2026-11-07 负责人裁定为多模态（text-only 系误判）。
             let expects_images = matches!(
                 preset.id,
                 "deepseek-flash"
@@ -1022,11 +1023,12 @@ mod tests {
                     | "qwen3.8-flash"
                     | "k3.1-pro"
                     | "kimi-for-coding"
+                    | "hy4"
             );
             assert_eq!(
                 caps.accepts_image_input(),
                 expects_images,
-                "{}: vision matrix must match the declared six-model final state",
+                "{}: vision matrix must match the declared seven-model final state",
                 preset.id
             );
         }
@@ -1054,8 +1056,9 @@ mod tests {
             glm.tool_result_modalities,
             vec![Modality::Text, Modality::Image]
         );
-        // 纯文本预设不含 Image 模态。
-        for id in ["deepseek-v4-pro", "glm-5.3", "hy4", "hy3"] {
+        // 纯文本预设不含 Image 模态（hy4 已于 2026-11-07 裁定为多模态，
+        // 移入下方 officially-declared 金测）。
+        for id in ["deepseek-v4-pro", "glm-5.3", "hy3"] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
@@ -1074,6 +1077,9 @@ mod tests {
             "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
+            // 2026-11-07 负责人裁定：hy4 支持多模态（此前 text-only 判定
+            // 为误判），随 GA 升级入 officially-declared 矩阵。
+            "hy4",
         ] {
             let preset = preset_by_id(id).unwrap();
             let caps = preset.owned_capabilities();
@@ -1146,10 +1152,7 @@ mod tests {
         // Hy Token Plan 专用端点（不是通用 Token Plan，也不是按量
         // 域名）；2026-11-04 官方套餐文档主推 tokenhub.tencentmaas.com
         // 拼写（旧 lkeap 域名并存，预设随新——负责人令 2026-11-07）。
-        assert_eq!(
-            preset.endpoint,
-            "https://tokenhub.tencentmaas.com/plan/v3"
-        );
+        assert_eq!(preset.endpoint, "https://tokenhub.tencentmaas.com/plan/v3");
         assert_eq!(preset.request_path, "/chat/completions");
         // TC-2 ①：官方口径 1M 总窗口（GLM 同款钉法；接口分解
         // ~960K 输入 + 64K 输出记注释于预设上方）。output 为 TC-0
@@ -1176,12 +1179,13 @@ mod tests {
         assert!(config.extra_headers.get("User-Agent").is_none());
         // 预算种入：自动压缩窗口 = 官方口径钉值（TC-2 ①）。
         assert_eq!(config.max_context_tokens, Some(1_000_000));
-        // 能力：text-only fail-closed（端点对图片部件静默丢弃——
-        // CLAT 侧门是承担拦截责任的一侧）。
+        // 能力：多模态（2026-11-07 负责人裁定：hy4 支持视觉输入，
+        // 此前 text-only 判定系误判；走 officially-declared 矩阵，
+        // tool_result 携图仍无证据 → [Text]）。
         let caps = &config.capabilities;
-        assert!(!caps.accepts_image_input());
-        assert!(!caps.image_input_verified);
-        assert_eq!(caps.input_modalities, vec![Modality::Text]);
+        assert!(caps.accepts_image_input());
+        assert!(caps.image_input_verified);
+        assert_eq!(caps.input_modalities, vec![Modality::Text, Modality::Image]);
         assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
     }
 

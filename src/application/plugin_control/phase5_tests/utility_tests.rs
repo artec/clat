@@ -45,6 +45,16 @@ fn setup() -> (
     {
         let mut app = attached.lock().unwrap();
         crate::test_support::configure_test_model(&app);
+        // 本组只考 suggestion 句柄的租约/写入纪律；run 会触发自动命名
+        // （goal 批次起更早），关闭后避免飞行标题在 teardown 被取消而
+        // 写入 utility-log 失败证据，干扰"不该有日志"断言（GOAL-REG-1）。
+        app.edit_utility_settings(UtilitySettingsEdit {
+            naming_enabled: false,
+            suggestions_enabled: true,
+            automatic_followups: false,
+            profile: None,
+        })
+        .unwrap();
         run(&mut app);
     }
     (root, project, host, attached)

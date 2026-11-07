@@ -55,7 +55,11 @@ impl TestModelScript for ToolOnceScript {
 }
 
 /// A finite Goal fixture ends by submitting a real completion candidate.
-/// Ordinary text runs and utility requests still complete normally.
+/// Ordinary text runs and utility requests still complete normally;
+/// maintenance requests (compaction summary, title) answer with their
+/// contract-valid shapes——脚本被 checkpoint 包装明确排除（phase9 起只有
+/// 非脚本行为自动包装），维护请求必须自己给合法应答，否则压缩八段
+/// 契约与 title 管线会把 "done"/工具调用当违约（GOAL-REG-1）。
 pub struct GoalCandidateScript;
 
 impl TestModelScript for GoalCandidateScript {
@@ -64,6 +68,19 @@ impl TestModelScript for GoalCandidateScript {
         request: ModelRequest<'_>,
         events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
+        if super::is_summary_request(&request) {
+            return Ok(super::response(
+                &super::checkpoint("goal continuation checkpoint"),
+                FinishReason::Completed,
+            ));
+        }
+        if request.tools.is_empty()
+            && request
+                .instructions
+                .is_some_and(|text| text.starts_with("Generate a concise title"))
+        {
+            return Ok(super::response("goal title", FinishReason::Completed));
+        }
         let goal = request
             .instructions
             .unwrap_or_default()
@@ -75,7 +92,15 @@ impl TestModelScript for GoalCandidateScript {
                 goal.split_whitespace()
                     .find_map(|word| word.strip_prefix("revision="))
             })
-            .and_then(|revision| revision.parse::<u64>().ok());
+            .and_then(|revision| revision.parse::<u64>().ok())
+            // goal 批次起续轮以 <goal_round> 用户消息下发，两种形态都认。
+            .or_else(|| {
+                super::goal_round_completion(&request).map(|call| {
+                    call.arguments["expected_revision"]
+                        .as_u64()
+                        .unwrap_or_default()
+                })
+            });
         if let Some(revision) = revision {
             return ToolOnceScript {
                 call: ToolCall {

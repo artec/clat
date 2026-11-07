@@ -6,12 +6,26 @@ impl TestModelScript for Capture {
     fn stream(
         &self,
         request: crate::ModelRequest<'_>,
-        _: &mut dyn crate::model::ModelEventSink,
+        _events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
         self.0
             .lock()
             .unwrap()
             .push(format!("{:?} {:?}", request.instructions, request.items));
+        // goal 续轮必须提交完成，否则上限移除后（maxRounds=0）无限续轮
+        // 挂死普通 run 的首投递（GOAL-REG-1）；goal_round_completion 自带
+        // stale 重试与"已成功即收尾"（None→落到下方 done 文本）。
+        if let Some(call) = crate::test_support::goal_round_completion(&request) {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![call],
+                finish_reason: crate::model::FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
         Ok(crate::ModelResponse {
             text: if crate::test_support::is_summary_request(&request) {
                 crate::test_support::checkpoint("done")

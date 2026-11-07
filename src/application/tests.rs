@@ -2519,13 +2519,12 @@ fn image_attachments_are_gated_by_verified_model_capability() {
         "the rejected round materializes no session at all"
     );
 
-    // —— 2. 纯文本预设（hy4：Token Plan 端点暂不支持多模态——官方
-    // 模型清单 2026-11-04 注记；TC-0 时代即静默弃图——CLAT 侧门
-    // 承担拦截责任）同样拒绝。——
+    // —— 2. 纯文本预设（hy3 伴生预设：TEXT_CAPS；原夹具 hy4 已于
+    // 2026-11-07 负责人裁定为多模态，翻正后不再适用本场景）同样拒绝。——
     save_config(
         &mut application,
         crate::model::ModelConfig {
-            preset: Some("hy4".into()),
+            preset: Some("hy3".into()),
             ..crate::model::ModelConfig::default()
         },
     );
