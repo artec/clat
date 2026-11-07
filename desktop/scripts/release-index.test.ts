@@ -1,7 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { checksum, DESKTOP, json, run } from './common';
+import { checksum, DESKTOP, digest, json, run } from './common';
 import { assembleIndex, PAYLOAD, type ReleaseIndex } from './release-index';
 import { minisign } from './protect-key';
 import { fixture, generateKey, remote, sign } from './test-support';
@@ -23,11 +23,23 @@ test.skipIf(!Bun.which('minisign'))('real finalizer publishes only compact asset
     spyOn(release, 'preflightSigning').mockResolvedValue(undefined);
     const folder = join(release.root, 'assets'); mkdirSync(folder);
     for (const name of owner.archives()) { writeFileSync(join(folder, name), 'test-only archive'); checksum(join(folder, name)); }
-    await release.finalize(folder, owner.tag(), true);
+    const cliNames = release.names('cli', owner.tag());
+    const remoteHashes = Object.fromEntries(cliNames.map(name => [name, digest(join(folder, name))]));
+    for (const name of cliNames) unlinkSync(join(folder, name));
+    await release.finalize(folder, owner.tag(), true, remoteHashes);
     sign(join(folder, PAYLOAD), cli, 'CLAT v2.0.0 release index'); assembleIndex(folder);
     const publicFolder = join(release.root, 'public'); mkdirSync(publicFolder);
-    for (const name of owner.files()) writeFileSync(join(publicFolder, name), readFileSync(join(folder, name)));
+    for (const name of owner.files().filter(name => !cliNames.includes(name))) writeFileSync(join(publicFolder, name), readFileSync(join(folder, name)));
+    writeFileSync(join(publicFolder, 'remote-cli-digests.json'), JSON.stringify(remoteHashes));
     await owner.verify(publicFolder);
+    const remoteAssets = owner.files().map(name => ({ name, state: 'uploaded', digest: 'sha256:' + (remoteHashes[name] ?? digest(join(publicFolder, name))) }));
+    expect(owner.missing({tagName: owner.tag(), isDraft: true, assets: remoteAssets}, publicFolder)).toEqual([]);
+    const changed = remoteAssets.map(asset => asset.name === cliNames[0] ? {...asset, digest: 'sha256:' + '0'.repeat(64)} : asset);
+    expect(() => owner.missing({tagName: owner.tag(), isDraft: true, assets: changed}, publicFolder)).toThrow();
+    expect(() => owner.missing({tagName: owner.tag(), isDraft: true, assets: remoteAssets.filter(asset => asset.name !== cliNames[0])}, publicFolder)).toThrow();
+    writeFileSync(join(publicFolder, 'remote-cli-digests.json'), JSON.stringify({...remoteHashes, [cliNames[0]!]: '0'.repeat(64)}));
+    await expect(owner.verify(publicFolder)).rejects.toThrow();
+    writeFileSync(join(publicFolder, 'remote-cli-digests.json'), JSON.stringify(remoteHashes));
     const path = join(publicFolder, 'latest.json'), original = readFileSync(path);
     for (const root of ['cli', 'desktop'] as const) {
       const value = json<ReleaseIndex>(path); value.signatures[root] = 'invalid'; writeFileSync(path, JSON.stringify(value));

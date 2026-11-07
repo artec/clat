@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checksum, DESKTOP, digest, json, nativeTarget, ROOT } from './common';
 import { assembleIndex } from './release-index';
-import { OwnerRelease } from './owner-release';
+import { OwnerRelease, missingAssets } from './owner-release';
 import { LocalMacos } from './local-macos';
 import { DesktopRelease } from './release';
 import { build, start, startArgs, stopDevelopmentHost } from './workflow';
@@ -100,6 +100,7 @@ test('legacy publish still runs one owner entry without Python', () => {
 test('upload never publishes', async () => {
   await fixture(async (_release, owner) => {
     await withoutLock(owner); const events: string[] = [];
+    spyOn(owner, 'missing').mockReturnValue(['new-file']);
     spyOn(owner, 'draft').mockImplementation(() => remote(owner)); spyOn(owner, 'verify').mockImplementation(async () => { events.push('verified'); });
     spyOn(owner, 'gh').mockImplementation((...args) => { expect(args.slice(0, 2)).toEqual(['release', 'upload']); events.push('upload'); return ''; });
     await owner.upload(); expect(events).toEqual(['verified', 'upload']);
@@ -109,7 +110,7 @@ test('publication requires local and remote verification', async () => {
   await fixture(async (_release, owner) => {
     await withoutLock(owner); const events: string[] = [];
     spyOn(owner, 'draft').mockImplementation(() => remote(owner)); spyOn(owner, 'verify').mockImplementation(async () => { events.push('local'); });
-    spyOn(owner, 'verifyRemoteInventory').mockImplementation(() => { events.push('remote'); });
+    spyOn(owner, 'verifyRemoteInventory').mockImplementation(() => { events.push('remote'); }); spyOn(owner, 'missing').mockReturnValue([]);
     spyOn(owner, 'gh').mockImplementation((...args) => { expect(args).toContain('--draft=false'); events.push('publish'); return ''; });
     await owner.publish(); expect(events).toEqual(['local', 'remote', 'publish']);
   });
@@ -151,6 +152,7 @@ test('prepared publication uploads once and publishes without downloading assets
     spyOn(owner, 'authenticate').mockImplementation(() => {});
     spyOn(owner, 'draft').mockImplementation(() => remote(owner));
     spyOn(owner, 'verify').mockResolvedValue(undefined);
+    spyOn(owner, 'missing').mockReturnValueOnce(['new-file']).mockReturnValueOnce([]);
     const gh = spyOn(owner, 'gh').mockReturnValue('');
     await owner.complete();
     expect(gh.mock.calls.map(args => args.slice(0, 2))).toEqual([
@@ -194,5 +196,36 @@ test.skipIf(process.platform === 'win32')('release lock rejects overlap and rele
       await expect(owner.localLock(async () => {})).rejects.toThrow('已有本机发布'); throw new Error('fixture failure');
     })).rejects.toThrow('fixture failure');
     await owner.localLock(async () => {});
+  });
+});
+
+test('existing release assets must match bytes before only missing files are uploaded', () => {
+  const digestFor = (name: string) => ({a: 'abc', b: 'def'} as Record<string,string>)[name]!;
+  const draft = {tagName: 'v1', isDraft: true, assets: [{name:'a', state:'uploaded', digest:'sha256:abc'}]};
+  expect(missingAssets(draft, ['a', 'b'], digestFor)).toEqual(['b']);
+  expect(missingAssets({...draft, assets: [...draft.assets, {name:'b', state:'uploaded', digest:'sha256:def'}]}, ['a','b'], digestFor)).toEqual([]);
+  for (const asset of [{name:'a',state:'uploaded',digest:'sha256:wrong'}, {name:'a',state:'uploaded',digest:''}, {name:'a',state:'new',digest:'sha256:abc'}, {name:'unexpected',state:'uploaded',digest:'sha256:abc'}]) {
+    expect(() => missingAssets({...draft, assets:[asset]}, ['a','b'], digestFor)).toThrow();
+  }
+});
+
+test('retry skips matching assets and refuses conflicting or unverified remote bytes', async () => {
+  await fixture(async (_release, owner) => {
+    await withoutLock(owner);
+    const folder = join(owner.directory(), 'prepared'); mkdirSync(folder, {recursive: true});
+    for (const name of owner.files()) writeFileSync(join(folder, name), name);
+    spyOn(owner, 'verify').mockResolvedValue(undefined);
+    const names = owner.files();
+    const assets = names.slice(0, -1).map(name => ({name, state: 'uploaded', digest: 'sha256:' + digest(join(folder, name))}));
+    const draft = spyOn(owner, 'draft').mockReturnValue({tagName: owner.tag(), isDraft: true, assets});
+    const gh = spyOn(owner, 'gh').mockReturnValue('');
+    await owner.upload();
+    expect(gh).toHaveBeenCalledTimes(1);
+    expect(gh.mock.calls[0]).toContain(join(folder, names.at(-1)!));
+    expect(gh.mock.calls[0]).not.toContain('--clobber');
+    gh.mockClear();
+    draft.mockReturnValue({tagName: owner.tag(), isDraft: true, assets: [...assets, {name: names.at(-1)!, state:'uploaded', digest:'sha256:bad'}]});
+    await expect(owner.upload()).rejects.toThrow();
+    expect(gh).not.toHaveBeenCalled();
   });
 });

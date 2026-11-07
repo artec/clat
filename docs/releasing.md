@@ -184,17 +184,19 @@ The script:
 1. selects the draft matching the root Cargo.toml version;
 2. derives the complete expected CLI/desktop set from `desktop/assets.json`;
 3. refuses to continue while an archive or manifest is missing;
-4. downloads all archives/manifests and checks exact names and bytes;
+4. reads GitHub SHA-256 metadata for the six CLI archives and downloads their small checksum files; it downloads the Windows installers needed for local signing and checks exact names and digests;
 5. signs/notarizes desktop assets locally, creates the signed updater index,
    then signs the shared payload with the CLI key and embeds both index signatures;
 6. verifies both trust roots, version bindings and all four index destinations;
-7. uploads only the verified local files. After a successful upload, it checks
-   the draft asset names via GitHub metadata and publishes the draft. Uploaded
-   assets are not downloaded again.
+7. compares each existing draft asset's uploaded state and GitHub SHA-256 digest
+   with the verified local file, and uploads only missing files. A missing digest,
+   mismatched file, unexpected asset or incomplete upload stops publication;
+   the owner must inspect the draft rather than silently overwrite it. Immediately
+   before publishing, the complete remote inventory and digests are checked again.
 
 An interrupted upload/publication can be retried with the same `./publish`.
 Verified local files under `dist-release/<tag>/prepared/` are reused, avoiding
-repeat signing/notarization. To intentionally rebuild a prepared version, move
+repeat signing/notarization. Remote CLI digests are saved with the prepared files and bound into the signed index; each retry and publication rechecks GitHub metadata. If a CLI asset disappears, changes, lacks a digest or is not uploaded, publication stops. To intentionally rebuild a prepared version, move
 that version's `prepared/` directory aside first. These local directories are
 Git-ignored and contain release assets, not private keys. A published release is
 never silently edited as though it were still a draft.
@@ -350,7 +352,7 @@ The macOS architecture pipelines remain sequential, preserving the shared backen
 staging area and Cargo cache. Concurrent signing/notarization with the next build
 is a possible future optimization, not an implemented or measured speedup.
 Once both local macOS stages and the remote Release finish, the script validates
-the complete draft and downloads the six CLI archives and two Windows installers.
+the complete draft, checks the six CLI archive digests against GitHub metadata and their checksum files, and downloads the two Windows installers for signing. The CLI archives remain on GitHub.
 Signing and finalization follow this order:
 
 1. Sign each nested backend using the local Developer ID Application identity and
@@ -362,7 +364,7 @@ Signing and finalization follow this order:
    key and an explicit signed app version; verify signatures locally.
 5. Write combined desktop checksums and the exact release payload, sign it with
    both release roots, embed all signatures in `latest.json`, then upload only
-   the 23 public assets and publish after exact remote inventory/byte verification.
+   missing public assets and publish after exact remote inventory/digest verification.
 
 The available local identity is `Developer ID Application: Artec Inc. (VJUBRKV7K9)`.
 APPLE_SIGNING_IDENTITY can select another authorized identity. CLAT_NOTARY_PROFILE

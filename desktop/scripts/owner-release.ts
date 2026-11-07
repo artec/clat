@@ -5,10 +5,21 @@ import { DesktopRelease } from './release';
 import { LocalMacos } from './local-macos';
 import { ReleaseProgress } from './release-progress';
 import { ReleaseBuild } from './release-build';
-import { assembleIndex, PAYLOAD, publicFiles, verifyIndex } from './release-index';
+import { assembleIndex, PAYLOAD, publicFiles, verifyIndex, artifactDigest, type RemoteDigests } from './release-index';
 
 export const REPO = 'artec/clat';
-export interface RemoteRelease { tagName: string; isDraft: boolean; assets: { name: string }[] }
+export interface RemoteRelease { tagName: string; isDraft: boolean; assets: { name: string; digest?: string | null; state?: string }[] }
+export function missingAssets(remote: RemoteRelease, names: string[], localDigest: (name: string) => string): string[] {
+  const seen = new Set<string>();
+  for (const asset of remote.assets) {
+    if (seen.has(asset.name) || !names.includes(asset.name)) throw new Error('远程发布资产清单异常：' + asset.name);
+    seen.add(asset.name);
+    if (asset.state !== 'uploaded' || !asset.digest || asset.digest !== 'sha256:' + localDigest(asset.name)) {
+      throw new Error('远程发布资产未完成或与本地不一致，请检查草稿：' + asset.name);
+    }
+  }
+  return names.filter(name => !seen.has(name));
+}
 export type Interactive = (args: string[]) => number;
 export const interactive: Interactive = args => Bun.spawnSync(args, { env: cleanEnv(), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' }).exitCode;
 
@@ -47,7 +58,16 @@ export class OwnerRelease {
     if (!fields || fields[2] !== name || fields[1]!.toLowerCase() !== digest(path)) throw new Error('发布文件校验失败：' + name);
   }
   async verifyDesktop(folder: string): Promise<void> { await verifyIndex(this.release, folder, true); }
-  async verify(folder: string): Promise<void> { await verifyIndex(this.release, folder); }
+  remoteDigests(folder: string): RemoteDigests {
+    const path = join(folder, 'remote-cli-digests.json');
+    if (!existsSync(path)) return {};
+    if (!lstatSync(path).isFile()) throw new Error('远程摘要必须是普通文件。');
+    const value = JSON.parse(readFileSync(path, 'utf8')) as RemoteDigests;
+    const expected = this.release.names('cli', this.tag()).sort();
+    if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expected) || expected.some(n => !/^[0-9a-f]{64}$/.test(value[n] ?? ''))) throw new Error('远程 CLI 摘要无效。');
+    return value;
+  }
+  async verify(folder: string): Promise<void> { await verifyIndex(this.release, folder, false, this.remoteDigests(folder)); }
   async localLock<T>(action: () => Promise<T>): Promise<T> {
     if (process.platform === 'win32') throw new Error('./publish 请在负责人的 macOS 签名机器运行。');
     const { dlopen } = await import('bun:ffi');
@@ -94,11 +114,25 @@ export class OwnerRelease {
         await build.ready();
         const remote = this.draft();
         if (!required.every(n => remote.assets.some(a => a.name === n))) throw new Error('CI 草稿缺少正式发布产物或校验文件。');
-        this.gh('release', 'download', this.tag(), '--repo', REPO, '--dir', folder, ...required.flatMap(n => ['--pattern', n]));
-        for (const name of this.remoteArchives()) this.verifyChecksum(folder, name);
+        const cli = this.release.names('cli', this.tag());
+        const remoteDigests: RemoteDigests = {};
+        for (const name of cli) {
+          const matches = remote.assets.filter(a => a.name === name);
+          if (matches.length !== 1 || matches[0]!.state !== 'uploaded' || !/^sha256:[0-9a-f]{64}$/.test(matches[0]!.digest ?? '')) throw new Error('远程 CLI 摘要不可用：' + name);
+          remoteDigests[name] = matches[0]!.digest!.slice(7);
+        }
+        writeFileSync(join(folder, 'remote-cli-digests.json'), JSON.stringify(remoteDigests));
+        const downloads = required.filter(n => !cli.includes(n));
+        this.gh('release', 'download', this.tag(), '--repo', REPO, '--dir', folder, ...downloads.flatMap(n => ['--pattern', n]));
+        for (const name of cli) {
+          const content = readFileSync(join(folder, name + '.sha256'), 'utf8');
+          const fields = content.match(/^([\da-fA-F]{64})[ \t]+\*?([^\r\n]+)\r?\n?$/);
+          if (!fields || fields[1]!.toLowerCase() !== remoteDigests[name] || fields[2] !== name) throw new Error('远程 CLI 校验清单不匹配：' + name);
+        }
+        for (const name of this.remoteArchives().filter(n => !cli.includes(n))) this.verifyChecksum(folder, name);
       });
       await this.progress.step('签署更新索引并核验完整发布产物', async () => {
-        await this.release.finalize(folder, this.tag(), true);
+        await this.release.finalize(folder, this.tag(), true, this.remoteDigests(folder));
         const args = ['minisign', '-S', '-s', join(this.release.root, '.release-secrets/clat-minisign.key'), '-t', `CLAT ${this.tag()} release index`,
           '-m', join(folder, PAYLOAD)];
         if (this.interact(args) !== 0) throw new Error('CLI 索引签名失败；未上传。');
@@ -112,15 +146,24 @@ export class OwnerRelease {
   verifyRemoteInventory(remote: RemoteRelease): void {
     if (JSON.stringify(remote.assets.map(a => a.name).sort()) !== JSON.stringify(this.files())) throw new Error('远程缺少完整发布资产；请重新运行 ./publish。');
   }
+  missing(remote: RemoteRelease, folder: string): string[] {
+    const hashes = this.remoteDigests(folder);
+    const missing = missingAssets(remote, this.files(), name => artifactDigest(this.release, folder, name, hashes));
+    if (missing.some(name => Object.hasOwn(hashes, name))) throw new Error('远程 CLI 资产丢失，停止发布。');
+    return missing;
+  }
   async upload(): Promise<void> {
     await this.progress.step('上传 GitHub 草稿', () => this.localLock(async () => {
-      this.draft(); const folder = join(this.directory(), 'prepared'); await this.verify(folder);
-      this.gh('release', 'upload', this.tag(), '--repo', REPO, ...this.files().map(n => join(folder, n)), '--clobber');
+      const folder = join(this.directory(), 'prepared'); await this.verify(folder);
+      const missing = this.missing(this.draft(), folder);
+      if (missing.length) this.gh('release', 'upload', this.tag(), '--repo', REPO, ...missing.map(n => join(folder, n)));
     }));
   }
   async publish(): Promise<void> {
     await this.progress.step('公开发布 ' + this.tag(), () => this.localLock(async () => {
-      await this.verify(join(this.directory(), 'prepared')); this.verifyRemoteInventory(this.draft());
+      const folder = join(this.directory(), 'prepared'); await this.verify(folder);
+      const remote = this.draft(); this.verifyRemoteInventory(remote);
+      if (this.missing(remote, folder).length) throw new Error('远程发布资产不完整。');
       await withTemp('clat-release-notes-', folder => {
         const notes = join(folder, 'notes.md'); writeFileSync(notes, this.notes());
         this.gh('release', 'edit', this.tag(), '--repo', REPO, '--notes-file', notes, '--draft=false');

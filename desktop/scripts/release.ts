@@ -7,7 +7,7 @@ import { createArchive, safeExtract } from './archive';
 import { sourceCommit, verifyBackend } from './backend';
 import { checksum, DESKTOP, digest, json, ROOT, run, type Runner, withTemp, decodeWrapper, privateWrite } from './common';
 
-import { PAYLOAD, writePayload } from './release-index';
+import { PAYLOAD, writePayload, artifactDigest, type RemoteDigests } from './release-index';
 
 export interface AssetRecord { os: string; target: string; platform?: string; label?: string }
 export type AssetKind = 'cli' | 'desktop';
@@ -193,11 +193,11 @@ export class DesktopRelease {
     if (!this.execute(['security', 'find-identity', '-v', '-p', 'codesigning']).includes(identity)) throw new Error('configured Developer ID identity is not available');
     await withTemp('clat-desktop-key-check-', async folder => { const probe = join(folder, 'probe'); writeFileSync(probe, 'CLAT Desktop local signing preflight\n'); await this.signFile(probe, tag); });
   }
-  async finalize(directory: string, tag: string, signedMacos = false): Promise<void> {
+  async finalize(directory: string, tag: string, signedMacos = false, remote: RemoteDigests = {}): Promise<void> {
     if (tag !== 'v' + this.version()) throw new Error('tag does not match workspace version');
     for (const name of [...this.names('cli', tag), ...this.names('desktop', tag)]) {
       const path = join(directory, name), manifest = path + '.sha256';
-      if (!existsSync(path) || !existsSync(manifest) || readFileSync(manifest, 'utf8').split(/\s/)[0] !== digest(path)) throw new Error('missing or mismatched draft asset: ' + name);
+      if (!existsSync(manifest) || readFileSync(manifest, 'utf8').split(/\s/)[0] !== artifactDigest(this, directory, name, remote)) throw new Error('missing or mismatched draft asset: ' + name);
     }
     await this.preflightSigning(tag);
     if (!signedMacos) for (const record of this.records('desktop')) if (record.platform!.startsWith('darwin')) await this.signMacos(directory, record, tag);
@@ -208,7 +208,7 @@ export class DesktopRelease {
       await this.signFile(join(directory, name), tag);
       platforms[record.platform!] = { url: `https://github.com/artec/clat/releases/download/${tag}/${name}`, signature: readFileSync(join(directory, name + '.sig'), 'utf8').trim() };
     }
-    writePayload(this, directory, tag, platforms);
+    writePayload(this, directory, tag, platforms, remote);
     await this.signFile(join(directory, PAYLOAD), tag);
   }
 }

@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { checksum, DESKTOP, run, withTemp } from './common';
 import { LocalMacos } from './local-macos';
 import { PAYLOAD } from './release-index';
@@ -37,7 +38,7 @@ test('local stage reports elapsed time on success and failure, but labels cache 
     });
   });
 });
-test('owner draft downloads six CLI and two Windows installers only', async () => {
+test('owner draft expects six CLI and two Windows installers', async () => {
   await fixture((_release, owner) => {
     expect(owner.remoteArchives()).toHaveLength(8);
     expect(owner.remoteArchives().filter(n => n.startsWith('clat-desktop-'))).toHaveLength(2);
@@ -125,21 +126,26 @@ test('owner assembles local macOS and remote Windows into the unchanged complete
   await fixture(async (release, owner) => {
     spyOn(owner, 'gh').mockImplementation((...args) => {
       const folder = args[args.indexOf('--dir') + 1]!;
-      for (const name of owner.remoteArchives()) { writeFileSync(join(folder, name), 'CI fixture'); checksum(join(folder, name)); }
-      expect(args.flatMap((value, index) => value === '--pattern' ? [args[index + 1]!] : [])).toEqual(owner.remoteArchives().flatMap(n => [n, n + '.sha256']));
+      const cli = release.names('cli', owner.tag());
+      for (const name of owner.remoteArchives()) {
+        if (!cli.includes(name)) writeFileSync(join(folder, name), 'CI fixture');
+        writeFileSync(join(folder, name + '.sha256'), createHash('sha256').update('CI fixture').digest('hex') + '  ' + name + '\n');
+      }
+      expect(args.flatMap((value, index) => value === '--pattern' ? [args[index + 1]!] : [])).toEqual(owner.remoteArchives().flatMap(n => cli.includes(n) ? [n + '.sha256'] : [n, n + '.sha256']));
       return '';
     });
     spyOn(LocalMacos.prototype, 'source').mockReturnValue(commit);
     spyOn(ReleaseBuild.prototype, 'locate').mockResolvedValue(undefined);
     spyOn(ReleaseBuild.prototype, 'ready').mockResolvedValue(undefined);
-    spyOn(owner, 'draft').mockReturnValue({ tagName: owner.tag(), isDraft: true, assets: owner.remoteArchives().flatMap(n => [n, n + '.sha256']).map(name => ({ name })) });
+    spyOn(owner, 'draft').mockReturnValue({ tagName: owner.tag(), isDraft: true, assets: owner.remoteArchives().flatMap(n => [n, n + '.sha256']).map(name => ({ name, state: 'uploaded', digest: 'sha256:' + createHash('sha256').update('CI fixture').digest('hex') })) });
     spyOn(LocalMacos.prototype, 'prepare').mockImplementation(async function (this: LocalMacos, folder) {
       for (const record of release.records('desktop').filter(r => r.platform!.startsWith('darwin'))) {
         for (const name of this.names(record, true)) { writeFileSync(join(folder, name), 'local signed fixture'); checksum(join(folder, name)); }
       }
     });
-    const finalize = spyOn(release, 'finalize').mockImplementation(async folder => {
-      for (const name of owner.archives()) owner.verifyChecksum(folder, name);
+    const finalize = spyOn(release, 'finalize').mockImplementation(async (folder, _tag, _signed, remote) => {
+      for (const name of owner.archives().filter(n => !release.names('cli', owner.tag()).includes(n))) owner.verifyChecksum(folder, name);
+      expect(Object.keys(remote!)).toHaveLength(6);
       for (const name of [PAYLOAD, PAYLOAD + '.sig', PAYLOAD + '.minisig']) writeFileSync(join(folder, name), 'signature fixture');
     });
     const verify = spyOn(owner, 'verify').mockResolvedValue(undefined);
@@ -151,6 +157,7 @@ test('owner assembles local macOS and remote Windows into the unchanged complete
     await assembly.buildPrepared(owner.remoteArchives().flatMap(n => [n, n + '.sha256']));
     expect(finalize.mock.calls[0]![2]).toBe(true);
     expect(verify).toHaveBeenCalledTimes(1);
-    for (const name of owner.payloads()) expect(existsSync(join(owner.directory(), 'prepared', name))).toBe(true);
+    for (const name of owner.payloads().filter(n => !release.names('cli', owner.tag()).includes(n))) expect(existsSync(join(owner.directory(), 'prepared', name))).toBe(true);
+    for (const name of release.names('cli', owner.tag())) expect(existsSync(join(owner.directory(), 'prepared', name))).toBe(false);
   });
 });

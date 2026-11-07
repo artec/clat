@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodeWrapper, digest, json, withTemp, writeJson } from './common';
 import type { DesktopRelease } from './release';
@@ -23,11 +23,23 @@ export function checksumGroups(release: DesktopRelease, tag: string): Record<str
 export function publicFiles(release: DesktopRelease, tag: string): string[] {
   return [...release.names('cli', tag), ...release.names('desktop', tag), ...Object.keys(checksumGroups(release, tag)), 'latest.json'].sort();
 }
-export function writePayload(release: DesktopRelease, folder: string, tag: string, platforms: ReleasePayload['platforms']): void {
-  for (const [name, entries] of Object.entries(checksumGroups(release, tag))) {
-    writeFileSync(join(folder, name), entries.map(n => `${digest(join(folder, n))}  ${n}\n`).join(''));
+export type RemoteDigests = Record<string, string>;
+export function artifactDigest(release: DesktopRelease, folder: string, name: string, remote: RemoteDigests = {}): string {
+  const path = join(folder, name);
+  if (existsSync(path)) {
+    if (!lstatSync(path).isFile()) throw new Error('发布文件必须是普通文件：' + name);
+    const actual = digest(path);
+    if (remote[name] && remote[name] !== actual) throw new Error('远程摘要不匹配：' + name);
+    return actual;
   }
-  const artifacts = Object.fromEntries(publicFiles(release, tag).filter(n => n !== 'latest.json').map(n => [n, digest(join(folder, n))]));
+  if (!release.names('cli', 'v' + release.version()).includes(name) || !/^[0-9a-f]{64}$/.test(remote[name] ?? '')) throw new Error('缺少发布文件：' + name);
+  return remote[name]!;
+}
+export function writePayload(release: DesktopRelease, folder: string, tag: string, platforms: ReleasePayload['platforms'], remote: RemoteDigests = {}): void {
+  for (const [name, entries] of Object.entries(checksumGroups(release, tag))) {
+    writeFileSync(join(folder, name), entries.map(n => `${artifactDigest(release, folder, n, remote)}  ${n}\n`).join(''));
+  }
+  const artifacts = Object.fromEntries(publicFiles(release, tag).filter(n => n !== 'latest.json').map(n => [n, artifactDigest(release, folder, n, remote)]));
   writeJson(join(folder, PAYLOAD), { version: release.version(), notes: 'CLAT ' + tag, pub_date: new Date().toISOString(), platforms, artifacts });
 }
 export function assembleIndex(folder: string): void {
@@ -40,7 +52,7 @@ function checkComment(signature: string, expected: string): void {
   const lines = signature.trimEnd().split(/\r?\n/);
   if (lines.length !== 4 || lines[2] !== 'trusted comment: ' + expected) throw new Error('发布索引签名未绑定当前版本。');
 }
-export async function verifyIndex(release: DesktopRelease, folder: string, desktopOnly = false): Promise<void> {
+export async function verifyIndex(release: DesktopRelease, folder: string, desktopOnly = false, remote: RemoteDigests = {}): Promise<void> {
   const path = join(folder, 'latest.json');
   if (!lstatSync(path).isFile()) throw new Error('发布索引必须是普通文件。');
   const index = json<ReleaseIndex>(path);
@@ -61,7 +73,7 @@ export async function verifyIndex(release: DesktopRelease, folder: string, deskt
     writeFileSync(signature, desktopSignature);
     release.execute(['minisign', '-Vm', payload, '-p', publicKey, '-x', signature, '-q']);
     const value = JSON.parse(index.payload) as ReleasePayload;
-    validatePayload(release, folder, value);
+    validatePayload(release, folder, value, remote);
     for (const record of release.records('desktop')) {
       const item = value.platforms[record.platform!]!;
       const name = item.url.split('/').at(-1)!;
@@ -72,7 +84,7 @@ export async function verifyIndex(release: DesktopRelease, folder: string, deskt
     }
   });
 }
-function validatePayload(release: DesktopRelease, folder: string, value: ReleasePayload): void {
+function validatePayload(release: DesktopRelease, folder: string, value: ReleasePayload, remote: RemoteDigests): void {
   const tag = 'v' + release.version();
   const platforms = release.records('desktop').map(r => r.platform).sort();
   if (value.version !== release.version() || JSON.stringify(Object.keys(value.platforms).sort()) !== JSON.stringify(platforms)) throw new Error('桌面更新索引的版本或四平台清单不匹配。');
@@ -83,7 +95,7 @@ function validatePayload(release: DesktopRelease, folder: string, value: Release
   }
   const names = publicFiles(release, tag).filter(n => n !== 'latest.json');
   if (JSON.stringify(Object.keys(value.artifacts).sort()) !== JSON.stringify(names)) throw new Error('发布索引的资产清单不匹配。');
-  for (const name of names) if (!lstatSync(join(folder, name)).isFile() || value.artifacts[name] !== digest(join(folder, name))) throw new Error('发布文件校验失败：' + name);
+  for (const name of names) if (value.artifacts[name] !== artifactDigest(release, folder, name, remote)) throw new Error('发布文件校验失败：' + name);
   for (const [name, entries] of Object.entries(checksumGroups(release, tag))) {
     const expected = entries.map(n => `${value.artifacts[n]}  ${n}\n`).join('');
     if (readFileSync(join(folder, name), 'utf8') !== expected) throw new Error('发布校验清单不匹配：' + name);
