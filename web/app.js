@@ -303,6 +303,9 @@ const ICON_PATHS = {
   "chevron-down": ["m6 9 6 6 6-6"],
   refresh: ["M20 11a8 8 0 1 0-2 7M20 4v7h-7"],
   edit: ['M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z', 'm14.5 5.5 3 3'],
+  goal: ['M20.6 10a9 9 0 1 1-6.6-6.6M17 12a5 5 0 1 1-5-5M12 12l7-7m-3 0h3v3'],
+  pause: ['M9 5v14m6-14v14'],
+  play: ['m8 5 12 7-12 7z'],
   trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
   terminal: ['M6 4h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z', 'm7.5 8.5 3.5 3.5-3.5 3.5M14 15.5h3'],
   'terminal-take-input': ['M9 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2', 'M3 12h12m-4-4 4 4-4 4m5 0h2'],
@@ -550,7 +553,7 @@ for (const id of [
   'model-picker-manage',
   'attachment-input', 'attachment-open', 'attachment-rail', 'attachment-summary', 'drop-overlay',
   'suggestion-panel', 'suggestion-text', 'suggestion-use', 'suggestion-ignore', 'suggestion-dismiss',
-  'composer-permission-label', 'plan-mode-badge', 'goal-badge', 'inspector', 'inspector-toggle', 'inspector-close',
+  'composer-permission-label', 'plan-mode-badge', 'inspector', 'inspector-toggle', 'inspector-close',
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'reading-options', 'permission-options',
@@ -2136,7 +2139,6 @@ function syncPlanModeBadge() {
   const info = state.workbench;
   const sameSession = info && (info.session?.id || null) === state.sessionId;
   dom['plan-mode-badge'].classList.toggle('hidden', !(sameSession && info.plan_mode_active));
-  dom['goal-badge'].classList.toggle('hidden', !(sameSession && info.goal_armed));
 }
 
 function addTraceEvent(eventId, detail) {
@@ -2789,7 +2791,8 @@ function syncSuggestionControl() {
 function syncInteractionControls() {
   const locked = state.switching || state.compactionActive || state.desktopUpdateLocked;
   syncInputSubmitButtons();
-  dom.send.disabled = locked;
+  dom.send.disabled = locked || (Boolean(composerGoalDraft) && !canComposeGoal(composerWorkflow()));
+  syncComposerGoal();
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked || !builtinReady('builtin.draft_images');
   dom['attachment-input'].disabled = dom['attachment-open'].disabled;
@@ -4038,6 +4041,7 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 }
 
 async function submitPrompt() {
+  if (composerGoalDraft) return submitComposerGoal();
   const generation = state.composerGeneration, owner = composerScope;
   if (!dom.prompt.value.trim().startsWith('/') && !await modelSetup.ensure()) return;
   if (generation !== state.composerGeneration || !composerOwns(owner)) return;

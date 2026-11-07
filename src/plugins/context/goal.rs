@@ -339,15 +339,14 @@ fn goal_json(view: &crate::goal::GoalView) -> Value {
 fn render_goal(view: &crate::goal::GoalView) -> String {
     let state = &view.state;
     format!(
-        "{} rev={} phase={} activation={} rounds={}/{} tokens={}/{} failures={}/{} elapsed={}ms/{}ms\n{}{}",
+        "{} rev={} phase={} activation={} rounds={}/{} tokens={} failures={}/{} elapsed={}ms/{}ms\n{}{}",
         state.id,
         state.revision,
         state.phase.as_str(),
         if view.armed { "armed" } else { "disarmed" },
         state.rounds_started,
         state.limits.max_rounds,
-        state.tokens_used,
-        state.limits.max_tokens,
+        state.token_usage(),
         state.failures,
         state.limits.max_failures,
         state.elapsed_ms,

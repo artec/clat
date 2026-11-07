@@ -408,9 +408,25 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .composer #prompt { min-height: 48px; height: auto; padding-block: 6px; }
 .composer-feedback { color: var(--text-muted); background: var(--surface); padding: 6px 12px; border-radius: 10px; margin-bottom: 6px; font-size: var(--text-size-secondary); }
 .composer-feedback:has([data-presentation="web.task_completed_send_a_message_to_continue"]) { display: none; }
-#goal-badge { margin-left: 4px; }
+/* Inset the goal strip so the input card forms its lower edge. */
+.composer-goal-bar {
+  display: flex; align-items: center; gap: 2px; pointer-events: auto;
+  min-width: 0; margin: 0 12px; padding: 3px 8px; border: 1px solid var(--line-strong);
+  border-bottom: 0; border-radius: 14px 14px 0 0; background: var(--surface-raised);
+}
+.composer-goal-bar[hidden], .composer-goal-bar button[hidden] { display: none; }
+.composer-goal-bar .shell-button { flex: none; min-height: 32px; padding: 4px 7px; }
+.composer-goal-bar .shell-button > svg { width: 16px; height: 16px; flex: none; }
+.composer-goal-bar > .shell-button > .shell-label { display: none; }
+.composer-goal-bar #goal-badge { flex: 1; min-width: 0; overflow: hidden; font-size: var(--text-size-secondary); }
+.composer-goal-status { flex: none; font-weight: 500; }
+.composer-goal-objective { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.composer-row #composer-plan-toggle:is([data-mode="goal"], [data-mode="plan"]) { width: auto; padding-inline: 7px; gap: 5px; }
+#composer-plan-toggle:is([data-mode="goal"], [data-mode="plan"]) .shell-label { display: inline; }
+.composer-goal-budget { display: grid; gap: 6px; padding: 8px; font-size: var(--text-size-secondary); }
+.composer-goal-budget input { min-width: 0; }
 #composer-plan-toggle[aria-pressed="true"] { background: color-mix(in srgb,var(--accent) 18%,transparent); border-radius: 8px; color: var(--signal); }
-#composer-permission-label, #composer-plan-toggle .shell-label { display: none; }
+#composer-permission-label, #composer-plan-toggle[data-mode="normal"] .shell-label { display: none; }
 .message-time { display: block; color: var(--text-muted); font-size: var(--text-size-secondary); line-height: 1.5; padding-inline-start:4px; }
 .message-actions .message-bookmark, .reader-actions [data-action="bookmark"] { margin-left: 0; }
 .message-actions, .reader-actions { align-items:center; flex-wrap:wrap; gap:2px; }

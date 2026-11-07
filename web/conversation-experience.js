@@ -32,7 +32,6 @@ function installConversationExperience() {
   row.before(dom.prompt); // The editor and bottom controls are the whole permanent composer.
   const status = el('div', 'composer-feedback'); status.hidden = true;
   status.append(dom['run-state']); shell.before(status, dom['next-turn-queue']);
-  dom['goal-badge'].classList.add('context-pill'); row.insertBefore(dom['goal-badge'], row.querySelector('.composer-actions'));
   shell.querySelector('.composer-context').remove();
   shell.before(dom['suggestion-panel']);
   dom['suggestion-panel'].classList.add('round-suggestions');

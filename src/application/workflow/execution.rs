@@ -1,5 +1,36 @@
 use super::*;
 use crate::plan_mode::documents::PlanDocument;
+
+pub(super) struct PlanGoalLinks<'a> {
+    own: std::collections::HashSet<&'a str>,
+    other: std::collections::HashSet<&'a str>,
+}
+
+impl<'a> PlanGoalLinks<'a> {
+    pub(super) fn new(documents: &'a [PlanDocument], goal: &str) -> Self {
+        let mut links = Self {
+            own: Default::default(),
+            other: Default::default(),
+        };
+        for doc in documents {
+            if let Some(bound) = doc.goal_id.as_deref() {
+                let set = if bound == goal {
+                    &mut links.own
+                } else {
+                    &mut links.other
+                };
+                set.insert(doc.id.as_str());
+            }
+        }
+        links
+    }
+
+    pub(super) fn allows(&self, plan: &str) -> bool {
+        !self.other.contains(plan)
+            && (self.own.is_empty() || self.own.len() == 1 && self.own.contains(plan))
+    }
+}
+
 impl TrustedProjectApplication {
     pub(super) fn check_workflow_goal_binding(&self, doc: &PlanDocument) -> Result<(), String> {
         if let Some(goal) = self.goal().map_err(|e| e.to_string())? {
@@ -26,7 +57,49 @@ impl TrustedProjectApplication {
         }
         Ok(())
     }
+    pub(super) fn check_explicit_plan_goal(
+        &self,
+        doc: &PlanDocument,
+        (id, revision): (&str, u64),
+    ) -> Result<(), String> {
+        self.check_goal_task_exclusion()
+            .map_err(|e| e.to_string())?;
+        let goal = self
+            .goal()
+            .map_err(|e| e.to_string())?
+            .ok_or("no current goal")?;
+        if goal.state.id != id
+            || goal.state.revision != revision
+            || goal.armed
+            || goal.state.phase == crate::goal::GoalPhase::Complete
+        {
+            return Err("goal changed; refresh before acting".into());
+        }
+        if crate::goal::budget_exhausted(&goal.state) {
+            return Err("goal budget is exhausted".into());
+        }
+        let documents = self.sessions.plan_documents()?.plans;
+        if documents
+            .iter()
+            .any(|p| p.id == doc.id && p.revision > doc.revision)
+        {
+            return Err("plan changed; review latest revision".into());
+        }
+        if !PlanGoalLinks::new(&documents, id).allows(&doc.id) {
+            return Err("plan or goal already belongs to a different workflow".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn request_workflow_goal(&self, plan: Option<(String, u64)>) -> Result<(), String> {
+        self.request_workflow_goal_for(plan, None)
+    }
+
+    pub(super) fn request_workflow_goal_for(
+        &self,
+        plan: Option<(String, u64)>,
+        target: Option<(String, u64)>,
+    ) -> Result<(), String> {
         self.goal_service().map_err(|e| e.to_string())?;
         if plan.is_some() {
             self.plan_plugin()?;
@@ -39,7 +112,11 @@ impl TrustedProjectApplication {
         if handoff.is_some() {
             return Err("a workflow handoff is already pending".into());
         }
-        *handoff = Some(Handoff::Goal { session, plan });
+        *handoff = Some(Handoff::Goal {
+            session,
+            plan,
+            target,
+        });
         Ok(())
     }
     /// Typed pending-input interruption preserves the goal's existing authority;
@@ -123,8 +200,8 @@ impl TrustedProjectApplication {
                     .map_err(ApplicationError::new)?;
                 Ok(None)
             }
-            Handoff::Goal { plan, .. } => {
-                self.prepare_workflow_goal(plan)
+            Handoff::Goal { plan, target, .. } => {
+                self.prepare_workflow_goal(plan, target)
                     .map_err(super::workflow_error)?;
                 self.start_goal_run(request).map(|(handle, _)| Some(handle))
             }
@@ -145,13 +222,22 @@ impl TrustedProjectApplication {
         }
         Ok(())
     }
-    fn prepare_workflow_goal(&mut self, plan: Option<(String, u64)>) -> Result<(), String> {
+    fn prepare_workflow_goal(
+        &mut self,
+        plan: Option<(String, u64)>,
+        target: Option<(String, u64)>,
+    ) -> Result<(), String> {
         if let Some((id, revision)) = plan {
             let doc = self.plan_plugin()?.document(&id, revision)?;
             if !doc.approved {
                 return Err("planning ended without approval".into());
             }
-            self.check_workflow_goal_binding(&doc)?;
+            if let Some((goal, expected)) = target.as_ref() {
+                self.check_explicit_plan_goal(&doc, (goal, *expected))?;
+                self.check_goal_activation().map_err(|e| e.to_string())?;
+            } else {
+                self.check_workflow_goal_binding(&doc)?;
+            }
             self.plan_plugin()?.approve_document(&id, revision)?;
             let current = self.goal().map_err(|e| e.to_string())?;
             let goal = match current.filter(|g| g.state.phase != crate::goal::GoalPhase::Complete) {
@@ -213,6 +299,51 @@ impl TrustedProjectApplication {
             .update_progress(resumed.state.revision, summary.trim())?;
         self.request_workflow_goal(None)
     }
+    pub(super) fn workflow_create_goal(
+        &mut self,
+        objective: &str,
+        max_tokens: Option<u64>,
+    ) -> Result<Value, String> {
+        self.reject_session_switch_while_busy()
+            .map_err(|e| e.to_string())?;
+        self.check_goal_task_exclusion()
+            .map_err(|e| e.to_string())?;
+        let objective = objective.trim();
+        crate::goal::validate_objective(objective)?;
+        if self
+            .goal()
+            .map_err(|e| e.to_string())?
+            .is_some_and(|goal| goal.state.phase != crate::goal::GoalPhase::Complete)
+        {
+            return Err(
+                "another unfinished goal exists; finish or end it before creating a goal".into(),
+            );
+        }
+        if self
+            .workflow
+            .handoff
+            .lock()
+            .map_err(|_| "handoff")?
+            .is_some()
+        {
+            return Err("a workflow handoff is already pending".into());
+        }
+        if self.plan_mode_active() {
+            self.set_plan_mode(false).map_err(|e| e.to_string())?;
+        }
+        self.goal_create(
+            objective,
+            crate::goal::GoalAcceptance::User,
+            crate::goal::GoalLimits {
+                max_tokens: max_tokens.unwrap_or_default(),
+                ..Default::default()
+            },
+            false,
+        )
+        .map_err(|e| e.to_string())?;
+        self.request_workflow_goal(None)?;
+        Ok(json!({"pending":true}))
+    }
     pub(super) fn workflow_goal(
         &mut self,
         verb: &str,
@@ -237,13 +368,11 @@ impl TrustedProjectApplication {
             }
             "feedback" => self.workflow_goal_feedback(revision, summary)?,
             "pause" => {
-                self.cancel_active_run();
-                self.disarm_goal();
-                if goal.state.phase == crate::goal::GoalPhase::Active {
-                    self.goal_service()
-                        .map_err(|e| e.to_string())?
-                        .pause(revision)?;
-                }
+                self.check_workflow_goal_stop(goal.armed)?;
+                self.goal_service()
+                    .map_err(|e| e.to_string())?
+                    .pause(revision)?;
+                self.stop_workflow_goal(goal.armed);
             }
             "complete" => {
                 self.reject_session_switch_while_busy()
@@ -259,12 +388,40 @@ impl TrustedProjectApplication {
                 .map_err(|e| e.to_string())?;
             }
             "clear" => {
-                self.reject_session_switch_while_busy()
-                    .map_err(|e| e.to_string())?;
-                self.goal_clear(revision).map_err(|e| e.to_string())?;
+                self.check_workflow_goal_stop(goal.armed)?;
+                if !goal.armed {
+                    self.reject_session_switch_while_busy()
+                        .map_err(|e| e.to_string())?;
+                }
+                self.goal_service()
+                    .map_err(|e| e.to_string())?
+                    .clear(revision)?;
+                self.stop_workflow_goal(goal.armed);
             }
             _ => return Err("unknown goal action".into()),
         }
         Ok(json!({"pending":verb=="start"}))
+    }
+
+    fn check_workflow_goal_stop(&self, armed: bool) -> Result<(), String> {
+        if !armed
+            && self
+                .workflow
+                .handoff
+                .lock()
+                .map_err(|_| "handoff")?
+                .is_some()
+        {
+            return Err("a workflow handoff is already pending".into());
+        }
+        Ok(())
+    }
+
+    fn stop_workflow_goal(&self, was_armed: bool) {
+        if was_armed {
+            self.cancel_active_run();
+        } else {
+            self.cancel_workflow_continuation();
+        }
     }
 }

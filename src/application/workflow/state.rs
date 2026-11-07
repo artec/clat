@@ -9,6 +9,7 @@ pub(crate) enum Handoff {
     Goal {
         session: String,
         plan: Option<(String, u64)>,
+        target: Option<(String, u64)>,
     },
     Plan {
         session: String,

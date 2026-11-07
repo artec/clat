@@ -151,10 +151,15 @@ saves a versioned Markdown document under the session's `plans/` directory.
 **Approve and execute** binds that exact revision, finishes planning, and starts
 same-session goal execution. **Approve only** keeps the old non-executing approval
 contract; **Continue revising** retains the plan identity and creates a new draft.
+**Approve and continue current goal** links the reviewed plan to an eligible
+paused goal and resumes that same goal.
 
 The plans/goals tool has a grouped list of plan revisions, the current goal and
-model-maintained to-dos. Its detail pane offers goal creation, start/continue,
-pause, human acceptance and ending the goal. A human-acceptance goal stops at
+model-maintained to-dos. Create a goal with **+ → Goal** in the composer and
+send the objective. The work mode control shows the selected mode and offers an
+optional token limit. The strip attached above the input shows the current
+objective and offers pause, continue, delete and details. In goal details, a
+human-acceptance goal stops at
 **Awaiting acceptance** when the agent submits its result; it is completed only
 by an explicit acceptance. **Give feedback and continue** records the feedback
 and resumes the same goal. Existing machine verifiers and execution limits still

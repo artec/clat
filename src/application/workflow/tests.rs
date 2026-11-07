@@ -133,14 +133,54 @@ impl crate::interaction::UserAsker for WaitingAsker {
 }
 #[test]
 fn approval_waits_for_planning_worker_to_settle_before_goal_admission() {
-    let script = crate::test_support::ToolOnceScript {
+    exercise_plan_review_handoff(false);
+}
+
+#[test]
+fn live_plan_review_can_continue_an_existing_goal_after_settlement() {
+    exercise_plan_review_handoff(true);
+}
+
+struct PlanOnlyTool(crate::test_support::ToolOnceScript);
+
+impl crate::test_support::TestModelScript for PlanOnlyTool {
+    fn stream(
+        &self,
+        mut request: crate::ModelRequest<'_>,
+        events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        if !request
+            .instructions
+            .unwrap_or_default()
+            .contains(crate::plan_mode::PLAN_POLICY)
+        {
+            request.tools = &[];
+        }
+        self.0.stream(request, events)
+    }
+}
+
+fn exercise_plan_review_handoff(continue_existing: bool) {
+    let script = PlanOnlyTool(crate::test_support::ToolOnceScript {
         call: crate::ToolCall {
             id: "plan".into(),
             name: "exit_plan_mode".into(),
             arguments: json!({"plan":"# Deliver requested change\n\nImplement and validate."}),
         },
-    };
+    });
     let (mut app, root) = mount(TestBehavior::Scripted(Arc::new(script)));
+    let prior = continue_existing.then(|| {
+        seed(&mut app);
+        let goal = app
+            .goal_create(
+                "Original goal",
+                Default::default(),
+                Default::default(),
+                false,
+            )
+            .unwrap();
+        app.goal_pause(goal.state.revision).unwrap().state
+    });
     app.set_plan_mode(true).unwrap();
     let (entered, waiting) = mpsc::channel();
     let (r, result) = request(Some(Arc::new(WaitingAsker(entered))));
@@ -148,14 +188,23 @@ fn approval_waits_for_planning_worker_to_settle_before_goal_admission() {
     waiting.recv_timeout(crate::test_support::HANG).unwrap();
     let snapshot = app.workflow_details().unwrap();
     let doc = &snapshot["documents"][0];
-    action(
-        &mut app,
+    let plan = doc["id"].as_str().unwrap().to_owned();
+    let intent = if let Some(goal) = &prior {
+        assert_eq!(doc["continue_goal"]["id"], goal.id);
+        WorkflowIntent::ApproveForGoal {
+            plan: plan.clone(),
+            revision: 1,
+            goal: goal.id.clone(),
+            goal_revision: goal.revision,
+        }
+    } else {
         WorkflowIntent::Approve {
-            plan: doc["id"].as_str().unwrap().into(),
+            plan: plan.clone(),
             revision: 1,
             execute: true,
-        },
-    );
+        }
+    };
+    action(&mut app, intent);
     // A live planning handle can only be followed once it is actually finished.
     if !handle.is_finished() {
         assert!(!app.workflow_ready());
@@ -173,7 +222,19 @@ fn approval_waits_for_planning_worker_to_settle_before_goal_admission() {
     goal_handle.join().unwrap();
     let _ = result.recv_timeout(crate::test_support::HANG).unwrap();
     assert!(!app.workflow_ready());
-    assert!(app.goal().unwrap().is_some());
+    let goal = app.goal().unwrap().unwrap().state;
+    if let Some(prior) = prior {
+        assert_eq!(goal.id, prior.id);
+        assert_eq!(goal.objective, prior.objective);
+    }
+    assert_eq!(
+        app.plan_service()
+            .unwrap()
+            .document(&plan, 1)
+            .unwrap()
+            .goal_id,
+        Some(goal.id)
+    );
     app.close().unwrap();
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }
@@ -469,6 +530,133 @@ fn a_stop_rejects_delayed_unaccepted_approval_requests() {
             .document(&doc.id, 1)
             .unwrap()
             .approved
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}
+
+#[test]
+fn pausing_a_disarmed_goal_does_not_cancel_an_ordinary_run() {
+    let (mut app, root) = mount(TestBehavior::TimedDeltas {
+        count: 20,
+        interval_ms: 25,
+    });
+    app.goal_create(
+        "keep this goal",
+        Default::default(),
+        Default::default(),
+        false,
+    )
+    .unwrap();
+    let (run, result) = request(None);
+    let handle = app.start_run(run).unwrap();
+    let goal = app.goal().unwrap().unwrap();
+    assert!(!goal.armed);
+    action(
+        &mut app,
+        WorkflowIntent::Goal {
+            verb: "pause".into(),
+            id: goal.state.id,
+            revision: goal.state.revision,
+            summary: None,
+        },
+    );
+    handle.join().unwrap();
+    let outcome = result
+        .recv_timeout(crate::test_support::HANG)
+        .unwrap()
+        .unwrap();
+    assert!(!outcome.cancelled);
+    assert_eq!(
+        app.goal().unwrap().unwrap().state.phase,
+        crate::goal::GoalPhase::Paused
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}
+
+#[test]
+fn explicit_plan_continuation_binds_the_same_paused_goal() {
+    let (mut app, root) = mount(TestBehavior::Success);
+    seed(&mut app);
+    let created = app
+        .goal_create(
+            "keep the original objective",
+            Default::default(),
+            crate::goal::GoalLimits {
+                max_tokens: 3_000_000,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    let paused = app.goal_pause(created.state.revision).unwrap().state;
+    app.set_plan_mode(true).unwrap();
+    let doc = app
+        .plan_service()
+        .unwrap()
+        .save_draft(
+            None,
+            0,
+            "# Continue the existing goal\n\nImplement the revised approach.",
+        )
+        .unwrap();
+    let intent = |goal_revision| {
+        serde_json::from_value::<WorkflowIntent>(json!({
+            "action": "approve_for_goal", "plan": doc.id, "revision": doc.revision,
+            "goal": paused.id, "goal_revision": goal_revision
+        }))
+        .unwrap()
+    };
+    let stale = WorkflowRequest {
+        operation_id: "stale-goal-binding".into(),
+        session: app.current_session_id().map(|id| id.to_string()),
+        expected_version: app.workflow_details().unwrap()["version"].as_u64().unwrap(),
+        expected_generation: app.workflow.generation(),
+        intent: intent(paused.revision + 1),
+    };
+    assert!(app.workflow_action(stale).is_err());
+    assert!(app.plan_mode_active());
+    assert!(
+        !app.plan_service()
+            .unwrap()
+            .document(&doc.id, doc.revision)
+            .unwrap()
+            .approved
+    );
+    let approved = action(&mut app, intent(paused.revision));
+    assert_eq!(approved["pending"], true);
+    let resumed = app.goal_resume(paused.revision).unwrap().state;
+    let (stale_run, _) = request(None);
+    assert!(app.start_workflow_run(stale_run).is_err());
+    let approved_doc = app
+        .plan_service()
+        .unwrap()
+        .document(&doc.id, doc.revision)
+        .unwrap();
+    assert!(approved_doc.approved);
+    assert!(approved_doc.goal_id.is_none());
+    assert!(!app.goal().unwrap().unwrap().armed);
+
+    let paused_again = app.goal_pause(resumed.revision).unwrap().state;
+    action(&mut app, intent(paused_again.revision));
+    let (run, result) = request(None);
+    let handle = app.start_workflow_run(run).unwrap().unwrap();
+    app.cancel_active_run();
+    handle.join().unwrap();
+    let _ = result.recv_timeout(crate::test_support::HANG).unwrap();
+    let current = app.goal().unwrap().unwrap().state;
+    assert_eq!(current.id, paused.id);
+    assert_eq!(current.objective, paused.objective);
+    assert_eq!(current.limits, paused.limits);
+    assert!(!app.plan_mode_active());
+    assert_eq!(
+        app.plan_service()
+            .unwrap()
+            .document(&doc.id, doc.revision)
+            .unwrap()
+            .goal_id,
+        Some(paused.id)
     );
     app.close().unwrap();
     crate::test_support::cleanup_tree(root.parent().unwrap());

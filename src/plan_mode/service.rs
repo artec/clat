@@ -219,15 +219,22 @@ impl PlanModeService {
         revision: u64,
         answer: AskAnswer,
     ) -> Result<bool, String> {
-        self.answer_review(id, revision, answer, false)
+        self.answer_review(id, revision, answer, false, None)
     }
     pub(crate) fn approve_review(
         &self,
         id: &str,
         revision: u64,
         execute: bool,
+        target: Option<(String, u64)>,
     ) -> Result<bool, String> {
-        self.answer_review(id, revision, AskAnswer::Selected("Approve".into()), execute)
+        self.answer_review(
+            id,
+            revision,
+            AskAnswer::Selected("Approve".into()),
+            execute,
+            target,
+        )
     }
     fn answer_review(
         &self,
@@ -235,6 +242,7 @@ impl PlanModeService {
         revision: u64,
         answer: AskAnswer,
         execute: bool,
+        target: Option<(String, u64)>,
     ) -> Result<bool, String> {
         let mut slot = self.review.lock().map_err(|_| "plan review")?;
         let Some(review) = slot.as_mut() else {
@@ -254,6 +262,7 @@ impl PlanModeService {
             *handoff = Some(Handoff::Goal {
                 session: review.document.session.clone(),
                 plan: Some((id.into(), revision)),
+                target,
             });
         }
         if review.sender.send(answer).is_err() {

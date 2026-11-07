@@ -203,17 +203,15 @@ async function refreshShellContext() {
     const value = await rpc('workflow.details', {});
     if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;
     shell.workflow = value;
+    [shell.workflowStream,shell.workflowSelection] = owner;
     const status = document.getElementById('context-status');
     status.hidden = !value.busy;
     CLATI18n.bind(status, 'textContent', () => CLATI18n.msg(value.busy ? 'web.running_short' : 'web.idle'));
     renderShellWorkSummary(value);
     const badge = document.getElementById('composer-plan-toggle');
-    badge?.setAttribute('aria-pressed', String(Boolean(value.plan_mode)));
     if (badge) badge.disabled = false;
-    const planAction=document.getElementById('add-plan');disableBuiltin(planAction,value,'builtin.plan_mode');
-    planAction.disabled ||= value.busy || shell.planPending;
     disableBuiltin(document.getElementById('add-skills'),value,'builtin.skills');
-    disableBuiltin(document.getElementById('add-goal'),value,'builtin.goal');
+    syncInteractionControls();
     refreshShellResources();
   } catch (_) {
     if (generation !== shell.contextRequest || owner[0] !== state.stream || owner[1] !== state.selectionGeneration) return;
@@ -266,28 +264,32 @@ function createShellComposer(shell) {
   ]);
   group(() => shellText('work_mode'), [
     ['add-plan', 'plan', () => shellText('plan_mode'), () => toggleShellPlan()],
-    ['add-goal', 'check', () => shellText('goal'), () => document.getElementById('workflow-open').click()],
+    ['add-goal', 'goal', () => workflowText('goal_mode'), () => chooseComposerGoal()],
     ['add-suggestion','trace',()=>experienceText('manual_suggestion'),()=>requestSuggestion()],
   ]);
   group(() => shellText('capabilities'), [
     ['add-skills', 'tool', () => shellText('skills'), () => { dom.prompt.focus(); dom.prompt.value += (dom.prompt.value ? '\n' : '') + '/'; state.composerGeneration++; resizePrompt(); dom.prompt.dispatchEvent(new Event('input', {bubbles:true})); }],
     ['add-extensions', 'extensions', () => shellText('extensions'), () => openMarket()],
   ]);
-  const plan = shellButton('composer-plan-toggle', 'plan', () => workflowText('work_mode'), () => {}, false);
+  const plan = shellButton('composer-plan-toggle', 'plan', () => workflowText(composerGoalDraft?'goal_mode':'work_mode'), () => {}, false);
   installWorkModeMenu(plan);
   dom['attachment-open'].classList.add('hidden');
   dom['attachment-open'].before(trigger);
   (dom['composer-permission'].closest('.permission-seat') || dom['composer-permission']).after(plan);
-  const popover = attachComposerPopup(trigger, trigger, menu, () => {}, 'left');
+  const popover = attachComposerPopup(trigger, trigger, menu, syncComposerGoal, 'left');
+  installComposerGoalBar();
 }
 
 async function toggleShellPlan() {
   if (state.runActive || state.compactionActive || state.switching || workbenchShell.planPending) return;
   workbenchShell.planPending = true;
-  const owner = [state.selectionGeneration, state.stream];
+  const owner = [state.selectionGeneration, state.stream], draft = composerGoalDraft;
   const current = () => owner[0] === state.selectionGeneration && owner[1] === state.stream;
   try {
-    await sendWorkflowIntent({action:'mode',mode:'plan'});
+    const value = await rpc('workflow.details', {});
+    if (!current()) return;
+    const result = await sendWorkflowIntent({action:'mode',mode:value.plan_mode?'normal':'plan'},value);
+    if (result !== undefined && current() && draft && composerGoalDraft === draft) setComposerGoalMode(false);
     if (current()) { await refreshWorkbench(); await refreshShellContext(); }
   } catch (error) { if (current()) updateRunState(error.message); }
   finally { workbenchShell.planPending = false; void refreshShellContext(); }

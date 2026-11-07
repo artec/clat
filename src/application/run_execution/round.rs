@@ -69,11 +69,13 @@ impl RoundExecution {
         );
         recorder.attach_aux_usage(Arc::clone(&worker.deps.sampling_usage));
         let configured = worker.deps.config.effective_run_token_budget();
-        let budget = if worker.goal_mode {
-            let remaining = worker.deps.goal_service.remaining_tokens().unwrap_or(1);
-            Some(configured.map_or(remaining, |cap| cap.min(remaining)))
-        } else {
-            configured
+        let budget = match worker
+            .goal_mode
+            .then(|| worker.deps.goal_service.remaining_tokens())
+            .flatten()
+        {
+            Some(cap) => Some(configured.map_or(cap, |configured| configured.min(cap))),
+            None => configured,
         };
         let budget = match worker.deps.task_service.cap() {
             Some(cap) => Some(budget.map_or(cap, |b| b.min(cap))),

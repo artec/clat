@@ -188,16 +188,20 @@ fn goal_entry(value: &Value, locale: LocaleContext) -> Option<WorkflowEntry> {
         state["tokensUsed"].as_u64(),
         state["limits"]["maxTokens"].as_u64(),
     ) {
-        text.push_str(&format!(
-            "\n{}",
-            locale.render(
-                &UiMessage::new("workflow.goal_progress")
-                    .arg("rounds", rounds)
-                    .arg("maxRounds", max_rounds)
-                    .arg("tokens", tokens)
-                    .arg("maxTokens", max_tokens),
-            )
-        ));
+        let progress = UiMessage::new(if max_tokens == 0 {
+            "workflow.goal_progress_unlimited"
+        } else {
+            "workflow.goal_progress"
+        })
+        .arg("rounds", rounds)
+        .arg("maxRounds", max_rounds)
+        .arg("tokens", tokens);
+        let progress = if max_tokens == 0 {
+            progress
+        } else {
+            progress.arg("maxTokens", max_tokens)
+        };
+        text.push_str(&format!("\n{}", locale.render(&progress)));
     }
     if let Some(result) = state["lastResult"].as_str().filter(|s| !s.is_empty()) {
         text.push_str(&format!(

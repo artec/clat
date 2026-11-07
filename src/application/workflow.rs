@@ -19,15 +19,27 @@ impl TrustedProjectApplication {
         let task = self.task_state()?;
         let documents = crate::plan_mode::documents::historical(&self.sessions)
             .map_err(ApplicationError::new)?;
+        let continuation = goal.goal.as_ref().filter(|goal_state| {
+            self.goal.is_some()
+                && self.plan_mode.is_some()
+                && !goal.armed
+                && goal_state.phase != crate::goal::GoalPhase::Complete
+                && !crate::goal::budget_exhausted(goal_state)
+        });
+        let links =
+            continuation.map(|target| execution::PlanGoalLinks::new(&documents, &target.id));
         let documents = documents
-            .into_iter()
+            .iter()
             .map(|doc| {
                 let projection = if self.plan_mode.is_some() {
-                    self.sessions.materialize_plan(&doc)
+                    self.sessions.materialize_plan(doc)
                 } else {
                     Err(missing_builtin("builtin.plan_mode").to_string())
                 };
                 let mut value = serde_json::to_value(doc).expect("plan serializes");
+                if let Some(target) = continuation.filter(|_| links.as_ref().is_some_and(|links| links.allows(&doc.id))) {
+                    value["continue_goal"] = json!({"id": target.id, "revision": target.revision, "objective": target.objective});
+                }
                 value["projection_ready"] = json!(projection.is_ok());
                 value["projection_error"] = json!(projection.err());
                 value

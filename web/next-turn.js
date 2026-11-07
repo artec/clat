@@ -12,6 +12,7 @@ function renderNextTurnQueue(items) {
   dom['queue-recall'].hidden = supportsPendingInputs() || (!items.length && !nextTurnRecallRetry);
 }
 async function enqueueNextTurn() {
+  if (composerGoalDraft) return;
   if (nextTurnBusy || state.switching || state.compactionActive) return;
   const text = dom.prompt.value;
   if (!state.runActive || !text.trim() || state.draft.images.length) {

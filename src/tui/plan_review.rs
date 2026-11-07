@@ -12,6 +12,7 @@ pub(super) struct PlanReview {
     pub version: Option<u64>,
     pub generation: Option<String>,
     pub selected: usize,
+    continue_goal: Option<(String, u64)>,
     pub offset: usize,
     pub loading: bool,
     pub busy: bool,
@@ -33,6 +34,7 @@ impl PlanReview {
             version: None,
             generation: None,
             selected: 0,
+            continue_goal: None,
             offset: 0,
             loading: true,
             busy: false,
@@ -73,6 +75,14 @@ impl PlanReview {
             self.failed = true;
             return false;
         };
+        self.continue_goal = details["documents"].as_array().and_then(|documents| {
+            let doc = documents.iter().find(|doc| {
+                doc["id"].as_str() == Some(self.plan.as_str())
+                    && doc["revision"].as_u64() == Some(self.revision)
+            })?;
+            let goal = &doc["continue_goal"];
+            Some((goal["id"].as_str()?.to_owned(), goal["revision"].as_u64()?))
+        });
         self.version = Some(version);
         self.generation = Some(generation.to_owned());
         self.loading = false;
@@ -108,6 +118,15 @@ impl PlanReview {
                 plan: self.plan.clone(),
                 revision: self.revision,
             },
+            2 if self.continue_goal.is_some() => {
+                let (goal, goal_revision) = self.continue_goal.as_ref()?;
+                WorkflowIntent::ApproveForGoal {
+                    plan: self.plan.clone(),
+                    revision: self.revision,
+                    goal: goal.clone(),
+                    goal_revision: *goal_revision,
+                }
+            }
             1 | 2 => WorkflowIntent::Approve {
                 plan: self.plan.clone(),
                 revision: self.revision,
@@ -164,6 +183,15 @@ mod tests {
         assert!(
             matches!(request.intent, WorkflowIntent::Approve { plan, revision: 3, execute: true } if plan == "plan-a")
         );
+        let mut target = doc.clone();
+        target["continue_goal"] = json!({"id":"goal-a","revision":7});
+        assert!(review.accept_details(&json!({
+            "session":"s1","version":8,"generation":"g1","review":doc,"documents":[target]
+        })));
+        assert!(matches!(
+            review.action("continue".into()).unwrap().intent,
+            WorkflowIntent::ApproveForGoal { goal, goal_revision: 7, revision: 3, .. } if goal == "goal-a"
+        ));
         review.busy = true;
         assert!(review.action("again".into()).is_none());
         review.busy = false;
@@ -523,7 +551,11 @@ impl App {
         for (i, key) in [
             "workflow.revise",
             "workflow.approve_only",
-            "workflow.approve_execute",
+            if plan.continue_goal.is_some() {
+                "workflow.approve_continue_goal"
+            } else {
+                "workflow.approve_execute"
+            },
         ]
         .iter()
         .enumerate()

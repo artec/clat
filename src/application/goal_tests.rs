@@ -63,7 +63,12 @@ impl TestModelScript for GoalScript {
                 events.emit(crate::ModelEvent::TextDelta {
                     delta: "round one".into(),
                 });
-                Ok(response("round one", crate::FinishReason::Completed, 10, 2))
+                Ok(response(
+                    "round one",
+                    crate::FinishReason::Completed,
+                    2_100_000,
+                    2,
+                ))
             }
             1 => {
                 let instructions = request.instructions.unwrap_or_default();
@@ -173,9 +178,9 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
             },
             GoalLimits {
                 max_rounds: 3,
-                max_tokens: 10_000,
                 max_time_secs: 60,
                 max_failures: 2,
+                ..GoalLimits::default()
             },
             true,
         )
@@ -199,7 +204,7 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
     handle.join().unwrap();
     let done = receiver.recv().unwrap().unwrap();
     assert_eq!(done.output, "goal complete");
-    assert_eq!(done.usage.input_tokens, 30);
+    assert_eq!(done.usage.input_tokens, 2_100_020);
     assert_eq!(done.usage.output_tokens, 6);
     assert_eq!(approvals.load(Ordering::SeqCst), 0);
 
@@ -207,7 +212,7 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
     assert_eq!(view.state.phase, GoalPhase::Complete);
     assert_eq!(view.state.rounds_started, 2);
     assert_eq!(view.state.revision, 4);
-    assert_eq!(view.state.tokens_used, 36);
+    assert_eq!(view.state.tokens_used, 2_100_026);
     assert!(!view.armed);
     let id = application.current_session_id().unwrap();
     application.close().unwrap();
@@ -257,6 +262,7 @@ fn explicit_goal_run_continues_durably_until_the_registered_verifier_completes()
     let restored = reopened.goal().unwrap().unwrap();
     assert_eq!(restored.state.phase, GoalPhase::Complete);
     assert_eq!(restored.state.rounds_started, 2);
+    assert_eq!(restored.state.tokens_used, 2_100_026);
     assert!(!restored.armed);
     reopened.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());

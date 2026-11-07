@@ -133,7 +133,7 @@ test('plan mode in the add menu changes core policy without sending or clearing 
   await page.click('#add-plan');
   await expect.poll(() => page.evaluate(async () => (await rpc('workflow.details', {})).plan_mode), LIVE).toBe(!before);
   await expect(page.locator('#prompt')).toHaveValue('Do not send this');
-  await page.click('#inspector-toggle');
+  await page.getByRole('button', {name:'Workspace', exact:true}).click();
   await expect(page.locator('#context-plan')).toBeVisible();
   await page.click('#composer-add');
 
@@ -183,18 +183,126 @@ test('a late mode-change failure cannot overwrite the newly selected conversatio
   let release, started;
   const held = new Promise(resolve => { release = resolve; });
   const requestStarted = new Promise(resolve => { started = resolve; });
-  await page.route('**/api/command.run', async route => {
+  await page.route('**/api/workflow.action', async route => {
     started(); await held;
     await route.fulfill({status:503,body:'late mode failure'});
   });
   try {
-    await page.click('#composer-plan-toggle'); await requestStarted;
+    await page.click('#composer-add');
+    await page.click('#add-plan');
+    await requestStarted;
     await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
     await expect.poll(() => page.evaluate(() => state.selectionGeneration),LIVE).not.toBe(selection);
     await page.fill('#prompt','New conversation draft');
+    await page.click('#composer-add');
+    const response = page.waitForResponse(reply => reply.url().endsWith('/api/workflow.action'));
     release();
-    await expect.poll(() => page.evaluate(() => Boolean(workbenchShell.planPending)),LIVE).toBe(false);
+    await response;
+    await expect(page.locator('#add-plan')).toBeEnabled(LIVE);
     await expect(page.locator('#run-state')).toBeEmpty();
     await expect(page.locator('#prompt')).toHaveValue('New conversation draft');
   } finally { release(); }
+});
+
+test('composer creates a Goal and controls the same durable objective after pausing and switching', async ({page}) => {
+  await openWorkbench(page, hostInfo('long-stream'));
+  const selection = await page.evaluate(() => state.selectionGeneration);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.selectionGeneration), LIVE).not.toBe(selection);
+  const facts = () => page.evaluate(() => rpc('workflow.details', {}));
+  // The timed test Host uses classic permissions. Its Plan mode requires
+  // a materialized session, unlike the production workbench's fresh composer.
+  await page.fill('#prompt', 'Seed a conversation for Plan mode');
+  await page.click('#send');
+  await expect.poll(async () => {
+    const value = await facts(); return Boolean(value.session) && !value.busy;
+  }, LIVE).toBe(true);
+  const objective = '保留路径 src/example.rs\n核对第二行的结果';
+  const bar = page.locator('#composer-goal-bar');
+  const pause = page.locator('#composer-goal-pause');
+  const start = page.locator('#composer-goal-start');
+  const remove = page.locator('#composer-goal-remove');
+
+  await page.click('#composer-add');
+  await page.click('#add-plan');
+  await expect.poll(async () => (await facts()).plan_mode, LIVE).toBe(true);
+  await page.click('#composer-add');
+  await page.click('#add-goal');
+  expect((await facts()).plan_mode).toBe(true);
+  expect((await facts()).goal.goal).toBeNull();
+  await expect(page.locator('#composer-plan-toggle[data-mode="goal"]')).toBeVisible(LIVE);
+  await page.click('#composer-plan-toggle');
+  await page.fill('#composer-goal-budget', '3000000');
+  await page.fill('#prompt', objective);
+  await page.locator('#prompt').press('Enter');
+  await expect(bar).toContainText('src/example.rs', LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('', LIVE);
+  await expect(pause).toBeEnabled(LIVE);
+  const created = await facts();
+  expect(created.plan_mode).toBe(false);
+  expect(created.goal.goal.objective).toBe(objective);
+  expect(created.goal.goal.limits.maxTokens).toBe(3_000_000);
+  expect(created.goal.armed).toBe(true);
+
+  await pause.click();
+  await expect(start).toBeEnabled(LIVE);
+  await expect.poll(async () => (await facts()).goal.goal.phase, LIVE).toBe('paused');
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect(bar).toBeHidden(LIVE);
+  await page.locator(`[data-session-id="${created.session}"] .session-item`).click();
+  await expect(bar).toContainText('src/example.rs', LIVE);
+  await expect(start).toBeEnabled(LIVE);
+  await start.click();
+  await expect(pause).toBeEnabled(LIVE);
+  await expect.poll(async () => (await facts()).goal.goal.roundsStarted, LIVE).toBe(2);
+  expect((await facts()).goal.goal.id).toBe(created.goal.goal.id);
+
+  page.once('dialog', d => d.dismiss());
+  await remove.click();
+  expect((await facts()).goal.goal.id).toBe(created.goal.goal.id);
+  page.once('dialog', d => d.accept());
+  await remove.click();
+  await expect(bar).toBeHidden(LIVE);
+  await expect.poll(async () => {
+    const value = await facts(); return [value.goal.goal, value.busy];
+  }, LIVE).toEqual([null, false]);
+  await page.reload();
+  await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
+  await expect(bar).toBeHidden();
+  expect((await facts()).goal.goal).toBeNull();
+});
+
+test('approving a plan links it to the existing paused goal instead of creating a new one', async ({page}) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.fill('#prompt', 'Open a conversation to replan');
+  await page.click('#send');
+  const facts = () => page.evaluate(() => rpc('workflow.details', {}));
+  await expect.poll(async () => {
+    const value = await facts(); return Boolean(value.session) && !value.busy;
+  }, LIVE).toBe(true);
+
+  const {goal, doc} = await page.evaluate(async () => {
+    await rpc('command.run', {command:'/goal create Keep the original objective --tokens 3000000'});
+    await rpc('command.run', {command:'/goal pause'});
+    await rpc('command.run', {command:'/plan on'});
+    const value = await rpc('workflow.details', {});
+    const doc = await rpc('workflow.action', {
+      operationId:crypto.randomUUID(), session:value.session, expectedVersion:value.version,
+      expectedGeneration:value.generation,
+      intent:{action:'save_plan',id:null,revision:0,text:'# Revised approach\n\nValidate the same objective.'},
+    });
+    return {goal:value.goal.goal, doc};
+  });
+  await page.click('#composer-plan-toggle');
+  await page.click('#work-mode-details');
+  await page.locator('#workflow-details [data-action="approve_for_goal"]').click();
+  await expect.poll(async () => {
+    const value = await facts();
+    return value.documents.find(item => item.id === doc.id && item.revision === doc.revision)?.goal_id;
+  }, LIVE).toBe(goal.id);
+  const continued = await facts();
+  expect(continued.goal.goal.id).toBe(goal.id);
+  expect(continued.goal.goal.objective).toBe(goal.objective);
+  expect(continued.goal.goal.limits).toEqual(goal.limits);
+  expect(continued.plan_mode).toBe(false);
 });

@@ -50,9 +50,12 @@ async function sendWorkflowIntent(intent,snapshot){
   const current=()=>owner[0]===state.sessionId&&owner[1]===state.selectionGeneration&&owner[2]===state.stream;
   const value=snapshot||await rpc('workflow.details',{});if(!current()||value.session!==owner[0])return;
   const result=await rpc('workflow.action',{operationId:newOpaqueClientId('workflow'),session:owner[0],expectedVersion:value.version,expectedGeneration:value.generation,intent});
-  if(owner[0]!==state.sessionId||owner[1]!==state.selectionGeneration||owner[2]!==state.stream)return;
-  await refreshWorkbench();if(!current())return;await refreshShellContext();if(!current())return;
-  window.dispatchEvent(new Event('clat:workflow-changed'));return result;
+  if(current()){
+    await refreshWorkbench();
+    if(current())await refreshShellContext();
+    if(current())window.dispatchEvent(new Event('clat:workflow-changed'));
+  }
+  return result;
 }
 async function loadWorkflowView(view){
   const request=++view.epoch,owner=[state.stream,state.selectionGeneration];
@@ -84,11 +87,11 @@ function installWorkflowDetails(){
     open();const token=++view.intent,owner=[state.sessionId,state.selectionGeneration];await load();
     if(token===view.intent&&toolViewIsOpen(page)&&owner[0]===state.sessionId&&owner[1]===state.selectionGeneration)run();
   }
-  trigger.onclick=open;for(const id of ['plan-mode-badge','goal-badge'])document.getElementById(id).onclick=open;
-  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load()),viewAction('create-goal','plus',()=>workflowText('create_goal'),()=>{page.dataset.detail='true';renderWorkflowGoalForm(view);},true,()=>!retainedPlan(view.value)&&builtinEnabled(view.value,"builtin.goal"))]});
+  trigger.onclick=open;document.getElementById('plan-mode-badge').onclick=open;
+  registerView(page,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>load())]});
   page.addEventListener('clat:tool-enter',()=>void load());page.addEventListener('clat:tool-leave',()=>{view.epoch++;view.intent++;});
   page.addEventListener('clat:tool-refresh',()=>{if(!view.acting)void load();});
   window.addEventListener('clat:workflow-changed',()=>{if(toolViewIsOpen(page))void load();});
   page.addEventListener('clat:tool-reset',()=>{view.epoch++;view.intent++;view.value=null;view.selection=null;view.signature='';view.editing=false;});
-  workflowController={open,goal:()=>afterEnter(()=>view.select('goal')),create:()=>afterEnter(()=>renderWorkflowGoalForm(view)),plan:text=>afterEnter(()=>{const doc=view.value?.documents.findLast(doc=>doc.text===text);if(doc)view.select('plan:'+doc.id+':'+doc.revision);})};
+  workflowController={open,goal:()=>afterEnter(()=>view.select('goal')),plan:text=>afterEnter(()=>{const doc=view.value?.documents.findLast(doc=>doc.text===text);if(doc)view.select('plan:'+doc.id+':'+doc.revision);})};
 }

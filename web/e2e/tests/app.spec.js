@@ -1600,13 +1600,15 @@ test('stale command completion preserves and submits newer composer input', asyn
   await expect(page.locator('#plan-mode-badge')).toBeVisible(LIVE);
 });
 
-test('PU content notices and armed Goal badge follow core workflow state', async ({ page }, testInfo) => {
+test('PU content notices and Goal strip follow core workflow state', async ({ page }, testInfo) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await openWorkbench(page, hostInfo('run-command'));
   await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
+  const selection = await page.evaluate(() => state.selectionGeneration);
   await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.selectionGeneration), LIVE).not.toBe(selection);
   await expect(page.locator('.msg.user')).toHaveCount(0, LIVE);
-  await expect(page.locator('#plan-mode-badge')).toBeHidden();
+  await expect(page.locator('#composer-plan-toggle[data-mode="plan"]')).toBeHidden();
   await expect(page.locator('#goal-badge')).toBeHidden();
   await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
   const command = async (text) => {
@@ -1631,7 +1633,7 @@ test('PU content notices and armed Goal badge follow core workflow state', async
   await command('/goal create inspect PU changes --rounds 1');
   await command('/goal');
   await expect(page.locator('.content-notice[aria-label="goal"]').last()).toContainText('inspect PU changes');
-  await expect(page.locator('#goal-badge')).toBeHidden();
+  await expect(page.locator('#goal-badge')).toContainText('inspect PU changes', LIVE);
 
   // Materialize before entering durable Plan Mode; an ordinary run disarms.
   await command('materialize PU workflow session');
@@ -1645,14 +1647,14 @@ test('PU content notices and armed Goal badge follow core workflow state', async
   await page.fill('#prompt', '/goal run');
   await page.click('#send');
   await expect(page.locator('#run-state')).toContainText('exit plan mode first', LIVE);
-  await expect(page.locator('#plan-mode-badge')).toBeVisible();
-  await expect(page.locator('#goal-badge')).toBeHidden();
+  await expect(page.locator('#composer-plan-toggle[data-mode="plan"]')).toBeVisible(LIVE);
+  await expect(page.locator('#composer-goal-start')).toBeDisabled();
   await command('/plan off');
   await command('/goal run');
   const goalBadge = page.locator('#goal-badge');
   await expect(goalBadge).toBeVisible(LIVE);
-  await expect(goalBadge).toHaveText('Goal');
-  await expect(page.locator('#plan-mode-badge')).toBeHidden();
+  await expect(page.locator('#composer-goal-pause')).toBeVisible(LIVE);
+  await expect(page.locator('#composer-plan-toggle[data-mode="plan"]')).toBeHidden();
   await page.emulateMedia({ colorScheme: 'light' });
   await page.emulateMedia({ colorScheme: 'dark' });
 
@@ -1661,7 +1663,7 @@ test('PU content notices and armed Goal badge follow core workflow state', async
   await expect(goalBadge).toBeVisible(LIVE);
   await page.click('#cancel');
   await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
-  await expect(goalBadge).toBeHidden(LIVE);
+  await expect(page.locator('#composer-goal-start')).toBeEnabled(LIVE);
   await command('/goal');
   const goal = page.locator('.content-notice[aria-label="goal"]').last();
   await expect(goal).toContainText('paused');

@@ -28,6 +28,7 @@ fn all_nine_absent_cancel_live_run_and_resume_session_after_restart() {
         &app,
         WorkflowIntent::CreateGoal {
             objective: "unavailable".into(),
+            max_tokens: None,
         },
     );
     assert_eq!(

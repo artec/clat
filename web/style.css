@@ -389,7 +389,6 @@ button:disabled { cursor: default; opacity: .45; }
 .context-pill:hover { color: var(--text); background: var(--surface-raised); }
 .context-pill svg { width: 14px; }
 .workflow-badge { --badge-color: var(--warning); margin-left: 7px; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--badge-color) 66%, var(--line)); border-radius: 99px; color: var(--badge-color); background: color-mix(in srgb, var(--badge-color) 8%, transparent); font: 700 10px/1.5 var(--font-mono); letter-spacing: .04em; }
-.goal-badge { --badge-color: var(--goal); }
 .run-state { min-width: 0; flex: 1; color: var(--text-muted); font: 12px/1.5 var(--font-ui); text-align: right; overflow-wrap: anywhere; }
 .suggestion-trigger { display: grid; flex: 0 0 auto; place-items: center; width: 32px; height: 32px; margin-left: 6px; border-radius: 8px; color: var(--text-muted); }
 .suggestion-trigger svg { width: 17px; height: 17px; stroke-width: 1.55; }

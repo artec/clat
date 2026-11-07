@@ -28,14 +28,28 @@ function renderWorkflowView(view) {
 function workflowViewButton(view,key,run,disabled=false){
   const node=el('button','ghost',()=>workflowText(key));node.type='button';node.disabled=disabled;node.onclick=run;return node;
 }
+function planExecution(doc) {
+  const target = doc.continue_goal;
+  return target ? {
+    key:'approve_continue_goal',
+    intent:{action:'approve_for_goal',plan:doc.id,revision:doc.revision,goal:target.id,goal_revision:target.revision},
+  } : {
+    key:doc.approved?'execute_plan':'approve_execute',
+    intent:{action:'approve',plan:doc.id,revision:doc.revision,execute:true},
+  };
+}
+
 function renderWorkflowPlan(view,doc){
   if(!doc){view.selection=null;return;}
   const {value,detail}=view,text=el('div','rich-text');renderMarkdown(text,doc.text);
   const actions=el('div','file-range'),latest=!value.documents.some(other=>other.id===doc.id&&other.revision>doc.revision);
   const reviewing=value.review?.id===doc.id&&value.review?.revision===doc.revision,ready=doc.projection_ready!==false;
-  const approve=execute=>view.act({action:'approve',plan:doc.id,revision:doc.revision,execute});
-  actions.append(workflowViewButton(view,doc.approved?'execute_plan':'approve_execute',()=>approve(true),!ready||!latest||Boolean(value.handoff)||value.busy&&!reviewing),
-    workflowViewButton(view,'approve_only',()=>approve(false),!ready||doc.approved||!latest||value.busy&&!reviewing),
+  const execution=planExecution(doc);
+  const execute=workflowViewButton(view,execution.key,()=>view.act(execution.intent),!ready||!latest||Boolean(value.handoff)||value.busy&&!reviewing);
+  execute.dataset.action=execution.intent.action;
+  if(doc.continue_goal) execute.title=doc.continue_goal.objective;
+  actions.append(execute,
+    workflowViewButton(view,'approve_only',()=>view.act({action:'approve',plan:doc.id,revision:doc.revision,execute:false}),!ready||doc.approved||!latest||value.busy&&!reviewing),
     workflowViewButton(view,'revise',async()=>{if(await view.act({action:'revise',plan:doc.id,revision:doc.revision})){workbenchShell.chat();dom.prompt.focus();}},value.busy&&!reviewing));
   if(!builtinEnabled(value,'builtin.plan_mode')){
     for(const button of actions.querySelectorAll('button'))disableBuiltin(button,value,'builtin.plan_mode');
@@ -51,10 +65,8 @@ function renderWorkflowGoal(view,goal){
   const {value,detail}=view;
   if(!goal){
     const overview=navigationOverview({title:()=>workflowText('no_goal'),description:()=>workflowText('no_plans'),icon:'plan'});
-    const create=workflowViewButton(view,'create_goal',()=>renderWorkflowGoalForm(view));
-    if(value.plan_mode)disableBuiltin(create,value,'builtin.plan_mode');
-    if(!builtinEnabled(value,'builtin.goal')){disableBuiltin(create,value,'builtin.goal');overview.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));}
-    overview.append(create);
+    const help = builtinEnabled(value,'builtin.goal') ? ()=>workflowText('goal_composer_help') : ()=>builtinReason(value,'builtin.goal');
+    overview.append(el('p','picker-hint',help));
     detail.append(overview);return;
   }
   detail.append(el('h2','',()=>goal?.objective||workflowText('no_goal')),el('p','',()=>workflowText(workflowGoalStatus(value))));
@@ -63,7 +75,7 @@ function renderWorkflowGoal(view,goal){
     workflowViewButton(view,'continue_goal',()=>action('start'),value.plan_mode||value.busy||Boolean(value.handoff)),
     workflowViewButton(view,'pause_goal',()=>action('pause'),!value.goal.armed&&!value.busy),
     workflowViewButton(view,'accept_goal',()=>action('complete'),value.busy),
-    workflowViewButton(view,'feedback_continue',()=>renderWorkflowGoalForm(view,goal),value.busy||value.plan_mode),
+    workflowViewButton(view,'feedback_continue',()=>renderWorkflowGoalFeedback(view,goal),value.busy||value.plan_mode),
     workflowViewButton(view,'end_goal',()=>{if(confirm(workflowText('end_goal_confirm')))void action('clear');},value.busy));
   if(!builtinEnabled(value,'builtin.goal')){
     for(const button of actions.querySelectorAll('button'))disableBuiltin(button,value,'builtin.goal');
@@ -74,12 +86,12 @@ function renderWorkflowGoal(view,goal){
   if(goal.blockedReason)detail.append(el('p','picker-hint',()=>goal.blockedReason.code==='awaiting-user-acceptance'?workflowText('acceptance_help'):goal.blockedReason.message));
   const linked=value.documents.findLast(doc=>doc.goal_id===goal.id);
   if(linked)detail.append(workflowViewButton(view,'view_plan',()=>view.select('plan:'+linked.id+':'+linked.revision)));
-  detail.append(el('p','picker-hint',()=>CLATI18n.msg('workflow.goal_progress',{rounds:goal.roundsStarted,maxRounds:goal.limits.maxRounds,tokens:goal.tokensUsed,maxTokens:goal.limits.maxTokens})));
+  detail.append(el('p','picker-hint',()=>CLATI18n.msg(goal.limits.maxTokens ? 'workflow.goal_progress' : 'workflow.goal_progress_unlimited',{rounds:goal.roundsStarted,maxRounds:goal.limits.maxRounds,tokens:goal.tokensUsed,...(goal.limits.maxTokens ? {maxTokens:goal.limits.maxTokens} : {})})));
 }
-function renderWorkflowGoalForm(view,goal=null){
+function renderWorkflowGoalFeedback(view,goal){
   view.editing=true;const form=el('form','workflow-goal-form'),input=el('textarea','');input.rows=4;
-  const label=()=>workflowText(goal?'feedback_prompt':'goal_objective');CLATI18n.attribute(input,'aria-label',label);
-  const submit=workflowViewButton(view,goal?'feedback_continue':'create_and_start',()=>{});submit.type='submit';
+  const label=()=>workflowText('feedback_prompt');CLATI18n.attribute(input,'aria-label',label);
+  const submit=workflowViewButton(view,'feedback_continue',()=>{});submit.type='submit';
   form.append(el('label','',label),input,el('p','picker-hint',()=>workflowText('acceptance_help')),submit);
   if(!builtinEnabled(view.value,'builtin.goal')){disableBuiltin(submit,view.value,'builtin.goal');form.append(el('p','picker-hint',()=>builtinReason(view.value,'builtin.goal')));}
   if(retainedPlan(view.value)){disableBuiltin(submit,view.value,'builtin.plan_mode');form.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));}
@@ -87,7 +99,7 @@ function renderWorkflowGoalForm(view,goal=null){
   form.onsubmit=async event=>{
     event.preventDefault();if(submit.disabled||!input.value.trim())return;submit.disabled=true;
     const token=view.intent,session=state.sessionId;
-    const intent=goal?{action:'goal',verb:'feedback',id:goal.id,revision:goal.revision,summary:input.value.trim()}:{action:'create_goal',objective:input.value.trim()};
+    const intent={action:'goal',verb:'feedback',id:goal.id,revision:goal.revision,summary:input.value.trim()};
     const done=await view.act(intent);
     if(token!==view.intent||session!==state.sessionId||!view.detail.contains(form))return;
     if(done){view.editing=false;renderWorkflowView(view);}else submit.disabled=retainedPlan(view.value)||!builtinEnabled(view.value,'builtin.goal');

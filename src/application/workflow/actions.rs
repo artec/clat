@@ -29,8 +29,16 @@ pub enum WorkflowIntent {
         plan: String,
         revision: u64,
     },
+    ApproveForGoal {
+        plan: String,
+        revision: u64,
+        goal: String,
+        goal_revision: u64,
+    },
     CreateGoal {
         objective: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u64>,
     },
     Goal {
         verb: String,
@@ -44,6 +52,7 @@ impl TrustedProjectApplication {
         if matches!(
             &request.intent,
             WorkflowIntent::Approve { execute: true, .. }
+                | WorkflowIntent::ApproveForGoal { .. }
                 | WorkflowIntent::CreateGoal { .. }
                 | WorkflowIntent::Goal { .. }
         ) {
@@ -53,6 +62,7 @@ impl TrustedProjectApplication {
             WorkflowIntent::Mode { mode } => mode == "plan" || self.plan_mode_active(),
             WorkflowIntent::SavePlan { .. }
             | WorkflowIntent::Approve { .. }
+            | WorkflowIntent::ApproveForGoal { .. }
             | WorkflowIntent::Revise { .. } => true,
             _ => false,
         };
@@ -128,24 +138,20 @@ impl TrustedProjectApplication {
                 plan,
                 revision,
                 execute,
-            } => self.workflow_approve(plan, *revision, *execute),
-            WorkflowIntent::Revise { plan, revision } => self.workflow_revise(plan, *revision),
-            WorkflowIntent::CreateGoal { objective } => {
-                self.reject_session_switch_while_busy()
-                    .map_err(|e| e.to_string())?;
-                if self.plan_mode_active() {
-                    self.set_plan_mode(false).map_err(|e| e.to_string())?;
-                }
-                self.goal_create(
-                    objective.trim(),
-                    crate::goal::GoalAcceptance::User,
-                    crate::goal::GoalLimits::default(),
-                    false,
-                )
-                .map_err(|e| e.to_string())?;
-                self.request_workflow_goal(None)?;
-                Ok(json!({"pending":true}))
+            } => self.workflow_approve(plan, *revision, *execute, None),
+            WorkflowIntent::ApproveForGoal {
+                plan,
+                revision,
+                goal,
+                goal_revision,
+            } => {
+                self.workflow_approve(plan, *revision, true, Some((goal.as_str(), *goal_revision)))
             }
+            WorkflowIntent::Revise { plan, revision } => self.workflow_revise(plan, *revision),
+            WorkflowIntent::CreateGoal {
+                objective,
+                max_tokens,
+            } => self.workflow_create_goal(objective, *max_tokens),
             WorkflowIntent::Goal {
                 verb,
                 id,
@@ -203,6 +209,7 @@ impl TrustedProjectApplication {
         id: &str,
         revision: u64,
         execute: bool,
+        goal: Option<(&str, u64)>,
     ) -> Result<Value, String> {
         if execute {
             self.goal_service().map_err(|e| e.to_string())?;
@@ -218,11 +225,26 @@ impl TrustedProjectApplication {
         if latest != Some(revision) {
             return Err("plan changed; review latest revision".into());
         }
-        if execute {
+        if let Some(target) = goal {
+            self.check_explicit_plan_goal(&doc, target)?;
+            if self
+                .workflow
+                .handoff
+                .lock()
+                .map_err(|_| "handoff")?
+                .is_some()
+            {
+                return Err("a workflow handoff is already pending".into());
+            }
+        } else if execute {
             self.check_workflow_goal_binding(&doc)?;
         }
+        let goal = goal.map(|(id, revision)| (id.to_owned(), revision));
         if self.plan_plugin()?.review_document().is_some() {
-            if !self.plan_plugin()?.approve_review(id, revision, execute)? {
+            if !self
+                .plan_plugin()?
+                .approve_review(id, revision, execute, goal)?
+            {
                 return Err("plan review changed; refresh before acting".into());
             }
         } else {
@@ -230,7 +252,7 @@ impl TrustedProjectApplication {
                 .map_err(|e| e.to_string())?;
             self.plan_plugin()?.approve_document(id, revision)?;
             if execute {
-                self.request_workflow_goal(Some((id.into(), revision)))?;
+                self.request_workflow_goal_for(Some((id.into(), revision)), goal)?;
             }
         }
         Ok(json!({"pending":execute,"plan":id,"revision":revision}))

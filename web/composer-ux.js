@@ -15,7 +15,7 @@ function installComposerGuard() {
     text: Boolean(dom.prompt.value.trim()) || [...composerDrafts.values()].some(draft => Boolean(draft.text.trim()))
       || [...document.querySelectorAll('.question-card:not(.resolved) textarea')].some(input => Boolean(input.value.trim())),
     images: state.draft.images.length > 0,
-    submitting: state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
+    submitting: composerGoalPending !== null || state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
     composing,
     busy: Boolean(document.querySelector('[data-unsaved=true]')) || Boolean(document.querySelector('[data-saving=true]')) || state.switching || state.compactionActive,
   }));
@@ -23,7 +23,7 @@ function installComposerGuard() {
 
 function saveComposerText() {
   if (composerScope) composerDrafts.set(composerScope, {
-    text: dom.prompt.value, generation: state.composerGeneration,
+    text: dom.prompt.value, generation: state.composerGeneration, goal: composerGoalDraft,
   });
 }
 
@@ -36,10 +36,11 @@ function observeComposerSession(id, selection) {
   const scope = workspacePrefix + ':' + (next || 'new-' + (++freshComposer));
   if (materializing) {
     composerOwnerAliases.set(oldScope, scope);
-    composerDrafts.set(scope, { text: dom.prompt.value, generation: state.composerGeneration });
+    composerDrafts.set(scope, composerDrafts.get(oldScope));
     composerDrafts.delete(oldScope);
   } else if (composerSession !== undefined) {
     dom.prompt.value = composerDrafts.get(scope)?.text || '';
+    composerGoalDraft = composerDrafts.get(scope)?.goal || null;
     state.composerGeneration += 1;
     invalidateSuggestion(); clearRoundFollowups();
     const hadImages = state.draft.images.length > 0;
@@ -68,6 +69,21 @@ function clearOwnedSubmittedText(owner, generation) {
   clearSubmittedPrompt(generation);
 }
 
+function settleComposerGoalDraft(owner, generation, goal) {
+  if (composerOwns(owner)) {
+    if (composerGoalDraft !== goal) return;
+    composerGoalDraft = null;
+    clearOwnedSubmittedText(owner, generation);
+    saveComposerText();
+    return;
+  }
+  const canonical = composerOwnerAliases.get(owner) || owner;
+  const draft = composerDrafts.get(canonical);
+  if (draft?.goal !== goal) return;
+  if (draft.generation === generation) composerDrafts.delete(canonical);
+  else composerDrafts.set(canonical, { ...draft, goal: null });
+}
+
 function composerOwns(owner) {
   return (composerOwnerAliases.get(owner) || owner) === composerScope;
 }
@@ -92,7 +108,7 @@ function restoreTextSteering(id, entry) {
     resizePrompt();
     saveComposerText();
   } else {
-    composerDrafts.set(canonical, { text, generation: (composerDrafts.get(canonical)?.generation || 0) + 1 });
+    composerDrafts.set(canonical, { ...composerDrafts.get(canonical), text, generation: (composerDrafts.get(canonical)?.generation || 0) + 1 });
   }
 }
 

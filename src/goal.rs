@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const MAX_GOAL_ROUNDS: u32 = 8;
-pub const MAX_GOAL_TOKENS: u64 = 1_000_000;
 pub const MAX_GOAL_SECONDS: u64 = 3_600;
 pub const MAX_GOAL_FAILURES: u32 = 3;
 const MAX_OBJECTIVE_BYTES: usize = 16 * 1024;
@@ -65,6 +64,7 @@ pub enum GoalAcceptance {
 #[serde(deny_unknown_fields)]
 pub struct GoalLimits {
     pub max_rounds: u32,
+    /// Zero means no Goal-wide token limit. Positive values are explicit limits.
     pub max_tokens: u64,
     pub max_time_secs: u64,
     pub max_failures: u32,
@@ -74,7 +74,7 @@ impl Default for GoalLimits {
     fn default() -> Self {
         Self {
             max_rounds: MAX_GOAL_ROUNDS,
-            max_tokens: MAX_GOAL_TOKENS,
+            max_tokens: 0,
             max_time_secs: MAX_GOAL_SECONDS,
             max_failures: MAX_GOAL_FAILURES,
         }
@@ -82,12 +82,13 @@ impl Default for GoalLimits {
 }
 
 impl GoalLimits {
+    pub(crate) fn token_cap(&self) -> Option<u64> {
+        (self.max_tokens > 0).then_some(self.max_tokens)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.max_rounds == 0 || self.max_rounds > MAX_GOAL_ROUNDS {
             return Err(format!("goal max rounds must be 1..={MAX_GOAL_ROUNDS}"));
-        }
-        if self.max_tokens == 0 || self.max_tokens > MAX_GOAL_TOKENS {
-            return Err(format!("goal max tokens must be 1..={MAX_GOAL_TOKENS}"));
         }
         if self.max_time_secs == 0 || self.max_time_secs > MAX_GOAL_SECONDS {
             return Err(format!(
@@ -320,7 +321,7 @@ impl GoalService {
                 return Err("a complete goal cannot be resumed".into());
             }
             if state.rounds_started >= state.limits.max_rounds
-                || state.tokens_used >= state.limits.max_tokens
+                || token_budget_exhausted(state)
                 || state.elapsed_ms >= state.limits.max_time_secs.saturating_mul(1000)
             {
                 return Err("goal budget is exhausted".into());
@@ -634,7 +635,7 @@ impl GoalService {
                 });
                 keep_armed = false;
             } else if state.rounds_started >= state.limits.max_rounds
-                || state.tokens_used >= state.limits.max_tokens
+                || token_budget_exhausted(&state)
                 || state.elapsed_ms >= state.limits.max_time_secs.saturating_mul(1000)
             {
                 state.phase = GoalPhase::Paused;
@@ -663,12 +664,15 @@ impl GoalService {
     }
 
     pub(crate) fn remaining_tokens(&self) -> Option<u64> {
-        self.current().ok().flatten().map(|view| {
-            view.state
+        match self.current() {
+            Ok(Some(view)) => view
+                .state
                 .limits
-                .max_tokens
-                .saturating_sub(view.state.tokens_used)
-        })
+                .token_cap()
+                .map(|cap| cap.saturating_sub(view.state.tokens_used)),
+            // A missing or unreadable goal is not an unlimited goal.
+            _ => Some(0),
+        }
     }
 
     pub(crate) fn remaining_time(&self) -> Option<Duration> {
@@ -692,7 +696,7 @@ impl GoalService {
             "CLAT active goal context (durable, not a new user command):\n\
              id={} revision={} phase={} armed={}\n\
              objective: {}\n\
-             rounds={}/{} tokens={}/{} elapsedMs={}/{} failures={}/{}\n\
+             rounds={}/{} tokens={} elapsedMs={}/{} failures={}/{}\n\
              Use update_goal with the exact current revision for progress, blocked, or a completion candidate. \
              A completion candidate is accepted only by its configured verifier; user-only acceptance requires /goal complete.",
             state.id,
@@ -702,8 +706,7 @@ impl GoalService {
             state.objective,
             state.rounds_started,
             state.limits.max_rounds,
-            state.tokens_used,
-            state.limits.max_tokens,
+            state.token_usage(),
             state.elapsed_ms,
             state.limits.max_time_secs.saturating_mul(1000),
             state.failures,
@@ -981,10 +984,7 @@ fn validate_state(state: &GoalState) -> Result<(), String> {
     validate_objective(&state.objective)?;
     validate_acceptance(&state.acceptance)?;
     state.limits.validate()?;
-    if state.rounds_started > state.limits.max_rounds
-        || state.tokens_used > MAX_GOAL_TOKENS.saturating_mul(2)
-        || state.failures > MAX_GOAL_FAILURES
-    {
+    if state.rounds_started > state.limits.max_rounds || state.failures > MAX_GOAL_FAILURES {
         return Err("goal counters exceed their structural bounds".into());
     }
     if (state.phase == GoalPhase::Blocked) != state.blocked_reason.is_some() {
@@ -1013,7 +1013,7 @@ fn valid_goal_id(value: &str) -> bool {
         .is_some_and(|id| value.len() <= 64 && uuid::Uuid::parse_str(id).is_ok())
 }
 
-fn validate_objective(value: &str) -> Result<(), String> {
+pub(crate) fn validate_objective(value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     if trimmed.is_empty()
         || trimmed != value
@@ -1068,9 +1068,25 @@ fn require_revision(state: &GoalState, expected: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn budget_exhausted(state: &GoalState) -> bool {
+fn token_budget_exhausted(state: &GoalState) -> bool {
+    state
+        .limits
+        .token_cap()
+        .is_some_and(|cap| state.tokens_used >= cap)
+}
+
+impl GoalState {
+    pub(crate) fn token_usage(&self) -> String {
+        match self.limits.token_cap() {
+            Some(cap) => format!("{} / {cap}", self.tokens_used),
+            None => self.tokens_used.to_string(),
+        }
+    }
+}
+
+pub(crate) fn budget_exhausted(state: &GoalState) -> bool {
     state.rounds_started >= state.limits.max_rounds
-        || state.tokens_used >= state.limits.max_tokens
+        || token_budget_exhausted(state)
         || state.elapsed_ms >= state.limits.max_time_secs.saturating_mul(1000)
         || state.failures >= state.limits.max_failures
 }

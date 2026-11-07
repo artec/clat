@@ -109,7 +109,7 @@ impl GoalRunPort {
         }
     }
     pub(super) fn remaining_tokens(&self) -> Option<u64> {
-        self.0.as_ref().and_then(|s| s.remaining_tokens())
+        self.0.as_ref().map_or(Some(0), |s| s.remaining_tokens())
     }
     pub(super) fn next_round(&self) -> Result<crate::goal::GoalRound, String> {
         self.0

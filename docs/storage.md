@@ -517,7 +517,8 @@ read-only and never append a session event.
 Goal state is session-local. A complete `goal/change` snapshot records each
 revision, transition, budget counter, acceptance result, and terminal/blocked
 reason. The goal projection participates in admission, checkpoint restore, and
-tail replay. The armed bit is intentionally absent from the durable snapshot:
+tail replay. A `limits.maxTokens` value of zero denotes no aggregate token limit.
+Positive values retain their original meaning. The armed bit is absent from the durable snapshot:
 restart and session switch require the user to arm again.
 
 Subagent activation is likewise process-local and defaults off. Each actual

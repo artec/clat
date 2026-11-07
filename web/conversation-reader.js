@@ -84,7 +84,7 @@ function installReaderDraft(parent, reference, status, current) {
   const owner = workspacePrefix + ':' + reference.session;
   const input = el('textarea', 'reader-draft'); input.value = state.sessionId === reference.session ? dom.prompt.value : composerDrafts.get(owner)?.text || '';
   CLATI18n.attribute(input, 'aria-label', () => pageText('draft'));
-  input.oninput = () => composerDrafts.set(owner, {text: input.value, generation: (composerDrafts.get(owner)?.generation || 0) + 1});
+  input.oninput = () => composerDrafts.set(owner, {...composerDrafts.get(owner), text: input.value, generation: (composerDrafts.get(owner)?.generation || 0) + 1});
   const activate = pageAction('continue_conversation', async () => {
     activate.disabled = true;
     try {

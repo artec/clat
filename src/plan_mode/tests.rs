@@ -328,8 +328,8 @@ fn losing_review_response_cannot_schedule_execution_after_approve_only() {
         sender,
         answered: false,
     });
-    assert!(f.service.approve_review(&doc.id, 1, false).unwrap());
-    assert!(f.service.approve_review(&doc.id, 1, true).is_err());
+    assert!(f.service.approve_review(&doc.id, 1, false, None).unwrap());
+    assert!(f.service.approve_review(&doc.id, 1, true, None).is_err());
     assert!(f.service.workflow.handoff.lock().unwrap().is_none());
     assert!(matches!(
         receiver

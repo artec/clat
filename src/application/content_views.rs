@@ -136,7 +136,7 @@ impl GoalViewDto {
             return "No current goal.".into();
         };
         let mut text = format!(
-            "Goal · {} · {}\n{} · rev {}\n\n{}\n\nRounds: {} / {}\nTokens: {} / {}\nFailures: {} / {}\nElapsed: {} / {} ms",
+            "Goal · {} · {}\n{} · rev {}\n\n{}\n\nRounds: {} / {}\nTokens: {}\nFailures: {} / {}\nElapsed: {} / {} ms",
             state.phase.as_str(),
             if self.armed { "armed" } else { "disarmed" },
             state.id,
@@ -144,8 +144,7 @@ impl GoalViewDto {
             state.objective,
             state.rounds_started,
             state.limits.max_rounds,
-            state.tokens_used,
-            state.limits.max_tokens,
+            state.token_usage(),
             state.failures,
             state.limits.max_failures,
             state.elapsed_ms,

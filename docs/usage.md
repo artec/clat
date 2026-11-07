@@ -687,15 +687,15 @@ Each session may have one current goal:
 
 `/goal clear` is an alias of `/goal cancel`: both clear and disarm the current
 goal. In the CLI, `--run` and `/goal run` explicitly arm continuation. Web/Desktop
-also provide typed **Approve and execute**, **Create and start**, and
-**Start / continue** workflow actions. Restart,
+also provide typed **Approve and execute** and composer Goal controls. Restart,
 session switch, an ordinary user prompt, cancellation, or a terminal goal state
 removes that process-local authority. Goal state itself is durable and uses
-revision/CAS transitions. V1 is capped at 8 rounds, 1,000,000 input+output
-tokens, one hour, and 3 failed rounds or rejected completion candidates;
-user-supplied limits can only narrow those caps. V1 has no monetary-price
-guard: the token cap is the effective cost boundary, and CLAT does not claim a
-micro-USD limit without provider pricing evidence. `user` acceptance can only
+revision/CAS transitions. Goals can run for up to 8 rounds, one hour, and
+3 failed rounds or rejected completion candidates. New goals have no default
+aggregate token limit. Set a positive limit with `--tokens N` or in the composer
+work mode menu. Blank or `--tokens 0` means unlimited for that goal. Existing
+goals retain their recorded limit, and any configured model run budget still
+applies. The limit counts input and output tokens, independently of price. `user` acceptance can only
 be completed by `/goal complete` or the explicit Web/Desktop **Accept result**
 action. **Give feedback and continue** stores the feedback durably and resumes
 the same goal with that context. A model completion candidate for a human-acceptance goal stops execution
@@ -2185,8 +2185,8 @@ fully readable.
 
 Informational slash commands use the same core command catalog. `/context`
 renders its estimate as a readable multi-line breakdown, including plan, goal,
-and memory injection state. Composer badges show **Plan** and an armed **Goal**
-from the core workbench snapshot, including after reload or session selection.
+and memory injection state. The composer shows **Plan** and pins the current
+Goal above the input, including paused goals and after reload or session selection.
 The browser does not persist workflow authority in localStorage or infer it
 from command text. The command bridge adds `memory`, `goal`, and `subagent_status`
 result kinds with read-only DTOs and a text `message`; `goal_run` also includes
@@ -2206,9 +2206,19 @@ saves approval, leaves Plan Mode, waits for the planning worker to settle and
 starts or continues a compatible goal in that session. It cannot overwrite an
 unrelated unfinished goal or start a second run. Stops cancel a pending handoff;
 failed starts keep the document and approved state for an explicit retry.
+To replan a goal started in the composer, pause it and enter Plan mode.
+When reviewing the new plan, choose **Approve and continue current goal**.
+This links the reviewed revision to the paused goal and preserves its objective,
+progress and limits. Later planning revises the linked plan. A plan already
+linked to a different goal cannot be attached through this action.
 
-Goals can be created without a plan. Their controls use typed, session-bound,
-idempotent Host operations and goal ID/revision checks. Existing TUI commands and
+In Web and Desktop, choose **+ → Goal**, enter the objective and send it.
+The bottom work mode control shows **Goal** while drafting. Open that control
+to set an optional token limit. After sending, the goal strip offers pause,
+continue, delete and details. Deletion clears the current goal while retaining
+its recorded history. The **Plans and goals** view still shows plan documents
+and goal progress. Goal controls use typed, session-bound, idempotent Host
+operations and goal ID/revision checks. Existing TUI commands and
 legacy approval keep their contracts. Plans/goals survive restart, while the
 process-local authority to continue execution does not. See [Desktop](desktop.md)
 for workspace navigation and manual interaction acceptance.
