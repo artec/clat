@@ -2,7 +2,7 @@
 function createSetupPage(owner) {
   const page = el('section', 'model-setup-page'), card = el('div', 'model-setup-card'); page.hidden = true;
   CLATI18n.attribute(page, 'aria-label', () => setupText('title'));
-  const brand = el('div', 'setup-brand'), logo = el('img'); logo.src = '/icons/clat.svg'; logo.alt = ''; logo.width = 34; logo.height = 34;
+  const brand = el('div', 'setup-brand'), logo = el('span', 'setup-logo'); logo.setAttribute('aria-hidden', 'true');
   const language = el('div', 'setup-language'); CLATI18n.selector(language); brand.append(logo, el('strong', '', 'CLAT'), language);
   const project = el('p', 'setup-project'), form = createModelSetupForm(), caption = el('p', 'setup-model');
   const status = el('p', 'setup-status'); status.setAttribute('role', 'status');

@@ -394,12 +394,13 @@ formal release version and publication batch.
 Downloaded packages require a signed release index, exact repository/version/
 architecture matching and a Tauri package signature bound to the announced
 version. Downgrades, malformed metadata and invalid signatures are rejected.
-Installation waits for Host-owned readiness across projects. Cancellation leaves
-work running; a new task racing the check keeps its original cached Host alive.
+Installation checks every mounted project and waits for running conversation
+turns and context compaction. Other Host-owned state does not hold up installing
+the desktop package. Cancellation leaves work running; a new task racing the
+check keeps its original cached Host alive.
 
 Text drafts are currently page-local. Before updating, send or clear unsent text
-and images in every session, and finish any input-method composition. Pending
-steering that might restore a draft also blocks installation. Before opening
+and images in every session, and finish any input-method composition. Before opening
 another project through the native project picker, finish the current draft.
 The in-page project list switches projects in the same window without losing
 page-local drafts or stopping their runs. The native project picker still

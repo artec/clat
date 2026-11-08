@@ -53,6 +53,9 @@ struct Control {
 struct Entry {
     metadata: Mutex<Metadata>,
     output: Mutex<Output>,
+    /// Paired with `output`: SSE stream loops wait on this so fresh PTY bytes
+    /// are picked up on arrival instead of on a polling tick.
+    output_signal: std::sync::Condvar,
     control: Mutex<Control>,
     input: mpsc::SyncSender<Vec<u8>>,
     platform: Mutex<Box<dyn platform::Control>>,

@@ -35,9 +35,25 @@ export function artifactDigest(release: DesktopRelease, folder: string, name: st
   if (!release.names('cli', 'v' + release.version()).includes(name) || !/^[0-9a-f]{64}$/.test(remote[name] ?? '')) throw new Error('缺少发布文件：' + name);
   return remote[name]!;
 }
+function validateChecksumManifest(content: string, entries: string[], expected: (name: string) => string): void {
+  const lines = content.split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length !== entries.length) throw new Error('发布校验清单不匹配。');
+  for (const [index, name] of entries.entries()) {
+    const fields = lines[index]!.match(/^([\da-fA-F]{64})[ \t]+\*?([^\r\n]+)$/);
+    if (!fields || fields[1]!.toLowerCase() !== expected(name) || fields[2] !== name) throw new Error('发布校验清单不匹配：' + name);
+  }
+}
 export function writePayload(release: DesktopRelease, folder: string, tag: string, platforms: ReleasePayload['platforms'], remote: RemoteDigests = {}): void {
   for (const [name, entries] of Object.entries(checksumGroups(release, tag))) {
-    writeFileSync(join(folder, name), entries.map(n => `${artifactDigest(release, folder, n, remote)}  ${n}\n`).join(''));
+    const path = join(folder, name);
+    const expected = (n: string) => artifactDigest(release, folder, n, remote);
+    if (existsSync(path)) {
+      if (!lstatSync(path).isFile()) throw new Error('发布文件必须是普通文件：' + name);
+      validateChecksumManifest(readFileSync(path, 'utf8'), entries, expected);
+    } else {
+      writeFileSync(path, entries.map(n => `${expected(n)}  ${n}\n`).join(''));
+    }
   }
   const artifacts = Object.fromEntries(publicFiles(release, tag).filter(n => n !== 'latest.json').map(n => [n, artifactDigest(release, folder, n, remote)]));
   writeJson(join(folder, PAYLOAD), { version: release.version(), notes: 'CLAT ' + tag, pub_date: new Date().toISOString(), platforms, artifacts });
@@ -97,7 +113,6 @@ function validatePayload(release: DesktopRelease, folder: string, value: Release
   if (JSON.stringify(Object.keys(value.artifacts).sort()) !== JSON.stringify(names)) throw new Error('发布索引的资产清单不匹配。');
   for (const name of names) if (value.artifacts[name] !== artifactDigest(release, folder, name, remote)) throw new Error('发布文件校验失败：' + name);
   for (const [name, entries] of Object.entries(checksumGroups(release, tag))) {
-    const expected = entries.map(n => `${value.artifacts[n]}  ${n}\n`).join('');
-    if (readFileSync(join(folder, name), 'utf8') !== expected) throw new Error('发布校验清单不匹配：' + name);
+    validateChecksumManifest(readFileSync(join(folder, name), 'utf8'), entries, n => value.artifacts[n]!);
   }
 }

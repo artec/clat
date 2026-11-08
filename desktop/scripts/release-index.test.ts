@@ -2,11 +2,30 @@ import { afterEach, expect, mock, spyOn, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { checksum, DESKTOP, digest, json, run } from './common';
-import { assembleIndex, PAYLOAD, type ReleaseIndex } from './release-index';
+import { assembleIndex, PAYLOAD, writePayload, type ReleaseIndex } from './release-index';
 import { minisign } from './protect-key';
 import { fixture, generateKey, remote, sign } from './test-support';
 
 afterEach(() => mock.restore());
+test('payload preserves and authenticates CI binary-mode checksum manifests', async () => {
+  await fixture((release, owner) => {
+    const folder = join(release.root, 'assets'); mkdirSync(folder);
+    for (const name of owner.archives()) {
+      writeFileSync(join(folder, name), 'archive');
+      checksum(join(folder, name));
+    }
+    const name = release.names('cli', owner.tag()).find(name => name.includes('windows'))!;
+    const manifest = join(folder, name + '.sha256');
+    const binaryMode = digest(join(folder, name)) + ' *' + name + '\n';
+    writeFileSync(manifest, binaryMode);
+    writePayload(release, folder, owner.tag(), {});
+    expect(readFileSync(manifest, 'utf8')).toBe(binaryMode);
+    const payload = json<{ artifacts: Record<string, string> }>(join(folder, PAYLOAD));
+    expect(payload.artifacts[name + '.sha256']).toBe(digest(manifest));
+    writeFileSync(manifest, '0'.repeat(64) + ' *' + name + '\n');
+    expect(() => writePayload(release, folder, owner.tag(), {})).toThrow();
+  });
+});
 test.skipIf(!Bun.which('minisign'))('real finalizer publishes only compact assets and authenticates both roots after private files are removed', async () => {
   await fixture(async (release, owner) => {
     const cli = join(release.root, '.release-secrets/clat-minisign.key');
@@ -24,6 +43,9 @@ test.skipIf(!Bun.which('minisign'))('real finalizer publishes only compact asset
     const folder = join(release.root, 'assets'); mkdirSync(folder);
     for (const name of owner.archives()) { writeFileSync(join(folder, name), 'test-only archive'); checksum(join(folder, name)); }
     const cliNames = release.names('cli', owner.tag());
+    const windowsCli = cliNames.find(name => name.includes('windows'))!;
+    const binaryManifest = digest(join(folder, windowsCli)) + ' *' + windowsCli + '\n';
+    writeFileSync(join(folder, windowsCli + '.sha256'), binaryManifest);
     const remoteHashes = Object.fromEntries(cliNames.map(name => [name, digest(join(folder, name))]));
     for (const name of cliNames) unlinkSync(join(folder, name));
     await release.finalize(folder, owner.tag(), true, remoteHashes);
@@ -32,6 +54,7 @@ test.skipIf(!Bun.which('minisign'))('real finalizer publishes only compact asset
     for (const name of owner.files().filter(name => !cliNames.includes(name))) writeFileSync(join(publicFolder, name), readFileSync(join(folder, name)));
     writeFileSync(join(publicFolder, 'remote-cli-digests.json'), JSON.stringify(remoteHashes));
     await owner.verify(publicFolder);
+    expect(readFileSync(join(publicFolder, windowsCli + '.sha256'), 'utf8')).toBe(binaryManifest);
     const remoteAssets = owner.files().map(name => ({ name, state: 'uploaded', digest: 'sha256:' + (remoteHashes[name] ?? digest(join(publicFolder, name))) }));
     expect(owner.missing({tagName: owner.tag(), isDraft: true, assets: remoteAssets}, publicFolder)).toEqual([]);
     const changed = remoteAssets.map(asset => asset.name === cliNames[0] ? {...asset, digest: 'sha256:' + '0'.repeat(64)} : asset);

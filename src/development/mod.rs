@@ -95,6 +95,16 @@ impl DevelopmentService {
         let _producer = self.lifetime.producer()?;
         self.terminals.output(id, offset)
     }
+    /// Bounded wait for fresh terminal output; see `Terminals::wait`.
+    pub fn terminal_wait(
+        &self,
+        id: &str,
+        offset: u64,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        let _producer = self.lifetime.producer()?;
+        self.terminals.wait_for_output(id, offset, timeout)
+    }
     pub fn has_live_work(&self) -> bool {
         self.lifetime.active() || self.git.has_live_work() || self.terminals.has_live_work()
     }

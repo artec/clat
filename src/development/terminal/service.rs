@@ -5,10 +5,17 @@ impl Terminals {
         method: &str,
         value: &Value,
     ) -> Result<Value, String> {
-        let _lane = self.lane.lock().map_err(|_| "terminal_busy")?;
         if self.closed.load(Ordering::SeqCst) {
             return Err("host_closed".into());
         }
+        // Read-only listing deliberately stays off the input lane: the 3s
+        // directory poll must never queue keystrokes behind its registry read
+        // (store saves are atomic renames, so a concurrent save cannot tear
+        // this read; a stale row self-corrects on the next poll).
+        if method == "terminal.list" {
+            return self.list();
+        }
+        let _lane = self.lane.lock().map_err(|_| "terminal_busy")?;
         if matches!(method, "terminal.remove" | "terminal.removeEnded") {
             return self.remove(method, value);
         }
@@ -17,9 +24,6 @@ impl Terminals {
         }
         if method == "terminal.shells" {
             return Ok(json!({"shells":shells::choices()}));
-        }
-        if method == "terminal.list" {
-            return self.list();
         }
         if method == "terminal.create" {
             return self.create(value);
@@ -139,6 +143,7 @@ pub(super) fn start_entry(
             end: 0,
             screen: vt100::Parser::new(size.0, size.1, 0),
         }),
+        output_signal: std::sync::Condvar::new(),
         control: Mutex::new(Control {
             client,
             lease: 1,

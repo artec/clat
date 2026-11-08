@@ -140,7 +140,7 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), UiMessage> {
 async fn wait_idle(app: &tauri::AppHandle) -> Result<(), UiMessage> {
     loop {
         let status = tauri::async_runtime::spawn_blocking(
-            clat_core::client_ports::host::HostClient::local_runtime_status,
+            clat_core::client_ports::host::HostClient::local_install_status,
         )
         .await
         .map_err(|_| "host status worker failed")?

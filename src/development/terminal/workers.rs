@@ -24,6 +24,7 @@ fn read_worker(entry: &Arc<Entry>, mut reader: Box<dyn Read + Send>) -> Result<(
                 output.append(&buffer[..n]);
             }
             output.output_done.store(true, Ordering::SeqCst);
+            output.notify_output();
         })
         .map_err(io)?;
     entry
@@ -84,6 +85,7 @@ fn monitor_worker(entry: &Arc<Entry>) -> Result<(), String> {
                         continue;
                     }
                     target.closed.store(true, Ordering::SeqCst);
+                    target.notify_output();
                     target.metadata.lock().expect("terminal metadata").phase = "ended".into();
                     break;
                 }

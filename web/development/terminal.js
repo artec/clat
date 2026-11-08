@@ -17,7 +17,7 @@ function installDevelopmentTerminal(){
     }catch(error){report(error);}
   }
   function dispose(seat){seat.stream?.abort();seat.unsubscribe?.();seat.widget.destroy();seat.element.remove();}
-  function makeSeat(id,row){const element=el('div','dev-terminal-screen');mount.append(element);const widget=globalThis.CLATDevelopmentWidgets.terminal(element,{...devTerminalOptions(),disableStdin:true});const seat={id,root:currentProject().root,row,element,widget,offset:0,sequence:0,lease:0,controlled:false,inputLane:Promise.resolve(),sizeLane:Promise.resolve(),sizeVersion:0};wireTerminalSeat(seat,{report,fit,status,isVisible:()=>selected===seat&&visible()});return seat;}
+  function makeSeat(id,row){const element=el('div','dev-terminal-screen');mount.append(element);const widget=globalThis.CLATDevelopmentWidgets.terminal(element,{...devTerminalOptions(),disableStdin:true});const seat={id,root:currentProject().root,row,element,widget,offset:0,sequence:0,lease:0,controlled:false,pendingInput:'',inputLane:Promise.resolve(),sizeLane:Promise.resolve(),sizeVersion:0};wireTerminalSeat(seat,{report,fit,status,isVisible:()=>selected===seat&&visible()});return seat;}
   async function choose(project,row){
     if(project.root!==currentProject().root){const target=await context.openProject(project,{hash:'#/terminal'});if(target)await target.view.openTerminal(row.id);return;}
     await select(row,true);
@@ -51,6 +51,7 @@ function installDevelopmentTerminal(){
     }catch(error){if(seat&&!terminals.has(seat.id)){dispose(seat);if(selected===seat)selected=null;}report(error);}finally{creating=false;render();}
   }
   const projectRpc=(project,method,params)=>terminalProjectRpc(project,method,params,currentProject().root);
+  let directoryTick=0;
   async function remove(project,row){if(row.phase==='running'&&!window.confirm(devText('close_terminal_confirm')))return;
     try{await projectRpc(project,'terminal.remove',{operationId:devId(),id:row.id,confirmed:true});await refresh();}catch(error){report(error);}}
   async function cleanup(project){const targets=project?[project]:projects,count=targets.reduce((n,p)=>n+p.terminals.filter(row=>row.phase!=='running').length,0);if(!count||!window.confirm(devText('close_ended_confirm',{count})))return;
@@ -65,7 +66,7 @@ function installDevelopmentTerminal(){
   const leave=()=>{active=false;epoch++;menuClose?.();globalThis.CLATTerminalMenuClose?.();selected?.stream?.abort();};node.addEventListener('clat:page-leave',leave);window.addEventListener('clat:development-deactivated',leave);
   window.addEventListener('clat:activated',()=>{if(pageIsOpen(node)){active=true;void refresh();}});
   node.addEventListener('keydown',event=>{if(event.key==='Escape'||mount.contains(event.target))event.stopPropagation();});
-  setInterval(()=>{if(visible())void refresh();},3000);
+  setInterval(()=>{if(!visible())return;directoryTick++;const attached=Boolean(selected&&selected.row.phase==='running'&&selected.stream&&!selected.stream.signal.aborted);if(directoryTick%(attached?10:3)===0)void refresh();},1000);
   return {node,open:()=>presentPage(node),openDirectory:async directory=>{presentPage(node);await createTerminal(directory);},selectById:async id=>{presentPage(node);await refresh();const row=currentProject().terminals.find(row=>row.id===id);if(row)await select(row,true);},create:async(directory,shell)=>{preferredShell=shell||preferredShell;presentPage(node);await createTerminal(directory);},fit};
 }
 function terminalKey(event,seat){
@@ -74,11 +75,27 @@ function terminalKey(event,seat){
   if(event.key.toLowerCase()==='c'&&seat.widget.term.hasSelection()){event.preventDefault();void navigator.clipboard.writeText(seat.widget.term.getSelection());return false;}return true;
 }
 
+function terminalInputPolicy(error,attempt){
+  const code=error?.code||(error?.name==='AbortError'?'timeout':error instanceof TypeError?'network':'internal');
+  const definitive=['terminal_observer','terminal_sequence','terminal_ended','terminal_missing','terminal_input_large','host_closed'].includes(code)||Boolean(error?.authentication);
+  if(definitive||attempt>3)return {action:'demote'};
+  return {action:'retry',delay:200*2**(attempt-1)};
+}
 function wireTerminalSeat(seat,{report,fit,status,isVisible}){
+    seat.pendingInput='';
     seat.widget.term.onData(data=>{
       if(data.length>2*1024*1024){devStatus(status,'input_large');return;}
-      seat.inputLane=seat.inputLane.then(async()=>{if(!seat.controlled||seat.row.phase!=='running')return;
-        for(let start=0;start<data.length;){let end=Math.min(start+16000,data.length);if(end<data.length&&/[\uD800-\uDBFF]/.test(data[end-1]))end--;const chunk=data.slice(start,end);start=end;const result=await rpc('terminal.input',{id:seat.id,clientId:developmentClient,lease:seat.lease,sequence:seat.sequence,data:chunk});seat.sequence=result.sequence;}
+      seat.pendingInput+=data;
+      seat.inputLane=seat.inputLane.then(async()=>{if(!seat.controlled||seat.row.phase!=='running'){seat.pendingInput='';return;}
+        while(seat.pendingInput){
+          const payload=seat.pendingInput;seat.pendingInput='';let start=0,attempt=1;
+          while(start<payload.length){
+            let end=Math.min(start+16000,payload.length);if(end<payload.length&&/[\uD800-\uDBFF]/.test(payload[end-1]))end--;
+            const chunk=payload.slice(start,end),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+            try{const result=await rpc('terminal.input',{id:seat.id,clientId:developmentClient,lease:seat.lease,sequence:seat.sequence,data:chunk},{signal:controller.signal});clearTimeout(timer);seat.sequence=result.sequence;start=end;}
+            catch(error){clearTimeout(timer);const policy=terminalInputPolicy(error,attempt++);if(policy.action==='demote'){seat.controlled=false;seat.widget.term.options.disableStdin=true;seat.pendingInput='';report(error);return;}await new Promise(resolve=>setTimeout(resolve,policy.delay));}
+          }
+        }
       }).catch(error=>{seat.controlled=false;seat.widget.term.options.disableStdin=true;report(error);});
     });
     seat.widget.term.attachCustomKeyEventHandler(event=>terminalKey(event,seat));

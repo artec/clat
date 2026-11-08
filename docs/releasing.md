@@ -195,6 +195,9 @@ The script:
    before publishing, the complete remote inventory and digests are checked again.
 
 An interrupted upload/publication can be retried with the same `./publish`.
+CI checksum manifests retain their original bytes, including the binary-mode
+`*` marker. The signer validates their referenced names and hashes before
+binding each manifest's own digest into the index.
 Verified local files under `dist-release/<tag>/prepared/` are reused, avoiding
 repeat signing/notarization. Remote CLI digests are saved with the prepared files and bound into the signed index; each retry and publication rechecks GitHub metadata. If a CLI asset disappears, changes, lacks a digest or is not uploaded, publication stops. To intentionally rebuild a prepared version, move
 that version's `prepared/` directory aside first. These local directories are

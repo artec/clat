@@ -609,7 +609,7 @@ function authHeaders() {
   return state.token ? { Authorization: 'Bearer ' + state.token } : {};
 }
 
-async function rpc(method, params) {
+async function rpc(method, params, options) {
   if (/^(editor|git|terminal)\./.test(method)) requireBuiltin("builtin.development");
   if (method === "draft.open") requireBuiltin("builtin.draft_images");
   if ((method.startsWith('editor.') || method.startsWith('terminal.')) && params?.clientId) {
@@ -629,6 +629,7 @@ async function rpc(method, params) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params || {}),
+    signal: options?.signal,
   });
   const body = await response.json().catch(() => null);
   if (!body || typeof body.ok !== 'boolean') {

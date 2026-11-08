@@ -583,8 +583,11 @@ fn accept_loop(
                     shared.register_connection(handle);
                 }
             }
+            // Brief pause keeps shutdown responsive; 10ms bounds how long a
+            // fresh browser connection can sit in the backlog before the
+            // per-connection thread even starts reading it.
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(10));
             }
             // FIX-3/CA-05（INV-F3-4）：fatal accept 错误记录根因、仍走
             // 完整关停序列（不静默消失）；退出码由结果映射判定非零。

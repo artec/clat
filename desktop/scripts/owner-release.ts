@@ -47,8 +47,7 @@ export class OwnerRelease {
       const name = `clat-desktop-${this.tag()}-${record.label}${record.platform!.startsWith('darwin') ? '.dmg' : '-setup.exe'}`;
       return `- [${record.label}](${base}${name})`;
     });
-    return ['CLAT ' + this.tag(), '', '**v2.1.1 及更早版本请手动重装一次；Do not use the old updater: reinstall once.**',
-      '', '## CLI / Host', '', ...cli, '', '## Desktop', '', ...desktop,
+    return ['CLAT ' + this.tag(), '', '## CLI / Host', '', ...cli, '', '## Desktop', '', ...desktop,
       '', 'Signatures and checksums are authenticated by [latest.json](' + base + 'latest.json).', ''].join('\n');
   }
   verifyChecksum(folder: string, name: string): void {

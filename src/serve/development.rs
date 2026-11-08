@@ -67,6 +67,9 @@ pub(super) fn stream(stream: &mut TcpStream, path: &str, shared: &Arc<ServeShare
     }
     let mut heartbeat = std::time::Instant::now();
     while !shared.is_shutting_down() {
+        // Event-driven pickup: wake on append/output_done/closed, bounded by
+        // this timeout so shutdown detection and heartbeats stay responsive.
+        let _ = service.terminal_wait(id, offset, Duration::from_millis(250));
         let Ok(chunk) = service.terminal_output(id, offset) else {
             break;
         };
@@ -92,6 +95,5 @@ pub(super) fn stream(stream: &mut TcpStream, path: &str, shared: &Arc<ServeShare
             }
             heartbeat = std::time::Instant::now();
         }
-        std::thread::sleep(Duration::from_millis(32));
     }
 }
