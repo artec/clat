@@ -26,7 +26,7 @@ test('local stage reports elapsed time on success and failure, but labels cache 
       // 失败行带时长、复用无时长——具体措辞与格式可自由调整。
       await local.stage(parent, commit, record, 'unsigned', action);
       const staged = Bun.stripANSI(log.mock.calls.flat().join('\n'));
-      expect(staged).toContain(record.label);
+      expect(staged).toContain(record.label!);
       expect(staged).toMatch(/耗时 \d+分\d+秒/);
       log.mockClear();
       await local.stage(parent, commit, record, 'unsigned', action);
@@ -38,7 +38,7 @@ test('local stage reports elapsed time on success and failure, but labels cache 
         now += 3601000; throw new Error('notary offline');
       })).rejects.toThrow('notary offline');
       const failed = Bun.stripANSI(log.mock.calls.flat().join('\n'));
-      expect(failed).toContain(record.label);
+      expect(failed).toContain(record.label!);
       expect(failed).toMatch(/用时 \d+小时\d+分\d+秒|\d+分\d+秒/);
     });
   });
