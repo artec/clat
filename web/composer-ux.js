@@ -162,7 +162,7 @@ function echoOptimisticSteering(clientMessageId, text) {
   node.classList.add('provisional');
   optimisticSteering.set(clientMessageId, { node, text });
   liveMessageNodes.push(node);
-  scrollIfNearEnd();
+  scrollIfFollowing();
 }
 
 function restoreTextSteering(id, entry) {

@@ -841,7 +841,7 @@ function dispatchFrame(frame) {
     case 'replay.end':
       syncEmptyState();
       dom['transcript-scroll'].style.scrollBehavior = 'auto';
-      dom['transcript-scroll'].scrollTop = dom['transcript-scroll'].scrollHeight;
+      snapToLatest();
       requestAnimationFrame(() => { dom['transcript-scroll'].style.scrollBehavior = ''; });
       state.history.replaying = false;
       conversationRounds.refresh();
@@ -1050,7 +1050,7 @@ function handleLive(event) {
     default:
       console.warn('[clat] unknown RunEvent type:', event.type);
   }
-  scrollIfNearEnd();
+  scrollIfFollowing();
 }
 
 function finishRun(event) {
@@ -1164,7 +1164,7 @@ function onApprovalRequested(ctl) {
   }
   card.append(title, meta, args, actions, note);
   appendHostInteraction(card, ctl.automatic_session_id);
-  scrollIfNearEnd();
+  scrollIfFollowing();
 }
 
 function onSettled(ctl) {
@@ -1212,7 +1212,7 @@ function onSettled(ctl) {
   }
   refreshSessions();
   refreshWorkbench(); void refreshUsage();
-  scrollIfNearEnd();
+  scrollIfFollowing();
 }
 
 
@@ -1471,7 +1471,7 @@ function onQuestionNotice(ctl) {
   } else if (!existing && payload.question && typeof payload.question.question === 'string') {
     if(!payload.automatic_session_id||payload.automatic_session_id===state.sessionId)runActivity.wait(CLATI18n.msg('round.waiting_answer'),payload.rpc_id);
     appendHostInteraction(createQuestionCard(payload), payload.automatic_session_id);
-    scrollIfNearEnd();
+    scrollIfFollowing();
   }
   return true;
 }
@@ -1813,11 +1813,10 @@ function streamingMarkdown(container, source) {
   function flush() {
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    const viewport = dom['transcript-scroll'];
-    const follow = container.isConnected && nearEnd() &&
+    const follow = container.isConnected && followPinned &&
       !(findActive && !document.getElementById('find-bar').classList.contains('hidden'));
     renderMarkdown(container, source());
-    if (follow) viewport.scrollTop = viewport.scrollHeight;
+    if (follow) snapToLatest();
   }
   return {
     schedule() {
@@ -2075,7 +2074,7 @@ function clearToolCardScope() {
 
 function addVerdict(kind, text) {
   appendTranscript(el('div', `verdict ${kind}`, () => (text)));
-  scrollIfNearEnd();
+  scrollIfFollowing();
 }
 
 function addNoticeLine(text, eventId, ordinary = ['model_requested', 'model_responded'].includes(eventId)) {
@@ -2176,10 +2175,48 @@ function nearEnd() {
   return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 180;
 }
 
-function scrollIfNearEnd() {
-  if (findActive && !document.getElementById('find-bar').classList.contains('hidden')) return;
+// Sticky follow-latest: streaming output follows the bottom only while the
+// reader is pinned to it. Any upward user scroll detaches — live output must
+// never yank the page back down — and returning within FOLLOW_REATTACH_PX,
+// or the back-to-latest ball, re-pins. Programmatic snaps only scroll down
+// toward the bottom, so they can never trip the detach rule; a user wheel-up
+// interrupting a smooth snap must still detach. Layout shrinks (collapsing
+// a round) re-anchor the viewport without the reader moving — those never
+// detach either.
+const FOLLOW_REATTACH_PX = 32;
+let followPinned = true;
+let followLastTop = 0;
+let followLastHeight = 0;
+
+function isFollowingLatest() { return followPinned; }
+
+function snapToLatest() {
   const viewport = dom['transcript-scroll'];
-  if (nearEnd()) viewport.scrollTop = viewport.scrollHeight;
+  followPinned = true;
+  viewport.scrollTop = viewport.scrollHeight;
+}
+
+function trackFollowScroll() {
+  const viewport = dom['transcript-scroll'];
+  followLastTop = viewport.scrollTop;
+  followLastHeight = viewport.scrollHeight;
+  viewport.addEventListener('scroll', () => {
+    const top = viewport.scrollTop;
+    const height = viewport.scrollHeight;
+    const layoutShrink = height < followLastHeight;
+    if (!layoutShrink) {
+      const distanceFromEnd = height - top - viewport.clientHeight;
+      if (distanceFromEnd <= FOLLOW_REATTACH_PX) followPinned = true;
+      else if (top < followLastTop) followPinned = false;
+    }
+    followLastTop = top;
+    followLastHeight = height;
+  }, { passive: true });
+}
+
+function scrollIfFollowing() {
+  if (findActive && !document.getElementById('find-bar').classList.contains('hidden')) return;
+  if (followPinned) snapToLatest();
 }
 
 function syncHistoryStatus() {
@@ -4248,6 +4285,7 @@ installConversationFind();
   developmentTerminal = installDevelopmentTerminal();
   installSessionOrganization();
   installWorkflowDetails();
+  trackFollowScroll();
   installNavigationHelp();
   installTaskReview();
   installWorkbenchTools();

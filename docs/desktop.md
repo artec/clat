@@ -44,7 +44,7 @@ needs no close button. Context compaction is an explicit action inside its popup
 Pending messages use the context popup's
 surface, aligned to the composer's right edge. The queue icon is disabled when
 the pending count is zero; it opens the popup only when messages are present. During a
-run, Send queues a message for the next model step; **Interrupt and send** on a queued
+run, Send queues a message for the next model step; **Interject now** on a queued
 item stops the current execution and automatically continues in the same
 conversation. Each queued item has one compact action row for interrupting,
 editing, recalling and removing it. Stop execution using the composer's stop

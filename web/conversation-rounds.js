@@ -94,9 +94,9 @@ function createConversationRounds(){
   function begin(){modelRequestPresentation.begin();scopeId=state.sessionId;live=seat('live:'+ ++serial);live.start=Date.now();live.approximate=true;tick();}
   function capture(node){if(live&&!live.ended&&!state.history.replaying&&!state.history.replayTarget){add(live,node);if(!live.header)paint(live);}}
   function finish(){
-    if(!live||live.ended)return;const follow=nearEnd();
+    if(!live||live.ended)return;const follow=isFollowingLatest();
     live.ended=true;live.end=Date.now();paint(live);stop();
-    if(follow)dom['transcript-scroll'].scrollTop=dom['transcript-scroll'].scrollHeight;
+    if(follow)snapToLatest();
   }
   function replay(event,node){
     if(event.type==='compaction')return;

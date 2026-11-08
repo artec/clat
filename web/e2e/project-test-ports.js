@@ -64,6 +64,7 @@ projectLifecycle = () => ({ ...lifecycle(), test: {
     set onQuestionNotice(value) { onQuestionNotice = value; },
     get addUserMessage() { return addUserMessage; },
     set addUserMessage(value) { addUserMessage = value; },
+    get scrollIfFollowing() { return scrollIfFollowing; },
     get addAssistantMessage() { return addAssistantMessage; },
     set addAssistantMessage(value) { addAssistantMessage = value; },
     get openToolCard() { return openToolCard; },

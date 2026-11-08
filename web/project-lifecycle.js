@@ -7,7 +7,7 @@ function captureProjectReading() {
   const edge = viewport.getBoundingClientRect().top;
   const anchor = [...dom.transcript.children].find(node => node.getBoundingClientRect().bottom > edge);
   projectReading = {
-    top: viewport.scrollTop, follow: nearEnd(), anchor, seq: anchor?.dataset.seq,
+    top: viewport.scrollTop, follow: isFollowingLatest(), anchor, seq: anchor?.dataset.seq,
     offset: anchor ? anchor.getBoundingClientRect().top - edge : 0,
   };
 }
@@ -20,7 +20,7 @@ function restoreProjectReading() {
     : saved.seq ? dom.transcript.querySelector('[data-seq="' + CSS.escape(saved.seq) + '"]') : null;
   const behavior = viewport.style.scrollBehavior;
   viewport.style.scrollBehavior = 'auto';
-  if (saved.follow) viewport.scrollTop = viewport.scrollHeight;
+  if (saved.follow) snapToLatest();
   else if (anchor) viewport.scrollTop += anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top - saved.offset;
   else viewport.scrollTop = saved.top;
   viewport.style.scrollBehavior = behavior;

@@ -10,7 +10,7 @@ function client() {
       if (ctx.state.composerGeneration === generation) ctx.dom.prompt.value = '';
     }, invalidateSuggestion() {}, clearDraft() {}, updateRunState() {}, addNoticeLine() {},
     // 跨文件全局（app.js/composer-ux.js 共享的脚本全局）：沙箱按需 stub。
-    liveMessageNodes: [], composerGoalDraft: null, scrollIfNearEnd() {},
+    liveMessageNodes: [], composerGoalDraft: null, scrollIfFollowing() {},
     addUserMessage() {
       return { classList: { add() {}, remove() {} }, remove() {}, querySelector: () => null };
     },

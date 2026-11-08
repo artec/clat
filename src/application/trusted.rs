@@ -927,18 +927,18 @@ impl TrustedProjectApplication {
             .as_ref()
             .is_some_and(|handle| !handle.is_finished())
         {
-            return Err(ApplicationError::new(
-                "cannot switch sessions while a run is active",
-            ));
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "session.switch_run_active",
+            )));
         }
         if self
             .active_compaction
             .as_ref()
             .is_some_and(|handle| !handle.is_finished())
         {
-            return Err(ApplicationError::new(
-                "cannot switch sessions while a compaction is active",
-            ));
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "session.switch_compaction_active",
+            )));
         }
         Ok(())
     }

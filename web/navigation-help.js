@@ -71,10 +71,10 @@ function createHistoryNavigation(){
   function sync(){
     const running=Boolean(state.connected&&state.runActive&&!state.switching&&context.isActive());
     latest.dataset.running=String(running);
-    latest.classList.toggle('hidden',!running&&nearEnd());
+    latest.classList.toggle('hidden',isFollowingLatest());
     for(const attr of ['title','aria-label'])CLATI18n.attribute(latest,attr,()=>CLATI18n.msg(running?'history_nav.running_latest':'history_nav.latest'));
   }
-  latest.onclick=()=>{viewport.scrollTop=viewport.scrollHeight;sync();};
+  latest.onclick=()=>{snapToLatest();sync();};
   viewport.addEventListener('scroll',sync,{passive:true});
   if(typeof ResizeObserver==='function')new ResizeObserver(sync).observe(dom.transcript);
   window.addEventListener('clat:workbench-updated',sync);

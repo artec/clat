@@ -12,6 +12,23 @@ HOSTS.push('workbench');
 HOSTS.push('project-tree');
 if (process.env.CLAT_PLG2_MARKET_URL) HOSTS.push('plugin-market');
 if (process.env.CLAT_LIVE_GLM_E2E === '1') HOSTS.push('live-glm');
+// CLAT_E2E_HOSTS=success[,key2,...]: start only the named hosts for fast
+// local iteration (runs just the serve_e2e_host_<key> gated tests; unset in
+// CI = every host). Saves the spawn and teardown wait of the rest — a
+// single-host iteration drops from ~75s to ~20s. Unknown keys fail fast
+// instead of hanging on a handshake that never comes.
+const REQUESTED_HOSTS = (process.env.CLAT_E2E_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean);
+if (REQUESTED_HOSTS.length) {
+  const known = new Set(HOSTS);
+  const unknown = REQUESTED_HOSTS.filter(key => !known.has(key));
+  if (unknown.length) {
+    throw new Error(`CLAT_E2E_HOSTS has unknown keys: ${unknown.join(', ')}; known: ${HOSTS.join(', ')}`);
+  }
+}
+const ACTIVE_HOSTS = REQUESTED_HOSTS.length ? REQUESTED_HOSTS : HOSTS;
+const HOST_TEST_FILTERS = REQUESTED_HOSTS.length
+  ? ACTIVE_HOSTS.map(key => `serve_e2e_host_${key.replace(/-/g, '_')}`)
+  : ['serve_e2e_host'];
 const STARTUP_TIMEOUT_MS = 300_000; // 含 cargo 增量编译
 const SHUTDOWN_TIMEOUT_MS = 60_000;
 
@@ -31,14 +48,14 @@ async function globalSetup() {
   // live host metadata midway through its specs.
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clat-web-e2e-'));
   process.env.CLAT_E2E_RUN_DIR = stateDir;
-  for (const key of HOSTS) {
+  for (const key of ACTIVE_HOSTS) {
     fs.rmSync(infoPath(key, stateDir), { force: true });
     fs.rmSync(stopPath(key, stateDir), { force: true });
   }
 
   const cargoArgs = ['test'];
   if (process.env.CLAT_E2E_RELEASE === '1') cargoArgs.push('--release');
-  cargoArgs.push('--lib', '--', '--ignored', 'serve_e2e_host', '--nocapture', '--test-threads=' + (HOSTS.length + 1));
+  cargoArgs.push('--lib', '--', '--ignored', ...HOST_TEST_FILTERS, '--nocapture', '--test-threads=' + (ACTIVE_HOSTS.length + 1));
   const child = spawn(
     'cargo',
     cargoArgs,
@@ -53,7 +70,7 @@ async function globalSetup() {
 
   try {
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-    for (const key of HOSTS) {
+    for (const key of ACTIVE_HOSTS) {
       while (!fs.existsSync(infoPath(key, stateDir))) {
         if (Date.now() > deadline) {
           child.kill('SIGKILL');
@@ -73,7 +90,7 @@ async function globalSetup() {
 
   return async () => {
     try {
-      for (const key of HOSTS) fs.writeFileSync(stopPath(key, stateDir), '');
+      for (const key of ACTIVE_HOSTS) fs.writeFileSync(stopPath(key, stateDir), '');
       const exitDeadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
       while (child.exitCode === null && Date.now() < exitDeadline) await sleep(300);
       if (child.exitCode === null) child.kill('SIGKILL');
