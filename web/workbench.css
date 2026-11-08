@@ -476,16 +476,18 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .pending-input-preview { display: flex; gap: 10px; align-items: flex-start; }
 .pending-input-number { flex: none; min-width: 16px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .pending-input-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6em; overflow-y: auto; }
-.pending-input-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 9px; }
-.pending-input-actions .input-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 30px; min-height: 30px; padding: 3px; }
-.pending-input-actions .input-interrupt { color: var(--accent); margin-right: auto; }
-.input-action svg, .input-stop svg { width: 18px; height: 18px; flex: none; }
+.pending-input-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 9px; }
+.pending-input-actions .input-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 30px; min-height: 30px; padding: 5px; border-color: transparent; background: transparent; font-family: var(--font-ui); }
+.pending-input-actions .input-action:hover:not(:disabled) { background: var(--surface-input); color: var(--text); }
+.pending-input-actions .input-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pending-input-actions .input-interrupt { color: var(--accent); margin-right: auto; padding-inline: 9px; background: color-mix(in srgb,var(--accent) 10%,transparent); }
+.pending-input-actions .input-interrupt:hover:not(:disabled) { color: var(--accent); background: color-mix(in srgb,var(--accent) 18%,transparent); }
+.input-action svg { width: 18px; height: 18px; flex: none; }
 .input-glyph { display: inline-block; width: 18px; height: 18px; flex: none; background: currentColor; mask: var(--input-icon) center / contain no-repeat; -webkit-mask: var(--input-icon) center / contain no-repeat; }
 .pending-input-attachments { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 0 26px; }
 .pending-input-image { max-width: 64px; height: 42px; object-fit: cover; border: 1px solid var(--line); border-radius: 5px; }
 .pending-input-reference { font-size: var(--text-size-secondary); color: var(--text-muted); overflow-wrap: anywhere; }
 .pending-input-editor textarea { width: 100%; resize: vertical; min-height: 72px; max-height: 30vh; margin-top: 8px; padding: 8px; font: inherit; color: var(--text); border: 1px solid var(--line); border-radius: 7px; background: var(--surface-input); }
-.input-stop { display: flex; gap: 8px; align-items: center; width: 100%; min-height: 36px; padding: 12px 0 0; border-top: 1px solid var(--line); margin-top: 12px; color: var(--text-muted); }
 .input-empty { color: var(--text-muted); margin: 16px 0; }
 .usage-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding-block: 5px; font-weight: 400; }
 .usage-row > span:first-child { color: var(--text-soft); }

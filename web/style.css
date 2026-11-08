@@ -238,7 +238,7 @@ button:disabled { cursor: default; opacity: .45; }
   mask-image: var(--transcript-bottom-mask);
 }
 .transcript, .empty-state { width: min(100%, var(--content-width)); margin: 0 auto; padding-inline: 28px; }
-.transcript { padding-top: 32px; padding-bottom: calc(var(--composer-height) + 56px); }
+.transcript { padding-top: 32px; padding-bottom: calc(var(--composer-height) + 16px); }
 .history-status { position: sticky; z-index: 6; top: 10px; display: block; width: fit-content; margin: 0 auto -28px; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--signal) 32%, var(--line)); border-radius: 99px; color: var(--text-muted); background: color-mix(in srgb, var(--surface-raised) 92%, transparent); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); backdrop-filter: blur(12px); font: 10px/1.4 var(--font-mono); }
 .history-status:not(:disabled):hover { color: var(--signal); border-color: var(--signal); }
 .message-map { position: absolute; z-index: 9; top: 88px; right: 28px; bottom: calc(var(--composer-height) + 22px); display: grid; width: 24px; place-items: center; pointer-events: none; }

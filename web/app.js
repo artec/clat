@@ -784,7 +784,19 @@ function resubscribe() {
 
 /* —— SSE projection ——————————————————————————————————————— */
 
+// 事故隔离（2026-11-08 插话冻结事故）：任何事件处理异常只损失该事件
+// 的 UI 效果，绝不冒泡进 openStream 的泵循环——否则一次 ReferenceError
+// 就会 reject 整个事件流，触发「重连 → 全量重放 → 再抛」风暴（会话运
+// 行中↔停止横跳、界面与队列冻结、host serve 层被重放锤死）。
 function handleFrame(frame) {
+  try {
+    dispatchFrame(frame);
+  } catch (error) {
+    console.error('[clat] event frame handler failed:', frame.event, error);
+  }
+}
+
+function dispatchFrame(frame) {
   const payload = parseJson(frame.data);
   if (!payload) {
     console.warn('[clat] non-JSON frame dropped:', frame.event);

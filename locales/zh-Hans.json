@@ -2451,7 +2451,7 @@
   "input.paused": "已暂停 · 发送消息后继续",
   "input.empty": "暂无待发消息",
   "input.not_running": "任务已结束，无法插话。请发送消息继续。",
-  "input.interrupt": "立即插话",
+  "input.interrupt": "打断并发送",
   "input.edit": "修改",
   "input.recall": "取回输入框",
   "input.delete": "删除待发消息",

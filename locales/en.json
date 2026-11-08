@@ -2451,7 +2451,7 @@
   "input.paused": "Paused · send a message to continue",
   "input.empty": "No pending messages",
   "input.not_running": "There is no running task to interrupt. Send a message to continue.",
-  "input.interrupt": "Interrupt now",
+  "input.interrupt": "Interrupt and send",
   "input.edit": "Edit",
   "input.recall": "Return to input",
   "input.delete": "Delete pending message",

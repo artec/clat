@@ -12,7 +12,7 @@ function pendingButton(key, action, icon) {
   const button = el('button', 'text-action input-action'); button.type = 'button';
   CLATI18n.attribute(button, 'title', () => inputText(key));
   CLATI18n.attribute(button, 'aria-label', () => inputText(key));
-  if (icon) button.append(inputGlyph(icon)); else button.append(svgIcon('tool'));
+  if (icon) button.append(typeof icon === 'string' ? inputGlyph(icon) : icon);
   button.onclick = action; return button;
 }
 function installPendingInputs() {
@@ -80,11 +80,6 @@ function renderPendingInputPopup() {
     const retry = el('button', 'text-action', () => inputText('retry_recall'));
     retry.type = 'button'; retry.onclick = () => recallPendingInput(recovery.item, recovery); pendingInputPopup.append(retry);
   }
-  if (state.runActive || pendingInputStore.interrupting) {
-    const stop = el('button', 'input-stop text-action', () => inputText('stop'));
-    stop.type = 'button'; stop.prepend(dom.cancel.querySelector('svg').cloneNode(true));
-    stop.onclick = () => { pendingInputPopover.close(); dom.cancel.click(); }; pendingInputPopup.append(stop);
-  }
   if (editing) {
     const editor = [...pendingInputPopup.querySelectorAll('textarea')].find(node => node.dataset.inputEditor === editing);
     if (editor) { editor.focus(); editor.setSelectionRange(...selection); }
@@ -101,8 +96,8 @@ function renderPendingInputRow(item, index) {
   if (attachments.children.length) row.append(attachments);
   if (pendingInputEditor(item.id)) { row.append(renderInputEditor(item)); return row; }
   const actions = el('div', 'pending-input-actions');
-  const interrupt = pendingButton('interrupt', () => performInputAction('interrupt', item), 'zap'); interrupt.append(el('span', '', () => inputText('interrupt'))); interrupt.classList.add('input-interrupt');
-  const edit = pendingButton('edit', () => beginPendingInputEdit(item));
+  const interrupt = pendingButton('interrupt', () => performInputAction('interrupt', item)); interrupt.append(el('span', '', () => inputText('interrupt'))); interrupt.classList.add('input-interrupt');
+  const edit = pendingButton('edit', () => beginPendingInputEdit(item), svgIcon('edit'));
   const recall = pendingButton('recall', () => recallPendingInput(item), 'corner-up-left');
   const remove = pendingButton('delete', () => performInputAction('delete', item), 'trash-2');
   for (const button of [interrupt, edit, recall, remove]) { button.disabled = item.phase !== 'queued' || inputOperations.has(item.id); actions.append(button); }

@@ -46,9 +46,46 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   if (composerOwns(owner)) {
     clearOwnedSubmittedText(owner, composerGeneration);
     if (images.length && draftEpoch === state.draft.epoch) clearDraft();
-    updateRunState(inputText('accepted')); void refreshPendingInputs();
+    showAcceptedInputFeedback();
+    void refreshPendingInputs();
   }
   inputSubmission = null;
+}
+
+/// 事故修复（2026-11-08 插话冻结事故）：82d7b3df 引入了对本函数的调用
+/// 但未随附定义，steering_applied 处理链在第一行即 ReferenceError；异常
+/// 沿 openStream 泵循环 reject 整个事件流 → connect 重连 → 全量重放，
+/// 形成「重连→重放→再抛」风暴（会话运行中↔停止横跳、UI 与输入队列冻
+/// 结、host serve 层被重放锤死需强杀）。
+/// 语义按 owner 红测试 "queued input feedback clears on receipt or
+/// expiry without hiding newer status"：accepted 提示在 steering_applied
+///（任意 receipt——队列在移动即提示已过时）时清除，或 5s 自动过期；
+/// 清除与过期都只作用于仍处 input.accepted 的提示，较新状态（如
+/// input.failed / interrupting / 错误文本）永不被掩盖。
+let acceptedFeedbackExpiry = null;
+const ACCEPTED_FEEDBACK_TTL_MS = 5000;
+
+function acceptedPresentationShowing() {
+  return (dom['run-state'].dataset.presentation || '') === 'input.accepted';
+}
+
+function showAcceptedInputFeedback() {
+  updateRunState(inputText('accepted'));
+  if (acceptedFeedbackExpiry) clearTimeout(acceptedFeedbackExpiry);
+  acceptedFeedbackExpiry = setTimeout(() => {
+    acceptedFeedbackExpiry = null;
+    if (acceptedPresentationShowing()) updateRunState('');
+  }, ACCEPTED_FEEDBACK_TTL_MS);
+}
+
+function dismissAcceptedInputFeedback(clientMessageId) {
+  void clientMessageId; // 保留调用方签名：per-input 反馈语义的未来扩展点。
+  if (acceptedFeedbackExpiry) {
+    clearTimeout(acceptedFeedbackExpiry);
+    acceptedFeedbackExpiry = null;
+  }
+  if (!acceptedPresentationShowing()) return;
+  updateRunState('');
 }
 async function performInputAction(action, item, extra = {}) {
   if (inputOperations.has(item.id)) return;

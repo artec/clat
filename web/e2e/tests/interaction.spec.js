@@ -20,9 +20,13 @@ test(`UX-1 late acknowledged ${steering ? 'steering' : 'prompt'} never reappears
     dom.prompt.value = 'acknowledged first submission'; state.composerGeneration += 1; saveComposerText();
     const original = rpc;
     let acknowledge;
-    rpc = (method, params) => method === (steering ? 'steer.send' : 'prompt.send')
+    rpc = (method, params) => method === (steering ? 'steer.send' : 'prompt.send') || method === 'input.submit'
       ? new Promise((resolve) => { acknowledge = resolve; }) : original(method, params);
     const pending = submitPrompt();
+    // 提交路径含 await（modelSetup→generation 守卫）：必须等分发真正挂到
+    // mock 上、提交已在途，再让 B 开始编辑——否则 generation 变更会让守卫
+    // 直接丢弃提交（rpc 永不发出），「晚确认」场景就不成立。
+    for (let i = 0; i < 400 && typeof acknowledge !== 'function'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
     observeComposerSession('materialized-A', 900);
     observeComposerSession('session-B', 901);
     dom.prompt.value = 'B is still editing'; state.composerGeneration += 1; saveComposerText();
@@ -102,9 +106,9 @@ test('UX-1b queued text steering echoes into the transcript immediately and sett
   await open(page);
   const result = await page.evaluate(async () => {
     state.runActive = true; state.switching = false; state.compactionActive = false;
-    // owner 并行 WIP 护栏：dismissAcceptedInputFeedback 尚未定义时注入 no-op
-    // stub（仅本页生效）；真实定义落地后 typeof 守卫自动让位于真实现。
-    if (typeof dismissAcceptedInputFeedback !== 'function') window.dismissAcceptedInputFeedback = () => {};
+    // 宿主已广告 input.submit，提交默认走现代路径；本腿钉住 legacy
+    // steer.send 路径（现代路径由 UX-1d 覆盖）。
+    state.workbench = { ...state.workbench, methods: [] };
     dom.prompt.value = 'mid-run interjection echo'; state.composerGeneration += 1; saveComposerText();
     const original = rpc;
     let sentId = null;
@@ -135,6 +139,9 @@ test('UX-1c unclaimed steering echo leaves the transcript when the run ends and 
   await open(page);
   const result = await page.evaluate(async () => {
     state.runActive = true; state.switching = false; state.compactionActive = false;
+    // 钉住 legacy steer.send 路径：本腿断言的「未 claim 退草稿」是 legacy
+    // 语义（现代路径条目留在 Host 队列，由 UX-1d 覆盖）。
+    state.workbench = { ...state.workbench, methods: [] };
     dom.prompt.value = 'never claimed interjection'; state.composerGeneration += 1; saveComposerText();
     const original = rpc;
     rpc = (method) => (method === 'steer.send' ? Promise.resolve({ outcome: 'queued' }) : original(method));
@@ -182,6 +189,32 @@ test('UX-1d deferred pending-input steering echoes immediately and is swept at r
   expect(result.stillQueued).toBe(true);
   expect(result.ghost).toBe(false);
   expect(result.promptCleared).toBe(true);
+});
+
+// 事故回归（2026-11-08 插话冻结事故）：任何事件处理异常只损失该事件的
+// UI 效果，绝不冒泡进 openStream 泵循环 reject 事件流——否则一次
+// ReferenceError 就触发「重连→全量重放→再抛」风暴（会话运行中↔停止横
+// 跳、界面与队列冻结、host serve 层被重放锤死需强杀）。
+test('UX-1e a throwing event handler is isolated and never kills the event pipeline', async ({ page }) => {
+  await open(page);
+  const result = await page.evaluate(() => {
+    state.runActive = true; state.switching = false; state.compactionActive = false;
+    // 注入毒 handler：steering_applied case 内的 addNoticeLine 必抛。
+    const original = addNoticeLine;
+    let poisoned = false;
+    addNoticeLine = () => { poisoned = true; throw new Error('poisoned handler'); };
+    let propagated = false;
+    try {
+      handleFrame({ event: 'event', data: JSON.stringify({ event: { type: 'steering_applied', client_message_id: 'iso-probe', text: 'isolation probe' } }) });
+    } catch (_) { propagated = true; }
+    addNoticeLine = original;
+    // 流未死：后续事件照常处理（run_completed 走完终态）。
+    handleLive({ type: 'run_completed' });
+    return { poisoned, propagated, pipelineAlive: state.runActive === false };
+  });
+  expect(result.poisoned).toBe(true);
+  expect(result.propagated).toBe(false);
+  expect(result.pipelineAlive).toBe(true);
 });
 
 test('UX-2 commands select without running and dedicated navigation opens its UI', async ({ page }) => {
