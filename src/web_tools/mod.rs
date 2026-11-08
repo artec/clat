@@ -1,11 +1,12 @@
 //! First-party web capability. The model vendor never selects a web provider.
 mod budget;
+mod ceramic;
 pub(crate) mod command;
 mod config;
+mod consent;
 pub(crate) use budget::PaidCallBudget;
 pub(crate) mod plugin;
 mod provider;
-mod public_search;
 mod tools;
 use crate::{CancelToken, ToolError, i18n::UiMessage};
 pub(crate) use config::WebService;
@@ -49,6 +50,8 @@ pub(crate) struct HttpRequest {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     timeout: Duration,
+    /// 用户明示放行的地址(consent.rs 同意流重试时填入;首轮恒空)。
+    pub(super) consented: Vec<std::net::IpAddr>,
 }
 #[derive(Debug)]
 pub(crate) struct HttpResponse {
@@ -86,6 +89,7 @@ impl WebTransport for NativeTransport {
                 body: &request.body,
                 timeout: request.timeout,
                 max_bytes: MAX_BYTES,
+                consented: &request.consented,
             },
             clat_wasm_net::CancelToken::from_check(move || source.is_cancelled()),
         )

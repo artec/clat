@@ -56,9 +56,10 @@ impl NetworkScope {
         gate: Arc<Gate>,
         cancel: CancelToken,
         deadline: Instant,
+        consented: Vec<std::net::IpAddr>,
     ) -> Result<Self, Error> {
         let tool = crate::dns_authority::Tool::new(deadline).map_err(Error::Authority)?;
-        let scope = Scope::with_tool(
+        let mut scope = Scope::with_tool(
             run,
             fence,
             Arc::new(CoreGuard {
@@ -67,6 +68,7 @@ impl NetworkScope {
             }),
             &tool,
         );
+        scope.set_consented(consented);
         Ok(Self {
             scope,
             gate,

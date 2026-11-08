@@ -23,6 +23,18 @@ Interactive local clients use three session-scoped modes:
 | `Execute` | ask | allow only with a prepared native sandbox invocation; otherwise ask | allow |
 | `Destructive` | ask | ask | allow |
 
+Native web tools add an address-aware consent gate on top of the Network
+effect (2026-11-08): when `web_search`/`web_fetch` would reach a
+**non-public address** — loopback, RFC1918, link-local, or the fake-IP
+ranges a TUN proxy's DNS returns — CLAT raises an interactive prompt
+(Allow once / Always allow this host / Deny) instead of silently failing.
+"Always allow" is remembered per host in control storage. Public targets
+are unaffected and never prompt. Headless runs have no prompt channel and
+fail closed with an actionable error. The prompt covers literal IP and
+`localhost` URLs as well as public-looking names that resolve privately
+(DNS rebinding shape included: the pinned retry only admits the addresses
+shown in the prompt).
+
 Project Write is the daily-driver mode: file edits and network/search tools run
 without interruption. Native commands run without prompting when that invocation
 is bound to macOS Seatbelt or the Windows ACL runner. Linux commands, third-party
@@ -124,8 +136,6 @@ and complete arguments.
 The TUI renders dangerous native calls as readable previews:
 
 - `edit_file` shows the old and new snippets as a diff;
-- `apply_patch` shows the complete patch JSON, including its single target and
-  every hunk; v1 rejects add/delete/rename and multi-file forms;
 - `write_file` shows the target and full content;
 - `export_patch` shows the artifact target and exports current workspace edits
   into fresh Git-ignored local artifacts; it does not stage, commit or publish;
@@ -315,7 +325,7 @@ with a model or extension you would not trust with local readable data.
 ### Writes
 
 `WriteScope` is derived from the same mode cell used by permission checks for
-the native `write_file`, `edit_file`, and `apply_patch` tools:
+the native `write_file` and `edit_file` tools:
 
 | Client/mode | Writable paths |
 |---|---|
@@ -383,7 +393,6 @@ claimed confinement.
 |---|---|---|
 | `write_file` | `Write` | content ≤1 MiB; default atomic create-only publication; explicit overwrite:true permits whole-file replacement preserving mode bits; capability-relative path operations |
 | `edit_file` | `Write` | target/result ≤1 MiB; exactly one text match; cooperating writers serialized; source snapshot revalidated before atomic replace |
-| `apply_patch` | `Write` | patch/target/result ≤1 MiB; one existing UTF-8 target; all exact hunks prevalidated; one snapshot-checked atomic commit; no add/delete/rename/multi-file v1 |
 | `export_patch` | `Write` | repository root; fresh Git-ignored project-relative artifacts; standard binary-safe patch plus SHA manifest written last; 128 files, 1 MiB patch/per-file, 8 MiB total source; code-edit recovery ledger excludes artifacts |
 | `exec_command` | `Execute` | run-owned session; project-relative cwd; incremental stdout/stderr or real PTY; 256 KiB transient rings; sandbox facts; max 8 active jobs |
 | `write_stdin` | `Execute` | poll/input/close/terminate one same-run session; ≤256 KiB per write with a 5 s backpressure deadline; characters redacted from durable `tool/call`; sensitive model input rejected |

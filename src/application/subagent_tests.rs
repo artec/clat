@@ -380,7 +380,6 @@ impl SubagentScript {
                 "update_goal",
                 "view_image",
                 "todo_write",
-                "apply_patch",
             ]
             .iter()
             .all(|forbidden| !names.contains(forbidden))

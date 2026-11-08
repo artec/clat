@@ -178,12 +178,19 @@ fn exact_origin_rejects_suffix_downgrade_and_new_port() {
     assert!(fixture.names().is_empty());
 }
 #[test]
-fn url_normalizer_rejects_numeric_and_ambiguous_origins() {
+fn url_normalizer_normalizes_numeric_literals_and_rejects_ambiguous_origins() {
+    // 数字形字面量(2026-11-08 同意通道)规范化后接受——拦截移到地址
+    // 校验:无同意集的字面量在 validate_addresses 处 Blocked。
+    for (text, host) in [
+        ("https://127.1", "127.0.0.1"),
+        ("http://2130706433", "127.0.0.1"),
+        ("https://0x7f000001", "127.0.0.1"),
+        ("https://[::1]", "::1"),
+    ] {
+        let origin = Origin::parse(text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+        assert_eq!(origin.host(), host, "{text}");
+    }
     for text in [
-        "https://127.1",
-        "http://2130706433",
-        "https://0x7f000001",
-        "https://[::1]",
         "https://api.example.com.",
         "https://api.example.com/",
         "https://api.example.com?q=x",
@@ -895,6 +902,7 @@ fn tool_entry_deadline_includes_dns_wait_and_cannot_rebase() {
         gate,
         clat_core::CancelToken::new(),
         deadline,
+        Vec::new(),
     )
     .unwrap();
     let job = runtime()

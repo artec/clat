@@ -31,19 +31,36 @@ pub struct WebSettingsEdit {
     pub clear_key: bool,
 }
 pub(crate) struct WebService {
-    control: Arc<ControlStorage>,
+    pub(super) control: Arc<ControlStorage>,
     transport: Arc<dyn WebTransport>,
+    /// 共享 Ceramic 搜索的口令缓存(内存 only,见 ceramic.rs)。
+    pub(super) shared: ceramic::SharedToken,
+    /// 私有地址同意通道的问答槽(与 ask_user 同一管线;headless 为空
+    /// 槽 → fail-closed,见 consent.rs)。
+    pub(super) asker: Arc<crate::interaction::AskUserSlot>,
+    /// 同意流分类解析的测试缝:生产恒 None(走系统解析器);测试注入
+    /// 固定映射避免依赖真实 DNS。见 consent.rs `resolve`。
+    pub(super) resolve_hook: std::sync::Mutex<Option<ResolveHook>>,
 }
+
+/// 解析缝签名:主机名 → 候选地址(见 consent.rs)。
+pub(super) type ResolveHook = Arc<dyn Fn(&str) -> Option<Vec<std::net::IpAddr>> + Send + Sync>;
 #[derive(Clone)]
 pub(super) struct Snapshot {
     pub provider: FetchProvider,
     pub key: Option<String>,
 }
 impl WebService {
-    pub(crate) fn new(control: Arc<ControlStorage>) -> Self {
+    pub(crate) fn new(
+        control: Arc<ControlStorage>,
+        asker: Arc<crate::interaction::AskUserSlot>,
+    ) -> Self {
         Self {
             control,
             transport: Arc::new(NativeTransport),
+            shared: ceramic::SharedToken::default(),
+            asker,
+            resolve_hook: std::sync::Mutex::new(None),
         }
     }
     fn settings(&self) -> Result<Settings, WebError> {
@@ -124,6 +141,12 @@ impl WebService {
         control: Arc<ControlStorage>,
         transport: Arc<dyn WebTransport>,
     ) -> Self {
-        Self { control, transport }
+        Self {
+            control,
+            transport,
+            shared: ceramic::SharedToken::default(),
+            asker: crate::interaction::AskUserSlot::shared(),
+            resolve_hook: std::sync::Mutex::new(None),
+        }
     }
 }

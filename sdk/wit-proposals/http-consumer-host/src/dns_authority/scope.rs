@@ -102,6 +102,9 @@ pub(super) struct ScopeInner {
     pub run: Run,
     pub generation: u64,
     pub store: Mutex<StoreState>,
+    /// 本 scope 明示放行的地址(2026-11-08 同意通道):native 调用方
+    /// 经用户权限框同意后带入;guest 恒为空。
+    pub consented: Vec<std::net::IpAddr>,
 }
 pub struct Scope {
     pub(super) inner: Arc<ScopeInner>,
@@ -137,7 +140,15 @@ impl Scope {
                     active: true,
                     jobs: Vec::new(),
                 }),
+                consented: Vec::new(),
             }),
+        }
+    }
+    /// 记录本 scope 明示放行的地址;仅在构造后、克隆前调用(引用计数
+    /// 为 1 的窗口,与 with_tool 写 tool 同款)。
+    pub(crate) fn set_consented(&mut self, consented: Vec<std::net::IpAddr>) {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.consented = consented;
         }
     }
     pub(crate) fn with_tool(

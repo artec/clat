@@ -324,11 +324,9 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         Arc::new(crate::plugins::SearchPlugin),
         Arc::new(crate::web_tools::plugin::WebPlugin {
             control: Arc::clone(&input.control),
+            asker: Arc::clone(&input.asker_slot),
         }),
         Arc::new(crate::plugins::NativeWriteToolsPlugin {
-            scope: write_scope(),
-        }),
-        Arc::new(crate::plugins::ApplyPatchPlugin {
             scope: write_scope(),
         }),
         Arc::new(crate::plugins::SandboxPlugin {

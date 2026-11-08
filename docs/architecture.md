@@ -861,8 +861,6 @@ Trusted projects also receive:
   original snapshot, rejecting overlapping ranges before one conflict-revalidated
   atomic commit; bounded match-failure line hints reach the next model request
   without extra reads or fuzzy mutation;
-- `apply_patch` — one existing UTF-8 file, multiple exact hunks, complete
-  in-memory validation followed by one snapshot-checked atomic commit;
 - `export_patch` — bounded workspace-to-HEAD Git patch plus source SHA manifest,
   including non-ignored new files, fresh ignored artifact paths and completion
   manifest published last; uses the same isolated Git query policy as review;
@@ -1398,7 +1396,7 @@ preserves global, trust, selection, modal and composer priority explicitly.
 | `src/application/remote_control.rs` | remote binding/pairing/delivery use cases and durable chat-to-session recovery orchestration |
 | `src/run/` | agent-step orchestration, request preparation, response settlement, serial tool calls, and atomically sealed steering |
 | `src/model.rs`, `src/providers/` | provider-neutral model contract and adapters |
-| `src/tool.rs`, `src/native_tools.rs`, `src/apply_patch.rs`, `src/search.rs` | tool contract and native coding tools |
+| `src/tool.rs`, `src/native_tools.rs`, `src/search.rs` | tool contract and native coding tools |
 | `src/process/`, `src/plugins/process.rs`, `src/sandbox.rs` | run-owned process sessions, bounded output cursors, exec tools and platform sandbox policy |
 | `src/project_instructions.rs`, `src/plugins/context/instructions.rs` | scoped project-instruction discovery, caching and observation |
 | `src/permission.rs` | effects, modes, policies, approver port, write scope |

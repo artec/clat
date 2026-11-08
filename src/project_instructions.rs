@@ -55,7 +55,7 @@ impl ProjectInstructionService {
         crate::test_support::execution_observation::record("instructions.observe");
         if !matches!(
             tool,
-            "list_files" | "read_file" | "search" | "write_file" | "edit_file" | "apply_patch"
+            "list_files" | "read_file" | "search" | "write_file" | "edit_file"
         ) {
             return;
         }

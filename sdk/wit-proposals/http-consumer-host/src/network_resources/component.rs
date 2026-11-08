@@ -55,7 +55,12 @@ impl HostState {
     ) -> Result<Self, crate::http_authority::network::Error> {
         let (fence, http, clock) = policy.into_parts();
         let network = Arc::new(NetworkScope::begin_tool(
-            run, fence, gate, cancel, deadline,
+            run,
+            fence,
+            gate,
+            cancel,
+            deadline,
+            Vec::new(),
         )?);
         Ok(Self {
             owner: Owner::with_clock(network.scope(), clock),

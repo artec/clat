@@ -1,11 +1,11 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const {fixture,texts,walk,row}=require('./support/builtin-cards.cjs');
-const sample=()=>row({configurable:true,required_by:[],disabled_by:[],provides:[],requires:['core.tools'],optional:[],tools:['apply_patch'],commands:[],extra:{literal:'原始<JSON>\n"value"'}});
+const sample=()=>row({configurable:true,required_by:[],disabled_by:[],provides:[],requires:['core.tools'],optional:[],tools:['edit_file'],commands:[],extra:{literal:'原始<JSON>\n"value"'}});
 test('readable table resolves service and tool names without rewriting raw copied metadata',async()=>{
  const f=fixture(),plugin=sample(),provider={...row({provides:['core.tools']}),id:'registry',name_presentation:{key:'registry.name'}};
  const card=f.context.builtinPluginCards([plugin,provider]).get(plugin.id);
  const table=walk(card).find(node=>node.tag==='table');assert.ok(table,'technical details should offer readable information');
- assert.ok(texts(table).includes('en:registry.name'));assert.ok(texts(table).includes('en:tool:apply_patch'));
+ assert.ok(texts(table).includes('en:registry.name'));assert.ok(texts(table).includes('en:tool:edit_file'));
  const copy=walk(card).find(node=>node.dataset.action==='copy-builtin-json');assert.ok(copy);
  await copy.click();await new Promise(setImmediate);
  assert.deepEqual(JSON.parse(f.copies[0]),{id:plugin.id,version:plugin.version,runtime:plugin.runtime,scope:plugin.scope,...plugin.instances[0]});

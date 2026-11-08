@@ -7,11 +7,6 @@ const DISPLAY: &[(&str, &str, &str)] = &[
         "extension.builtin.extension_status.summary",
     ),
     (
-        "builtin.apply_patch",
-        "extension.builtin.apply_patch.name",
-        "extension.builtin.apply_patch.summary",
-    ),
-    (
         "builtin.capabilities",
         "extension.builtin.capabilities.name",
         "extension.builtin.capabilities.summary",

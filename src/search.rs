@@ -31,7 +31,8 @@ enum SearchMode {
 
 #[derive(Clone, Debug)]
 struct SearchRequest {
-    query: String,
+    /// 内容检索词；`None` = glob 列文件模式（include_globs 必填）。
+    query: Option<String>,
     requested_path: String,
     mode: SearchMode,
     case_sensitive: bool,
@@ -82,7 +83,17 @@ pub(crate) fn execute(
         .map_err(|error| format!("search: cannot resolve project root: {error}"))?;
     let include = build_globset(&request.include_globs, "include_globs")?;
     let exclude = build_globset(&request.exclude_globs, "exclude_globs")?;
-    let matcher = build_matcher(&request)?;
+    if request.query.is_none() {
+        return execute_glob(
+            &request,
+            &root,
+            &project_root,
+            include.as_ref(),
+            exclude.as_ref(),
+            cancel,
+        );
+    }
+    let matcher = build_matcher(&request, request.query.as_deref().unwrap_or_default())?;
     let query_digest = request.query_digest(&root);
     if let Some(cursor) = &request.cursor
         && cursor.query_digest != query_digest
@@ -199,6 +210,101 @@ pub(crate) fn execute(
     }))
 }
 
+#[derive(Clone, Debug)]
+struct FoundFile {
+    path: String,
+    modified_secs: Option<u64>,
+}
+
+/// glob 列文件模式（query 省略、include_globs 必填）：不读内容，只按
+/// 模式匹配相对路径；按修改时间倒序（Claude Code Glob 同款，并列按
+/// 路径稳定排序）；游标快照 = 路径+mtime 摘要——文件一动游标即失效，
+/// 与内容模式同等纪律。
+fn execute_glob(
+    request: &SearchRequest,
+    root: &Path,
+    project_root: &Path,
+    include: Option<&GlobSet>,
+    exclude: Option<&GlobSet>,
+    cancel: &CancelToken,
+) -> Result<Value, String> {
+    let candidates = collect_candidates(root, project_root, request, include, exclude, cancel)?;
+    let mut files = Vec::new();
+    for candidate in candidates {
+        check_cancelled(cancel)?;
+        let Ok(metadata) = std::fs::symlink_metadata(&candidate.path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let modified_secs = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        files.push(FoundFile {
+            path: candidate.display_path,
+            modified_secs,
+        });
+    }
+    files.sort_by(|left, right| {
+        right
+            .modified_secs
+            .cmp(&left.modified_secs)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    let mut snapshot = Sha256::new();
+    for file in &files {
+        snapshot.update(file.path.as_bytes());
+        snapshot.update([0]);
+        snapshot.update(file.modified_secs.unwrap_or(0).to_le_bytes());
+    }
+    let snapshot_digest = format!("{:x}", snapshot.finalize());
+    let query_digest = request.query_digest(root);
+    let offset = request.cursor.as_ref().map_or(0, |cursor| cursor.offset);
+    if let Some(cursor) = &request.cursor {
+        if cursor.snapshot_digest != snapshot_digest {
+            return Err("search: cursor invalidated because the matched files changed".into());
+        }
+        if offset > files.len() {
+            return Err("search: cursor offset is beyond the current result set".into());
+        }
+    }
+    let end = offset.saturating_add(request.max_results).min(files.len());
+    let page = &files[offset..end];
+    let next_cursor = (end < files.len()).then(|| {
+        SearchCursor {
+            query_digest: query_digest.clone(),
+            snapshot_digest: snapshot_digest.clone(),
+            offset: end,
+        }
+        .encode()
+    });
+    let rows = page
+        .iter()
+        .map(|file| {
+            json!({
+                "path": file.path,
+                "modified_at": file.modified_secs,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "query": Value::Null,
+        "path": request.requested_path,
+        "mode": "glob",
+        "matches": rows,
+        "total_matches": files.len(),
+        "files_searched": files.len(),
+        "files_skipped": 0,
+        "bytes_searched": 0,
+        "next_cursor": next_cursor,
+        "truncated": next_cursor.is_some()
+    }))
+}
+
 fn reject_explicit_symlink(project: &Project, requested: &str) -> Result<(), String> {
     let requested = Path::new(requested);
     let display = if requested.is_absolute() {
@@ -250,12 +356,21 @@ impl SearchRequest {
         if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
             return Err(format!("search: unknown argument `{unknown}`"));
         }
-        let query = string_required(arguments, "query")?;
-        if query.is_empty() {
-            return Err("search: `query` cannot be empty".into());
-        }
-        if query.len() > MAX_QUERY_BYTES {
-            return Err(format!("search: query exceeds {MAX_QUERY_BYTES} bytes"));
+        let query = match string_optional(arguments, "query")? {
+            Some("") => {
+                return Err("search: `query` cannot be empty".into());
+            }
+            Some(query) if query.len() > MAX_QUERY_BYTES => {
+                return Err(format!("search: query exceeds {MAX_QUERY_BYTES} bytes"));
+            }
+            other => other,
+        };
+        let include_globs = string_array(arguments, "include_globs")?;
+        if query.is_none() && include_globs.is_empty() {
+            return Err(
+                "search: `query` is required unless `include_globs` lists patterns (glob mode)"
+                    .into(),
+            );
         }
         let mode = match string_optional(arguments, "mode")?.unwrap_or("literal") {
             "literal" => SearchMode::Literal,
@@ -273,7 +388,6 @@ impl SearchRequest {
                         format!("search: `max_results` must be 1..={MAX_RESULTS_PER_PAGE}")
                     })
             })?;
-        let include_globs = string_array(arguments, "include_globs")?;
         let exclude_globs = string_array(arguments, "exclude_globs")?;
         let extensions = string_array(arguments, "extensions")?
             .into_iter()
@@ -283,7 +397,7 @@ impl SearchRequest {
             .map(SearchCursor::parse)
             .transpose()?;
         Ok(Self {
-            query: query.to_owned(),
+            query: query.map(str::to_owned),
             requested_path: string_optional(arguments, "path")?
                 .unwrap_or(".")
                 .to_owned(),
@@ -518,10 +632,10 @@ fn metadata_stamp(metadata: &std::fs::Metadata) -> (u64, u128) {
     (metadata.len(), modified)
 }
 
-fn build_matcher(request: &SearchRequest) -> Result<Regex, String> {
+fn build_matcher(request: &SearchRequest, query: &str) -> Result<Regex, String> {
     let pattern = match request.mode {
-        SearchMode::Literal => regex::escape(&request.query),
-        SearchMode::Regex => request.query.clone(),
+        SearchMode::Literal => regex::escape(query),
+        SearchMode::Regex => query.to_owned(),
     };
     RegexBuilder::new(&pattern)
         .case_insensitive(!request.case_sensitive)
@@ -597,13 +711,6 @@ fn string_array(arguments: &Value, name: &str) -> Result<Vec<String>, String> {
             Ok(text.to_owned())
         })
         .collect()
-}
-
-fn string_required<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, String> {
-    arguments
-        .get(name)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("search: `{name}` must be a string"))
 }
 
 fn string_optional<'a>(arguments: &'a Value, name: &str) -> Result<Option<&'a str>, String> {
@@ -709,6 +816,100 @@ mod tests {
         assert!(text.contains("src/b.rs"));
         assert!(!text.contains("ignored.rs"));
         assert!(!text.contains("README.md"));
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    fn set_mtime(path: &Path, secs: u64) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap_or_else(|error| panic!("set_mtime {}: {error}", path.display()));
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn glob_mode_lists_matching_files_newest_first_with_ignore_discipline() {
+        let (root, project) = fixture("glob");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored.md\n").unwrap();
+        std::fs::write(root.join("old.md"), "x").unwrap();
+        std::fs::write(root.join("src/new.md"), "x").unwrap();
+        std::fs::write(root.join("ignored.md"), "x").unwrap();
+        std::fs::write(root.join(".hidden.md"), "x").unwrap();
+        std::fs::write(root.join("other.txt"), "x").unwrap();
+        set_mtime(&root.join("old.md"), 1_000);
+        set_mtime(&root.join("src/new.md"), 2_000);
+        set_mtime(&root.join("ignored.md"), 3_000);
+        let output = execute(
+            &json!({"include_globs": ["**/*.md"]}),
+            &project,
+            &CancelToken::new(),
+        )
+        .expect("glob search");
+        assert_eq!(output["mode"], "glob");
+        assert_eq!(output["total_matches"], 2);
+        let paths: Vec<&str> = output["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].as_str().unwrap())
+            .collect();
+        // 修改时间倒序（Claude Code Glob 同款）；gitignore/隐藏文件不进结果。
+        assert_eq!(paths, ["src/new.md", "old.md"]);
+        assert_eq!(output["matches"][0]["modified_at"], 2_000);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn glob_mode_requires_include_globs_when_query_is_omitted() {
+        let (root, project) = fixture("glob-args");
+        let error = execute(&json!({}), &project, &CancelToken::new())
+            .expect_err("glob mode needs patterns");
+        assert!(error.contains("include_globs"), "{error}");
+        let error = execute(
+            &json!({"include_globs": [], "query": ""}),
+            &project,
+            &CancelToken::new(),
+        )
+        .expect_err("empty query still rejected");
+        assert!(error.contains("cannot be empty"), "{error}");
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn glob_mode_pages_and_invalidates_cursors_on_modification() {
+        let (root, project) = fixture("glob-page");
+        std::fs::write(root.join("a.md"), "x").unwrap();
+        std::fs::write(root.join("b.md"), "x").unwrap();
+        set_mtime(&root.join("a.md"), 1_000);
+        set_mtime(&root.join("b.md"), 2_000);
+        let first = execute(
+            &json!({"include_globs": ["*.md"], "max_results": 1}),
+            &project,
+            &CancelToken::new(),
+        )
+        .expect("page one");
+        assert_eq!(first["matches"][0]["path"], "b.md");
+        assert!(first["next_cursor"].is_string(), "paging must continue");
+        let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+        let second = execute(
+            &json!({"include_globs": ["*.md"], "max_results": 1, "cursor": cursor}),
+            &project,
+            &CancelToken::new(),
+        )
+        .expect("page two");
+        assert_eq!(second["matches"][0]["path"], "a.md");
+        assert!(second["next_cursor"].is_null());
+        // 快照绑定 mtime：文件一改，旧游标即失效。
+        set_mtime(&root.join("a.md"), 4_000);
+        let error = execute(
+            &json!({"include_globs": ["*.md"], "max_results": 1, "cursor": cursor}),
+            &project,
+            &CancelToken::new(),
+        )
+        .expect_err("stale cursor must be rejected");
+        assert!(error.contains("invalidated"), "{error}");
         crate::test_support::cleanup_tree(&root);
     }
 

@@ -43,10 +43,6 @@ impl ToolMiddleware for Maintenance {
 fn native_manifest_path(invocation: &ToolInvocation<'_>) -> Option<PathBuf> {
     match invocation.tool.definition().name.as_str() {
         "write_file" | "edit_file" => invocation.arguments["path"].as_str().map(PathBuf::from),
-        "apply_patch" => invocation.arguments["patch"]
-            .as_str()
-            .and_then(|text| crate::apply_patch::parse(text).ok())
-            .map(|patch| PathBuf::from(patch.path)),
         _ => None,
     }
 }

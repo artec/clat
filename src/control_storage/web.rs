@@ -49,4 +49,58 @@ impl ControlStorage {
         let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
         crate::private_fs::write_text_atomic(&self.dir, &self.root, "web.json", &text)
     }
+    /// 私有地址同意记忆(web-consents.json,按主机,先入先出上限 256)。
+    /// 2026-11-08 同意通道:权限框"不再询问"的持久层;无密钥、独立于
+    /// web.json 的 deny_unknown_fields 之外,老版本二进制不受新文件影响。
+    pub(crate) fn web_consents(&self) -> Result<Vec<String>, String> {
+        let _lock = self.lock();
+        self.web_consents_locked()
+    }
+
+    /// 无锁内层读(调用方必须已持有 self.lock();std Mutex 非重入)。
+    fn web_consents_locked(&self) -> Result<Vec<String>, String> {
+        let name = "web-consents.json";
+        let bytes = match self.dir.open(name) {
+            Ok(mut file) => {
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+                if buffer.len() > 65_536 {
+                    return Err("web consents file too large".into());
+                }
+                buffer
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        if value["unit"]["name"] != "web-consents" || value["unit"]["version"] != 1 {
+            return Err("invalid web consents unit".into());
+        }
+        Ok(value["hosts"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|host| host.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// 追加一条记忆;先入先出挤掉最旧条目,原子落盘。
+    pub(crate) fn save_web_consent(&self, host: &str) -> Result<(), String> {
+        let _lock = self.lock();
+        let mut hosts = self.web_consents_locked()?;
+        if !hosts.iter().any(|item| item == host) {
+            hosts.push(host.to_owned());
+            while hosts.len() > 256 {
+                hosts.remove(0);
+            }
+        }
+        let value = serde_json::json!({
+            "unit": {"name": "web-consents", "version": 1},
+            "hosts": hosts,
+        });
+        let text = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+        crate::private_fs::write_text_atomic(&self.dir, &self.root, "web-consents.json", &text)
+    }
 }

@@ -74,10 +74,33 @@ fn raw_url_cannot_hide_authority_or_controls() {
         "https://example.com/a\n",
         "https://example.com\\a",
         "https://example.com./a",
-        "https://127.0.0.1/a",
     ] {
         rejects(&fence(), u, "GET", &[], &[], Failure::InvalidRequest);
     }
+    // 字面量 URL 形状合法(2026-11-08):对未声明它的围栏是普通的
+    // CapabilityDenied,不是 InvalidRequest;连接期的地址拦截在
+    // validate_addresses(无同意集 → Blocked)。
+    rejects(
+        &fence(),
+        "https://127.0.0.1/a",
+        "GET",
+        &[],
+        &[],
+        Failure::CapabilityDenied,
+    );
+    let literal_fence = HttpFence::new(
+        Some(&[Declaration {
+            origin: "http://192.168.1.1:80",
+            methods: &["GET"],
+        }]),
+        None,
+    )
+    .unwrap();
+    assert!(
+        literal_fence
+            .prepare("http://192.168.1.1/", "GET", &[], &[])
+            .is_ok()
+    );
 }
 #[test]
 fn transport_control_headers_are_closed() {

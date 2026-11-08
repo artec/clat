@@ -29,7 +29,7 @@ impl CommandHandler for Handler {
             let key = if result.credential_set {
                 "webtool.search_deepseek"
             } else {
-                "webtool.search_public"
+                "webtool.search_shared"
             };
             return Ok(CommandOutcome::Status(UiMessage::new(key).into()));
         }

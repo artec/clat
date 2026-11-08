@@ -2126,10 +2126,6 @@ mod tests {
                 crate::permission::WriteScopeSource::default(),
             ))
             .chain(std::iter::once(
-                std::sync::Arc::new(crate::plugins::ApplyPatchTool::default())
-                    as std::sync::Arc<dyn Tool>,
-            ))
-            .chain(std::iter::once(
                 std::sync::Arc::new(RunCommandTool) as std::sync::Arc<dyn Tool>
             ))
             .chain(native_interaction_tools(
@@ -2146,7 +2142,6 @@ mod tests {
                 "write_file",
                 "edit_file",
                 "export_patch",
-                "apply_patch",
                 "run_command",
                 "ask_user"
             ]

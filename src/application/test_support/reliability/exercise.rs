@@ -181,7 +181,6 @@ pub(super) fn policy(storage: &Path) {
         "builtin.native_write",
         "builtin.native_interaction",
         "builtin.exec_tools",
-        "builtin.apply_patch",
         "builtin.search",
         "builtin.web",
         "builtin.history",

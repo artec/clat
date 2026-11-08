@@ -110,6 +110,12 @@ Network 策略，再读取 A/AAAA。最多32条地址；空集、非法项、超
 项导致整单拒绝，不是滤掉私网后继续。CNAME 只作为该 origin 的解析链，不能改变
 HTTP authority；最终全部候选地址都受同样检查。
 
+原生工具同意通道（2026-11-08）：`http_authority::native` 的调用方可为单次请求
+携带显式放行地址集（用户在权限框明示"允许"后重试带入）；集合内地址跳过公网
+与 NAT64 检查，集合外地址维持原拦截。guest（WASM 组件）永远没有同意集，guest
+策略与错误面零变化；guest 能力描述符也继续在声明期拒绝 IP literal host（Origin
+接受 literal 只服务于原生同意通道的 URL 形状解析）。
+
 地址分类使用钉版 IANA 特殊用途表并覆盖 DSH 的限制，不只检查“不是 RFC1918”。
 拒 loopback、link-local、private、unspecified、multicast、documentation、benchmark、
 保留地址及 IPv4 mapped/兼容/6to4/Teredo 等转换逃逸。明确新增表的审计版本，

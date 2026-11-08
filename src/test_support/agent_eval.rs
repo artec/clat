@@ -1144,26 +1144,8 @@ mod tests {
     }
 
     #[test]
-    fn patch_multi_hunk_scenario_is_stable_after_plugin_graduation() {
-        let fixture = fixture("patch-multi-hunk-before-plugin");
-        let report = run_fixture(&fixture).expect("scenario runs through Application");
-        assert_eq!(report.gate, GateStatus::Matched, "report: {report:#?}");
-        let actual = report_json(&report).expect("serialize report");
-        let expected =
-            std::fs::read_to_string(fixture.join("expected-report.json")).expect("expected report");
-        assert_eq!(
-            actual, expected,
-            "report protocol drift needs explicit review"
-        );
-        assert!(
-            !actual.contains(std::env::temp_dir().to_string_lossy().as_ref()),
-            "stable report must not contain the random temporary root"
-        );
-    }
-
-    #[test]
     fn scenario_schema_rejects_unknown_version_and_empty_steps() {
-        let fixture = fixture("patch-multi-hunk-before-plugin");
+        let fixture = fixture("write-file-permission-control");
         let unconsumed =
             ScenarioScript::new(load_definition(&fixture).expect("fixture").model_steps).report();
         assert!(
@@ -1195,7 +1177,7 @@ mod tests {
 
     #[test]
     fn model_script_reports_catalog_drift_and_extra_requests() {
-        let fixture = fixture("patch-multi-hunk-before-plugin");
+        let fixture = fixture("write-file-permission-control");
         let definition = load_definition(&fixture).expect("fixture");
         let script = ScenarioScript::new(definition.model_steps);
         let tools = Vec::new();
@@ -1213,7 +1195,7 @@ mod tests {
         let first = script
             .stream(request, &mut events)
             .expect_err("catalog drift");
-        assert!(first.to_string().contains("missing tool `apply_patch`"));
+        assert!(first.to_string().contains("missing tool `write_file`"));
         let second = script
             .stream(request, &mut events)
             .expect_err("missing prior result");

@@ -166,7 +166,6 @@ impl TargetServices {
         let mut replacements = crate::plugins::process::process_tools(self.process.clone());
         replacements.extend(self.view_image.tool(self.sessions.clone()));
         replacements.extend(crate::native_tools::native_write_tools(scope.clone()));
-        replacements.push(crate::plugins::target_patch_tool(scope));
         replacements.push(crate::plugins::target_todo_tool(self.todo.clone()));
         if let Some(goal) = &self.goal {
             replacements.push(crate::plugins::target_goal_tool(goal.clone()));

@@ -9,7 +9,6 @@ pub(crate) mod conversation;
 use conversation::{compaction, pruner, title, todo, utility};
 
 mod agent;
-mod apply_patch;
 mod commands;
 pub(crate) mod inventory;
 mod language_intelligence;
@@ -31,9 +30,6 @@ mod wasm;
 mod tests;
 
 pub(crate) use agent::{DefaultAgentPlugin, ToolPipelinePlugin};
-pub(crate) use apply_patch::ApplyPatchPlugin;
-#[cfg(test)]
-pub(crate) use apply_patch::ApplyPatchTool;
 pub(crate) use commands::{BuiltinCommandsPlugin, CommandsPlugin};
 pub(crate) use compaction::{CompactionPlugin, compaction_recommended};
 pub(crate) use context_inspector::ContextInspectorPlugin;
@@ -93,7 +89,6 @@ pub(crate) use process::acceptance::{
     command_observation, command_plan, prior_command_matches, task_checkers,
 };
 
-pub(crate) use apply_patch::execution_tool as target_patch_tool;
 pub(crate) use goal::execution_tool as target_goal_tool;
 pub(crate) use instructions::execution_observer as target_instruction_observer;
 pub(crate) use permission::execution_factory as target_permission_factory;

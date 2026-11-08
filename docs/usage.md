@@ -123,10 +123,9 @@ resume can rebuild the same scope set and detect changed or removed files.
 
 The native `search` tool defaults to case-insensitive literal matching and can
 also use bounded regex, globs, extension filters, gitignore/hidden policy and
-snapshot-bound cursors. `apply_patch` performs one existing file's exact
-multi-hunk update atomically; creation remains `write_file` and v1 does not
-delete or rename files.
-
+snapshot-bound cursors. Omitting the query switches it to file listing by
+`include_globs` patterns alone (no contents are read), sorted by modification
+time, newest first, with the same ignore policy and pagination cursors.
 `write_file` creates new files by default. If the path already exists, it
 returns an error and preserves its contents. Use `edit_file` to append or
 change a section; intentional whole-file replacement requires

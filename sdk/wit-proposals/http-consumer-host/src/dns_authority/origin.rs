@@ -24,6 +24,12 @@ impl Origin {
         }
         let host = match url.host() {
             Some(Host::Domain(host)) if !host.ends_with('.') && !host.is_empty() => host,
+            // IP 字面量主机(2026-11-08 同意通道):声明 Origin 允许携带
+            // 字面量,连接仍走既有地址校验——非公网字面量在没有显式
+            // 同意集(ScopeInner.consented)时依旧拦截。guest 永不携带
+            // 同意集,策略结果不变;仅失败点从声明解析移到地址校验。
+            Some(Host::Ipv4(address)) => return Ok(Self::literal(&url, &address.to_string())),
+            Some(Host::Ipv6(address)) => return Ok(Self::literal(&url, &address.to_string())),
             _ => return Err(Failure::InvalidOrigin),
         };
         if host.contains('*') || host.split('.').any(|part| part.is_empty()) {
@@ -37,6 +43,13 @@ impl Origin {
                 .filter(|p| *p > 0)
                 .ok_or(Failure::InvalidOrigin)?,
         })
+    }
+    fn literal(url: &Url, host: &str) -> Self {
+        Self {
+            scheme: url.scheme().into(),
+            host: host.into(),
+            port: url.port_or_known_default().filter(|p| *p > 0).unwrap_or(80),
+        }
     }
     pub fn host(&self) -> &str {
         &self.host

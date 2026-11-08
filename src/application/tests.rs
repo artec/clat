@@ -5226,7 +5226,6 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
             "write_file",
             "edit_file",
             "export_patch",
-            "apply_patch",
             "run_command",
             "exec_command",
             "write_stdin",

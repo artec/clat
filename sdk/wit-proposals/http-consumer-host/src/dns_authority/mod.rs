@@ -20,7 +20,7 @@ mod nat64;
 mod origin;
 mod resolver;
 mod scope;
-pub use addresses::validate_addresses;
+pub use addresses::{address_is_public, validate_addresses, validate_addresses_with_consent};
 pub(crate) use budget::{HttpPermit, Tool};
 pub use credential::{ConnectionPins, Resolution};
 pub use origin::{Fence, Origin};

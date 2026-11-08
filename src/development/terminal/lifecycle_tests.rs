@@ -71,7 +71,7 @@ impl std::io::Read for ChannelReader {
 }
 fn probe_terminals() -> Terminals {
     Terminals::new(
-        Project::new(&std::env::temp_dir()),
+        Project::new(std::env::temp_dir()),
         store::Store::new(
             std::env::temp_dir().join(format!("clat-terminal-probe-{}", uuid::Uuid::new_v4())),
         ),

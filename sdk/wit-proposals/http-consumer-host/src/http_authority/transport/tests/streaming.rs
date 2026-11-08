@@ -392,6 +392,7 @@ fn resource_owner_closes_idle_http_on_close_drop_run_or_plan() {
                     Arc::new(gate.clone()),
                     CancelToken::new(),
                     Instant::now() + Duration::from_secs(1),
+                    Vec::new(),
                 )
                 .unwrap();
                 let mut owner = crate::network_resources::Owner::new(network.scope());
@@ -518,6 +519,7 @@ fn resource_task_http_and_read_share_typed_private_result_chain() {
                 Arc::new(gate),
                 CancelToken::new(),
                 Instant::now() + Duration::from_secs(1),
+                Vec::new(),
             )
             .unwrap(),
         );

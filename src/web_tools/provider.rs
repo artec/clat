@@ -11,12 +11,8 @@ pub(super) fn validate_url(text: &str) -> Result<Url, WebError> {
     let url = Url::parse(text).map_err(|_| WebError::new("invalid_url"))?;
     clat_wasm_net::dns_authority::Origin::parse(&url.origin().ascii_serialization())
         .map_err(|_| WebError::new("invalid_url"))?;
-    if url
-        .host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost"))
-    {
-        return Err(WebError::new("blocked"));
-    }
+    // localhost/字面量不再在此特判(2026-11-08):它们流入传输层,由
+    // 地址策略拦截后走 consent.rs 的权限框同意流。
     Ok(url)
 }
 impl WebService {
@@ -24,7 +20,8 @@ impl WebService {
         &self,
         args: &Value,
         snapshot: &Snapshot,
-        cancel: &CancelToken,
+        req_cancel: &CancelToken,
+        run_cancel: &CancelToken,
         quota: Option<&PaidCallBudget>,
     ) -> Result<Value, WebError> {
         let query = args
@@ -40,14 +37,11 @@ impl WebService {
                 .ok_or_else(|| WebError::new("invalid_query"))?,
         };
         if snapshot.key.is_none() {
-            return super::public_search::search(
-                self.transport(),
-                query.trim(),
-                count as usize,
-                cancel,
-            );
+            // 2026-11-08 负责人令:无 key 兜底由匿名 DuckDuckGo Lite 抓取
+            // 换为项目方共享 Ceramic 代理(public_search.rs 已删除)。
+            return self.search_shared(query.trim(), count, req_cancel, run_cancel);
         }
-        self.search_deepseek(query, count, snapshot, cancel, quota)
+        self.search_deepseek(query, count, snapshot, req_cancel, run_cancel, quota)
     }
 
     fn search_deepseek(
@@ -55,14 +49,16 @@ impl WebService {
         query: &str,
         count: u64,
         snapshot: &Snapshot,
-        cancel: &CancelToken,
+        req_cancel: &CancelToken,
+        run_cancel: &CancelToken,
         quota: Option<&PaidCallBudget>,
     ) -> Result<Value, WebError> {
         let response = self.api(
             "search",
             json!({"query":query,"count":count,"need_content":false}),
             snapshot,
-            cancel,
+            req_cancel,
+            run_cancel,
             quota,
         )?;
         let results = response
@@ -97,7 +93,8 @@ impl WebService {
         &self,
         args: &Value,
         snapshot: &Snapshot,
-        cancel: &CancelToken,
+        req_cancel: &CancelToken,
+        run_cancel: &CancelToken,
         quota: Option<&PaidCallBudget>,
     ) -> Result<Value, WebError> {
         let text = args
@@ -110,7 +107,8 @@ impl WebService {
                 "fetch",
                 json!({"url":url.as_str()}),
                 snapshot,
-                cancel,
+                req_cancel,
+                run_cancel,
                 quota,
             )?;
             let body = response
@@ -132,17 +130,18 @@ impl WebService {
                 "external_untrusted":true,"truncated":truncated}),
             );
         }
-        self.fetch_http(url, cancel)
+        self.fetch_http(url, req_cancel, run_cancel)
     }
     fn api(
         &self,
         operation: &str,
         body: Value,
         snapshot: &Snapshot,
-        cancel: &CancelToken,
+        req_cancel: &CancelToken,
+        run_cancel: &CancelToken,
         quota: Option<&PaidCallBudget>,
     ) -> Result<Value, WebError> {
-        check(cancel)?;
+        check(req_cancel)?;
         let key = snapshot
             .key
             .as_ref()
@@ -150,20 +149,22 @@ impl WebService {
         if let Some(quota) = quota {
             quota.charge()?;
         }
-        let response = self.transport().execute(
-            &HttpRequest {
+        let response = self.consent_execute(
+            HttpRequest {
                 url: format!("{API_BASE}/{operation}"),
                 method: "POST",
                 body: serde_json::to_vec(&body).unwrap(),
                 timeout: TIMEOUT,
+                consented: Vec::new(),
                 headers: vec![
                     ("authorization".into(), format!("Bearer {key}")),
                     ("content-type".into(), "application/json".into()),
                 ],
             },
-            cancel,
+            req_cancel,
+            run_cancel,
         )?;
-        check(cancel)?;
+        check(req_cancel)?;
         if response.body.len() > MAX_BYTES {
             return Err(WebError::new("too_large"));
         }
@@ -178,19 +179,25 @@ impl WebService {
         }
         serde_json::from_slice(&response.body).map_err(|_| WebError::new("invalid_response"))
     }
-    fn fetch_http(&self, mut url: Url, cancel: &CancelToken) -> Result<Value, WebError> {
+    fn fetch_http(
+        &self,
+        mut url: Url,
+        req_cancel: &CancelToken,
+        run_cancel: &CancelToken,
+    ) -> Result<Value, WebError> {
         let deadline = Instant::now() + TIMEOUT;
         for hop in 0..=5 {
-            check(cancel)?;
+            check(req_cancel)?;
             let timeout = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| WebError::new("timeout"))?;
-            let r = self.transport().execute(
-                &HttpRequest {
+            let r = self.consent_execute(
+                HttpRequest {
                     url: url.to_string(),
                     method: "GET",
                     body: Vec::new(),
                     timeout,
+                    consented: Vec::new(),
                     headers: vec![
                         ("user-agent".into(), "CLAT web_fetch".into()),
                         (
@@ -199,9 +206,10 @@ impl WebService {
                         ),
                     ],
                 },
-                cancel,
+                req_cancel,
+                run_cancel,
             )?;
-            check(cancel)?;
+            check(req_cancel)?;
             if matches!(r.status, 301 | 302 | 303 | 307 | 308) {
                 let location = r
                     .location
@@ -220,7 +228,7 @@ impl WebService {
                 url = target;
                 continue;
             }
-            return render_http(&url, r, cancel);
+            return render_http(&url, r, req_cancel);
         }
         Err(WebError::new("redirect_limit"))
     }

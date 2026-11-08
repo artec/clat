@@ -22,6 +22,8 @@ pub struct Request<'a> {
     pub body: &'a [u8],
     pub timeout: Duration,
     pub max_bytes: usize,
+    /// 用户明示放行的地址(权限框"允许"后重试时带入;首轮恒空)。
+    pub consented: &'a [std::net::IpAddr],
 }
 #[derive(Debug)]
 pub struct Response {
@@ -89,6 +91,7 @@ async fn execute_async(input: Request<'_>, cancel: CancelToken) -> Result<Respon
         gate,
         cancel.clone(),
         Instant::now() + input.timeout,
+        input.consented.to_vec(),
     )
     .map_err(|e| network_error(&cancel, e))?;
     let dns = SystemDns::shared().map_err(|_| Error::Transport)?;
@@ -175,12 +178,10 @@ mod tests {
     use super::*;
     #[test]
     fn native_web_transport_rejects_non_public_url_shapes_and_precancel() {
-        for url in [
-            "http://127.0.0.1:1/",
-            "http://[::1]:1/",
-            "file:///tmp/file",
-            "https://user:pass@example.com/",
-        ] {
+        // 字面量 URL(2026-11-08)形状合法:无同意集 → DNS 解析后落在
+        // 地址校验上 Blocked(此前是 InvalidRequest——失败点前移说明
+        // 字面量已进入解析管线)。
+        for url in ["http://127.0.0.1:1/", "http://[::1]:1/"] {
             let result = execute(
                 Request {
                     url,
@@ -189,6 +190,37 @@ mod tests {
                     body: &[],
                     timeout: Duration::from_secs(1),
                     max_bytes: 1024,
+                    consented: &[],
+                },
+                CancelToken::new(),
+            );
+            assert_eq!(result.unwrap_err(), Error::Blocked, "{url}");
+        }
+        // 同意集携带该字面量 → 通过地址校验、真正发起连接(端口 1 无
+        // 服务,连接拒绝映射 Transport——证明同意放行到了 socket 层)。
+        let refused = execute(
+            Request {
+                url: "http://127.0.0.1:1/",
+                method: "GET",
+                headers: &[],
+                body: &[],
+                timeout: Duration::from_secs(1),
+                max_bytes: 1024,
+                consented: &[std::net::IpAddr::from([127, 0, 0, 1])],
+            },
+            CancelToken::new(),
+        );
+        assert_eq!(refused.unwrap_err(), Error::Transport);
+        for url in ["file:///tmp/file", "https://user:pass@example.com/"] {
+            let result = execute(
+                Request {
+                    url,
+                    method: "GET",
+                    headers: &[],
+                    body: &[],
+                    timeout: Duration::from_secs(1),
+                    max_bytes: 1024,
+                    consented: &[],
                 },
                 CancelToken::new(),
             );
@@ -204,6 +236,7 @@ mod tests {
                 body: &[],
                 timeout: Duration::from_secs(1),
                 max_bytes: 1024,
+                consented: &[],
             },
             cancel,
         );

@@ -148,6 +148,12 @@ impl NetworkList {
         for entry in network.origins {
             let text = format!("{}://{}:{}", entry.scheme, entry.host, entry.port);
             let origin = Origin::parse(&text).map_err(|_| Error::InvalidFence)?;
+            // Guest 描述符保持拒绝字面量 host(2026-11-08):Origin 收字面量
+            // 只为 native 同意通道服务,guest 永不携带同意集,声明期拒绝
+            // 优于连接期拒绝——guest 契约与既有语义零变化。
+            if origin.host().parse::<std::net::IpAddr>().is_ok() {
+                return Err(Error::InvalidFence);
+            }
             list.origins.push(format!(
                 "{}://{}:{}",
                 origin.scheme(),

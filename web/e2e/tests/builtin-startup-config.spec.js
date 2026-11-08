@@ -22,7 +22,7 @@ test('built-in batch configuration preserves running state and retains conflicti
   await expect.poll(()=>page.evaluate(async()=> (await rpc('plugin.builtin.get',{})).disabled.includes('builtin.web'))).toBe(desired);
   const saved=await page.evaluate(()=>rpc('plugin.builtin.get',{}));expect(saved.current).toEqual(baseline.current);
   await panel.locator('.builtin-config-list > summary').click();await panel.locator('input[data-plugin-id="builtin.web"]').setChecked(desired);
-  await save(page,[...new Set([...saved.disabled,'builtin.apply_patch'])]);
+  await save(page,[...new Set([...saved.disabled,'builtin.skills'])]);
   await panel.locator('[data-action=builtin-preview]').click();await expect(panel.locator('[data-action=builtin-recheck]')).toBeVisible();
   await expect(panel.locator('input[data-plugin-id="builtin.web"]')).toBeChecked({checked:desired});
   await panel.locator('[data-action=builtin-recheck]').click();await expect(panel.locator('[data-action=builtin-preview]')).toBeEnabled();
@@ -44,7 +44,7 @@ test('older Hosts retain read-only inventory without attempting configuration wr
  await openWorkbench(page,hostInfo('success'));await page.locator('#nav-extensions').click();
  await page.locator('#application-toolbar [data-action=builtin-config]').click();
  await expect(page.locator('.builtin-config-editor')).toBeVisible();
- await expect(page.locator('#market-dialog .navigation-list [data-plugin-id="builtin.apply_patch"]')).toBeVisible();
+ await expect(page.locator('#market-dialog .navigation-list [data-plugin-id="builtin.skills"]')).toBeVisible();
  await expect(page.locator('[data-action=builtin-save]')).toHaveCount(0);expect(writes).toEqual([]);
 });
 
@@ -73,8 +73,8 @@ test('lost save acknowledgement retains draft and requires readback without retr
 test('startup configuration is a separate destination and plugin browsing retains its draft',async({page})=>{
  await openWorkbench(page,hostInfo('success'));await page.locator('#nav-extensions').click();
  const panel=page.locator('.builtin-config-editor');
- const plugin=page.locator('#market-dialog .navigation-list [data-plugin-id="builtin.apply_patch"]');
- await plugin.click();await expect(page.locator('.market-item[data-plugin-id="builtin.apply_patch"]')).toBeVisible();
+ const plugin=page.locator('#market-dialog .navigation-list [data-plugin-id="builtin.skills"]');
+ await plugin.click();await expect(page.locator('.market-item[data-plugin-id="builtin.skills"]')).toBeVisible();
  await expect(panel).toBeHidden();
  await page.locator('[data-action=builtin-config]').click();await expect(panel).toBeVisible();
  await panel.locator('.builtin-config-list > summary').click();
@@ -82,7 +82,7 @@ test('startup configuration is a separate destination and plugin browsing retain
  await plugin.click();await expect(page.locator('.builtin-leave-dialog')).toBeVisible();
  await page.locator('.builtin-leave-dialog [data-action=builtin-back]').click();await expect(panel).toBeVisible();await expect(check).toBeChecked({checked:!selected});
  await plugin.click();await page.locator('.builtin-leave-dialog [data-action=builtin-keep]').click();
- await expect(panel).toBeHidden();await expect(page.locator('.market-item[data-plugin-id="builtin.apply_patch"]')).toBeVisible();
+ await expect(panel).toBeHidden();await expect(page.locator('.market-item[data-plugin-id="builtin.skills"]')).toBeVisible();
  await page.locator('[data-action=builtin-config]').click();await expect(check).toBeChecked({checked:!selected});
  await panel.locator('[data-action=builtin-discard]').click();
 });

@@ -12,7 +12,10 @@ Open **Settings → Web** in the workbench. Save a dedicated DeepSeek API key,
 or explicitly choose to use the saved DeepSeek model key for the official
 Web API. Reads return configuration status, never credential bytes. Search
 and DeepSeek Fetch may incur charges from the provider. Without a configured
-key, native search uses DuckDuckGo Lite.
+key, native search uses the project-operated shared Ceramic search service
+(`search.dengcb.net`): no user-side key or charge, subject to the service's
+shared rate limits. Queries from keyless configurations traverse that
+server; configure a DeepSeek key if that matters to you.
 
 Terminal clients share the same settings:
 
@@ -37,15 +40,23 @@ next call; a call already prepared for permission review retains its snapshot.
 ### Search and retrieve
 
 `web_search` sends only the search query and returns up to ten results by
-default. It uses DuckDuckGo Lite without a key, or DeepSeek Search when a Web
-key is configured. Both routes query a search service directly without a
-separate model request. DuckDuckGo can rate-limit or challenge requests.
-CLAT reports that condition as a search error and preserves the configured
-provider for subsequent calls.
+default. It uses the shared Ceramic search service without a key, or
+DeepSeek Search when a Web key is configured. Both routes query a search
+service directly without a separate model request. The shared route
+fetches a short-lived encrypted access token from the same origin and
+refreshes it automatically when the service rotates it; rate limits and
+transient failures are reported as explicit search errors and never fall
+back silently.
 
-`web_fetch` defaults to anonymous HTTP(S). Only public domain-name addresses
-are supported: private/special addresses, IP literals, credentials in URLs and
-DNS rebinding are rejected. Up to five same-origin redirects are followed;
+`web_fetch` defaults to anonymous HTTP(S). Public targets are reached
+directly. Targets that resolve to **non-public addresses** — loopback,
+RFC1918, link-local, IP literals such as `http://192.168.1.1/`, `localhost`,
+or the fake-IP range a TUN proxy's DNS returns for every name — go through
+an interactive consent prompt (Allow once / Always allow this host / Deny,
+see [Permissions](permissions.md)); headless runs fail closed. Credentials
+in URLs, fragments and other malformed shapes are still rejected outright,
+and the consented retry is pinned to the addresses shown in the prompt.
+Up to five same-origin redirects are followed;
 a cross-origin destination requires another explicit tool call. Requests have
 a 30-second deadline and a 5 MiB decoded-body limit. UTF-8 HTML, plain text and
 Markdown are supported; scripts, login, cookies and PDF/OCR are not.

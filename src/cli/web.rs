@@ -30,7 +30,7 @@ fn execute(args: Vec<String>, locale: LocaleContext) -> Result<String, String> {
             .text(if view["credential_set"] == true {
                 "webtool.search_deepseek"
             } else if view["search_available"] == true {
-                "webtool.search_public"
+                "webtool.search_shared"
             } else {
                 "webtool.not_configured"
             })

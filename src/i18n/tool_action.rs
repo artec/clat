@@ -7,6 +7,8 @@ pub fn tool_action(tool: &str) -> UiMessage {
         "read_file" => "web.tool_action.read_file",
         "list_files" => "web.tool_action.list_files",
         "search" => "web.tool_action.search_files",
+        // apply_patch 已于 2026-11-08 退役;该 arm 保留用于历史会话回放
+        // 的展示映射(旧 journal 中的 tool/call 仍按名渲染)。
         "edit_file" | "apply_patch" => "web.tool_action.edit_file",
         "write_file" => "web.tool_action.write_file",
         "run_command" => "web.tool_action.run_command",

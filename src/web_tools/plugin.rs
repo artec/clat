@@ -17,6 +17,7 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 };
 pub(crate) struct WebPlugin {
     pub control: Arc<crate::control_storage::ControlStorage>,
+    pub asker: Arc<crate::interaction::AskUserSlot>,
 }
 impl Plugin for WebPlugin {
     fn descriptor(&self) -> &'static PluginDescriptor {
@@ -26,7 +27,7 @@ impl Plugin for WebPlugin {
         let _ = context
             .require(CONFIG_SERVICE)
             .map_err(|e| PluginError::new(e.to_string()))?;
-        let service = Arc::new(WebService::new(self.control.clone()));
+        let service = Arc::new(WebService::new(self.control.clone(), self.asker.clone()));
         context
             .provide(WEB_SERVICE, service.clone())
             .map_err(|e| PluginError::new(e.to_string()))?;

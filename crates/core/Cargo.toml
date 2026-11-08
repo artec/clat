@@ -53,6 +53,10 @@ portable-pty = "=0.9.0"
 # Bounded current-screen folding for run-owned PTYs; no external runtime.
 vt100 = "=0.16.2"
 regex = "1.12"
+# Shared Ceramic search fallback: AES-256-GCM token-blob decryption. The
+# same ring 0.17 already links into the binary through clat-wasm-net/rustls,
+# so this direct dependency adds no new code to the product.
+ring = "0.17"
 # `clat exec` turns Ctrl-C into a graceful CancelToken trip so partial output
 # still persists; a second press hard-exits 130. Installed once at the
 # process boundary in main.rs (the lib exposes ExecCancel instead).

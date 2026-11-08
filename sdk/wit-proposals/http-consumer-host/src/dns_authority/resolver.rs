@@ -1,4 +1,4 @@
-use super::{Failure, Origin, Resolution, Scope, validate_addresses};
+use super::{Failure, Origin, Resolution, Scope, validate_addresses_with_consent};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
@@ -238,7 +238,11 @@ impl DnsJob {
         }
         match std::mem::replace(&mut *state, State::Consumed) {
             State::Ready(answers) => Some(answers.and_then(|answers| {
-                let addresses = validate_addresses(answers.addresses, answers.discovery.clone())?;
+                let addresses = validate_addresses_with_consent(
+                    answers.addresses,
+                    answers.discovery.clone(),
+                    &self.scope.inner.consented,
+                )?;
                 Ok(Resolution::new(
                     self.scope.borrow_handle(),
                     self.origin.clone(),

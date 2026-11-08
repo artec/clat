@@ -2,7 +2,6 @@
 #[path = "test_support/agent_eval.rs"]
 mod agent_eval;
 pub mod application;
-mod apply_patch;
 mod command;
 mod control_storage;
 pub mod demo;

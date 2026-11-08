@@ -49,11 +49,11 @@ impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".into(),
-            description: "Search bounded UTF-8 files with literal (default) or regex matching. Supports gitignore, include/exclude globs, extensions, hidden-file control, stable ordering, and invalidation-aware pagination cursors. Paths may be project-relative or explicit absolute read paths.".into(),
+            description: "Search bounded UTF-8 files with literal (default) or regex matching, or list files by glob pattern alone (omit query, pass include_globs) sorted by modification time, newest first. Supports gitignore, include/exclude globs, extensions, hidden-file control, stable ordering, and invalidation-aware pagination cursors. Paths may be project-relative or explicit absolute read paths.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Literal text or regex pattern"},
+                    "query": {"type": "string", "description": "Literal text or regex pattern. Omit with include_globs set to list matching files by pattern"},
                     "path": {"type": "string", "description": "File/directory; defaults to '.'"},
                     "mode": {"type": "string", "enum": ["literal", "regex"], "description": "Defaults to literal"},
                     "case_sensitive": {"type": "boolean", "description": "Defaults to false"},
@@ -65,7 +65,7 @@ impl Tool for SearchTool {
                     "max_results": {"type": "integer", "minimum": 1, "maximum": crate::search::MAX_RESULTS_PER_PAGE},
                     "cursor": {"type": "string", "description": "Opaque next_cursor from the same query"}
                 },
-                "required": ["query"],
+                "required": [],
                 "additionalProperties": false
             }),
             effect: ToolEffect::Read,
