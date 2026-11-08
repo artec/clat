@@ -210,7 +210,14 @@ mod tests {
             },
             CancelToken::new(),
         );
-        assert_eq!(refused.unwrap_err(), Error::Transport);
+        // 不变量是"同意放行到 socket 层"（非 Blocked）；具体失败形态是
+        // 平台语义：Linux loopback 拒连即回 RST→Transport，Windows
+        // 防火墙可能静默丢包→Deadline（2026-11-08 CI 实证）。两者都
+        // 证明同意生效，只拒绝 Blocked。
+        assert!(matches!(
+            refused.unwrap_err(),
+            Error::Transport | Error::Deadline
+        ));
         for url in ["file:///tmp/file", "https://user:pass@example.com/"] {
             let result = execute(
                 Request {

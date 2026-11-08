@@ -1,6 +1,10 @@
 const {test,expect}=require('@playwright/test');
 const {LIVE,hostInfo,openWorkbench,createWorkbenchConversation}=require('../helpers/workbench');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+// 期望文案从 catalog 读取（2026-10-26 文案不入 CI 契约）：改措辞不红，
+// 漏翻译/串键照样红。
+const catalog=(lang,key)=>JSON.parse(fs.readFileSync(path.join(__dirname,'../../..','locales',`${lang}.json`),'utf8'))[key];
+const render=(lang,key,args)=>catalog(lang,key).replace(/\{(\w+)\}/g,(_,name)=>String(args[name]));
 
 test('image upload rejection retains its presentation while a draft changes language',async({page})=>{
   await openWorkbench(page,hostInfo('success'));
@@ -57,7 +61,7 @@ test('a delayed project list cannot erase a newer trust failure or its translati
     await delayed.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,value:{projects:[]}})});delayed=null;
     await response;
     await page.evaluate(()=>CLATI18n.setLanguage('zh-Hant'));
-    await expect(page.locator('#workspace-error')).toContainText('尚未受信任');
+    await expect(page.locator('#workspace-error')).toContainText(catalog('zh-Hant','host.project_untrusted_short'));
   }finally{
     if(delayed)await delayed.abort();
     fs.rmSync(root,{recursive:true,force:true});
@@ -163,8 +167,9 @@ test('retained background notices, nested arguments and attributes switch togeth
     return {seen,sameSession:state.sessionId===before,hasHtml:!!node.querySelector('script')};
   });
   expect(result.sameSession).toBe(true);expect(result.hasHtml).toBe(false);
-  expect(result.seen[0].status).toContain('已压缩');expect(result.seen[1].nested).toContain('已壓縮');
-  expect(result.seen[2].status).toContain('compacted: shadowed 7 events');
+  expect(result.seen[0].status).toContain(render('zh-Hans','command.compacted',{count:7}));
+  expect(result.seen[1].nested).toContain(render('zh-Hant','command.compacted',{count:7}));
+  expect(result.seen[2].status).toContain(render('en','command.compacted',{count:7}));
 });
 
 test('plugin consent is reset after translation while the ticket and secret draft stay local',async({page})=>{

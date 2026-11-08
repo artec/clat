@@ -777,7 +777,9 @@ fn profile_template_requires_a_name() {
     else {
         panic!("missing name must not save");
     };
-    assert!(editor.error_text().contains("Profile name is required"));
+    // 行为契约（2026-10-26 文案不入 CI）：缺名保存被拒且给出错误提示；
+    // 具体措辞（tui.profile_name_is_required）可自由调整。
+    assert!(!editor.error_text().is_empty());
 }
 
 /// U2（INV-M6，负责人拍板 2026-08-22）：档案模板缺省思考档位

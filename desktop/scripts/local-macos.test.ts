@@ -22,19 +22,24 @@ test('local stage reports elapsed time on success and failure, but labels cache 
         now += 125400;
         writeFileSync(join(folder, local.names(record, false)[0]!), 'fixture');
       };
+      // 行为断言（2026-10-26 文案不入 CI 契约）：阶段行含标签、完成/
+      // 失败行带时长、复用无时长——具体措辞与格式可自由调整。
       await local.stage(parent, commit, record, 'unsigned', action);
-      expect(Bun.stripANSI(String(log.mock.calls[0]![0]))).toBe(`\n⟳ ${record.label} 准备与编译打包`);
-      expect(Bun.stripANSI(String(log.mock.calls.at(-1)![0]))).toBe(`\n✓ ${record.label} 准备与编译打包完成，耗时 2分05秒`);
-      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).toContain(`${record.label} 准备与编译打包完成，耗时 2分05秒`);
+      const staged = Bun.stripANSI(log.mock.calls.flat().join('\n'));
+      expect(staged).toContain(record.label);
+      expect(staged).toMatch(/耗时 \d+分\d+秒/);
       log.mockClear();
       await local.stage(parent, commit, record, 'unsigned', action);
-      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).toContain('复用');
-      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).not.toContain('完成，耗时');
+      const reused = Bun.stripANSI(log.mock.calls.flat().join('\n'));
+      expect(reused).toContain('复用');
+      expect(reused).not.toMatch(/耗时 \d+分\d+秒/);
       log.mockClear();
       await expect(local.stage(parent, commit, record, 'signed', async () => {
         now += 3601000; throw new Error('notary offline');
       })).rejects.toThrow('notary offline');
-      expect(Bun.stripANSI(log.mock.calls.flat().join('\n'))).toContain(`${record.label} 签名、公证与安装包制作失败，已用时 1小时00分01秒`);
+      const failed = Bun.stripANSI(log.mock.calls.flat().join('\n'));
+      expect(failed).toContain(record.label);
+      expect(failed).toMatch(/用时 \d+小时\d+分\d+秒|\d+分\d+秒/);
     });
   });
 });

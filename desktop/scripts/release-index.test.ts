@@ -89,7 +89,8 @@ test('release notes put Host first and link only the four human desktop installe
     expect(notes.indexOf('CLI / Host')).toBeLessThan(notes.indexOf('## Desktop'));
     for (const name of owner.archives().filter(n => n.endsWith('.dmg') || n.endsWith('-setup.exe'))) expect(notes).toContain(name);
     expect(notes).not.toContain('.app.tar.gz');
-    expect(notes).toContain('手动重装一次');
+    // 7b46ee00 起发布注记不再带"手动重装一次"迁移横幅（同笔删了
+    // owner-release 的横幅行，此断言当时漏删——2026-11-08 CI 红补清）。
   });
 });
 
