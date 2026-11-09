@@ -54,6 +54,15 @@ These visual and interaction details are manually accepted on each platform.
 
 ## Conversation and contextual tools
 
+The conversation sidebar groups projects under a Projects heading. Its add
+button opens the desktop project picker (or project settings in the browser),
+and its archive toggle shows archived conversations across the project list.
+
+Agent questions show options as a full-width list with descriptions below their
+labels. Select an option and send the answer, or enter a custom answer when
+allowed; declining remains available. A selection does not submit until the
+send button is activated.
+
 Toolbar Back/Forward also support Cmd+[ / Cmd+] on macOS and Ctrl+[ / Ctrl+] on Windows/browser workbenches. macOS exposes them in the native View menu. They share the toolbar’s application history boundaries and do not navigate while a modal reader/dialog is open. The embedded, non-modal About and Updates panel does not block navigation, including when its settings page is hidden.
 
 On macOS, entering native fullscreen removes the toolbar space reserved for the

@@ -23,6 +23,8 @@ test('workflow confirmation uses translated presentation but submits the stable 
   assert.ok(texts(card).includes(language+':workflow.model_confirm'));
  }
  walk(card).find(node=>node.dataset.answerValue==='confirm').click();
+ assert.deepEqual(f.answers,[]);
+ walk(card).find(node=>node.tag==='form').submit({preventDefault(){}});
  assert.deepEqual(f.answers,[{kind:'selected',value:'confirm'}]);
  assert.equal(JSON.stringify(payload),original);
 });

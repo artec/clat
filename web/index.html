@@ -86,13 +86,14 @@
 
     <nav class="session-nav sidebar-expanded-only" aria-label="Sessions" data-i18n-aria-label="web.sessions">
       <div class="section-row sidebar-expanded-only">
-        <div class="session-tabs" role="tablist" aria-label="Sessions" data-i18n-aria-label="web.sessions">
-          <button id="active-sessions" role="tab" type="button" aria-selected="true" aria-controls="session-panel" data-i18n="web.active_sessions_tab">Active</button>
-          <button id="archived-sessions" role="tab" type="button" aria-selected="false" aria-controls="session-panel" tabindex="-1" data-i18n="web.archived_sessions_tab">Archived</button>
+        <span id="project-list-heading" data-i18n="workbench.projects">Projects</span>
+        <div class="project-list-actions">
+          <button id="project-list-add" class="icon-button" type="button" data-i18n-title="web.add_project" data-i18n-aria-label="web.add_project"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button id="archived-sessions" class="icon-button" type="button" aria-pressed="false" aria-controls="session-panel" data-i18n-title="web.show_archived_sessions" data-i18n-aria-label="web.show_archived_sessions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v4H3zM5 8v12h14V8M10 12h4"/></svg></button>
         </div>
         <span id="session-count">0</span>
       </div>
-      <div id="session-panel" role="tabpanel" aria-labelledby="active-sessions">
+      <div id="session-panel" aria-labelledby="project-list-heading">
         <ul id="session-list" class="session-list"></ul>
         <p id="session-empty" class="session-empty sidebar-expanded-only hidden" data-i18n="web.no_matching_sessions">No matching sessions.</p>
       </div>

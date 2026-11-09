@@ -5,20 +5,15 @@ async function organizeSession(session, flags) {
   await refreshSessions();
 }
 function installSessionOrganization() {
-  const tabs = ['active-sessions','archived-sessions'].map(id=>document.getElementById(id));
-  const select = index => {
-    showArchivedSessions = index === 1;
-    tabs.forEach((tab,i)=>{tab.setAttribute('aria-selected',String(i===index));tab.tabIndex=i===index?0:-1;});
-    document.getElementById('session-panel').setAttribute('aria-labelledby',tabs[index].id);
-    renderSessions();
-  };
-  tabs.forEach((tab,index)=>{
-    tab.addEventListener('click',()=>select(index));
-    tab.addEventListener('keydown',event=>{
-      if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
-      event.preventDefault();
-      const next=event.key==='Home'?0:event.key==='End'?1:1-index;
-      select(next);tabs[next].focus();
-    });
+  const toggle = document.getElementById('archived-sessions');
+  for (const attribute of ['aria-label','title']) CLATI18n.attribute(toggle, attribute, () => CLATI18n.msg(showArchivedSessions ? 'web.show_active_sessions' : 'web.show_archived_sessions'));
+  toggle.addEventListener('click',()=>{
+    showArchivedSessions = !showArchivedSessions;
+    toggle.setAttribute('aria-pressed',String(showArchivedSessions));
+    CLATI18n.refresh(); renderSessions();
+  });
+  document.getElementById('project-list-add').addEventListener('click',()=>{
+    if (window.__TAURI__) document.querySelector('#clat-desktop-settings [data-action="open"]')?.click();
+    else openSettings('projects');
   });
 }

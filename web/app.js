@@ -1487,38 +1487,49 @@ function createQuestionCard(payload) {
   note.setAttribute('role', 'status');
   card.append(el('div', 'eyebrow', () => (CLATI18n.msg("web.your_input", {}, "YOUR INPUT"))), el('h3', 'title', () => CLATI18n.present(question.presentation?.question,question.question)), actions, note);
   const options = Array.isArray(question.options) ? question.options : [];
+  const choices = el('div', 'question-choices');
+  let selected = null, input = null; const optionButtons = [];
   for (const [index,option] of options.entries()) {
     const label=()=>CLATI18n.present(question.presentation?.options?.[index],option.label);
-    const button = el('button', 'ghost question-option', label);
+    const button = el('button', 'question-option');
     button.dataset.answerValue = option.label;
     button.type = 'button';
     CLATI18n.attribute(button,'aria-label',label);
-    if (option.description) button.appendChild(el('span', 'question-description', () => (option.description)));
-    button.addEventListener('click', () => submitQuestionAnswer(card, {
-      kind: 'selected', value: option.label,
-    }));
-    actions.appendChild(button);
+    button.setAttribute('aria-pressed', 'false');
+    const copy = el('span', 'question-option-copy'); copy.append(el('strong', 'question-option-label', label));
+    if (option.description) copy.append(el('span', 'question-description', () => option.description));
+    button.append(copy, el('span', 'question-option-indicator'));
+    button.addEventListener('click', () => {
+      selected = option.label;
+      for (const choice of optionButtons) choice.setAttribute('aria-pressed', String(choice === button));
+    });
+    optionButtons.push(button); choices.appendChild(button);
   }
+  if (options.length) actions.append(choices);
   if (question.allow_custom || options.length === 0) {
     const label = el('label', 'question-custom', () => (CLATI18n.msg("web.your_answer", {}, "Your answer")));
-    const input = el('textarea');
-    input.rows = 3;
+    input = el('textarea');
+    input.rows = 1;
+    input.addEventListener('input', () => {
+      if (!input.value.trim()) return;
+      selected = null;
+      for (const choice of optionButtons) choice.setAttribute('aria-pressed', 'false');
+    });
     label.appendChild(input);
-    const send = el('button', 'primary', () => (CLATI18n.msg("web.send_answer", {}, "Send answer")));
-    send.type = 'submit';
-    actions.append(label, send);
-    actions.addEventListener('submit', (event) => {
+    actions.append(label);
+  }
+  const send = el('button', 'primary', () => (CLATI18n.msg("web.send_answer", {}, "Send answer")));
+  send.type = 'submit'; actions.append(send);
+  actions.addEventListener('submit', (event) => {
       event.preventDefault();
-      if (!input.value.trim() || new TextEncoder().encode(input.value).length > 65536) {
-        CLATI18n.bind(note, "textContent", () => CLATI18n.msg("web.enter_a_nonblank_answer_of_at_most_64_kib", {}, "Enter a nonblank answer of at most 64 KiB."));
-        input.focus();
+      if (selected !== null) return submitQuestionAnswer(card, { kind: 'selected', value: selected });
+      if (!input || !input.value.trim() || new TextEncoder().encode(input.value).length > 65536) {
+        CLATI18n.bind(note, "textContent", () => CLATI18n.msg(input && input.value.trim() ? 'web.enter_a_nonblank_answer_of_at_most_64_kib' : 'web.question_select_or_answer'));
+        input?.focus();
         return;
       }
       submitQuestionAnswer(card, { kind: 'custom', value: input.value });
-    });
-  } else {
-    actions.addEventListener('submit', (event) => event.preventDefault());
-  }
+  });
   const decline = el('button', 'ghost', () => (CLATI18n.msg("web.decline_short",{},"Decline")));
   decline.type = 'button';
   decline.addEventListener('click', () => submitQuestionAnswer(card, { kind: 'declined' }));

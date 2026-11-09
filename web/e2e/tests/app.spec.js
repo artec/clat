@@ -440,6 +440,7 @@ test('question cards replay to another client and first answer closes both', asy
   await other.reload();
   await expect(other.locator('.question-card')).toHaveCount(1, LIVE);
   await other.locator('.question-card').getByRole('button', { name: 'stable', exact: true }).click();
+  await other.locator('.question-card').getByRole('button', { name: 'Send answer', exact: true }).click();
   await expect(card.locator('button')).toHaveCount(0, LIVE);
   await expect(other.locator('.question-card button')).toHaveCount(0, LIVE);
   await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
@@ -494,7 +495,7 @@ test('question notices deduplicate safely and stale failures cannot reopen a res
   });
   const first = page.locator('.question-card').first();
   await first.getByRole('button', { name: 'Send answer', exact: true }).click();
-  await expect(first.locator('.resolution')).toContainText('nonblank');
+  await expect(first.locator('.resolution')).toContainText('Select an option or enter an answer');
   expect(calls).toBe(0);
   await first.getByRole('textbox').fill('retained draft');
   await first.getByRole('button', { name: 'Send answer', exact: true }).click();

@@ -120,11 +120,10 @@ test('UX-4 explicit archive and shared reload/restore keep selected transcript',
   await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
   await page.fill('#prompt','保留未发送草稿');
   await page.click('#archived-sessions');
-  await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-selected','true');
-  await expect(page.locator('#active-sessions')).toHaveAttribute('aria-selected','false');
+  await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-pressed','true');
   await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
   await expect(row).toBeVisible(LIVE);
-  await page.click('#active-sessions');
+  await page.click('#archived-sessions');
   await expect(row).toBeHidden(LIVE);
   await expect(page.locator('#transcript')).toContainText('organization retained chat');
   await page.click('#archived-sessions');
@@ -132,7 +131,7 @@ test('UX-4 explicit archive and shared reload/restore keep selected transcript',
   await page.getByRole('menuitem', { name: 'Restore archived session' }).click();
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).archived, id), LIVE).toBe(false);
   await expect(row).toBeHidden(LIVE);
-  await page.click('#active-sessions');
+  await page.click('#archived-sessions');
   await expect(row).toBeVisible(LIVE);
   await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
 });

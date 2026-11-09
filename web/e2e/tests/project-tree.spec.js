@@ -104,7 +104,7 @@ test('archive tabs classify selected conversations in both active and retained p
   await expect(entry(page,a)).toBeVisible(LIVE);
   await expect(entry(page,b)).toBeVisible(LIVE);
   await expect(entry(page,fixture.secondaryProject.sessions[0])).toBeHidden();
-  await page.click('#active-sessions');
+  await page.click('#archived-sessions');
   await expect(entry(page,a)).toBeHidden(LIVE);
   await expect(entry(page,b)).toBeHidden(LIVE);
   await expect(entry(page,fixture.secondaryProject.sessions[0])).toBeVisible(LIVE);
