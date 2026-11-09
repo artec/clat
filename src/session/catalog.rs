@@ -51,8 +51,19 @@ pub(crate) struct EventSpec {
     pub retired_in_v2: bool,
     pub starts_step: bool,
     pub job_phase: Option<JobPhase>,
+    pub inspection: InspectionKind,
     validate: Option<PayloadValidator>,
     project: Option<SurfaceProjector>,
+}
+
+/// Additional read-only inspection facts; vocabulary stays in the seat table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InspectionKind {
+    #[default]
+    None,
+    StepStart,
+    Request,
+    Approval,
 }
 
 /// Vocabulary birth/death by format generation (pinned upstream fact: DSH's
@@ -130,17 +141,20 @@ pub(crate) fn project_message_event(
     }
 }
 macro_rules! vocabulary {
+    (@inspection) => { InspectionKind::None };
+    (@inspection $kind:ident) => { InspectionKind::$kind };
     (@project) => {None};
     (@project $project:path) => {Some($project)};
     (@job) => {None};
     (@job $phase:ident) => {Some(JobPhase::$phase)};
-    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)? $(; $project:path)?) ),* $(,)?) => {
+    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)? $(; $project:path)?) $(@ $inspection:ident)? ),* $(,)?) => {
         pub(crate) const KNOWN_EVENT_TYPES: &[&str] = &[$($name),*];
         const EVENTS: &[EventSpec] = &[$(EventSpec {
             name: $name, validate: $validate, surface: $surface,
             replay: ReplayKind::$replay, retired_in_v2: $retired,
             starts_step: false $(|| $step)?,
             job_phase: vocabulary!(@job $($($job)?)?),
+            inspection: vocabulary!(@inspection $($inspection)?),
             project: vocabulary!(@project $($project)?),
         }),*];
     };
@@ -152,7 +166,7 @@ vocabulary! {
     "clat/task" => (Some(validation::task), false, Skip, false),
     "clat/subagent" => (Some(validation::subagent), false, Skip, false),
     "agent/inbox/spliced" => (None, false, Skip, false),
-    "approval/asked" => (Some(validation::approval), false, ApprovalAsked, false),
+    "approval/asked" => (Some(validation::approval), false, ApprovalAsked, false) @ Approval,
     "approval/decided" => (Some(validation::approval), false, ApprovalDecided, false),
     "approval/policy" => (None, false, Skip, false),
     "assistant/attempt" => (Some(validation::assistant_attempt), false, Skip, false),
@@ -181,7 +195,7 @@ vocabulary! {
     "permission/preset" => (None, false, Skip, false),
     "plan/mode" => (Some(validation::plan), false, Skip, false),
     "request/context" => (None, false, Skip, false),
-    "request/header" => (Some(validation::header), false, Skip, false),
+    "request/header" => (Some(validation::header), false, Skip, false) @ Request,
     "sandbox/mode" => (Some(validation::sandbox), false, Skip, false),
     "schedule/change" => (None, false, Skip, false),
     "session-log-deepseek/delivery-accepted" => (None, false, Skip, false),
@@ -189,7 +203,7 @@ vocabulary! {
     "session/title" => (Some(validation::title), false, Skip, false),
     "session/title-llm-request" => (None, false, Skip, false),
     "step/end" => (Some(validation::step), false, Skip, false),
-    "step/start" => (Some(validation::step), false, Skip, false, true),
+    "step/start" => (Some(validation::step), false, Skip, false, true) @ StepStart,
     "subagent/catalog" => (None, false, Skip, false),
     "subagent/model-selection-policy" => (None, false, Skip, false),
     "subagent/descriptor" => (Some(validation::descriptor), false, Skip, false),

@@ -9,6 +9,9 @@ pub use crate::session_query::{
     OperationDetail, OperationDetailRequest, OperationFilter, OperationRow, OperationsPage,
     OperationsRequest,
 };
+pub use crate::session_query::{
+    TrajectoryDetail, TrajectoryDetailRequest, TrajectoryPage, TrajectoryRequest,
+};
 /// A cloneable, read-only port. Heavy indexing never holds an Application lock.
 #[derive(Clone)]
 pub struct HistoryReader(Option<Arc<crate::session_query::SessionQueryService>>);
@@ -18,6 +21,22 @@ impl TrustedProjectApplication {
     }
 }
 impl HistoryReader {
+    pub fn trajectory(
+        &self,
+        request: TrajectoryRequest,
+        cancel: &CancelToken,
+    ) -> Result<TrajectoryPage, ApplicationError> {
+        self.service()?.trajectory(request, cancel).map_err(error)
+    }
+    pub fn trajectory_detail(
+        &self,
+        request: TrajectoryDetailRequest,
+        cancel: &CancelToken,
+    ) -> Result<TrajectoryDetail, ApplicationError> {
+        self.service()?
+            .trajectory_detail(request, cancel)
+            .map_err(error)
+    }
     fn service(&self) -> Result<&crate::session_query::SessionQueryService, ApplicationError> {
         self.0
             .as_deref()

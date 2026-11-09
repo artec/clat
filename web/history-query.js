@@ -23,8 +23,9 @@ function installHistoryQuery() {
     detail.replaceChildren(navigationOverview({title:()=>pageText('history_intro_title'),description:()=>pageText('history_intro_description'),icon:'history',items:hits.slice(0,6).map(hit=>({title:hit.title||hit.reference.session,description:hit.excerpt||hit.reference.project,icon:'history',action:()=>void inspect(hit.reference,hit.title)}))}));
   }
   overview();
-  dialog.addEventListener('clat:page-leave',()=>{generation++;submit.disabled=false;run.disabled=false;});
-  dialog.addEventListener('clat:page-enter',()=>{if(selected&&!detail.querySelector('.reader-messages')?.children.length)void reader?.refresh();});
+  dialog.addEventListener('clat:tool-reset',()=>{generation++;detailGeneration++;reader?.dispose();reader=null;selected=null;results.replaceChildren();cursor=null;more.hidden=true;overview();});
+  dialog.addEventListener('clat:page-leave',()=>{generation++;submit.disabled=false;run.disabled=false;reader?.suspend();});
+  dialog.addEventListener('clat:page-enter',()=>reader?.resume());
   trigger.onclick = () => {
     presentPage(dialog);
     if (!results.children.length) void recent();
@@ -37,12 +38,26 @@ function installHistoryQuery() {
     finally { if(ticket===generation){submit.disabled=false;run.disabled=false;refreshViewContext();} }
   }
   function hitNode(hit) {
-    const item=navigationRow({title:hit.title||hit.reference.session,meta:()=>[hit.excerpt,hit.time?new Date(hit.time).toLocaleString(CLATI18n.locale):'',hit.reference.project||''].filter(Boolean).join(' · '),icon:'history',selected:JSON.stringify(selected)===JSON.stringify(hit.reference),action:()=>void inspect(hit.reference,hit.title)});
-    item.dataset.reference=JSON.stringify(hit.reference);return item;
+    const identity = JSON.stringify(hit.reference);
+    const item = navigationRow({
+      title: hit.title || hit.reference.session,
+      meta: () => [
+        hit.time ? new Date(hit.time).toLocaleString(CLATI18n.locale) : '',
+        projectDisplayName(hit.reference.project),
+      ].filter(Boolean).join(' · '),
+      icon: 'history',
+      selected: JSON.stringify(selected) === identity,
+      action: () => void inspect(hit.reference, hit.title),
+    });
+    if (hit.excerpt) {
+      item.querySelector('.navigation-row-copy').append(el('small', 'history-hit-excerpt', hit.excerpt));
+    }
+    item.dataset.reference = identity;
+    return item;
   }
 
   async function search(append) {
-    if (!append) activeQuery = { query: query.value, trusted_projects: all.checked };
+    if (!append) { clearReader();activeQuery = { query: query.value, trusted_projects: all.checked }; }
     await attempt(async (ticket) => {
       const page = await rpc('history.search', { ...activeQuery, cursor: append ? cursor : null });
       if (ticket !== generation) return;
@@ -52,8 +67,10 @@ function installHistoryQuery() {
       CLATI18n.bind(status, 'textContent', () => page.truncated ? msg('bounded') : (!results.children.length ? msg('empty') : ''));
     });
   }
+  function clearReader(){detailGeneration++;reader?.dispose();reader=null;selected=null;historyTitle='';overview();}
   async function recent() {
-    activeQuery={trusted_projects:false};all.checked=false;refreshViewContext();
+    clearReader();
+    activeQuery={trusted_projects:false};cursor=null;more.hidden=true;all.checked=false;refreshViewContext();
     await attempt(async ticket => {
       const value = await rpc('session.list', {}); if (ticket !== generation) return;
       results.replaceChildren(...value.sessions.map(session => hitNode({title:session.title || session.id, reference:{project:state.workbench.project.root,session:session.id,seq:null},excerpt:'',time:session.last_activity_ms})));
@@ -64,50 +81,13 @@ function installHistoryQuery() {
   async function inspect(reference,title) {
     historyTitle=title;selected=reference;const ticket=++detailGeneration,trusted=activeQuery.trusted_projects,current=()=>ticket===detailGeneration&&pageIsOpen(dialog)&&context.isActive();
     view.show(title||reference.session);for(const row of results.children)row.setAttribute('aria-current',String(row.dataset.reference===JSON.stringify(reference)));reader?.dispose();detail.replaceChildren();
-    reader = createConversationReader(detail, reference, {trusted,current});
-    if (reference.project === state.workbench.project.root) detail.append(pageAction('continue_conversation', async()=>{
-      try{if(await selectConversationTarget(reference,current))workbenchShell.chat();}catch(error){CLATI18n.bind(status,'textContent',()=>error.message);}
-    }));
-    const advanced=el('details','history-advanced'); advanced.append(el('summary','',()=>pageText('raw_events')));
-    const rawHost=el('section'); advanced.append(rawHost); detail.append(advanced);
-    advanced.addEventListener('toggle',()=>{if(advanced.open&&!rawHost.children.length)void inspectHistoryEvents(rawHost,reference,{trusted,current,status,msg});});
+    reader = createHistoryTrajectory(detail, reference, {trusted,current,locate:async target=>{
+      try{if(await selectConversationTarget(target,current)){workbenchShell.chat();if(target.seq!=null)await jumpToMessage(target.seq);}}catch(error){if(current())CLATI18n.bind(status,'textContent',()=>error.message);}
+    }});
   }
 
+  all.onchange = () => { if(query.value.trim()) void search(false); };
   form.onsubmit = (event) => { event.preventDefault(); void search(false); };
   query.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();form.requestSubmit();}};
   more.onclick = () => void search(true);
 }
-
-function inspectHistoryEvents(detail,reference,{trusted,current,status,msg}) {
-    detail.replaceChildren();
-    const filter = el('input', ''); CLATI18n.bind(filter, 'placeholder', () => msg('filter'));
-    const events = el('div', 'history-events');
-    const next = el('button', '', () => msg('more')); next.type = 'button';
-    const raw = el('pre', 'history-json'); const continuation = el('button', '', () => msg('more')); continuation.type = 'button'; continuation.hidden = true;
-    let after = null; let readRequest = null; let readEpoch = 0; let listEpoch = 0;
-    async function loadRead(ref, append) {
-      const epoch = ++readEpoch;
-      const data = await rpc('history.event.read', append ? readRequest : { reference: ref, trusted_projects:trusted });
-      if (!current() || epoch !== readEpoch) return;
-      raw.textContent = (append ? raw.textContent : '') + data.json;
-      readRequest = { reference: ref, trusted_projects:trusted, offset: data.next_offset, version: data.version };
-      continuation.hidden = data.next_offset === null; continuation.onclick = () => void attemptRead(ref);
-    }
-    async function attemptRead(ref) { try { await loadRead(ref, true); } catch (error) { if (current()) CLATI18n.bind(status, 'textContent', () => error.message); } }
-    async function loadEvents(append) {
-      const epoch = ++listEpoch;
-      const data = await rpc('history.events', { reference, trusted_projects:trusted, after_seq: append ? after : null, event_type: filter.value || null });
-      if (!current() || epoch !== listEpoch) return;
-      if (!append) events.replaceChildren();
-      for (const event of data.events) {
-        const button = el('button', 'history-event', `${event.reference.seq} · ${event.event_type} · ${event.preview}`); button.type = 'button';
-        button.onclick = () => void loadRead(event.reference, false).catch((error) => { if (current()) CLATI18n.bind(status, 'textContent', () => error.message); }); events.append(button);
-      }
-      after = data.next_seq; next.hidden = after === null;
-    }
-    const refresh = el('button', '', () => msg('events')); refresh.type = 'button';
-    refresh.onclick = () => void loadEvents(false).catch((error) => { if (current()) CLATI18n.bind(status, 'textContent', () => error.message); });
-    next.onclick = () => void loadEvents(true).catch((error) => { if (current()) CLATI18n.bind(status, 'textContent', () => error.message); });
-    detail.append(el('h3', '', reference.session), filter, refresh, events, next, raw, continuation);
-    return loadEvents(false).then(()=>reference.seq!==null?loadRead(reference,false):undefined).catch(error=>{if(current())CLATI18n.bind(status,'textContent',()=>error.message);});
-  }

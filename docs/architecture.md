@@ -1772,6 +1772,18 @@ the web page.
 
 Session history is owned by `src/session_query/`. A Host-shared lazy SQLite connection maintains the disposable FTS5 cache, while `SessionService::query_reader` exposes only committed header/revision/visitor reads. The query service derives authority from project binding and the control-plane trust table; Agent parameters cannot supply project authority. `HistoryReader` is the cloneable client port. RPC and TUI continuations release the Application lock before indexing or inspection. Search metadata follows catalog replay classifications and title projection rules. UI presentation retains references and never selects a session implicitly.
 
+The history workbench uses `history.trajectory` for turn summaries, timeline spans,
+paged records and exact search matches. `history.trajectory.detail` reads the selected
+record's redacted content and source events. The projection uses the catalog and
+replay adapter for recorded turn membership, terminal outcomes and compaction
+disclosure. Tool records use the call event sequence as their identity and retain
+the paired result sequence for exact lookup. A snapshot binds the project and
+session to a journal boundary and a digest of records and replacement visibility
+through that boundary. Cursors also bind the query and trust scope. Appends beyond
+the boundary stay outside the snapshot. Replacements or truncation affecting it
+require refresh. Reads check authorization before and after visiting the journal.
+
+
 Native background commands are owned by `background_jobs::JobRegistry`, with a Host-shared capacity budget and a detached `ProcessService`/sandbox per job. The planner, permission gate and process launcher remain shared with normal command tools. The registry records `job/registered` before spawn and `job/settled` only after a real terminal observation; execution, persistence, cleanup and notification failures remain distinct. The catalog owns native job phase classification; the job projection/checkpoint and restart recovery consume it.
 
 `SessionService` keeps independent display/execution facades over a shared weak writer table keyed by the full `SessionKey`. A borrowed target uses the same coordinator, folding journal and projections as any selected facade. Acquiring a target never changes the foreground selection. Acquisition and last explicit close share a lock, including the last strong-reference release, so simultaneous detach cannot leak a writer thread or create a second owner.
@@ -1964,13 +1976,14 @@ The capture lifecycle saves reading positions before a page is hidden. Switching
 pages does not stop Host execution or create another conversation DOM/subscription.
 
 Resources retains current-project files/materials/bookmarks; its file browser
-mounts directly into the common list/detail slots. History keeps search scope and
-read-only admission separate from explicit conversation continuation. Tasks keeps
+mounts directly into the common list/detail slots. History keeps the shared search
+sidebar and renders a timeline, virtual turn list and record inspector in the detail
+slot. Entering the source conversation remains an explicit action. Tasks keeps
 project selection and existing schedule/job controls; its borrowed live conversation
 is returned on leave. Extensions separates Installed/Discover navigation from the
 plugin owner and permission-review renderer: changing selection cancels unsubmitted
 review tickets and clears credentials, while late prepare results are cancelled.
-No journal vocabulary, persistence format or public RPC changes are introduced.
+The shared navigation frame owns layout and view lifecycle.
 
 Default navigation content reuses `navigationOverview` and the shared SVG table.
 Recommendations are projections of the existing bounded public catalog, not new

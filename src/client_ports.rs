@@ -103,6 +103,7 @@ pub mod history {
         HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit, HistoryPage,
         HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch, OperationDetail,
         OperationDetailRequest, OperationFilter, OperationRow, OperationsPage, OperationsRequest,
+        TrajectoryDetail, TrajectoryDetailRequest, TrajectoryPage, TrajectoryRequest,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }

@@ -219,7 +219,33 @@ fn source_error(e: impl ToString) -> QueryError {
     QueryError::new("source_unavailable").detail(e)
 }
 pub(super) fn redact_value(value: &Value) -> Value {
+    redact_json(value, false)
+}
+
+pub(super) fn redact_trajectory_value(value: &Value) -> Value {
+    redact_json(value, true)
+}
+
+fn redact_json(value: &Value, embedded_json: bool) -> Value {
     match value {
+        Value::String(s) if embedded_json => {
+            // Tool outputs and event payloads may carry JSON inside a string.
+            // Apply the same key policy without changing the protocol value type.
+            let structured = serde_json::from_str::<Value>(s)
+                .ok()
+                .filter(|v| v.is_object() || v.is_array());
+            Value::String(structured.map_or_else(
+                || crate::redact::redact_secrets(s),
+                |value| {
+                    let redacted = redact_json(&value, true);
+                    if redacted == value {
+                        s.clone()
+                    } else {
+                        serde_json::to_string(&redacted).expect("JSON serializes")
+                    }
+                },
+            ))
+        }
         Value::String(s) => Value::String(crate::redact::redact_secrets(s)),
         Value::Object(o) => Value::Object(
             o.iter()
@@ -229,13 +255,13 @@ pub(super) fn redact_value(value: &Value) -> Value {
                         if crate::redact::credential_name(k) {
                             json!("[REDACTED]")
                         } else {
-                            redact_value(v)
+                            redact_json(v, embedded_json)
                         },
                     )
                 })
                 .collect(),
         ),
-        Value::Array(a) => Value::Array(a.iter().map(redact_value).collect()),
+        Value::Array(a) => Value::Array(a.iter().map(|v| redact_json(v, embedded_json)).collect()),
         _ => value.clone(),
     }
 }

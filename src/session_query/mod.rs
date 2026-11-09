@@ -3,10 +3,14 @@ mod conversation;
 mod index;
 mod inspect;
 mod operations;
+mod trajectory;
 pub use conversation::{ConversationMessage, ConversationPage, ConversationRequest};
 pub use operations::{
     OperationDetail, OperationDetailRequest, OperationFilter, OperationRow, OperationsPage,
     OperationsRequest,
+};
+pub use trajectory::{
+    TrajectoryDetail, TrajectoryDetailRequest, TrajectoryPage, TrajectoryRequest,
 };
 mod query;
 mod source;

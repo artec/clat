@@ -89,6 +89,8 @@ History controls use compact circular icons: the top upward-to-line button loads
 
 Loading earlier messages preserves the current reading position without a scroll animation. Prepending, process folding, preview sizing and removal of the exhausted loader share one synchronous position-restoration step with native scroll anchoring temporarily disabled. The reading anchor is captured when the page arrives, so scrolling while waiting for history does not return the reader to an older position. Long-message previews settle to their collapsed height before the reading position is restored, avoiding delayed height changes after each prepend. Hidden process rows are excluded from reading anchors. Explicit navigation retains its smooth scrolling.
 
+**Search history** opens the shared Desktop and Web/PWA execution workbench. Recent sessions and cross-session results stay on the left. The timeline and collapsible turns show execution order, and the right pane loads details for the selected record. On narrow windows, details open in a drawer. Use **Refresh snapshot** to read newly committed records. See [history search](history.md) for search scope, precise navigation and the available record details.
+
 Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening the complete original text in a centered, scrollable reader with a blurred backdrop and Copy full text. Escape, Close or clicking the backdrop dismisses it without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the reader and highlight the match; precise message navigation opens the reader as well. Web and Desktop share this behavior.
 
 Each Agent round has one process header below its initial user message. While
@@ -99,7 +101,7 @@ for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
 connection clears the live activity; reduced-motion and forced-color settings
 use static, readable status indicators.
-Conversation body text uses font weight 300; emphasized text and interface labels retain their separate weights. Thinking uses a compact brain icon; known native web-search and web-fetch actions use a globe. Known native tools use action icons with a recognizable pencil for edits and a rounded terminal for commands; external tools retain a generic wrench icon and
+Conversation body text uses 15 px at weight 400 with platform font smoothing. Emphasis and interface labels retain their separate weights. Thinking uses a compact brain icon; known native web-search and web-fetch actions use a globe. Known native tools use action icons with a recognizable pencil for edits and a rounded terminal for commands; external tools retain a generic wrench icon and
 original identifiers in their details. Once the actual terminal event arrives,
 the process collapses behind the elapsed-time chevron, leaving the last nonempty
 answer visible. User inputs, failures, permission refusals and interruptions

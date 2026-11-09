@@ -440,6 +440,31 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/trajectory-list.js",
+        include_bytes!("../../web/trajectory-list.js"),
+        "application/javascript",
+    ),
+    (
+        "/trajectory-overview.js",
+        include_bytes!("../../web/trajectory-overview.js"),
+        "application/javascript",
+    ),
+    (
+        "/trajectory-detail.js",
+        include_bytes!("../../web/trajectory-detail.js"),
+        "application/javascript",
+    ),
+    (
+        "/history-trajectory.js",
+        include_bytes!("../../web/history-trajectory.js"),
+        "application/javascript",
+    ),
+    (
+        "/trajectory.css",
+        include_bytes!("../../web/trajectory.css"),
+        "text/css; charset=utf-8",
+    ),
+    (
         "/history-query.js",
         include_bytes!("../../web/history-query.js"),
         "application/javascript",
@@ -553,6 +578,10 @@ const PROJECT_MODULES: &[&str] = &[
     "/plugin-market.js",
     "/background-jobs.js",
     "/scheduled-work.js",
+    "/trajectory-list.js",
+    "/trajectory-overview.js",
+    "/trajectory-detail.js",
+    "/history-trajectory.js",
     "/history-query.js",
     "/web-settings.js",
     "/interaction-dock.js",

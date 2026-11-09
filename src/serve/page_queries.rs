@@ -20,6 +20,16 @@ pub(super) fn history(
         })
     }
     let result = match method {
+        "history.trajectory" => serde_json::to_value(
+            reader
+                .trajectory(decode(value)?, &cancel)
+                .map_err(app_error)?,
+        ),
+        "history.trajectory.detail" => serde_json::to_value(
+            reader
+                .trajectory_detail(decode(value)?, &cancel)
+                .map_err(app_error)?,
+        ),
         "history.attachment" => {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
