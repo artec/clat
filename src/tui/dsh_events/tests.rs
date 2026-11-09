@@ -632,9 +632,18 @@ fn spawned_host_cleanup_takes_the_whole_tree() {
 /// 产品标签；未知自定义值原样显示。
 #[test]
 fn preset_projection_maps_journal_values_to_web_labels() {
-    assert_eq!(dsh_preset_label("read-only"), "Read Only");
-    assert_eq!(dsh_preset_label("workspace-write"), "Workspace Write");
-    assert_eq!(dsh_preset_label("danger-full-access"), "Full Access");
+    // 期望值走 catalog（2026-10-26 文案不入 CI）：改措辞不红，
+    // 映射错键/漏翻译照样红；未知自定义值原样透传。
+    let locale = LocaleContext::default();
+    assert_eq!(dsh_preset_label("read-only"), locale.text("web.read_only"));
+    assert_eq!(
+        dsh_preset_label("workspace-write"),
+        locale.text("tui.workspace_write")
+    );
+    assert_eq!(
+        dsh_preset_label("danger-full-access"),
+        locale.text("web.full_access")
+    );
     assert_eq!(dsh_preset_label("custom-audit-mode"), "custom-audit-mode");
     // PermissionMode 与 journal 值互转（dsh /perm 的 Apply 通道）。
     assert_eq!(

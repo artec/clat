@@ -1129,7 +1129,8 @@ fn dispatch_covers_the_full_method_set() {
         &shared,
     )
     .unwrap();
-    assert_eq!(goal["message"], "No current goal.");
+    // 行为契约：空 goal 状态携带 command.goal_none 呈现键（措辞不入 CI）。
+    assert_eq!(goal["presentation"][0]["key"], "command.goal_none");
 
     // SC-2：/skill 经 command.run 列表（status 文本，ShowHelp 同姿势）
     // 与武装确认；别名 /sub（A3）经同一注册表派发。
@@ -1268,12 +1269,15 @@ fn pu_serve_content_kinds_and_workflow_refusals_preserve_state_and_release_claim
             .remove("presentation")
             .unwrap(),
         serde_json::json!([{
-            "key": "command.goal_none", "args": {}, "fallback": "No current goal."
+            "key": "command.goal_none", "args": {},
+            "fallback": crate::i18n::UiMessage::new("command.goal_none").english()
         }])
     );
+    // 结构契约：kind/goal 形状；message 措辞不入 CI（呈现键已钉）。
+    goal.as_object_mut().unwrap().remove("message");
     assert_eq!(
         goal.to_string(),
-        r#"{"kind":"goal","goal":{"goal":null,"armed":false},"message":"No current goal."}"#
+        r#"{"kind":"goal","goal":{"goal":null,"armed":false}}"#
     );
     for (command_text, enabled) in [("/sub", false), ("/sub on", true), ("/sub status", true)] {
         let value = command(command_text).unwrap();

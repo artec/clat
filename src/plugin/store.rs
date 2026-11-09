@@ -1775,8 +1775,12 @@ pub(crate) mod tests {
             .unwrap()
             .set_modified(before)
             .unwrap();
+        // 断言安全属性（激活路径必须拒绝），不钉中间证据层：Unix 靠
+        // ctime 证据、Windows 的 ChangeTime 证据在部分文件系统/镜像上
+        // 不可靠（2026-11-09 CI 实证），最终摘要闸才是确定性裁决
+        // （verified_entry.rs：Windows 保留 final full digest gate）。
         assert!(
-            inspected.verified_entry.checked_path().is_err(),
+            inspected.verified_entry.activation_path().is_err(),
             "activation must reject mutation even when size and mtime are unchanged"
         );
         fs::remove_dir_all(fixture).unwrap();

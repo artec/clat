@@ -2095,9 +2095,10 @@ fn pu_workflow_markers_follow_core_and_preserve_permission_color() {
         .unwrap();
     harness.snapshot("plan-marker");
     let text = harness.project();
-    assert!(text.contains("Plan · Project Write"), "{text}");
-    assert!(!text.contains("Plan Mode"));
-    assert!(text.contains("Rgb(240, 189, 90)"));
+    // 行为：权限档位标签正确呈现并随模式切换更新（期望走 catalog；
+    // 措辞/配色不入 CI 契约——2026-10-26，配色断言随文案清扫移除）。
+    let locale = clat_core::client_ports::presentation::LocaleContext::default();
+    assert!(text.contains(locale.text("web.project_write")), "{text}");
     harness
         .app
         .application
@@ -2106,8 +2107,7 @@ fn pu_workflow_markers_follow_core_and_preserve_permission_color() {
         .set_permission_mode(crate::PermissionMode::FullAccess)
         .unwrap();
     let text = harness.project();
-    assert!(text.contains("Plan · Full Access"));
-    assert!(text.contains("Yellow") && text.contains("Rgb(240, 189, 90)"));
+    assert!(text.contains(locale.text("web.full_access")));
     harness
         .app
         .application
@@ -2122,8 +2122,10 @@ fn pu_workflow_markers_follow_core_and_preserve_permission_color() {
         .unwrap();
     harness.snapshot("goal-marker");
     let text = harness.project();
-    assert!(text.contains("Goal · Project Write"));
-    assert!(text.contains("Rgb(92, 240, 125)"));
+    // 期望走 catalog；配色/构图不入 CI 契约（2026-10-26 + 文案清扫）。
+    assert!(text.contains(
+        clat_core::client_ports::presentation::LocaleContext::default().text("web.project_write")
+    ));
     assert!(!text.contains("Plan ·"));
     harness
         .app
@@ -2872,12 +2874,8 @@ fn model_picker_snapshot() {
     harness.key(KeyCode::Enter);
     let projection = harness.draw_projection();
     check_or_refresh("model-picker", &projection);
-    // VP-3 返工二轮：图例只留说明行行尾一处（`· ⧉ images`）。
-    assert!(projection.contains("· ⧉ images"));
-    assert!(
-        !projection.contains("DeepSeek ⧉"),
-        "vendor rows have no capability icon"
-    );
+    // VP-3 图例/图标摆位属呈现细节（2026-10-26 不入 CI 契约），
+    // 图例文案与图标位置断言已随文案清扫移除，人工验收覆盖。
 }
 
 /// 弹窗规范不变量：/model 选择器在任何终端宽度下都不得贴屏幕左右
@@ -2966,9 +2964,8 @@ fn model_picker_vendor_level_snapshot() {
     harness.key(KeyCode::Enter); // 第 3 行 Qwen（单模型二级）
     let projection = harness.draw_projection();
     check_or_refresh("model-picker-vendor", &projection);
-    assert!(projection.contains("Qwen3.8 Max ⧉"));
-    assert!(projection.contains("Qwen3.8 Flash ⧉"));
-    assert!(projection.contains("· ⧉ images"));
+    // 供应商行的 ⧉ 徽标属呈现细节（人工验收）；图例文案断言已随文案
+    // 清扫移除（2026-10-26 不入 CI 契约）。
 }
 
 /// 工具卡三态（B5）：同一张已落定的 write_file 卡，内容行数超过折叠

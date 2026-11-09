@@ -525,7 +525,12 @@ fn native_permission_target_and_replies_are_fenced_without_optimistic_state() {
     app.event_sender = Some(tx);
     app.native.as_mut().unwrap().selection += 1;
     app.apply_native_permission(PermissionMode::FullAccess);
-    assert_eq!(app.status, "permission target changed; reopen /perm");
+    // 期望值走 catalog 键（文案不入 CI 契约）。
+    assert_eq!(
+        app.status,
+        clat_core::client_ports::presentation::LocaleContext::default()
+            .text("tui.host_permission_changed")
+    );
     assert!(!app.native.as_ref().unwrap().permissions.pending);
     app.event_sender = None;
     app.native.as_mut().unwrap().permissions.pending = true;
