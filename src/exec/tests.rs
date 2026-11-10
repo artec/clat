@@ -164,10 +164,9 @@ fn parse_accepts_command_flag_and_rejects_misuse() {
 fn command_help_lists_registry_catalog_on_stdout() {
     let (storage_root, project_root, project) = setup("exec-command-help");
     prepare_storage(&project, &storage_root, TestBehavior::Success);
-    let mut options = args(None);
-    options.command = Some("/help".into());
-    let (io, captured) = ExecIo::capture(&[]);
-    let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+    // 走 command_after_close：prepare_storage 关闭后的锁释放有内核
+    // 可见性窗口，撞窗口按共享策略有界重试（2026-11-10 CI 实证）。
+    let (outcome, captured) = command_after_close(&project, &storage_root, "/help");
     match outcome {
         ExecOutcome::Success { output, turns, .. } => {
             assert_eq!(turns, 0);
