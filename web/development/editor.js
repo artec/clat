@@ -67,10 +67,10 @@ function createDevelopmentEditor(){
       const version=overwrite?(doc.disk?.version==='missing'?'missing':(await rpc('editor.open',{path:doc.path})).version):doc.version;
       const text=doc.text;const result=await rpc('editor.save',{operationId:devId(),path:doc.path,version,text,bom:doc.bom,newline:doc.newline});
       doc.version=result.version;doc.baseText=text;doc.dirty=doc.text!==text;doc.conflict=false;if(doc===selected){controller.clearConflict?.();if(!view){selected=null;activate(doc);}}renderTabs();queueDraft(doc);devStatus(status,'saved');
-      if(result.rust_support?.status==='failed'){
+      if(['failed','reported'].includes(result.rust_support?.status)){
         CLATI18n.bind(status,'textContent',()=>CLATI18n.present(result.rust_support.presentation));
       }
-      CLATI18n.attribute(status,'title',()=>result.rust_support?.status==='failed'?result.rust_support.error||'':'');
+      CLATI18n.attribute(status,'title',()=>result.rust_support?.status==='failed'?result.rust_support.error||'':result.rust_support?.changed_keys?.join('\n')||'');
       return true;
     }catch(error){devReport(status,error);doc.conflict=true;if(doc===selected)showConflict(doc);return false;}finally{doc.saving=false;refreshViewContext();}
   }

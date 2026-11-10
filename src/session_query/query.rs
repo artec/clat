@@ -23,7 +23,7 @@ impl SessionQueryService {
         cancel: &CancelToken,
         deadline: Instant,
     ) -> Result<HistoryPage, QueryError> {
-        if request.query.trim().is_empty() || request.query.chars().count() > 512 {
+        if (agent && request.query.trim().is_empty()) || request.query.chars().count() > 512 {
             return Err(QueryError::new("invalid_query"));
         }
         let fingerprint = digest(
@@ -49,9 +49,16 @@ impl SessionQueryService {
         if projects.len() > 256 {
             return Err(QueryError::new("scope_too_large"));
         }
-        let (hits, capped) = collect_candidates(
-            connection, projects, request, current, agent, cancel, deadline,
-        )?;
+        let (hits, capped) = if request.query.trim().is_empty() {
+            (
+                list_sessions(connection, projects, request.session.as_deref())?,
+                false,
+            )
+        } else {
+            collect_candidates(
+                connection, projects, request, current, agent, cancel, deadline,
+            )?
+        };
         Ok(page(
             state,
             Cursor {
@@ -65,6 +72,55 @@ impl SessionQueryService {
         ))
     }
 }
+fn list_sessions(
+    connection: &Connection,
+    projects: &[ProjectKey],
+    session: Option<&str>,
+) -> Result<Vec<HistoryHit>, QueryError> {
+    if projects.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; projects.len()].join(",");
+    let mut args: Vec<SqlValue> = projects
+        .iter()
+        .map(|project| SqlValue::Text(project_text(project)))
+        .collect();
+    let filter = if let Some(session) = session {
+        args.push(SqlValue::Text(session.to_owned()));
+        " AND s.session=?"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT s.project,s.session,s.title,COALESCE(MAX(d.time),0)          FROM sessions s LEFT JOIN documents d ON d.session_key=s.key AND d.visible=1          WHERE s.project IN({placeholders}){filter}          GROUP BY s.key ORDER BY MAX(d.time) DESC,s.project,s.session"
+    );
+    let mut statement = connection.prepare(&sql).map_err(sql_error)?;
+    let rows = statement
+        .query_map(params_from_iter(args), |row| {
+            let project: String = row.get(0)?;
+            let project = serde_json::from_str(&project).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok(HistoryHit {
+                reference: HistoryReference {
+                    project,
+                    session: row.get(1)?,
+                    seq: None,
+                },
+                title: row.get(2)?,
+                time: row.get(3)?,
+                role: String::new(),
+                excerpt: String::new(),
+            })
+        })
+        .map_err(sql_error)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(sql_error)
+}
+
 fn page(state: &mut State, cursor: Cursor, agent: bool) -> HistoryPage {
     let end = (cursor.offset + if agent { 10 } else { PAGE }).min(cursor.hits.len());
     let hits = cursor.hits[cursor.offset..end].to_vec();

@@ -147,7 +147,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
 | 搜索与抓取公开网页 | [原生联网工具](docs/web.md) |
-| 搜索与检视会话历史 | [会话检索](docs/history.md) |
+| 搜索与检视会话历史 | [历史轨迹](docs/history.md) |
 | [后台任务](docs/jobs.md) | Host 所有的命令、输出、取消与恢复 |
 | [定时与续跑](docs/schedules.md) | 明确授权、有界 Job 续跑、时间规则与恢复 |
 | 使用 DSH 官方 web 搜索与抓取 | [Web 工具](docs/web.md) |

@@ -21,6 +21,17 @@ Investigate whether a failure represents a product regression or an obsolete
 UI expectation before changing it; do not repeatedly refresh strings or
 screenshots merely to keep a low-value assertion green.
 
+**CI-red triage (owner ruling, 2026-11-10):** every red CI run is first
+classified. A failure caused by a presentation-only assertion — exact copy,
+colors, layout, menu counts, DOM shape — is not a bug: delete or relax that
+assertion (recording the behavior coverage that remains) instead of
+refreshing strings to keep it green. A logic or functional failure is a real
+defect: fix the code or the contract, never delete the check. The same
+classification applies to lint-shaped reds: contracts that protect runtime
+behavior (clippy correctness lints, wait inventories, architecture tests)
+stay; ones that only pin presentation wording go. Record each deletion in
+the delivery note so the lost coverage is always explicit.
+
 The ordinary Web/Desktop suites do not capture review screenshots. Explicit
 manual captures live in `web/e2e/manual/` and run with
 `npx playwright test --config playwright.visual.config.js`; they do not run in CI

@@ -72,6 +72,7 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order keeps json!-built payloads in insertion order, matching
 # DSH's JSON.stringify field order for byte-level wire compat.
 serde_json = { version = "1", features = ["preserve_order"] }
+toml = "=0.8.2"
 # AG-3 Skills: standard YAML frontmatter parser; do not hand-roll YAML semantics.
 serde_yaml_ng = "0.10"
 semver.workspace = true

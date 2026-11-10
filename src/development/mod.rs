@@ -60,13 +60,13 @@ impl DevelopmentService {
         *self.rust_support.write().expect("Rust support hook") = Some(service);
     }
 
-    pub(super) fn rust_saved(&self, path: &str) -> Option<Value> {
-        self.rust_support
-            .read()
-            .ok()?
-            .as_ref()?
-            .upgrade()?
-            .saved(path, true, &CancelToken::new())
+    pub(super) fn rust_saved(&self, path: &str, previous: Option<&[u8]>) -> Option<Value> {
+        self.rust_support.read().ok()?.as_ref()?.upgrade()?.react(
+            path,
+            true,
+            &CancelToken::new(),
+            previous,
+        )
     }
 
     /// Only trusted client ports expose this service. No Agent tool accepts a human flag.

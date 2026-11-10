@@ -1848,9 +1848,9 @@ divider lines. The conversation map appears only when the message column has
 enough room; opening a list or work area can hide it even in a wide window. Its
 outline and navigation remain available when space returns.
 
-The permanent global navigation opens conversations, resources, task center, history search,
+The permanent global navigation opens conversations, resources, task center, history timeline,
 extensions, settings, and help. The project/session list can collapse within
-Conversations; global actions remain available. Settings, task center, history search, and extensions
+Conversations; global actions remain available. Settings, task center, history timeline, and extensions
 use full content pages. Moving between these pages preserves the current conversation,
 its reading position, and unsent text in this browser page. Back/Forward and hash routes
 return to the corresponding function page; refreshing still discards page-local drafts.
@@ -2655,7 +2655,7 @@ independently of the original file operation's result.
 The web and desktop composer uses an arrow icon to send. While a run is active,
 the arrow remains available with a draft; an empty composer shows the square stop
 button instead. Stopping keeps the unsent draft.
-The sidebar's schedules, background jobs and history search entries keep their
+The sidebar's schedules, background jobs and history timeline entries keep their
 icons when collapsed, with localized tooltips and accessible names.
 
 Each successful run dispatches one FIFO item as an ordinary new run; successive
@@ -3112,7 +3112,7 @@ background Job inspection and explicitly authorized schedules. TUI equivalents
 are `/web`, `/history`, `/jobs`, and `/schedule`; CLI equivalents are `clat web`,
 `clat history`, `clat jobs`, and `clat schedule`. Query commands select the
 current already mounted project without implicitly trusting or mounting another.
-See [Web](web.md), [History search](history.md), [Background jobs](jobs.md), and
+See [Web](web.md), [History timeline](history.md), [Background jobs](jobs.md), and
 [Scheduled work](schedules.md) for scope, permissions, quotas and recovery.
 
 

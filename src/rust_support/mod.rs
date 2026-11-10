@@ -7,8 +7,13 @@ use std::sync::{Arc, Mutex, RwLock};
 mod cargo;
 mod changes;
 pub(crate) mod plugin;
+mod reactions;
 
 type Runner = dyn Fn(&Path, &[&str], bool, &CancelToken) -> Result<String, String> + Send + Sync;
+
+pub(crate) fn observes(path: &str) -> bool {
+    reactions::find(path).is_some()
+}
 
 pub(crate) struct RustSupport {
     project: Project,
@@ -47,16 +52,28 @@ impl RustSupport {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn saved(&self, path: &str, human: bool, cancel: &CancelToken) -> Option<Value> {
-        if Path::new(path).file_name()? != "Cargo.toml" {
-            return None;
-        }
-        let result = self.synchronize(path, human, cancel);
+        self.react(path, human, cancel, None)
+    }
+
+    pub(crate) fn react(
+        &self,
+        path: &str,
+        human: bool,
+        cancel: &CancelToken,
+        previous: Option<&[u8]>,
+    ) -> Option<Value> {
+        let reaction = reactions::find(path)?;
+        let result = (reaction.run)(self, path, human, cancel, previous);
         Some(match result {
-            Ok(lock) => json!({"status":"synchronized","lockfile":lock,
-                "presentation":crate::i18n::UiMessage::new("rust_support.synchronized")}),
-            Err(error) => json!({"status":"failed","error":crate::redact::redact_secrets(&error),
-                "presentation":crate::i18n::UiMessage::new("rust_support.failed")}),
+            Ok(value) => value,
+            Err(error) => json!({
+                "status":"failed",
+                "artifact": reaction.artifact,
+                "error":crate::redact::redact_secrets(&error),
+                "presentation":crate::i18n::UiMessage::new(reaction.failure),
+            }),
         })
     }
 

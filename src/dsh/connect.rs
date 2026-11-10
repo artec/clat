@@ -633,9 +633,17 @@ mod tests {
             "the poll loop must not block past the deadline"
         );
 
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        // Windows 上 "true" 解析到 Git Bash 的 true.exe——新 runner 冷启动
+        // 加 Defender 首扫可能超预算(2026-11-10 CI 首跑红、重跑绿的签名)。
+        // 改用平台原生瞬时进程,预算放到 5s:"prompt" 语义是轮询在退出后
+        // 一个 50ms 粒度内收割,不是绝对时长。
+        let mut command = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" });
+        if cfg!(windows) {
+            command.args(["/C", "exit", "0"]);
+        }
+        let mut child = command.spawn().unwrap();
         assert!(
-            wait_bounded(Duration::from_secs(2), || child.try_wait()),
+            wait_bounded(Duration::from_secs(5), || child.try_wait()),
             "an exiting process is reaped promptly"
         );
 

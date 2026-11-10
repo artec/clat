@@ -546,3 +546,69 @@ fn navigation_conversation_read_is_public_scoped_and_does_not_select() {
             .is_err()
     );
 }
+
+#[test]
+fn history_empty_query_lists_all_sessions_in_authorized_scope_with_pagination() {
+    let f = Fixture::new();
+    for index in 0..22 {
+        f.write("/tmp/query-one", &format!("one-{index:02}"), "local");
+    }
+    f.write("/tmp/query-two", "other", "outside");
+    let cancel = CancelToken::new();
+    let request = HistorySearch::default();
+    let first = f.service.search(request.clone(), &cancel, false).unwrap();
+    assert_eq!(first.hits.len(), 20);
+    assert!(
+        first
+            .hits
+            .iter()
+            .all(|hit| hit.reference.project.as_deref() == Some("/tmp/query-one"))
+    );
+    assert!(first.hits.iter().all(|hit| hit.reference.seq.is_none()));
+    let next = f
+        .service
+        .search(
+            HistorySearch {
+                cursor: first.next_cursor,
+                ..request.clone()
+            },
+            &cancel,
+            false,
+        )
+        .unwrap();
+    assert_eq!(next.hits.len(), 2);
+    assert!(next.next_cursor.is_none());
+
+    f.service
+        .control
+        .add_trust(std::path::Path::new("/tmp/query-two"))
+        .unwrap();
+    let all = HistorySearch {
+        trusted_projects: true,
+        ..request.clone()
+    };
+    let first = f.service.search(all.clone(), &cancel, false).unwrap();
+    let next = f
+        .service
+        .search(
+            HistorySearch {
+                cursor: first.next_cursor,
+                ..all
+            },
+            &cancel,
+            false,
+        )
+        .unwrap();
+    assert!(
+        first
+            .hits
+            .iter()
+            .chain(&next.hits)
+            .any(|hit| hit.reference.session == "other")
+    );
+    assert_eq!(
+        f.service.search(request, &cancel, true).unwrap_err().code,
+        "invalid_query"
+    );
+    assert!(f.service.reader.current().is_none());
+}

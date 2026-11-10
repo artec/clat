@@ -27,6 +27,11 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
   const valid = () => !suspended && current() && workspacePrefix === initialWorkspace;
   const scope = { reference: { ...reference, seq: null }, trusted_projects: trusted };
   const refresh = navigationIcon(() => trajectoryText('refresh'), 'refresh', refreshSnapshot);
+  const reopen = navigationIcon(() => trajectoryText(host.classList.contains('has-inspector') ? 'close_details' : 'open_details'), 'panel', () => {
+    if (host.classList.contains('has-inspector')) closeDetail(false);
+    else if (selected && valid() && !invalid && !needsLoad) void detail(selected);
+  });
+  reopen.setAttribute('aria-expanded', 'false');
   const collapse = navigationIcon(() => trajectoryText('collapse_all'), 'collapse-all', () => list.collapse());
   const previous = navigationIcon(() => trajectoryText('previous_match'), 'previous', () => void nextMatch(-1));
   const next = navigationIcon(() => trajectoryText('next_match'), 'next', () => void nextMatch(1));
@@ -35,7 +40,7 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
   const zoomOut = navigationIcon(() => trajectoryText('zoom_out'), 'minus', () => chart.zoom(-1));
   const zoom = el('div', 'trajectory-zoom');
   zoom.append(zoomIn, zoomOut);
-  toolbar.append(mode, collapse, zoom, find, count, previous, next, refresh);
+  toolbar.append(mode, collapse, zoom, reopen, find, count, previous, next, refresh);
   host.append(toolbar);
   const chart = createTrajectoryOverview(host, id => void choose(id), ({ canZoomIn, canZoomOut }) => {
     zoomIn.disabled = !canZoomIn;
@@ -65,6 +70,8 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
   function closeDetail(focus = true) {
     detailEpoch++;
     inspector.hide();
+    reopen.setAttribute('aria-expanded', 'false');
+    for (const attr of ['title', 'aria-label']) CLATI18n.attribute(reopen, attr, () => trajectoryText('open_details'));
     host.classList.remove('has-inspector');
     if (focus) list.focus();
   }
@@ -76,6 +83,7 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
     if (mode.options[1].disabled) mode.value = 'sequence';
     chart.update(overview, selected, mode.value);
     previous.disabled = next.disabled = invalid || needsLoad || !matches.length;
+    reopen.disabled = invalid || needsLoad || !selected;
     const index = matches.indexOf(selected);
     CLATI18n.bind(count, 'textContent', () => query
       ? trajectoryText('match_count', { current: index + 1, total: matches.length })
@@ -146,6 +154,8 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
     const stillCurrent = () => ticket === detailEpoch && valid() && selected === id;
     inspector.loading();
     host.classList.add('has-inspector');
+    reopen.setAttribute('aria-expanded', 'true');
+    for (const attr of ['title', 'aria-label']) CLATI18n.attribute(reopen, attr, () => trajectoryText('close_details'));
     try {
       const value = await rpc('history.trajectory.detail', { ...scope, snapshot, id });
       if (stillCurrent()) inspector.show(value);

@@ -257,7 +257,7 @@ impl App {
             let label = operation_tool(row["tool"].as_str().unwrap_or(""), self.locale);
             let status = operation_status(row["status"].as_str(), self.locale);
             let warning = if row["rust_sync_failed"] == true {
-                format!(" · {}", self.locale.text("rust_support.failed"))
+                format!(" · {}", self.locale.text("rust_support.operation_failed"))
             } else {
                 String::new()
             };
@@ -292,7 +292,10 @@ impl App {
             )
         );
         if row["rust_sync_failed"] == true {
-            text.push_str(&format!("\n\n{}", self.locale.text("rust_support.failed")));
+            text.push_str(&format!(
+                "\n\n{}",
+                self.locale.text("rust_support.operation_failed")
+            ));
         }
         for (key, label) in [("arguments", "view.arguments"), ("result", "view.result")] {
             if let Some(content) = value[key].as_str() {

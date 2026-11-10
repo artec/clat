@@ -118,15 +118,13 @@ alter `plugin.list`, current `builtin_availability`, permissions or durable fact
 ### Rust development support
 
 `builtin.rust_support` is an independently switchable built-in, enabled by
-default. It uses the installed Cargo executable after Agent file/patch/command
-operations change a non-ignored `Cargo.toml` inside the project, and after a human
-saves that file in the project editor. It asks Cargo to locate the workspace,
-then runs `cargo update --workspace --offline` to synchronize `Cargo.lock`.
-This uses cached registry index data without requiring downloaded crate sources.
-Cargo preserves existing dependency versions where possible. It does not
-implement dependency resolution, install a toolchain, download dependencies, or
-run `cargo check`, tests, build scripts or a build. Existing dependency pins are
-retained where compatible; manifest changes can necessarily change resolution.
+default. Rust support detects artifact changes after Agent file, patch or command operations and human editor saves. The reaction table contains:
+
+- `Cargo.toml` locates its workspace and runs `cargo update --workspace --offline` to synchronize `Cargo.lock`.
+- `rust-toolchain.toml` reports the pinned channel and its installation status in the local rustup toolchain directory. If that directory cannot be located, installation status is unknown.
+- `.cargo/config.toml` reports changed configuration keys without their values. If previous content is unavailable, the report identifies the missing baseline.
+
+The latter two reactions only read local files. They do not launch, install, download or switch a toolchain. Rust source changes do not trigger formatting, Clippy or checks. Cargo uses cached registry index data and preserves existing dependency versions where possible.
 
 Missing Cargo/cache entries, invalid manifests, cancellation or an unsupported
 sandbox produce a separate synchronization failure; a completed editor save is
@@ -141,8 +139,9 @@ headless file-write approval do not implicitly authorize a Cargo process. Human
 editor saves remain a separate explicit user action. A Cargo workspace outside
 the project is not written.
 Background commands still running after a tool returns and writes made by other
-applications are not watched; use Cargo directly for those changes. Manifest
-discovery respects ignore rules and has depth/file/size limits.
+applications are not watched. Explicit native file writes are observed even when
+the file is ignored. Broader patch and command discovery respects ignore rules
+and has depth, file and size limits.
 
 Use **Extensions → Built-ins → Rust development support** to disable it for the
 next Host startup, or add `builtin.rust_support` to `disabled` in

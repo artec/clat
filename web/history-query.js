@@ -17,7 +17,12 @@ function installHistoryQuery() {
   view.filters.append(form);view.list.append(results,more);view.body.replaceWith(detail);detail.classList.add('navigation-body');view.body=detail;status.className='navigation-status';view.sidebar.insertBefore(status,view.list);document.body.append(dialog);
   let generation=0,detailGeneration=0,cursor=null,activeQuery={trusted_projects:false},reader=null,selected=null;
   view.actions([viewAction('search','search',()=>msg('search'),()=>form.requestSubmit(),true,()=>!submit.disabled),viewAction('recent','history',()=>viewText('recent_sessions'),()=>recent())]);
-  view.context({crumbs:()=>[{label:()=>shellText('history'),run:()=>{delete dialog.dataset.detail;}},{label:()=>activeQuery.trusted_projects?msg('all_projects'):projectDisplayName(state.workbench?.project?.root,state.workbench?.project?.name)},...(selected?[{label:()=>projectDisplayName(selected.project)},{label:()=>historyTitle||selected.session}]:[])]});let historyTitle='';
+  view.context({crumbs:()=>[
+    {label:()=>shellText('history'),run:()=>{delete dialog.dataset.detail;}},
+    {label:()=>activeQuery.trusted_projects?msg('all_projects'):projectDisplayName(selected?.project||state.workbench?.project?.root,state.workbench?.project?.name)},
+    ...(selected&&activeQuery.trusted_projects?[{label:()=>projectDisplayName(selected.project)}]:[]),
+    ...(selected?[{label:()=>historyTitle||selected.session}]:[]),
+  ]});let historyTitle='';
   function overview(hits=[]){
     if(selected)return;CLATI18n.bind(view.name,'textContent',()=>shellText('history'));
     detail.replaceChildren(navigationOverview({title:()=>pageText('history_intro_title'),description:()=>pageText('history_intro_description'),icon:'history',items:hits.slice(0,6).map(hit=>({title:hit.title||hit.reference.session,description:hit.excerpt||hit.reference.project,icon:'history',action:()=>void inspect(hit.reference,hit.title)}))}));
@@ -69,14 +74,8 @@ function installHistoryQuery() {
   }
   function clearReader(){detailGeneration++;reader?.dispose();reader=null;selected=null;historyTitle='';overview();}
   async function recent() {
-    clearReader();
-    activeQuery={trusted_projects:false};cursor=null;more.hidden=true;all.checked=false;refreshViewContext();
-    await attempt(async ticket => {
-      const value = await rpc('session.list', {}); if (ticket !== generation) return;
-      results.replaceChildren(...value.sessions.map(session => hitNode({title:session.title || session.id, reference:{project:state.workbench.project.root,session:session.id,seq:null},excerpt:'',time:session.last_activity_ms})));
-      overview(value.sessions.map(session=>({title:session.title||session.id,reference:{project:state.workbench.project.root,session:session.id,seq:null}})));
-      if (!value.sessions.length) results.append(pageEmpty('search_intro'));
-    });
+    query.value = '';
+    await search(false);
   }
   async function inspect(reference,title) {
     historyTitle=title;selected=reference;const ticket=++detailGeneration,trusted=activeQuery.trusted_projects,current=()=>ticket===detailGeneration&&pageIsOpen(dialog)&&context.isActive();
@@ -86,7 +85,8 @@ function installHistoryQuery() {
     }});
   }
 
-  all.onchange = () => { if(query.value.trim()) void search(false); };
+  all.onchange = () => void search(false);
+  query.addEventListener('input', () => { if (!query.value.trim()) void search(false); });
   form.onsubmit = (event) => { event.preventDefault(); void search(false); };
   query.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();form.requestSubmit();}};
   more.onclick = () => void search(true);

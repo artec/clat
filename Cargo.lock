@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "clat"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "clat-core"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "aes",
  "async-trait",
@@ -779,6 +779,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.10.9",
  "sys-locale",
+ "toml 0.8.2",
  "unicode-segmentation",
  "unicode-width",
  "ureq",
@@ -794,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "clat-desktop"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "base64 0.22.1",
  "clat-core",
@@ -868,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "clat-wasm-net"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "brotli-decompressor 5.0.0",
  "bytes",

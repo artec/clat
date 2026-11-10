@@ -44,6 +44,12 @@ impl DevelopmentService {
             (signature.clone(), json!({"_error":"operation_unknown"})),
         );
         self.store.save("editor-receipts.json", &receipts)?;
+        let previous =
+            if method == "editor.save" && crate::rust_support::observes(text(value, "path")?) {
+                self.file_bytes(text(value, "path")?).ok().flatten()
+            } else {
+                None
+            };
         let outcome = match method {
             "editor.save" => self.save_document(value),
             "editor.create" | "editor.rename" | "editor.delete" | "editor.restore" => {
@@ -62,7 +68,7 @@ impl DevelopmentService {
             }
         };
         if method == "editor.save"
-            && let Some(report) = self.rust_saved(text(value, "path")?)
+            && let Some(report) = self.rust_saved(text(value, "path")?, previous.as_deref())
         {
             result["rust_support"] = report;
         }

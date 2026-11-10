@@ -34,7 +34,8 @@ function createTrajectoryDetail(parent, { close, locate, reference, trusted }) {
   const icon = el('span', 'trajectory-detail-icon');
   const body = el('section', 'trajectory-detail-body');
   const footer = el('footer');
-  const jump = el('button', '', () => trajectoryText('locate'));
+  const jump = el('button', 'trajectory-locate');
+  jump.append(svgIcon('crosshair'), el('span', '', () => trajectoryText('locate')));
   const currentProject = () => reference.project === state.workbench?.project?.root;
   let value = null, tab = 'overview', loading = false;
   const tabs = navigationTabs(

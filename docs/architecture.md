@@ -32,7 +32,9 @@ observe manifest saves; Cargo remains the dependency/lockfile authority. The
 plugin owns serial execution and cancellation, while the shared process capture
 and sandbox modules own bounded child I/O and enforcement. Reports use existing
 tool-result/editor payloads; there is no new journal event kind and no widening
-of the read-only LSP service.
+of the read-only LSP service. Its artifact reaction table owns path matching and
+handlers for Cargo manifests, toolchain pins and Cargo configuration. Tool and
+editor changes share dispatch; the latter two reports only read local data.
 
 ## System shape
 

@@ -1,12 +1,12 @@
-# Session history search
+# Session history and timeline
 
-Open **Search history** in the workbench sidebar to browse recent conversations or search across them. Search defaults to the current project. Select **All trusted projects** to widen the scope. Results show the session, project, date and matching excerpt. Choose a hit to open its exact record.
+Open **History timeline** in the workbench sidebar to browse recent conversations or search across them. Search defaults to the current project. Select **All trusted projects** to widen the scope. Results show the session, project, date and matching excerpt. An empty search lists sessions in the selected scope. Choose a hit to open its exact record.
 
 The execution workbench has three timeline lanes for input, model activity and tools. **Sequence** shows recorded order. **Time** uses available time boundaries, marks estimated and unknown durations, and is unavailable when no duration can be calculated. Select a segment to open its record in the turn list. Turns start collapsed. Choosing a recent session shows the latest turn and its final reply when one was recorded. A search hit opens its turn automatically. Steering stays in its original turn, and compaction appears separately with the recorded range, record count and token estimate when available.
 
 The timeline starts with the full session in view. Use **+** and **−** to zoom horizontally. The zoomed timeline follows the list as you scroll. Its closest zoom covers the visible rows, including all records represented by a visible collapsed turn. In **Time** mode, records without a timestamp appear in a separate strip at the right edge.
 
-Use **Search this session** to find literal text in replies, thinking, tool arguments and results. The adjacent arrows step through matches. Select a row to inspect **Overview**, **Preview**, **Original** or **Source**. Original content and its copy action use the redacted event data. On narrow windows, close the details drawer to return to the same list position. **Locate in conversation** is available for supported records in the current project.
+Use **Search this session** to find literal text in replies, thinking, tool arguments and results. The adjacent arrows step through matches. Select a row to inspect **Overview**, **Preview**, **Original** or **Source**. Original content and its copy action use the redacted event data. On narrow windows, close the details drawer to return to the same list position. Use the details button in the toolbar to reopen the selected record. **Locate in conversation** is available for supported records in the current project.
 
 The workbench opens a read-only snapshot. Use **Refresh snapshot** to see newer records from a running conversation. Earlier and later pages use the same snapshot and preserve the reading position. A replacement or truncation that invalidates the snapshot asks you to refresh. Browsing leaves the active conversation and draft in place.
 

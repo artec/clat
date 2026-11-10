@@ -83,13 +83,17 @@ highlighted when the row is shown. Timestamps from today show only the local
 time; other dates show the full local date and time. Labels and accessible
 names follow the selected interface language.
 
+Saving Rust toolchain and Cargo configuration files reports the pinned local
+toolchain status or changed configuration keys in the editor status. See
+[Rust development support](plugins.md).
+
 Git change-group headings keep a stable height when hover actions appear. File counts sit at the right edge normally and move left to make room for those actions on hover or keyboard focus; the file list does not shift vertically.
 
 History controls use compact circular icons: the top upward-to-line button loads earlier messages, with a spinner during loading. The bottom button jumps to the latest messages; during an active run it stays visible and shows three dots moving in a wave. Hover or keyboard focus reveals the downward arrow. After the run it shows an arrow only when away from the bottom. Both controls retain localized tooltips and accessible names; reduced-motion mode disables animation.
 
 Loading earlier messages preserves the current reading position without a scroll animation. Prepending, process folding, preview sizing and removal of the exhausted loader share one synchronous position-restoration step with native scroll anchoring temporarily disabled. The reading anchor is captured when the page arrives, so scrolling while waiting for history does not return the reader to an older position. Long-message previews settle to their collapsed height before the reading position is restored, avoiding delayed height changes after each prepend. Hidden process rows are excluded from reading anchors. Explicit navigation retains its smooth scrolling.
 
-**Search history** opens the shared Desktop and Web/PWA execution workbench. Recent sessions and cross-session results stay on the left. The timeline and collapsible turns show execution order, and the right pane loads details for the selected record. On narrow windows, details open in a drawer. Use **Refresh snapshot** to read newly committed records. See [history search](history.md) for search scope, precise navigation and the available record details.
+**History timeline** opens the shared Desktop and Web/PWA execution workbench. Recent sessions and cross-session results stay on the left. The timeline and collapsible turns show execution order, and the right pane loads details for the selected record. On narrow windows, details open in a drawer. Use **Refresh snapshot** to read newly committed records. See [history timeline](history.md) for search scope, precise navigation and the available record details.
 
 Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening the complete original text in a centered, scrollable reader with a blurred backdrop and Copy full text. Escape, Close or clicking the backdrop dismisses it without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the reader and highlight the match; precise message navigation opens the reader as well. Web and Desktop share this behavior.
 

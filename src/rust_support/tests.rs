@@ -376,3 +376,82 @@ fn rust_support_real_workspace_inherited_version_updates_the_workspace_lock() {
     support.close().unwrap();
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn rust_support_reactions_report_artifacts_without_running_commands() {
+    let (root, project) = fixture();
+    std::fs::create_dir_all(root.join(".cargo")).unwrap();
+    let (support, calls) = fake(&project, false);
+    let cancel = CancelToken::new();
+    let toolchain = root.join("rust-toolchain.toml");
+    std::fs::write(&toolchain, "[toolchain]\nchannel='stable'\n").unwrap();
+    let report = support.saved("rust-toolchain.toml", true, &cancel).unwrap();
+    assert_eq!(report["status"], "reported");
+    assert_eq!(report["channel"], "stable");
+    std::fs::write(&toolchain, "[toolchain\n").unwrap();
+    assert_eq!(
+        support.saved("rust-toolchain.toml", true, &cancel).unwrap()["status"],
+        "failed"
+    );
+    let config = root.join(".cargo/config.toml");
+    let old = b"[build]\njobs=2\n";
+    std::fs::write(&config, "[build]\njobs=3\n").unwrap();
+    let report = support
+        .react(".cargo/config.toml", true, &cancel, Some(old))
+        .unwrap();
+    assert_eq!(report["changed_keys"], json!(["build.jobs"]));
+    std::fs::write(&config, "[build\n").unwrap();
+    assert_eq!(
+        support.saved(".cargo/config.toml", true, &cancel).unwrap()["status"],
+        "failed"
+    );
+    assert!(support.saved("src/lib.rs", true, &cancel).is_none());
+    assert!(support.saved("config.toml", true, &cancel).is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn rust_support_agent_and_editor_report_configuration_changes() {
+    let (root, project) = fixture();
+    std::fs::create_dir_all(root.join(".cargo")).unwrap();
+    std::fs::write(root.join(".gitignore"), ".cargo/\n").unwrap();
+    std::fs::write(root.join(".cargo/config.toml"), "[build]\njobs=2\n").unwrap();
+    let (support, calls) = fake(&project, false);
+    let support = Arc::new(support);
+    let middleware = changes::Maintenance(support.clone());
+    let tool = crate::native_tools::EditFileTool::default();
+    let args = json!({"path":".cargo/config.toml","old_str":"jobs=2","new_str":"jobs=3"});
+    let cancel = CancelToken::new();
+    let invocation = ToolInvocation {
+        call_id: None,
+        tool: &tool,
+        arguments: &args,
+        project: &project,
+        cancel: &cancel,
+    };
+    let result = middleware.execute(&invocation, &Invoke).unwrap();
+    assert_eq!(
+        result["rust_support"][0]["changed_keys"],
+        json!(["build.jobs"])
+    );
+    let private = root.with_extension("private-config");
+    let editor = Arc::new(crate::development::DevelopmentService::new(
+        project, &private,
+    ));
+    editor.set_rust_support(Arc::downgrade(&support));
+    let doc = editor
+        .request("editor.open", json!({"path":".cargo/config.toml"}), None)
+        .unwrap();
+    let request = json!({"operationId":"save-cargo-config","path":".cargo/config.toml","version":doc["version"],"text":"[build]\njobs=4\n"});
+    let result = editor.request("editor.save", request, None).unwrap();
+    assert_eq!(
+        result["rust_support"]["changed_keys"],
+        json!(["build.jobs"])
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    editor.close().unwrap();
+    support.close().unwrap();
+    crate::test_support::cleanup_tree(&root);
+    crate::test_support::cleanup_tree(&private);
+}
