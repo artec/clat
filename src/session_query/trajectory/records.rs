@@ -106,13 +106,13 @@ impl Projection {
     pub(super) fn assistant(
         &mut self,
         event: &SessionEvent,
-        turn: u64,
-        step: u64,
+        step: (u64, u64),
         reasoning: Option<String>,
         body: String,
         provider: String,
         model: String,
     ) {
+        let (turn, step) = step;
         for (kind, content) in [
             ("reasoning", reasoning.unwrap_or_default()),
             ("message", body),

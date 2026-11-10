@@ -39,7 +39,7 @@ impl Projection {
                 provider,
                 model,
                 ..
-            } => self.assistant(event, turn, step, reasoning, text, provider, model),
+            } => self.assistant(event, (turn, step), reasoning, text, provider, model),
             ReplayEvent::ToolRequested { call, .. } => self.tool_call(event, turn, call),
             ReplayEvent::ToolFinished {
                 call_id,
