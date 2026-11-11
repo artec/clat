@@ -33,7 +33,7 @@ function createRailAllowance(){
     // A failed refresh cannot keep an old percentage looking current.
     allowance=next;button.hidden=!next;
     if(!next){card.hide();return;}
-    ring.set(next.remaining);button.dataset.low=String(next.remaining<=20);
+    ring.set(next.remaining);button.dataset.low=String(next.remaining<=20);button.dataset.critical=String(next.remaining<=5);
     CLATI18n.attribute(button,'aria-label',()=>text('remaining_percent',{percent:next.remaining.toLocaleString(CLATI18n.locale,{maximumFractionDigits:1})}));
     if(!popup.hidden){render();card.position();}
   }

@@ -57,6 +57,8 @@ These visual and interaction details are manually accepted on each platform.
 The conversation sidebar groups projects under a Projects heading. Its add
 button opens the desktop project picker (or project settings in the browser),
 and its archive toggle shows archived conversations across the project list.
+Double-clicking a project row opens the project files work area — the same
+entry as the work area's Project files.
 
 Agent questions show options as a full-width list with descriptions below their
 labels. Select an option and send the answer, or enter a custom answer when

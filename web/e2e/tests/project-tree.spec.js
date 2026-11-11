@@ -49,6 +49,16 @@ test('project conversations open their own session and retain each project draft
   await expect(page.locator('#project-root')).toHaveText(root);
 });
 
+test('double-clicking a project row activates it and opens the project files work area', async ({ page }) => {
+  const fixture = hostInfo('project-tree'), root = fixture.secondaryProject.root;
+  await openWorkbench(page, fixture);
+  const route = await addWorkbenchProject(page, root);
+  await group(page, route).locator('[data-action="open-project"]').dblclick();
+  await expect(page.locator('#workspace-tool-host')).toBeVisible();
+  await expect(page.locator('#file-browser')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => dom.app.dataset.tool), LIVE).toBe('files');
+});
+
 test('a conversation waiting for another project to connect cannot override a newer navigation', async ({ page }) => {
   const fixture = hostInfo('project-tree'), root = fixture.secondaryProject.root;
   let release;

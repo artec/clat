@@ -1279,22 +1279,22 @@ fn pu_serve_content_kinds_and_workflow_refusals_preserve_state_and_release_claim
         goal.to_string(),
         r#"{"kind":"goal","goal":{"goal":null,"armed":false}}"#
     );
-    for (command_text, enabled) in [("/sub", false), ("/sub on", true), ("/sub status", true)] {
+    for (command_text, enabled) in [
+        ("/sub", Some(true)),
+        ("/sub off", None),
+        ("/sub status", Some(false)),
+        ("/sub on", None),
+        ("/sub status", Some(true)),
+    ] {
         let value = command(command_text).unwrap();
-        if command_text == "/sub on" {
-            assert_eq!(value["kind"], "status");
-        } else {
+        if let Some(enabled) = enabled {
             assert_eq!(value["kind"], "subagent_status");
             assert_eq!(
                 value["subagent_status"],
                 serde_json::json!({"enabled":enabled})
             );
-            assert!(
-                value["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("delegate_readonly")
-            );
+        } else {
+            assert_eq!(value["kind"], "status");
         }
     }
     command("/mem add project first\nsecond").unwrap();

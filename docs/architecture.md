@@ -1005,7 +1005,7 @@ Agent phase 4 adds three more removable Trusted Project entries:
 - `builtin.goal` owns the one-goal-per-session state machine, `goal/change`
   projection, `/goal`, unarmed `propose_goal`, verifier-gated `update_goal`, and the explicitly armed
   bounded continuation driver;
-- `builtin.subagent` owns the default-off `/subagents` experiment and
+- `builtin.subagent` owns the default-on, session-scoped `/subagents` control and
   `delegate_readonly`. A child is a scoped `Run` over a fixed three-tool
   project-confined registry view, independent history/model instance, child
   cancellation token, hard budgets, joined worker, and parent-journal

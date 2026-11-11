@@ -100,8 +100,8 @@ struct RunBinding {
 
 #[derive(Default)]
 struct Inner {
-    pending_enabled: bool,
-    enabled_session: Option<SessionId>,
+    pending_disabled: bool,
+    disabled_sessions: BTreeSet<SessionId>,
     binding: Option<RunBinding>,
     closing: bool,
     workers: Vec<(String, CancelToken)>,
@@ -135,8 +135,8 @@ impl SubagentService {
             return false;
         };
         match session {
-            Some(session) => inner.enabled_session.as_ref() == Some(session),
-            None => inner.pending_enabled,
+            Some(id) => !inner.closing && !inner.disabled_sessions.contains(id),
+            None => !inner.closing && !inner.pending_disabled,
         }
     }
 
@@ -150,34 +150,31 @@ impl SubagentService {
             return Err("subagent service is closing".into());
         }
         if inner.binding.is_some() {
-            return Err("cannot change subagent experiment while a run is active".into());
+            return Err("cannot change subagent availability while a run is active".into());
         }
         match session {
+            Some(session) if enabled => {
+                inner.disabled_sessions.remove(session);
+            }
             Some(session) => {
-                inner.pending_enabled = false;
-                inner.enabled_session = enabled.then(|| session.clone());
+                inner.disabled_sessions.insert(session.clone());
             }
-            None => {
-                inner.pending_enabled = enabled;
-                inner.enabled_session = None;
-            }
+            None => inner.pending_disabled = !enabled,
         }
         Ok(())
     }
 
     pub(crate) fn materialized(&self, session: &SessionId) {
-        if let Ok(mut inner) = self.inner.lock() {
-            if inner.pending_enabled {
-                inner.enabled_session = Some(session.clone());
-            }
-            inner.pending_enabled = false;
+        if let Ok(mut inner) = self.inner.lock()
+            && std::mem::take(&mut inner.pending_disabled)
+        {
+            inner.disabled_sessions.insert(session.clone());
         }
     }
 
     pub(crate) fn session_boundary(&self) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.pending_enabled = false;
-            inner.enabled_session = None;
+            inner.pending_disabled = false;
             inner.binding = None;
         }
     }
@@ -194,7 +191,7 @@ impl SubagentService {
         if inner.closing {
             return Err("subagent service is closing".into());
         }
-        if inner.enabled_session.as_ref() != Some(session) {
+        if inner.disabled_sessions.contains(session) {
             inner.binding = None;
             return Ok(false);
         }

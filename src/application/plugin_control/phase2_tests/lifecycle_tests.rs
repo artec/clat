@@ -133,8 +133,8 @@ fn absent_context_features_do_no_io_and_survive_run_goal_reload_reopen_and_reena
         let mut app = attached.lock().unwrap();
         assert_eq!(app.memory_list(None).unwrap().len(), 1);
         assert!(
-            !app.subagents_enabled(),
-            "experimental arm remains process-local"
+            app.subagents_enabled(),
+            "re-enabling the built-in restores default read-only delegation"
         );
         assert!(!app.skills_overview().unwrap().entries.is_empty());
         assert!(app.invoked_skill.is_none());

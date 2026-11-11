@@ -89,8 +89,8 @@ it remains off unless `serve` is started with `--im wechat`.
   for a one-shot estimate of the model-facing context breakdown.
 - **Agent intelligence** — explicit local project/user memory with no
   model writes; one durable CAS goal per session with user-armed
-  continuation; and a default-off, depth-1 explorer/reviewer experiment whose
-  children are confined to three project-relative read tools.
+  continuation; and depth-1 explorer/reviewer delegation confined to three
+  project-relative read tools, available by default in trusted projects.
 - **Models** — built-in DeepSeek, GLM, Qwen, Kimi, and Tencent Hy presets;
   named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,

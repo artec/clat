@@ -140,10 +140,9 @@ impl GoalViewDto {
 
 impl SubagentStatusDto {
     pub fn to_text(&self) -> String {
-        format!(
-            "Read-only subagents · {}\n\nSession-local experiment; restart resets it off.\n/sub on enables it; /sub off disables it.\n\ndelegate_readonly delegates one or two repository-reading tasks to fixed explorer/reviewer children (depth 1, bounded tokens, time and output).",
-            if self.enabled { "enabled" } else { "disabled" },
-        )
+        self.localized_text(crate::i18n::LocaleContext::new(
+            crate::i18n::Locale::English,
+        ))
     }
 }
 

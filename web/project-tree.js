@@ -2,6 +2,9 @@
 (() => {
   'use strict';
   const text = (key, args) => CLATI18n.msg('workbench.' + key, args);
+  // WKWebView never synthesizes dblclick on project rows; pair clicks manually.
+  const DOUBLE_CLICK_MS = 500;
+  let lastProjectClick = { key: null, at: 0 };
   function node(tag, className = '', label) {
     const element = document.createElement(tag); element.className = className;
     if (label) CLATI18n.bind(element, 'textContent', label);
@@ -67,6 +70,21 @@
         void this.host.open(row).catch(error => this.failure(error));
       });
       title.dataset.projectRoute = row.route_id || '';
+      title.dataset.action = 'open-project';
+      // Double-click mirrors the work-area Project files entry. WKWebView does not
+      // synthesize dblclick for this row, so consecutive clicks are paired manually
+      // with the shared, render-stable project key. Pairing clicks the same hidden
+      // trigger the work-area entry clicks; its disabled state carries the builtin
+      // gate. No page globals: this file's scope cannot resolve all of them.
+      title.addEventListener('click', () => {
+        const key = this.key(row), now = Date.now();
+        if (lastProjectClick.key === key && now - lastProjectClick.at <= DOUBLE_CLICK_MS) {
+          lastProjectClick = { key: null, at: 0 };
+          document.getElementById('files-open')?.click();
+          return;
+        }
+        lastProjectClick = { key, at: now };
+      });
       const pin=this.host.organization.pin(row);
       title.append(glyph('M3 7h7l2-3h9v16H3z'), node('span', 'project-directory-name', () => row.title || row.root),pin);
       CLATI18n.attribute(title, 'title', () => row.root);

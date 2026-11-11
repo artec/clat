@@ -222,7 +222,7 @@ impl SubagentScript {
                         .tools
                         .iter()
                         .all(|tool| tool.name != "delegate_readonly"),
-                    "the experimental surface must default off"
+                    "an explicit opt-out before the first message must survive materialization"
                 );
                 events.emit(crate::ModelEvent::TextDelta {
                     delta: "off".into(),
@@ -509,7 +509,7 @@ fn run(
 }
 
 #[test]
-fn experiment_is_opt_in_child_is_project_confined_and_lifecycle_is_durable() {
+fn readonly_delegation_defaults_on_and_preserves_scope_and_lifecycle() {
     let (storage_root, project_root) = roots("subagent-application");
     std::fs::create_dir_all(&project_root).unwrap();
     std::fs::create_dir_all(&storage_root).unwrap();
@@ -533,8 +533,20 @@ fn experiment_is_opt_in_child_is_project_confined_and_lifecycle_is_durable() {
     configure_test_model(&application);
 
     let approvals = Arc::new(AtomicUsize::new(0));
+    assert!(application.subagents_enabled());
+    let exposes_delegation = |app: &TrustedProjectApplication| {
+        app.tools
+            .definitions_for(&app.context_tool_access(&crate::ModelConfig::default(), false))
+            .iter()
+            .any(|tool| tool.name == "delegate_readonly")
+    };
+    assert!(exposes_delegation(&application));
+    application.set_plan_mode(true).unwrap();
+    assert!(!exposes_delegation(&application));
+    application.set_plan_mode(false).unwrap();
+    application.set_subagents_enabled(false).unwrap();
     assert_eq!(
-        run(&mut application, "check default", &approvals).output,
+        run(&mut application, "check opt-out", &approvals).output,
         "off"
     );
     assert!(!application.subagents_enabled());
@@ -574,6 +586,11 @@ fn experiment_is_opt_in_child_is_project_confined_and_lifecycle_is_durable() {
         "a child reservation larger than the parent budget never starts"
     );
     let session_id = application.current_session_id().unwrap();
+    application.set_subagents_enabled(false).unwrap();
+    application.new_session().unwrap();
+    assert!(application.subagents_enabled());
+    application.switch_session(session_id.clone()).unwrap();
+    assert!(!application.subagents_enabled());
     application.close().unwrap();
 
     let backend = JsonlBackend::new(storage_root.join("sessions"), JsonlCompression::Zstd, false);
@@ -622,7 +639,7 @@ fn experiment_is_opt_in_child_is_project_confined_and_lifecycle_is_durable() {
         .unwrap();
     assert_eq!(last_header.data["header"]["subagents"]["enabled"], true);
 
-    // Resume restores the durable evidence but not process-local authority.
+    // A fresh mount uses the current default, independent of the old opt-out.
     let bootstrap = BootstrapApplication::open(project, storage_root.clone())
         .unwrap()
         .with_permission_modes();
@@ -632,7 +649,7 @@ fn experiment_is_opt_in_child_is_project_confined_and_lifecycle_is_durable() {
         }))
         .unwrap();
     assert_eq!(reopened.current_session_id(), Some(session_id));
-    assert!(!reopened.subagents_enabled());
+    assert!(reopened.subagents_enabled());
     assert!(
         reopened
             .tools

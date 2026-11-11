@@ -76,8 +76,7 @@ impl Plugin for SubagentPlugin {
                     // A3（2026-09-02 负责人裁定）：新增主名 `sub`，旧名保留
                     // 别名（INV-SC-2）。
                     names: vec!["sub".into(), "subagents".into()],
-                    description: "enable or disable the read-only one-shot subagent experiment"
-                        .into(),
+                    description: "enable or disable read-only subagents for this session".into(),
                     takes_args: true,
                     group: crate::command::CommandGroup::Experiments,
                     order: 13,
@@ -107,7 +106,7 @@ impl Tool for DelegateReadonlyTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "delegate_readonly".into(),
-            description: "Delegate one or two independent repository-reading tasks to fixed explorer/reviewer children. Children have depth 1, independent history, read-only project tools, no execution/network/interaction/memory/delegation authority, and hard token/time/output caps. The experiment is visible only after the user enables /subagents on for this session."
+            description: "Delegate one or two independent repository investigations or code reviews. Use explorer to locate code and trace behavior, or reviewer to independently assess a change against explicit requirements. Give each child a concrete question and relevant project-relative paths. Keep small or sequential tasks in the parent. Children have independent history, read-only project tools, and bounded time, tokens, and output. Verify returned evidence before acting on it."
                 .into(),
             input_schema: json!({
                 "type": "object",

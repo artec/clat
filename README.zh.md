@@ -83,8 +83,8 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
   （`definition`、`references`、`implementation`、`hover`，经 CLAT 管理的沙箱 stdio），
   以及 `/context` 一次性解释模型实际可见上下文的估算分项。
 - **Agent 智能**——不允许模型写入的显式 project/user 本地记忆；
-  每会话一个带 CAS 的持久 goal 及仅由用户显式开启的持续续跑；默认关闭、
-  深度 1 的 explorer/reviewer 实验，子 Agent 只拥有三个项目相对只读工具。
+  每会话一个带 CAS 的持久 goal 及仅由用户显式开启的持续续跑；可信项目默认
+  可用的只读探索与审查委派，深度为 1，子 Agent 只拥有三个项目相对只读工具。
 - **模型**——DeepSeek、GLM、Qwen、Kimi、腾讯混元内置预设，命名自定义档案，
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测；
   经探针验证的视觉路由支持结构化 TUI 图片草稿、多路径选择、显式剪贴板

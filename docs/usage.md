@@ -385,7 +385,7 @@ model → safety → extensions → experiments → meta):
 | `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
 | `/mem`, `/memory ...` | open a read-only memory dialog; add/edit/delete confirms in the status bar |
 | `/goal ...` | open the current goal dialog, or explicitly control a goal |
-| `/sub`, `/subagents on|off` | open the subagent status dialog, or enable/disable the experiment |
+| `/sub`, `/subagents on|off` | inspect or change read-only delegation for the current session |
 | `/vision-probe` | run the one-shot vision probe against the current custom model |
 | `/help` | open the command and key reference |
 | `/quit`, `/exit` | close CLAT cleanly |
@@ -710,9 +710,11 @@ continue the same authorized goal; a manual stop revokes that continuation.
 File acceptance is project-relative and may be proposed by the model through
 `update_goal`, but CLAT verifies it before committing completion.
 
-`/sub on` (alias `/subagents on`) exposes `delegate_readonly` for the current
-session and process;
-the default and every restart are off. One call may launch one or two fixed
+With `builtin.subagent` enabled, the model can delegate independent repository
+exploration and review in trusted projects outside Plan Mode. `/sub off` hides
+the tool for the current session until the project is reopened, and `/sub on`
+restores it. To turn off delegation across restarts, disable the built-in plugin
+in the extension startup configuration. One call may launch one or two fixed
 `explorer`/`reviewer` children. Children have independent empty history, depth
 1, only project-confined `list_files`, `read_file`, and `search`, and no memory,
 interaction, delegation, LSP, write, execute, network, or session-write tools.
@@ -720,9 +722,7 @@ Child count, token, wall-time, task, reference, and output sizes are hard-capped
 parent cancellation propagates to children, and start/end provenance is written
 to the parent journal. Child usage is included in the parent run result and
 spend ledger; a child reservation that cannot fit the remaining parent/Goal
-token budget is rejected before launch. This remains an experiment:
-deterministic conformance is not evidence that it improves real-model task
-completion.
+token budget is rejected before launch.
 
 The shipped HTTP provider adapters consume the child deadline and cancellation
 token. The provider interface is cooperative, so a future third-party adapter

@@ -2251,7 +2251,10 @@ fn pu_content_dialogs_use_real_dispatch_and_scroll_without_editing() {
             .is_some_and(|dialog| dialog.kind == super::InfoDialogKind::SubagentStatus)
     );
     harness.snapshot("subagent-dialog");
-    assert!(harness.project().contains("delegate_readonly"));
+    assert!(matches!(
+        harness.app.content_view.as_ref(),
+        Some(super::ContentView::SubagentStatus(view)) if view.enabled
+    ));
     harness.key(KeyCode::Esc);
     harness.type_text("/sub on");
     harness.key(KeyCode::Enter);

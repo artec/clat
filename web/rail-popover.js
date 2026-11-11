@@ -8,7 +8,7 @@
       .rail-popover[hidden]{display:none!important}.rail-popover{position:fixed;z-index:1000;box-sizing:border-box;width:min(320px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto;padding:16px;color:var(--text);background:var(--surface-raised,#252525);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 8px 30px #0004;font:400 var(--text-size-ui,13px)/1.6 var(--font-ui);overflow-wrap:anywhere}
       .rail-popover p{margin:8px 0}.rail-popover .rail-fact{display:flex;justify-content:space-between;gap:16px;margin:8px 0}.rail-fact>span:first-child{color:var(--text-muted)}.rail-fact>span:last-child{text-align:end}.rail-popover button{min-height:32px}.rail-popover button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       .global-rail:has(#nav-update:not([hidden])) #nav-allowance{display:none!important}
-      #nav-allowance[hidden]{display:none!important}#nav-allowance[data-low=true]{color:var(--warning)}
+      #nav-allowance[hidden]{display:none!important}#nav-allowance[data-low=true]{color:var(--warning)}#nav-allowance[data-critical=true]{color:var(--danger)}
       .rail-ring{display:grid;place-items:center;width:22px;height:22px;flex:none}.rail-ring[hidden]{display:none!important}
       .rail-ring>*{grid-area:1/1}.rail-ring svg{width:22px;height:22px;transform:rotate(-90deg)}
       .rail-ring circle{fill:none;stroke:currentColor;stroke-width:1.64;stroke-linecap:butt}

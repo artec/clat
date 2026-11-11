@@ -277,7 +277,8 @@ permission mode:
   without satisfying the verifier, while still using the current revision/CAS
   transition and durable `goal/change` commit;
 - `delegate_readonly` is `SessionWrite` because it spends model tokens and
-  records parent-session provenance. It is absent until `/subagents on`.
+  records parent-session provenance. It is available by default outside Plan
+  Mode when the built-in plugin is mounted. `/sub off` opts out for the session.
   Children use a separate fixed access snapshot containing only
   project-relative `list_files`, `read_file`, and `search`; absolute paths,
   third-party `Read` tools, host sampling, approval, write, execute, network,
