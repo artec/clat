@@ -28,6 +28,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── vision-probe-log.jsonl       # vision-probe diagnostics
 ├── utility-log.jsonl            # bounded naming/suggestion failure evidence (256 KiB rotate to .1)
 ├── mcp.json                     # optional, user-managed MCP servers
+├── mcp-managed.json             # Host-managed per-user/project MCP connections (0600)
 ├── lsp.json                     # optional, user-managed read-only LSP servers
 ├── skills/<name>/SKILL.md       # optional user-layer instruction bundles
 ├── builtin-plugins.json         # optional, user-managed static composition; restart to apply

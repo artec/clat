@@ -787,6 +787,43 @@ fn native_readonly_dialog_replies_are_fenced_and_scroll_locally() {
 }
 
 #[test]
+fn native_management_uses_host_view_without_consuming_composer_draft() {
+    let (mut app, storage) = shell();
+    app.input.insert_str("unsent draft");
+    app.submit_native("/mcp manage list".into());
+    let first = app.native.as_ref().unwrap().info_request;
+    assert!(matches!(
+        app.content_view.as_ref(),
+        Some(ContentView::Remote { title: "/mcp", .. })
+    ));
+    assert_eq!(app.input.text(), "unsent draft");
+    app.submit_native("/skill manage list".into());
+    let second = app.native.as_ref().unwrap().info_request;
+    assert!(second > first);
+    assert!(matches!(
+        app.content_view.as_ref(),
+        Some(ContentView::Remote {
+            title: "/skill",
+            ..
+        })
+    ));
+    app.handle_native_event(NativeEvent::Info(
+        0,
+        0,
+        first,
+        Ok(json!({"kind":"status","message":"stale MCP reply"})),
+    ));
+    let text = match app.content_view.as_ref().unwrap() {
+        ContentView::Remote { text, .. } => text.clone(),
+        _ => panic!("management is shown in the read-only Host view"),
+    };
+    assert!(!text.raw.contains("stale MCP reply"));
+    assert_eq!(app.input.text(), "unsent draft");
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
 fn native_mcp_refresh_keys_replace_only_the_current_read_request() {
     let (mut app, storage) = shell();
     app.input.insert_str("draft survives refresh");

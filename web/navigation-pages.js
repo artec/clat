@@ -80,6 +80,14 @@ function setupSettingsDirtyProtection() {
 
 let acknowledgeSettingsSave = () => {};
 function installNavigationPages() {
+  const mcpSettings=installMcpSettings();
+  const skillSettings=installSkillSettings();
+  const projectCapabilities=el('section','settings-group-block');
+  projectCapabilities.append(el('h4','',()=>CLATI18n.msg('settings_ui.project_capabilities')));
+  for(const [key,controller] of [['mcp_settings.title',mcpSettings],['skill_settings.title',skillSettings]]){
+    const button=el('button','secondary',()=>CLATI18n.msg(key));button.type='button';button.onclick=()=>controller.selectProject();projectCapabilities.append(button);
+  }
+  document.querySelector('[data-settings-panel=projects]').append(projectCapabilities);
   setupWebAbout(); setupProjectPicker(); setupWechatUsers(); installTaskNotifications();
   setupSettingsSections(); acknowledgeSettingsSave = setupSettingsDirtyProtection();
   const scope = el('p', 'page-scope current-permission');

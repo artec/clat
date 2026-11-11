@@ -59,6 +59,11 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "terminal.input",
     "terminal.resize",
     "terminal.close",
+    "mcp.manage.list",
+    "mcp.manage.get",
+    "mcp.manage.save",
+    "mcp.manage.remove",
+    "mcp.manage.test",
     "plugin.list",
     "plugin.builtin.get",
     "plugin.builtin.preview",
@@ -108,6 +113,10 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "web.settings.get",
     "web.settings.set",
     "interaction.catalog",
+    "skill.manage.list",
+    "skill.manage.get",
+    "skill.manage.save",
+    "skill.manage.remove",
     "workspace.changes",
     "workspace.diff",
     "turn.changes",
@@ -551,6 +560,11 @@ fn dispatch_project(
         return result;
     }
     match method {
+        // Skill settings follow the selected trusted project. MCP settings are
+        // Host-wide and route separately through workspaces::HOST_METHODS.
+        "skill.manage.list" | "skill.manage.get" | "skill.manage.save" | "skill.manage.remove" => {
+            super::skills::dispatch(method, params, shared)
+        }
         "workbench.info" => workbench_info(shared),
         "interaction.catalog" | "workspace.changes" | "workspace.diff" => {
             dispatch_read_discovery(shared, method, params)
@@ -597,21 +611,23 @@ fn dispatch_project(
         "command.run" => command_run(params, shared),
         "prompt.send" => prompt_send(params, shared),
         "steer.send" => steer_send(params, shared),
-        "run.cancel" => {
-            // 幂等：无 active run 也 ok（§4）。
-            if let Some(session) = optional_str(params, "session_id")? {
-                if !with_app(shared, |app| app.cancel_conversation_run(&session)) {
-                    let message = crate::i18n::UiMessage::new("pages.conversation_unavailable");
-                    return Err(RpcError::busy(message.english()).with_presentation(message));
-                }
-            } else {
-                with_app(shared, |app| app.cancel_active_run());
-            }
-            Ok(json!({}))
-        }
+        "run.cancel" => cancel_run(params, shared),
         "approval.respond" => approver::respond(shared, params),
         other => Err(RpcError::bad_request(format!("unknown method: {other}"))),
     }
+}
+
+fn cancel_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    // Idempotent even without an active run.
+    if let Some(session) = optional_str(params, "session_id")? {
+        if !with_app(shared, |app| app.cancel_conversation_run(&session)) {
+            let message = crate::i18n::UiMessage::new("pages.conversation_unavailable");
+            return Err(RpcError::busy(message.english()).with_presentation(message));
+        }
+    } else {
+        with_app(shared, |app| app.cancel_active_run());
+    }
+    Ok(json!({}))
 }
 
 fn set_permission(
@@ -1797,7 +1813,9 @@ fn context_reply(snapshot: crate::ContextEstimateSnapshot) -> Result<Value, RpcE
 fn project_mutation(method: &str) -> bool {
     matches!(
         method,
-        "session.new"
+        "skill.manage.save"
+            | "skill.manage.remove"
+            | "session.new"
             | "session.switch"
             | "session.rename"
             | "session.organize"

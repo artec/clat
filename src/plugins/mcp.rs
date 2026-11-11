@@ -159,8 +159,9 @@ impl Plugin for McpAdapterPlugin {
         // 连接与握手全部挪进后台 worker——mount 即返回，ready 不再被
         // MCP 阻塞（docs/todo/mcp-async-startup.md）。
         let pack = self.pack_factory.as_ref().map(|factory| factory());
-        let effective = load_effective_mcp_config(
+        let effective = load_effective_mcp_config_for_project(
             &self.storage_root,
+            &self.project_root,
             pack.as_ref().unwrap_or(&self.vendor_pack),
         )
         .map_err(PluginError::new)?;
@@ -291,16 +292,32 @@ struct EffectiveMcpConfig {
     failures: Vec<String>,
 }
 
+#[cfg(test)]
 fn load_effective_mcp_config(
     storage_root: &std::path::Path,
+    vendor_pack: &[(String, McpServerConfig)],
+) -> Result<EffectiveMcpConfig, String> {
+    load_effective_mcp_config_for_project(storage_root, storage_root, vendor_pack)
+}
+
+fn load_effective_mcp_config_for_project(
+    storage_root: &std::path::Path,
+    project_root: &std::path::Path,
     vendor_pack: &[(String, McpServerConfig)],
 ) -> Result<EffectiveMcpConfig, String> {
     let user = load_mcp_config(storage_root)?;
     let excluded = user.keys().cloned().collect();
     let mut effective = load_installed_mcp_config(storage_root, &excluded)?;
-    // User mcp.json is the explicit escape hatch and wins by package id.
-    effective.servers.extend(user);
     merge_vendor_pack(&mut effective.servers, vendor_pack);
+    let overridden = crate::mcp::manage::McpManaged::merge(
+        storage_root,
+        project_root,
+        &mut effective.servers,
+        &user,
+    )?;
+    for id in overridden {
+        effective.manifest_prompts.remove(&id);
+    }
     Ok(effective)
 }
 

@@ -61,7 +61,9 @@ pub use features::{BuiltinAvailability, BuiltinAvailabilityMap};
 pub(crate) use user_images::DraftImages;
 mod files;
 mod library;
+mod mcp_management;
 mod session_organization;
+mod skill_management;
 mod task_acceptance;
 #[cfg(test)]
 mod task_acceptance_tests;

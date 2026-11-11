@@ -8,6 +8,39 @@ Use MCP for capabilities that need a separate process, network service, or
 language runtime. For portable in-process local tools, compare
 [WASM plugins](wasm.md).
 
+## First-class MCP Server settings
+
+MCP Servers are **not** user-installed plugins. Open **Settings → MCP Servers**
+in the PWA or Desktop client. Choose **User** (all trusted projects) or
+**Current project**, then add a local stdio command or a Streamable HTTP URL.
+You can edit, enable, disable, delete, or explicitly **Test** a connection.
+**Project Settings** links to the project's MCP configuration and inherited
+servers. A test actually negotiates MCP and calls `tools/list`; it may start
+a subprocess or send a network request, so it is never automatic on page open.
+
+Host-owned entries live in private `~/.clat/mcp-managed.json`, not in the
+plugin registry. User-managed entries override installed packages and vendor
+defaults. Existing manual `~/.clat/mcp.json` entries still override managed
+**user-level** entries; an explicitly configured trusted-project entry can
+override or disable any inherited entry. The UI lists legacy entries separately
+without overwriting them. The Host stores credential values privately; management
+reads show only credential field names, not their values. All mounted projects
+must be idle before a change safely reloads MCP connections and tool leases.
+Reported runtime warnings mean a setting may be saved while a server failed
+to start. The server's own process is **not** sandboxed by tool permissions.
+
+Host-attached TUI users can list and manage the same settings, without editing
+JSON files manually:
+
+```text
+/mcp manage list
+/mcp manage save user example {"command":"my-mcp-server","args":["--stdio"]}
+/mcp manage disable user example
+/mcp manage enable user example
+/mcp manage test user example
+/mcp manage delete user example
+```
+
 ## Configuration
 
 For a distributable local package, use `clat plugin install <package-dir>` with

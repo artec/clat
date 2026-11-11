@@ -593,6 +593,27 @@ sandbox policy.
   through the ordinary sandboxed Execute path.
 - An unknown name fails with the catalog's candidate list.
 
+Skills can also be created, edited or deleted without touching their files:
+**Settings → Skills** in PWA/Desktop has **User** and **Current project**
+scopes. **Project Settings** links to the project view. The authenticated Host
+validates and atomically saves `SKILL.md`; each new run reads its catalog afresh.
+This form manages the instruction text only. Skills with sibling
+`references/`, `scripts/` or `assets/` resources are not deleted by this form;
+copying/importing complete bundles is not yet part of the editor. Existing
+bundled skills are not overwritten; a user/project layer may shadow them.
+
+Host-attached TUI users can manage Skills through the Host:
+
+```text
+/skill manage list
+/skill manage save user review-demo {"description":"Review carefully","body":"Audit code and tests."}
+/skill manage delete user review-demo
+```
+
+`/skill` and `/skill <name>` keep their existing list/one-run-invocation
+semantics. The management commands are not supported in `clat standalone`
+without a shared Host.
+
 Five skills ship compiled-in: `code-review`, `bug-diagnosis`,
 `change-verification`, `docs-sync`, and `grill-me` (interrogate a plan before
 implementation begins). User and project layers can override any of them by

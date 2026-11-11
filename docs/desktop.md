@@ -52,6 +52,18 @@ button; the queue popup does not duplicate it. Images and fixed file references 
 open popup first, otherwise stops execution and cancels any automatic handoff.
 These visual and interaction details are manually accepted on each platform.
 
+## First-class MCP Servers and Skills settings
+
+The Web/PWA and native Desktop share **Settings → MCP Servers** and
+**Settings → Skills**, distinct from **Extensions** (the plugin manager).
+Each page can switch between user-level and current-project scope; Project
+Settings links to the current project's effective configuration. MCP changes
+are coordinated by the authenticated Host across mounted projects when idle;
+Skill edits apply to new runs without modifying an in-flight skill snapshot.
+Passwords and external-server headers remain private Host state, not browser
+preferences. The Host-attached TUI can manage the same sources with
+`/mcp manage` and `/skill manage` commands.
+
 ## Conversation and contextual tools
 
 The conversation sidebar groups projects under a Projects heading. Its add

@@ -111,11 +111,17 @@ it remains off unless `serve` is started with `--im wechat`.
   on macOS/Windows; project trust; path fences; fail-closed headless behavior.
 - **Sessions** — crash-resilient, append-only, DSH-compatible journals under
   `~/.clat`, with local replay and per-project resume state.
-- **Extensions** — MCP over stdio or Streamable HTTP, sandboxed WebAssembly
-  components, and a static Cordis compatibility adapter for portable DSH
-  plugin capabilities; one transactional package manager installs both WASM
-  and executable MCP packages with signed market discovery, dependency solving,
-  publisher/revocation checks, capability review and rollback.
+- **MCP Servers and Skills** — independently managed in PWA/Desktop **Settings**
+  (user or current-project scope, with links from Project Settings); the Host
+  owns MCP connections, safe reloads, and layered Skill files. Attached TUI
+  users can run `/mcp manage` and `/skill manage`; ordinary `/mcp` status
+  and `/skill` invocation remain available. See [MCP](docs/mcp.md) and
+  [Skills](docs/usage.md).
+- **Plugins (Extensions)** — sandboxed WebAssembly components and the
+  DSH/Cordis compatibility adapter, plus installable packaged MCP executables.
+  The transactional plugin manager supports signed market discovery, dependency
+  solving, publisher/revocation checks, capability review and rollback.
+  Custom MCP servers and Skills do **not** need plugin packaging.
 - **Client-neutral core** — the TUI, headless runner, local server, and optional
   WeChat frontend consume the same Application facade, permission pipeline,
   attachment admission, and event vocabulary. By default `clat` discovers or

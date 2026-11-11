@@ -144,6 +144,8 @@ impl SkillCatalogEntry {
 
 mod catalog;
 pub(crate) use catalog::SkillCatalogSnapshot;
+mod manage;
+pub(crate) use manage::SkillFiles;
 
 /// One explicitly invoked skill resolved at a run boundary (SC-2). The body
 /// comes from the run's frozen catalog via the same staleness-checked

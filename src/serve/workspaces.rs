@@ -17,6 +17,11 @@ mod lifecycle_tests;
 mod organization;
 mod reclaim;
 pub(crate) const HOST_METHODS: &[&str] = &[
+    "mcp.manage.list",
+    "mcp.manage.get",
+    "mcp.manage.save",
+    "mcp.manage.remove",
+    "mcp.manage.test",
     "plugin.list",
     "plugin.builtin.get",
     "plugin.builtin.preview",
@@ -213,6 +218,9 @@ impl WorkspaceHost {
         let mut projects = self.projects.lock().expect("host projects");
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(RpcError::busy("host is shutting down"));
+        }
+        if method.starts_with("mcp.manage.") {
+            return super::mcp_settings::dispatch(&mut projects.application, method, params);
         }
         if method.starts_with("plugin.") {
             return super::plugins::dispatch(&mut projects.application, method, params);

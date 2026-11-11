@@ -8,3 +8,4 @@ mod schema_privacy;
 pub(crate) mod transport;
 
 pub(crate) mod client;
+pub(crate) mod manage;

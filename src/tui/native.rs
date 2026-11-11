@@ -4,6 +4,7 @@ use crate::host::{HostCallError, HostClient, HostEvent, HostEventsInterrupt, dec
 use serde_json::{Value, json};
 
 mod info;
+mod managed;
 mod models;
 mod permissions;
 mod profiles;
@@ -295,6 +296,9 @@ impl App {
         }
         if HostClient::is_permission_dialog_command(text) {
             self.open_native_permissions();
+            return true;
+        }
+        if self.open_native_management(text) {
             return true;
         }
         if self.open_native_info(text) {

@@ -522,6 +522,12 @@ ordinary update can never switch identity silently.
 `clat-dsh package` can produce this format with `--publisher`,
 `--publisher-key`, and `--minisign-key`.
 
+MCP Servers and Skills are independently managed in **Settings**, not under
+the downloadable Extensions/Plugins navigation. The internal MCP adapter and
+built-in Skills plugin remain implementation machinery; externally installed
+executable MCP packages still follow this package lifecycle. See
+[MCP management](mcp.md#first-class-mcp-server-settings) and [Skills](usage.md).
+
 ## Legacy override files
 
 `~/.clat/plugins.json` and `~/.clat/mcp.json` remain supported escape hatches.

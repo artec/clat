@@ -283,7 +283,7 @@ impl HostApplication {
         })
     }
 
-    fn with_idle_plugin_runtimes(
+    pub(super) fn with_idle_plugin_runtimes(
         &self,
         mutate: impl FnOnce() -> Result<Value, ApplicationError>,
     ) -> Result<Value, ApplicationError> {

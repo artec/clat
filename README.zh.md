@@ -100,10 +100,15 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
   macOS/Windows 的 Project Write 原生命令绑定实际沙盒后免审；项目信任、路径围栏，以及无头场景的失败关闭。
 - **会话**——`~/.clat` 下可从崩溃恢复的追加式 DSH 兼容日志、本地 replay
   与按项目恢复当前会话。
-- **扩展**——stdio / Streamable HTTP MCP、沙箱化 WebAssembly 组件，
-  以及面向 DSH 可移植插件能力的静态 Cordis 兼容适配器；同一个
-  事务型插件管理器安装 WASM 与可执行 MCP 包，并提供签名市场发现、依赖求解、
-  发布者/撤销校验、能力复审与回滚。
+- **MCP 服务器与技能（Skills）**——在 PWA/桌面版的**设置**中分别管理，
+  可选用户级与当前项目范围；项目设置提供对应入口。Host 负责 MCP 连接和安全
+  重载，以及多层 Skill 文件；连接 Host 的 TUI 支持 `/mcp manage` 与
+  `/skill manage`。原有 `/mcp` 状态与 `/skill` 调用保持不变。
+  详见 [MCP](docs/mcp.md) 与 [Skills](docs/usage.md)。
+- **插件（Extensions）**——沙箱化 WebAssembly 组件、DSH/Cordis 兼容适配，
+  以及可安装的 MCP 可执行插件包；事务型插件管理器负责签名市场发现、
+  依赖求解、发布者/撤销校验、能力复审与回滚。自定义 MCP 服务器和 Skill
+  **无需打包成插件**。
 - **前端中立核心**——TUI、无头运行器、本地服务和可选微信前端共享同一个
   Application 门面、权限管道、附件 admission 与事件词汇。默认情况下
   `clat` 会发现或启动一个 `127.0.0.1:2691` 上的后台宿主，终端 UI 与
