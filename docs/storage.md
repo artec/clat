@@ -205,9 +205,12 @@ read-only: CLAT cannot continue their model/deferred-tool context safely.
 DSH 0.2.1-rc.2 adds required `working-directory/change`, `job/registered`, and
 `job/settled` records within V4. CLAT admits their declared payload shapes and
 preserves their bytes during append-only continuation, including an unsettled
-registration. These are non-surface metadata with no CLAT cwd/job projection or
-producer. Continuing uses CLAT's existing project/run directory; it does not
-adopt DSH's recorded effective directory or take over a background job. See the
+registration. `working-directory/change` stays non-surface: continuing uses
+CLAT's own project/run directory and never adopts DSH's recorded effective
+directory. `job/registered`/`job/settled` are produced by CLAT's own
+background jobs with `owner=clat/native` and a nested native authority record
+(`src/background_jobs/`); DSH-owned registrations stay non-surface — CLAT does
+not resume, control, settle or adopt another producer's jobs. See the
 revision-specific boundary in the [compatibility matrix](dsh-compat.md).
 
 ### Event admission

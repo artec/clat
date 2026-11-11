@@ -82,13 +82,35 @@ fn file_identity(metadata: &std::fs::Metadata) -> String {
     format!("win:{}:{modified}:{created}", metadata.len())
 }
 
+/// 只读打开的理由(R21:新增 Seeded;同一通道,不新开第二条只读 lane)。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReadOnlyReason {
+    /// 低于 SESSION_FORMAT_VERSION 的旧代(/update 可升)。
+    Legacy,
+    /// 当前代但含 CLAT 不能保真续写的上下文(V4 developer message)。
+    Capabilities,
+    /// DSH fork 会话(isSeeded,继承前缀):只读打开,继续请在 DSH。
+    Seeded,
+}
+
+impl From<bool> for ReadOnlyReason {
+    /// 旧二态(legacy bool)的测试便利转换。
+    fn from(legacy: bool) -> Self {
+        if legacy {
+            Self::Legacy
+        } else {
+            Self::Capabilities
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum SessionError {
     /// Log is fine but this build cannot interpret it faithfully.
     UnsupportedFormat(String),
     /// A readable conversation with no writable journal in this build.
     ReadOnly {
-        legacy: bool,
+        reason: ReadOnlyReason,
     },
     /// Stored content failed validation after a successful read.
     Corruption(String),
@@ -105,10 +127,10 @@ pub(crate) enum SessionError {
 impl SessionError {
     pub(crate) fn presentation(&self) -> Option<crate::i18n::UiMessage> {
         match self {
-            Self::ReadOnly { legacy } => Some(crate::i18n::UiMessage::new(if *legacy {
-                "session.read_only_legacy"
-            } else {
-                "session.read_only_capabilities"
+            Self::ReadOnly { reason } => Some(crate::i18n::UiMessage::new(match reason {
+                ReadOnlyReason::Legacy => "session.read_only_legacy",
+                ReadOnlyReason::Capabilities => "session.read_only_capabilities",
+                ReadOnlyReason::Seeded => "session.read_only_seeded",
             })),
             _ => None,
         }
@@ -795,7 +817,7 @@ impl JsonlBackend {
         match self.prepare_with_visitor(key, &mut |_| Ok(()))? {
             PrepareOutcome::Writable(prepared, _) => Ok(prepared),
             PrepareOutcome::ReadOnly(_, _) => Err(SessionError::UnsupportedFormat(
-                "V4 developer messages require read-only resume".into(),
+                "V4 developer messages and DSH fork sessions require read-only resume".into(),
             )),
         }
     }
@@ -832,9 +854,11 @@ impl JsonlBackend {
         });
         match streamed {
             Ok(scan) => {
-                if scan.header.version == 4 && saw_developer {
+                if scan.header.version == 4 && (saw_developer || scan.header.is_seeded) {
                     // The scan already populated the resume visitor. No
-                    // lease, repair, seed, or append occurred.
+                    // lease, repair, seed, or append occurred. R21: a DSH
+                    // parentless fork (isSeeded) rides the same mouth as
+                    // V4 developer messages — read-only, artifact-free.
                     return Ok(PrepareOutcome::ReadOnly(
                         scan.header,
                         scan.tracker.next_seq(),
@@ -857,7 +881,20 @@ impl JsonlBackend {
                     "V4 developer session cannot be repaired for writable resume: {error}"
                 )));
             }
-            Err(SessionError::Io(_)) => {}
+            Err(SessionError::Io(_)) => {
+                // R21:撕裂尾的 seeded fork 同样不进修复/写路(同
+                // developer 先例)。头部帧通常完好——先读头判
+                // isSeeded,命中按只读收场(此点尚未取租约,零
+                // artifact);读不出头维持原语义落修复路径。
+                if let Ok(read) = self.read_events(key, false)
+                    && read.header.is_seeded
+                {
+                    return Ok(PrepareOutcome::ReadOnly(
+                        read.header,
+                        read.events.len() as u64,
+                    ));
+                }
+            }
             Err(error) => return Err(error),
         }
         // The writable path commits pending recovery first (DSH prepare):

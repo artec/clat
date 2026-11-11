@@ -468,6 +468,16 @@ impl SessionService {
             })
     }
 
+    /// R21:活动会话的只读理由(写入口共用;非只读时 None)。
+    pub(crate) fn read_only_reason(&self) -> crate::session::persistence::ReadOnlyReason {
+        self.active
+            .lock()
+            .expect("active")
+            .as_ref()
+            .map(|active| active.coordinator.read_only_reason())
+            .unwrap_or(crate::session::persistence::ReadOnlyReason::Legacy)
+    }
+
     pub(crate) fn upgrade_active(&self) -> Result<SessionView, SessionError> {
         let key = {
             let guard = self.active.lock().expect("active");

@@ -39,12 +39,16 @@ mod official_web;
 
 #[test]
 fn session_read_only_presentation_preserves_error_identity() {
-    use crate::session::persistence::SessionError;
-    for (legacy, key) in [
-        (true, "session.read_only_legacy"),
-        (false, "session.read_only_capabilities"),
+    use crate::session::persistence::{ReadOnlyReason, SessionError};
+    for (reason, key) in [
+        (ReadOnlyReason::Legacy, "session.read_only_legacy"),
+        (
+            ReadOnlyReason::Capabilities,
+            "session.read_only_capabilities",
+        ),
+        (ReadOnlyReason::Seeded, "session.read_only_seeded"),
     ] {
-        let error = session_error(SessionError::ReadOnly { legacy });
+        let error = session_error(SessionError::ReadOnly { reason });
         let message = error.presentation();
         assert_eq!(message.key, key);
         assert_ne!(

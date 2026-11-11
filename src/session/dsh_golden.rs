@@ -23,6 +23,10 @@
 mod rc_021;
 
 #[cfg(test)]
+#[path = "dsh_golden/rc_022_tests.rs"]
+mod rc_022;
+
+#[cfg(test)]
 mod tests {
     use crate::session::compat::log_file_name;
     use crate::session::event::SessionEvent;
@@ -61,9 +65,16 @@ mod tests {
         id: &str,
         version: u32,
     ) -> (std::path::PathBuf, JsonlBackend) {
+        // R21-FLAKE-1:根名唯一性不得依赖时钟——本批起三个测试并行挂载
+        // 同一会话 id,微秒粒度时钟下纳秒位全零,同名根互相 remove。
+        // 追加进程内单调原子计数,唯一性与时钟解耦(一处修,全体金样受益;
+        // 2026-09-08 FL 家族同根因,当时只修了单个调用点)。
+        static MOUNT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mount = MOUNT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "clat-dsh-golden-{id}-{}-{}",
+            "clat-dsh-golden-{id}-{}-{}-{}",
             std::process::id(),
+            mount,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")

@@ -287,16 +287,31 @@ impl SessionCoordinator {
         self.header.version < crate::session::compat::SESSION_FORMAT_VERSION
     }
 
+    /// 只读理由派生(R21):旧代 → Legacy;DSH fork(isSeeded)→
+    /// Seeded;当前代其余只读面(developer message)→ Capabilities。
+    pub(crate) fn read_only_reason(&self) -> crate::session::persistence::ReadOnlyReason {
+        if self.is_legacy() {
+            crate::session::persistence::ReadOnlyReason::Legacy
+        } else if self.header.is_seeded {
+            crate::session::persistence::ReadOnlyReason::Seeded
+        } else {
+            crate::session::persistence::ReadOnlyReason::Capabilities
+        }
+    }
+
     fn enqueue_atomic(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
         let _transaction = self.transaction.lock().expect("journal transaction");
         self.enqueue_atomic_locked(events)
     }
 
     fn enqueue_atomic_locked(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
-        let writer = self
-            .writer
-            .as_ref()
-            .ok_or("session is read-only; use /update for a legacy generation, or /new")?;
+        let writer = self.writer.as_ref().ok_or_else(|| {
+            if self.header.is_seeded {
+                "session is read-only: a DSH fork continues in DSH, not CLAT"
+            } else {
+                "session is read-only; use /update for a legacy generation, or /new"
+            }
+        })?;
         if events.is_empty() {
             return Err("cannot append an empty event group".into());
         }

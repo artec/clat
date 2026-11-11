@@ -917,6 +917,7 @@
   "serve.unknown_option": "unknown option: {value}",
   "session.read_only_capabilities": "This conversation contains context this version cannot continue and is read-only. Use /new to start a conversation.",
   "session.read_only_legacy": "This legacy conversation is read-only. Use /update to upgrade it, or /new to start a conversation.",
+  "session.read_only_seeded": "This session is a DSH fork. CLAT opened it read-only; continue it in DSH.",
   "tui.a_again_confirm_archive_content_retained_esc_cancel": "A again: confirm archive (content retained) · Esc cancel",
   "tui.advanced": "[ Advanced ]",
   "tui.answer_declined": "declined — the model continues without an answer",

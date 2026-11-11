@@ -917,6 +917,7 @@
   "serve.unknown_option": "未知選項：{value}",
   "session.read_only_capabilities": "此對話包含目前版本暫不支援的上下文，只能閱讀。請使用 /new 建立新對話。",
   "session.read_only_legacy": "此對話使用舊版格式，目前只能閱讀。請使用 /update 升級，或使用 /new 建立新對話。",
+  "session.read_only_seeded": "這是 DSH fork 會話，CLAT 唯讀開啟；請在 DSH 中繼續。",
   "tui.a_again_confirm_archive_content_retained_esc_cancel": "再次按 A 確認封存（保留內容） · Esc 取消",
   "tui.advanced": "[ 進階 ]",
   "tui.answer_declined": "已拒答，模型將繼續執行",

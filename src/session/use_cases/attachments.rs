@@ -20,7 +20,7 @@ impl SessionService {
     ) -> Result<Vec<crate::message::JournalImage>, SessionError> {
         if self.is_read_only() {
             return Err(SessionError::ReadOnly {
-                legacy: self.is_legacy_read_only(),
+                reason: self.read_only_reason(),
             });
         }
         if sources.is_empty() {
@@ -220,7 +220,7 @@ impl SessionService {
     ) -> Result<crate::session::attachments::AttachmentStore, SessionError> {
         if self.is_read_only() {
             return Err(SessionError::ReadOnly {
-                legacy: self.is_legacy_read_only(),
+                reason: self.read_only_reason(),
             });
         }
         let active = self.active.lock().expect("active");

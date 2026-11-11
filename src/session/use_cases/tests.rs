@@ -178,7 +178,11 @@ fn assert_read_only_mutations(service: &SessionService, key: &SessionKey, legacy
             .unwrap_err(),
     ];
     for error in errors {
-        assert!(matches!(error, SessionError::ReadOnly { legacy: actual } if actual == legacy));
+        assert!(matches!(
+            error,
+            SessionError::ReadOnly { reason: actual }
+                if actual == crate::session::persistence::ReadOnlyReason::from(legacy)
+        ));
         let message = error.presentation().expect("structured read-only error");
         assert_eq!(
             message.key,

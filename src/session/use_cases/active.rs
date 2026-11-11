@@ -46,7 +46,7 @@ impl ActiveSession {
     ) -> Result<Arc<dyn RunJournal>, SessionError> {
         if self.coordinator.is_read_only() {
             return Err(SessionError::ReadOnly {
-                legacy: self.coordinator.is_legacy(),
+                reason: self.coordinator.read_only_reason(),
             });
         }
         let mut slot = self.journal.lock().expect("session journal");
