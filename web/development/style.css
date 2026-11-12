@@ -1,7 +1,5 @@
 .dev-actions,.dev-editor-toolbar,.dev-group-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.dev-confirm{max-width:500px;border:1px solid var(--line-strong);border-radius:16px;background:var(--surface);color:var(--text);padding:24px;box-shadow:var(--shadow)}
-.dev-confirm::backdrop{background:#0006}
-.dev-confirm .dev-actions{justify-content:flex-end;margin-top:24px}
+.dev-confirm>p{margin:0;line-height:1.65;overflow-wrap:anywhere}
 .dev-file-tabs:empty,.git-body .dev-editor-toolbar:empty{display:none}
 .dev-file-tabs{display:flex;flex:none;overflow:auto;border-bottom:1px solid var(--line)}
 .dev-file-tab{display:flex;align-items:center;flex:none;padding-right:8px;border-right:1px solid var(--line);border-bottom:2px solid transparent}

@@ -61,6 +61,19 @@
 #settings-dialog .settings-form > :is(button,.settings-actions) { margin-top:14px; }
 #settings-dialog .settings-form > label:has(input[type=checkbox]) { font-size:12px; line-height:1.7; }
 #settings-dialog .settings-form summary { cursor:pointer; color:var(--text); font-size:13px; font-weight:500; }
+#settings-dialog .settings-card > button.settings-link-row { min-height:56px; padding:14px 20px; gap:12px; background:transparent; border-radius:0; text-align:start; color:var(--text); }
+#settings-dialog .settings-card > button.settings-link-row:hover { background:var(--ink-3); }
+#settings-dialog .settings-link-row > svg { width:17px; height:17px; flex:none; color:var(--text-muted); }
+#settings-dialog .settings-card.managed-settings-list > .settings-note { padding:12px 20px; }
+#settings-dialog .settings-group-block > .managed-settings-editor { margin-top:0; }
+#settings-dialog .managed-settings-editor > button:first-child { margin-top:0; }
+#settings-dialog .settings-card.managed-settings-editor > .settings-note { margin:10px 0 0; padding:0; }
+#settings-dialog .managed-settings-fields { display:grid; gap:14px; }
+#settings-dialog .managed-settings-field { display:grid; gap:7px; min-width:0; color:var(--text-soft); font-size:13px; }
+#settings-dialog .managed-settings-field > :is(input:not([type=checkbox]),select,textarea) { width:100%; }
+#settings-dialog .managed-settings-field:has(input[type=checkbox]) { display:flex; align-items:center; gap:10px; }
+#settings-dialog .managed-settings-field > input[type=checkbox] { order:-1; }
+#settings-dialog .managed-settings-fields > :is(.settings-note,.settings-actions) { margin:0; }
 #settings-dialog #model-profile-editor > p { margin-block:16px; color:var(--text-muted); font-size:12px; line-height:1.7; }
 #settings-dialog .model-form-grid { gap:18px; margin:20px 0; }
 #settings-dialog .model-form-grid label, #settings-dialog .settings-advanced label { display:grid; gap:7px; min-width:0; color:var(--text-soft); font-size:12px; }

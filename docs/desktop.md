@@ -69,6 +69,8 @@ preferences. The Host-attached TUI can manage the same sources with
 The conversation sidebar groups projects under a Projects heading. Its add
 button opens the desktop project picker (or project settings in the browser),
 and its archive toggle shows archived conversations across the project list.
+Select **Show more** under a project to reveal six more conversations at a time.
+The button disappears when all conversations in that list are visible.
 Double-clicking a project row opens the project files work area — the same
 entry as the work area's Project files.
 

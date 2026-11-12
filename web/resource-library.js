@@ -41,14 +41,16 @@ function refreshRecalledSessionShares(owner, selection = state.selectionGenerati
 }
 
 function renderSessionShareDraft() {
+  const shares = sessionSharesFor();
   let rail = document.getElementById('session-share-rail');
   if (!rail) {
+    if (!shares.length) return;
     rail = el('div', 'attachment-rail');
     rail.id = 'session-share-rail';
     dom['attachment-rail'].before(rail);
   }
   rail.replaceChildren();
-  for (const share of sessionSharesFor()) {
+  for (const share of shares) {
     const chip = el('article', 'attachment-chip session-share-chip');
     const copy = el('div', 'attachment-copy');
     copy.append(el('strong', '', share.title || share.reference.session),
@@ -74,7 +76,69 @@ function renderSessionShareDraft() {
     chip.append(remove);
     rail.append(chip);
   }
-  rail.hidden = !rail.childElementCount;
+  rail.hidden = !shares.length;
+}
+
+function sessionSharePickerControls() {
+  const dialog = el('dialog', 'workbench-dialog session-share-dialog');
+  CLATI18n.attribute(dialog, 'aria-label', () => inputText('share_session'));
+  const head = el('header', 'workbench-dialog-header');
+  const title = el('h2', '', () => inputText('share_session'));
+  const close = el('button', 'icon-button workbench-dialog-close');
+  close.type = 'button'; close.append(svgIcon('close'));
+  CLATI18n.attribute(close, 'aria-label', () => CLATI18n.msg('common.close'));
+  close.onclick = () => dialog.close();
+  head.append(title, close);
+
+  const fields = el('div', 'session-share-fields');
+  const label = el('label');
+  const picker = el('select'); picker.disabled = true;
+  label.append(el('span', '', () => inputText('share_choose')), picker);
+  const scope = el('fieldset', 'session-share-scope');
+  const options = el('div', 'segmented');
+  const scopeOption = (key, checked) => {
+    const choice = el('label'), radio = el('input');
+    radio.type = 'radio'; radio.name = 'session-share-scope'; radio.checked = checked;
+    choice.append(radio, el('span', '', () => inputText(key))); options.append(choice);
+    return radio;
+  };
+  const all = scopeOption('share_all', true);
+  const recent = scopeOption('share_recent', false);
+  const rangeLabel = el('label', 'session-share-turns');
+  const range = el('input'); range.type = 'number'; range.min = '1'; range.step = '1';
+  range.value = '5'; rangeLabel.hidden = true;
+  rangeLabel.append(el('span', '', () => inputText('share_turns')), range);
+  scope.append(el('legend', '', () => inputText('share_scope')), options, rangeLabel);
+  scope.disabled = true;
+  fields.append(label, scope);
+
+  const estimate = el('div', 'workbench-dialog-summary session-share-estimate');
+  const estimateLabel = el('span', '', () => inputText('share_estimate'));
+  estimateLabel.hidden = true;
+  const status = el('span', '', () => inputText('share_loading'));
+  status.setAttribute('role', 'status');
+  estimate.append(estimateLabel, status);
+  const footer = el('footer', 'workbench-dialog-actions');
+  const attach = el('button', 'primary', () => inputText('share_attach')); attach.type = 'button'; attach.disabled = true;
+  const cancel = el('button', 'secondary', () => CLATI18n.msg('web.cancel'));
+  cancel.type = 'button'; cancel.onclick = () => dialog.close();
+  footer.append(cancel, attach);
+  dialog.append(head, fields, estimate, footer);
+  return {dialog, picker, scope, all, recent, rangeLabel, range, status, estimateLabel, attach};
+}
+
+function populateSessionSharePicker(picker, sessions) {
+  for (const archived of [false, true]) {
+    const rows = sessions.filter(session => Boolean(session.archived) === archived);
+    if (!rows.length) continue;
+    const group = el('optgroup');
+    CLATI18n.attribute(group, 'label', () => CLATI18n.msg(archived ? 'web.archived_sessions_tab' : 'web.active_sessions_tab'));
+    for (const session of rows) {
+      const option = el('option', '', () => session.title || CLATI18n.msg('web.untitled_session'));
+      option.value = session.id; group.append(option);
+    }
+    picker.append(group);
+  }
 }
 
 async function openSessionSharePicker() {
@@ -82,52 +146,61 @@ async function openSessionSharePicker() {
     updateRunState(inputText('share_unavailable')); return;
   }
   const owner = composerScope, selection = state.selectionGeneration;
-  const dialog = el('dialog', 'image-preview session-share-dialog');
-  const title = el('h2', '', () => inputText('share_session'));
-  const label = el('label');
-  const picker = el('select');
-  const rangeLabel = el('label');
-  const range = el('input'); range.type = 'number'; range.min = '1'; range.step = '1';
-  range.placeholder = String(inputText('share_all'));
-  const status = el('p', 'settings-note');
-  const attach = el('button', 'primary', () => inputText('share_attach')); attach.type = 'button'; attach.disabled = true;
-  const cancel = el('button', 'secondary', () => inputText('cancel_edit')); cancel.type = 'button'; cancel.onclick = () => dialog.close();
-  label.append(el('span', '', () => inputText('share_choose')), picker);
-  rangeLabel.append(el('span', '', () => inputText('share_recent')), range);
-  dialog.append(title, label, rangeLabel, status, attach, cancel); document.body.append(dialog);
-  dialog.addEventListener('close', () => dialog.remove(), { once: true }); dialog.showModal();
+  const {dialog, picker, scope, all, recent, rangeLabel, range, status, estimateLabel, attach} = sessionSharePickerControls();
+  let added = false;
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    if (!added) document.getElementById('composer-add')?.focus();
+  }, { once: true });
+  dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
+  dialog.showModal();
+
   let request = 0, preview = null;
   const current = () => dialog.open && composerOwns(owner) && selection === state.selectionGeneration;
+  function showStatus(message, ready = false) {
+    estimateLabel.hidden = !ready;
+    CLATI18n.bind(status, 'textContent', () => message);
+  }
   async function refresh() {
     const serial = ++request; preview = null; attach.disabled = true;
-    const count = range.value === '' ? null : Number(range.value);
-    if (!picker.value || (count !== null && (!Number.isSafeInteger(count) || count < 1))) return;
+    const count = recent.checked ? range.valueAsNumber : null;
+    if (!picker.value) return;
+    if (count !== null && (!Number.isSafeInteger(count) || count < 1)) {
+      showStatus(inputText('share_turns_invalid')); return;
+    }
+    showStatus(inputText('share_loading'));
     const reference = { project: state.workbench.project.root, session: picker.value, seq: null };
     try {
       const value = await rpc('history.share.preview', { reference, recent_turns: count, expected_selection_generation: selection });
       if (!current() || serial !== request) return;
       preview = value;
-      CLATI18n.bind(status, 'textContent', () => inputText('share_count', { turns: value.turns, characters: value.characters }));
+      showStatus(inputText('share_count', { turns: value.turns, characters: value.characters }), true);
       attach.disabled = false;
-    } catch (error) { if (current() && serial === request) status.textContent = error.message; }
+    } catch (error) { if (current() && serial === request) showStatus(error.message); }
   }
   picker.onchange = () => void refresh(); range.oninput = () => void refresh();
+  all.onchange = recent.onchange = () => {
+    rangeLabel.hidden = !recent.checked;
+    void refresh();
+  };
   attach.onclick = () => {
     if (!preview || !current()) return;
     const canonical = composerOwnerAliases.get(owner) || owner;
     if (!pendingSessionShares.has(canonical)) pendingSessionShares.set(canonical, []);
     pendingSessionShares.get(canonical).push(preview);
+    added = true;
     dialog.close(); renderSessionShareDraft(); syncInputSubmitButtons(); dom.prompt.focus();
   };
   try {
     const result = await rpc('session.list', {});
     if (!current()) return;
-    for (const session of result.sessions.filter(item => item.id !== state.sessionId)) {
-      const option = el('option', '', session.title || session.id); option.value = session.id; picker.append(option);
-    }
-    if (picker.options.length) await refresh();
-    else CLATI18n.bind(status, 'textContent', () => inputText('share_none'));
-  } catch (error) { if (current()) status.textContent = error.message; }
+    populateSessionSharePicker(picker, result.sessions.filter(item => item.id !== state.sessionId));
+    if (!picker.options.length) { showStatus(inputText('share_none')); return; }
+    picker.disabled = scope.disabled = false;
+    if (document.activeElement === dialog.querySelector('.workbench-dialog-close')) picker.focus();
+    await refresh();
+  } catch (error) { if (current()) showStatus(error.message); }
 }
 function queueFileReference(snapshot) {
   if (!pendingFileReferences.has(composerScope)) pendingFileReferences.set(composerScope, []);

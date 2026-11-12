@@ -2,6 +2,8 @@
 (() => {
   'use strict';
   const text = (key, args) => CLATI18n.msg('workbench.' + key, args);
+  const INITIAL_SESSION_COUNT = 5;
+  const SESSION_BATCH_SIZE = 6;
   // WKWebView never synthesizes dblclick on project rows; pair clicks manually.
   const DOUBLE_CLICK_MS = 500;
   let lastProjectClick = { key: null, at: 0 };
@@ -34,7 +36,7 @@
     state(row) {
       let value = this.branches.get(this.key(row));
       if (!value || value.route !== row.route_id) {
-        value = { route: row.route_id, expanded: Boolean(row.route_id), all: false, items: null };
+        value = { route: row.route_id, expanded: Boolean(row.route_id), extraSessions: 0, items: null };
         this.branches.set(this.key(row), value);
       }
       return value;
@@ -96,10 +98,12 @@
       const body = node('div', 'project-group-body');
       const list = node('ul', 'session-list');
       const status = node('p', 'project-branch-status'); status.setAttribute('role', 'status');
-      const more = button('project-sessions-more', () => text(this.state(row).all ? 'show_less' : 'show_more'), () => {
-        this.state(row).all = !this.state(row).all; this.host.render();
+      const showMore = () => text('show_more');
+      const more = button('project-sessions-more', showMore, () => {
+        this.state(row).extraSessions += SESSION_BATCH_SIZE;
+        this.host.render();
       });
-      more.dataset.action = 'more-project-sessions'; CLATI18n.bind(more, 'textContent', () => text(this.state(row).all ? 'show_less' : 'show_more'));
+      more.dataset.action = 'more-project-sessions'; CLATI18n.bind(more, 'textContent', showMore);
       const retry = button('project-sessions-retry', () => text('retry_project'), () => { void this.load(row, true); });
       CLATI18n.bind(retry, 'textContent', () => text('retry_project'));
       const organization=this.host.organization.menuButton(row);this.host.organization.bind(header,row,organization);
@@ -166,12 +170,23 @@
         if (value.expanded && row.route_id && !source && !value.error) void this.load(row);
       }
       this.renderRunning(group,row);
-      const children = [...group.list.children];
-      children.forEach((item, index) => { item.hidden = !value.all && !navigation.query && index >= 5 && !item.classList.contains('active') && item.dataset.running!=='true'; });
-      group.more.hidden = children.length <= 5 || Boolean(navigation.query);
-      group.more.setAttribute('aria-expanded', String(value.all));
-      labelButton(group.more, () => text(value.all ? 'show_less' : 'show_more'));
-      CLATI18n.bind(group.more, 'textContent', () => text(value.all ? 'show_less' : 'show_more'));
+      this.renderSessionLimit(group, value.extraSessions, navigation.query);
+    }
+    renderSessionLimit(group, remaining, query) {
+      let hasHiddenSessions = false;
+      [...group.list.children].forEach((item, index) => {
+        const alwaysVisible = query || index < INITIAL_SESSION_COUNT
+          || item.classList.contains('active') || item.dataset.running === 'true';
+        item.hidden = false;
+        if (alwaysVisible) return;
+        if (remaining > 0) {
+          remaining -= 1;
+        } else {
+          item.hidden = true;
+          hasHiddenSessions = true;
+        }
+      });
+      group.more.hidden = !hasHiddenSessions;
     }
     renderRunning(group,row) {
       const summary=this.views.get(row.route_id)?.view?.summary();

@@ -1,13 +1,17 @@
 const { test, expect } = require('@playwright/test');
 const { hostInfo, openWorkbench, createWorkbenchConversation, LIVE } = require('../helpers/workbench');
 
-async function addShare(page, source) {
+async function addShare(page, source, recentTurns) {
   await page.click('#composer-add');
   await page.click('#add-session-share');
   const dialog = page.locator('.session-share-dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('select option[value="' + source + '"]')).toHaveCount(1, LIVE);
   await dialog.locator('select').selectOption(source);
+  if (recentTurns) {
+    await dialog.getByText('Recent turns', { exact: true }).click();
+    await dialog.getByRole('spinbutton').fill(String(recentTurns));
+  }
   await expect(dialog.locator('button.primary')).toBeEnabled(LIVE);
   await dialog.locator('button.primary').click();
   await expect(page.locator('#session-share-rail .session-share-chip')).toHaveCount(1);
@@ -19,10 +23,13 @@ test('shares an archived conversation as a frozen user message', async ({ page }
   await page.evaluate(id => rpc('session.organize', { id, archived: true, confirmed: true }), source);
   await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBeNull();
-  await addShare(page, source);
+  await expect(page.locator('#session-share-rail')).toBeHidden();
+  await addShare(page, source, 1);
   await page.click('#send');
   await expect(page.locator('#session-share-rail .session-share-chip')).toHaveCount(0, LIVE);
+  await expect(page.locator('#session-share-rail')).toBeHidden();
   await expect(page.locator('.msg.user').last()).toContainText('Shared conversation source', LIVE);
+  await expect(page.locator('.msg.user').last()).toContainText('last 1 turns', LIVE);
 });
 
 test('recalls a queued share and lets the user remove it', async ({ page }) => {
@@ -58,6 +65,7 @@ test('recalls a queued share and lets the user remove it', async ({ page }) => {
   await expect(chip).toContainText('Queue share source', LIVE);
   await chip.getByRole('button', { name: 'Remove shared conversation' }).click();
   await expect(chip).toHaveCount(0);
+  await expect(page.locator('#session-share-rail')).toBeHidden();
   await question.getByRole('button', { name: 'Decline', exact: true }).click();
   await expect(page.locator('#detail-run')).toHaveText('Idle', LIVE);
 });

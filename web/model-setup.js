@@ -1,20 +1,26 @@
 /* Core owns configuration and checks; this controller owns only the setup view. */
 function createSetupPage(owner) {
-  const page = el('section', 'model-setup-page'), card = el('div', 'model-setup-card'); page.hidden = true;
+  const page = el('section', 'model-setup-page workbench-dialog-scrim');
+  const card = el('div', 'workbench-dialog model-setup-card'); page.hidden = true;
   CLATI18n.attribute(page, 'aria-label', () => setupText('title'));
   const brand = el('div', 'setup-brand'), logo = el('span', 'setup-logo'); logo.setAttribute('aria-hidden', 'true');
   const language = el('div', 'setup-language'); CLATI18n.selector(language); brand.append(logo, el('strong', '', 'CLAT'), language);
   const project = el('p', 'setup-project'), form = createModelSetupForm(), caption = el('p', 'setup-model');
-  const status = el('p', 'setup-status'); status.setAttribute('role', 'status');
-  const cost = el('p', 'setup-note', () => setupText('cost')), actions = el('div', 'setup-actions');
+  const status = el('p', 'workbench-dialog-summary setup-status'); status.setAttribute('role', 'status');
+  const cost = el('p', 'setup-note', () => setupText('cost'));
+  const actions = el('footer', 'workbench-dialog-actions setup-actions');
+  const alternatives = el('div', 'setup-secondary-actions');
   const primary = setupButton('save_verify', () => owner.apply(true), 'primary');
   const save = setupButton('save_only', () => owner.apply(false)), retry = setupButton('verify', () => owner.verify());
   const cancel = setupButton('cancel', () => owner.cancel()), edit = setupButton('edit', () => owner.edit());
   const reload = setupButton('reload', () => owner.read(true)), enter = setupButton('start_chat', () => owner.close(false), 'primary');
   const skip = setupButton('later', () => owner.close(true), 'ghost');
   const help = setupButton('help', () => { owner.close(true); openHelp('models'); }, 'ghost');
-  actions.append(primary, save, retry, cancel, edit, reload, enter, skip, help);
-  card.append(brand, el('p', 'setup-steps', () => setupText('steps')), el('h1', '', () => setupText('title')),
+  alternatives.append(skip, help);
+  actions.append(alternatives, retry, cancel, edit, reload, save, primary, enter);
+  const heading = el('header', 'workbench-dialog-header');
+  heading.append(el('h1', '', () => setupText('title')));
+  card.append(brand, el('p', 'setup-steps', () => setupText('steps')), heading,
     project, el('p', 'setup-description', () => setupText('intro')), caption, form.element, cost, status, actions);
   page.append(card); dom.app.append(page);
   const notice = el('div', 'setup-composer-notice'), configure = setupButton('configure', () => owner.open()); notice.hidden = true;
@@ -36,7 +42,7 @@ class ModelSetupController {
     });
     document.querySelector('[data-settings-panel="models"] .settings-copy').after(test); this.render();
   }
-  message(key) { CLATI18n.bind(this.ui.status, 'textContent', () => setupText(key)); }
+  message(key) { CLATI18n.bind(this.ui.status, 'textContent', () => key === 'intro' ? '' : setupText(key)); }
   render() {
     const u = this.ui, checking = this.operation?.state === 'checking';
     u.form.element.hidden = !this.view || this.saved; u.cost.hidden = !this.view || this.saved;

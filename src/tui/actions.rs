@@ -984,7 +984,7 @@ impl App {
             CommandOutcome::ShowCapabilities(text) => {
                 self.show_command_content("/capabilities", text)
             }
-            CommandOutcome::ShowUiConsents(parts) => self.show_ui_consents(parts),
+            CommandOutcome::ShowUiConsents(view) => self.show_ui_consents(view.parts),
             CommandOutcome::StartTaskRun(task) => {
                 self.start_controlled_run(Some(task));
             }

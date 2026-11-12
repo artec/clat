@@ -690,6 +690,8 @@ show menu or raise. CLAT reads the interface again to verify the result.
 Screenshots, coordinate input, typing and clipboard operations are outside
 the current tool set.
 
+In Web, PWA and Desktop, **Settings → Computer Use** shows the connected
+Host’s Accessibility access and lets you revoke application consent decisions.
 See [macOS application interface permissions](permissions.md#macos-application-interface-permissions)
 for the approval rules and `/ui-consents` syntax.
 

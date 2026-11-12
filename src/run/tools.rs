@@ -211,17 +211,23 @@ impl Run<'_> {
         state: &mut StepState,
         events: &mut dyn EventSink,
     ) {
+        // CI-43145218708 修复（2026-11-12）：原形态在非 macOS 分支持有
+        // 字面量 `None` 再共享 `unwrap_or_else`，`clippy::
+        // unnecessary_literal_unwrap` 在 Linux/Windows 编译面报错（本地
+        // macOS clippy 与 CI 的 xwin 面之外不可见）。拆成各平台直接
+        // 构造，语义不变。
         #[cfg(target_os = "macos")]
-        let structured =
-            crate::native_tools::ui::denied_output(&call.name, self.tool_access.is_plan_mode());
+        let output =
+            crate::native_tools::ui::denied_output(&call.name, self.tool_access.is_plan_mode())
+                .unwrap_or_else(|| serde_json::json!({"error": message}));
         #[cfg(not(target_os = "macos"))]
-        let structured: Option<serde_json::Value> = None;
+        let output = serde_json::json!({"error": message});
         let mut result = ToolResult {
             blocks: Vec::new(),
             image_parts: Vec::new(),
             call_id: call.id.clone(),
             tool_name: call.name.clone(),
-            output: structured.unwrap_or_else(|| serde_json::json!({"error":message})),
+            output,
             is_error: true,
         };
         if let Some(pipeline) = self.tool_pipeline {

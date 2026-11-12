@@ -64,10 +64,10 @@ function createUserMessageReader() {
 }
 function createUserReaderDialog(getActive, onClose) {
     const text = key => CLATI18n.msg('user_reader.' + key);
-    const dialog = el('dialog', 'user-message-reader');
+    const dialog = el('dialog', 'workbench-dialog user-message-reader');
     const title = el('h2', '', () => text('title'));
     title.id = 'user-message-reader-title'; dialog.setAttribute('aria-labelledby', title.id);
-    const dismiss = el('button', 'icon-button'); dismiss.type = 'button'; dismiss.autofocus = true;
+    const dismiss = el('button', 'icon-button workbench-dialog-close'); dismiss.type = 'button'; dismiss.autofocus = true;
     dismiss.append(svgIcon('close')); CLATI18n.attribute(dismiss, 'aria-label', () => CLATI18n.msg('common.close'));
     dismiss.onclick = () => dialog.close();
     const header = el('header', 'user-reader-header'); header.append(title, dismiss);

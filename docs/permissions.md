@@ -451,6 +451,8 @@ have their own permission checks.
   `/ui-consents revoke always APP_ID` to remove the selected decision.
   Revocation invalidates affected handles, cancels pending approvals and
   blocks any dispatch that has yet to cross the authorization boundary.
+  In the workbench, **Settings → Computer Use** shows the Host process’s
+  Accessibility status and lets you revoke individual consent decisions.
 
 ## MCP effects
 

@@ -18,8 +18,12 @@ function appendHostInteraction(card, session) {
   document.getElementById('nav-tasks')?.setAttribute('data-pending','true');
 }
 function createScheduleEditor() {
-  const dialog = el('dialog', 'task-editor'); dialog.id = 'schedule-editor';
-  const head = el('header', 'page-header'); head.append(el('h2', '', () => pageText('edit_task')), pageAction('cancel', () => dialog.close()));
+  const dialog = el('dialog', 'workbench-dialog task-editor'); dialog.id = 'schedule-editor';
+  const head = el('header', 'workbench-dialog-header');
+  const title = el('h2', '', () => pageText('edit_task')); title.id = 'schedule-editor-title';
+  dialog.setAttribute('aria-labelledby', title.id);
+  const close = navigationIcon(() => CLATI18n.msg('common.close'), 'close', () => dialog.close());
+  close.classList.add('workbench-dialog-close'); head.append(title, close);
   const form = el('form', 'schedule-form'); const advanced = el('details', 'settings-advanced');
   advanced.append(el('summary', '', () => pageText('advanced')));
   const fields = {}, msg = key => CLATI18n.msg('schedule.' + key);
@@ -37,8 +41,9 @@ function createScheduleEditor() {
   field('model_profile','text','',advanced); field('notification','select','',advanced);
   for (const key of ['attention','completion','off']) {const o = el('option','',()=>pageText('notify_'+key));o.value=key;fields.notification.append(o);}
   form.append(advanced); const status = el('p','settings-note'); status.setAttribute('role','status');
-  dialog.append(head,form,status); document.body.append(dialog);
-  return {dialog,form,fields,status};
+  const actions = el('footer', 'workbench-dialog-actions');
+  dialog.append(head,form,status,actions); document.body.append(dialog);
+  return {dialog,form,fields,status,actions};
 }
 function scheduleDraftFrom(fields, editing, job) {
   const kind = fields.trigger.value, now = Date.now(); let rule;
@@ -53,7 +58,7 @@ function scheduleDraftFrom(fields, editing, job) {
     instruction:fields.instruction.value,trigger:job?{kind:'job',job_id:job.id}:{kind:'time',rule},budget,model_profile:fields.model_profile.value.trim()||null};
 }
 function installScheduledWork() {
-  const {dialog,form,fields,status} = createScheduleEditor();
+  const {dialog,form,fields,status,actions} = createScheduleEditor();
   let editing=null, job=null, epoch=0, pending=false, draftKey='new'; const drafts=new Map();
   const fail = error => CLATI18n.bind(status,'textContent',()=>error.message);
   const defaults=Object.fromEntries(Object.entries(fields).map(([key,input])=>[key,input.value]));
@@ -79,7 +84,7 @@ function installScheduledWork() {
     try{const draft=scheduleDraftFrom(fields,editing,job);const value=await rpc(editing?'schedule.update':'schedule.create',editing?{id:editing.id,revision:editing.revision,draft}:draft);
       await taskCenter.refresh();if(request!==epoch)return;if(token!==settingsSaveToken(form)){editing=value.rule;return;}drafts.delete(draftKey);delete dialog.dataset.unsaved;const closed=new Promise(resolve=>dialog.addEventListener('close',resolve,{once:true}));dialog.close();await closed;await review(value.rule);}
     catch(error){if(request===epoch)fail(error);}finally{pending=false;save.disabled=false;delete dialog.dataset.saving;}
-  },true);form.append(save);form.onsubmit=e=>{e.preventDefault();save.click();};fields.trigger.onchange=visibility;
+  },true);form.onsubmit=e=>{e.preventDefault();save.click();};fields.trigger.onchange=visibility;
   async function review(rule) {
     const owner=++epoch;
     try{const value=await rpc('schedule.review',{id:rule.id,revision:rule.revision});if(owner!==epoch)return;showScheduleReview(value.review,()=>taskCenter.refresh());}
@@ -93,16 +98,19 @@ function installScheduledWork() {
   const interactions=el('section','schedule-interactions');taskCenter.interactionHost.prepend(interactions);
   window.addEventListener('clat:job-authorize',event=>{taskCenter.openSchedules();void open(null,event.detail);});
   form.addEventListener('input',()=>{dialog.dataset.unsaved='true';});
-  form.append(pageAction('discard',()=>{drafts.delete(draftKey);delete dialog.dataset.unsaved;dialog.close();}));
+  actions.append(pageAction('discard',()=>{drafts.delete(draftKey);delete dialog.dataset.unsaved;dialog.close();}),save);
   dialog.addEventListener('close',()=>{epoch++;if(dialog.dataset.unsaved==='true')drafts.set(draftKey,Object.fromEntries(Object.entries(fields).map(([key,input])=>[key,input.value])));});
 }
 function showScheduleReview(review, saved) {
-  const dialog=el('dialog','task-editor schedule-review'); const r=review.rule;
-  dialog.append(el('h2','',()=>pageText('review')),el('p','',r.spec.title||r.spec.instruction),el('pre','task-instruction',r.spec.instruction),
+  const dialog=el('dialog','workbench-dialog schedule-review'); const r=review.rule;
+  CLATI18n.attribute(dialog,'aria-label',()=>pageText('review'));
+  const head=el('header','workbench-dialog-header');head.append(el('h2','',()=>pageText('review')));
+  dialog.append(head,el('p','',r.spec.title||r.spec.instruction),el('pre','task-instruction',r.spec.instruction),
     el('p','page-scope',()=>pageText('session_scope',{project:r.scope.project,session:r.scope.session})),el('p','',()=>scheduleTriggerText(r.spec.trigger)),el('p','',r.spec.model.model));
   for(const [key,value]of Object.entries(r.spec.budget))dialog.append(el('p','settings-note',()=>CLATI18n.msg('schedule.'+key)+': '+value));
-  const status=el('p','error');dialog.append(status,pageAction('confirm',async()=>{
+  const status=el('p','error'), actions=el('footer','workbench-dialog-actions');
+  actions.append(pageAction('cancel',()=>dialog.close()),pageAction('confirm',async()=>{
     try{await rpc('schedule.confirm',{id:r.id,revision:r.revision,nonce:review.nonce,digest:review.digest});dialog.close();await saved();}catch(error){status.textContent=error.message;}
-  },true),pageAction('cancel',()=>dialog.close()));
+  },true));dialog.append(status,actions);
   document.body.append(dialog);dialog.addEventListener('close',()=>dialog.remove(),{once:true});dialog.showModal();
 }

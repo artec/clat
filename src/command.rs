@@ -80,6 +80,20 @@ pub struct CommandInfo {
     pub group: CommandGroup,
 }
 
+#[derive(serde::Serialize)]
+pub struct UiConsentSummary {
+    pub app_id: String,
+    pub name: Option<String>,
+    pub scope: &'static str,
+    pub allowed: bool,
+}
+
+pub struct UiConsentsView {
+    pub parts: Vec<crate::i18n::UiMessage>,
+    pub consents: Vec<UiConsentSummary>,
+    pub accessibility_granted: bool,
+}
+
 /// 命令分发的前端中立结果。变体表达意图与数据，不是渲染指令。
 pub enum CommandOutcome {
     /// 纯信息性消息（前端以状态提示呈现）。
@@ -87,7 +101,7 @@ pub enum CommandOutcome {
     ShowTask(String),
     /// Read-only capability content through the existing content view.
     ShowCapabilities(String),
-    ShowUiConsents(Vec<crate::i18n::UiMessage>),
+    ShowUiConsents(UiConsentsView),
     QueryHistory(crate::session_query::command::HistoryCommandRequest),
     ShowJobs(serde_json::Value),
     ShowSchedules(serde_json::Value),

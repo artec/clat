@@ -20,6 +20,43 @@ function parseMcpPairs(value){
   }
   return result;
 }
+
+function managedSettingsEditor(section, t) {
+  const group = el('section', 'settings-group-block');
+  const heading = el('h4', '', () => t('add'));
+  const card = el('div', 'settings-card settings-form managed-settings-editor');
+  const add = el('button', 'primary', () => t('add'));
+  const form = el('div', 'managed-settings-fields');
+  const message = el('p', 'settings-note');
+  message.setAttribute('role', 'status');
+  add.type = 'button';
+  form.hidden = true;
+  card.append(add, form, message);
+  group.append(heading, card);
+  section.append(group);
+  return {
+    add, form, message,
+    field(key, control) {
+      const label = el('label', 'managed-settings-field');
+      label.append(el('span', '', () => t(key)), control);
+      form.append(label);
+      return label;
+    },
+    open(field, editing = false) {
+      CLATI18n.bind(heading, 'textContent', () => t(editing ? 'edit' : 'add'));
+      form.hidden = false;
+      add.hidden = true;
+      group.scrollIntoView({block:'nearest'});
+      field.focus({preventScroll:true});
+    },
+    close() {
+      form.hidden = true;
+      add.hidden = false;
+      CLATI18n.bind(heading, 'textContent', () => t('add'));
+    },
+  };
+}
+
 function installMcpSettings(){
   const page=dom['settings-dialog'],nav=page.querySelector('.settings-nav'),host=page.querySelector('.settings-content');
   const t=key=>CLATI18n.msg('mcp_settings.'+key);
@@ -29,13 +66,13 @@ function installMcpSettings(){
   const scope=el('select');CLATI18n.attribute(scope,'aria-label',()=>t('scope'));
   for(const value of ['user','project']){const option=el('option','',()=>t(value));option.value=value;scope.append(option);}
   const heading=el('div','settings-group-heading');heading.append(el('strong','',()=>t('scope')),scope);
-  const list=el('div','settings-card'),message=el('p','settings-note'),form=el('div','settings-card settings-form');form.hidden=true;
-  const add=el('button','secondary',()=>t('add'));add.type='button';
-  section.append(heading,add,list,form,message);host.append(section);
+  const list=el('div','settings-card managed-settings-list'),summary=el('p','settings-note');
+  section.append(heading,list,summary);host.append(section);
+  const editor=managedSettingsEditor(section,t);
+  const {add,form,message,field}=editor;
   const name=el('input'),transport=el('select'),command=el('input'),args=el('textarea'),cwd=el('input'),url=el('input'),env=el('textarea'),headers=el('textarea'),enabled=el('input');
   name.maxLength=64;name.autocomplete='off';args.rows=2;env.rows=3;headers.rows=3;enabled.type='checkbox';enabled.checked=true;
   for(const mode of ['stdio','http']){const option=el('option','',()=>t(mode));option.value=mode;transport.append(option);}
-  const field=(key,control)=>{const label=el('label','',()=>t(key));label.append(control);form.append(label);return label;};
   field('name',name);field('transport',transport);
   const processFields=[field('command',command),field('args',args),field('cwd',cwd),field('env',env)];
   const httpFields=[field('url',url),field('headers',headers)];
@@ -77,18 +114,19 @@ function installMcpSettings(){
   async function refresh(){
     const request=++serial;try{const value=await rpc('mcp.manage.list',{project_root:project()});
       if(request!==serial||!active())return;loaded=value;revision=value.revision;render();
-      showStatus(value.runtime?value.runtime.connected+'/'+value.runtime.configured+' '+t('connected'):'');
+      CLATI18n.bind(summary,'textContent',()=>value.runtime?value.runtime.connected+'/'+value.runtime.configured+' '+t('connected'):'');
+      showStatus('');
     }catch(error){if(request===serial&&active())showStatus(error.message);}
   }
   function create(){
     maskedUrl=false;name.value='';name.disabled=false;transport.value='stdio';command.value='';args.value='';cwd.value='';url.value='';env.value='';headers.value='';enabled.checked=true;
-    form.hidden=false;updateTransport();name.focus();
+    showStatus('');updateTransport();editor.open(name);
   }
   async function openEdit(id){
     const request=++serial;try{const value=await rpc('mcp.manage.get',{project_root:project(),scope:scope.value,name:id});
       if(request!==serial||!active())return;revision=value.revision;name.value=id;name.disabled=true;
       const entry=value.entry||{};maskedUrl=entry.url_has_query===true;transport.value=(entry.url||maskedUrl)?'http':'stdio';command.value=entry.command||'';url.value=entry.url||'';cwd.value=entry.cwd||'';enabled.checked=entry.enabled!==false;
-      args.value='';env.value='';headers.value='';updateTransport();form.hidden=false;showStatus(t('credential_notice'));
+      args.value='';env.value='';headers.value='';updateTransport();showStatus('');editor.open(transport,true);
     }catch(error){if(request===serial&&active())showStatus(error.message);}
   }
   async function toggle(item){
@@ -119,17 +157,17 @@ function installMcpSettings(){
     }catch{showStatus(t('invalid_json'));return;}
     const request=++serial;save.disabled=true;
     try{const result=await rpc('mcp.manage.save',{project_root:project(),scope:scope.value,name:id,revision,enabled:enabled.checked,config});
-      if(request!==serial)return;form.hidden=true;env.value='';headers.value='';await refresh();acknowledgeSettingsSave(section);
+      if(request!==serial)return;editor.close();env.value='';headers.value='';await refresh();acknowledgeSettingsSave(section);
       if((result.runtime_warnings||[]).length)showStatus(result.runtime_warnings.join('\n'));
     }catch(error){if(request===serial)showStatus(error.message);}
     finally{save.disabled=false;}
   };
-  cancel.onclick=()=>{form.hidden=true;args.value='';env.value='';headers.value='';url.value='';maskedUrl=false;acknowledgeSettingsSave(section);};
-  add.onclick=create;scope.onchange=()=>{form.hidden=true;render();};
+  cancel.onclick=()=>{editor.close();args.value='';env.value='';headers.value='';url.value='';maskedUrl=false;showStatus('');acknowledgeSettingsSave(section);add.focus();};
+  add.onclick=create;scope.onchange=()=>{editor.close();showStatus('');render();};
   navButton.addEventListener('click',()=>void refresh());
   page.addEventListener('clat:page-enter',()=>{if(active())void refresh();});
   for(const event of ['clat:settings-leave','clat:page-leave'])page.addEventListener(event,()=>{
-    serial++;form.hidden=true;args.value='';env.value='';headers.value='';url.value='';maskedUrl=false;
+    serial++;editor.close();args.value='';env.value='';headers.value='';url.value='';maskedUrl=false;
   });
   return {selectProject(){scope.value='project';selectSettingsCategory('mcp');void refresh();}};
 }
@@ -146,17 +184,16 @@ function installSkillSettings(){
   const scope=el('select');CLATI18n.attribute(scope,'aria-label',()=>t('scope'));
   for(const value of ['user','project']){const o=el('option','',()=>t(value));o.value=value;scope.append(o);}
   const bar=el('div','settings-group-heading');bar.append(el('strong','',()=>t('scope')),scope);
-  const list=el('div','settings-card'),status=el('p','settings-note');
-  const form=el('div','settings-card settings-form');form.hidden=true;
+  const list=el('div','settings-card managed-settings-list'),summary=el('p','settings-note');
+  section.append(bar,list,summary);content.append(section);
+  const editor=managedSettingsEditor(section,t);
+  const {add,form,message:status,field}=editor;
   const name=el('input'),description=el('input'),body=el('textarea'),execution=el('input');
   name.maxLength=64;name.autocomplete='off';description.maxLength=500;body.rows=9;
   execution.type='checkbox';
-  const field=(caption,input)=>{const l=el('label','',()=>t(caption));l.append(input);form.append(l);};
   field('name',name);field('summary',description);field('instructions',body);field('requires_execution',execution);
   const actions=el('div','settings-actions'),save=el('button','primary',()=>t('save')),cancel=el('button','secondary',()=>t('cancel'));
   for(const b of [save,cancel])b.type='button';actions.append(save,cancel);form.append(actions);
-  const add=el('button','secondary',()=>t('add'));add.type='button';
-  section.append(bar,add,list,form,status);content.append(section);
   let epoch=0,revision='missing',editingName=null,loaded=null;
   const active=()=>currentSettingsCategory==='skills'&&pageIsOpen(page);
   function renderRows(){
@@ -178,10 +215,11 @@ function installSkillSettings(){
   async function refresh(){
     const request=++epoch;try{const data=await rpc('skill.manage.list',{});
       if(request!==epoch||!active())return;
-      loaded=data;renderRows();CLATI18n.bind(status,'textContent',()=>data.project_root||'');
+      loaded=data;renderRows();CLATI18n.bind(summary,'textContent',()=>data.project_root||'');
+      CLATI18n.bind(status,'textContent',()=>'');
     }catch(error){if(request===epoch&&active())CLATI18n.bind(status,'textContent',()=>error.message);}
   }
-  function start(){revision='missing';editingName=null;name.value='';description.value='';body.value='';execution.checked=false;name.disabled=false;form.hidden=false;name.focus();}
+  function start(){revision='missing';editingName=null;name.value='';description.value='';body.value='';execution.checked=false;name.disabled=false;CLATI18n.bind(status,'textContent',()=>'');editor.open(name);}
   function parseText(value){
     const matched=value.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
     if(!matched)return {description:'',body:value,execution:false};
@@ -193,8 +231,7 @@ function installSkillSettings(){
     const request=++epoch;try{const result=await rpc('skill.manage.get',{scope:scope.value,name:value});
       if(request!==epoch||!active())return;
       const parsed=parseText(result.text||'');editingName=value;revision=result.revision;
-      name.value=value;name.disabled=true;description.value=parsed.description;body.value=parsed.body;execution.checked=parsed.execution;form.hidden=false;
-      form.scrollIntoView({block:'nearest'});
+      name.value=value;name.disabled=true;description.value=parsed.description;body.value=parsed.body;execution.checked=parsed.execution;CLATI18n.bind(status,'textContent',()=>'');editor.open(description,true);
     }catch(error){if(request===epoch&&active())CLATI18n.bind(status,'textContent',()=>error.message);}
   }
   save.onclick=async()=>{
@@ -204,14 +241,14 @@ function installSkillSettings(){
       '\nrequires-execution: '+(execution.checked?'true':'false')+'\n---\n'+body.value;
     const request=++epoch;save.disabled=true;
     try{await rpc('skill.manage.save',{scope:scope.value,name:value,revision,text});
-      if(request!==epoch)return;form.hidden=true;editingName=null;await refresh();void refreshCommandCatalog();
+      if(request!==epoch)return;editor.close();editingName=null;await refresh();void refreshCommandCatalog();
       acknowledgeSettingsSave(section);
     }catch(error){if(request===epoch)CLATI18n.bind(status,'textContent',()=>error.message);}
     finally{save.disabled=false;}
   };
-  cancel.onclick=()=>{form.hidden=true;editingName=null;acknowledgeSettingsSave(section);};
+  cancel.onclick=()=>{editor.close();editingName=null;CLATI18n.bind(status,'textContent',()=>'');acknowledgeSettingsSave(section);add.focus();};
   add.onclick=start;
-  scope.onchange=()=>{form.hidden=true;editingName=null;renderRows();};
+  scope.onchange=()=>{editor.close();editingName=null;CLATI18n.bind(status,'textContent',()=>'');renderRows();};
   async function removeSkill(item){
     if(!window.confirm(t('confirm_delete')))return;
     const request=++epoch;try{await rpc('skill.manage.remove',{scope:scope.value,name:item.name,revision:item.revision});
@@ -219,10 +256,140 @@ function installSkillSettings(){
     catch(error){if(request===epoch)CLATI18n.bind(status,'textContent',()=>error.message);}
   }
   page.addEventListener('clat:page-enter',()=>{if(active())void refresh();});
-  page.addEventListener('clat:settings-leave',()=>{epoch++;form.hidden=true;});
-  page.addEventListener('clat:page-leave',()=>{epoch++;form.hidden=true;});
+  page.addEventListener('clat:settings-leave',()=>{epoch++;editor.close();});
   button.addEventListener('click',()=>void refresh());
   return {refresh,selectProject(){scope.value='project';selectSettingsCategory('skills');void refresh();}};
+}
+
+const computerUseText = (key, args) => CLATI18n.msg('cua_settings.' + key, args);
+function computerUseSettingsPanel(page, category) {
+  const t = computerUseText;
+  const section = el('section', 'settings-section');
+  section.dataset.settingsPanel = category;
+  section.hidden = true;
+  section.append(el('h2', '', () => t('title')), el('p', 'settings-note', () => t('description')));
+  page.querySelector('.settings-content').append(section);
+
+  const system = settingsGroup(section, () => t('system_access'));
+  const row = el('div', 'settings-row');
+  const copy = el('span', 'settings-row-copy');
+  const access = el('strong');
+  const hint = el('small', '', () => t('system_hint'));
+  const reload = el('button', 'secondary', () => t('refresh'));
+  reload.type = 'button';
+  copy.append(access, hint);
+  row.append(copy, reload);
+  system.append(row);
+  const list = settingsGroup(section, () => t('application_consents'));
+  const consentsSection = list.parentElement;
+  const status = el('p', 'settings-note');
+  status.setAttribute('role', 'status');
+  section.append(status);
+  return { access, hint, reload, list, consentsSection, status };
+}
+
+function computerUseConsentRow(consent, onRevoke) {
+  const t = computerUseText;
+  const item = el('div', 'settings-row');
+  const text = el('div', 'settings-row-copy');
+  const name = () => consent.name || t('unnamed_app');
+  text.append(el('strong', '', name), el('small', '', () => {
+    const scope = CLATI18n.msg(consent.scope === 'session' ? 'cua.scope_session' : 'cua.scope_always');
+    const decision = CLATI18n.msg(consent.allowed ? 'cua.decision_allow' : 'cua.decision_deny');
+    return String(scope) + ' · ' + decision;
+  }));
+  const revoke = el('button', 'secondary', () => t('revoke'));
+  revoke.type = 'button';
+  CLATI18n.attribute(revoke, 'aria-label', () => t('revoke_app', { app: name() }));
+  revoke.onclick = async () => {
+    revoke.disabled = true;
+    try { await onRevoke(t('revoked', { app: name() })); }
+    finally { revoke.disabled = false; }
+  };
+  item.append(text, revoke);
+  return item;
+}
+
+function installComputerUseSettings() {
+  const category = 'computer-use';
+  const page = dom['settings-dialog'];
+  const t = computerUseText;
+  const nav = el('button', '', () => t('title'));
+  nav.type = 'button';
+  nav.dataset.settingsCategory = category;
+  page.querySelector('.settings-nav').append(nav);
+  const {access, hint, reload, list, consentsSection, status} = computerUseSettingsPanel(page, category);
+  const active = () => currentSettingsCategory === category && pageIsOpen(page);
+  const selection = () => JSON.stringify([workspacePrefix, state.sessionId, state.selectionGeneration]);
+  let generation = 0;
+  let shownFor = null;
+  const showStatus = value => CLATI18n.bind(status, 'textContent', () => value);
+  const setAccess = key => CLATI18n.bind(access, 'textContent', () => t(key));
+  async function revoke(consent, target, success) {
+    if (!active() || target !== selection()) return;
+    try {
+      await rpc('command.run', {
+        command: '/ui-consents revoke ' + consent.scope + ' ' + consent.app_id,
+        expected_selection_generation: state.selectionGeneration,
+      });
+      if (active() && target === selection()) await refresh(success);
+    } catch (error) {
+      if (active() && target === selection()) showStatus(error.message);
+    }
+  }
+  async function refresh(success = '') {
+    if (!active()) return;
+    const request = ++generation, target = selection();
+    const current = () => request === generation && active() && target === selection();
+    if (shownFor !== target) {
+      shownFor = target;
+      list.replaceChildren();
+      consentsSection.hidden = true;
+    }
+    const available = state.workbench?.builtin_availability?.['builtin.native_ui'];
+    hint.hidden = available?.enabled !== true;
+    reload.hidden = hint.hidden;
+    if (hint.hidden) {
+      consentsSection.hidden = true;
+      setAccess(state.workbench ? 'unavailable' : 'loading');
+      showStatus(available?.reason ? CLATI18n.present(available.reason) : '');
+      return;
+    }
+    if (consentsSection.hidden) setAccess('loading');
+    reload.disabled = true;
+    showStatus('');
+    try {
+      const view = await rpc('command.run', {
+        command: '/ui-consents',
+        expected_selection_generation: state.selectionGeneration,
+      });
+      if (!current()) return;
+      setAccess(view.accessibility_granted === true ? 'granted'
+        : view.accessibility_granted === false ? 'not_granted' : 'unknown');
+      const entries = (Array.isArray(view.consents) ? view.consents : []).filter(entry =>
+        /^[a-f0-9]{64}$/.test(entry?.app_id) && ['session','always'].includes(entry.scope));
+      list.replaceChildren(...entries.map(entry => computerUseConsentRow(entry, success => revoke(entry, target, success))));
+      if (!entries.length) {
+        const empty = el('div', 'settings-row');
+        empty.append(el('span', 'settings-note', () => CLATI18n.msg('cua.consent_empty')));
+        list.append(empty);
+      }
+      consentsSection.hidden = !Array.isArray(view.consents);
+      showStatus(success);
+    } catch (error) {
+      if (current()) {
+        setAccess('unknown');
+        showStatus(error.message);
+      }
+    } finally {
+      if (current()) reload.disabled = false;
+    }
+  }
+  nav.onclick = () => { selectSettingsCategory(category); void refresh(); };
+  reload.onclick = () => void refresh();
+  page.addEventListener('clat:page-enter', () => void refresh());
+  page.addEventListener('clat:settings-leave', () => { generation++; shownFor = null; });
+  window.addEventListener('clat:workbench-updated', () => { if (active()) void refresh(); });
 }
 
 function setupWechatUsers() {

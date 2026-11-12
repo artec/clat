@@ -1,23 +1,24 @@
 /* Match the neutral surfaces and brand blue in web/style.css. */
 :root{color-scheme:light dark;--brand:#0c416f;--bg:#f2f2f2;--ink:#242424;--muted:#686868;--line:#dedede;--accent:var(--brand);--signal:var(--accent);--text:var(--ink);--text-muted:var(--muted);--surface:#fff;--surface-input:#f7f7f7;--surface-raised:#fafafa;--danger:#b9342f;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;font-size:15px;line-height:1.6}
-main{flex-shrink:0;width:min(680px,calc(100% - 64px));margin:auto;padding:32px 0}
-.brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:22px;letter-spacing:.02em}
-.brand img{border-radius:8px}
-.eyebrow{font-size:13px;font-weight:500;letter-spacing:.04em;color:var(--accent);margin-top:48px}
-h1{font-family:inherit;font-size:clamp(26px,4.2vw,36px);font-weight:600;line-height:1.4;letter-spacing:0;margin:16px 0 20px;text-wrap:balance;line-break:strict}
-.intro{margin:0;color:var(--muted);font-size:15px;line-height:1.8;text-wrap:pretty}
+body{margin:0;background:var(--bg);color:var(--ink);min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;padding:24px 16px;font-size:14px;line-height:1.6}
+main{flex-shrink:0;width:min(540px,100%);margin:auto;padding:clamp(18px,5vw,26px);border:1px solid var(--line);border-radius:18px;background:var(--surface-raised);box-shadow:0 20px 48px #0002}
+.brand{display:flex;align-items:center;gap:8px;font-weight:650;font-size:15px}
+.brand img{width:28px;height:28px;border-radius:8px}
+.welcome-header{margin:20px 0 18px}
+.eyebrow{font-size:12px;color:var(--muted);margin:0 0 6px}
+h1{font-size:20px;font-weight:600;line-height:1.4;margin:0 0 8px;line-break:strict}
+.intro{margin:0;color:var(--muted);font-size:13px;line-height:1.7}
 button{font:inherit;cursor:pointer}
-.primary{display:inline-flex;align-items:center;justify-content:center;gap:12px;background:var(--brand);color:white;border:0;border-radius:8px;padding:10px 18px;margin-top:28px;min-height:44px;font-size:15px;font-weight:600;line-height:1.5;white-space:nowrap}
+.welcome-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px;margin-top:18px}
+.welcome-actions button{min-height:36px;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:500;line-height:1.5}
+.primary{background:var(--brand);color:white;border:1px solid transparent}
 .primary:disabled{opacity:.55;cursor:wait}
-#status{min-height:48px;font-size:14px;line-height:1.7;color:var(--muted);margin:20px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
-footer{border-top:1px solid var(--line);margin-top:40px;padding-top:18px;display:flex;align-items:center;justify-content:space-between;gap:16px;color:var(--muted);font-size:14px}
+#status{padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-input);font-size:13px;line-height:1.7;color:var(--muted);margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+footer{border-top:1px solid var(--line);margin-top:18px;padding-top:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;color:var(--muted);font-size:12px}
 footer button{border:0;background:transparent;color:inherit;padding:6px 0}
-.retry-project{border:0;background:transparent;color:var(--accent);margin-left:12px;font-size:13px}.retry-project[hidden]{display:none}
+.retry-project{border:1px solid var(--line);background:var(--surface-input);color:var(--text)}.retry-project[hidden]{display:none}
 footer [data-language-control]{display:flex;align-items:center;gap:8px;flex:none}footer [data-language-control] label{white-space:nowrap}footer select{font:inherit;color:var(--ink);background:var(--surface-input);border:1px solid var(--line);border-radius:6px;padding:4px;max-width:140px}
-@media(max-width:600px){footer{flex-wrap:wrap}.retry-project{margin-left:0;display:block;margin-top:14px}}
-@media(max-width:480px){main{width:calc(100% - 40px)}.eyebrow{margin-top:36px}footer{margin-top:28px}}
 @media(prefers-color-scheme:dark){:root{--bg:#171717;--ink:#ededed;--muted:#a0a0a0;--line:#343434;--accent:#8bb8f7;--surface:#171717;--surface-input:#272727;--surface-raised:#232323;--danger:#ff7b70}}
 
 body[data-startup="loading"]{overflow:hidden}
@@ -46,8 +47,8 @@ body[data-startup="loading"] #clat-desktop-controls{display:none}
 /* Desktop shell styles: mirror the workbench block in web/style.css. */
 #clat-desktop-controls{font:13px ui-sans-serif,system-ui;position:fixed;right:18px;bottom:12px;z-index:10000}
 #clat-desktop-controls button{font:inherit;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:7px 12px;color:inherit;background:var(--surface-input)}
-#clat-desktop-controls dialog{color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:26px;width:min(520px,90vw);max-height:85vh;overflow:auto}
-#clat-desktop-controls dialog::backdrop{background:#0007}
+#clat-desktop-controls dialog{color:var(--text);background:var(--surface-raised);border:1px solid var(--line);border-radius:18px;padding:clamp(18px,5vw,26px);width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow:auto}
+#clat-desktop-controls dialog::backdrop{background:#0009;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
 #clat-desktop-controls button:disabled{opacity:.45;cursor:not-allowed}
 #clat-desktop-controls h2{font-size:20px;margin:0 0 22px}
 #clat-desktop-controls p{line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}

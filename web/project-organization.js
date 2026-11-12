@@ -17,7 +17,7 @@
     }
     function rename(row){
       closeMenu();closeDialog();row=current(row);
-      const dialog=node('dialog','task-editor project-rename-dialog'),form=node('form'),head=node('header','page-header'),label=node('label'),input=node('input'),error=node('p','error'),actions=node('div','project-rename-actions');
+      const dialog=node('dialog','workbench-dialog project-rename-dialog'),form=node('form'),head=node('header','workbench-dialog-header'),label=node('label'),input=node('input'),error=node('p','error'),actions=node('div','workbench-dialog-actions');
       CLATI18n.attribute(dialog,'aria-label',()=>text('rename'));head.append(node('h2','',()=>text('rename')));input.type='text';input.value=row.title||'';input.autocomplete='off';label.append(node('span','',()=>text('name')),input);error.setAttribute('role','alert');
       const save=button('primary',()=>text('save'),()=>{}),cancel=button('secondary',()=>text('cancel'),()=>dialog.close());save.type='submit';actions.append(cancel,save);
       form.append(head,label,node('p','settings-note',()=>text('name_hint')),error,actions);dialog.append(form);document.body.append(dialog);

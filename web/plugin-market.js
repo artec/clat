@@ -205,9 +205,15 @@ function installBuiltinConfiguration(host,page){
   page.addEventListener('clat:page-leave',()=>{serial++;busy=false;draft.invalidate();});
   window.addEventListener('clat:builtin-availability',()=>{serial++;busy=false;draft.invalidate();if(pageIsOpen(page))void refresh();});
   async function chooseLeave(run){
-    const dialog=el('dialog','builtin-leave-dialog');dialog.append(el('p','',()=>text('leave')));
+    const dialog=el('dialog','workbench-dialog builtin-leave-dialog');
+    const head=el('header','workbench-dialog-header'), actions=el('footer','workbench-dialog-actions');
+    head.append(el('h2','',()=>text('unsaved')));
+    CLATI18n.attribute(dialog,'aria-label',()=>text('unsaved'));
+    dialog.append(head,el('p','',()=>text('leave')),actions);
     const finish=choice=>{dialog.close();dialog.remove();if(choice==='discard')draft.discard();if(choice!=='back'){page.builtinLeaveApproved=true;run();page.builtinLeaveApproved=false;}render();};
-    for(const choice of ['keep','discard','back'])dialog.append(action(choice,()=>finish(choice)));document.body.append(dialog);dialog.showModal();dialog.addEventListener('cancel',()=>dialog.remove(),{once:true});
+    for(const choice of ['back','discard','keep'])actions.append(action(choice,()=>finish(choice)));
+    actions.lastElementChild.className='primary';
+    document.body.append(dialog);dialog.showModal();dialog.addEventListener('cancel',()=>dialog.remove(),{once:true});
   }
   CLATI18n.onChange(render);render();return {refresh,beforeTab(run){if(draft.dirty){void chooseLeave(run);return false;}return true;}};
 }

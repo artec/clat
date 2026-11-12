@@ -22,6 +22,42 @@ fn fixture(name: &str) -> (Arc<ServeShared>, PathBuf, PathBuf) {
     )
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn computer_use_settings_reads_host_status_and_revokes_scoped_consent() {
+    let (shared, storage, root) = fixture("computer-use-settings");
+    let id = crate::test_support::seed_ui_consent_test_records(&storage);
+    let generation = shared.selection_generation();
+    let command = |command, expected| {
+        protocol::dispatch(
+            "command.run",
+            &json!({ "command": command, "expected_selection_generation": expected }),
+            &shared,
+        )
+    };
+    let before = command("/ui-consents", generation).unwrap();
+    assert_eq!(before["kind"], "ui_consents");
+    assert!(before["accessibility_granted"].is_boolean());
+    assert_eq!(
+        before["consents"],
+        json!([{ "app_id": id, "name": "Preview", "scope": "always", "allowed": true }]),
+    );
+    let revoke = format!("/ui-consents revoke always {id}");
+    assert!(command(&revoke, generation + 1).is_err());
+    assert_eq!(
+        command("/ui-consents", generation).unwrap()["consents"],
+        before["consents"]
+    );
+    command(&revoke, generation).unwrap();
+    assert_eq!(
+        command("/ui-consents", generation).unwrap()["consents"],
+        json!([])
+    );
+    drop(shared);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
 #[test]
 fn workbench_methods_advertise_actual_bounded_read_surfaces() {
     let (shared, storage, root) = fixture("workbench-surfaces");

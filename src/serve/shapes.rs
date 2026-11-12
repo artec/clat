@@ -416,6 +416,16 @@ pub(crate) fn admission_receipt_value(receipt: &crate::message::AdmissionReceipt
     crate::wire::admission_receipt_to_json(receipt)
 }
 
+pub(super) fn ui_consents_reply(view: crate::command::UiConsentsView) -> Value {
+    json!({
+        "kind":"ui_consents",
+        "message":crate::i18n::views::render_parts(crate::i18n::LocaleContext::default(), &view.parts),
+        "presentation":view.parts,
+        "consents":view.consents,
+        "accessibility_granted":view.accessibility_granted,
+    })
+}
+
 /// settled 载荷附加回执（settler 的统一出口——完成/取消/失败三态
 /// 共用；`None` 不加字段，纯文本无键 run 的 settled 字节不变）。
 pub(crate) fn with_admission_receipt(

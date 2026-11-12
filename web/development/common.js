@@ -22,10 +22,17 @@ const developmentClient=developmentClientSession.id;
 function devStatus(target,key,args={}){CLATI18n.bind(target,'textContent',()=>devText(key,args));}
 function devReport(target,error){CLATI18n.bind(target,'textContent',()=>error?.message||devText('failed'));target.classList.add('error');}
 async function devChoice(message,choices){
-  const dialog=el('dialog','dev-confirm');const copy=el('p','',message),actions=el('div','dev-actions');dialog.append(copy,actions);document.body.append(dialog);
+  const dialog=el('dialog','workbench-dialog dev-confirm');const copy=el('p','',message),actions=el('footer','workbench-dialog-actions');
+  copy.id='dev-confirm-message';dialog.setAttribute('aria-labelledby',copy.id);
+  dialog.append(copy,actions);document.body.append(dialog);
   return new Promise(resolve=>{
     let settled=false;const finish=value=>{if(settled)return;settled=true;dialog.close();dialog.remove();resolve(value);};
-    for(const key of choices)actions.append(devButton(key,()=>finish(key)));
+    const cancel = choices.includes('cancel');
+    for(const key of (cancel ? ['cancel',...choices.filter(choice=>choice!=='cancel')] : choices)) {
+      const primary=key==='save'||(choices.length===2&&key!=='cancel');
+      const button=devButton(key,()=>finish(key),primary?'primary':'secondary');
+      button.autofocus=key==='cancel';actions.append(button);
+    }
     dialog.addEventListener('cancel',event=>{event.preventDefault();finish('cancel');});dialog.showModal();
   });
 }

@@ -1,6 +1,9 @@
 //! macOS plugin contributions and the human-only consent command.
 use super::*;
-use crate::command::{CommandError, CommandGroup, CommandHandler, CommandOutcome, CommandSpec};
+use crate::command::{
+    CommandError, CommandGroup, CommandHandler, CommandOutcome, CommandSpec, UiConsentSummary,
+    UiConsentsView,
+};
 use crate::plugin::{
     DisposeError, Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind,
     ServiceId, ServiceKey,
@@ -104,7 +107,7 @@ impl CommandHandler for ConsentCommand {
     ) -> std::result::Result<CommandOutcome, CommandError> {
         let session = app.current_session_id().map(|session| session.to_string());
         if args.is_empty() {
-            return list(&self.0, session.as_deref()).map(CommandOutcome::ShowUiConsents);
+            return list(&self.0, session.as_deref());
         }
         let fields = args.split_whitespace().collect::<Vec<_>>();
         let ["revoke", scope, identity] = fields.as_slice() else {
@@ -139,35 +142,51 @@ impl CommandHandler for ConsentCommand {
 fn list(
     control: &ControlStorage,
     session: Option<&str>,
-) -> std::result::Result<Vec<UiMessage>, CommandError> {
+) -> std::result::Result<CommandOutcome, CommandError> {
     use crate::control_storage::ui_consents::Decision;
-    let mut rows = vec![UiMessage::new("cua.consent_list")];
+    let mut parts = vec![UiMessage::new("cua.consent_list")];
+    let mut consents = Vec::new();
     for entry in control.ui_consents().map_err(|_| storage_error())? {
-        let scope = if entry.session.is_none() {
-            "cua.scope_always"
+        let (scope, label) = if entry.session.is_none() {
+            ("always", "cua.scope_always")
         } else if entry.session.as_deref() == session {
-            "cua.scope_session"
+            ("session", "cua.scope_session")
         } else {
             continue;
         };
-        rows.push(
+        let allowed = entry.decision == Decision::Allow;
+        parts.push(
             UiMessage::new("cua.consent_row")
-                .arg("app", entry.name.unwrap_or_else(|| entry.app.clone()))
-                .arg("id", entry.app)
-                .arg_message("scope", UiMessage::new(scope))
+                .arg(
+                    "app",
+                    entry.name.clone().unwrap_or_else(|| entry.app.clone()),
+                )
+                .arg("id", entry.app.clone())
+                .arg_message("scope", UiMessage::new(label))
                 .arg_message(
                     "decision",
-                    UiMessage::new(match entry.decision {
-                        Decision::Allow => "cua.decision_allow",
-                        Decision::Deny => "cua.decision_deny",
+                    UiMessage::new(if allowed {
+                        "cua.decision_allow"
+                    } else {
+                        "cua.decision_deny"
                     }),
                 ),
         );
+        consents.push(UiConsentSummary {
+            app_id: entry.app,
+            name: entry.name,
+            scope,
+            allowed,
+        });
     }
-    if rows.len() == 1 {
-        rows.push(UiMessage::new("cua.consent_empty"));
+    if consents.is_empty() {
+        parts.push(UiMessage::new("cua.consent_empty"));
     }
-    Ok(rows)
+    Ok(CommandOutcome::ShowUiConsents(UiConsentsView {
+        parts,
+        consents,
+        accessibility_granted: super::trusted(),
+    }))
 }
 
 fn usage() -> CommandError {

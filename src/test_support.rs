@@ -850,6 +850,21 @@ fn reopen_after_close_retries_only_the_visibility_window() {
     );
 }
 
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn seed_ui_consent_test_records(root: &std::path::Path) -> String {
+    use crate::control_storage::{ControlStorage, ui_consents::Decision};
+
+    let control = ControlStorage::open_ready(root).unwrap();
+    let id = "a".repeat(64);
+    control
+        .set_ui_consent_named(&id, None, Decision::Allow, Some("Preview"))
+        .unwrap();
+    control
+        .set_ui_consent(&id, Some("other-session"), Decision::Deny)
+        .unwrap();
+    id
+}
+
 pub fn configure_test_model(application: &TrustedProjectApplication) {
     let config = ModelConfig {
         model: "deterministic".into(),

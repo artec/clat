@@ -1008,11 +1008,7 @@ fn command_reply(
         crate::CommandOutcome::ShowCapabilities(message) => {
             Ok(json!({"kind":"capabilities", "message":message}))
         }
-        crate::CommandOutcome::ShowUiConsents(parts) => Ok(json!({
-            "kind":"ui_consents",
-            "message":crate::i18n::views::render_parts(crate::i18n::LocaleContext::default(), &parts),
-            "presentation":parts
-        })),
+        crate::CommandOutcome::ShowUiConsents(view) => Ok(super::shapes::ui_consents_reply(view)),
         crate::CommandOutcome::QueryHistory(request) => {
             let reader = with_app(shared, |app| Ok(app.history_reader())).map_err(app_error)?;
             let view = reader

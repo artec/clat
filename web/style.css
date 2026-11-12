@@ -410,6 +410,7 @@ button:disabled { cursor: default; opacity: .45; }
 #prompt { display: block; width: 100%; min-height: 72px; max-height: 220px; resize: none; padding: 8px 7px; color: var(--text); background: transparent; border: 0; font-size: 16px; line-height: 1.65; }
 #prompt::placeholder { color: var(--text-muted); }
 .attachment-rail { display: grid; grid-template-columns: repeat(auto-fit, minmax(198px, 1fr)); gap: 7px; margin: 5px 0 2px; padding: 7px 0 8px; border-bottom: 1px solid var(--line); }
+.attachment-rail[hidden] { display: none; }
 .attachment-chip { position: relative; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--surface-raised) 76%, transparent); }
 .attachment-chip.is-uploading { border-color: color-mix(in srgb, var(--signal) 58%, var(--line)); }
 .attachment-chip.is-failed { border-color: color-mix(in srgb, var(--danger) 68%, var(--line)); }
@@ -743,15 +744,14 @@ button:disabled { cursor: default; opacity: .45; }
 .schedule-form label { display:flex; flex-direction:column; gap:4px; min-width:0; }
 .schedule-form textarea { min-height:100px; }
 .schedule-form [hidden] { display:none; }
-.schedule-review { padding:16px; border:1px solid var(--border); border-radius:8px; }
 #schedules-open { position: relative; }
 #schedules-open[data-pending="true"]::after { content:'•'; position: absolute; top: 3px; right: 5px; color:var(--accent); }
 
 /* Desktop shell styles: also used by desktop/ui/welcome.css. */
 #clat-desktop-controls{font:13px ui-sans-serif,system-ui;position:fixed;right:18px;bottom:12px;z-index:10000}
 #clat-desktop-controls button{font:inherit;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:7px 12px;color:inherit;background:var(--surface-input)}
-#clat-desktop-controls dialog{color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:26px;width:min(520px,90vw);max-height:85vh;overflow:auto}
-#clat-desktop-controls dialog::backdrop{background:#0007}
+#clat-desktop-controls dialog{color:var(--text);background:var(--surface-raised);border:1px solid var(--line);border-radius:18px;padding:clamp(18px,5vw,26px);width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow:auto}
+#clat-desktop-controls dialog::backdrop{background:#0009;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
 #clat-desktop-controls button:disabled{opacity:.45;cursor:not-allowed}
 #clat-desktop-controls h2{font-size:20px;margin:0 0 22px}
 #clat-desktop-controls p{line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -789,8 +789,6 @@ details.notice-line > summary { cursor: pointer; }
 .builtin-config-list label { display: flex; align-items: flex-start; gap: 8px; }
 .builtin-config-list th { width: auto; }
 .builtin-config-list td { width: 25%; }
-.builtin-leave-dialog { max-width: 440px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); }
-.builtin-leave-dialog button { margin: 8px 8px 0 0; }
 @media(max-width:560px){
   .builtin-config-list table,.builtin-config-list tbody{display:block;}
   .builtin-config-list thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);}
