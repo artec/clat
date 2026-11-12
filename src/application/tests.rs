@@ -5211,49 +5211,53 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .iter()
         .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
+    let mut expected_catalog: std::collections::BTreeSet<&str> = [
+        "schedule_create",
+        "schedule_list",
+        "schedule_update",
+        "schedule_delete",
+        "query_capabilities",
+        "describe_capability",
+        "list_files",
+        "read_file",
+        "session_search",
+        "session_event_search",
+        "session_event_read",
+        "search",
+        "web_search",
+        "web_fetch",
+        "write_file",
+        "edit_file",
+        "export_patch",
+        "run_command",
+        "exec_command",
+        "write_stdin",
+        "test_discrimination",
+        "verify_observation",
+        "terminal_snapshot",
+        "session_info",
+        "job_start",
+        "job_output",
+        "job_list",
+        "job_kill",
+        "ask_user",
+        "request_plan_mode",
+        "exit_plan_mode",
+        "skill",
+        "memory_search",
+        "propose_goal",
+        "update_goal",
+        "view_image",
+        "todo_write",
+    ]
+    .into_iter()
+    .collect();
+    // b0c3ef57 默认开启只读委派；CUA1 的 ui_* 仅在 macOS 注册。
+    expected_catalog.insert("delegate_readonly");
+    #[cfg(target_os = "macos")]
+    expected_catalog.extend(["ui_apps", "ui_tree", "ui_act", "ui_wait"]);
     assert_eq!(
-        tool_names,
-        [
-            "schedule_create",
-            "schedule_list",
-            "schedule_update",
-            "schedule_delete",
-            "query_capabilities",
-            "describe_capability",
-            "list_files",
-            "read_file",
-            "session_search",
-            "session_event_search",
-            "session_event_read",
-            "search",
-            "web_search",
-            "web_fetch",
-            "write_file",
-            "edit_file",
-            "export_patch",
-            "run_command",
-            "exec_command",
-            "write_stdin",
-            "test_discrimination",
-            "verify_observation",
-            "terminal_snapshot",
-            "session_info",
-            "job_start",
-            "job_output",
-            "job_list",
-            "job_kill",
-            "ask_user",
-            "request_plan_mode",
-            "exit_plan_mode",
-            "skill",
-            "memory_search",
-            "propose_goal",
-            "update_goal",
-            "view_image",
-            "todo_write",
-        ]
-        .into_iter()
-        .collect(),
+        tool_names, expected_catalog,
         "request/header freezes the complete model-visible native catalog"
     );
     application.close().unwrap();

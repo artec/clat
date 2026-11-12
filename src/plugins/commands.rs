@@ -543,7 +543,8 @@ mod tests {
         }
         for input in ["/sub", "/subagents"] {
             match application.dispatch_command(input) {
-                Ok(CommandOutcome::ShowSubagentStatus(view)) => assert!(!view.enabled),
+                // b0c3ef57：可信项目默认开启只读委派——断言随之翻向。
+                Ok(CommandOutcome::ShowSubagentStatus(view)) => assert!(view.enabled),
                 other => panic!("{input} must be a ShowSubagentStatus outcome, got {other:?}"),
             }
         }

@@ -313,7 +313,7 @@ fn pu_headless_content_views_print_to_stdout_and_plan_conflicts_are_read_only() 
     for (command, expected) in [
         ("/mem", "No explicit memories."),
         ("/goal", "No current goal."),
-        ("/sub", "delegate_readonly"),
+        ("/sub", "Read-only subagents"),
     ] {
         let mut options = args(None);
         options.command = Some(command.into());
