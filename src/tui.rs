@@ -29,6 +29,7 @@ mod permission_picker;
 mod plan_review;
 mod plugins;
 mod session_picker;
+mod session_share;
 mod theme;
 mod workbench;
 mod worker;
@@ -127,10 +128,13 @@ const STATUS_TTL: Duration = Duration::from_secs(4);
 /// unclaimed messages when a run seals; retaining the original source paths
 /// here is what makes cancel/failure a lossless, user-visible retry rather
 /// than silent data loss.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct NativeSteeringDraft {
     prompt: String,
     attachments: Vec<PathBuf>,
+    client_id: Option<String>,
+    share_owner: Option<SessionId>,
+    shares: Vec<session_share::DraftShare>,
 }
 
 pub fn run(project: Project) -> io::Result<()> {
@@ -354,6 +358,8 @@ struct App {
     picker_return: Option<PickerSnapshot>,
     /// /resume 会话选择器；打开期间独占按键与鼠标。
     session_picker: Option<SessionPicker>,
+    share_drafts: session_share::ShareDrafts,
+    share_picker: Option<Option<usize>>,
     running: bool,
     /// CANCEL-1（C1）：运行中已发出取消请求（Esc / /cancel）。phase 行
     /// 优先于 flash 渲染，取消确认必须出现在 phase 行上，否则用户在
@@ -615,6 +621,8 @@ impl App {
             picker: None,
             picker_return: None,
             session_picker: None,
+            share_drafts: Default::default(),
+            share_picker: None,
             running: false,
             run_start_pending: false,
             workflow_handoff_session: None,
@@ -729,6 +737,8 @@ impl App {
             picker: None,
             picker_return: None,
             session_picker: None,
+            share_drafts: Default::default(),
+            share_picker: None,
             running: false,
             run_start_pending: false,
             workflow_handoff_session: None,

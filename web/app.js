@@ -352,7 +352,8 @@ const FILL_ICONS = new Set(['agent']);
 
 function svgIcon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
+  // The brain outline reaches the edges of the standard viewBox.
+  svg.setAttribute('viewBox', name === 'brain' ? '-3 -3 30 30' : '0 0 24 24');
   svg.setAttribute('aria-hidden', 'true');
   for (const data of ICON_PATHS[name] || ICON_PATHS.info) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -913,6 +914,8 @@ function handleReplay(event) {
         '← ' + jsonText(event.output),
         Boolean(event.is_error),
         event.tool,
+        undefined,
+        uiToolError(event.tool, event.output, event.is_error),
       );
       node = settled;
       if (node && Number.isSafeInteger(event.seq)) node.dataset.resultSeq = String(event.seq);
@@ -1025,6 +1028,8 @@ function handleLive(event) {
         '← ' + jsonText(result.output),
         Boolean(result.is_error),
         result.tool_name,
+        undefined,
+        uiToolError(result.tool_name, result.output, result.is_error),
       );
       if (result.tool_name === 'exit_plan_mode' && !result.is_error) {
         refreshWorkbench();
@@ -1133,7 +1138,7 @@ function onApprovalRequested(ctl) {
   const card = el('div', 'approval-card');
   card.dataset.rpcId = ctl.rpc_id;
   const title = el('div', 'title', () => (CLATI18n.msg("web.line_permission_required_value",{value1:toolDisplayName(request.tool)},"Permission required — {value1}")));
-  const meta = el('div', 'note', () => ((request.effect || CLATI18n.msg("web.side_effect", {}, "side effect")) + ' · ' + (request.reason || '')));
+  const meta = el('div', 'note', () => (permissionEffectLabel(request.effect) + ' · ' + CLATI18n.present(request.presentation, request.reason || '')));
   const args = el('div', 'args', () => CLATI18n.msg('web.tool_action.identifier', {name:request.tool || ''}) + '\n' + jsonText(request.arguments));
   const actions = el('div', 'actions');
   const note = el('div', 'note resolution', () => (''));
@@ -1578,13 +1583,20 @@ const TOOL_PRESENTATION_KEYS = {
   read_file: 'read_file', list_files: 'list_files', search: 'search_files',
   edit_file: 'edit_file', write_file: 'write_file', apply_patch: 'edit_file',
   run_command: 'run_command', view_image: 'view_image', ask_user: 'ask_user',
+  ui_apps: 'ui_apps', ui_tree: 'ui_tree', ui_wait: 'ui_wait', ui_act: 'ui_act',
   ask_user_question: 'ask_user', update_plan: 'update_plan', exit_plan_mode: 'finish_plan',
   request_plan_mode: 'request_plan_mode', propose_goal: 'propose_goal',
 };
+function permissionEffectLabel(effect) {
+  const keys = {pure:'pure', read:'read', write:'write', execute:'execute', network:'network', external_read:'external_read', destructive:'destructive', session_write:'session_write', ui_structure_read:'ui_structure_read', ui_action:'ui_action'};
+  return Object.hasOwn(keys, effect) ? CLATI18n.msg('remote.effect_' + keys[effect]) : CLATI18n.msg('web.side_effect');
+}
 function toolDisplayName(name) {
   const raw = String(name || '');
   let action = Object.hasOwn(TOOL_PRESENTATION_KEYS, raw) ? TOOL_PRESENTATION_KEYS[raw] : null;
-  const external = /^(mcp_|mcp__|plugin_)/.test(raw);
+  const hostAction = raw.match(/:host:(ui_apps|ui_tree|ui_wait|ui_act)$/)?.[1];
+  const external = Boolean(hostAction) || /^(mcp_|mcp__|plugin_)/.test(raw);
+  if (hostAction) action = hostAction;
   if (!action && external) {
     const suffix = Object.keys(TOOL_PRESENTATION_KEYS).sort((a,b) => b.length-a.length)
       .find(candidate => raw.endsWith('_' + candidate));
@@ -1987,7 +1999,11 @@ function openToolCard(name, argsText, rawId, key) {
   return appendWorkRecord(card, name);
 }
 
-function settleToolCard(rawId, explicitKey, outputText, isError, toolName, stateText) {
+function uiToolError(toolName, output, isError) {
+  return isError && /^ui_(apps|tree|wait|act)$/.test(toolName) ? output?.presentation : undefined;
+}
+
+function settleToolCard(rawId, explicitKey, outputText, isError, toolName, stateText, presentation) {
   const key = resolveToolCardKey(rawId, explicitKey);
   let card = key ? state.toolCards.get(key) : null;
   if (!card) {
@@ -2017,6 +2033,10 @@ function settleToolCard(rawId, explicitKey, outputText, isError, toolName, state
     if (!output) {
       output = el('div', 'tool-output');
       body.appendChild(output);
+    }
+    body.querySelector('.tool-output-presentation')?.remove();
+    if (presentation) {
+      output.before(el('div', 'tool-output-presentation', () => CLATI18n.present(presentation)));
     }
     // 幂等：重复/迟到落定替换同一输出行，不追加第二份结果。
     output.replaceChildren(document.createTextNode(outputText || ''));
@@ -3832,6 +3852,7 @@ function totalDraftBytes() {
 }
 
 function renderDraft() {
+  renderSessionShareDraft();
   syncInputSubmitButtons();
   const images = state.draft.images;
   dom['attachment-rail'].replaceChildren();
@@ -4137,7 +4158,7 @@ async function submitConfiguredPrompt() {
   if (images.length && state.workbench?.model?.image_input === false) { updateRunState(CLATI18n.msg('web.model_images_unsupported')); return; }
   const draftEpoch = state.draft.epoch;
   const owner = composerScope;
-  if (!text && images.length === 0) return;
+  if (!text && images.length === 0 && !sessionSharesFor(owner).length) return;
   if (state.draft.queuedClientMessageId !== null) {
     updateRunState(CLATI18n.msg("web.steering_is_queued_waiting_for_the_active_run", {}, "steering is queued; waiting for the active run"));
     return;
@@ -4154,13 +4175,21 @@ async function submitConfiguredPrompt() {
     updateRunState(CLATI18n.msg("web.commands_do_not_accept_draft_images_draft_retained", {}, "commands do not accept draft images; draft retained"));
     return;
   }
-  state.draft.sending = images.length > 0;
+  state.draft.sending = images.length > 0 || sessionSharesFor(owner).length > 0;
   renderDraft();
   const submission = { text, composerGeneration, images, draftEpoch, owner };
   try {
     if (supportsPendingInputs() && (state.runActive || !text.startsWith('/'))) {
       try { await submitPendingInput(submission); }
-      catch(error) { if(composerOwns(owner)) updateRunState(error.message); }
+      catch (error) {
+        if (composerOwns(owner)) {
+          if (error.presentation?.key === 'history.source_changed') {
+            for (const share of sessionSharesFor(owner)) share.needsRefresh = true;
+            renderSessionShareDraft();
+          }
+          updateRunState(error.message);
+        }
+      }
       return;
     }
     if (state.runActive) {

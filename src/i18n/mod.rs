@@ -2,8 +2,8 @@
 mod preferences;
 mod text;
 mod tool_action;
-pub use tool_action::tool_action;
-mod views;
+pub use tool_action::{tool_action, tool_effect};
+pub(crate) mod views;
 pub use text::PresentedText;
 mod template;
 mod terminal;

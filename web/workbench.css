@@ -594,7 +594,8 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 #transcript .trace-event:not(.is-error):not(.is-warning),
 #transcript .trace-event:not(.is-error):not(.is-warning) b { color:var(--process-text); }
 #transcript .reasoning-dot { background:var(--process-text); }
-#transcript .tool-card>summary>svg{width:1em;height:1em;flex:none;stroke-width:1.5}
+#transcript .msg.assistant .reasoning>summary>svg,
+#transcript .tool-card>summary>svg{width:var(--text-size-ui);height:var(--text-size-ui);flex:none;stroke-width:1.5}
 #transcript>.tool-card>.tool-body{border-inline-start:1px solid var(--line);padding:8px 12px;margin:6px 0 12px 8px}
 @media(max-width:640px){.round-process-heading{width:100%;margin-inline-start:0}.compaction-disclosure{margin-inline-start:0}}
 .round-process-heading:disabled{opacity:1;cursor:default}
@@ -631,7 +632,6 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .user-reader-footer button { padding:8px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface-input); }
 @media(forced-colors:active) { .user-message-collapsed .user-message-preview { mask-image:none;-webkit-mask-image:none; }.user-message-collapsed { outline:1px solid ButtonText; } }
 
-.msg.assistant .reasoning summary>svg{width:1em;height:1em;flex:none;stroke-width:1.5;color:var(--text-muted)}
 .run-activity .run-loading{animation:run-loading-turn 2s linear infinite}
 .run-activity[data-waiting=true] .run-loading{animation:none}
 @keyframes run-loading-turn{to{transform:rotate(360deg)}}

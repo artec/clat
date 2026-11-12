@@ -1,5 +1,39 @@
 use super::*;
 
+#[test]
+fn pending_share_keeps_snapshot_out_of_view_and_attaches_it_on_claim() {
+    let queue = InputQueue::default();
+    let mut message = PendingMessage::from_front_end("draft", Some("share".into()), Vec::new());
+    let selection = crate::application::SessionShareSelection {
+        reference: crate::application::HistoryReference {
+            project: Some("/project".into()),
+            session: "source".into(),
+            seq: None,
+        },
+        recent_turns: None,
+        version: "revision".into(),
+    };
+    message.bind_session_share_identity(std::slice::from_ref(&selection));
+    let digest = message.request_digest();
+    let draft = InputDraft {
+        session_shares: vec![selection],
+        frozen_shares: vec!["private historical content".into()],
+        ..Default::default()
+    };
+    queue.enqueue("share".into(), message, draft).unwrap();
+    let view = serde_json::to_string(&queue.snapshot()).unwrap();
+    assert!(!view.contains("private historical content"));
+    assert!(view.contains("draft"));
+    let claimed = queue.claim(true).unwrap();
+    assert!(
+        claimed
+            .content
+            .plain_text()
+            .contains("private historical content")
+    );
+    assert_eq!(claimed.request_digest(), digest);
+}
+
 fn queued(queue: &InputQueue, id: &str) {
     queue
         .enqueue(

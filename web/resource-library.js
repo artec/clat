@@ -1,5 +1,134 @@
 /* The library stores provenance, never copies of file or message bodies. */
 const pendingFileReferences = new Map();
+const pendingSessionShares = new Map();
+
+function sessionSharesFor(owner = composerScope) {
+  const canonical = composerOwnerAliases.get(owner) || owner;
+  return pendingSessionShares.get(canonical) || [];
+}
+
+function restoreSessionShares(item, owner) {
+  const selections = item.draft.sessionShares || [];
+  if (!selections.length) return;
+  const canonical = composerOwnerAliases.get(owner) || owner;
+  if (!pendingSessionShares.has(canonical)) pendingSessionShares.set(canonical, []);
+  const target = pendingSessionShares.get(canonical);
+  selections.forEach((selection, index) => {
+    const summary = item.draft.sessionShareSummaries?.[index];
+    target.push({ ...selection, title: selection.reference.session, turns: '—', characters: '—', ...summary, needsRefresh: true });
+  });
+  refreshRecalledSessionShares(owner);
+  if (composerOwns(owner)) { renderSessionShareDraft(); syncInputSubmitButtons(); }
+}
+
+function refreshRecalledSessionShares(owner, selection = state.selectionGeneration) {
+  if (!composerOwns(owner)) return;
+  const target = sessionSharesFor(owner);
+  for (const share of target) {
+    if (!share.needsRefresh) continue;
+    const generation = selection;
+    const request = share.refreshRequest = (share.refreshRequest || 0) + 1;
+    rpc('history.share.preview', { reference: share.reference, recent_turns: share.recent_turns, expected_selection_generation: generation }).then(preview => {
+      if (composerOwns(owner) && state.selectionGeneration === generation && target.includes(share) && share.refreshRequest === request) {
+        Object.assign(share, preview, { needsRefresh: false });
+        renderSessionShareDraft();
+        syncInputSubmitButtons();
+      }
+    }).catch(error => {
+      if (composerOwns(owner) && state.selectionGeneration === generation && target.includes(share) && share.refreshRequest === request) updateRunState(error.message);
+    });
+  }
+}
+
+function renderSessionShareDraft() {
+  let rail = document.getElementById('session-share-rail');
+  if (!rail) {
+    rail = el('div', 'attachment-rail');
+    rail.id = 'session-share-rail';
+    dom['attachment-rail'].before(rail);
+  }
+  rail.replaceChildren();
+  for (const share of sessionSharesFor()) {
+    const chip = el('article', 'attachment-chip session-share-chip');
+    const copy = el('div', 'attachment-copy');
+    copy.append(el('strong', '', share.title || share.reference.session),
+      el('small', '', () => inputText('share_count', { turns: share.turns, characters: share.characters })));
+    const remove = el('button', 'attachment-remove', '×');
+    remove.type = 'button';
+    CLATI18n.attribute(remove, 'aria-label', () => inputText('share_remove'));
+    remove.disabled = state.draft.sending;
+    remove.onclick = () => {
+      const shares = sessionSharesFor();
+      const index = shares.indexOf(share);
+      if (index >= 0) shares.splice(index, 1);
+      renderSessionShareDraft();
+      syncInputSubmitButtons();
+    };
+    chip.append(copy);
+    if (share.needsRefresh) {
+      const refresh = el('button', 'secondary', () => inputText('share_refresh'));
+      refresh.type = 'button';
+      refresh.onclick = () => refreshRecalledSessionShares(composerScope);
+      chip.append(refresh);
+    }
+    chip.append(remove);
+    rail.append(chip);
+  }
+  rail.hidden = !rail.childElementCount;
+}
+
+async function openSessionSharePicker() {
+  if (!supportsPendingInputs() || !state.workbench?.methods?.includes('history.share.preview')) {
+    updateRunState(inputText('share_unavailable')); return;
+  }
+  const owner = composerScope, selection = state.selectionGeneration;
+  const dialog = el('dialog', 'image-preview session-share-dialog');
+  const title = el('h2', '', () => inputText('share_session'));
+  const label = el('label');
+  const picker = el('select');
+  const rangeLabel = el('label');
+  const range = el('input'); range.type = 'number'; range.min = '1'; range.step = '1';
+  range.placeholder = String(inputText('share_all'));
+  const status = el('p', 'settings-note');
+  const attach = el('button', 'primary', () => inputText('share_attach')); attach.type = 'button'; attach.disabled = true;
+  const cancel = el('button', 'secondary', () => inputText('cancel_edit')); cancel.type = 'button'; cancel.onclick = () => dialog.close();
+  label.append(el('span', '', () => inputText('share_choose')), picker);
+  rangeLabel.append(el('span', '', () => inputText('share_recent')), range);
+  dialog.append(title, label, rangeLabel, status, attach, cancel); document.body.append(dialog);
+  dialog.addEventListener('close', () => dialog.remove(), { once: true }); dialog.showModal();
+  let request = 0, preview = null;
+  const current = () => dialog.open && composerOwns(owner) && selection === state.selectionGeneration;
+  async function refresh() {
+    const serial = ++request; preview = null; attach.disabled = true;
+    const count = range.value === '' ? null : Number(range.value);
+    if (!picker.value || (count !== null && (!Number.isSafeInteger(count) || count < 1))) return;
+    const reference = { project: state.workbench.project.root, session: picker.value, seq: null };
+    try {
+      const value = await rpc('history.share.preview', { reference, recent_turns: count, expected_selection_generation: selection });
+      if (!current() || serial !== request) return;
+      preview = value;
+      CLATI18n.bind(status, 'textContent', () => inputText('share_count', { turns: value.turns, characters: value.characters }));
+      attach.disabled = false;
+    } catch (error) { if (current() && serial === request) status.textContent = error.message; }
+  }
+  picker.onchange = () => void refresh(); range.oninput = () => void refresh();
+  attach.onclick = () => {
+    if (!preview || !current()) return;
+    const canonical = composerOwnerAliases.get(owner) || owner;
+    if (!pendingSessionShares.has(canonical)) pendingSessionShares.set(canonical, []);
+    pendingSessionShares.get(canonical).push(preview);
+    dialog.close(); renderSessionShareDraft(); syncInputSubmitButtons(); dom.prompt.focus();
+  };
+  try {
+    const result = await rpc('session.list', {});
+    if (!current()) return;
+    for (const session of result.sessions.filter(item => item.id !== state.sessionId)) {
+      const option = el('option', '', session.title || session.id); option.value = session.id; picker.append(option);
+    }
+    if (picker.options.length) await refresh();
+    else CLATI18n.bind(status, 'textContent', () => inputText('share_none'));
+  } catch (error) { if (current()) status.textContent = error.message; }
+}
 function queueFileReference(snapshot) {
   if (!pendingFileReferences.has(composerScope)) pendingFileReferences.set(composerScope, []);
   pendingFileReferences.get(composerScope).push({path:snapshot.path, version:snapshot.version, quote:snapshot.reference});

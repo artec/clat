@@ -305,13 +305,15 @@ impl SessionCoordinator {
     }
 
     fn enqueue_atomic_locked(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
-        let writer = self.writer.as_ref().ok_or_else(|| {
-            if self.header.is_seeded {
-                "session is read-only: a DSH fork continues in DSH, not CLAT"
-            } else {
-                "session is read-only; use /update for a legacy generation, or /new"
-            }
-        })?;
+        // R21 审核勘误修复（2026-11-12）：两个分支都是 'static 字面量，
+        // 先求值再 ok_or 与原 ok_or_else 语义等价（clippy
+        // unnecessary_lazy_evaluations）。
+        let reason = if self.header.is_seeded {
+            "session is read-only: a DSH fork continues in DSH, not CLAT"
+        } else {
+            "session is read-only; use /update for a legacy generation, or /new"
+        };
+        let writer = self.writer.as_ref().ok_or(reason)?;
         if events.is_empty() {
             return Err("cannot append an empty event group".into());
         }

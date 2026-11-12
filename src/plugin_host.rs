@@ -81,6 +81,14 @@ const HOST_TOOL_ALLOWLIST: &[&str] = &[
     "write_file",
     "edit_file",
     "run_command",
+    #[cfg(target_os = "macos")]
+    "ui_apps",
+    #[cfg(target_os = "macos")]
+    "ui_tree",
+    #[cfg(target_os = "macos")]
+    "ui_wait",
+    #[cfg(target_os = "macos")]
+    "ui_act",
 ];
 const HOST_CONTEXT_MAX_ITEMS: usize = 64;
 const HOST_CONTEXT_MAX_BYTES: usize = 256 * 1024;
@@ -291,14 +299,23 @@ impl HostProjectServices {
         definition: &ToolDefinition,
         call: &ToolCall,
         context: &RunHostContext,
-    ) -> (Arc<dyn crate::Tool>, PermissionDecision) {
+    ) -> Result<(Arc<dyn crate::Tool>, PermissionDecision), crate::ToolError> {
         let policy = self
             .permissions
             .create(Arc::clone(&context.approver), &context.cancel);
-        let (tool, prepared) = crate::tool::prepare_tool(tool, &call.arguments);
+        let (tool, prepared) = crate::tool::prepare_tool(tool, &call.arguments, &context.cancel)?;
         let decision = policy.check_prepared(&self.project, definition, call, prepared.as_ref());
-        (tool, decision)
+        Ok((tool, decision))
     }
+}
+
+fn host_invocation_error(tool: &dyn crate::Tool, error: crate::ToolError) -> PluginHostError {
+    let message = if error.recovery().is_some() {
+        tool.error_output(&error).to_string()
+    } else {
+        error.to_string()
+    };
+    PluginHostError::HostTool(message)
 }
 
 #[derive(Clone)]
@@ -771,8 +788,9 @@ impl PluginHostBridge {
         let mut permission_definition = tool.definition();
         permission_definition.name = format!("{}:host:{name}", source.label());
         call.arguments = fence_host_tool_arguments(&services.project, name, call.arguments)?;
-        let (tool, decision) =
-            services.prepare_checked_tool(tool, &permission_definition, &call, &context);
+        let (tool, decision) = services
+            .prepare_checked_tool(tool.clone(), &permission_definition, &call, &context)
+            .map_err(|error| host_invocation_error(tool.as_ref(), error))?;
         match decision {
             PermissionDecision::Allow => {}
             PermissionDecision::Ask { reason }
@@ -793,7 +811,7 @@ impl PluginHostBridge {
                 project: &services.project,
                 cancel: &context.cancel,
             })
-            .map_err(|error| PluginHostError::HostTool(error.to_string()))
+            .map_err(|error| host_invocation_error(tool.as_ref(), error))
     }
 
     /// W1-17/A1（INV-S8 半边）：在途审批/采样所属的 run 是否仍然活着

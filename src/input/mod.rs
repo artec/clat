@@ -9,6 +9,13 @@ mod actions;
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SessionShareSummary {
+    pub(crate) title: String,
+    pub(crate) turns: usize,
+    pub(crate) characters: usize,
+}
+
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputDraft {
@@ -17,6 +24,12 @@ pub struct InputDraft {
     pub uploads: Vec<String>,
     #[serde(default)]
     pub references: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_shares: Vec<crate::application::SessionShareSelection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) session_share_summaries: Vec<SessionShareSummary>,
+    #[serde(skip)]
+    pub(crate) frozen_shares: Vec<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -175,7 +188,10 @@ impl InputQueue {
             return None;
         }
         entry.view.phase = "claiming";
-        Some(entry.message.clone())
+        let mut message = entry.message.clone();
+        message
+            .append_session_share_texts(entry.view.draft.frozen_shares.iter().map(AsRef::as_ref));
+        Some(message)
     }
 
     pub(crate) fn accepts_initial(&self, message: &PendingMessage) -> bool {

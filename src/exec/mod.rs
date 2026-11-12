@@ -615,6 +615,11 @@ fn run_headless_command(
             Ok(CommandOutcome::ShowTask(text) | CommandOutcome::ShowCapabilities(text)) => {
                 write_content_view(text, io, io_state)
             }
+            Ok(CommandOutcome::ShowUiConsents(parts)) => write_content_view(
+                crate::i18n::views::render_parts(io.locale, &parts),
+                io,
+                io_state,
+            ),
             Ok(CommandOutcome::ShowJobs(value)) => write_content_view(
                 crate::background_jobs::command::display(&value, io.locale),
                 io,

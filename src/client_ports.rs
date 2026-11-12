@@ -31,6 +31,7 @@ pub mod host {
     pub use crate::application::{WorkspaceDirectoryEntry, WorkspaceUpdate};
     pub use crate::host_client::HostNotification;
     pub use crate::host_client::PackagedBackend;
+    pub use crate::host_client::{HostSessionSharePreview, HostSharedInput, PreparedSharedMessage};
     pub fn journal_format_version() -> u32 {
         crate::session::compat::SESSION_FORMAT_VERSION
     }
@@ -103,7 +104,8 @@ pub mod history {
         HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit, HistoryPage,
         HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch, OperationDetail,
         OperationDetailRequest, OperationFilter, OperationRow, OperationsPage, OperationsRequest,
-        TrajectoryDetail, TrajectoryDetailRequest, TrajectoryPage, TrajectoryRequest,
+        SessionShare, SessionShareSelection, TrajectoryDetail, TrajectoryDetailRequest,
+        TrajectoryPage, TrajectoryRequest,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 }

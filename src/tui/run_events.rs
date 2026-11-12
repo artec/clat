@@ -111,6 +111,8 @@ impl App {
             application,
             prompt,
             outcome,
+            share_owner,
+            share_ids,
         } = finished;
         self.application = Some(application);
         self.release_core_staged_attachment_paths(std::iter::empty());
@@ -119,13 +121,18 @@ impl App {
         let exit_after_start = std::mem::take(&mut self.quit_after_run_start);
         match outcome {
             Ok(started) => {
+                self.share_drafts.committed(&share_owner, &share_ids);
                 // W1-13：纪元与全部本地 run 状态必须先于 gate
                 // 开放；这样首个 RunStarted 不可能被当成空闲态
                 // 或累加到上一 run 的用量基线。
                 self.run_epoch += 1;
                 let epoch = self.run_epoch;
                 self.cancel_requested = false;
-                self.conversation.push_user(prompt);
+                if share_ids.is_empty() {
+                    self.conversation.push_user(prompt);
+                } else {
+                    self.workflow_starting = true;
+                }
                 self.conversation_scroll_from_bottom = 0;
                 self.run_handle = Some(started.handle);
                 self.running = true;
@@ -159,13 +166,17 @@ impl App {
                 });
             }
             Err(error) => {
-                // The composer was never mutated during handoff.
-                // Restore only text; image IDs/order and staged files
-                // remain byte-for-byte the same for a lossless retry.
-                self.input.insert_str(&prompt);
+                if error.admission_receipt().is_some_and(|receipt| {
+                    receipt.state == crate::message::AdmissionState::Committed
+                }) {
+                    self.share_drafts.committed(&share_owner, &share_ids);
+                    self.clear_attachment_draft();
+                } else {
+                    self.input.insert_str(&prompt);
+                }
                 self.flash_message(
                     UiMessage::new("tui.message_failed_to_start_run_value")
-                        .arg("error", (error).to_string()),
+                        .arg_message("error", error.presentation()),
                 );
             }
         }
@@ -179,6 +190,9 @@ impl App {
             application,
             prompt,
             outcome,
+            share_owner,
+            share_ids,
+            client_id,
         } = finished;
         self.application = Some(application);
         self.release_core_staged_attachment_paths(std::iter::empty());
@@ -188,13 +202,27 @@ impl App {
         let draft_count = self.attachments.len();
         match outcome {
             SteerOutcome::Queued { .. } => {
-                let pending = if prompt.is_empty() {
+                let pending = if draft_count == 0 {
+                    prompt.clone()
+                } else if prompt.is_empty() {
                     format!("[{draft_count} image(s)]")
                 } else {
                     format!("{prompt}\n[{draft_count} image(s)]")
                 };
-                self.conversation.push_pending_steering(pending);
-                self.remember_native_steering(prompt, self.attachments.paths());
+                if let Some(client_id) = client_id {
+                    if self.remember_shared_steering(
+                        prompt,
+                        self.attachments.paths(),
+                        share_owner,
+                        share_ids,
+                        client_id,
+                    ) {
+                        self.conversation.push_pending_steering(pending);
+                    }
+                } else {
+                    self.conversation.push_pending_steering(pending);
+                    self.remember_native_steering(prompt, self.attachments.paths());
+                }
                 self.attachments.clear();
                 self.flash_message(UiMessage::new("tui.steering_pending"));
             }
@@ -232,6 +260,25 @@ impl App {
     }
 
     pub(super) fn handle_run_event(&mut self, event: RunEvent) {
+        if let RunEvent::SteeringApplied {
+            client_message_id: Some(id),
+            ..
+        } = &event
+            && let Some(draft) = self
+                .pending_native_steering
+                .iter()
+                .find(|draft| draft.client_id.as_ref() == Some(id))
+        {
+            let count = draft.attachments.len();
+            let label = if count == 0 {
+                draft.prompt.clone()
+            } else if draft.prompt.is_empty() {
+                format!("[{count} image(s)]")
+            } else {
+                format!("{}\n[{count} image(s)]", draft.prompt)
+            };
+            self.conversation.forget_pending_steering(&label);
+        }
         // 转录装配的唯一 live 入口（G8）：状态行闪烁等呈现逻辑之外，
         // 事件先喂会话模型。
         if let RunEvent::RunStarted { message, .. } = &event {
@@ -342,22 +389,31 @@ impl App {
             RunEvent::ToolFinished { result } => {
                 self.flash_message(tool_finished_message(result.tool_name, result.is_error))
             }
-            RunEvent::SteeringApplied { message, .. } => {
+            RunEvent::SteeringApplied {
+                message,
+                client_message_id,
+                ..
+            } => {
                 // 转录用户块与 pending 区升级都由会话模型负责
                 //（apply_run_event 已处理）；徽标计数派生自 pending 区，
                 // 无独立状态可回收。事件若抢在 admission ack 前到达，
                 // 先记 credit，由稍后注册的本地草稿消费。
                 let prompt = message.plain_text();
-                if let Some(position) = self
-                    .pending_native_steering
-                    .iter()
-                    .position(|draft| draft.prompt == prompt)
+                if let Some(position) =
+                    self.pending_native_steering.iter().position(|draft| {
+                        match (&draft.client_id, &client_message_id) {
+                            (Some(id), Some(actual)) => id == actual,
+                            (None, _) => draft.prompt == prompt,
+                            _ => false,
+                        }
+                    })
                 {
                     if let Some(draft) = self.pending_native_steering.remove(position) {
                         self.release_core_staged_attachment_paths(draft.attachments);
                     }
                 } else if self.steering_admission_pending {
-                    self.native_steering_claim_credits.push_back(prompt);
+                    self.native_steering_claim_credits
+                        .push_back(client_message_id.map_or(prompt, |id| format!("id:{id}")));
                 }
             }
             _ => {}

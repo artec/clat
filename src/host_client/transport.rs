@@ -1,10 +1,10 @@
 use super::HostClient;
+use crate::wire::host::MAX_HOST_BYTES;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::time::Duration;
 
-const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(super) type Response = BufReader<TcpStream>;
 
 pub(super) fn request(
@@ -42,7 +42,7 @@ fn request_with_type_presented(
     body: &[u8],
     content_type: &'static str,
 ) -> Result<Response, crate::i18n::PresentedText> {
-    if body.len() > MAX_BYTES {
+    if body.len() > MAX_HOST_BYTES {
         return Err("host request is too large".into());
     }
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), client.port);
@@ -90,10 +90,10 @@ fn request_with_type_presented(
 pub(super) fn read_body(response: &mut Response) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     response
-        .take((MAX_BYTES + 1) as u64)
+        .take((MAX_HOST_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| "host response interrupted; operation outcome may be uncertain")?;
-    if bytes.len() > MAX_BYTES {
+    if bytes.len() > MAX_HOST_BYTES {
         return Err("host response exceeds the limit".into());
     }
     Ok(bytes)
@@ -154,14 +154,14 @@ impl HostEvents {
     pub fn next_frame(&mut self) -> Result<(String, Value), String> {
         let mut event = String::new();
         let mut data = String::new();
-        let mut remaining = MAX_BYTES;
+        let mut remaining = MAX_HOST_BYTES;
         loop {
             let line = bounded_line(&mut self.reader, remaining)?;
             remaining = remaining.saturating_sub(line.len());
             let line = line.trim_end_matches(['\r', '\n']);
             if line.is_empty() {
                 if event.is_empty() {
-                    remaining = MAX_BYTES;
+                    remaining = MAX_HOST_BYTES;
                     continue;
                 }
                 let value =

@@ -26,14 +26,50 @@ impl App {
             .push_back(super::NativeSteeringDraft {
                 prompt,
                 attachments,
+                client_id: None,
+                share_owner: None,
+                shares: Vec::new(),
             });
+    }
+
+    pub(super) fn remember_shared_steering(
+        &mut self,
+        prompt: String,
+        attachments: Vec<PathBuf>,
+        owner: Option<SessionId>,
+        ids: Vec<String>,
+        client_id: String,
+    ) -> bool {
+        let shares = self.share_drafts.take_sent(&owner, &ids);
+        let credit = format!("id:{client_id}");
+        if let Some(index) = self
+            .native_steering_claim_credits
+            .iter()
+            .position(|value| value == &credit)
+        {
+            self.native_steering_claim_credits.remove(index);
+            self.release_core_staged_attachment_paths(attachments);
+            return false;
+        }
+        self.pending_native_steering
+            .push_back(super::NativeSteeringDraft {
+                prompt,
+                attachments,
+                client_id: Some(client_id),
+                share_owner: owner,
+                shares,
+            });
+        true
     }
 
     /// Restore one exact unclaimed draft without merging message boundaries.
     /// Additional drafts remain ordered for subsequent retries, so several
     /// individually valid eight-image messages never become one invalid one.
     pub(super) fn restore_next_recovered_steering(&mut self) -> bool {
-        if !self.input.text().is_empty() || !self.attachments.is_empty() {
+        if !self.input.text().is_empty()
+            || !self.attachments.is_empty()
+            || !self.share_drafts.items(&self.session_id).is_empty()
+        {
             return false;
         }
         let Some(draft) = self.recovered_native_steering.pop_front() else {
@@ -52,6 +88,7 @@ impl App {
             return false;
         }
         self.input.insert_str(&draft.prompt);
+        self.share_drafts.restore(draft.share_owner, draft.shares);
         let remaining = self.recovered_native_steering.len();
         self.flash_status(if remaining == 0 {
             UiMessage::new("tui.unclaimed_steering_restored_edit_or_enter_to_retry")
@@ -119,9 +156,14 @@ impl App {
                 id,
                 pinned,
                 archived,
-            } => self.organize_picker_session(id, pinned, archived),
+            } => {
+                if self.share_picker.is_none() {
+                    self.organize_picker_session(id, pinned, archived);
+                }
+            }
             ResumeAction::Cancel => {
                 self.session_picker = None;
+                self.share_picker = None;
             }
             ResumeAction::OpenDsh(row) => {
                 // dsh 七步切换（§2.6，§0-1 create 收养式）：②在
@@ -131,6 +173,10 @@ impl App {
             }
             ResumeAction::Open(session_id) => {
                 self.session_picker = None;
+                if let Some(range) = self.share_picker.take() {
+                    self.preview_session_share(session_id, range);
+                    return;
+                }
                 if self.native.is_some() {
                     self.submit_native(format!("/resume {}", session_id.as_str()));
                     return;
@@ -691,13 +737,19 @@ impl App {
         }
         let value = self.input.take();
         let value = value.trim().to_owned();
+        if self.handle_share_command(&value) {
+            return;
+        }
         if self.handle_attachment_command(&value) {
             return;
         }
         // 附件只随对话消息走：slash 命令不携带、也不清空（留待下一
         // 条消息）；纯附件（空文本）允许提交。
         let is_command = value.starts_with('/');
-        if value.is_empty() && (self.attachments.is_empty() || is_command) {
+        if value.is_empty()
+            && (self.attachments.is_empty() && self.share_drafts.items(&self.session_id).is_empty()
+                || is_command)
+        {
             return;
         }
         // 输入历史是进程内的（↑/↓ 召回）；跨重启的回忆来自会话的
@@ -726,23 +778,7 @@ impl App {
         // 命令语义全部在 core 注册表（INV-C1）：这里只剩「分发 → 渲染」。
         // 附件剥离/输入历史等输入路由留在前端。
         if is_command {
-            if value == "/suggest" {
-                let _ = self.start_prompt_suggestion();
-                return;
-            }
-            let outcome = match self.application.as_mut() {
-                Some(application) => application.dispatch_command(&value),
-                None => Err(CommandError::Failed {
-                    message: self
-                        .locale
-                        .text("tui.project_application_is_unavailable")
-                        .to_owned(),
-                }),
-            };
-            match outcome {
-                Ok(outcome) => self.render_command_outcome(outcome),
-                Err(error) => self.flash_message(error.presentation()),
-            }
+            self.submit_local_command(&value);
         } else {
             if !self.attachments.is_empty() && !self.config.capabilities.accepts_image_input() {
                 self.input.insert_str(&value);
@@ -755,6 +791,26 @@ impl App {
                 // draft and text so Enter is a lossless retry.
                 self.input.insert_str(&value);
             }
+        }
+    }
+
+    fn submit_local_command(&mut self, value: &str) {
+        if value == "/suggest" {
+            let _ = self.start_prompt_suggestion();
+            return;
+        }
+        let outcome = match self.application.as_mut() {
+            Some(application) => application.dispatch_command(value),
+            None => Err(CommandError::Failed {
+                message: self
+                    .locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned(),
+            }),
+        };
+        match outcome {
+            Ok(outcome) => self.render_command_outcome(outcome),
+            Err(error) => self.flash_message(error.presentation()),
         }
     }
 
@@ -852,6 +908,13 @@ impl App {
     fn show_jobs(&mut self, value: serde_json::Value) {
         self.show_host_content("/jobs", serde_json::json!({"kind":"jobs","jobs":value}));
     }
+    fn show_ui_consents(&mut self, presentation: Vec<UiMessage>) {
+        self.show_host_content(
+            "/ui-consents",
+            serde_json::json!({"kind":"ui_consents","message":"","presentation":presentation}),
+        );
+    }
+
     fn show_schedules(&mut self, value: serde_json::Value) {
         self.show_host_content(
             "/schedule",
@@ -921,6 +984,7 @@ impl App {
             CommandOutcome::ShowCapabilities(text) => {
                 self.show_command_content("/capabilities", text)
             }
+            CommandOutcome::ShowUiConsents(parts) => self.show_ui_consents(parts),
             CommandOutcome::StartTaskRun(task) => {
                 self.start_controlled_run(Some(task));
             }
@@ -954,10 +1018,16 @@ impl App {
         }
         let value = self.input.take();
         let value = value.trim().to_owned();
+        if self.handle_share_command(&value) {
+            return;
+        }
         if self.handle_attachment_command(&value) {
             return;
         }
-        if value.is_empty() && self.attachments.is_empty() {
+        if value.is_empty()
+            && self.attachments.is_empty()
+            && self.share_drafts.items(&self.session_id).is_empty()
+        {
             return;
         }
         if value.starts_with('/') {
@@ -989,7 +1059,7 @@ impl App {
         }
         self.input.remember(value.clone());
         let paths = self.attachments.paths();
-        if !paths.is_empty() {
+        if !paths.is_empty() || !self.share_drafts.items(&self.session_id).is_empty() {
             // `steer` admits staged images before pushing the pending message.
             // That can decode/normalize up to eight inputs, so use the same
             // sole-owner handoff as initial attachment admission instead of
@@ -1047,6 +1117,9 @@ impl App {
             self.flash_message(UiMessage::new("tui.project_application_is_unavailable"));
             return false;
         };
+        let share_owner = self.session_id.clone();
+        let (share_ids, share_selections) = self.session_share_submission();
+        let client_id = (!share_ids.is_empty()).then(|| uuid::Uuid::new_v4().to_string());
         let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
         let worker_sender = sender.clone();
         let spawn = thread::Builder::new()
@@ -1055,16 +1128,30 @@ impl App {
                 let Ok(application) = received.recv() else {
                     return;
                 };
-                let outcome = application.steer(crate::message::PendingMessage::from_front_end(
+                let message = crate::message::PendingMessage::from_front_end(
                     prompt.clone(),
-                    None,
+                    client_id.clone(),
                     attachments,
-                ));
+                );
+                let outcome = match application.freeze_session_share_message(
+                    message,
+                    &share_selections,
+                    &crate::CancelToken::new(),
+                ) {
+                    Ok(message) => application.steer(message),
+                    Err(error) => SteerOutcome::Refused {
+                        reason: error.to_string(),
+                        receipt: None,
+                    },
+                };
                 let message = UiEvent::Worker(WorkerMessage::SteeringAdmissionFinished(Box::new(
                     SteeringAdmissionFinished {
                         application,
                         prompt,
                         outcome,
+                        share_owner,
+                        share_ids,
+                        client_id,
                     },
                 )));
                 if let Err(error) = worker_sender.send(message)
@@ -1122,10 +1209,12 @@ impl App {
         if !self.require_configured_model() {
             return false;
         }
-        if attachments.is_empty() {
+        let (share_ids, share_selections) = self.session_share_submission();
+        if attachments.is_empty() && share_ids.is_empty() {
             return self.start_text_run(prompt);
         }
-        if !self.image_admission_available() {
+        let includes_images = !attachments.is_empty();
+        if includes_images && !self.image_admission_available() {
             return false;
         }
         let sender = self
@@ -1136,6 +1225,7 @@ impl App {
             self.flash_message(UiMessage::new("tui.project_application_is_unavailable"));
             return false;
         };
+        let share_owner = self.session_id.clone();
         // Spawn before moving the application. If the OS refuses the thread,
         // the frontend still owns the exact live application and can retry.
         let (handoff, received) = mpsc::sync_channel::<TrustedProjectApplication>(0);
@@ -1148,12 +1238,18 @@ impl App {
                 };
                 let (completion, completed) = mpsc::channel();
                 let gate = RunStartGate::closed();
-                let request = ApplicationRunRequest {
-                    message: crate::message::PendingMessage::from_front_end(
-                        prompt.clone(),
-                        None,
-                        attachments,
-                    ),
+                let message = crate::message::PendingMessage::from_front_end(
+                    prompt.clone(),
+                    (!share_ids.is_empty()).then(|| uuid::Uuid::new_v4().to_string()),
+                    attachments,
+                );
+                let message = application.freeze_session_share_message(
+                    message,
+                    &share_selections,
+                    &crate::CancelToken::new(),
+                );
+                let request = message.map(|message| ApplicationRunRequest {
+                    message,
                     asker: Some(Arc::new(ChannelUserAsker::new(worker_sender.clone()))),
                     approver: Arc::new(ChannelApprover::new(worker_sender.clone())),
                     events: Box::new(DeferredChannelEventSink::new(
@@ -1161,22 +1257,21 @@ impl App {
                         gate.clone(),
                     )),
                     completion,
-                };
-                let outcome = application.start_run(request).map_or_else(
-                    |error| Err(error.to_string()),
-                    |handle| {
-                        Ok(PreparedTuiRun {
-                            handle,
-                            completed,
-                            gate,
-                        })
-                    },
-                );
+                });
+                let outcome = request
+                    .and_then(|request| application.start_run(request))
+                    .map(|handle| PreparedTuiRun {
+                        handle,
+                        completed,
+                        gate,
+                    });
                 let message = UiEvent::Worker(WorkerMessage::RunStartFinished(Box::new(
                     RunStartFinished {
                         application,
                         prompt,
                         outcome,
+                        share_owner,
+                        share_ids,
                     },
                 )));
                 if let Err(error) = worker_sender.send(message) {
@@ -1210,7 +1305,11 @@ impl App {
         }
         self.run_start_pending = true;
         self.steering_admission_pending = false;
-        self.flash_message(UiMessage::new("tui.preparing_attachments"));
+        self.flash_message(UiMessage::new(if includes_images {
+            "tui.preparing_attachments"
+        } else {
+            "input.share_freezing"
+        }));
         true
     }
 
@@ -1222,13 +1321,24 @@ impl App {
     }
 
     pub(super) fn start_text_run_kind(&mut self, prompt: String, queued: bool) -> bool {
+        let (message, sent_shares) = match self.freeze_local_session_shares(
+            crate::message::PendingMessage::text(prompt.clone()),
+            queued,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.flash_status(error);
+                return false;
+            }
+        };
+        let share_owner = self.session_id.clone();
         let sender = self
             .event_sender
             .clone()
             .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
-            message: crate::message::PendingMessage::text(prompt.clone()),
+            message,
             asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),
@@ -1259,6 +1369,7 @@ impl App {
                 return false;
             }
         };
+        self.share_drafts.committed(&share_owner, &sent_shares);
         self.run_epoch += 1;
         let epoch = self.run_epoch;
         self.conversation.push_user(prompt);

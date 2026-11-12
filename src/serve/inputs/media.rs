@@ -12,6 +12,9 @@ pub(super) fn draft(params: &Map<String, Value>) -> Result<InputDraft, RpcError>
     let references: Vec<Value> =
         serde_json::from_value(params.get("references").cloned().unwrap_or(json!([])))
             .map_err(|_| failed("invalid references"))?;
+    let session_shares =
+        serde_json::from_value(params.get("sessionShares").cloned().unwrap_or(json!([])))
+            .map_err(|_| failed("invalid session share selection"))?;
     if serde_json::to_vec(&references)
         .map_err(|_| failed("invalid references"))?
         .len()
@@ -23,6 +26,9 @@ pub(super) fn draft(params: &Map<String, Value>) -> Result<InputDraft, RpcError>
         draft_scope_id,
         uploads,
         references,
+        session_shares,
+        frozen_shares: Vec::new(),
+        session_share_summaries: Vec::new(),
     })
 }
 

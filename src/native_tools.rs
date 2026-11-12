@@ -18,6 +18,12 @@ mod edit;
 mod edit_recovery;
 mod export;
 mod read;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod ui;
+#[cfg(target_os = "macos")]
+mod ui_apps;
+#[cfg(any(target_os = "macos", test))]
+mod ui_state;
 mod write;
 
 pub use read::ReadFileTool;
@@ -2116,6 +2122,26 @@ mod tests {
     /// Stage-0 characterization: model-visible tool order is part of the
     /// request/cache surface and must survive registry/plugin migration.
     #[test]
+    #[cfg(target_os = "macos")]
+    fn ui_apps_is_registered_as_structure_read() {
+        assert_eq!(
+            ui_apps::UiApps.definition().effect,
+            ToolEffect::UIStructureRead
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn ui_apps_honours_cancellation_before_inventory() {
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let error = ui_apps::UiApps
+            .invoke(&json!({}), &Project::new("."), &cancel)
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
     fn native_tool_definition_order_is_stable() {
         let definitions = native_read_tools()
             .into_iter()
@@ -2133,19 +2159,16 @@ mod tests {
             ))
             .map(|tool| tool.definition().name)
             .collect::<Vec<_>>();
-        assert_eq!(
-            definitions,
-            [
-                "list_files",
-                "read_file",
-                "search",
-                "write_file",
-                "edit_file",
-                "export_patch",
-                "run_command",
-                "ask_user"
-            ]
-        );
+        let mut expected = vec!["list_files", "read_file"];
+        expected.extend([
+            "search",
+            "write_file",
+            "edit_file",
+            "export_patch",
+            "run_command",
+            "ask_user",
+        ]);
+        assert_eq!(definitions, expected);
     }
 }
 

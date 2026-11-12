@@ -27,7 +27,11 @@ impl TrustedProjectApplication {
         {
             return Err(ApplicationError::new("pending input limit reached"));
         }
-        if edit.text.trim().is_empty() && keep.is_empty() && edit.attachments.is_empty() {
+        if edit.text.trim().is_empty()
+            && keep.is_empty()
+            && edit.attachments.is_empty()
+            && old.view.draft.session_shares.is_empty()
+        {
             return Err(ApplicationError::new("empty input"));
         }
         if !edit.attachments.is_empty() {
@@ -73,12 +77,14 @@ impl TrustedProjectApplication {
             Some(id.to_owned()),
             draft.uploads.iter().map(std::path::PathBuf::from).collect(),
         );
+        message.bind_session_share_identity(&draft.session_shares);
         message.resolve_staged_attachments(paths);
         if self.current_session_id().is_some() {
             message = self
                 .prepare_input_message(message)
                 .map_err(|error| ApplicationError::new(error.reason))?;
         }
+        self.validate_frozen_input(&message, &draft)?;
         let destination = draft.draft_scope_id.clone();
         self.input_queue()
             .replace(id, version, message, draft, || {

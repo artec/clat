@@ -15,6 +15,7 @@ impl HostClient {
             "/task" | "/task show" => Some("/task"),
             "/task check" => Some("/task check"),
             "/sub" | "/subagents" => Some("/sub"),
+            "/ui-consents" => Some("/ui-consents"),
             _ if command.split_whitespace().next() == Some("/history") => Some("/history"),
             _ if command.split_whitespace().next() == Some("/jobs") => Some("/jobs"),
             _ if command.split_whitespace().next() == Some("/schedule") => Some("/schedule"),

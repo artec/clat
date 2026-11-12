@@ -223,6 +223,8 @@ pub struct PendingMessage {
     /// later enriched with normalized descriptors. Initial submissions do
     /// not need this because `prepare_run` computes before enrichment.
     pub(crate) submission_digest: Option<String>,
+    /// Process-local admission metadata. The journal stores only user text.
+    pub(crate) contains_session_share: bool,
 }
 
 impl PendingMessage {
@@ -234,6 +236,7 @@ impl PendingMessage {
             staged_attachments: Vec::new(),
             admitted_images: Vec::new(),
             submission_digest: None,
+            contains_session_share: false,
         }
     }
 
@@ -249,6 +252,19 @@ impl PendingMessage {
             staged_attachments,
             admitted_images: Vec::new(),
             submission_digest: None,
+            contains_session_share: false,
+        }
+    }
+
+    pub(crate) fn append_session_share_texts<'a>(
+        &mut self,
+        texts: impl IntoIterator<Item = &'a str>,
+    ) {
+        for text in texts {
+            self.contains_session_share = true;
+            self.content.blocks.push(ContentBlock::Text {
+                text: format!("\n\n{text}"),
+            });
         }
     }
 

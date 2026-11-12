@@ -217,6 +217,78 @@ fn native_image_submission_uses_uploads_and_keeps_admission_receipt() {
 }
 
 #[test]
+fn native_shared_message_with_image_reaches_the_host_as_one_admission() {
+    use crate::client_ports::host::HostClient;
+    let (handle, storage, project) = spawn_serve("native-share-image", TestBehavior::Success);
+    let client = HostClient::connect(handle.addr.port(), TEST_TOKEN.into(), &storage).unwrap();
+    let mut source_events = SseClient::connect(handle.addr);
+    let original = "source paragraph ".repeat(5_000);
+    assert!(original.len() > 64 * 1024);
+    prompt_send(handle.addr, &original);
+    source_events.wait_settled();
+    let source = client.call("session.info", &json!({})).unwrap()["session_id"].clone();
+    client.call("session.new", &json!({})).unwrap();
+    let info = client.call("workbench.info", &json!({})).unwrap();
+    let reference = crate::application::HistoryReference {
+        project: info["project"]["root"].as_str().map(str::to_owned),
+        session: source.as_str().unwrap().to_owned(),
+        seq: None,
+    };
+    let selection = host_selection(&client);
+    let preview = client
+        .session_share_preview(&reference, None, selection)
+        .unwrap();
+    let image = project.join("share-image.png");
+    std::fs::write(&image, png_bytes(4, 3)).unwrap();
+    let mut events = SseClient::connect(handle.addr);
+    let prepared = client
+        .prepare_shared_message(
+            "",
+            &[image],
+            false,
+            selection,
+            std::slice::from_ref(&preview.selection),
+        )
+        .unwrap();
+    let result = client.submit_prepared_shared_message(&prepared).unwrap();
+    assert_eq!(result["receipt"]["state"], "committed");
+    assert_eq!(
+        result["receipt"]["attachment_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    events.wait_settled();
+    let before_retry = client.call("session.history", &json!({})).unwrap();
+    let retry = client.submit_prepared_shared_message(&prepared).unwrap();
+    assert_eq!(retry["receipt"], result["receipt"]);
+    assert_eq!(
+        before_retry,
+        client.call("session.history", &json!({})).unwrap()
+    );
+    let history = client
+        .call("session.history", &json!({}))
+        .unwrap()
+        .to_string();
+    assert!(history.contains(&original));
+    assert!(history.contains("image/png"));
+    let error = client
+        .submit_message_with_shares("", &[], true, selection, &[preview.selection])
+        .unwrap_err();
+    assert_eq!(error.code.as_deref(), Some("not-running"));
+    assert!(!error.committed());
+    assert_eq!(
+        history,
+        client
+            .call("session.history", &json!({}))
+            .unwrap()
+            .to_string()
+    );
+    cleanup(handle, &storage, &project);
+}
+
+#[test]
 fn reconnect_represents_each_admitted_input_once() {
     let (handle, storage, project) = spawn_approval_serve("reconnect-input-once");
     let mut first = SseClient::connect(handle.addr);

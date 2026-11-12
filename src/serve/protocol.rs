@@ -105,6 +105,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "operations.list",
     "operations.detail",
     "history.conversation",
+    "history.share.preview",
     "history.search",
     "history.events",
     "history.event.read",
@@ -368,9 +369,7 @@ pub(crate) fn parse_rpc_result(body: &str) -> Result<ParsedRpcResult, String> {
 // —— SSE 帧编解码（§5.1）———————————————————————————————————————————
 
 /// 三行式帧 + 空行：`event:` / `id:` / `data:`。
-pub(crate) fn encode_sse_frame(event: &str, seq: u64, data: &str) -> String {
-    format!("event: {event}\nid: {seq}\ndata: {data}\n\n")
-}
+pub(crate) use crate::wire::host::encode_sse_frame;
 
 /// 心跳 comment（SSE 规范：`:` 开头的行被客户端忽略）。
 pub(crate) fn encode_heartbeat() -> &'static str {
@@ -483,38 +482,7 @@ fn dispatch_guarded_project(
         && let Some(expected) = params.get("expected_selection_generation")
         && expected.as_u64() != Some(shared.selection_generation())
     {
-        // Only replay an already-produced receipt across a selection change.
-        // This cannot pop input from the newly selected session.
-        if method.starts_with("input.")
-            && let Some(receipt) = super::inputs::replay(method, params, shared)
-        {
-            return receipt;
-        }
-        if method == "queue.select"
-            && let Some(operation) = params.get("operationId").and_then(Value::as_str)
-            && let Some(item) = params.get("itemId").and_then(Value::as_str)
-            && let Some(session) = params.get("session").and_then(Value::as_str)
-            && let Some(receipt) = shared
-                .app
-                .lock()
-                .expect("application lock")
-                .selected_next_turn_receipt(operation, item, session)
-        {
-            return Ok(json!({"item": receipt}));
-        }
-        if method == "queue.recall"
-            && let Some(id) = params.get("clientMessageId").and_then(Value::as_str)
-            && let Some(item) = shared
-                .app
-                .lock()
-                .expect("application lock")
-                .recalled_next_turn_receipt(id)
-        {
-            return Ok(json!({"item": item}));
-        }
-        return Err(RpcError::busy(
-            "session selection changed; refresh before submitting",
-        ));
+        return replay_after_selection_change(method, params, shared);
     }
     if method == "workflow.action" {
         return super::workflow::action(shared, params);
@@ -541,6 +509,59 @@ fn dispatch_guarded_project(
         );
     }
     dispatch_project(method, params, shared)
+}
+
+fn replay_after_selection_change(
+    method: &str,
+    params: &Value,
+    shared: &Arc<ServeShared>,
+) -> Result<Value, RpcError> {
+    // Only replay an already-produced receipt across a selection change.
+    // This cannot pop input from the newly selected session.
+    if matches!(method, "prompt.send" | "steer.send")
+        && let Some(params) = params.as_object()
+        && let Ok(message_input::Submission { message, .. }) =
+            message_input::parse(params, method == "steer.send")
+        && let Some(receipt) = committed_retry_check(shared, &message)
+    {
+        return receipt.map(|value| {
+            if method == "steer.send" {
+                json!({"outcome":"queued", "receipt":value["receipt"]})
+            } else {
+                value
+            }
+        });
+    }
+    if method.starts_with("input.")
+        && let Some(receipt) = super::inputs::replay(method, params, shared)
+    {
+        return receipt;
+    }
+    if method == "queue.select"
+        && let Some(operation) = params.get("operationId").and_then(Value::as_str)
+        && let Some(item) = params.get("itemId").and_then(Value::as_str)
+        && let Some(session) = params.get("session").and_then(Value::as_str)
+        && let Some(receipt) = shared
+            .app
+            .lock()
+            .expect("application lock")
+            .selected_next_turn_receipt(operation, item, session)
+    {
+        return Ok(json!({"item": receipt}));
+    }
+    if method == "queue.recall"
+        && let Some(id) = params.get("clientMessageId").and_then(Value::as_str)
+        && let Some(item) = shared
+            .app
+            .lock()
+            .expect("application lock")
+            .recalled_next_turn_receipt(id)
+    {
+        return Ok(json!({"item": item}));
+    }
+    Err(RpcError::busy(
+        "session selection changed; refresh before submitting",
+    ))
 }
 
 fn dispatch_project(
@@ -987,6 +1008,11 @@ fn command_reply(
         crate::CommandOutcome::ShowCapabilities(message) => {
             Ok(json!({"kind":"capabilities", "message":message}))
         }
+        crate::CommandOutcome::ShowUiConsents(parts) => Ok(json!({
+            "kind":"ui_consents",
+            "message":crate::i18n::views::render_parts(crate::i18n::LocaleContext::default(), &parts),
+            "presentation":parts
+        })),
         crate::CommandOutcome::QueryHistory(request) => {
             let reader = with_app(shared, |app| Ok(app.history_reader())).map_err(app_error)?;
             let view = reader
@@ -1098,7 +1124,13 @@ fn start_goal_run(
 /// `prompt.send`：受理即应答（结果在事件流，§5.5）。busy 即拒——
 /// run 队列是产品语义，无病历不立（§4/§11-6）。
 fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
-    let (mut message, upload_ids, draft_scope_id) = message_input::parse(params, false)?;
+    let message_input::Submission {
+        mut message,
+        upload_ids,
+        draft_scope_id,
+        shares,
+    } = message_input::parse(params, false)?;
+    let share_generation = (!shares.is_empty()).then(|| shared.selection_generation());
     // 第一道（claim 前）：挡住绝大多数已完成的重复提交。
     if let Some(outcome) = committed_retry_check(shared, &message) {
         return outcome;
@@ -1106,15 +1138,12 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
 
     with_app(shared, |app| app.ensure_user_images(&message))?;
     let rpc_id = uuid::Uuid::new_v4().to_string();
-    // 先占 run 槽再锁应用（锁纪律：Inner 锁内不调门面；busy 判定与
-    // 缓冲归属之间无窗口）。
+    // Claim the run before taking the application lock.
     if !shared.try_claim_run(&rpc_id, super::state::now_ms()) {
         return Err(RpcError::busy("another run is already active")
             .with_receipt(rolled_back_receipt(&message, "run-busy")));
     }
-    // 第二道（claim 后复查）：关掉「检查与 append 之间上一个同键 run
-    // 恰好完成落盘」的竞态窗口——claim 是串行点，复查之后不再可能
-    // 有并发同键 append。
+    // Recheck after the claim serializes concurrent admissions.
     if let Some(outcome) = committed_retry_check(shared, &message) {
         shared.release_run_claim();
         return outcome;
@@ -1126,6 +1155,11 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     let client_key = message.client_message_id.clone();
     let started = {
         let mut app = shared.app.lock().expect("application lock");
+        if let Err(error) = append_shares(shared, &app, share_generation, &mut message, &shares) {
+            drop(app);
+            shared.release_run_claim();
+            return Err(RpcError::from(error));
+        }
         if let Some(scope_id) = draft_scope_id.as_deref() {
             // Selection commit + generation publication and draft
             // reservation serialize on the Application lock. A reservation
@@ -1151,32 +1185,71 @@ fn prompt_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
                 shared.drafts.commit_uploads(scope_id, &upload_ids);
             }
             shared.spawn_settler(rpc_id.clone(), completion_rx, handle);
-            // M-03：受理即应答携带 committed 回执——start_run 返回时
-            // user/message 已 append+flush（prepare 在调用线程执行）、
-            // 投影已 fold（flush 同步 fold），此刻 journal 即权威。
-            let mut response = json!({ "prompt_rpc_id": rpc_id });
-            if let Some(id) = &client_key
-                && let Some(record) = with_app(shared, |app| app.committed_admission(id))
-            {
-                response["receipt"] = super::shapes::admission_receipt_value(&record.receipt);
-            }
-            Ok(response)
+            Ok(prompt_committed_response(
+                shared,
+                &rpc_id,
+                client_key.as_deref(),
+            ))
         }
-        Err(error) => {
-            shared.release_run_claim();
-            let receipt = error.admission_receipt().cloned().map(Box::new);
-            if let Some(scope_id) = draft_scope_id.as_deref() {
-                if receipt.as_deref().is_some_and(|receipt| {
-                    receipt.state == crate::message::AdmissionState::Committed
-                }) {
-                    shared.drafts.commit_uploads(scope_id, &upload_ids);
-                } else {
-                    shared.drafts.rollback_uploads(scope_id, &upload_ids);
-                }
-            }
-            Err(RpcError::internal(format!("could not start run: {error}")).with_receipt(receipt))
+        Err(error) => Err(prompt_start_error(
+            shared,
+            error,
+            draft_scope_id.as_deref(),
+            &upload_ids,
+        )),
+    }
+}
+
+fn append_shares(
+    shared: &ServeShared,
+    app: &crate::TrustedProjectApplication,
+    generation: Option<u64>,
+    message: &mut crate::message::PendingMessage,
+    shares: &[crate::application::SessionShareSelection],
+) -> Result<(), crate::ApplicationError> {
+    check_share_generation(shared, generation)?;
+    app.append_session_shares(message, shares, &crate::CancelToken::new())
+}
+
+// start_run has flushed the user message and folded its admission receipt.
+fn prompt_committed_response(
+    shared: &Arc<ServeShared>,
+    rpc_id: &str,
+    client_key: Option<&str>,
+) -> Value {
+    let mut response = json!({ "prompt_rpc_id": rpc_id });
+    if let Some(id) = client_key
+        && let Some(record) = with_app(shared, |app| app.committed_admission(id))
+    {
+        response["receipt"] = super::shapes::admission_receipt_value(&record.receipt);
+    }
+    response
+}
+
+fn prompt_start_error(
+    shared: &Arc<ServeShared>,
+    error: crate::application::ApplicationError,
+    scope: Option<&str>,
+    uploads: &[String],
+) -> RpcError {
+    shared.release_run_claim();
+    let receipt = error.admission_receipt().cloned().map(Box::new);
+    if let Some(scope_id) = scope {
+        if receipt
+            .as_deref()
+            .is_some_and(|receipt| receipt.state == crate::message::AdmissionState::Committed)
+        {
+            shared.drafts.commit_uploads(scope_id, uploads);
+        } else {
+            shared.drafts.rollback_uploads(scope_id, uploads);
         }
     }
+    let presentation = error.presentation();
+    let reply = RpcError::internal(format!("could not start run: {error}")).with_receipt(receipt);
+    if presentation.key == "input.share_host_frame_too_large" {
+        return reply.with_presentation(presentation);
+    }
+    reply
 }
 
 // Caller holds Application: selection and the reservation share one boundary.
@@ -1205,34 +1278,16 @@ fn reserve_prompt_uploads(
 /// cancel，浏览器还能把同一草稿作为普通 prompt 重试。NotRunning/Refused
 /// 均立即回滚 raw reservation。
 fn steer_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
-    let (mut message, upload_ids, draft_scope_id) = message_input::parse(params, true)?;
+    let message_input::Submission {
+        mut message,
+        upload_ids,
+        draft_scope_id,
+        shares,
+    } = message_input::parse(params, true)?;
+    let share_generation = (!shares.is_empty()).then(|| shared.selection_generation());
     let request_digest = message.request_digest();
-    if let Some(client_message_id) = message.client_message_id.as_deref() {
-        if let Some(record) = with_app(shared, |app| app.committed_admission(client_message_id)) {
-            if record
-                .request_digest
-                .as_deref()
-                .is_some_and(|recorded| recorded != request_digest)
-            {
-                return Err(RpcError::bad_request(
-                    "clientMessageId is already committed with a different payload",
-                )
-                .with_receipt(Some(Box::new(
-                    record.receipt.with_failure_phase("idempotency-conflict"),
-                ))));
-            }
-            return Ok(steer_outcome_value("queued", Some(&record.receipt)));
-        }
-        match shared.pending_steering_retry(client_message_id, &request_digest) {
-            Ok(Some(receipt)) => return Ok(steer_outcome_value("queued", Some(&receipt))),
-            Ok(None) => {}
-            Err(receipt) => {
-                return Err(RpcError::bad_request(
-                    "clientMessageId is already queued with a different payload",
-                )
-                .with_receipt(Some(Box::new(receipt))));
-            }
-        }
+    if let Some(outcome) = steering_retry(shared, &message, &request_digest) {
+        return outcome;
     }
     with_app(shared, |app| app.ensure_user_images(&message))?;
     if let Some(scope_id) = draft_scope_id.as_deref() {
@@ -1247,7 +1302,19 @@ fn steer_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<
             .map_err(RpcError::bad_request)?;
         message.resolve_staged_attachments(paths);
     }
-    let outcome = with_app(shared, |app| app.steer(message));
+    let outcome = with_app(shared, |app| {
+        append_shares(shared, app, share_generation, &mut message, &shares)?;
+        Ok::<_, crate::application::ApplicationError>(app.steer(message))
+    });
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if let Some(scope_id) = draft_scope_id.as_deref() {
+                shared.drafts.rollback_uploads(scope_id, &upload_ids);
+            }
+            return Err(RpcError::from(error));
+        }
+    };
     match outcome {
         SteerOutcome::Queued { receipt } => {
             if let (Some(client_message_id), Some(receipt)) = (
@@ -1274,8 +1341,61 @@ fn steer_send(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<
             if let Some(scope_id) = draft_scope_id.as_deref() {
                 shared.drafts.rollback_uploads(scope_id, &upload_ids);
             }
-            Err(RpcError::bad_request(reason).with_receipt(receipt))
+            let host_frame = receipt
+                .as_ref()
+                .and_then(|receipt| receipt.failure_phase.as_deref())
+                == Some("steering-host-frame");
+            let mut error = RpcError::bad_request(reason).with_receipt(receipt);
+            if host_frame {
+                error = error.with_presentation(crate::i18n::UiMessage::new(
+                    "input.share_host_frame_too_large",
+                ));
+            }
+            Err(error)
         }
+    }
+}
+
+fn check_share_generation(
+    shared: &ServeShared,
+    expected: Option<u64>,
+) -> Result<(), crate::application::ApplicationError> {
+    if expected.is_some_and(|generation| generation != shared.selection_generation()) {
+        return Err(crate::application::ApplicationError::presented(
+            crate::i18n::UiMessage::new("history.scope_changed").arg("detail", ""),
+        ));
+    }
+    Ok(())
+}
+
+fn steering_retry(
+    shared: &Arc<ServeShared>,
+    message: &crate::message::PendingMessage,
+    digest: &str,
+) -> Option<Result<Value, RpcError>> {
+    let id = message.client_message_id.as_deref()?;
+    if let Some(record) = with_app(shared, |app| app.committed_admission(id)) {
+        if record
+            .request_digest
+            .as_deref()
+            .is_some_and(|recorded| recorded != digest)
+        {
+            return Some(Err(RpcError::bad_request(
+                "clientMessageId is already committed with a different payload",
+            )
+            .with_receipt(Some(Box::new(
+                record.receipt.with_failure_phase("idempotency-conflict"),
+            )))));
+        }
+        return Some(Ok(steer_outcome_value("queued", Some(&record.receipt))));
+    }
+    match shared.pending_steering_retry(id, digest) {
+        Ok(Some(receipt)) => Some(Ok(steer_outcome_value("queued", Some(&receipt)))),
+        Ok(None) => None,
+        Err(receipt) => Some(Err(RpcError::bad_request(
+            "clientMessageId is already queued with a different payload",
+        )
+        .with_receipt(Some(Box::new(receipt))))),
     }
 }
 
@@ -1361,6 +1481,7 @@ fn dispatch_workbench_tools(
         | "library.reference.add" => super::page_queries::library(shared, method, params),
         "history.attachment"
         | "history.conversation"
+        | "history.share.preview"
         | "history.search"
         | "history.events"
         | "history.trajectory"

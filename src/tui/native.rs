@@ -47,6 +47,15 @@ pub(super) enum NativeEvent {
     Offline(u64, String),
     Snapshot(u64, u64, Result<Value, String>),
     Submitted(Result<Value, HostCallError>),
+    SharedSubmitted {
+        owner: Option<SessionId>,
+        ids: Vec<String>,
+        text: String,
+        images: Vec<PathBuf>,
+        selection: u64,
+        prepared: Option<crate::host::PreparedSharedMessage>,
+        result: Result<Value, HostCallError>,
+    },
     SelectedNextTurn {
         epoch: u64,
         operation: String,
@@ -65,6 +74,13 @@ pub(super) enum NativeEvent {
     ),
     ApprovalReply(Result<Value, String>),
     Sessions(u64, u64, Result<Vec<crate::SessionSummary>, String>),
+    SharePreview(
+        u64,
+        u64,
+        Option<SessionId>,
+        Option<super::session_share::ShareRefresh>,
+        Result<crate::host::HostSessionSharePreview, String>,
+    ),
     Renamed(u64, u64, Result<Value, String>),
     Models(u64, u64, Result<crate::host::HostModelChoices, String>),
     ModelChanged(u64, u64, Result<Value, String>),
@@ -94,6 +110,7 @@ pub(super) struct NativeState {
     pub(super) online: bool,
     pub(super) selection: u64,
     snapshot_request: u64,
+    snapshot_selection: Option<u64>,
     pending: Option<String>,
     /// HIST-TUI-1/T2 + B8-R1 同类：本次在途提交的入史资格（提交时的选择
     /// 世代，空闲态非 slash 消息）。接纳回执（Ok 或 committed 错误）只有
@@ -108,6 +125,7 @@ pub(super) struct NativeState {
     pub(super) recalled_queue_items: std::collections::VecDeque<String>,
     pub(super) queue_recovered: Vec<(Option<String>, String)>,
     pending_images: crate::tui::attachments::AttachmentComposer,
+    share_retry: std::collections::HashMap<Option<SessionId>, ShareRetry>,
     approval_id: Option<String>,
     replay: Vec<crate::session::replay::ReplayEvent>,
     rename_target: Option<(u64, u64, String)>,
@@ -129,6 +147,14 @@ pub(super) struct NativeState {
     /// CF8（r4）：本连接内 RunStarted 帧递增的本地 run 序号，标识取
     /// 消请求的归属。
     pub(super) run_seq: u64,
+}
+
+struct ShareRetry {
+    ids: Vec<String>,
+    text: String,
+    images: Vec<PathBuf>,
+    prepared: Option<crate::host::PreparedSharedMessage>,
+    restored: bool,
 }
 
 impl App {
@@ -168,6 +194,7 @@ impl App {
             online: false,
             selection: 0,
             snapshot_request: 0,
+            snapshot_selection: None,
             pending: None,
             pending_history: None,
             next_turn: Vec::new(),
@@ -178,6 +205,7 @@ impl App {
             recalled_queue_items: Default::default(),
             queue_recovered: Vec::new(),
             pending_images: Default::default(),
+            share_retry: Default::default(),
             approval_id: None,
             replay: Vec::new(),
             rename_target: None,
@@ -205,6 +233,9 @@ impl App {
 
     pub(super) fn start_native(&mut self) {
         self.conversation.stop_live_clock();
+        if self.share_picker.take().is_some() {
+            self.session_picker = None;
+        }
         if let Some(native) = &mut self.native {
             native.builtin_availability = Value::Null;
         }
@@ -290,6 +321,9 @@ impl App {
     }
 
     fn native_local_command(&mut self, text: &str) -> bool {
+        if self.handle_share_command(text) {
+            return true;
+        }
         if HostClient::is_detach_command(text) {
             self.should_quit = true;
             return true;
@@ -361,7 +395,10 @@ impl App {
         if self.native_local_command(text.trim()) {
             return;
         }
-        if text.is_empty() && self.attachments.is_empty() {
+        if text.is_empty()
+            && self.attachments.is_empty()
+            && self.share_drafts.items(&self.session_id).is_empty()
+        {
             return;
         }
         if text == "/cancel" {
@@ -369,6 +406,12 @@ impl App {
             return;
         }
         let running = self.running;
+        let owner = self.session_id.clone();
+        let (ids, shares) = if text.starts_with('/') {
+            (Vec::new(), Vec::new())
+        } else {
+            self.session_share_submission()
+        };
         let Some(native) = &mut self.native else {
             return;
         };
@@ -401,13 +444,46 @@ impl App {
         }
         let images = native.pending_images.paths();
         let client = native.client.clone();
+        if !shares.is_empty() {
+            let retry = native
+                .share_retry
+                .remove(&owner)
+                .filter(|retry| retry.ids == ids && retry.text == text && retry.images == images)
+                .and_then(|retry| retry.prepared)
+                .filter(|prepared| prepared.matches_session_shares(&shares));
+            thread::spawn(move || {
+                let prepared = match retry {
+                    Some(prepared) => Ok(prepared),
+                    None => {
+                        client.prepare_shared_message(&text, &images, running, selection, &shares)
+                    }
+                };
+                let (prepared, result) = match prepared {
+                    Ok(prepared) => {
+                        let result = client.submit_prepared_shared_message(&prepared);
+                        (Some(prepared), result)
+                    }
+                    Err(error) => (None, Err(error)),
+                };
+                let _ = ui.send(UiEvent::Native(NativeEvent::SharedSubmitted {
+                    owner,
+                    ids,
+                    text,
+                    images,
+                    selection,
+                    prepared,
+                    result,
+                }));
+            });
+            return;
+        }
         thread::spawn(move || {
             let result = client.submit_message(&text, &images, running, selection);
             let _ = ui.send(UiEvent::Native(NativeEvent::Submitted(result)));
         });
     }
 
-    fn open_native_sessions(&mut self) {
+    pub(super) fn open_native_sessions(&mut self) {
         let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) else {
             return;
         };
@@ -452,6 +528,63 @@ impl App {
 
     fn native_dialog_event(&mut self, event: NativeEvent) -> Option<NativeEvent> {
         match event {
+            NativeEvent::SharedSubmitted {
+                owner,
+                ids,
+                text,
+                images,
+                selection,
+                prepared,
+                result,
+            } => {
+                let owner = if owner.is_none()
+                    && self
+                        .native
+                        .as_ref()
+                        .is_some_and(|native| native.selection == selection)
+                    && self.session_id.is_some()
+                {
+                    self.share_drafts.materialize(&self.session_id);
+                    self.session_id.clone()
+                } else {
+                    owner
+                };
+                if result.is_ok() || result.as_ref().is_err_and(|error| error.committed()) {
+                    self.share_drafts.committed(&owner, &ids);
+                    if let Some(native) = &mut self.native {
+                        native.share_retry.remove(&owner);
+                    }
+                } else if let Some(native) = &mut self.native {
+                    let changed = self.session_id != owner;
+                    let retryable = !result
+                        .as_ref()
+                        .is_err_and(|error| error.code.as_deref() == Some("not-running"));
+                    native.share_retry.insert(
+                        owner.clone(),
+                        ShareRetry {
+                            ids,
+                            text,
+                            images,
+                            prepared: if retryable { prepared } else { None },
+                            restored: !changed,
+                        },
+                    );
+                    if changed {
+                        native.pending.take();
+                        native.pending_history.take();
+                        native.pending_images = Default::default();
+                        return None;
+                    }
+                }
+                self.native_submitted(result);
+            }
+            NativeEvent::SharePreview(epoch, selection, owner, refresh, result) => {
+                if self.native_selection_identity() == Some((epoch, selection))
+                    && self.session_id == owner
+                {
+                    self.finish_session_share_preview(owner, refresh, result);
+                }
+            }
             NativeEvent::PlanReviewDetails(epoch, selection, question, request, result) => {
                 self.receive_plan_review_details(epoch, selection, &question, &request, result)
             }
@@ -508,6 +641,31 @@ impl App {
         None
     }
 
+    fn restore_share_retry_draft(&mut self) {
+        if !self.input.text().is_empty() || !self.attachments.is_empty() {
+            return;
+        }
+        let Some(retry) = self
+            .native
+            .as_mut()
+            .and_then(|native| native.share_retry.get_mut(&self.session_id))
+        else {
+            return;
+        };
+        if retry.restored {
+            return;
+        }
+        if self
+            .attachments
+            .add_paths(self.project.root(), retry.images.clone())
+            .is_err()
+        {
+            return;
+        }
+        self.input.insert_str(&retry.text);
+        retry.restored = true;
+    }
+
     pub(super) fn handle_native_event(&mut self, event: NativeEvent) {
         let Some(event) = self.native_dialog_event(event) else {
             return;
@@ -521,7 +679,10 @@ impl App {
             {
                 match result {
                     Ok(rows) => self.refresh_picker_sessions(rows),
-                    Err(error) => self.flash_status(error),
+                    Err(error) => {
+                        self.share_picker = None;
+                        self.flash_status(error);
+                    }
                 }
             }
             NativeEvent::Connected(epoch, interrupt)
@@ -750,6 +911,19 @@ impl App {
         self.session_id = value["session"]["id"]
             .as_str()
             .map(|id| SessionId::new(id.to_owned()));
+        if let Some(native) = &mut self.native {
+            if previous_session_id.is_none()
+                && self.session_id.is_some()
+                && native.snapshot_selection == Some(native.selection)
+            {
+                self.share_drafts.materialize(&self.session_id);
+                if let Some(retry) = native.share_retry.remove(&None) {
+                    native.share_retry.insert(self.session_id.clone(), retry);
+                }
+            }
+            native.snapshot_selection = Some(native.selection);
+        }
+        self.restore_share_retry_draft();
         if self.running
             && previous_session_id == self.session_id
             && value["active_run"]["session_id"].as_str().is_none_or(|id| {

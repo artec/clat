@@ -60,7 +60,7 @@ function renderPendingInputs(value) {
 }
 function syncInputSubmitButtons() {
   const busy = state.runActive || (supportsPendingInputs() && pendingInputStore.interrupting);
-  const hasDraft = Boolean(dom.prompt.value.trim() || state.draft.images.length);
+  const hasDraft = Boolean(dom.prompt.value.trim() || state.draft.images.length || sessionSharesFor().length);
   const sending = supportsPendingInputs() ? (!busy || hasDraft) : !state.runActive;
   dom.send.classList.toggle('hidden', !sending); dom.cancel.classList.toggle('hidden', sending);
 }
@@ -93,6 +93,12 @@ function renderPendingInputRow(item, index) {
   const attachments = el('div', 'pending-input-attachments');
   item.draft.uploads.forEach((_, i) => { const image = el('img', 'pending-input-image'); image.alt = String(inputText('image')); inputPreview(item, i).then(value => { image.src = value.url; }).catch(() => image.remove()); attachments.append(image); });
   for (const reference of item.draft.references) attachments.append(el('span', 'pending-input-reference', reference.path || reference.quote || ''));
+  (item.draft.sessionShares || []).forEach((share, index) => {
+    const summary = item.draft.sessionShareSummaries?.[index];
+    attachments.append(el('span', 'pending-input-reference', () => summary
+      ? summary.title + ' · ' + inputText('share_count', summary)
+      : share.reference.session));
+  });
   if (attachments.children.length) row.append(attachments);
   if (pendingInputEditor(item.id)) { row.append(renderInputEditor(item)); return row; }
   const actions = el('div', 'pending-input-actions');

@@ -174,14 +174,6 @@ pub(super) fn help_dialog_lines(
     locale: LocaleContext,
     dsh: bool,
 ) -> Vec<Line<'static>> {
-    let composer: &[(&str, &str)] = &[
-        ("/attach PATH…", locale.text("tui.attach_help")),
-        ("/pi, /paste-image", locale.text("tui.paste_help")),
-        ("/ac, /attach-clear", locale.text("tui.clear_help")),
-        ("/plan", locale.text("tui.plan_help")),
-        ("/goal", locale.text("tui.goal_help")),
-        ("/resume", locale.text("tui.resume_help")),
-    ];
     // CP-2 A4（2026-09-02 负责人拍板的权威顺序表）：行 1-4 输入与提交，
     // 5-6 运行控制，7-9 浏览与显示，10-12 选择与复制。
     let keys: &[(&str, &str)] = &[
@@ -218,13 +210,7 @@ pub(super) fn help_dialog_lines(
             locale.text("tui.commands"),
             command_help_entries(commands, locale, dsh),
         ),
-        (
-            locale.text("tui.composer"),
-            composer
-                .iter()
-                .map(|(name, description)| format!("  {name} — {description}"))
-                .collect::<Vec<_>>(),
-        ),
+        (locale.text("tui.composer"), composer_help_entries(locale)),
         (
             locale.text("tui.keys"),
             keys.iter()
@@ -246,6 +232,25 @@ pub(super) fn help_dialog_lines(
         }
     }
     lines
+}
+
+fn composer_help_entries(locale: LocaleContext) -> Vec<String> {
+    let composer: &[(&str, &str)] = &[
+        ("/attach PATH…", locale.text("tui.attach_help")),
+        ("/pi, /paste-image", locale.text("tui.paste_help")),
+        ("/ac, /attach-clear", locale.text("tui.clear_help")),
+        ("/plan", locale.text("tui.plan_help")),
+        ("/goal", locale.text("tui.goal_help")),
+        ("/resume", locale.text("tui.resume_help")),
+        (
+            "/share-session [N]",
+            locale.text("input.share_command_hint"),
+        ),
+    ];
+    composer
+        .iter()
+        .map(|(name, description)| format!("  {name} — {description}"))
+        .collect()
 }
 
 /// 命令节的折行前条目：`  /name, /alias — description`（主名+别名全部

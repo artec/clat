@@ -247,22 +247,7 @@ impl App {
         self.conversation.set_stream_marker(streaming);
         // 瞬时提示到期回落为常驻状态（当前目录）。
         self.expire_status();
-        // The input box grows with the number of wrapped lines, up to
-        // eight content rows, Claude Code style. 行首箭头前缀占 2 列，
-        // 换行宽度随之收窄。
-        let input_width = area
-            .width
-            .saturating_sub(2)
-            .saturating_sub(INPUT_MARKER_WIDTH as u16)
-            .max(1) as usize;
-        let attachment_rows = if self.attachments.is_empty() {
-            0
-        } else {
-            self.attachments.len() + 1
-        };
-        let input_rows =
-            (self.input.line_count(input_width) + 2 + attachment_rows + self.suggestion_rows())
-                .clamp(3, 14);
+        let input_rows = self.composer_rows(area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -288,6 +273,28 @@ impl App {
         self.draw_status_bar(frame, chunks[3], tick);
 
         self.draw_modal_layer(frame, area);
+    }
+
+    fn composer_rows(&self, area: Rect) -> usize {
+        // The input box grows with the number of wrapped lines, up to
+        // eight content rows, Claude Code style. 行首箭头前缀占 2 列，
+        // 换行宽度随之收窄。
+        let input_width = area
+            .width
+            .saturating_sub(2)
+            .saturating_sub(INPUT_MARKER_WIDTH as u16)
+            .max(1) as usize;
+        let attachment_rows = if self.attachments.is_empty() {
+            0
+        } else {
+            self.attachments.len() + 1
+        };
+        (self.input.line_count(input_width)
+            + 2
+            + attachment_rows
+            + self.session_share_rail().len()
+            + self.suggestion_rows())
+        .clamp(3, 14)
     }
 
     fn draw_modal_layer(&mut self, frame: &mut Frame, area: Rect) {
@@ -351,11 +358,12 @@ impl App {
                     as usize;
                 let row = row.min(visible_rows.saturating_sub(1));
                 // 光标跳过行首箭头前缀（`❯ ` / 两个空格）与附件徽标行。
-                let attachment_offset = if self.attachments.is_empty() {
-                    0
-                } else {
-                    self.attachments.len() + 1
-                };
+                let attachment_offset = self.session_share_rail().len()
+                    + if self.attachments.is_empty() {
+                        0
+                    } else {
+                        self.attachments.len() + 1
+                    };
                 frame.set_cursor_position((
                     self.input_area.x + 1 + INPUT_MARKER_WIDTH as u16 + column as u16,
                     self.input_area.y + 1 + (row + attachment_offset) as u16,
@@ -1302,7 +1310,8 @@ impl App {
             .collect();
         // 结构化附件 rail：稳定 [Image #N] 身份与顺序独立于可编辑文本，
         // 因此删改正文不会悄悄重绑图片。每图一行，末行给批次预算。
-        let mut rail = self.attachment_rail();
+        let mut rail = self.session_share_rail();
+        rail.extend(self.attachment_rail());
         rail.extend(lines);
         lines = rail;
         if let Some((from, to)) = self
@@ -1431,15 +1440,28 @@ fn permission_headers(request: &PermissionRequest, locale: LocaleContext) -> Vec
             theme::style(theme::Role::Bold),
         )),
         Line::from(""),
-        Line::from(locale.render(
-            &UiMessage::new("tui.message_tool_value").arg("value1", (request.tool).to_string()),
-        )),
-        Line::from(locale.render(
-            &UiMessage::new("tui.message_effect_value").arg("value1", (request.effect).to_string()),
-        )),
-        Line::from(locale.render(
-            &UiMessage::new("tui.message_reason_value").arg("value1", (request.reason).to_string()),
-        )),
+        Line::from(
+            locale.render(&UiMessage::new("tui.message_tool_value").arg_message(
+                "value1",
+                clat_core::client_ports::presentation::tool_action(&request.tool),
+            )),
+        ),
+        Line::from(
+            locale.render(&UiMessage::new("tui.message_effect_value").arg_message(
+                "value1",
+                clat_core::client_ports::presentation::tool_effect(request.effect),
+            )),
+        ),
+        Line::from(
+            locale.render(
+                &UiMessage::new("tui.message_reason_value").arg(
+                    "value1",
+                    request
+                        .reason_presentation()
+                        .map_or_else(|| request.reason.clone(), |reason| locale.render(&reason)),
+                ),
+            ),
+        ),
     ];
     // 危险字段摘要：参数的顶层键全部列出，一眼可见隐藏在长
     // JSON 深处的 command/path/url 等目标——批准前不可错过。

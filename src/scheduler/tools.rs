@@ -204,6 +204,7 @@ impl Tool for ScheduleTool {
     }
     fn prepare_execution(&self, _: &Value) -> Option<crate::tool::PreparedTool> {
         Some(crate::tool::PreparedTool {
+            approval: None,
             workspace_enforced: false,
             status: "host-schedule-control".into(),
             tool: Arc::new(Self {

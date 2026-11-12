@@ -756,8 +756,11 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
                             &mut stream,
                             413,
                             protocol::rpc_result_json(&Err(protocol::RpcError::bad_request(
-                                format!("{part} exceeds the size limit"),
-                            ))),
+                                format!("{part} exceeds the Host HTTP request size limit"),
+                            )
+                            .with_presentation(crate::i18n::UiMessage::new(
+                                "input.host_request_too_large",
+                            )))),
                         );
                         return;
                     }

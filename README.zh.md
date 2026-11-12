@@ -89,6 +89,10 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测；
   经探针验证的视觉路由支持结构化 TUI 图片草稿、多路径选择、显式剪贴板
   导入、纯图片消息与运行中图片插话。
+- **会话内容共享**——从输入框或用 `/share-session` 引用同项目其他活动或归档会话的
+  全部或最近若干轮对话。
+- **macOS 应用操控**——读取辅助功能树、等待界面条件、派发获准的语义动作。
+  使用 `/ui-consents` 管理应用同意。[权限说明](docs/permissions.md#macos-application-interface-permissions)
 - **原生工具**——有界且理解 gitignore 的字面量/正则/glob 搜索、文件列表与
   读取、按模型能力门控的视觉检查、原子写入、精确编辑、单文件多 hunk
   补丁，以及支持增量输出、stdin、

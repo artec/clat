@@ -42,6 +42,18 @@ pub struct PermissionRequest {
 }
 
 impl PermissionRequest {
+    pub fn reason_presentation(&self) -> Option<crate::i18n::UiMessage> {
+        let target = self.arguments.get("target")?;
+        (self.effect == ToolEffect::UIAction).then(|| {
+            crate::i18n::UiMessage::new(if target["high_risk"] == true {
+                "cua.action_high_risk"
+            } else {
+                "cua.action_approval"
+            })
+            .arg("app", target["app"].clone())
+            .arg("title", target["title"].clone())
+        })
+    }
     /// D-2：DSH 宿主审批帧（`approval/requested`——只带 tool 名/reason/
     /// call id，无 effect/arguments 语义）的前端投影构造。effect 归
     /// `Write`（审批语义即副作用放行），arguments 空（前端滚动审阅对
@@ -162,7 +174,7 @@ impl PermissionPolicy for InteractivePermissionPolicy {
         tool: &ToolDefinition,
         call: &ToolCall,
     ) -> PermissionDecision {
-        self.resolve(self.delegate.check(project, tool, call), tool, call)
+        self.resolve(self.delegate.check(project, tool, call), tool, call, None)
     }
 
     fn check_prepared(
@@ -176,6 +188,7 @@ impl PermissionPolicy for InteractivePermissionPolicy {
             self.delegate.check_prepared(project, tool, call, prepared),
             tool,
             call,
+            prepared.and_then(|prepared| prepared.approval.as_ref()),
         )
     }
 }
@@ -186,17 +199,38 @@ impl InteractivePermissionPolicy {
         decision: PermissionDecision,
         tool: &ToolDefinition,
         call: &ToolCall,
+        approval: Option<&crate::tool::PreparedApproval>,
     ) -> PermissionDecision {
-        match decision {
+        let decision = match approval {
+            Some(approval) if approval.cancel.is_cancelled() => {
+                return PermissionDecision::Deny {
+                    reason: "application authorization is no longer active".into(),
+                };
+            }
+            Some(approval)
+                if matches!(decision, PermissionDecision::Ask { .. })
+                    || (approval.required && decision == PermissionDecision::Allow) =>
+            {
+                PermissionDecision::Ask {
+                    reason: approval.reason.clone(),
+                }
+            }
+            _ => decision,
+        };
+        let decision = match decision {
             PermissionDecision::Ask { reason } => {
                 let request = PermissionRequest {
                     tool: tool.name.clone(),
                     effect: tool.effect,
                     reason,
-                    arguments: call.arguments.clone(),
+                    arguments: approval.map_or_else(
+                        || call.arguments.clone(),
+                        |approval| approval.arguments.clone(),
+                    ),
                     call_id: call.id.clone(),
                 };
-                match self.approver.decide(request, &self.cancel) {
+                let cancel = approval.map_or(&self.cancel, |approval| &approval.cancel);
+                match self.approver.decide(request, cancel) {
                     // The approver answers with a final decision only.
                     PermissionDecision::Ask { .. } => PermissionDecision::Deny {
                         reason: "approver returned an unresolved decision".into(),
@@ -205,7 +239,20 @@ impl InteractivePermissionPolicy {
                 }
             }
             decision => decision,
+        };
+        if let Some(approval) = approval {
+            if approval.cancel.is_cancelled() {
+                return PermissionDecision::Deny {
+                    reason: "application authorization is no longer active".into(),
+                };
+            }
+            if decision == PermissionDecision::Allow {
+                approval
+                    .permit
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
         }
+        decision
     }
 }
 
@@ -220,14 +267,16 @@ impl PermissionPolicy for SafeByDefault {
         _call: &ToolCall,
     ) -> PermissionDecision {
         match tool.effect {
-            ToolEffect::Pure | ToolEffect::Read | ToolEffect::SessionWrite => {
-                PermissionDecision::Allow
-            }
+            ToolEffect::Pure
+            | ToolEffect::Read
+            | ToolEffect::SessionWrite
+            | ToolEffect::UIStructureRead => PermissionDecision::Allow,
             ToolEffect::Write
             | ToolEffect::Execute
             | ToolEffect::Network
             | ToolEffect::ExternalRead
-            | ToolEffect::Destructive => PermissionDecision::Ask {
+            | ToolEffect::Destructive
+            | ToolEffect::UIAction => PermissionDecision::Ask {
                 reason: format!("tool `{}` can cause side effects", tool.name),
             },
         }
@@ -337,10 +386,14 @@ pub fn mode_allows(mode: PermissionMode, effect: ToolEffect) -> bool {
                 | ToolEffect::Write
                 | ToolEffect::Network
                 | ToolEffect::ExternalRead
+                | ToolEffect::UIStructureRead
         ),
         PermissionMode::ReadOnly => matches!(
             effect,
-            ToolEffect::Pure | ToolEffect::Read | ToolEffect::SessionWrite
+            ToolEffect::Pure
+                | ToolEffect::Read
+                | ToolEffect::SessionWrite
+                | ToolEffect::UIStructureRead
         ),
     }
 }
@@ -371,7 +424,9 @@ pub fn mode_guidance(mode: PermissionMode) -> &'static str {
         PermissionMode::ProjectWrite => {
             "file edits, file reads (anywhere on disk), and network/search tools run without approval; native commands with a prepared OS sandbox run without approval; explicit command network requests, unconfined commands, and destructive tools require user approval"
         }
-        PermissionMode::FullAccess => "all tools run without approval prompts",
+        PermissionMode::FullAccess => {
+            "the permission mode allows all tools; tool-specific consent and approval requirements still apply"
+        }
     }
 }
 
@@ -525,6 +580,27 @@ mod tests {
             name: "test".into(),
             arguments: serde_json::json!({"path": "notes.txt"}),
         }
+    }
+
+    #[test]
+    fn ui_action_requires_approval_in_read_only_and_project_write_modes() {
+        let action = definition(ToolEffect::UIAction);
+        let structure = definition(ToolEffect::UIStructureRead);
+        for mode in [PermissionMode::ReadOnly, PermissionMode::ProjectWrite] {
+            assert!(matches!(
+                mode_decision(mode, &action),
+                PermissionDecision::Ask { .. }
+            ));
+            assert_eq!(mode_decision(mode, &structure), PermissionDecision::Allow);
+        }
+        assert_eq!(
+            mode_decision(PermissionMode::FullAccess, &action),
+            PermissionDecision::Allow
+        );
+        assert!(matches!(
+            SafeByDefault.check(&Project::new("."), &action, &call()),
+            PermissionDecision::Ask { .. }
+        ));
     }
 
     #[test]

@@ -100,13 +100,18 @@ pub(crate) enum WorkerMessage {
 pub(crate) struct RunStartFinished {
     pub(crate) application: crate::TrustedProjectApplication,
     pub(crate) prompt: String,
-    pub(crate) outcome: Result<PreparedTuiRun, String>,
+    pub(crate) outcome: Result<PreparedTuiRun, crate::ApplicationError>,
+    pub(crate) share_owner: Option<crate::SessionId>,
+    pub(crate) share_ids: Vec<String>,
 }
 
 pub(crate) struct SteeringAdmissionFinished {
     pub(crate) application: crate::TrustedProjectApplication,
     pub(crate) prompt: String,
     pub(crate) outcome: crate::SteerOutcome,
+    pub(crate) share_owner: Option<crate::SessionId>,
+    pub(crate) share_ids: Vec<String>,
+    pub(crate) client_id: Option<String>,
 }
 
 pub(crate) struct PreparedTuiRun {
@@ -234,6 +239,10 @@ impl ChannelUserAsker {
 }
 
 impl UserAsker for ChannelUserAsker {
+    fn is_standalone_terminal(&self) -> bool {
+        true
+    }
+
     fn ask(&self, question: AskQuestion, cancel: &CancelToken) -> AskAnswer {
         let (answer_tx, answer_rx) = mpsc::channel();
         if self

@@ -308,6 +308,17 @@ impl ConversationModel {
         self.pending_generation += 1;
     }
 
+    pub(crate) fn forget_pending_steering(&mut self, text: &str) {
+        if let Some(index) = self
+            .pending_steering
+            .iter()
+            .position(|pending| pending == text)
+        {
+            self.pending_steering.remove(index);
+            self.pending_generation += 1;
+        }
+    }
+
     /// `SteeringApplied` 的 claim 升级（INV-SV2）：按事件文本出区、在
     /// 当前尾部落为正式用户项（事件文本是权威）——升级后的 items 序 ==
     /// journal 顺序 == 回放顺序。W1-29：确认**按文本匹配**出区——陈旧
@@ -1492,6 +1503,15 @@ fn render_tool_card_localized(
         CardState::Pending => {}
         CardState::Settled { output, is_error } => {
             if *is_error {
+                if matches!(tool, "ui_apps" | "ui_tree" | "ui_wait" | "ui_act")
+                    && let Ok(message) =
+                        serde_json::from_value::<UiMessage>(output["presentation"].clone())
+                {
+                    lines.push(Line::from(Span::styled(
+                        locale.render(&message),
+                        theme::style(theme::Role::Error),
+                    )));
+                }
                 lines.push(Line::from(Span::styled(
                     format!("✗ {}", value_display_text(output)),
                     theme::style(theme::Role::Error),

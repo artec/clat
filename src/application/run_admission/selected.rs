@@ -39,6 +39,17 @@ impl TrustedProjectApplication {
             crate::application::run_lifecycle::validate_route_images(&config, &images)
                 .map_err(ApplicationError::new)?;
         }
+        if message.contains_session_share {
+            let mut content = message.content.clone();
+            content.blocks.extend(
+                images
+                    .iter()
+                    .map(|image| crate::message::ContentBlock::Image {
+                        attachment: image.descriptor.clone(),
+                    }),
+            );
+            crate::wire::share_frames::validate(&self.project, message, &content, true)?;
+        }
         let (birth, plan_birth) = self.run_birth_events(materialized.is_some(), pending_goal);
         let origin = goal_round.map_or(AdmissionOrigin::User, AdmissionOrigin::Goal);
         let admitted =

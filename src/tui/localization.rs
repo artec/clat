@@ -6,6 +6,9 @@ pub(super) fn workflow_tool_name(name: &str) -> UiMessage {
     match name {
         "request_plan_mode" => UiMessage::new("web.tool_action.request_plan_mode"),
         "propose_goal" => UiMessage::new("web.tool_action.propose_goal"),
+        "ui_apps" | "ui_tree" | "ui_wait" | "ui_act" => {
+            clat_core::client_ports::presentation::tool_action(name)
+        }
         _ => UiMessage::new("common.diagnostic").arg("detail", name),
     }
 }

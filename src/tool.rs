@@ -29,6 +29,8 @@ pub enum ToolEffect {
     /// project files, no processes, no network. Safe to auto-allow because
     /// the effect is confined to the current conversation's own state.
     SessionWrite,
+    UIStructureRead,
+    UIAction,
 }
 
 impl fmt::Display for ToolEffect {
@@ -42,6 +44,8 @@ impl fmt::Display for ToolEffect {
             Self::ExternalRead => f.write_str("external read access"),
             Self::Destructive => f.write_str("destructive external action"),
             Self::SessionWrite => f.write_str("updates this session's local state"),
+            Self::UIStructureRead => f.write_str("reads application interface structure"),
+            Self::UIAction => f.write_str("operates an application interface"),
         }
     }
 }
@@ -149,9 +153,10 @@ impl ToolAccessPolicy {
         if !self.plan_mode {
             return true;
         }
-        matches!(definition.effect, ToolEffect::Pure | ToolEffect::Read)
-            || (definition.effect == ToolEffect::SessionWrite
-                && definition.name == "exit_plan_mode")
+        matches!(
+            definition.effect,
+            ToolEffect::Pure | ToolEffect::Read | ToolEffect::UIStructureRead
+        ) || (definition.effect == ToolEffect::SessionWrite && definition.name == "exit_plan_mode")
     }
 
     pub(crate) fn denial_reason(&self, definition: &ToolDefinition) -> &'static str {
@@ -173,6 +178,11 @@ impl ToolAccessPolicy {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn is_plan_mode(&self) -> bool {
+        self.plan_mode
+    }
+
     /// Argument-level half of the child capability fence. The three allowed
     /// native tools deliberately accept absolute paths for normal parent runs;
     /// delegated children do not inherit that ambient-read escape hatch.
@@ -181,6 +191,18 @@ impl ToolAccessPolicy {
         definition: &ToolDefinition,
         arguments: &Value,
     ) -> Result<(), &'static str> {
+        if self.plan_mode && definition.effect == ToolEffect::UIStructureRead {
+            let reads_values = arguments
+                .get("include_values")
+                .is_some_and(|value| value != false)
+                || matches!(
+                    arguments.get("condition").and_then(Value::as_str),
+                    Some("value_equals" | "contains")
+                );
+            if reads_values {
+                return Err("application interface values are unavailable in plan mode");
+            }
+        }
         if !self.readonly_child {
             return Ok(());
         }
@@ -323,6 +345,13 @@ pub trait Tool: Send + Sync {
     fn prepare_execution(&self, _arguments: &Value) -> Option<PreparedTool> {
         None
     }
+    fn prepare_for_call(
+        &self,
+        arguments: &Value,
+        _cancel: &CancelToken,
+    ) -> Result<Option<PreparedTool>, ToolError> {
+        Ok(self.prepare_execution(arguments))
+    }
 
     fn definition(&self) -> ToolDefinition;
 
@@ -384,6 +413,7 @@ pub trait Tool: Send + Sync {
 }
 
 mod prepared;
+pub(crate) use prepared::PreparedApproval;
 pub use prepared::PreparedTool;
 pub(crate) use prepared::prepare_tool;
 
@@ -1050,6 +1080,42 @@ mod tests {
                 .with_view_image(true)
                 .allows(&definition),
             "AG-4 children retain their exact three-tool allowlist"
+        );
+    }
+
+    #[test]
+    fn plan_mode_allows_ui_structure_but_rejects_actions_and_values() {
+        let make = |name: &str, effect| ToolDefinition {
+            name: name.into(),
+            description: String::new(),
+            input_schema: json!({}),
+            effect,
+            strict: false,
+        };
+        let policy = ToolAccessPolicy::plan_mode();
+        let tree = make("ui_tree", ToolEffect::UIStructureRead);
+        let wait = make("ui_wait", ToolEffect::UIStructureRead);
+        assert!(policy.allows(&tree));
+        assert!(!policy.allows(&make("ui_act", ToolEffect::UIAction)));
+        assert!(
+            policy
+                .validate_call(&tree, &json!({"include_values":false}))
+                .is_ok()
+        );
+        assert!(
+            policy
+                .validate_call(&tree, &json!({"include_values":true}))
+                .is_err()
+        );
+        assert!(
+            policy
+                .validate_call(&wait, &json!({"condition":"value_equals"}))
+                .is_err()
+        );
+        assert!(
+            policy
+                .validate_call(&wait, &json!({"condition":"contains"}))
+                .is_err()
         );
     }
 }

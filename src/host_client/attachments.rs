@@ -8,6 +8,23 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod tests;
 
+/// The exact Host request, including opaque upload identities, survives retries.
+#[derive(Clone)]
+pub struct PreparedSharedMessage {
+    params: Value,
+    running: bool,
+    client_message_id: String,
+}
+
+impl PreparedSharedMessage {
+    pub fn matches_session_shares(
+        &self,
+        shares: &[crate::application::SessionShareSelection],
+    ) -> bool {
+        self.params["sessionShares"] == json!(shares)
+    }
+}
+
 impl HostClient {
     pub fn submit_message(
         &self,
@@ -16,12 +33,104 @@ impl HostClient {
         running: bool,
         selection: u64,
     ) -> Result<Value, HostCallError> {
-        if images.is_empty() {
+        self.submit_message_with_shares(text, images, running, selection, &[])
+    }
+
+    pub fn submit_message_with_shares(
+        &self,
+        text: &str,
+        images: &[PathBuf],
+        running: bool,
+        selection: u64,
+        shares: &[crate::application::SessionShareSelection],
+    ) -> Result<Value, HostCallError> {
+        if images.is_empty() && shares.is_empty() {
             return self.submit_text(text, running, selection);
         }
         if text.trim_start().starts_with('/') {
             return Err("attachments belong to messages, not slash commands".into());
         }
+        let prepared = self.prepare_shared_message(text, images, running, selection, shares)?;
+        self.submit_prepared_shared_message(&prepared)
+    }
+
+    pub fn prepare_shared_message(
+        &self,
+        text: &str,
+        images: &[PathBuf],
+        running: bool,
+        selection: u64,
+        shares: &[crate::application::SessionShareSelection],
+    ) -> Result<PreparedSharedMessage, HostCallError> {
+        if text.trim_start().starts_with('/')
+            || (text.trim().is_empty() && images.is_empty() && shares.is_empty())
+        {
+            return Err("shared messages require text, an image or a session reference".into());
+        }
+        let uploaded = if images.is_empty() {
+            None
+        } else {
+            Some(self.upload_message_images(images, selection)?)
+        };
+        let client_message_id = uuid::Uuid::new_v4().to_string();
+        let params = message_params(
+            text,
+            &client_message_id,
+            selection,
+            shares,
+            uploaded
+                .as_ref()
+                .map(|(scope, ids)| (scope.as_str(), ids.clone())),
+        );
+        Ok(PreparedSharedMessage {
+            params,
+            running,
+            client_message_id,
+        })
+    }
+
+    pub fn submit_prepared_shared_message(
+        &self,
+        prepared: &PreparedSharedMessage,
+    ) -> Result<Value, HostCallError> {
+        let mut events = if prepared.running {
+            Some(claim_subscription(self)?)
+        } else {
+            None
+        };
+        let accepted = self.call_with_receipt(
+            if prepared.running {
+                "steer.send"
+            } else {
+                "prompt.send"
+            },
+            &prepared.params,
+        )?;
+        if accepted["receipt"]["state"] == "committed" {
+            return Ok(accepted);
+        }
+        if let Some(events) = &mut events {
+            if accepted["outcome"] != "queued" {
+                return Err(HostCallError {
+                    presentation: None,
+                    message: "run is no longer accepting steering; draft retained".into(),
+                    code: Some("not-running".into()),
+                    receipt: accepted
+                        .get("receipt")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok()),
+                });
+            }
+            return wait_for_image_claim(events, &prepared.client_message_id);
+        }
+        Ok(accepted)
+    }
+
+    fn upload_message_images(
+        &self,
+        images: &[PathBuf],
+        selection: u64,
+    ) -> Result<(String, Vec<String>), HostCallError> {
         self.ensure_image_input_available()?;
         let sources = read_sources(images)?;
         let scope = self.call_with_receipt(
@@ -48,36 +157,23 @@ impl HostClient {
             let value = serde_json::from_slice(&body).map_err(|_| "invalid upload response")?;
             uploads.push(opaque_id(&error::decode_result(value)?, "uploadId")?);
         }
-        let mut events = if running {
-            Some(claim_subscription(self)?)
-        } else {
-            None
-        };
-        let client_message_id = uuid::Uuid::new_v4().to_string();
-        let accepted = self.call_with_receipt(
-            if running { "steer.send" } else { "prompt.send" },
-            &json!({
-                "text": text, "attachments": uploads, "draftScopeId": scope,
-                "clientMessageId": client_message_id,
-                "expected_selection_generation": selection,
-            }),
-        )?;
-        if let Some(events) = &mut events {
-            if accepted["outcome"] != "queued" {
-                return Err(HostCallError {
-                    presentation: None,
-                    message: "run is no longer accepting steering; draft retained".into(),
-                    code: Some("not-running".into()),
-                    receipt: accepted
-                        .get("receipt")
-                        .cloned()
-                        .and_then(|value| serde_json::from_value(value).ok()),
-                });
-            }
-            return wait_for_image_claim(events, &client_message_id);
-        }
-        Ok(accepted)
+        Ok((scope, uploads))
     }
+}
+
+fn message_params(
+    text: &str,
+    id: &str,
+    selection: u64,
+    shares: &[crate::application::SessionShareSelection],
+    images: Option<(&str, Vec<String>)>,
+) -> Value {
+    let mut params = json!({"text":text,"clientMessageId":id,"expected_selection_generation":selection,"sessionShares":shares});
+    if let Some((scope, uploads)) = images {
+        params["draftScopeId"] = json!(scope);
+        params["attachments"] = json!(uploads);
+    }
+    params
 }
 
 // An in-run reservation is not admission. Keep the client's image draft until

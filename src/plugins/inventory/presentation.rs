@@ -102,6 +102,11 @@ const DISPLAY: &[(&str, &str, &str)] = &[
         "extension.builtin.native_read.summary",
     ),
     (
+        "builtin.native_ui",
+        "extension.builtin.native_ui.name",
+        "extension.builtin.native_ui.summary",
+    ),
+    (
         "builtin.native_write",
         "extension.builtin.native_write.name",
         "extension.builtin.native_write.summary",

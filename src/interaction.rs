@@ -34,6 +34,11 @@ pub enum AskAnswer {
 /// 必须在等待中轮询 `cancel` 并以 `Declined` 返回。
 pub trait UserAsker: Send + Sync {
     fn ask(&self, question: AskQuestion, cancel: &CancelToken) -> AskAnswer;
+
+    /// True only for an approval UI rendered in the standalone local terminal.
+    fn is_standalone_terminal(&self) -> bool {
+        false
+    }
 }
 
 /// 可安装的前端实现槽：`ask_user` 工具在 bootstrap 时携带它注册，

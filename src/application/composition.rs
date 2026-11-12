@@ -95,6 +95,14 @@ pub(super) struct MountedRunScope {
 }
 
 impl TrustedProjectComposition {
+    #[cfg(target_os = "macos")]
+    pub(super) fn native_ui(&self) -> Option<Arc<crate::native_tools::ui::Service>> {
+        self.manager
+            .as_ref()?
+            .try_require(crate::native_tools::ui::plugin::SERVICE)
+            .ok()
+            .flatten()
+    }
     pub(super) fn enabled(&self, id: &str) -> bool {
         self.manager.is_some()
             && self
@@ -348,6 +356,8 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         }),
         Arc::new(crate::plugins::ProviderRegistryPlugin),
     ];
+    #[cfg(target_os = "macos")]
+    catalog.push(native_ui_plugin(input));
     match input.provider_plugins.take() {
         Some(providers) => catalog.extend(providers),
         None => catalog.extend([
@@ -357,6 +367,14 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
     }
     catalog.extend(project_runtime_catalog(input, permission_source));
     catalog
+}
+
+#[cfg(target_os = "macos")]
+fn native_ui_plugin(input: &CompositionInput) -> Arc<dyn Plugin> {
+    Arc::new(crate::native_tools::ui::plugin::NativeUiPlugin {
+        control: input.control.clone(),
+        asker: input.asker_slot.clone(),
+    })
 }
 
 impl CompositionInput {

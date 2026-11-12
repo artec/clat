@@ -2028,6 +2028,90 @@ fn selection_commit_cannot_race_an_old_draft_reservation_into_the_new_session() 
 }
 
 #[test]
+fn session_share_prompt_cannot_cross_a_concurrent_selection_change() {
+    let (storage, root, project) = setup("serve-share-selection-race");
+    prepare_storage(&project, &storage, TestBehavior::Success);
+    let bootstrap = BootstrapApplication::open(project, storage.clone()).unwrap();
+    let mut application = bootstrap
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&application);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let run = application
+        .start_run(crate::application::ApplicationRunRequest {
+            message: crate::message::PendingMessage::from_front_end("source", None, Vec::new()),
+            asker: None,
+            approver: Arc::new(|_: crate::PermissionRequest, _: &crate::CancelToken| {
+                crate::PermissionDecision::Allow
+            }),
+            events: Box::new(crate::test_support::SharedEvents(Arc::new(Mutex::new(
+                Vec::new(),
+            )))),
+            completion: tx,
+        })
+        .unwrap();
+    run.join().unwrap();
+    rx.recv_timeout(crate::test_support::HANG).unwrap().unwrap();
+    let mut reference = application
+        .history_reader()
+        .search(
+            crate::application::HistorySearch {
+                query: "source".into(),
+                ..Default::default()
+            },
+            &crate::CancelToken::new(),
+        )
+        .unwrap()
+        .hits[0]
+        .reference
+        .clone();
+    reference.seq = None;
+    application.new_session().unwrap();
+    let preview = application
+        .history_reader()
+        .share(&reference, None, &crate::CancelToken::new())
+        .unwrap();
+    let app = Arc::new(Mutex::new(application));
+    let shared = Arc::new(ServeShared::new(Arc::clone(&app), "unit".into(), 0));
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    shared.inject_prompt_pre_admission_channels(reached_tx, release_rx);
+    let prompt_shared = shared.clone();
+    let prompt = std::thread::spawn(move || {
+        protocol::dispatch(
+            "prompt.send",
+            &serde_json::json!({
+                "text":"", "sessionShares":[{"reference":reference,"recent_turns":null,"version":preview.version}]
+            }),
+            &prompt_shared,
+        )
+    });
+    reached_rx.recv_timeout(crate::test_support::HANG).unwrap();
+    let mut application = shared.app.lock().unwrap();
+    application.new_session().unwrap();
+    shared.advance_selection_generation();
+    drop(application);
+    release_tx.send(()).unwrap();
+    assert!(prompt.join().unwrap().is_err());
+    assert!(shared.active_run_info().is_null());
+    shared.mark_shutting_down();
+    shared.drain_workers();
+    drop(app);
+    let shared = Arc::try_unwrap(shared).ok().unwrap();
+    Arc::try_unwrap(shared.app)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .unwrap()
+        .close()
+        .unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn rpc_selection_errors_publish_the_committed_generation_before_returning() {
     let (storage_root, project_root, project) = setup("serve-selection-error-generation");
     prepare_storage(&project, &storage_root, TestBehavior::Success);

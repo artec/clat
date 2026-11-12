@@ -122,6 +122,7 @@ pub(crate) struct SessionPicker {
     dsh: Option<Box<DshResumeData>>,
     show_archived: bool,
     archive_confirmation: Option<SessionId>,
+    share_only: bool,
 }
 
 impl SessionPicker {
@@ -235,8 +236,15 @@ impl SessionPicker {
             dsh: None,
             show_archived: false,
             archive_confirmation: None,
+            share_only: false,
         };
         picker.apply_filter();
+        picker
+    }
+
+    pub(in crate::tui) fn new_share(sessions: Vec<SessionSummary>) -> Self {
+        let mut picker = Self::new(sessions, None);
+        picker.share_only = true;
         picker
     }
 
@@ -308,6 +316,7 @@ impl SessionPicker {
             current: None,
             show_archived: false,
             archive_confirmation: None,
+            share_only: false,
             dsh: Some(Box::new(DshResumeData {
                 all_rows,
                 rows: flat,
@@ -444,7 +453,9 @@ impl SessionPicker {
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         crate::tui::clear_popup_with_guards(frame, area);
-        let title = if self.show_archived {
+        let title = if self.share_only {
+            self.locale.text("input.share_session")
+        } else if self.show_archived {
             self.locale.text("tui.resume_archived")
         } else {
             "/resume"
@@ -525,7 +536,9 @@ impl SessionPicker {
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                if self.archive_confirmation.is_some() {
+                if self.share_only {
+                    self.locale.text("input.share_picker_hint")
+                } else if self.archive_confirmation.is_some() {
                     self.locale
                         .text("tui.a_again_confirm_archive_content_retained_esc_cancel")
                 } else if self.show_archived {
@@ -609,6 +622,9 @@ impl SessionPicker {
             self.archive_confirmation = None;
             self.apply_filter();
             return Some(ResumeAction::Continue);
+        }
+        if self.share_only {
+            return None;
         }
         let session = self.sessions.get(self.selected)?;
         if key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P') {

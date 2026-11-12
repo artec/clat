@@ -24,6 +24,18 @@ pub struct CancelToken {
 }
 
 impl CancelToken {
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn child(&self) -> Self {
+        Self {
+            parent: Some(Arc::new(self.clone())),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn same_source(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
+    }
     pub fn new() -> Self {
         Self::default()
     }

@@ -262,9 +262,11 @@ pub(crate) fn scan_raw(buffer: &[u8]) -> Result<LogScan, String> {
 /// Decode a zstd log into plaintext: all complete frames concatenated, the
 /// torn final frame's salvageable prefix appended, and the torn-frame byte
 /// offset reported for truncation repair.
+pub(crate) const MAX_DECODED_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 pub(crate) fn decode_zstd_log(file: &[u8]) -> Result<(Vec<u8>, Option<usize>), String> {
     // FP-08：与 persistence read_events 同款的解压层预算。
-    const FRAME_DECODED_CAP: usize = 64 * 1024 * 1024;
+    const FRAME_DECODED_CAP: usize = MAX_DECODED_FRAME_BYTES;
     let scan = crate::session::zstd_frames::scan_frames(file, usize::MAX)
         .map_err(|error| format!("corrupt Zstandard session log: {error}"))?;
     let mut plaintext = Vec::new();
@@ -325,6 +327,7 @@ pub(crate) fn materialized_bytes(
 ) -> Result<Vec<u8>, std::io::Error> {
     let header_line = format!("{}\n", header.to_line());
     let body = format!("{}\n", event_lines(events, pack_chunks, header.version));
+    validate_encoded_body(&body, compression, MAX_DECODED_FRAME_BYTES)?;
     match compression {
         JsonlCompression::None => Ok([header_line.into_bytes(), body.into_bytes()].concat()),
         JsonlCompression::Zstd => {
@@ -352,10 +355,29 @@ pub(crate) fn append_batch_bytes(
             crate::session::compat::SESSION_FORMAT_VERSION
         )
     );
+    validate_encoded_body(&body, compression, MAX_DECODED_FRAME_BYTES)?;
     match compression {
         JsonlCompression::None => Ok(body.into_bytes()),
         JsonlCompression::Zstd => crate::session::zstd_frames::compress_frame(body.as_bytes()),
     }
+}
+
+fn validate_encoded_body(
+    body: &str,
+    compression: JsonlCompression,
+    limit: usize,
+) -> std::io::Result<()> {
+    let oversized = match compression {
+        JsonlCompression::Zstd => body.len() > limit,
+        JsonlCompression::None => body.split_inclusive('\n').any(|line| line.len() > limit),
+    };
+    if oversized {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("session record or frame exceeds the {limit}-byte decoded limit"),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -364,6 +386,28 @@ mod tests {
     use crate::session::event::{SessionEvent, payloads};
     use crate::session::id::SessionId;
     use serde_json::json;
+
+    #[test]
+    fn append_respects_decoder_limits_before_writing() {
+        assert!(validate_encoded_body("1234567\n", JsonlCompression::Zstd, 8).is_ok());
+        assert!(validate_encoded_body("12345678\n", JsonlCompression::Zstd, 8).is_err());
+        assert!(validate_encoded_body("123\n456\n", JsonlCompression::None, 4).is_ok());
+        assert!(validate_encoded_body("1234\n", JsonlCompression::None, 4).is_err());
+    }
+
+    #[test]
+    fn oversized_user_record_is_rejected_by_both_writer_paths() {
+        let text = "x".repeat(MAX_DECODED_FRAME_BYTES);
+        let event = SessionEvent::new("user/message", 0, 1, payloads::user_message(&text))
+            .append(Vec::new());
+        for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+            assert!(append_batch_bytes(std::slice::from_ref(&event), compression, true).is_err());
+            assert!(
+                materialized_bytes(&header(), std::slice::from_ref(&event), compression, true)
+                    .is_err()
+            );
+        }
+    }
 
     fn header() -> SessionHeader {
         SessionHeader::new(SessionId::new("test-session"), Some("/tmp/p".into()), 1000)

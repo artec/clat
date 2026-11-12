@@ -373,12 +373,14 @@ model → safety → extensions → experiments → meta):
 |---|---|
 | `/new`, `/clear` | start a fresh, lazily materialized conversation |
 | `/resume` | switch to a prior conversation in this project |
+| `/share-session [N]` | attach all turns or the most recent N turns from another conversation in this project |
 | `/update` | shown only in a selected legacy local session: retain the original generation, upgrade supported older formats to the current writable format (V4); disappears after success. A current V4 session with unsupported developer context or preset is read-only and cannot use `/update` |
 | `/rename` | replace the current conversation title |
 | `/compact` | summarize older context in the background; original history remains on disk |
 | `/context` | inspect a one-shot estimated model-context breakdown |
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
+| `/ui-consents` | list or revoke macOS application interface consent |
 | `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
 | `/plugin` | inspect built-in plugins, manage installed packages and browse the signed market in the host TUI; open Extensions in the PWA |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
@@ -664,6 +666,32 @@ a conservative local estimate included in the history total, not a claim about
 exact provider billing. The numbers come from the same estimator used by
 model-request budgeting and compaction; the command does not call a model,
 write a session event, or start a live monitor.
+
+### Operate a macOS application
+
+For a trusted project on macOS, you can ask CLAT to inspect an open
+application and carry out supported Accessibility actions. Grant the CLAT
+process Accessibility access in System Settings when macOS reports that
+access is missing. A simple first task is to ask CLAT to list the buttons
+in an open Finder window. For a task that operates a control, CLAT presents
+the application consent and any individual action approval it needs.
+
+`ui_apps` lists running applications and their Accessibility availability.
+`ui_tree` reads an app, a zero-based window index, or a subtree from a
+previous snapshot. It returns at most 100 nodes per page and a continuation
+cursor when more nodes are available. The run keeps its eight most recent
+snapshots. Secure values stay masked, and other values require explicit
+application consent.
+
+`ui_wait` can wait for an element to appear, disappear, gain focus or match a
+value for up to 10 seconds after consent. `ui_act` uses a snapshot and node
+index to dispatch an advertised action such as press, confirm, cancel, pick,
+show menu or raise. CLAT reads the interface again to verify the result.
+Screenshots, coordinate input, typing and clipboard operations are outside
+the current tool set.
+
+See [macOS application interface permissions](permissions.md#macos-application-interface-permissions)
+for the approval rules and `/ui-consents` syntax.
 
 ### Memory, goals, and read-only subagents
 
@@ -1862,6 +1890,31 @@ non-graphical sessions suppress the handoff; opener failure falls back to the
 printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
+
+In Web, PWA, or Desktop, open the composer's **+** menu and choose **Share
+conversation content** under **Add content**. Choose another active or archived
+conversation in this project, then select all turns or the most recent N turns.
+The composer shows the source title, turn count, and character count. You can
+remove any reference or send the references on their own. If the source changes
+before sending, refresh its preview and submit again. You can edit the text of a
+queued message without changing its frozen quotation. Returning a queued message
+to the composer restores removable references and previews them for the next send.
+
+In the standalone and Host-connected TUI, use `/share-session` or
+`/share-session N` to open the picker. Use `F2` to switch between active and
+archived conversations. Use `/share-session list`, `/share-session remove N`,
+or `/share-session refresh N` to manage references by their position in the draft.
+
+Sending quotes the selected user messages and final assistant responses and
+records them in the destination message. The quote excludes reasoning, tool calls
+and results, approvals, question records, and internal context. It is historical
+data, and permissions follow the current conversation. The source stays read-only.
+The selected range is included in full, subject to the existing Host HTTP body
+(8 MiB), native client event frame (16 MiB), journal record or decoded frame
+(64 MiB), and serialized model request (32 MiB) limits. The provider limit is
+checked against the complete request when the run builds it, including other
+context and attachments. An oversized provider request fails the run and keeps
+the admitted message in the destination history.
 
 The toolbar and fixed navigation share one application background. Rounded content
 surfaces distinguish the active page and optional right work area without frame

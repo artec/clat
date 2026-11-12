@@ -31,6 +31,46 @@ fn preparation_error(reason: impl Into<String>, phase: &'static str) -> InputPre
     }
 }
 
+fn share_text_fits<'a>(
+    text: &str,
+    shares: impl Iterator<Item = &'a str>,
+    limit: usize,
+) -> Result<bool, serde_json::Error> {
+    let mut size = serde_json::to_vec(text)?.len();
+    for share in shares {
+        let encoded = serde_json::to_vec(share)?;
+        size = size
+            .saturating_add(encoded.len().saturating_sub(2))
+            .saturating_add(4);
+        if size > limit {
+            return Ok(false);
+        }
+    }
+    Ok(size <= limit)
+}
+
+pub(super) fn validate_share_size<'a>(
+    text: &str,
+    shares: impl Iterator<Item = &'a str>,
+) -> Result<(), ApplicationError> {
+    let mut shares = shares.peekable();
+    if shares.peek().is_none() {
+        return Ok(());
+    }
+    if !share_text_fits(
+        text,
+        shares,
+        crate::providers::MAX_PROVIDER_REQUEST_BODY_BYTES,
+    )
+    .map_err(|error| ApplicationError::new(error.to_string()))?
+    {
+        return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+            "input.share_too_large",
+        )));
+    }
+    Ok(())
+}
+
 impl TrustedProjectApplication {
     pub(crate) fn input_queue(&self) -> &crate::input::InputQueue {
         &self.transient_inputs.queue
@@ -48,6 +88,12 @@ impl TrustedProjectApplication {
         mut message: PendingMessage,
         draft: InputDraft,
     ) -> Result<(), ApplicationError> {
+        if draft.session_shares.len() != draft.frozen_shares.len() {
+            return Err(ApplicationError::presented(
+                crate::i18n::UiMessage::new("history.source_unavailable").arg("detail", ""),
+            ));
+        }
+
         self.ensure_user_images(&message)?;
         if !draft.uploads.is_empty() {
             self.ensure_image_input_available()?;
@@ -66,6 +112,7 @@ impl TrustedProjectApplication {
                 .prepare_input_message(message)
                 .map_err(|error| ApplicationError::new(error.reason))?;
         }
+        self.validate_frozen_input(&message, &draft)?;
         let result = self
             .transient_inputs
             .queue
@@ -80,6 +127,21 @@ impl TrustedProjectApplication {
             }
         }
         result
+    }
+
+    fn validate_frozen_input(
+        &self,
+        message: &PendingMessage,
+        draft: &InputDraft,
+    ) -> Result<(), ApplicationError> {
+        if draft.frozen_shares.is_empty() {
+            return Ok(());
+        }
+        let texts = draft.frozen_shares.iter().map(AsRef::as_ref);
+        validate_share_size(&message.content.plain_text(), texts.clone())?;
+        let mut composed = message.clone();
+        composed.append_session_share_texts(texts);
+        crate::wire::share_frames::validate(&self.project, &composed, &composed.content, false)
     }
 
     pub fn interrupt_pending_input(&self, id: &str, version: u64) -> Result<(), ApplicationError> {
@@ -276,5 +338,31 @@ impl TrustedProjectApplication {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod share_size_tests {
+    use super::*;
+
+    #[test]
+    fn shared_message_checks_the_encoded_provider_body_lower_bound() {
+        let shares = ["引文\n\"\\".to_owned(), "another".to_owned()];
+        let text = "user\ntext";
+        let combined = format!("{text}\n\n{}\n\n{}", shares[0], shares[1]);
+        let encoded = serde_json::to_vec(&combined).unwrap();
+        assert!(share_text_fits(text, shares.iter().map(String::as_str), encoded.len()).unwrap());
+        assert!(
+            !share_text_fits(text, shares.iter().map(String::as_str), encoded.len() - 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn shared_message_accepts_more_than_ordinary_draft_limit_and_rejects_provider_limit() {
+        let acceptable = ["x".repeat(128 * 1024)];
+        assert!(validate_share_size("", acceptable.iter().map(String::as_str)).is_ok());
+        let oversized = ["x".repeat(crate::providers::MAX_PROVIDER_REQUEST_BODY_BYTES)];
+        let error = validate_share_size("", oversized.iter().map(String::as_str)).unwrap_err();
+        assert_eq!(error.presentation().key, "input.share_too_large");
     }
 }

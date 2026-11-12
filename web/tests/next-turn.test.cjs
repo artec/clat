@@ -35,6 +35,20 @@ test('QUE-1 unclaimed text restores alongside new input', async () => {
   vm.runInContext('typeof finishTextSteering === \"function\" && finishTextSteering()', ctx);
   assert.equal(ctx.dom.prompt.value, 'pending words\nnew thought');
 });
+
+test('a conversation-share-only draft participates in the workspace leave guard', () => {
+  const ctx = client();
+  let readGuard;
+  ctx.CLATWorkbenchState = { register(_workspace, callback) { readGuard = callback; } };
+  ctx.document.querySelectorAll = () => [];
+  ctx.document.querySelector = () => null;
+  ctx.state.draft.sending = false;
+  ctx.state.draft.queuedClientMessageId = null;
+  ctx.composerGoalPending = null;
+  ctx.dom.prompt.value = '';
+  vm.runInContext("pendingSessionShares.set('session', [{reference:{session:'source'}}]); installComposerGuard()", ctx);
+  assert.equal(readGuard().text, true);
+});
 test('QUE-1 durable claim prevents restoration', async () => {
   const ctx = client();
   await vm.runInContext("submitComposerSteering({text:'pending words',images:[],owner:'session',draftEpoch:0,composerGeneration:1})", ctx);
@@ -112,6 +126,29 @@ test('optional malformed language metadata cannot hide the original diagnostic',
     assert.equal(String(ctx.CLATI18n.present(value,'original diagnostic {path}')),'original diagnostic {path}');
   }
   assert.equal(String(ctx.CLATI18n.present({key:'extension.unknown',fallback:'English fallback {path}',args:{path:'<script>{other}'}})), 'English fallback <script>{other}');
+});
+
+test('the macOS consent command displays Host decisions without sending a prompt', async () => {
+  const ctx = client();
+  const calls = [];
+  let content;
+  ctx.rpc = async (method, params) => {
+    calls.push([method, params.command]);
+    return {
+      kind: 'ui_consents',
+      message: 'Host fallback',
+      presentation: [{ key: 'cua.consent_row', fallback: '{app} · {id}', args: { app: 'TextEdit', id: 'application-identity' } }],
+    };
+  };
+  ctx.addNoticeLine = (text) => {
+    content = text;
+    return { classList: { add() {} }, setAttribute() {} };
+  };
+  ctx.refreshWorkbench = async () => {};
+  await vm.runInContext("submitComposerCommand({text:'/ui-consents',owner:'session'})", ctx);
+  assert.deepEqual(calls, [['command.run', '/ui-consents']]);
+  assert.match(String(content), /TextEdit/);
+  assert.match(String(content), /application-identity/);
 });
 
 test('static translation defaults cannot replace a newer status or accessibility binding', () => {

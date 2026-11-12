@@ -10,15 +10,12 @@ pub(super) fn history(
     method: &str,
     params: &Map<String, Value>,
 ) -> Result<Value, RpcError> {
+    if method == "history.share.preview" {
+        return share_preview(shared, Value::Object(params.clone()));
+    }
     let reader = with_app(shared, |app| Ok(app.history_reader())).map_err(app_error)?;
     let cancel = crate::CancelToken::new();
     let value = Value::Object(params.clone());
-    fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
-        serde_json::from_value(value).map_err(|_| {
-            let message = crate::i18n::UiMessage::new("history.invalid_query").arg("detail", "");
-            RpcError::bad_request(message.english()).with_presentation(message)
-        })
-    }
     let result = match method {
         "history.trajectory" => serde_json::to_value(
             reader
@@ -66,6 +63,62 @@ pub(super) fn history(
         _ => unreachable!(),
     };
     result.map_err(|e| RpcError::internal(e.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharePreviewRequest {
+    reference: crate::client_ports::history::HistoryReference,
+    recent_turns: Option<usize>,
+    expected_selection_generation: u64,
+}
+
+fn share_preview(shared: &Arc<ServeShared>, value: Value) -> Result<Value, RpcError> {
+    let request: SharePreviewRequest = decode(value)?;
+    let reader = with_app(shared, |app| {
+        if request.expected_selection_generation != shared.selection_generation()
+            || app
+                .current_session_id()
+                .as_ref()
+                .is_some_and(|id| id.as_str() == request.reference.session)
+            || request.reference.seq.is_some()
+        {
+            return Err(share_scope_changed());
+        }
+        Ok(app.history_reader())
+    })?;
+    let share = reader
+        .share(
+            &request.reference,
+            request.recent_turns,
+            &crate::CancelToken::new(),
+        )
+        .map_err(app_error)?;
+    if request.expected_selection_generation != shared.selection_generation() {
+        return Err(share_scope_changed());
+    }
+    Ok(serde_json::json!({
+        "reference": request.reference,
+        "recent_turns": request.recent_turns,
+        "characters": share.characters,
+        "turns": share.turns,
+        "version": share.version,
+        "title": share.title,
+        "last_time": share.last_time,
+        "snapshot_time": share.snapshot_time,
+    }))
+}
+
+fn share_scope_changed() -> RpcError {
+    let message = crate::i18n::UiMessage::new("history.scope_changed").arg("detail", "");
+    RpcError::busy(message.english()).with_presentation(message)
+}
+
+fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
+    serde_json::from_value(value).map_err(|_| {
+        let message = crate::i18n::UiMessage::new("history.invalid_query").arg("detail", "");
+        RpcError::bad_request(message.english()).with_presentation(message)
+    })
 }
 
 pub(super) fn library(

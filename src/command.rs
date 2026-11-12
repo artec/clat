@@ -87,6 +87,7 @@ pub enum CommandOutcome {
     ShowTask(String),
     /// Read-only capability content through the existing content view.
     ShowCapabilities(String),
+    ShowUiConsents(Vec<crate::i18n::UiMessage>),
     QueryHistory(crate::session_query::command::HistoryCommandRequest),
     ShowJobs(serde_json::Value),
     ShowSchedules(serde_json::Value),
@@ -147,6 +148,7 @@ impl fmt::Debug for CommandOutcome {
             Self::Status(_) => "Status(..)",
             Self::ShowTask(_) => "ShowTask(..)",
             Self::ShowCapabilities(_) => "ShowCapabilities(..)",
+            Self::ShowUiConsents(_) => "ShowUiConsents(..)",
             Self::QueryHistory(_) => "QueryHistory(..)",
             Self::ShowJobs(_) => "ShowJobs(..)",
             Self::ShowSchedules(_) => "ShowSchedules(..)",

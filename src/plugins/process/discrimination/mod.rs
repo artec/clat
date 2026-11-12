@@ -40,6 +40,7 @@ impl Tool for TestDiscriminationTool {
         let pair = Pair::prepare(&self.service, arguments);
         let workspace_enforced = pair.as_ref().is_ok_and(Pair::workspace_enforced);
         Some(crate::tool::PreparedTool {
+            approval: None,
             workspace_enforced,
             status: pair.as_ref().map_or_else(Clone::clone, |p| p.status()),
             tool: Arc::new(FrozenPair {

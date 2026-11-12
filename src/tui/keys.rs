@@ -630,9 +630,14 @@ impl App {
         // 回填按发送顺序排列、换行分隔（多次召回时
         // 先发的想法靠前——见 prepend_recalled_line）。
         self.conversation.recall_pending_steering();
-        self.pending_native_steering.pop_back();
-        self.input
-            .prepend_recalled_line(&message.message.content.plain_text());
+        let draft = self.pending_native_steering.pop_back();
+        if let Some(draft) = draft.filter(|draft| !draft.shares.is_empty()) {
+            self.input.prepend_recalled_line(&draft.prompt);
+            self.share_drafts.restore(draft.share_owner, draft.shares);
+        } else {
+            self.input
+                .prepend_recalled_line(&message.message.content.plain_text());
+        }
         let roots = self.project.root().to_path_buf();
         let restored = message.message.staged_attachments.len();
         let restore = self

@@ -2903,6 +2903,7 @@ fn image_and_text_steering_share_durable_admission_and_forged_blocks_are_refused
         staged_attachments: Vec::new(),
         admitted_images: Vec::new(),
         submission_digest: None,
+        contains_session_share: false,
     };
     assert!(matches!(
         application.steer(with_image_block),

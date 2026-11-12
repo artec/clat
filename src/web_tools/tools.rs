@@ -105,6 +105,7 @@ impl Tool for WebTool {
     }
     fn prepare_execution(&self, _: &Value) -> Option<PreparedTool> {
         Some(PreparedTool {
+            approval: None,
             tool: Arc::new(Self {
                 service: self.service.clone(),
                 operation: self.operation,

@@ -7,11 +7,12 @@
 //! 成为 serve 下行词汇契约。词汇政策（§5.4）：serve 帧/控制词汇新增
 //! = v2；唯一例外 `notice.kind`（开放枚举，客户端忽略未知）。
 
-use crate::event::RunEvent;
 use crate::model::Usage;
 use crate::permission::PermissionRequest;
 use crate::session::replay::{ReplayEvent, ReplayRetryFailure, ReplayTurnEnd};
 use crate::tool::ToolEffect;
+pub(crate) use crate::wire::host::realtime_data;
+use crate::wire::host::{replay_envelope, replay_user_message_json};
 use crate::{ApplicationEvent, SessionSummary, WorkbenchSnapshot};
 use serde_json::{Map, Value, json};
 
@@ -97,41 +98,15 @@ pub(crate) fn replay_event_json(event: &ReplayEvent) -> Value {
             content_blocks,
             client_message_id,
             receipt,
-        } => {
-            // MM-1A additive：blocks 携带图片时才上网（纯文本消息的
-            // wire 字节与 v1 完全一致——`text` 语义不变，仍是文本
-            // blocks 拼接）。SSE 只带 descriptor，永不带字节。
-            let has_images = content_blocks
-                .iter()
-                .any(|block| matches!(block, crate::message::ContentBlock::Image { .. }));
-            let mut fields = vec![
-                ("seq", json!(seq)),
-                ("turn", json!(turn)),
-                ("time_ms", json!(time_ms)),
-                ("text", Value::String(text.clone())),
-            ];
-            if has_images {
-                fields.push((
-                    "content_blocks",
-                    Value::Array(
-                        content_blocks
-                            .iter()
-                            .map(crate::wire::content_block_to_json)
-                            .collect(),
-                    ),
-                ));
-            }
-            if let Some(client_message_id) = client_message_id {
-                fields.push((
-                    "client_message_id",
-                    Value::String(client_message_id.clone()),
-                ));
-            }
-            if let Some(receipt) = receipt {
-                fields.push(("receipt", admission_receipt_value(receipt)));
-            }
-            event_object("user_message", fields)
-        }
+        } => replay_user_message_json(
+            *seq,
+            *turn,
+            *time_ms,
+            text,
+            content_blocks,
+            client_message_id.as_deref(),
+            receipt.as_deref(),
+        ),
         ReplayEvent::AssistantMessage {
             seq,
             turn,
@@ -328,6 +303,9 @@ pub(crate) fn approval_requested_ctl(rpc_id: &str, request: &PermissionRequest) 
         ("reason", Value::String(request.reason.clone())),
         ("call_id", Value::String(request.call_id.clone())),
     ];
+    if let Some(presentation) = request.reason_presentation() {
+        request_fields.push(("presentation", json!(presentation)));
+    }
     // arguments 放最后：长载荷不遮蔽前面的判定字段（TUI 弹窗同款
     // 「fields 行」防藏纪律）。
     request_fields.push(("arguments", request.arguments.clone()));
@@ -347,6 +325,8 @@ fn tool_effect_tag(effect: ToolEffect) -> String {
         ToolEffect::ExternalRead => "external_read".into(),
         ToolEffect::Destructive => "destructive".into(),
         ToolEffect::SessionWrite => "session_write".into(),
+        ToolEffect::UIStructureRead => "ui_structure_read".into(),
+        ToolEffect::UIAction => "ui_action".into(),
     }
 }
 
@@ -630,22 +610,9 @@ fn event_object(tag: &str, fields: Vec<(&str, Value)>) -> Value {
 
 // —— 供 sse/protocol 组帧的便捷封装 ————————————————————————————————
 
-/// 实时族帧 data：RunEvent 经 `envelope_line` 去掉行尾换行的原文
-///（INV-S2 零转译——这里不做任何再构造）。
-pub(crate) fn realtime_data(event: &RunEvent) -> String {
-    let line = crate::wire::envelope_line(event);
-    line.strip_suffix('\n')
-        .expect("envelope_line ends with newline")
-        .to_owned()
-}
-
 /// 重放族帧 data：`{"v":1,"replay":{...}}`。
 pub(crate) fn replay_data(event: &ReplayEvent) -> String {
-    json!({
-        "v": crate::wire::WIRE_VERSION,
-        "replay": replay_event_json(event),
-    })
-    .to_string()
+    replay_envelope(replay_event_json(event))
 }
 
 /// 控制族帧 data：`{"v":1,"ctl":{...}}`。

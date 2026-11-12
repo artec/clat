@@ -277,7 +277,7 @@ struct ResolvedLog {
     version: u32,
 }
 
-const STREAM_RECORD_BYTE_CAP: usize = 64 * 1024 * 1024;
+const STREAM_RECORD_BYTE_CAP: usize = jsonl::MAX_DECODED_FRAME_BYTES;
 
 pub(crate) struct JsonlBackend {
     root: PathBuf,
@@ -641,6 +641,9 @@ impl JsonlBackend {
         events: &[SessionEvent],
     ) -> Result<(std::sync::Arc<Dir>, Arc<SessionWriteLease>, LogRevision), MaterializeFailure>
     {
+        let content =
+            jsonl::materialized_bytes(&session.header, events, self.compression, self.pack_chunks)
+                .map_err(|error| MaterializeFailure::NotCommitted(error.to_string()))?;
         let dir = std::sync::Arc::new(
             self.root_dir
                 .create_session(&session.key)
@@ -694,9 +697,6 @@ impl JsonlBackend {
                 session.key.id
             )));
         }
-        let content =
-            jsonl::materialized_bytes(&session.header, events, self.compression, self.pack_chunks)
-                .map_err(|error| MaterializeFailure::NotCommitted(error.to_string()))?;
         let temp = format!("{}.{}.tmp", log_name, uuid::Uuid::new_v4().simple());
         let mut temp_options = cap_std::fs::OpenOptions::new();
         temp_options.write(true).create_new(true);

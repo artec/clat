@@ -261,6 +261,7 @@ function createShellComposer(shell) {
   group(() => shellText('add_content'), [
     ['add-image', 'vision', () => CLATI18n.msg('web.add_images'), () => openImagePicker()],
     ['add-project-file', 'open', () => shellText('reference_file'), () => document.getElementById('files-open').click()],
+    ['add-session-share', 'trace', () => CLATI18n.msg('input.share_session'), () => openSessionSharePicker()],
   ]);
   group(() => shellText('work_mode'), [
     ['add-plan', 'plan', () => shellText('plan_mode'), () => toggleShellPlan()],

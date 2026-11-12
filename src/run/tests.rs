@@ -423,6 +423,7 @@ fn steering_image_projection_mismatch_fails_before_commit_and_provider_io() {
                 path: "/private/provider-source.png".into(),
             }],
             submission_digest: None,
+            contains_session_share: false,
         }),
         PushOutcome::Accepted
     );

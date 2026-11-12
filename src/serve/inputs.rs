@@ -78,13 +78,14 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
     }
     let id = string(params, "clientMessageId")?;
     let text = params.get("text").and_then(Value::as_str).unwrap_or("");
-    let draft = media::draft(params)?;
+    let mut draft = media::draft(params)?;
     let mut message = crate::message::PendingMessage::from_front_end(
         text,
         Some(id.to_owned()),
         draft.uploads.iter().map(std::path::PathBuf::from).collect(),
     );
-    if text.trim().is_empty() && draft.uploads.is_empty() {
+    message.bind_session_share_identity(&draft.session_shares);
+    if text.trim().is_empty() && draft.uploads.is_empty() && draft.session_shares.is_empty() {
         return Err(failed("empty input"));
     }
     let app = shared.app.lock().expect("application");
@@ -99,6 +100,17 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
             return Err(failed("input id conflict"));
         }
         return Ok(json!({"outcome":"received"}));
+    }
+    let shares = app.freeze_session_shares(&draft.session_shares, &crate::CancelToken::new())?;
+    for share in shares {
+        draft
+            .session_share_summaries
+            .push(crate::input::SessionShareSummary {
+                title: share.title,
+                turns: share.turns,
+                characters: share.characters,
+            });
+        draft.frozen_shares.push(share.text.into());
     }
     app.ensure_user_images(&message)?;
     if let Some(scope) = &draft.draft_scope_id {
@@ -115,7 +127,16 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
     }
     if let Err(error) = app.enqueue_input(id.to_owned(), message, draft.clone()) {
         app.release_input_draft(&draft, false);
-        return Err(failed(&error.to_string()));
+        return Err(
+            if matches!(
+                error.presentation().key.as_str(),
+                "input.share_too_large" | "input.share_host_frame_too_large"
+            ) {
+                RpcError::from(error)
+            } else {
+                failed(&error.to_string())
+            },
+        );
     }
     Ok(json!({"outcome":"queued"}))
 }
@@ -231,7 +252,7 @@ pub(super) fn dispatch_ready(shared: &Arc<ServeShared>) {
         Ok(None) => shared.release_run_claim(),
         Err(error) => {
             shared.release_run_claim();
-            shared.broadcast(super::state::SseFrame { event:"notice", data:super::shapes::ctl_data(&json!({"kind":"input_error","payload":{"message":error.to_string(),"presentation":crate::i18n::UiMessage::new("input.failed")}})) });
+            shared.broadcast(super::state::SseFrame { event:"notice", data:super::shapes::ctl_data(&json!({"kind":"input_error","payload":{"message":error.to_string(),"presentation":error.presentation()}})) });
         }
     }
 }

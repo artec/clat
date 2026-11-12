@@ -19,6 +19,8 @@ pub(crate) mod sentinel;
 mod session_flags;
 pub(crate) mod settings;
 pub(crate) mod timestamp;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod ui_consents;
 mod web;
 mod wechat_users;
 pub(crate) mod workspace;
@@ -83,6 +85,8 @@ pub(crate) struct ControlStorage {
     dir: Dir,
     state: Mutex<ControlState>,
     web_updates: Mutex<()>,
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) ui_authority: crate::native_tools::ui::Authority,
     builtin_plugins: crate::plugin::selection::Configuration,
     #[cfg(test)]
     builtin_write_fault: std::sync::atomic::AtomicU8,
@@ -128,6 +132,8 @@ impl ControlStorage {
         let projcache_file = projcache::load(&storages_dir, &storages_root);
         let storage = Self {
             web_updates: Mutex::new(()),
+            #[cfg(any(target_os = "macos", test))]
+            ui_authority: Default::default(),
             builtin_plugins,
             #[cfg(test)]
             builtin_write_fault: std::sync::atomic::AtomicU8::new(0),

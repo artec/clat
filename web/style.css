@@ -324,7 +324,6 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.assistant .reasoning { grid-column: 2; margin: 0 0 9px; overflow: hidden; color: var(--text-muted); font: var(--text-size-secondary)/1.7 var(--font-ui); }
 .msg.assistant .reasoning summary { position: relative; display: flex; min-height: 24px; align-items: center; gap: 7px; padding: 2px 0; overflow: hidden; cursor: pointer; list-style: none; }
 .msg.assistant .reasoning summary::-webkit-details-marker { display: none; }
-.msg.assistant .reasoning summary svg { width: 1em; height: 1em; color: var(--signal); }
 .reasoning-title { flex: 0 0 auto; color: var(--text-soft); }
 .reasoning-dot { flex: 0 0 auto; width: 3px; height: 3px; border-radius: 50%; background: var(--text-muted); }
 .reasoning-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

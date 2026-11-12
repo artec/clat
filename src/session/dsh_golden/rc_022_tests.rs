@@ -106,12 +106,6 @@ fn dsh_022_parentless_fork_resumes_read_only_without_artifacts() {
 fn dsh_022_top_level_control_resumes_writable_unchanged() {
     let (root, _) = mount_fixture_generation(TOP_LEVEL.0, TOP_LEVEL.1, 4);
     let key = key_for(TOP_LEVEL.1);
-    let log = crate::session::path_layout::log_path(
-        &root,
-        Some("/Users/deng/Documents/GitHub/clat"),
-        &key.id,
-        JsonlCompression::Zstd,
-    );
     let service = SessionService::new(root.clone(), JsonlCompression::Zstd).expect("service");
     service.resume(&key).expect("normal V4 resumes writable");
     assert!(

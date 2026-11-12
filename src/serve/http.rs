@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 pub(crate) const MAX_REQUEST_LINE_BYTES: usize = 4 * 1024;
 pub(crate) const MAX_HEAD_BYTES: usize = 16 * 1024;
-pub(crate) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) use crate::wire::host::MAX_RPC_REQUEST_BYTES as MAX_BODY_BYTES;
 
 const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const BODY_TIMEOUT: Duration = Duration::from_secs(60);

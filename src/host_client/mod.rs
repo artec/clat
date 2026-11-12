@@ -3,6 +3,7 @@
 //! Every mutation is sent once. A transport failure is an uncertain outcome,
 //! not permission to retry or to open another local writer.
 mod attachments;
+pub use attachments::PreparedSharedMessage;
 pub(crate) mod browser;
 pub(crate) mod build_identity;
 mod commands;
@@ -19,6 +20,7 @@ pub use lifecycle::HostManagementArgs;
 pub(crate) mod backend;
 mod models;
 mod sessions;
+pub use sessions::{HostSessionSharePreview, HostSharedInput};
 mod startup;
 pub use backend::PackagedBackend;
 mod desktop;
@@ -322,6 +324,9 @@ impl HostClient {
             return Err("invalid host method".into());
         }
         let body = serde_json::to_vec(params).map_err(|_| "cannot encode host request")?;
+        if body.len() > crate::wire::host::MAX_RPC_REQUEST_BYTES {
+            return Err(crate::i18n::UiMessage::new("input.host_request_too_large").into());
+        }
         let mut response =
             transport::request_presented(self, "POST", &format!("/api/{method}"), &body)?;
         let bytes = transport::read_body(&mut response)?;

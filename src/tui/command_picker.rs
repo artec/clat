@@ -476,7 +476,7 @@ fn entry_lines_localized(
 }
 
 fn local_choices() -> Vec<Choice> {
-    clat_core::client_ports::presentation::client_commands()
+    let mut choices: Vec<_> = clat_core::client_ports::presentation::client_commands()
         .into_iter()
         .map(|command| Choice {
             text: format!("/{} ", command.name),
@@ -487,7 +487,17 @@ fn local_choices() -> Vec<Choice> {
             unavailable: false,
             skill: false,
         })
-        .collect()
+        .collect();
+    choices.push(Choice {
+        text: "/share-session ".into(),
+        label: "/share-session".into(),
+        description: UiMessage::new("input.share_session").into(),
+        hint: UiMessage::new("input.share_command_hint").into(),
+        aliases: String::new(),
+        unavailable: false,
+        skill: false,
+    });
+    choices
 }
 
 fn picker_body(

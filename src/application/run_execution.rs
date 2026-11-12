@@ -145,6 +145,8 @@ struct RunSlots {
     tools: Arc<crate::tool::ToolRegistry>,
     skill_catalog: Option<Arc<crate::skills::SkillCatalogSlot>>,
     view_image: ImageToolPort,
+    #[cfg(target_os = "macos")]
+    native_ui: Option<Arc<crate::native_tools::ui::Service>>,
     file_review: Option<Arc<crate::project::review::FileReview>>,
 }
 
@@ -156,11 +158,17 @@ impl RunSlots {
             tools: Arc::clone(&app.tools),
             skill_catalog: app.skill_catalog.clone(),
             view_image: app.view_image.clone(),
+            #[cfg(target_os = "macos")]
+            native_ui: app.composition.native_ui(),
             file_review: app.project.file_review(),
         }
     }
 
     fn clear(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(service) = &self.native_ui {
+            service.end();
+        }
         self.plugin_host.clear();
         self.tool_access.clear();
         self.tools.clear_capabilities();
@@ -254,6 +262,10 @@ impl RunExecutionEngine {
             slots.tool_access = target.access.clone();
             slots.view_image = target.view_image.clone();
             slots.tools = target.runtime.tools.clone();
+            #[cfg(target_os = "macos")]
+            {
+                slots.native_ui = None;
+            }
         }
         let host = RunHostDeps::from_application(
             application,
@@ -341,6 +353,15 @@ impl WaitingRunExecution {
             .tools
             .install_capabilities(Arc::clone(&start.context.capabilities));
         self.slots.view_image.begin_run();
+        #[cfg(target_os = "macos")]
+        if let Some(service) = &self.slots.native_ui {
+            service.begin(
+                start.prepared.session_id.to_string(),
+                &self.host.cancel,
+                start.context.tool_access.clone(),
+                asker.as_deref(),
+            );
+        }
         self.slots
             .plugin_host
             .install(crate::plugin_host::RunHostContext {

@@ -126,6 +126,7 @@ impl Tool for JobTool {
                     .ok_or_else(|| JobError::new("unbound").tool())
             });
         Some(PreparedTool {
+            approval: None,
             workspace_enforced: false,
             status: "host-background-command".into(),
             tool: Arc::new(FrozenStart {

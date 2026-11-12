@@ -25,6 +25,216 @@ fn allow(addr: SocketAddr, approval: &ParsedSseFrame) {
 }
 
 #[test]
+fn session_share_legacy_prompt_freezes_the_selected_source() {
+    let (handle, storage, root) = spawn_serve("share-legacy-prompt", TestBehavior::Success);
+    let mut source_events = SseClient::connect(handle.addr);
+    submit(handle.addr, "source-legacy", "source legacy body");
+    assert_eq!(
+        settled_outcome_type(&source_events.wait_settled()),
+        "completed"
+    );
+    let source = input_rpc(handle.addr, "session.info", json!({}))["session_id"].clone();
+    input_rpc(handle.addr, "session.new", json!({}));
+    let info = input_rpc(handle.addr, "workbench.info", json!({}));
+    let reference = json!({"project":info["project"]["root"],"session":source,"seq":null});
+    let preview = input_rpc(
+        handle.addr,
+        "history.share.preview",
+        json!({
+            "reference":reference,"recent_turns":null,
+            "expected_selection_generation":info["selection_generation"]
+        }),
+    );
+    let mut events = SseClient::connect(handle.addr);
+    let submission = json!({"text":"", "clientMessageId":"legacy-share",
+        "sessionShares":[{"reference":reference,"recent_turns":null,"version":preview["version"]}]});
+    input_rpc(handle.addr, "prompt.send", submission.clone());
+    assert_eq!(settled_outcome_type(&events.wait_settled()), "completed");
+    let destination = input_rpc(handle.addr, "session.info", json!({}))["session_id"].clone();
+    let history = input_rpc(
+        handle.addr,
+        "history.conversation",
+        json!({
+            "reference":{"project":info["project"]["root"],"session":destination,"seq":null}
+        }),
+    );
+    assert!(
+        history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "user"
+                && message["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("source legacy body")))
+    );
+    input_rpc(handle.addr, "session.switch", json!({"id":source}));
+    let mut source_events = SseClient::connect(handle.addr);
+    submit(handle.addr, "legacy-source-update", "new source content");
+    source_events.wait_settled();
+    input_rpc(handle.addr, "session.switch", json!({"id":destination}));
+    input_rpc(handle.addr, "prompt.send", submission);
+    assert_eq!(count_keyed_user_messages(&storage, "legacy-share"), 1);
+    cleanup(handle, &storage, &root);
+}
+
+#[test]
+fn session_share_legacy_steering_freezes_the_selected_source() {
+    let gate = Arc::new(SteerGate::default());
+    let (handle, storage, root) =
+        spawn_serve("share-legacy-steer", TestBehavior::Steer(gate.clone()));
+    let mut source_events = SseClient::connect(handle.addr);
+    submit(handle.addr, "steer-source", "steering source body");
+    gate.wait_entered();
+    let source = input_rpc(handle.addr, "session.info", json!({}))["session_id"].clone();
+    input_rpc(handle.addr, "run.cancel", json!({}));
+    source_events.wait_settled();
+    input_rpc(handle.addr, "session.new", json!({}));
+    let info = input_rpc(handle.addr, "workbench.info", json!({}));
+    let reference = json!({"project":info["project"]["root"],"session":source,"seq":null});
+    let preview = input_rpc(
+        handle.addr,
+        "history.share.preview",
+        json!({
+            "reference":reference,"recent_turns":null,
+            "expected_selection_generation":info["selection_generation"]
+        }),
+    );
+    let mut events = SseClient::connect(handle.addr);
+    input_rpc(
+        handle.addr,
+        "prompt.send",
+        json!({"text":"begin destination"}),
+    );
+    let result = input_rpc(
+        handle.addr,
+        "steer.send",
+        json!({"text":"", "clientMessageId":"share-steer",
+        "sessionShares":[{"reference":reference,"recent_turns":null,"version":preview["version"]}]}),
+    );
+    assert_eq!(result["outcome"], "queued");
+    gate.release();
+    events.wait_settled();
+    let destination = input_rpc(handle.addr, "session.info", json!({}))["session_id"].clone();
+    let history = input_rpc(
+        handle.addr,
+        "history.conversation",
+        json!({
+            "reference":{"project":info["project"]["root"],"session":destination,"seq":null}
+        }),
+    );
+    assert!(
+        history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "user"
+                && message["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("steering source body")))
+    );
+    cleanup(handle, &storage, &root);
+}
+
+#[test]
+fn session_share_preview_checks_session_project_and_selection() {
+    let (handle, storage, root) = spawn_serve("share-preview", TestBehavior::Success);
+    let mut events = SseClient::connect(handle.addr);
+    submit(
+        handle.addr,
+        "source-message",
+        "content for sharing\nbody-only-secret",
+    );
+    assert_eq!(settled_outcome_type(&events.wait_settled()), "completed");
+    let source = input_rpc(handle.addr, "session.info", json!({}))["session_id"].clone();
+    let info = input_rpc(handle.addr, "workbench.info", json!({}));
+    let reference = json!({"project":info["project"]["root"],"session":source,"seq":null});
+    let request = json!({"reference":reference,"recent_turns":null,"expected_selection_generation":info["selection_generation"]});
+    let (_, own) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "history.share.preview",
+        &request.to_string(),
+    );
+    assert_eq!(own["ok"], false, "the selected session cannot share itself");
+    input_rpc(handle.addr, "session.new", json!({}));
+    let info = input_rpc(handle.addr, "workbench.info", json!({}));
+    let mut request = request;
+    request["expected_selection_generation"] = info["selection_generation"].clone();
+    let preview = input_rpc(handle.addr, "history.share.preview", request.clone());
+    assert!(preview["characters"].as_u64().unwrap() > 0);
+    assert_eq!(preview["turns"], 1);
+    assert!(preview.get("text").is_none());
+    assert!(!preview.to_string().contains("body-only-secret"));
+    let mut next_events = SseClient::connect(handle.addr);
+    let submission = json!({
+        "text":"", "clientMessageId":"shared-message", "operationId":"share-submit",
+        "sessionShares":[{"reference":reference,"recent_turns":null,"version":preview["version"]}]
+    });
+    input_rpc(handle.addr, "input.submit", submission.clone());
+    assert_eq!(
+        settled_outcome_type(&next_events.wait_settled()),
+        "completed"
+    );
+    let session = input_rpc(handle.addr, "session.info", json!({}));
+    let destination = session["session_id"].clone();
+    let history = input_rpc(
+        handle.addr,
+        "history.conversation",
+        json!({
+            "reference":{"project":info["project"]["root"],"session":session["session_id"],"seq":null}
+        }),
+    );
+    assert!(
+        history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["role"] == "user"
+                    && message["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("body-only-secret"))
+            })
+    );
+    input_rpc(handle.addr, "session.switch", json!({"id":source}));
+    let mut source_events = SseClient::connect(handle.addr);
+    submit(handle.addr, "source-later", "source changed after sharing");
+    assert_eq!(
+        settled_outcome_type(&source_events.wait_settled()),
+        "completed"
+    );
+    input_rpc(handle.addr, "session.switch", json!({"id":destination}));
+    let mut retry = submission;
+    retry["operationId"] = json!("share-submit-retry");
+    let result = input_rpc(handle.addr, "input.submit", retry.clone());
+    assert_eq!(result["outcome"], "received");
+    assert_eq!(count_keyed_user_messages(&storage, "shared-message"), 1);
+    retry["operationId"] = json!("share-submit-conflict");
+    retry["sessionShares"][0]["recent_turns"] = json!(1);
+    let (_, conflict) = post_rpc_json(handle.addr, TEST_TOKEN, "input.submit", &retry.to_string());
+    assert_eq!(conflict["ok"], false);
+    request["reference"]["project"] = json!("/tmp/another-project");
+    let (_, foreign) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "history.share.preview",
+        &request.to_string(),
+    );
+    assert_eq!(foreign["ok"], false, "foreign projects cannot be shared");
+    request["reference"] = reference;
+    request["expected_selection_generation"] = json!(u64::MAX);
+    let (_, stale) = post_rpc_json(
+        handle.addr,
+        TEST_TOKEN,
+        "history.share.preview",
+        &request.to_string(),
+    );
+    assert_eq!(stale["ok"], false, "stale selection must fail");
+    cleanup(handle, &storage, &root);
+}
+
+#[test]
 fn pending_input_receives_one_per_step_with_images_and_preserves_fifo() {
     let (handle, storage, root) = spawn_serve("inputs-fifo", TestBehavior::RunCommandPerTurn);
     input_rpc(handle.addr, "permission.set", json!({"mode":"read-only"}));

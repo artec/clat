@@ -77,6 +77,7 @@ pub(super) fn prepare_native(
         Err(e) => format!("enforcement unavailable: {e}"),
     };
     crate::tool::PreparedTool {
+        approval: None,
         workspace_enforced,
         status,
         tool: Arc::new(FrozenProcessTool {

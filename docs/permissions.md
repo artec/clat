@@ -22,6 +22,8 @@ Interactive local clients use three session-scoped modes:
 | `Network`, `ExternalRead` | ask | allow | allow |
 | `Execute` | ask | allow only with a prepared native sandbox invocation; otherwise ask | allow |
 | `Destructive` | ask | ask | allow |
+| `UIStructureRead` | allow | allow | allow |
+| `UIAction` | ask each time after application consent | ask each time after application consent | application consent, plus individual approval for sensitive actions |
 
 Native web tools add an address-aware consent gate on top of the Network
 effect (2026-11-08): when `web_search`/`web_fetch` would reach a
@@ -40,8 +42,9 @@ without interruption. Native commands run without prompting when that invocation
 is bound to macOS Seatbelt or the Windows ACL runner. Linux commands, third-party
 Execute tools, explicit `network: true` requests and destructive operations still
 ask. Full
-Access removes all tool prompts and unlocks absolute-path writes, so cold
-switches require a separate warning confirmation.
+Access removes mode-level tool prompts and unlocks absolute-path writes, so cold
+switches require a separate warning confirmation. Tool-specific consent and
+approval rules still apply.
 
 Read Only does not create a hard deny. It asks before every side effect and
 still confines approved writes to the project. A deny always comes from the
@@ -177,6 +180,11 @@ credentials never bypass cross-site checks. Browser localStorage no longer
 stores new raw access credentials. This authentication boundary does not grant
 project trust, approve tools, or change the permission mode. See
 [local server security](usage.md#security-boundary).
+
+Conversation sharing uses the current project's read-only history access.
+When you send a shared conversation, its quoted text enters the destination
+conversation and the model request. Tool permissions continue to follow the
+destination conversation.
 
 The workbench CSP permits generated inline styles for the bundled terminal and
 editor renderers (fonts, terminal cell dimensions, colors and cursor placement).
@@ -408,6 +416,41 @@ Commands inherit the CLAT process environment. That is useful for normal
 tooling and also means secrets exported in the launching shell are visible to
 approved commands even under a filesystem/network sandbox. Seatbelt is not an
 environment-secret filter.
+
+## macOS application interface permissions
+
+CLAT uses the macOS Accessibility APIs in the process that runs the tools.
+Grant that process Accessibility access under **System Settings → Privacy &
+Security → Accessibility**. Screen Recording permission is unnecessary for
+these tools. Interface calls run outside the command Seatbelt sandbox and
+have their own permission checks.
+
+- `ui_apps`, structural `ui_tree` reads and structural `ui_wait` conditions
+  can run in Plan Mode and in headless sessions. Values start hidden.
+  CLAT masks fields identified as secure by Accessibility.
+- Value reads, value comparisons and actions require interactive consent
+  for the application. The choices are **Allow for this session**,
+  **Always allow**, and **Deny**. A session decision takes precedence over
+  a cross-session decision. The control plane stores up to 256 decisions
+  in `ui-consents.json` by application identity and scope.
+- Read Only and Project Write require individual action approval after
+  application consent. Full Access also asks each time for controls whose
+  labels indicate sensitive operations such as submitting, deleting or
+  purchasing. Actions and value reads are blocked in Plan Mode and without
+  an interactive question channel.
+- Actions against CLAT or the terminal hosting its approvals are blocked.
+  Browser and unclassified application actions require a standalone local
+  TUI with a verified terminal ancestor. A shared Host permits actions
+  on recognized native system apps such as Finder and TextEdit.
+- An action rechecks the running process, window or menu, element, label
+  and supported action after approval. Each run can dispatch up to 20
+  actions. Three consecutive actions on the same element with unchanged
+  observable state stop further repetitions.
+- Use `/ui-consents` to list decisions for the current session and across
+  sessions. Use `/ui-consents revoke session APP_ID` or
+  `/ui-consents revoke always APP_ID` to remove the selected decision.
+  Revocation invalidates affected handles, cancels pending approvals and
+  blocks any dispatch that has yet to cross the authorization boundary.
 
 ## MCP effects
 

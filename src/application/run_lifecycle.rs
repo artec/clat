@@ -258,7 +258,18 @@ impl TrustedProjectApplication {
             };
         }
         match self.prepare_input_message(message.clone()) {
-            Ok(prepared) => self.queue_steering_message(handle, prepared),
+            Ok(prepared) => match crate::wire::share_frames::validate(
+                &self.project,
+                &prepared,
+                &prepared.content,
+                false,
+            ) {
+                Ok(()) => self.queue_steering_message(handle, prepared),
+                Err(error) => SteerOutcome::Refused {
+                    reason: error.to_string(),
+                    receipt: steering_rollback_receipt(&message, "steering-host-frame"),
+                },
+            },
             Err(error) => SteerOutcome::Refused {
                 reason: error.reason,
                 receipt: steering_rollback_receipt(&message, error.phase),

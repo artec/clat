@@ -30,6 +30,8 @@ impl Run<'_> {
         state: &mut StepState,
         events: &mut dyn EventSink,
     ) -> Result<(), RunError> {
+        crate::wire::share_frames::validate(self.project, &pending, &pending.content, false)
+            .map_err(|error| state.fail(events, &self.steering, error.to_string()))?;
         let parts = pending.model_parts().map_err(|error| {
             state.fail(
                 events,

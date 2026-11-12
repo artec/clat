@@ -199,12 +199,12 @@ impl<'a> Run<'a> {
         tool: std::sync::Arc<dyn crate::Tool>,
         definition: &crate::ToolDefinition,
         call: &crate::ToolCall,
-    ) -> (std::sync::Arc<dyn crate::Tool>, PermissionDecision) {
-        let (tool, prepared) = crate::tool::prepare_tool(tool, &call.arguments);
+    ) -> Result<(std::sync::Arc<dyn crate::Tool>, PermissionDecision), crate::ToolError> {
+        let (tool, prepared) = crate::tool::prepare_tool(tool, &call.arguments, &self.cancel)?;
         let decision =
             self.permissions
                 .check_prepared(self.project, definition, call, prepared.as_ref());
-        (tool, decision)
+        Ok((tool, decision))
     }
 
     fn drive(

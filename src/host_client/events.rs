@@ -25,6 +25,8 @@ pub fn decode_host_approval(value: &Value) -> Result<(String, crate::PermissionR
         Some("external_read") => crate::ToolEffect::ExternalRead,
         Some("destructive") => crate::ToolEffect::Destructive,
         Some("session_write") => crate::ToolEffect::SessionWrite,
+        Some("ui_structure_read") => crate::ToolEffect::UIStructureRead,
+        Some("ui_action") => crate::ToolEffect::UIAction,
         _ => return Err("unknown host approval effect".into()),
     };
     Ok((

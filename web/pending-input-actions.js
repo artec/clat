@@ -1,5 +1,5 @@
 const inputOperations = new Set(), inputPreviews = new Map();
-let inputSubmission = null;
+const inputSubmissions = new Map();
 let optimisticInputInterrupt = null;
 const inputRetryOperations = new Map(), inputRecallRecoveries = new Map(), recalledInputFiles = new Map();
 function rememberInputReferences(item, owner = composerScope) {
@@ -30,15 +30,34 @@ async function refreshPendingInputs() {
 }
 async function submitPendingInput({ text, images, owner, draftEpoch, composerGeneration }) {
   const params = { ...composerSubmissionParams(text, images) };
+  const shares = [...sessionSharesFor(owner)];
+  if (shares.some(share => share.needsRefresh)) throw CLATI18n.error(inputText('share_refresh_required'));
+  if (shares.length) params.sessionShares = shares.map(({reference, recent_turns, version}) => ({reference, recent_turns, version}));
   params.clientMessageId ||= newOpaqueClientId('input');
-  const signature = JSON.stringify([owner, text, images.map(i => i.uploadId)]);
-  if (!inputSubmission || inputSubmission.signature !== signature) inputSubmission = { signature, operationId: newOpaqueClientId('input-op'), clientMessageId: params.clientMessageId };
-  Object.assign(params, { operationId: inputSubmission.operationId, clientMessageId: inputSubmission.clientMessageId });
+  const signature = JSON.stringify([text, images.map(i => i.uploadId), params.sessionShares]);
+  const canonical = composerOwnerAliases.get(owner) || owner;
+  let submission = inputSubmissions.get(canonical);
+  if (!submission || submission.signature !== signature) {
+    submission = { signature, operationId: newOpaqueClientId('input-op'), clientMessageId: params.clientMessageId, selection: state.selectionGeneration };
+    inputSubmissions.set(canonical, submission);
+  }
+  Object.assign(params, { operationId: submission.operationId, clientMessageId: submission.clientMessageId });
   bindFileReferenceSubmission(owner, text, params);
   params.references = (pendingFileReferences.get(owner) || []).filter(ref => text.includes(ref.quote)).map(({path,version,quote}) => ({path,version,quote}));
-  params.expected_selection_generation = state.selectionGeneration;
+  params.expected_selection_generation = submission.selection;
   const deferredIntoRun = state.runActive;
-  await rpc('input.submit', params);
+  try {
+    await rpc('input.submit', params);
+  } catch (error) {
+    if (error.code === 'busy' && submission.selection !== state.selectionGeneration) {
+      forgetInputSubmission(owner, submission);
+    }
+    throw error;
+  }
+  forgetInputSubmission(owner, submission);
+  const retained = sessionSharesFor(owner);
+  for (const share of shares) { const index = retained.indexOf(share); if (index >= 0) retained.splice(index, 1); }
+  if (composerOwns(owner)) renderSessionShareDraft();
   // INV-OE1：run 进行中的提交是 deferred 插话——立即乐观回显，等下一
   // 模型请求边界 claim（steering_applied）原地转正。等待期间 run 已终结
   // 则不回显：条目转为空闲队列，由下一 run_started 正常入转录。
@@ -49,7 +68,11 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
     showAcceptedInputFeedback();
     void refreshPendingInputs();
   }
-  inputSubmission = null;
+}
+
+function forgetInputSubmission(owner, submission) {
+  const canonical = composerOwnerAliases.get(owner) || owner;
+  if (inputSubmissions.get(canonical) === submission) inputSubmissions.delete(canonical);
 }
 
 /// 事故修复（2026-11-08 插话冻结事故）：82d7b3df 引入了对本函数的调用
@@ -121,6 +144,7 @@ async function recallPendingInput(item, recovery = null) {
     const recalled = result.item;
     restoreTextSteering('', { owner, text: recalled.text });
     rememberInputReferences(recalled, owner);
+    restoreSessionShares(recalled, owner);
     const files = previews.map(preview => new File([preview.blob], preview.name || String(inputText('image')), {type:preview.blob.type}));
     inputRecallRecoveries.delete(item.id);
     if (!composerOwns(owner)) { recalledInputFiles.set(owner, [...(recalledInputFiles.get(owner) || []), ...files]); return; }

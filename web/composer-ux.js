@@ -13,6 +13,7 @@ function installComposerGuard() {
   document.addEventListener('compositionend', event => { if (event.target === dom.prompt) composing = false; });
   CLATWorkbenchState.register(workspacePrefix, () => ({
     text: Boolean(dom.prompt.value.trim()) || [...composerDrafts.values()].some(draft => Boolean(draft.text.trim()))
+      || [...pendingSessionShares.values()].some(shares => shares.length > 0)
       || [...document.querySelectorAll('.question-card:not(.resolved) textarea')].some(input => Boolean(input.value.trim())),
     images: state.draft.images.length > 0,
     submitting: composerGoalPending !== null || state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
@@ -38,6 +39,14 @@ function observeComposerSession(id, selection) {
     composerOwnerAliases.set(oldScope, scope);
     composerDrafts.set(scope, composerDrafts.get(oldScope));
     composerDrafts.delete(oldScope);
+    if (inputSubmissions.has(oldScope)) {
+      inputSubmissions.set(scope, inputSubmissions.get(oldScope));
+      inputSubmissions.delete(oldScope);
+    }
+    if (pendingSessionShares.has(oldScope)) {
+      pendingSessionShares.set(scope, pendingSessionShares.get(oldScope));
+      pendingSessionShares.delete(oldScope);
+    }
   } else if (composerSession !== undefined) {
     dom.prompt.value = composerDrafts.get(scope)?.text || '';
     composerGoalDraft = composerDrafts.get(scope)?.goal || null;
@@ -50,6 +59,8 @@ function observeComposerSession(id, selection) {
     }
   }
   composerScope = scope;
+  renderSessionShareDraft();
+  refreshRecalledSessionShares(scope, selection);
   restoreRecalledInputFiles();
   composerSession = next;
   composerSelection = selection;
@@ -246,11 +257,14 @@ async function submitComposerCommand({ text, owner }) {
     dom['market-open'].click();
     return true;
   }
-  if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run', 'task', 'task_run', 'capabilities'].includes(value.kind)) {
-    const notice = addNoticeLine(value.presentation ? CLATI18n.present(value.presentation,value.message) : value.message || CLATI18n.msg("web.command_completed", {}, "command completed"));
-    if (['memory', 'goal', 'subagent_status', 'task', 'capabilities'].includes(value.kind)) {
+  if (value && ['status', 'help', 'memory', 'goal', 'subagent_status', 'goal_run', 'task', 'task_run', 'capabilities', 'ui_consents'].includes(value.kind)) {
+    const notice = addNoticeLine(value.presentation
+      ? CLATI18n.present(value.presentation, value.message)
+      : value.message || CLATI18n.msg("web.command_completed", {}, "command completed"));
+    if (['memory', 'goal', 'subagent_status', 'task', 'capabilities', 'ui_consents'].includes(value.kind)) {
       notice.classList.add('content-notice');
-      CLATI18n.attribute(notice,'aria-label',()=>value.kind.replaceAll('_', ' '));
+      CLATI18n.attribute(notice,'aria-label',()=>value.kind === 'ui_consents'
+        ? CLATI18n.msg('cua.consent_list') : value.kind.replaceAll('_', ' '));
     }
   } else if (value && value.kind === 'context') {
     addContextSnapshot(value.context);

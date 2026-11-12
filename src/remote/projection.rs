@@ -1,7 +1,6 @@
 use crate::event::RunEvent;
-use crate::i18n::{UiMessage, tool_action};
+use crate::i18n::{UiMessage, tool_action, tool_effect};
 use crate::permission::PermissionRequest;
-use crate::tool::ToolEffect;
 
 pub(crate) enum RemoteProjection {
     Typing(bool),
@@ -10,16 +9,6 @@ pub(crate) enum RemoteProjection {
 }
 
 pub(crate) fn approval_prompt(request: &PermissionRequest, id: &str) -> UiMessage {
-    let key = match request.effect {
-        ToolEffect::Pure => "remote.effect_pure",
-        ToolEffect::Read => "remote.effect_read",
-        ToolEffect::Write => "remote.effect_write",
-        ToolEffect::Execute => "remote.effect_execute",
-        ToolEffect::Network => "remote.effect_network",
-        ToolEffect::ExternalRead => "remote.effect_external_read",
-        ToolEffect::Destructive => "remote.effect_destructive",
-        ToolEffect::SessionWrite => "remote.effect_session_write",
-    };
     let reason = crate::redact::redact_secrets(&request.reason);
     let mut summary = reason.chars().take(240).collect::<String>();
     if reason.chars().count() > 240 {
@@ -28,7 +17,7 @@ pub(crate) fn approval_prompt(request: &PermissionRequest, id: &str) -> UiMessag
     UiMessage::new("remote.approval_request")
         .arg("id", id)
         .arg_message("action", tool_action(&request.tool))
-        .arg_message("effect", UiMessage::new(key))
+        .arg_message("effect", tool_effect(request.effect))
         .arg("reason", summary)
 }
 
@@ -58,6 +47,7 @@ pub(crate) fn project_run_event(event: &RunEvent) -> Vec<RemoteProjection> {
 mod tests {
     use super::*;
     use crate::i18n::{Locale, LocaleContext};
+    use crate::tool::ToolEffect;
 
     #[test]
     fn tool_projection_is_localized_and_never_exposes_unknown_identifiers() {

@@ -13,10 +13,12 @@ pub use trajectory::{
     TrajectoryDetail, TrajectoryDetailRequest, TrajectoryPage, TrajectoryRequest,
 };
 mod query;
+mod share;
 mod source;
 pub use inspect::{
     HistoryEventRead, HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryReadRequest,
 };
+pub use share::SessionShare;
 pub(crate) mod command;
 pub(crate) mod plugin;
 mod tools;

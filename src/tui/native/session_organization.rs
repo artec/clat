@@ -4,15 +4,19 @@ use crate::client_ports::SessionId;
 impl App {
     pub(in crate::tui) fn refresh_picker_sessions(
         &mut self,
-        rows: Vec<crate::client_ports::SessionSummary>,
+        mut rows: Vec<crate::client_ports::SessionSummary>,
     ) {
+        if self.share_picker.is_some() {
+            rows.retain(|row| Some(&row.id) != self.session_id.as_ref());
+        }
         if let Some(picker) = self.session_picker.as_mut() {
             picker.replace_sessions(rows);
         } else {
-            self.session_picker = Some(session_picker::SessionPicker::new(
-                rows,
-                self.session_id.clone(),
-            ));
+            self.session_picker = Some(if self.share_picker.is_some() {
+                session_picker::SessionPicker::new_share(rows)
+            } else {
+                session_picker::SessionPicker::new(rows, self.session_id.clone())
+            });
         }
     }
     pub(in crate::tui) fn organize_picker_session(

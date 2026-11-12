@@ -123,6 +123,9 @@ pub(crate) struct ServeShared {
     #[cfg(test)]
     prompt_pre_admission_barriers:
         Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
+    #[cfg(test)]
+    prompt_pre_admission_channels:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -176,6 +179,8 @@ impl ServeShared {
             active_connections: AtomicUsize::new(0),
             #[cfg(test)]
             prompt_pre_admission_barriers: Mutex::new(None),
+            #[cfg(test)]
+            prompt_pre_admission_channels: Mutex::new(None),
         }
     }
 
@@ -195,6 +200,20 @@ impl ServeShared {
             reached.wait();
             release.wait();
         }
+        let channels = self.prompt_pre_admission_channels.lock().unwrap().take();
+        if let Some((reached, release)) = channels {
+            reached.send(()).unwrap();
+            release.recv_timeout(crate::test_support::HANG).unwrap();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_prompt_pre_admission_channels(
+        &self,
+        reached: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self.prompt_pre_admission_channels.lock().unwrap() = Some((reached, release));
     }
 
     pub(crate) fn is_shutting_down(&self) -> bool {

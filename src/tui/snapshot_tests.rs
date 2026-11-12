@@ -4192,6 +4192,56 @@ fn failed_initial_admission_keeps_core_staged_clipboard_source_retryable() {
 }
 
 #[test]
+fn session_share_standalone_picker_sends_only_the_selected_conversation() {
+    let mut harness = Harness::trusted("share-session-standalone", 90, 25);
+    let application = harness.app.application.as_ref().unwrap();
+    crate::test_support::configure_test_model(application);
+    (harness.app.config, harness.app.credentials) = application.model_state().unwrap();
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    let wait_for_run = |harness: &mut Harness| {
+        let deadline = std::time::Instant::now() + ADMISSION_WAIT;
+        let mut submitted = None;
+        while harness.app.run_start_pending || harness.app.running {
+            let event = events
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("run should settle");
+            if let UiEvent::Worker(WorkerMessage::Event(RunEvent::RunStarted { message, .. })) =
+                &event
+            {
+                submitted = Some(message.plain_text());
+            }
+            harness.event(event);
+        }
+        submitted.expect("run should start")
+    };
+    harness.type_text("original source body");
+    harness.key(KeyCode::Enter);
+    assert_eq!(wait_for_run(&mut harness), "original source body");
+    let source = harness.app.session_id.clone().unwrap();
+
+    harness.type_text("/new");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.session_id.is_none());
+    harness.type_text("/share-session 1");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.session_picker.is_some());
+    harness.key(KeyCode::Enter);
+    assert_eq!(
+        harness.app.session_share_submission().1[0]
+            .reference
+            .session,
+        source.as_str()
+    );
+    assert!(harness.app.input.text().is_empty());
+    harness.key(KeyCode::Enter);
+    let submitted = wait_for_run(&mut harness);
+    assert!(submitted.contains("> user:\n> original source body\n"));
+    assert_ne!(harness.app.session_id.as_ref(), Some(&source));
+    assert!(harness.app.session_share_submission().1.is_empty());
+}
+
+#[test]
 fn attachment_admission_handoff_restores_app_before_first_run_event() {
     let mut harness = Harness::trusted("attach-admission-handoff", 90, 25);
     let image = harness
@@ -4945,6 +4995,9 @@ fn refused_image_steering_admission_restores_text_and_draft() {
                 reason: "image is no longer admissible".into(),
                 receipt: None,
             },
+            share_owner: None,
+            share_ids: Vec::new(),
+            client_id: None,
         }),
     )));
 
@@ -4979,6 +5032,9 @@ fn sealed_image_steering_admission_falls_back_to_an_ordinary_run() {
             application,
             prompt: "send after the previous run sealed".into(),
             outcome: crate::SteerOutcome::NotRunning { receipt: None },
+            share_owner: None,
+            share_ids: Vec::new(),
+            client_id: None,
         }),
     )));
     // Image-bearing ordinary fallback itself uses the bounded admission path.

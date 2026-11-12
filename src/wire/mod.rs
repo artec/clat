@@ -54,6 +54,9 @@ use crate::tool::{ToolCall, ToolResult};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
+pub(crate) mod host;
+pub(crate) mod share_frames;
+
 pub(crate) const WIRE_VERSION: u64 = 1;
 
 // —— MM-1A 冻结内容块：wire 拥有的显式映射（PWA1-03 纪律同 ToolCall/

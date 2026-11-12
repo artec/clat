@@ -2,6 +2,30 @@ use super::*;
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
+#[test]
+fn shared_input_preserves_references_with_images_and_selection() {
+    let share = crate::application::SessionShareSelection {
+        reference: crate::application::HistoryReference {
+            project: Some("/project".into()),
+            session: "source".into(),
+            seq: None,
+        },
+        recent_turns: Some(2),
+        version: "version".into(),
+    };
+    let params = message_params(
+        "",
+        "message",
+        7,
+        &[share],
+        Some(("scope", vec!["upload".into()])),
+    );
+    assert_eq!(params["sessionShares"][0]["reference"]["session"], "source");
+    assert_eq!(params["attachments"][0], "upload");
+    assert_eq!(params["draftScopeId"], "scope");
+    assert_eq!(params["expected_selection_generation"], 7);
+}
+
 fn stream(frames: Vec<(&str, Value)>) -> super::super::HostEvents {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
