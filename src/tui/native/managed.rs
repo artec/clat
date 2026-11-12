@@ -161,23 +161,41 @@ fn managed_mutate(
     if !matches!(scope, "user" | "project") || name.is_empty() || name.len() > 64 {
         return Err(usage.into());
     }
+    // CI-43162290318：公共参数收束成结构体，避免 mutate_mcp 8 参
+    // 触发 clippy::too_many_arguments（整树面；core 面看不见根包）。
+    let mutation = Mutation {
+        verb,
+        scope,
+        name,
+        tail,
+        captions,
+        usage,
+    };
     if is_mcp {
-        mutate_mcp(client, project, verb, scope, name, tail, captions, usage)
+        mutate_mcp(client, project, &mutation)
     } else {
-        mutate_skill(client, verb, scope, name, tail, captions, usage)
+        mutate_skill(client, &mutation)
     }
 }
 
-fn mutate_mcp(
-    client: &HostClient,
-    project: &str,
-    verb: &str,
-    scope: &str,
-    name: &str,
-    tail: &str,
-    captions: &Captions,
-    usage: &str,
-) -> Result<String, String> {
+struct Mutation<'a> {
+    verb: &'a str,
+    scope: &'a str,
+    name: &'a str,
+    tail: &'a str,
+    captions: &'a Captions,
+    usage: &'a str,
+}
+
+fn mutate_mcp(client: &HostClient, project: &str, m: &Mutation<'_>) -> Result<String, String> {
+    let Mutation {
+        verb,
+        scope,
+        name,
+        tail,
+        captions,
+        usage,
+    } = *m;
     let current = client.call("mcp.manage.list", &json!({"project_root":project}))?;
     let revision = current["revision"].as_str().ok_or("MCP revision missing")?;
     let params = json!({"project_root":project,"scope":scope,"name":name,"revision":revision});
@@ -235,15 +253,15 @@ fn mutate_mcp(
     ))
 }
 
-fn mutate_skill(
-    client: &HostClient,
-    verb: &str,
-    scope: &str,
-    name: &str,
-    tail: &str,
-    captions: &Captions,
-    usage: &str,
-) -> Result<String, String> {
+fn mutate_skill(client: &HostClient, m: &Mutation<'_>) -> Result<String, String> {
+    let Mutation {
+        verb,
+        scope,
+        name,
+        tail,
+        captions,
+        usage,
+    } = *m;
     match verb {
         "save" => {
             let config: Value = serde_json::from_str(tail).map_err(|_| usage.to_owned())?;
