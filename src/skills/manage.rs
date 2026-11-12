@@ -114,10 +114,31 @@ impl SkillFiles {
         if revision != expected {
             return Err("Skill was changed; reload before saving".into());
         }
-        if expected == "missing" {
-            crate::private_fs::write_text_new_atomic_in_dir(&bundle, "SKILL.md", content)?;
+        // CI-X3（2026-11-12）：Windows 上发布（硬链接/重命名）要求父目录
+        // DELETE 共享；open_dir_nofollow 句柄（cap-std 刻意不带
+        // FILE_SHARE_DELETE，见 I3）握在手里会自冲突出 os error 32。
+        // 校验完成后释放 nofollow 句柄，用 ambient 句柄（共享位宽松，
+        // 与 mcp-managed.json 路径同款、Windows CI 已验证）执行发布。
+        drop(bundle);
+        drop(layer);
+        let components: &[&std::ffi::OsStr] = if user {
+            &[std::ffi::OsStr::new("skills"), std::ffi::OsStr::new(name)]
         } else {
-            crate::private_fs::write_text_atomic_in_dir(&bundle, "SKILL.md", content)?;
+            &[
+                std::ffi::OsStr::new(".clat"),
+                std::ffi::OsStr::new("skills"),
+                std::ffi::OsStr::new(name),
+            ]
+        };
+        let bundle_path = components
+            .iter()
+            .fold(root.to_path_buf(), |path, part| path.join(part));
+        let publish_dir =
+            Dir::open_ambient_dir(&bundle_path, ambient_authority()).map_err(|e| e.to_string())?;
+        if expected == "missing" {
+            crate::private_fs::write_text_new_atomic_in_dir(&publish_dir, "SKILL.md", content)?;
+        } else {
+            crate::private_fs::write_text_atomic_in_dir(&publish_dir, "SKILL.md", content)?;
         }
         Ok(json!({"saved":true,"name":name,"revision":sha256_hex(content.as_bytes())}))
     }
@@ -146,13 +167,27 @@ impl SkillFiles {
                 "Skill has bundled resources; use the bundle import/removal workflow".into(),
             );
         }
-        bundle.remove_file("SKILL.md").map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        bundle
-            .open(".")
-            .and_then(|f| f.sync_all())
+        // 同 save：先释放 nofollow 句柄再删（Windows DELETE 共享自冲突）；
+        // 删除本身经 ambient 句柄执行（remove_file 后 remove_dir，不级联）。
+        drop(bundle);
+        drop(layer);
+        let layer_components: &[&std::ffi::OsStr] = if user {
+            &[std::ffi::OsStr::new("skills")]
+        } else {
+            &[
+                std::ffi::OsStr::new(".clat"),
+                std::ffi::OsStr::new("skills"),
+            ]
+        };
+        let layer_path = layer_components
+            .iter()
+            .fold(root.to_path_buf(), |path, part| path.join(part));
+        let ambient_layer =
+            Dir::open_ambient_dir(&layer_path, ambient_authority()).map_err(|e| e.to_string())?;
+        ambient_layer
+            .remove_file(std::path::Path::new(name).join("SKILL.md").as_os_str())
             .map_err(|e| e.to_string())?;
-        layer.remove_dir(name).map_err(|e| e.to_string())?;
+        ambient_layer.remove_dir(name).map_err(|e| e.to_string())?;
         Ok(json!({"removed":true,"name":name}))
     }
 }
