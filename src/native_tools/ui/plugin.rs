@@ -109,6 +109,13 @@ impl CommandHandler for ConsentCommand {
         if args.is_empty() {
             return list(&self.0, session.as_deref());
         }
+        if args == "request-accessibility" {
+            return request_accessibility(
+                super::trusted,
+                super::console_ready,
+                super::mac::prompt_accessibility,
+            );
+        }
         let fields = args.split_whitespace().collect::<Vec<_>>();
         let ["revoke", scope, identity] = fields.as_slice() else {
             return Err(usage());
@@ -137,6 +144,27 @@ impl CommandHandler for ConsentCommand {
             UiMessage::new("cua.revoked").arg("id", *identity).into(),
         ))
     }
+}
+
+fn request_accessibility(
+    trusted: impl FnOnce() -> bool,
+    console: impl FnOnce() -> Result<()>,
+    prompt: impl FnOnce() -> Result<bool>,
+) -> std::result::Result<CommandOutcome, CommandError> {
+    let granted = if trusted() {
+        true
+    } else {
+        console().map_err(|_| {
+            CommandError::presented(UiMessage::new("cua.error_accessibility_console"))
+        })?;
+        prompt().map_err(|_| CommandError::presented(UiMessage::new("cua.error_native")))?
+    };
+    let key = if granted {
+        "cua_settings.granted"
+    } else {
+        "cua.accessibility_requested"
+    };
+    Ok(CommandOutcome::Status(UiMessage::new(key).into()))
 }
 
 fn list(
@@ -200,6 +228,39 @@ fn storage_error() -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accessibility_request_prompts_only_when_untrusted_on_an_unlocked_console() {
+        fn check_status(outcome: CommandOutcome, expected: &str) {
+            let CommandOutcome::Status(message) = outcome else {
+                panic!("expected an accessibility status");
+            };
+            assert_eq!(message.presentation.unwrap().key, expected);
+        }
+        let forbidden = || panic!("must not invoke the system prompt");
+        check_status(
+            request_accessibility(|| true, || panic!("no console check needed"), forbidden)
+                .unwrap(),
+            "cua_settings.granted",
+        );
+        assert!(
+            request_accessibility(|| false, || Err(error("SESSION_LOCKED")), forbidden).is_err()
+        );
+        let called = std::cell::Cell::new(false);
+        check_status(
+            request_accessibility(
+                || false,
+                || Ok(()),
+                || {
+                    called.set(true);
+                    Ok(false)
+                },
+            )
+            .unwrap(),
+            "cua.accessibility_requested",
+        );
+        assert!(called.get());
+    }
 
     #[test]
     fn cua_plugin_mounts_the_four_tools_and_human_consent_command() {

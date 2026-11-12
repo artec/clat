@@ -420,10 +420,13 @@ environment-secret filter.
 ## macOS application interface permissions
 
 CLAT uses the macOS Accessibility APIs in the process that runs the tools.
-Grant that process Accessibility access under **System Settings → Privacy &
-Security → Accessibility**. Screen Recording permission is unnecessary for
-these tools. Interface calls run outside the command Seatbelt sandbox and
-have their own permission checks.
+In **Settings → Computer Use**, select **Request macOS access** when the
+Host lacks access. In the TUI, use `/ui-consents request-accessibility`.
+macOS handles the request on the Mac running the tools. Enable access under
+**System Settings → Privacy & Security → Accessibility**, then refresh the
+status. Screen Recording permission is unnecessary for these tools.
+Interface calls run outside the command Seatbelt sandbox and have their
+own permission checks.
 
 - `ui_apps`, structural `ui_tree` reads and structural `ui_wait` conditions
   can run in Plan Mode and in headless sessions. Values start hidden.

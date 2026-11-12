@@ -58,7 +58,7 @@ function installSettingsLayout() {
   const empty = el('p', 'settings-search-empty', () => settingsUi('no_categories')); empty.hidden = true; nav.append(empty);
   const groups = [
     ['workbench', [['appearance','settings'],['terminal','terminal'],['projects','folder']]],
-    ['capabilities', [['models','wasm'],['utility','sparkles'],['skills','file'],['permissions','permission-write'],['computer-use','panel']]],
+    ['capabilities', [['models','chip'],['utility','sparkles'],['skills','book-open'],['permissions','permission-write'],['computer-use','monitor-pointer']]],
     ['integrations', [['mcp','mcp'],['web','search'],['remote','remote'],['git','branch']]],
     ['application', [['desktop','info']]],
   ];

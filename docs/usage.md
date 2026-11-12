@@ -380,7 +380,7 @@ model → safety → extensions → experiments → meta):
 | `/context` | inspect a one-shot estimated model-context breakdown |
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
-| `/ui-consents` | list or revoke macOS application interface consent |
+| `/ui-consents` | request macOS Accessibility access, list or revoke app consent |
 | `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
 | `/plugin` | inspect built-in plugins, manage installed packages and browse the signed market in the host TUI; open Extensions in the PWA |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
@@ -691,7 +691,8 @@ Screenshots, coordinate input, typing and clipboard operations are outside
 the current tool set.
 
 In Web, PWA and Desktop, **Settings → Computer Use** shows the connected
-Host’s Accessibility access and lets you revoke application consent decisions.
+Host’s Accessibility status. **Request macOS access** starts the system
+request on the Host Mac. You can also revoke individual app consent decisions.
 See [macOS application interface permissions](permissions.md#macos-application-interface-permissions)
 for the approval rules and `/ui-consents` syntax.
 

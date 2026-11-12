@@ -264,6 +264,10 @@ function installSkillSettings(){
 const computerUseText = (key, args) => CLATI18n.msg('cua_settings.' + key, args);
 function computerUseSettingsPanel(page, category) {
   const t = computerUseText;
+  const nav = el('button', '', () => t('title'));
+  nav.type = 'button';
+  nav.dataset.settingsCategory = category;
+  page.querySelector('.settings-nav').append(nav);
   const section = el('section', 'settings-section');
   section.dataset.settingsPanel = category;
   section.hidden = true;
@@ -276,16 +280,22 @@ function computerUseSettingsPanel(page, category) {
   const access = el('strong');
   const hint = el('small', '', () => t('system_hint'));
   const reload = el('button', 'secondary', () => t('refresh'));
+  const requestAccess = el('button', 'primary', () => t('request_accessibility'));
+  const actions = el('div', 'settings-row-actions');
   reload.type = 'button';
+  requestAccess.type = 'button';
+  requestAccess.dataset.action = 'request-accessibility';
+  requestAccess.hidden = true;
+  actions.append(reload, requestAccess);
   copy.append(access, hint);
-  row.append(copy, reload);
+  row.append(copy, actions);
   system.append(row);
   const list = settingsGroup(section, () => t('application_consents'));
   const consentsSection = list.parentElement;
   const status = el('p', 'settings-note');
   status.setAttribute('role', 'status');
   section.append(status);
-  return { access, hint, reload, list, consentsSection, status };
+  return { nav, access, hint, reload, requestAccess, list, consentsSection, status };
 }
 
 function computerUseConsentRow(consent, onRevoke) {
@@ -310,31 +320,42 @@ function computerUseConsentRow(consent, onRevoke) {
   return item;
 }
 
+function renderComputerUseConsents(list, view, onRevoke) {
+  const entries = (Array.isArray(view.consents) ? view.consents : []).filter(entry =>
+    /^[a-f0-9]{64}$/.test(entry?.app_id) && ['session','always'].includes(entry.scope));
+  list.replaceChildren(...entries.map(entry => computerUseConsentRow(entry, success => onRevoke(entry, success))));
+  if (!entries.length) {
+    const empty = el('div', 'settings-row');
+    empty.append(el('span', 'settings-note', () => CLATI18n.msg('cua.consent_empty')));
+    list.append(empty);
+  }
+}
+
 function installComputerUseSettings() {
   const category = 'computer-use';
   const page = dom['settings-dialog'];
   const t = computerUseText;
-  const nav = el('button', '', () => t('title'));
-  nav.type = 'button';
-  nav.dataset.settingsCategory = category;
-  page.querySelector('.settings-nav').append(nav);
-  const {access, hint, reload, list, consentsSection, status} = computerUseSettingsPanel(page, category);
+  const {nav, access, hint, reload, requestAccess, list, consentsSection, status} = computerUseSettingsPanel(page, category);
   const active = () => currentSettingsCategory === category && pageIsOpen(page);
   const selection = () => JSON.stringify([workspacePrefix, state.sessionId, state.selectionGeneration]);
   let generation = 0;
   let shownFor = null;
-  const showStatus = value => CLATI18n.bind(status, 'textContent', () => value);
-  const setAccess = key => CLATI18n.bind(access, 'textContent', () => t(key));
-  async function revoke(consent, target, success) {
-    if (!active() || target !== selection()) return;
+  const command = (args = '') => rpc('command.run', {
+    command: '/ui-consents' + args, expected_selection_generation: state.selectionGeneration,
+  });
+  const showStatus = value => CLATI18n.bind(status, 'textContent', () => typeof value === 'function' ? value() : value);
+  const setAccess = key => {
+    requestAccess.hidden = key !== 'not_granted';
+    CLATI18n.bind(access, 'textContent', () => t(key));
+  };
+  async function change(args, target, success) {
+    const current = () => active() && target === selection();
+    if (!current()) return;
     try {
-      await rpc('command.run', {
-        command: '/ui-consents revoke ' + consent.scope + ' ' + consent.app_id,
-        expected_selection_generation: state.selectionGeneration,
-      });
-      if (active() && target === selection()) await refresh(success);
+      const reply = await command(args);
+      if (current()) await refresh(() => success(reply));
     } catch (error) {
-      if (active() && target === selection()) showStatus(error.message);
+      if (current()) showStatus(() => CLATI18n.present(error.presentation, error.message));
     }
   }
   async function refresh(success = '') {
@@ -359,21 +380,12 @@ function installComputerUseSettings() {
     reload.disabled = true;
     showStatus('');
     try {
-      const view = await rpc('command.run', {
-        command: '/ui-consents',
-        expected_selection_generation: state.selectionGeneration,
-      });
+      const view = await command();
       if (!current()) return;
       setAccess(view.accessibility_granted === true ? 'granted'
         : view.accessibility_granted === false ? 'not_granted' : 'unknown');
-      const entries = (Array.isArray(view.consents) ? view.consents : []).filter(entry =>
-        /^[a-f0-9]{64}$/.test(entry?.app_id) && ['session','always'].includes(entry.scope));
-      list.replaceChildren(...entries.map(entry => computerUseConsentRow(entry, success => revoke(entry, target, success))));
-      if (!entries.length) {
-        const empty = el('div', 'settings-row');
-        empty.append(el('span', 'settings-note', () => CLATI18n.msg('cua.consent_empty')));
-        list.append(empty);
-      }
+      renderComputerUseConsents(list, view, (entry, success) =>
+        change(` revoke ${entry.scope} ${entry.app_id}`, target, () => success));
       consentsSection.hidden = !Array.isArray(view.consents);
       showStatus(success);
     } catch (error) {
@@ -387,6 +399,12 @@ function installComputerUseSettings() {
   }
   nav.onclick = () => { selectSettingsCategory(category); void refresh(); };
   reload.onclick = () => void refresh();
+  requestAccess.onclick = async () => {
+    requestAccess.disabled = true;
+    try {
+      await change(' request-accessibility', selection(), reply => CLATI18n.present(reply.presentation, reply.message));
+    } finally { requestAccess.disabled = false; }
+  };
   page.addEventListener('clat:page-enter', () => void refresh());
   page.addEventListener('clat:settings-leave', () => { generation++; shownFor = null; });
   window.addEventListener('clat:workbench-updated', () => { if (active()) void refresh(); });

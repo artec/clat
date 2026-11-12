@@ -6,6 +6,7 @@ use std::ffi::CStr;
 
 mod apps;
 pub(in crate::native_tools) use apps::console_ready;
+pub(super) use ffi::prompt_accessibility;
 pub(in crate::native_tools) fn trusted() -> bool {
     unsafe { ffi::AXIsProcessTrusted() != 0 }
 }

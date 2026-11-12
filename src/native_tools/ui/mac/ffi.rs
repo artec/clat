@@ -41,12 +41,23 @@ unsafe extern "C" {
     ) -> Raw;
     unsafe fn CFArrayGetCount(value: Raw) -> isize;
     unsafe fn CFArrayGetValueAtIndex(value: Raw, index: isize) -> Raw;
+    unsafe fn CFDictionaryCreate(
+        allocator: Raw,
+        keys: *const Raw,
+        values: *const Raw,
+        count: isize,
+        key_callbacks: Raw,
+        value_callbacks: Raw,
+    ) -> Raw;
     unsafe fn CFDictionaryGetValue(dictionary: Raw, key: Raw) -> Raw;
+    static kCFBooleanTrue: Raw;
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     pub(super) unsafe fn AXIsProcessTrusted() -> u8;
+    unsafe fn AXIsProcessTrustedWithOptions(options: Raw) -> u8;
+    static kAXTrustedCheckOptionPrompt: Raw;
     pub(super) unsafe fn AXUIElementCreateApplication(pid: i32) -> Raw;
     unsafe fn AXUIElementGetTypeID() -> usize;
     unsafe fn AXUIElementGetPid(node: Raw, pid: *mut i32) -> i32;
@@ -70,6 +81,22 @@ unsafe extern "C" {
     unsafe fn AXUIElementPerformAction(node: Raw, action: Raw) -> i32;
     unsafe fn AXValueGetTypeID() -> usize;
     unsafe fn AXValueGetValue(value: Raw, kind: u32, out: *mut c_void) -> u8;
+}
+
+pub(in crate::native_tools::ui) fn prompt_accessibility() -> Result<bool> {
+    // The dictionary borrows process-lifetime constants.
+    let options = Cf::owned(unsafe {
+        CFDictionaryCreate(
+            null(),
+            &kAXTrustedCheckOptionPrompt,
+            &kCFBooleanTrue,
+            1,
+            null(),
+            null(),
+        )
+    })
+    .ok_or_else(|| error("NATIVE_ERROR"))?;
+    Ok(unsafe { AXIsProcessTrustedWithOptions(options.raw()) != 0 })
 }
 
 #[repr(C)]
