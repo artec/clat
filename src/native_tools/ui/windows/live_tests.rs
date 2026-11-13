@@ -110,7 +110,7 @@ fn create_window() -> HWND {
             180,
             30,
             Some(root),
-            Some(HMENU(1 as *mut _)),
+            Some(HMENU(std::ptr::dangling_mut())),
             Some(instance),
             None,
         )

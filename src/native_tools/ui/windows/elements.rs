@@ -20,7 +20,8 @@ pub(super) fn is_public(element: &IUIAutomationElement) -> Result<Option<bool>> 
         .map_err(native)?;
     let result = unsafe {
         let data = &*property.Anonymous.Anonymous;
-        (data.vt == VT_BOOL).then(|| data.Anonymous.boolVal.0 == 0)
+        // VARIANT_BOOL 是 i16 别名：vt 不匹配时读到的杂值被丢弃，急切求值无碍。
+        (data.vt == VT_BOOL).then_some(data.Anonymous.boolVal.0 == 0)
     };
     let _ = unsafe { VariantClear(&mut property) };
     let native = native_control_privacy(element);
@@ -179,7 +180,8 @@ impl Patterns {
             ("show_menu", self.expand.is_some()),
         ]
         .into_iter()
-        .filter_map(|(name, present)| present.then(|| name.to_owned()))
+        .filter(|&(_name, present)| present)
+        .map(|(name, _present)| name.to_owned())
         .collect()
     }
 
@@ -358,6 +360,21 @@ impl Automation {
 }
 
 #[cfg(test)]
+impl Automation {
+    pub(super) fn perform_fixture(
+        &self,
+        target: &Retained,
+        action: &str,
+        call: &CancelToken,
+        dispatch: &worker::Dispatch,
+    ) -> Result<()> {
+        let element = self.verified_element(target, call)?;
+        let role = unsafe { element.CurrentControlType() }.map_err(native)?;
+        Patterns::read(&element, role)?.perform(action, call, dispatch)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -378,20 +395,5 @@ mod tests {
         assert!(menu_control(UIA_ComboBoxControlTypeId));
         assert!(!menu_control(UIA_TreeItemControlTypeId));
         assert_eq!(role_name(UIA_WindowControlTypeId), "Window");
-    }
-}
-
-#[cfg(test)]
-impl Automation {
-    pub(super) fn perform_fixture(
-        &self,
-        target: &Retained,
-        action: &str,
-        call: &CancelToken,
-        dispatch: &worker::Dispatch,
-    ) -> Result<()> {
-        let element = self.verified_element(target, call)?;
-        let role = unsafe { element.CurrentControlType() }.map_err(native)?;
-        Patterns::read(&element, role)?.perform(action, call, dispatch)
     }
 }
