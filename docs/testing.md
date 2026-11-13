@@ -990,6 +990,22 @@ the same script's --revision HEAD result; no new >=80-line production function
 and no extension of an existing giant is accepted.
 
 
+### Windows Computer Use
+
+On an unlocked Windows desktop, run the native fixture as a regular user:
+
+```powershell
+cargo test -p clat-core --lib cua_live_windows_uia -- --ignored --nocapture
+```
+
+The fixture checks window discovery, tree and wait scope, password masking,
+the effects of all three semantic actions, and rejection of a stale window
+after reopening. It also moves a test thread to a non-input desktop and
+checks recovery. For the lock-screen walkthrough, leave the same Host running,
+lock Windows and query Computer Use status from a connected client. Confirm the
+Host reports the desktop unavailable. Unlock Windows, refresh, and confirm
+the status returns to ready with the same Host instance.
+
 ### Desktop local commands
 
 From the root, `bun start` stages the private backend and opens native desktop

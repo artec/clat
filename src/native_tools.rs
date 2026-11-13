@@ -18,11 +18,11 @@ mod edit;
 mod edit_recovery;
 mod export;
 mod read;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub(crate) mod ui;
 #[cfg(target_os = "macos")]
 mod ui_apps;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod ui_state;
 mod write;
 
@@ -2122,20 +2122,20 @@ mod tests {
     /// Stage-0 characterization: model-visible tool order is part of the
     /// request/cache surface and must survive registry/plugin migration.
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn ui_apps_is_registered_as_structure_read() {
         assert_eq!(
-            ui_apps::UiApps.definition().effect,
+            ui::api::UiApps.definition().effect,
             ToolEffect::UIStructureRead
         );
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn ui_apps_honours_cancellation_before_inventory() {
         let cancel = CancelToken::new();
         cancel.cancel();
-        let error = ui_apps::UiApps
+        let error = ui::api::UiApps
             .invoke(&json!({}), &Project::new("."), &cancel)
             .unwrap_err();
         assert!(error.to_string().contains("cancelled"));

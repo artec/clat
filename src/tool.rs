@@ -178,7 +178,7 @@ impl ToolAccessPolicy {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn is_plan_mode(&self) -> bool {
         self.plan_mode
     }

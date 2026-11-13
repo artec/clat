@@ -457,6 +457,23 @@ own permission checks.
   In the workbench, **Settings → Computer Use** shows the Host process’s
   Accessibility status and lets you revoke individual consent decisions.
 
+## Windows application interface permissions
+
+CLAT uses Windows UI Automation in the process running the tools. The Host
+needs an unlocked interactive desktop. The target must run in the same
+Windows session under the same user without elevation or a higher integrity
+level. CLAT masks password values and controls whose password status it
+cannot confirm. The Windows backend supports reading, waiting and a limited
+set of UI Automation actions on an observed window.
+
+Windows uses the same application consent, Plan Mode, per-action approval,
+revocation and action limits described above. A shared Host permits actions
+on recognized native Windows apps such as File Explorer and Notepad.
+Browser and unclassified targets require a standalone TUI with a verified
+local console. CLAT, the approval console and protected system applications
+are fenced. **Settings → Computer Use** reports the connected Host's Windows
+desktop status and lets you revoke individual application decisions.
+
 ## MCP effects
 
 MCP annotations are untrusted hints used only to choose a conservative effect:

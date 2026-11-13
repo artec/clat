@@ -91,7 +91,14 @@ pub struct UiConsentSummary {
 pub struct UiConsentsView {
     pub parts: Vec<crate::i18n::UiMessage>,
     pub consents: Vec<UiConsentSummary>,
-    pub accessibility_granted: bool,
+    pub system: UiSystemStatus,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "platform", rename_all = "lowercase")]
+pub enum UiSystemStatus {
+    Macos { accessibility_granted: bool },
+    Windows { desktop: &'static str },
 }
 
 /// 命令分发的前端中立结果。变体表达意图与数据，不是渲染指令。

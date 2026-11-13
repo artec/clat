@@ -471,7 +471,7 @@ mod tests {
 
     /// SC-3 判别：真机 catalog 逐行等于权威顺序表（A1 裁定，2026-09-02）
     /// 的顺序，GA-3 增加 /capabilities、aa3d4240 增加 /ui-consents（仅
-    /// macOS，CI 的 Linux/Windows 面不可见）——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
+    /// macOS 和 Windows，Linux 不可见）——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
     /// 红。挂载序与展示序解耦（INV-SC-1）靠此测试钉住。
     #[test]
     fn command_catalog_matches_the_authoritative_table() {
@@ -501,9 +501,9 @@ mod tests {
             "/perm, /permission",
             "/plan",
         ];
-        // /ui-consents 随 NativeUiPlugin 仅在 macOS 组装（CUA 平台面），
+        // /ui-consents 随 NativeUiPlugin 在 macOS 和 Windows 组装（CUA 平台面），
         // 落位在 /plan 与 /mcp 之间（Safety 组 order 9）。
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         table.push("/ui-consents");
         table.extend([
             "/mcp",

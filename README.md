@@ -99,7 +99,7 @@ it remains off unless `serve` is started with `--im wechat`.
   import, image-only prompts, and in-run image steering.
 - **Conversation sharing** — attach all or recent turns from another active or
   archived conversation in the same project using the composer or `/share-session`.
-- **macOS application controls** — inspect Accessibility trees, wait for
+- **macOS and Windows application controls** — inspect Accessibility trees, wait for
   interface conditions, and dispatch approved semantic actions. Manage
   application decisions with `/ui-consents`. [Permissions](docs/permissions.md#macos-application-interface-permissions)
 - **Native tools** — bounded Git-aware literal/regex/glob search, file listing

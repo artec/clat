@@ -30,6 +30,7 @@ struct Facts {
     value: String,
     value_unavailable: bool,
     count: usize,
+    window_scoped: bool,
     current_window: usize,
     supported: bool,
     label_complete: bool,
@@ -49,6 +50,7 @@ impl Default for Facts {
             value: "ordinary value".into(),
             value_unavailable: false,
             count: 2,
+            window_scoped: false,
             current_window: 1,
             supported: true,
             label_complete: true,
@@ -65,6 +67,10 @@ fn index(node: &Handle) -> usize {
 }
 
 impl Backend for Fake {
+    fn window_scoped(&self) -> bool {
+        self.facts.lock().unwrap().window_scoped
+    }
+
     fn ready(&self) -> Result<()> {
         Ok(())
     }
@@ -121,6 +127,7 @@ impl Backend for Fake {
         let facts = self.facts.lock().unwrap();
         let index = index(node);
         let (role, title, subrole) = match index {
+            0 if facts.window_scoped => ("UIAApplication", "Example".into(), None),
             0 => ("AXApplication", "Example".into(), None),
             1 => ("AXWindow", "Example window".into(), None),
             2 => (facts.role.as_str(), facts.title.clone(), None),
@@ -440,6 +447,106 @@ fn cua_tree_overview_pages_keep_scope_and_actionable_indices() {
         )
         .unwrap();
     assert_eq!(dispatched["dispatched"], true);
+}
+
+#[test]
+fn cua_tree_limits_return_the_last_valid_page_and_are_inherited() {
+    let f = Fixture::new(false);
+    for max_nodes in [0, 8193] {
+        code(
+            f.read(Operation::Tree, json!({"pid":42,"max_nodes":max_nodes})),
+            "INVALID_ARGUMENTS",
+        );
+    }
+    let first = f
+        .read(
+            Operation::Tree,
+            json!({"pid":42,"max_nodes":2,"page_size":1}),
+        )
+        .unwrap();
+    assert_eq!(first["next_cursor"], 1);
+    assert_eq!(first["limits_reached"], json!([]));
+    let id = &first["snapshot_id"];
+    code(
+        f.read(
+            Operation::Tree,
+            json!({"snapshot_id":id,"cursor":1,"max_nodes":3}),
+        ),
+        "INVALID_ARGUMENTS",
+    );
+    let last = f
+        .read(Operation::Tree, json!({"snapshot_id":id,"cursor":1}))
+        .unwrap();
+    assert_eq!(last["nodes"][0]["role"], "AXWindow");
+    assert_eq!(last["has_more"], false);
+    assert_eq!(last["limits_reached"], json!(["max_nodes"]));
+    let shallow = f
+        .read(Operation::Tree, json!({"pid":42,"max_depth":1}))
+        .unwrap();
+    assert_eq!(shallow["limits_reached"], json!(["max_depth"]));
+    let exact = f
+        .read(Operation::Tree, json!({"pid":42,"max_nodes":4}))
+        .unwrap();
+    assert_eq!(exact["limits_reached"], json!([]));
+}
+
+#[test]
+fn cua_wait_cannot_infer_disappearance_from_a_truncated_tree() {
+    let f = Fixture::new(false);
+    f.fake.facts.lock().unwrap().count = 8192;
+    code(
+        f.read(
+            Operation::Wait,
+            json!({"pid":42,"condition":"disappear","title":"Absent"}),
+        ),
+        "TREE_LIMIT",
+    );
+    let page = f
+        .read(
+            Operation::Tree,
+            json!({"pid":42,"page_size":5,"max_nodes":5}),
+        )
+        .unwrap();
+    assert_eq!(page["nodes"].as_array().unwrap().len(), 5);
+    assert_eq!(page["limits_reached"], json!(["max_nodes"]));
+}
+
+#[test]
+fn cua_window_scoped_backend_pins_a_window_from_the_inventory() {
+    let f = Fixture::new(false);
+    f.fake.facts.lock().unwrap().window_scoped = true;
+    let overview = f.read(Operation::Tree, json!({"pid":42})).unwrap();
+    assert_eq!(overview["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(overview["nodes"][1]["role"], "AXWindow");
+    code(
+        f.read(
+            Operation::Wait,
+            json!({"pid":42,"condition":"appear","title":"Open folder"}),
+        ),
+        "INVALID_ARGUMENTS",
+    );
+    let id = overview["snapshot_id"].clone();
+    let request =
+        json!({"snapshot_id":id,"element_index":1,"condition":"appear","title":"Open folder"});
+    assert_eq!(
+        f.read(Operation::Wait, request.clone()).unwrap()["matched"],
+        true
+    );
+    let page = f
+        .read(
+            Operation::Tree,
+            json!({"snapshot_id":id,"element_index":1,"page_size":1}),
+        )
+        .unwrap();
+    f.fake.facts.lock().unwrap().current_window = 99;
+    code(f.read(Operation::Wait, request), "STALE_SNAPSHOT");
+    code(
+        f.read(
+            Operation::Tree,
+            json!({"snapshot_id":page["snapshot_id"],"cursor":page["next_cursor"]}),
+        ),
+        "STALE_SNAPSHOT",
+    );
 }
 
 #[cfg(target_os = "macos")]

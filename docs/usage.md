@@ -380,7 +380,7 @@ model → safety → extensions → experiments → meta):
 | `/context` | inspect a one-shot estimated model-context breakdown |
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
-| `/ui-consents` | request macOS Accessibility access, list or revoke app consent |
+| `/ui-consents` | check Host access and list or revoke app consent. Use `request-accessibility` to request macOS access |
 | `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
 | `/plugin` | inspect built-in plugins, manage installed packages and browse the signed market in the host TUI; open Extensions in the PWA |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
@@ -667,7 +667,7 @@ exact provider billing. The numbers come from the same estimator used by
 model-request budgeting and compaction; the command does not call a model,
 write a session event, or start a live monitor.
 
-### Operate a macOS application
+### Operate a desktop application
 
 For a trusted project on macOS, you can ask CLAT to inspect an open
 application and carry out supported Accessibility actions. Grant the CLAT
@@ -682,9 +682,11 @@ previous snapshot. It returns at most 100 nodes per page and a continuation
 cursor when more nodes are available. For a quick overview, pass
 `max_depth: 1` with the app PID to see windows and the menu bar without
 walking their contents. Then read the relevant window or subtree. Set
-`page_size` from 1 to 100 to limit each page. Continue with the same
-`snapshot_id` and the returned `next_cursor`; the depth and value settings
-carry over. The run keeps its eight most recent snapshots. Secure values
+`page_size` from 1 to 100 for each page and `max_nodes` from 1 to 8192 for
+the entire snapshot. Continue with the same `snapshot_id` and the returned
+`next_cursor`. The depth, node and value settings carry over. The
+`limits_reached` array reports which traversal limits prevented further
+reading. Narrow the subtree if you need to inspect a truncated branch. The run keeps its eight most recent snapshots. Secure values
 stay masked, and other values require explicit
 application consent. If macOS cannot list a control's actions or read its
 description, CLAT can still show the control and the surrounding tree. It
@@ -712,7 +714,17 @@ a different signing identity, macOS can reject an existing Accessibility
 entry for the same bundle ID. Use the signed release for acceptance, or
 remove the old CLAT entry and authorize the installed test build separately.
 You can also revoke individual app consent decisions.
-See [macOS application interface permissions](permissions.md#macos-application-interface-permissions)
+On Windows, open the application in the unlocked desktop running CLAT Host.
+`ui_apps` lists running apps with visible windows. `ui_tree` with a PID lists
+the app and its windows. Pass a window's `snapshot_id` and `element_index`
+to `ui_tree` or `ui_wait` to target it. If the window closes or changes
+identity, obtain a fresh snapshot before continuing. An absence check on
+a truncated tree returns an error. Windows supports the advertised
+`press`, `pick` and `show_menu` actions for controls that expose the
+corresponding UI Automation patterns. In **Settings → Computer Use**,
+**Refresh status** checks the Windows Host desktop directly.
+
+See [desktop application interface permissions](permissions.md#macos-application-interface-permissions)
 for the approval rules and `/ui-consents` syntax.
 
 ### Memory, goals, and read-only subagents

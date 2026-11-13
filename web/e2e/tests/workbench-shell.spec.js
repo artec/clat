@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
+const { LIVE, hostInfo, openWorkbench, fetchBrowserRequest } = require('../helpers/workbench');
 
 test('a fresh backend connection opens Computer Use before any manual reload', async ({ page }) => {
   const entry = hostInfo('workbench');
@@ -13,6 +13,35 @@ test('a fresh backend connection opens Computer Use before any manual reload', a
   await expect(settings).toBeVisible();
   await expect(settings.locator('[data-action="refresh-accessibility"]')).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('Computer Use refreshes a connected Windows Host without requesting macOS access', async ({ page }) => {
+  const entry = hostInfo('workbench');
+  let desktop = 'locked';
+  const commands = [];
+  await page.route('**/api/workbench.info', async route => {
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    body.value.builtin_availability['builtin.native_ui'] = { enabled: true };
+    await route.fulfill({ response, json: body });
+  });
+  await page.route('**/api/command.run', async route => {
+    const { command } = route.request().postDataJSON();
+    if (!command.startsWith('/ui-consents')) return route.continue();
+    commands.push(command);
+    await route.fulfill({ json: { ok: true, value: {
+      kind: 'ui_consents', system: { platform: 'windows', desktop }, consents: [],
+    } } });
+  });
+  await page.goto(`${entry.origin}/#/settings/computer-use`);
+  const settings = page.locator('[data-settings-panel="computer-use"]');
+  await expect(settings.locator('[data-system-status="windows_locked"]')).toBeVisible(LIVE);
+  await expect(settings.locator('[data-action="request-accessibility"]')).toBeHidden();
+  desktop = 'ready';
+  await settings.locator('[data-action="refresh-accessibility"]').click();
+  await expect(settings.locator('[data-system-status="windows_ready"]')).toBeVisible(LIVE);
+  expect(commands.length).toBeGreaterThanOrEqual(2);
+  expect(new Set(commands)).toEqual(new Set(['/ui-consents']));
 });
 
 test('the global extension retains an open file and can be controlled from every feature page', async ({ page }) => {

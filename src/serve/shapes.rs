@@ -417,13 +417,20 @@ pub(crate) fn admission_receipt_value(receipt: &crate::message::AdmissionReceipt
 }
 
 pub(super) fn ui_consents_reply(view: crate::command::UiConsentsView) -> Value {
-    json!({
+    let mut reply = json!({
         "kind":"ui_consents",
         "message":crate::i18n::views::render_parts(crate::i18n::LocaleContext::default(), &view.parts),
         "presentation":view.parts,
         "consents":view.consents,
-        "accessibility_granted":view.accessibility_granted,
-    })
+        "system":view.system,
+    });
+    if let crate::command::UiSystemStatus::Macos {
+        accessibility_granted,
+    } = view.system
+    {
+        reply["accessibility_granted"] = json!(accessibility_granted);
+    }
+    reply
 }
 
 /// settled 载荷附加回执（settler 的统一出口——完成/取消/失败三态

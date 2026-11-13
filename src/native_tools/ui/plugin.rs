@@ -1,4 +1,4 @@
-//! macOS plugin contributions and the human-only consent command.
+//! Native UI plugin contributions and the human-only consent command.
 use super::*;
 use crate::command::{
     CommandError, CommandGroup, CommandHandler, CommandOutcome, CommandSpec, UiConsentSummary,
@@ -34,10 +34,14 @@ impl Plugin for NativeUiPlugin {
     }
 
     fn mount(&self, context: &mut PluginContext<'_>) -> std::result::Result<(), PluginError> {
+        #[cfg(target_os = "macos")]
+        let backend = super::mac::Mac;
+        #[cfg(windows)]
+        let backend = super::windows::Windows;
         let service = Arc::new(Service::new(
             self.control.clone(),
             self.asker.clone(),
-            Arc::new(super::mac::Mac),
+            Arc::new(backend),
         ));
         let tools = context.require(TOOL_SERVICE).map_err(plugin_error)?;
         for tool in registered_tools(service.clone()) {
@@ -77,7 +81,7 @@ impl Plugin for NativeUiPlugin {
 fn registered_tools(service: Arc<Service>) -> Vec<Arc<dyn Tool>> {
     use super::api::{Operation, UiTool};
     vec![
-        Arc::new(super::super::ui_apps::UiApps),
+        Arc::new(super::api::UiApps),
         Arc::new(UiTool {
             service: service.clone(),
             operation: Operation::Tree,
@@ -110,6 +114,11 @@ impl CommandHandler for ConsentCommand {
             return list(&self.0, session.as_deref());
         }
         if args == "request-accessibility" {
+            #[cfg(windows)]
+            return Err(CommandError::presented(UiMessage::new(
+                "cua.error_windows_request",
+            )));
+            #[cfg(target_os = "macos")]
             return request_accessibility(
                 super::trusted,
                 super::console_ready,
@@ -146,6 +155,7 @@ impl CommandHandler for ConsentCommand {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn request_accessibility(
     trusted: impl FnOnce() -> bool,
     console: impl FnOnce() -> Result<()>,
@@ -210,15 +220,37 @@ fn list(
     if consents.is_empty() {
         parts.push(UiMessage::new("cua.consent_empty"));
     }
+    use crate::command::UiSystemStatus;
+    #[cfg(target_os = "macos")]
+    let system = UiSystemStatus::Macos {
+        accessibility_granted: super::trusted(),
+    };
+    #[cfg(windows)]
+    let system = UiSystemStatus::Windows {
+        desktop: super::windows::status(),
+    };
+    #[cfg(windows)]
+    parts.insert(
+        0,
+        UiMessage::new(match &system {
+            UiSystemStatus::Windows { desktop: "ready" } => "cua_settings.windows_ready",
+            UiSystemStatus::Windows { desktop: "locked" } => "cua_settings.windows_locked",
+            _ => "cua_settings.windows_unknown",
+        }),
+    );
     Ok(CommandOutcome::ShowUiConsents(UiConsentsView {
         parts,
         consents,
-        accessibility_granted: super::trusted(),
+        system,
     }))
 }
 
 fn usage() -> CommandError {
-    CommandError::presented(UiMessage::new("cua.consent_usage"))
+    CommandError::presented(UiMessage::new(if cfg!(windows) {
+        "cua.consent_usage_windows"
+    } else {
+        "cua.consent_usage"
+    }))
 }
 
 fn storage_error() -> CommandError {
@@ -230,6 +262,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn accessibility_request_prompts_only_when_untrusted_on_an_unlocked_console() {
         fn check_status(outcome: CommandOutcome, expected: &str) {
             let CommandOutcome::Status(message) = outcome else {

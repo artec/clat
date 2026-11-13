@@ -216,11 +216,11 @@ impl Run<'_> {
         // unnecessary_literal_unwrap` 在 Linux/Windows 编译面报错（本地
         // macOS clippy 与 CI 的 xwin 面之外不可见）。拆成各平台直接
         // 构造，语义不变。
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let output =
             crate::native_tools::ui::denied_output(&call.name, self.tool_access.is_plan_mode())
                 .unwrap_or_else(|| serde_json::json!({"error": message}));
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         let output = serde_json::json!({"error": message});
         let mut result = ToolResult {
             blocks: Vec::new(),

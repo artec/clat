@@ -1,5 +1,5 @@
 //! Waits poll the same scoped, bounded observation path as ui_tree.
-use super::tree::Walk;
+use super::tree::{Walk, get_observation, same_window};
 use super::*;
 use serde::Deserialize;
 
@@ -22,7 +22,9 @@ impl Condition {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WaitRequest {
-    pid: i32,
+    pid: Option<i32>,
+    snapshot_id: Option<String>,
+    element_index: Option<usize>,
     window_index: Option<usize>,
     condition: Condition,
     role: Option<String>,
@@ -55,13 +57,11 @@ impl WaitRequest {
 impl Service {
     pub(super) fn wait_for_condition(&self, run: &Run, request: WaitRequest) -> Result<Value> {
         let timeout = request.validate()?;
-        let app = self.app(request.pid)?;
-        let lease = self.control.ui_authority.lease(&app, run)?;
+        let (app, lease, mut window) = self.wait_target(run, &request)?;
         if request.condition.reads_value() {
             self.consent(run, &app, &lease)?;
         }
         let call = deadline(&lease.cancel, timeout);
-        let mut window = None;
         loop {
             active(&call)?;
             self.recheck_app(&app)?;
@@ -80,6 +80,41 @@ impl Service {
             if let Some(remaining) = call.remaining() {
                 std::thread::sleep(remaining.min(Duration::from_millis(60)));
             }
+        }
+    }
+
+    fn wait_target(
+        &self,
+        run: &Run,
+        request: &WaitRequest,
+    ) -> Result<(App, Arc<Lease>, Option<Handle>)> {
+        match (
+            request.pid,
+            request.snapshot_id.as_deref(),
+            request.element_index,
+        ) {
+            (Some(pid), None, None) if !self.backend.window_scoped() => {
+                let app = self.app(pid)?;
+                let lease = self.control.ui_authority.lease(&app, run)?;
+                Ok((app, lease, None))
+            }
+            (None, Some(id), Some(index)) if request.window_index.is_none() => {
+                let (app, lease, observed) = get_observation(run, id, index)?;
+                if !self.backend.is_window_root(&observed.node) {
+                    return Err(error("INVALID_ARGUMENTS"));
+                }
+                let call = deadline(&lease.cancel, Duration::from_secs(2));
+                self.recheck_app(&app)?;
+                let live = self.backend.describe(&observed.node.handle, &app, &call)?;
+                let window = self.backend.window(&live, &app, &call)?;
+                if window.is_none()
+                    || !same_window(self.backend.as_ref(), &observed.window, &window)
+                {
+                    return Err(error("STALE_SNAPSHOT"));
+                }
+                Ok((app, lease, window))
+            }
+            _ => Err(error("INVALID_ARGUMENTS")),
         }
     }
 
@@ -102,6 +137,9 @@ impl Service {
                 return Ok(!matches!(request.condition, Condition::Disappear));
             }
         }
+        if !walk.limits_reached().is_empty() {
+            return Err(error("TREE_LIMIT"));
+        }
         Ok(matches!(request.condition, Condition::Disappear))
     }
 
@@ -117,11 +155,13 @@ impl Service {
             let current = node.and_then(|node| self.backend.window(&node, app, call));
             return match current {
                 Ok(Some(live)) if self.backend.same(window, &live) => Ok(Some(live)),
+                Ok(_) if self.backend.window_scoped() => Err(error("STALE_SNAPSHOT")),
                 Ok(_) => Ok(None),
                 Err(error)
-                    if error
-                        .recovery()
-                        .is_some_and(|details| details["code"] == "STALE_SNAPSHOT") =>
+                    if !self.backend.window_scoped()
+                        && error
+                            .recovery()
+                            .is_some_and(|details| details["code"] == "STALE_SNAPSHOT") =>
                 {
                     Ok(None)
                 }

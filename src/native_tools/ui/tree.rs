@@ -20,6 +20,7 @@ pub(super) struct TreeRequest {
     cursor: Option<usize>,
     include_values: Option<bool>,
     max_depth: Option<usize>,
+    max_nodes: Option<usize>,
     page_size: Option<usize>,
 }
 
@@ -36,6 +37,7 @@ pub(super) struct Snapshot {
     pub(super) lease: Arc<Lease>,
     pub(super) nodes: Vec<Observed>,
     walk: Walk,
+    root_window: Option<Handle>,
     values: bool,
 }
 
@@ -45,7 +47,11 @@ pub(super) struct Walk {
     seen: HashMap<u64, Vec<Handle>>,
     visited: usize,
     lookahead: Option<Observed>,
-    depth_limit: Option<usize>,
+    depth_limit: usize,
+    node_limit: usize,
+    depth_reached: bool,
+    nodes_reached: bool,
+    inventory_only: bool,
 }
 
 #[derive(Clone)]
@@ -83,7 +89,11 @@ impl Walk {
             seen: HashMap::new(),
             visited: 0,
             lookahead: None,
-            depth_limit: None,
+            depth_limit: MAX_DEPTH,
+            node_limit: MAX_NODES,
+            depth_reached: false,
+            nodes_reached: false,
+            inventory_only: false,
         }
     }
 
@@ -110,8 +120,14 @@ impl Walk {
                     if seen.iter().any(|prior| backend.same(prior, &handle)) {
                         continue;
                     }
-                    if self.visited >= MAX_NODES || depth > MAX_DEPTH {
-                        return Err(error("TREE_LIMIT"));
+                    if depth > self.depth_limit {
+                        self.depth_reached = true;
+                        continue;
+                    }
+                    if self.visited >= self.node_limit {
+                        self.nodes_reached = true;
+                        self.pending.clear();
+                        break;
                     }
                     seen.push(handle.clone());
                     let node = match backend.describe(&handle, app, call) {
@@ -125,7 +141,7 @@ impl Walk {
                         }
                         Err(error) => return Err(error),
                     };
-                    let window = if matches!(node.role.as_str(), "AXWindow" | "AXMenuBar") {
+                    let window = if backend.is_window_root(&node) {
                         Some(handle)
                     } else {
                         window
@@ -153,8 +169,18 @@ impl Walk {
         Ok(None)
     }
 
+    pub(super) fn limits_reached(&self) -> Vec<&'static str> {
+        [
+            ("max_nodes", self.nodes_reached),
+            ("max_depth", self.depth_reached),
+        ]
+        .into_iter()
+        .filter_map(|(name, reached)| reached.then_some(name))
+        .collect()
+    }
+
     fn enqueue_children(&mut self, observed: &Observed) {
-        if observed.node.secure() || self.depth_limit == Some(observed.depth) {
+        if observed.node.secure() && observed.node.subrole.as_deref() != Some("UIAUnclassified") {
             return;
         }
         let work = |source| Work::Children {
@@ -163,10 +189,16 @@ impl Walk {
             offset: 0,
             source,
         };
-        self.pending.push(work(Children::Ordinary));
-        if observed.node.role == "AXApplication" {
-            self.pending.push(work(Children::MenuBar));
-            self.pending.push(work(Children::Windows));
+        if self.inventory_only {
+            if observed.depth == 0 {
+                self.pending.push(work(Children::Windows));
+            }
+        } else {
+            self.pending.push(work(Children::Ordinary));
+            if observed.node.role == "AXApplication" {
+                self.pending.push(work(Children::MenuBar));
+                self.pending.push(work(Children::Windows));
+            }
         }
     }
 
@@ -179,6 +211,11 @@ impl Walk {
         source: Children,
         call: &CancelToken,
     ) -> Result<()> {
+        let count = if node.depth == self.depth_limit || self.visited >= self.node_limit {
+            1
+        } else {
+            BATCH
+        };
         let children = match source {
             Children::MenuBar => backend
                 .menu_bar(&node.node.handle, call)?
@@ -187,16 +224,20 @@ impl Walk {
             Children::Windows | Children::Ordinary => backend.children(
                 &node.node.handle,
                 offset,
-                BATCH,
+                count,
                 matches!(source, Children::Windows),
                 call,
             )?,
         };
-        if children.len() == BATCH {
+        if !children.is_empty() && node.depth == self.depth_limit {
+            self.depth_reached = true;
+            return Ok(());
+        }
+        if children.len() == count && !matches!(source, Children::MenuBar) {
             self.pending.push(Work::Children {
                 node: node.clone(),
                 parent,
-                offset: offset + BATCH,
+                offset: offset + count,
                 source,
             });
         }
@@ -213,7 +254,11 @@ impl Walk {
 
 impl Node {
     pub(super) fn secure(&self) -> bool {
-        self.role == "AXSecureTextField" || self.subrole.as_deref() == Some("AXSecureTextField")
+        self.role == "AXSecureTextField"
+            || matches!(
+                self.subrole.as_deref(),
+                Some("AXSecureTextField" | "UIASecure" | "UIAUnclassified")
+            )
     }
 }
 
@@ -227,11 +272,13 @@ impl Service {
             cursor,
             include_values,
             max_depth,
+            max_nodes,
             page_size,
         } = request;
         let page_size = page_size.unwrap_or(PAGE);
         if !(1..=PAGE).contains(&page_size)
             || max_depth.is_some_and(|depth| depth > MAX_DEPTH || cursor.is_some())
+            || max_nodes.is_some_and(|nodes| !(1..=MAX_NODES).contains(&nodes) || cursor.is_some())
         {
             return Err(error("INVALID_ARGUMENTS"));
         }
@@ -253,6 +300,11 @@ impl Service {
             _ => return Err(error("INVALID_ARGUMENTS")),
         };
         let values = include_values.unwrap_or(false);
+        if self.backend.window_scoped()
+            && (window_index.is_some() || values && matches!(selected, Scope::Application(_)))
+        {
+            return Err(error("INVALID_ARGUMENTS"));
+        }
         if values {
             self.consent(run, &app, &lease)?;
         }
@@ -260,13 +312,17 @@ impl Service {
         self.recheck_app(&app)?;
         let (root, window) = self.scope(&app, selected, &call)?;
         let id = run.snapshot_id();
-        let mut walk = Walk::new(root, window);
-        walk.depth_limit = max_depth;
+        let inventory_only = self.backend.window_scoped() && window.is_none();
+        let mut walk = Walk::new(root, window.clone());
+        walk.inventory_only = inventory_only;
+        walk.depth_limit = max_depth.unwrap_or(MAX_DEPTH);
+        walk.node_limit = max_nodes.unwrap_or(MAX_NODES);
         let mut snapshot = Snapshot {
             app,
             lease,
             nodes: Vec::new(),
             walk,
+            root_window: window,
             values,
         };
         let result = self.page(&id, &mut snapshot, page_size, &call)?;
@@ -301,7 +357,9 @@ impl Service {
             Scope::Subtree(observed) => {
                 let node = self.backend.describe(&observed.node.handle, app, call)?;
                 let window = self.backend.window(&node, app, call)?;
-                if !same_window(self.backend.as_ref(), &observed.window, &window) {
+                if (self.backend.window_scoped() && window.is_none())
+                    || !same_window(self.backend.as_ref(), &observed.window, &window)
+                {
                     return Err(error("STALE_SNAPSHOT"));
                 }
                 Ok((node.handle, window))
@@ -335,6 +393,15 @@ impl Service {
         }
         self.recheck_app(&snapshot.app)?;
         let call = deadline(&snapshot.lease.cancel, READ_TIME);
+        if self.backend.window_scoped()
+            && let Some(window) = &snapshot.root_window
+        {
+            let node = self.backend.describe(window, &snapshot.app, &call)?;
+            let live = self.backend.window(&node, &snapshot.app, &call)?;
+            if !same_window(self.backend.as_ref(), &snapshot.root_window, &live) {
+                return Err(error("STALE_SNAPSHOT"));
+            }
+        }
         self.page(id, snapshot, page_size, &call)
     }
 
@@ -362,11 +429,12 @@ impl Service {
         }
         active(call)?;
         let has_more = walk.lookahead.is_some();
+        let limits = walk.limits_reached();
         snapshot.walk = walk;
         snapshot.nodes.extend(nodes);
         Ok(
             json!({"snapshot_id":id,"pid":snapshot.app.pid,"nodes":rows,"has_more":has_more,
-            "next_cursor":has_more.then_some(snapshot.nodes.len())}),
+            "next_cursor":has_more.then_some(snapshot.nodes.len()),"limits_reached":limits}),
         )
     }
 

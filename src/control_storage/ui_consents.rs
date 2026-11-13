@@ -11,6 +11,7 @@ const FILE_LIMIT: usize = 524_288;
 
 /// Bundle identity is preferred; the fallback is the canonical executable,
 /// never the caller-provided path spelling. PID is deliberately not identity.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn app_identity(
     bundle: Option<&str>,
     executable: &std::path::Path,

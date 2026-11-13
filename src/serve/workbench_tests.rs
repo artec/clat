@@ -22,7 +22,7 @@ fn fixture(name: &str) -> (Arc<ServeShared>, PathBuf, PathBuf) {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn computer_use_settings_reads_host_status_and_revokes_scoped_consent() {
     let (shared, storage, root) = fixture("computer-use-settings");
@@ -37,7 +37,25 @@ fn computer_use_settings_reads_host_status_and_revokes_scoped_consent() {
     };
     let before = command("/ui-consents", generation).unwrap();
     assert_eq!(before["kind"], "ui_consents");
-    assert!(before["accessibility_granted"].is_boolean());
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(before["system"]["platform"], "macos");
+        assert!(before["accessibility_granted"].is_boolean());
+        assert_eq!(
+            before["system"]["accessibility_granted"],
+            before["accessibility_granted"]
+        );
+    }
+    #[cfg(windows)]
+    {
+        assert_eq!(before["system"]["platform"], "windows");
+        assert!(matches!(
+            before["system"]["desktop"].as_str(),
+            Some("ready" | "locked" | "unknown")
+        ));
+        assert!(before.get("accessibility_granted").is_none());
+        assert!(command("/ui-consents request-accessibility", generation).is_err());
+    }
     assert_eq!(
         before["consents"],
         json!([{ "app_id": id, "name": "Preview", "scope": "always", "allowed": true }]),

@@ -1,4 +1,4 @@
-//! Native macOS accessibility. Platform reads, human authorization and
+//! Native accessibility for the interactive desktop. Platform reads, human authorization and
 //! execution authority meet here; no process, shell or input-event fallback.
 use crate::CancelToken;
 use crate::control_storage::ControlStorage;
@@ -16,15 +16,17 @@ use std::time::{Duration, Instant};
 
 mod access;
 mod action;
-mod api;
+pub(super) mod api;
 #[cfg(target_os = "macos")]
 mod mac;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) mod plugin;
 #[cfg(test)]
 mod tests;
 mod tree;
 mod wait;
+#[cfg(windows)]
+mod windows;
 
 use super::ui_state::{ApplicationKind, Element, Failure, TargetFence, UiState};
 pub(crate) use access::Authority;
@@ -56,6 +58,12 @@ enum ValuePurpose {
 /// opaque, retained by the backend and never supplied by a caller.
 trait Backend: Send + Sync {
     fn ready(&self) -> Result<()>;
+    fn window_scoped(&self) -> bool {
+        false
+    }
+    fn is_window_root(&self, node: &Node) -> bool {
+        matches!(node.role.as_str(), "AXWindow" | "AXMenuBar")
+    }
     fn app(&self, pid: i32) -> Result<App>;
     fn root(&self, app: &App, call: &CancelToken) -> Result<Handle>;
     fn same(&self, left: &Handle, right: &Handle) -> bool;
@@ -263,6 +271,9 @@ pub(super) fn error(code: &'static str) -> ToolError {
         "INVALID_ARGUMENTS" => "cua.error_arguments",
         "LIMIT" => "cua.error_action_limit",
         "NATIVE_BUSY" => "cua.error_native_busy",
+        "WINDOWS_DESKTOP_UNAVAILABLE" => "cua_settings.windows_locked",
+        "WINDOWS_TARGET_UNAVAILABLE" => "cua.error_windows_target",
+        "WINDOWS_UIA_UNAVAILABLE" => "cua_settings.windows_unknown",
         "PERMISSION_DENIED" => "cua.error_tcc",
         "PLAN_MODE" => "cua.error_plan_mode",
         "PROTECTED_TARGET" => "cua.error_protected_target",
@@ -304,7 +315,7 @@ pub(super) fn output_error(error: &ToolError) -> Value {
     output
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn denied_output(tool: &str, plan: bool) -> Option<Value> {
     let code = match tool {
         "ui_act" if plan => "PLAN_MODE",

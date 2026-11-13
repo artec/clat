@@ -271,7 +271,8 @@ function computerUseSettingsPanel(page, category) {
   const section = el('section', 'settings-section');
   section.dataset.settingsPanel = category;
   section.hidden = true;
-  section.append(el('h2', '', () => t('title')), el('p', 'settings-note', () => t('description')));
+  const description = el('p', 'settings-note', () => t('description'));
+  section.append(el('h2', '', () => t('title')), description);
   page.querySelector('.settings-content').append(section);
 
   const system = settingsGroup(section, () => t('system_access'));
@@ -296,7 +297,8 @@ function computerUseSettingsPanel(page, category) {
   const status = el('p', 'settings-note');
   status.setAttribute('role', 'status');
   section.append(status);
-  return { nav, access, hint, reload, requestAccess, list, consentsSection, status };
+  return { nav, description, systemHeading: system.parentElement.querySelector('h4'),
+    access, hint, reload, requestAccess, list, consentsSection, status };
 }
 
 function computerUseConsentRow(consent, onRevoke) {
@@ -336,12 +338,13 @@ function installComputerUseSettings() {
   const category = 'computer-use';
   const page = dom['settings-dialog'];
   const t = computerUseText;
-  const {nav, access, hint, reload, requestAccess, list, consentsSection, status} = computerUseSettingsPanel(page, category);
+  const {nav, description, systemHeading, access, hint, reload, requestAccess, list, consentsSection, status} = computerUseSettingsPanel(page, category);
   const active = () => currentSettingsCategory === category && pageIsOpen(page);
   const selection = () => JSON.stringify([workspacePrefix, state.sessionId, state.selectionGeneration]);
   let generation = 0;
   let shownFor = null;
   let requestedAccess = false;
+  let windowsHost = false;
   let restarting = false;
   let checkingManually = false;
   const command = (args = '') => rpc('command.run', {
@@ -349,9 +352,13 @@ function installComputerUseSettings() {
   });
   const showStatus = value => CLATI18n.bind(status, 'textContent', () => typeof value === 'function' ? value() : value);
   const setAccess = key => {
-    requestAccess.hidden = key !== 'not_granted';
+    access.dataset.systemStatus = key;
+    requestAccess.hidden = windowsHost || key !== 'not_granted';
     CLATI18n.bind(access, 'textContent', () => t(key));
-    CLATI18n.bind(hint, 'textContent', () => t(key === 'not_granted' ? 'access_recovery' : 'system_hint'));
+    CLATI18n.bind(hint, 'textContent', () => t(windowsHost ? 'windows_hint'
+      : key === 'not_granted' ? 'access_recovery' : 'system_hint'));
+    CLATI18n.bind(description, 'textContent', () => t(windowsHost ? 'windows_description' : 'description'));
+    CLATI18n.bind(systemHeading, 'textContent', () => t(windowsHost ? 'windows_system_access' : 'system_access'));
   };
   async function change(args, target, success) {
     const current = () => active() && target === selection();
@@ -400,13 +407,20 @@ function installComputerUseSettings() {
     try {
       const view = await command();
       if (!current()) return;
-      setAccess(view.accessibility_granted === true ? 'granted'
-        : view.accessibility_granted === false ? 'not_granted' : 'unknown');
+      windowsHost = view.system?.platform === 'windows';
+      if (windowsHost) {
+        requestedAccess = false;
+        setAccess(view.system.desktop === 'ready' ? 'windows_ready'
+          : view.system.desktop === 'locked' ? 'windows_locked' : 'windows_unknown');
+      } else {
+        setAccess(view.accessibility_granted === true ? 'granted'
+          : view.accessibility_granted === false ? 'not_granted' : 'unknown');
+      }
       renderComputerUseConsents(list, view, (entry, success) =>
         change(` revoke ${entry.scope} ${entry.app_id}`, target, () => success));
       consentsSection.hidden = !Array.isArray(view.consents);
       if (view.accessibility_granted === true) requestedAccess = false;
-      restartNeeded = manual && requestedAccess && view.accessibility_granted === false
+      restartNeeded = !windowsHost && manual && requestedAccess && view.accessibility_granted === false
         && Boolean(window.__TAURI__);
       if (restartNeeded) {
         const restart = window.refreshDesktopAccessibility;
@@ -417,7 +431,7 @@ function installComputerUseSettings() {
       showStatus(success || (manual && view.accessibility_granted === false ? () => t('access_still_missing') : ''));
     } catch (error) {
       if (current()) {
-        if (!restartNeeded) setAccess('unknown');
+        if (!restartNeeded) setAccess(windowsHost ? 'windows_unknown' : 'unknown');
         showStatus(() => CLATI18n.present(error, error.message || String(error)));
       }
     } finally {
