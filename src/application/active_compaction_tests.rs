@@ -324,9 +324,13 @@ fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt
         "oversized request must not reach provider after failed summary"
     );
     let seen = script.main.load(Ordering::SeqCst);
+    // 结构性上界（原 `<= 3` 按 Linux 目录尺寸调死，ui_* 目录随平台出现
+    // 后触发点后移一轮即红——A 桌 2026-11-13）：维护重试的形状是
+    // "每次摘要尝试至多再派发一轮"，故 seen ≤ summaries + 1 平台无关；
+    // 触发点本身（第几轮超限）不是被测不变量。
     assert!(
-        seen <= 3,
-        "failed reduction cannot dispatch an over-capacity request"
+        seen <= script.summaries.load(Ordering::SeqCst) + 1,
+        "failed reduction cannot dispatch beyond its summary attempts"
     );
     assert!(script.summaries.load(Ordering::SeqCst) >= 1);
     app.close().unwrap();
