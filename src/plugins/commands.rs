@@ -470,7 +470,8 @@ mod tests {
     }
 
     /// SC-3 判别：真机 catalog 逐行等于权威顺序表（A1 裁定，2026-09-02）
-    /// 的顺序，GA-3 增加 /capabilities 后为十八行——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
+    /// 的顺序，GA-3 增加 /capabilities、aa3d4240 增加 /ui-consents（仅
+    /// macOS，CI 的 Linux/Windows 面不可见）——删 `catalog()` 折叠（或抹掉某条 spec 的分组键落位）即
     /// 红。挂载序与展示序解耦（INV-SC-1）靠此测试钉住。
     #[test]
     fn command_catalog_matches_the_authoritative_table() {
@@ -486,33 +487,39 @@ mod tests {
                 names
             })
             .collect();
+        let mut table = vec![
+            "/new, /clear",
+            "/resume",
+            "/rename",
+            "/task",
+            "/history",
+            "/jobs",
+            "/schedule",
+            "/compact",
+            "/context",
+            "/model",
+            "/perm, /permission",
+            "/plan",
+        ];
+        // /ui-consents 随 NativeUiPlugin 仅在 macOS 组装（CUA 平台面），
+        // 落位在 /plan 与 /mcp 之间（Safety 组 order 9）。
+        #[cfg(target_os = "macos")]
+        table.push("/ui-consents");
+        table.extend([
+            "/mcp",
+            "/skill, /skills",
+            "/plugin",
+            "/capabilities",
+            "/web",
+            "/mem, /memory",
+            "/goal",
+            "/sub, /subagents",
+            "/help",
+            "/quit, /exit",
+        ]);
         assert_eq!(
-            rows,
-            vec![
-                "/new, /clear",
-                "/resume",
-                "/rename",
-                "/task",
-                "/history",
-                "/jobs",
-                "/schedule",
-                "/compact",
-                "/context",
-                "/model",
-                "/perm, /permission",
-                "/plan",
-                "/mcp",
-                "/skill, /skills",
-                "/plugin",
-                "/capabilities",
-                "/web",
-                "/mem, /memory",
-                "/goal",
-                "/sub, /subagents",
-                "/help",
-                "/quit, /exit",
-            ],
-            "the catalog must fold to the authoritative twenty-one-row table"
+            rows, table,
+            "the catalog must fold to the authoritative command table"
         );
         // 附加工单（2026-09-03 负责人令）：`/vision-probe` 不进帮助目录
         //（listed = false），但仍可派发——隐藏 ≠ 下线。判定只区分

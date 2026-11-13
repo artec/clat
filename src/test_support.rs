@@ -509,6 +509,17 @@ impl Model for TestModel {
                 }
             }
             TestBehavior::Steer(gate) => {
+                // 标题旁路（纪律同 ToolLoop/Scripted）：turn-1 起自动命名与
+                // run 并发，旁路请求不得触碰 SteerGate——否则它会替 run 的
+                // 首次模型调用置位 entered，wait_entered 提前放行，插话被
+                // 并入第一轮（CI 43362713172，steering_recall turns 1≠2）。
+                let is_title = request.tools.is_empty()
+                    && request
+                        .instructions
+                        .is_some_and(|text| text.starts_with("Generate a concise title"));
+                if is_title {
+                    return Ok(response("", FinishReason::Cancelled));
+                }
                 let has_steering = request.items.iter().any(|item| {
                     matches!(
                         item,
@@ -674,6 +685,16 @@ impl Model for TestModel {
                 Ok(response("done", FinishReason::Completed))
             }
             TestBehavior::TimedDeltas { count, interval_ms } => {
+                // 标题旁路（纪律同 ToolLoop/Scripted）：TimedDeltas 不检查
+                // cancel，4 秒长流会让 close 的 2 秒 title-worker join 必然
+                // 超时（CI 43362713172，plugin_mutation_refuses cleanup_failed）。
+                let is_title = request.tools.is_empty()
+                    && request
+                        .instructions
+                        .is_some_and(|text| text.starts_with("Generate a concise title"));
+                if is_title {
+                    return Ok(response("", FinishReason::Cancelled));
+                }
                 let blob = "x".repeat(16 * 1024);
                 for _ in 0..*count {
                     events.emit(ModelEvent::TextDelta {

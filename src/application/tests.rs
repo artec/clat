@@ -5490,6 +5490,13 @@ fn process_bind_failure_still_closes_the_turn_and_publishes_one_terminal() {
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let mut application = mount(&project, &storage_root, TestBehavior::Success);
+    // turn-1 起自动命名是迟到的 journal 写者（FL 族病历）：本测试断言
+    // journal 以 turn/end(error) 收尾，标题 worker 异步落 session/title
+    // 会与其竞速。关掉标题 worker 隔离之（先例：active_compaction fixture
+    // 的 "this script owns only main/summary steps"）。
+    if let Some(worker) = application.title_worker.as_mut() {
+        worker.shutdown().unwrap();
+    }
     configure_test_model(&application);
     let occupied = application
         .process_service
