@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::*;
 
-/// Successful-run notification. The worker coalesces turns and captures CAS
+/// First admission or successful-run notification. The worker coalesces turns and captures CAS
 /// and bounded conversation together for this session, immediately before I/O.
 pub(super) struct AutotitleJob {
     pub(super) session_id: SessionId,

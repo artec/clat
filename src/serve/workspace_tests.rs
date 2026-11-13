@@ -577,7 +577,7 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "storage_root": described_root,
         "methods": ["mcp.manage.list", "mcp.manage.get", "mcp.manage.save", "mcp.manage.remove", "mcp.manage.test",
             "plugin.list", "plugin.builtin.get", "plugin.builtin.preview", "plugin.builtin.set", "plugin.market", "plugin.prepare", "plugin.commit", "plugin.cancel", "plugin.remove",
-            "host.describe", "host.runtime_status", "host.stop", "host.takeover", "workspace.list", "workspace.directory", "workspace.update", "terminal.directory", "workspace.open"],
+            "host.describe", "host.runtime_status", "host.stop", "host.restart_idle", "host.takeover", "workspace.list", "workspace.directory", "workspace.update", "terminal.directory", "workspace.open"],
         "wire_version": crate::wire::WIRE_VERSION,
         "journal_version": crate::session::compat::SESSION_FORMAT_VERSION,
         "product_version": crate::host_client::build_identity::product_version(),

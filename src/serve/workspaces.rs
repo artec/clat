@@ -34,6 +34,7 @@ pub(crate) const HOST_METHODS: &[&str] = &[
     "host.describe",
     "host.runtime_status",
     "host.stop",
+    "host.restart_idle",
     "host.takeover",
     "workspace.list",
     "workspace.directory",
@@ -212,6 +213,10 @@ impl WorkspaceHost {
         if method == "host.takeover" {
             return self.takeover(params);
         }
+        if method == "host.restart_idle" {
+            self.check_shutdown_instance(params)?;
+            return self.stop_when_idle();
+        }
         if method == "host.describe" {
             return self.startup_description();
         }
@@ -249,16 +254,24 @@ impl WorkspaceHost {
         }
     }
 
-    fn takeover(&self, params: &serde_json::Map<String, Value>) -> Result<Value, RpcError> {
+    fn check_shutdown_instance(
+        &self,
+        params: &serde_json::Map<String, Value>,
+    ) -> Result<(), RpcError> {
         let expected = params
             .get("expected_instance_id")
             .and_then(Value::as_str)
             .ok_or_else(|| RpcError::bad_request("expected_instance_id is required"))?;
         if expected != self.instance {
             return Err(RpcError::busy(
-                "host instance changed; refresh before requesting takeover",
+                "host instance changed; refresh before requesting shutdown",
             ));
         }
+        Ok(())
+    }
+
+    fn takeover(&self, params: &serde_json::Map<String, Value>) -> Result<Value, RpcError> {
+        self.check_shutdown_instance(params)?;
         let replacement = params
             .get("replacement_product_version")
             .and_then(Value::as_str)
@@ -274,6 +287,10 @@ impl WorkspaceHost {
             ));
         }
 
+        self.stop_when_idle()
+    }
+
+    fn stop_when_idle(&self) -> Result<Value, RpcError> {
         let projects = self.projects.lock().expect("host projects");
         if self.shutdown.load(Ordering::SeqCst) {
             return Ok(json!({"stopping": true}));
@@ -285,7 +302,7 @@ impl WorkspaceHost {
             .collect::<Vec<_>>();
         if routes.iter().any(|shared| !shared.is_idle_for_takeover()) {
             return Err(RpcError::busy(
-                "host has active work; finish or cancel it before upgrading",
+                "host has active work; finish or cancel it before restarting",
             ));
         }
         for shared in &routes {

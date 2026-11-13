@@ -220,7 +220,7 @@ fn instructions(task: UtilityTask) -> &'static str {
              below. Name the recent topic or intended outcome in your own words; \
              do not repeat a sentence from the dialogue. Use the same language as the \
              conversation. Keep it within 6 words for non-CJK languages, or \
-             within 12 CJK characters. Output only the title text: no quotes, \
+             within 12 CJK characters. Output only the title text: no Markdown, no quotes, \
              no trailing punctuation beyond what is natural, no explanation."
         }
         UtilityTask::Followups => {

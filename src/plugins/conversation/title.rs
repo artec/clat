@@ -117,18 +117,15 @@ fn sanitize_title_outcome(raw: &str, conversation: &str) -> TitleSanitizeResult 
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or_default();
-    let mut inner = first;
-    while let Some(stripped) = strip_wrapping_markup(inner) {
-        inner = stripped;
-    }
-    let cleaned = scrub_title_text(inner);
+    let cleaned = scrub_title_text(first);
+    let cleaned = title_line_content(&cleaned);
     if cleaned.is_empty() {
         return Err("generated title sanitized to empty");
     }
-    if copies_conversation_line(&cleaned, conversation) {
+    if copies_conversation_line(cleaned, conversation) {
         return Err("generated title repeats the conversation");
     }
-    cut_within_width(&cleaned, TITLE_MAX_WIDTH)
+    cut_within_width(cleaned, TITLE_MAX_WIDTH)
         .ok_or("no compliant prefix within the title width cap")
 }
 
@@ -141,7 +138,7 @@ fn copies_conversation_line(title: &str, conversation: &str) -> bool {
                 .strip_prefix("user: ")
                 .or_else(|| line.strip_prefix("assistant: "))
                 .unwrap_or(line);
-            scrub_title_text(text) == title
+            title_line_content(&scrub_title_text(text)) == title
         })
 }
 
@@ -314,6 +311,31 @@ fn is_word_internal_char(character: char) -> bool {
         )
 }
 
+fn title_line_content(text: &str) -> &str {
+    unwrap_title(strip_markdown_heading(unwrap_title(text)))
+}
+
+fn unwrap_title(mut text: &str) -> &str {
+    while let Some(inner) = strip_wrapping_markup(text) {
+        text = inner.trim();
+    }
+    text
+}
+
+fn strip_markdown_heading(text: &str) -> &str {
+    // Whitespace has already been normalized by scrub_title_text.
+    let body = text.trim_start_matches('#');
+    let opening = text.len() - body.len();
+    if !(1..=6).contains(&opening) || !(body.is_empty() || body.starts_with(' ')) {
+        return text;
+    }
+    let without_hashes = body.trim_end_matches('#');
+    if without_hashes.len() < body.len() && without_hashes.ends_with(' ') {
+        return without_hashes.trim();
+    }
+    body.trim_start()
+}
+
 fn strip_wrapping_markup(text: &str) -> Option<&str> {
     const PAIRS: [(&str, &str); 7] = [
         ("\"", "\""),
@@ -417,6 +439,28 @@ mod tests {
         assert_eq!(
             sanitize_title_outcome("Fix the login bug", ""),
             Ok("Fix the login bug".to_owned())
+        );
+    }
+
+    #[test]
+    fn sanitizer_removes_markdown_headings_but_keeps_literal_hashes() {
+        for (raw, expected) in [
+            ("### 提炼出的改进提议", "提炼出的改进提议"),
+            ("「######\t**修复登录** ###」", "修复登录"),
+            ("### ###", ""),
+            ("###", ""),
+            ("### 修复 C#", "修复 C#"),
+            ("#123 登录故障", "#123 登录故障"),
+            ("####### literal", "####### literal"),
+        ] {
+            assert_eq!(sanitize_title(raw), expected, "{raw:?}");
+        }
+        assert!(
+            sanitize_title_outcome(
+                "### 我想让插话不打断正在运行的任务",
+                "user: ### 我想让插话不打断正在运行的任务",
+            )
+            .is_err()
         );
     }
 

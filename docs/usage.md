@@ -679,20 +679,39 @@ the application consent and any individual action approval it needs.
 `ui_apps` lists running applications and their Accessibility availability.
 `ui_tree` reads an app, a zero-based window index, or a subtree from a
 previous snapshot. It returns at most 100 nodes per page and a continuation
-cursor when more nodes are available. The run keeps its eight most recent
-snapshots. Secure values stay masked, and other values require explicit
-application consent.
+cursor when more nodes are available. For a quick overview, pass
+`max_depth: 1` with the app PID to see windows and the menu bar without
+walking their contents. Then read the relevant window or subtree. Set
+`page_size` from 1 to 100 to limit each page. Continue with the same
+`snapshot_id` and the returned `next_cursor`; the depth and value settings
+carry over. The run keeps its eight most recent snapshots. Secure values
+stay masked, and other values require explicit
+application consent. If macOS cannot list a control's actions or read its
+description, CLAT can still show the control and the surrounding tree. It
+advertises no actions for that control until it can verify the action list
+and label.
 
 `ui_wait` can wait for an element to appear, disappear, gain focus or match a
 value for up to 10 seconds after consent. `ui_act` uses a snapshot and node
 index to dispatch an advertised action such as press, confirm, cancel, pick,
-show menu or raise. CLAT reads the interface again to verify the result.
+show menu or raise. If macOS cannot provide the control's value for repeat
+detection, CLAT compares its other observable state. CLAT reads the
+interface again to verify the result.
 Screenshots, coordinate input, typing and clipboard operations are outside
 the current tool set.
 
 In Web, PWA and Desktop, **Settings → Computer Use** shows the connected
 Host’s Accessibility status. **Request macOS access** starts the system
-request on the Host Mac. You can also revoke individual app consent decisions.
+request on the Host Mac. **Refresh status** rechecks the running Host.
+After you request access from Desktop, **Refresh status** can also restart
+the matching packaged Host if it still reports missing access. It returns
+to Computer Use in the current project. If the Host has active work or
+the window has unsaved input, finish that work before refreshing again.
+When testing a build with
+a different signing identity, macOS can reject an existing Accessibility
+entry for the same bundle ID. Use the signed release for acceptance, or
+remove the old CLAT entry and authorize the installed test build separately.
+You can also revoke individual app consent decisions.
 See [macOS application interface permissions](permissions.md#macos-application-interface-permissions)
 for the approval rules and `/ui-consents` syntax.
 
@@ -2546,6 +2565,9 @@ Authenticated clients can call `host.describe`, `workspace.list`, `workspace.dir
 `host.takeover` additionally requires the exact instance id and a strictly
 newer product version; it serves the native startup upgrade flow described
 earlier and is rejected for same-version or older clients.
+`host.restart_idle` requires the exact instance id and uses the same idle
+check. Desktop uses it to restart its packaged Host after an Accessibility
+request when the running Host still reports missing access.
 `workspace.open` returns an opaque `id` and `api_prefix`; prepend that prefix
 to the existing `/api/...` paths, including events, image uploads and image
 reads. These route identifiers are temporary; reopen the project after an idle
@@ -2596,10 +2618,11 @@ session list. `/rename` opens the existing editable title dialog; a selection
 change while it is open prevents a stale rename from reaching another session.
 Once you rename a session, model-generated titles cannot replace your title,
 including after the session is reopened.
-Automatic naming follows recent conversation after a successful run. It may
-update a model-generated title after each newly completed turn, without lifetime
+Automatic naming starts in the background as soon as the first prompt is
+committed, while the first run proceeds. After later successful turns it may
+update a model-generated title using recent conversation. There are no lifetime
 quotas or time-based cooldowns. The scheduling sidecar prevents duplicate calls
-for the same turn after reopening. Each request uses at most 12 recent
+for the same turn, including after reopening. Each request uses at most 12 recent
 user/assistant messages, 1000 characters per message and 6000 characters total,
 without tools. An unreadable or damaged scheduling file pauses automatic naming,
 but does not disable manual suggestions.

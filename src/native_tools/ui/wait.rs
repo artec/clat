@@ -155,7 +155,7 @@ impl Service {
                 self.control
                     .ui_authority
                     .authorized(&self.control, lease, || Ok(()))?;
-                let value = self.backend.value(node, call)?;
+                let value = self.backend.value(node, ValuePurpose::Read, call)?;
                 let needle = request
                     .value
                     .as_deref()

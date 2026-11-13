@@ -43,11 +43,25 @@ pub fn welcome(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn connected(app: &tauri::AppHandle, client: HostClient) -> Result<(), String> {
+    connected_at(app, client, None)
+}
+
+pub fn connected_at(
+    app: &tauri::AppHandle,
+    client: HostClient,
+    fragment: Option<&str>,
+) -> Result<(), String> {
     let address = client.browser_url();
     if !crate::policy::permitted_page(&address) {
         return Err(crate::localization::text(app, "desktop.port_required").into());
     }
-    let url = address.parse().map_err(|_| "invalid workbench URL")?;
+    let mut url: url::Url = address.parse().map_err(|_| "invalid workbench URL")?;
+    url.set_fragment(fragment);
+    if fragment.is_some() {
+        // Force a new document even when reconnecting on the same loopback URL.
+        url.query_pairs_mut()
+            .append_pair("host", client.instance_id());
+    }
     *app.state::<Desktop>()
         .host
         .lock()
@@ -268,6 +282,7 @@ pub fn run() {
             crate::commands::desktop_preferences,
             crate::commands::desktop_quit,
             crate::commands::desktop_stop_host,
+            crate::commands::desktop_refresh_accessibility,
             crate::tray::desktop_remember_conversation,
             crate::tray::desktop_take_tray_intent,
             crate::window_frame::desktop_window,

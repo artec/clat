@@ -214,7 +214,6 @@ struct RunWorkerDeps {
     goal_service: super::execution_features::GoalRunPort,
     task_service: super::execution_features::TaskRunPort,
     subagent_service: Option<Arc<crate::subagent::SubagentService>>,
-    titler: Option<Arc<dyn crate::plugins::services::SessionTitler>>,
     title_sender: Option<mpsc::SyncSender<AutotitleJob>>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     slots: RunSlots,
@@ -597,7 +596,6 @@ impl RunWorkerDeps {
             .as_ref()
             .map(|m| *m.read().expect("target permission"));
         // Automatic execution must not spend an unapproved auxiliary title call.
-        self.titler = None;
         self.title_sender = None;
         self.subscribers = Arc::new(Mutex::new(Vec::new()));
     }
@@ -635,7 +633,6 @@ impl RunWorkerDeps {
             goal_service: app.goal_port(),
             task_service: app.task_port(),
             subagent_service: app.subagents.clone(),
-            titler: app.titler.clone(),
             title_sender: app
                 .title_worker
                 .as_ref()

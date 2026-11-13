@@ -1703,8 +1703,10 @@ across CLI/TUI/PWA/desktop. See [CLAT desktop client](desktop.md).
 and capabilities. Published compatible builds can share a Host despite different
 file fingerprints; development builds stay strict. Version preference is separate
 from compatibility: only a strictly newer backend may request the existing idle,
-instance-fenced takeover. Readiness is observed through `host.runtime_status`;
-the takeover owner rechecks atomically. Root identity/authentication and exact
+instance-fenced takeover. Desktop can also restart a Host with the same build
+fingerprint to apply macOS Accessibility access. Both paths fence the exact
+instance and atomically check that all projects are idle before shutdown.
+Readiness is observed through `host.runtime_status`. Root identity/authentication and exact
 Host/wire/journal compatibility checks precede build compatibility.
 
 `GET /api/notifications` is an authenticated, bounded, host-wide SSE metadata

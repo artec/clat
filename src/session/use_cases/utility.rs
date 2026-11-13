@@ -79,9 +79,9 @@ impl SessionService {
                 .unwrap_or(SetTitleExpectation::NoTitle);
             (turns.unwrap_or(0), expectation)
         };
-        if turns == 0 {
-            return Ok(None);
-        }
+        // Admission and settlement of the first turn share one naming slot.
+        // The bounded replay context below still requires durable input.
+        let turns = turns.max(1);
         let dir = self.backend.open_session_dir(&active.key)?;
         let mut budget = read_budget(&dir)?;
         if budget.title_attempts > 0 && turns <= budget.last_title_turn {

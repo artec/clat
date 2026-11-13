@@ -20,7 +20,14 @@
   });
   let integratedShow = null;
   const showSettings = () => { if(integratedShow){integratedShow();return;}const panel=document.getElementById('clat-desktop-settings');if(panel&&!panel.open)panel.showModal(); };
-  Object.defineProperty(window, 'CLATDesktop', { value: Object.freeze({ version: 1, showSettings }) });
+  async function refreshAccessibility() {
+    const unlock = prepareDesktopAction('refresh-accessibility');
+    try { await invoke('desktop_refresh_accessibility'); }
+    finally { unlock(); }
+  }
+  Object.defineProperty(window, 'CLATDesktop', { value: Object.freeze({
+    version: 1, showSettings, refreshAccessibility,
+  }) });
   const createPanel = () => {
     const host = document.createElement('div'); host.id = 'clat-desktop-controls';
     const launch = document.createElement('button'); launch.onclick = showSettings;
@@ -96,10 +103,10 @@
     return {dialog,status,launch,footer,launchLabel};
   };
   function prepareDesktopAction(action) {
-    if (!['install','open','quit'].includes(action)) return () => {};
+    if (!['install','open','quit','stop','refresh-accessibility'].includes(action)) return () => {};
     const request = new CustomEvent('clat-desktop-action-request', {cancelable:true, detail:{action}});
     if (!window.dispatchEvent(request) || desktopComposing || document.querySelector('#prompt')?.value.trim() || document.querySelector('#attachment-rail .attachment-chip')) throw CLATI18n.msg('desktop.draft_warning');
-    if (action !== 'install') return () => {};
+    if (!['install','stop','refresh-accessibility'].includes(action)) return () => {};
     const guard = new CustomEvent('clat-desktop-install-lock',{cancelable:true});
     if (!window.dispatchEvent(guard)) throw CLATI18n.msg('desktop.draft_warning');
     const composer = document.querySelector('#prompt'), previous = composer?.readOnly;

@@ -29,7 +29,7 @@ struct CapturedRequest {
     body: serde_json::Value,
 }
 
-/// 本地思考模型服务器。串行 accept `expected` 个请求后退出。
+/// 本地思考模型服务器。接收 `expected` 个请求后退出。
 struct ThinkingServer {
     port: u16,
     requests: Arc<Mutex<Vec<CapturedRequest>>>,
@@ -53,6 +53,14 @@ impl ThinkingServer {
     /// 故障，用于失败诊断面。正文是**人工合成金丝雀标记**（R1-F1 反例）：
     /// 它若出现在错误文本或证据日志里，即为 provider 不可信正文泄漏。
     fn spawn_with(expected: usize, fail_utility: bool) -> Self {
+        Self::spawn_with_main_gate(expected, fail_utility, None)
+    }
+
+    fn spawn_with_main_gate(
+        expected: usize,
+        fail_utility: bool,
+        mut main_gate: Option<mpsc::Receiver<()>>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind thinking server");
         let port = listener.local_addr().expect("address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -86,6 +94,14 @@ impl ThinkingServer {
                         .lock()
                         .expect("capture")
                         .push(CapturedRequest { path, body: body.clone() });
+                    if !is_utility && let Some(gate) = main_gate.take() {
+                        std::thread::spawn(move || {
+                            if gate.recv_timeout(crate::test_support::HANG).is_ok() {
+                                respond(&mut stream, &body).expect("send main response");
+                            }
+                        });
+                        continue;
+                    }
                     let result = if fail_utility && is_utility {
                         write!(
                             &mut stream,
@@ -330,6 +346,17 @@ fn run_prompt(
     application: &mut TrustedProjectApplication,
     prompt: &str,
 ) -> Result<ApplicationRunDone, ApplicationRunFailure> {
+    let (handle, receiver) = start_prompt(application, prompt);
+    handle.join().expect("run worker");
+    receiver
+        .recv_timeout(crate::test_support::HANG)
+        .expect("run completion within 60 seconds")
+}
+
+fn start_prompt(
+    application: &mut TrustedProjectApplication,
+    prompt: &str,
+) -> (RunHandle, mpsc::Receiver<ApplicationRunResult>) {
     let (completion, receiver) = mpsc::channel();
     let handle = application
         .start_run(ApplicationRunRequest {
@@ -340,10 +367,7 @@ fn run_prompt(
             completion,
         })
         .expect("start run");
-    handle.join().expect("run worker");
-    receiver
-        .recv_timeout(crate::test_support::HANG)
-        .expect("run completion within 60 seconds")
+    (handle, receiver)
 }
 
 fn load_events(storage_root: &std::path::Path) -> Vec<crate::session::event::SessionEvent> {
@@ -385,11 +409,11 @@ fn wait_for_title_event(
 fn autotitle_lands_for_thinking_companion_models() {
     let (storage_root, project_root) = crate::test_support::roots("ag6-title-thinking");
     // 1 个主请求 + 1 个标题请求。
-    let server = ThinkingServer::spawn(2);
+    let (release_main, main_gate) = mpsc::channel();
+    let server = ThinkingServer::spawn_with_main_gate(2, false, Some(main_gate));
     let mut application = mount_thinking(&storage_root, &project_root, &server);
 
-    let done = run_prompt(&mut application, "please fix the login handler race").expect("run");
-    assert!(done.output.contains("main run complete"));
+    let (run, completion) = start_prompt(&mut application, "please fix the login handler race");
 
     let title_event = wait_for_title_event(&storage_root);
     let title = title_event
@@ -400,7 +424,7 @@ fn autotitle_lands_for_thinking_companion_models() {
     assert_eq!(
         title.as_deref(),
         Some(ThinkingServer::TITLE_ANSWER),
-        "auto naming must summarize the conversation, not stay on the first input"
+        "first-prompt naming must commit before the main response is released"
     );
 
     // 命中的请求形态：无 thinking 对象、effort 收敛、预算充足。
@@ -435,18 +459,28 @@ fn autotitle_lands_for_thinking_companion_models() {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let summaries = application.list_sessions().expect("sessions");
-        if summaries
-            .iter()
-            .any(|summary| summary.title.as_deref() == Some(ThinkingServer::TITLE_ANSWER))
-        {
+        if summaries.iter().any(|summary| {
+            Some(&summary.id) == run.session_id()
+                && summary.title.as_deref() == Some(ThinkingServer::TITLE_ANSWER)
+                && summary.message_count == 1
+                && summary.turns == 0
+        }) {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "session listing must surface the generated title"
+            "the running first turn must be listed with its committed prompt and generated title"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+    assert!(!run.is_finished());
+    release_main.send(()).expect("release main response");
+    run.join().expect("run worker");
+    let done = completion
+        .recv_timeout(crate::test_support::HANG)
+        .unwrap()
+        .unwrap();
+    assert!(done.output.contains("main run complete"));
 
     // 冷重启：重开同一 storage root，标题仍在 journal 里。
     application.close().expect("close");

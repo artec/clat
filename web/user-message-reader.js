@@ -30,13 +30,19 @@ function createUserMessageReader() {
       active = null;
     });
     active = entry;
-    const content = dialog.querySelector('pre'); content.replaceChildren();
+    const content = dialog.querySelector('.user-reader-content');
     dialog.querySelector('[role=status]').textContent = '';
     if (match) {
+      // Search offsets refer to the original Markdown, including its syntax.
+      content.classList.remove('rich-text', 'is-rendered');
+      content.replaceChildren();
       content.append(document.createTextNode(entry.source.slice(0, match.offset)));
       const mark = el('mark', '', entry.source.slice(match.offset, match.offset + match.length));
       content.append(mark, document.createTextNode(entry.source.slice(match.offset + match.length)));
-    } else content.textContent = entry.source;
+    } else {
+      content.classList.add('rich-text');
+      renderMarkdown(content, entry.source);
+    }
     if (!dialog.open) dialog.showModal();
     content.scrollTop = 0;
     content.querySelector('mark')?.scrollIntoView({block:'center'});
@@ -71,7 +77,7 @@ function createUserReaderDialog(getActive, onClose) {
     dismiss.append(svgIcon('close')); CLATI18n.attribute(dismiss, 'aria-label', () => CLATI18n.msg('common.close'));
     dismiss.onclick = () => dialog.close();
     const header = el('header', 'user-reader-header'); header.append(title, dismiss);
-    const content = el('pre', 'user-reader-content'); content.tabIndex = 0;
+    const content = el('div', 'user-reader-content'); content.tabIndex = 0;
     CLATI18n.attribute(content, 'aria-label', () => text('title'));
     const copy = el('button', 'secondary', () => text('copy')); copy.type = 'button';
     const status = el('span'); status.setAttribute('role', 'status');

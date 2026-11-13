@@ -23,6 +23,13 @@
     const windowPort = {
       get innerWidth() { return window.innerWidth; },
       get __TAURI__() { return window.__TAURI__; },
+      get refreshDesktopAccessibility() {
+        if (!context.isActive() || typeof window.CLATDesktop?.refreshAccessibility !== 'function') return undefined;
+        return () => {
+          if (!context.isActive()) throw CLATI18n.msg('cua_settings.restart_unavailable');
+          return window.CLATDesktop.refreshAccessibility();
+        };
+      },
       getComputedStyle: window.getComputedStyle.bind(window),
       getSelection: () => context.isActive() ? window.getSelection() : null,
       setTimeout: window.setTimeout.bind(window),

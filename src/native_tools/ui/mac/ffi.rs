@@ -5,6 +5,7 @@ use std::ptr::{NonNull, null, null_mut};
 
 pub(super) type Raw = *const c_void;
 pub(super) const UTF8: u32 = 0x0800_0100;
+const AX_FAILURE: i32 = -25200; // kAXErrorFailure
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
@@ -288,9 +289,22 @@ impl Ax {
     }
 
     pub(super) fn attr(&self, name: &CStr, cancel: &CancelToken) -> Result<Option<Cf>> {
+        self.attr_with(name, cancel, absent)
+    }
+
+    pub(super) fn value(&self, purpose: ValuePurpose, cancel: &CancelToken) -> Result<Option<Cf>> {
+        self.attr_with(c"AXValue", cancel, |code| value_unavailable(purpose, code))
+    }
+
+    fn attr_with(
+        &self,
+        name: &CStr,
+        cancel: &CancelToken,
+        missing: impl FnOnce(i32) -> bool,
+    ) -> Result<Option<Cf>> {
         let name = Cf::key(name)?;
         self.call(cancel, |node| {
-            copy_optional(cancel, |out| unsafe {
+            copy_optional(cancel, missing, |out| unsafe {
                 AXUIElementCopyAttributeValue(node, name.raw(), out)
             })
         })
@@ -305,6 +319,26 @@ impl Ax {
         names: [&CStr; N],
         cancel: &CancelToken,
     ) -> Result<Vec<Option<Cf>>> {
+        self.attrs_with(names, cancel, |_, _| false)
+    }
+
+    pub(super) fn label_attrs(&self, cancel: &CancelToken) -> Result<(Vec<Option<Cf>>, bool)> {
+        let mut complete = true;
+        let values = self.attrs_with([c"AXTitle", c"AXDescription"], cancel, |name, code| {
+            // Finder images may reject AXDescription even when queried alone.
+            let unavailable = name == c"AXDescription" && code == AX_FAILURE;
+            complete &= !unavailable;
+            unavailable
+        })?;
+        Ok((values, complete))
+    }
+
+    fn attrs_with<const N: usize>(
+        &self,
+        names: [&CStr; N],
+        cancel: &CancelToken,
+        mut unavailable: impl FnMut(&CStr, i32) -> bool,
+    ) -> Result<Vec<Option<Cf>>> {
         let keys = names
             .iter()
             .map(|name| Cf::key(name))
@@ -314,14 +348,16 @@ impl Ax {
         let array = Cf::owned(unsafe { CFArrayCreate(null(), raw.as_ptr(), N as isize, null()) })
             .ok_or_else(|| error("NATIVE_ERROR"))?;
         let values = self.call(cancel, |node| {
-            copy_optional(cancel, |out| unsafe {
+            copy_optional(cancel, absent, |out| unsafe {
                 AXUIElementCopyMultipleAttributeValues(node, array.raw(), 0, out)
             })
         })?;
         let Some(values) = values else {
             return names
                 .into_iter()
-                .map(|name| self.attr(name, cancel))
+                .map(|name| {
+                    self.attr_with(name, cancel, |code| absent(code) || unavailable(name, code))
+                })
                 .collect();
         };
         let values = values.list(N)?;
@@ -330,12 +366,16 @@ impl Ax {
         }
         values
             .into_iter()
-            .map(|value| {
+            .zip(names)
+            .map(|(value, name)| {
                 if unsafe { CFGetTypeID(value.raw()) == CFNullGetTypeID() } {
                     return Ok(None);
                 }
                 match value.ax_error() {
-                    Some(code) if absent(code) => Ok(None),
+                    Some(code) if absent(code) || unavailable(name, code) => {
+                        active(cancel)?;
+                        Ok(None)
+                    }
                     Some(code) => status(code, cancel).map(|_| None),
                     None => Ok(Some(value)),
                 }
@@ -375,7 +415,7 @@ impl Ax {
         }
         let count = count.min((size - offset) as usize);
         let children = self.call(cancel, |node| {
-            copy_optional(cancel, |out| unsafe {
+            copy_optional(cancel, absent, |out| unsafe {
                 AXUIElementCopyAttributeValues(node, key.raw(), offset, count as isize, out)
             })
         })?;
@@ -386,21 +426,11 @@ impl Ax {
     }
 
     pub(super) fn actions(&self, cancel: &CancelToken) -> Result<Vec<String>> {
-        let actions = self.call(cancel, |node| {
-            copy_optional(cancel, |out| unsafe {
+        self.call(cancel, |node| {
+            copy_action_names(cancel, |out| unsafe {
                 AXUIElementCopyActionNames(node, out)
             })
-        })?;
-        actions.map_or_else(
-            || Ok(Vec::new()),
-            |value| {
-                Ok(value
-                    .list(64)?
-                    .iter()
-                    .filter_map(Cf::string::<65>)
-                    .collect())
-            },
-        )
+        })
     }
 
     pub(super) fn perform(&self, action: &CStr, cancel: &CancelToken) -> Result<()> {
@@ -417,11 +447,34 @@ impl Ax {
     }
 }
 
-fn copy_optional(cancel: &CancelToken, copy: impl FnOnce(*mut Raw) -> i32) -> Result<Option<Cf>> {
+fn copy_action_names(
+    cancel: &CancelToken,
+    copy: impl FnOnce(*mut Raw) -> i32,
+) -> Result<Vec<String>> {
+    // Finder and Safari splitters can return kAXErrorFailure for action
+    // enumeration while still exposing valid structure. With no confirmed
+    // actions, the node is readable but cannot pass action revalidation.
+    let Some(names) = copy_optional(cancel, |code| absent(code) || code == AX_FAILURE, copy)?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(names
+        .list(64)?
+        .iter()
+        .filter_map(Cf::string::<65>)
+        .collect())
+}
+
+fn copy_optional(
+    cancel: &CancelToken,
+    missing: impl FnOnce(i32) -> bool,
+    copy: impl FnOnce(*mut Raw) -> i32,
+) -> Result<Option<Cf>> {
     let mut raw = null_mut::<c_void>().cast_const();
     let code = copy(&mut raw);
     let value = Cf::owned(raw);
-    if absent(code) {
+    if missing(code) {
+        active(cancel)?;
         return Ok(None);
     }
     status(code, cancel)?;
@@ -430,6 +483,12 @@ fn copy_optional(cancel: &CancelToken, copy: impl FnOnce(*mut Raw) -> i32) -> Re
 
 fn absent(code: i32) -> bool {
     matches!(code, -25205 | -25206 | -25208 | -25212 | -25213)
+}
+
+fn value_unavailable(purpose: ValuePurpose, code: i32) -> bool {
+    // Finder windows and outlines can reject AXValue even when actionable.
+    // The repeat guard can compare the other observable states in that case.
+    absent(code) || (purpose == ValuePurpose::RepeatGuard && code == AX_FAILURE)
 }
 
 fn status(code: i32, cancel: &CancelToken) -> Result<()> {
@@ -443,4 +502,67 @@ fn status(code: i32, cancel: &CancelToken) -> Result<()> {
         -25211 => "PERMISSION_DENIED",
         _ => "NATIVE_ERROR",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cua_ax_value_failure_is_optional_only_for_repeat_guard() {
+        let cancel = CancelToken::new();
+        let read = |purpose, native| {
+            copy_optional(&cancel, |code| value_unavailable(purpose, code), |_| native)
+        };
+        assert!(
+            read(ValuePurpose::RepeatGuard, AX_FAILURE)
+                .unwrap()
+                .is_none()
+        );
+        for (purpose, native, expected) in [
+            (ValuePurpose::Read, AX_FAILURE, "NATIVE_ERROR"),
+            (ValuePurpose::RepeatGuard, -25202, "STALE_SNAPSHOT"),
+            (ValuePurpose::RepeatGuard, -25204, "NATIVE_BUSY"),
+            (ValuePurpose::RepeatGuard, -25211, "PERMISSION_DENIED"),
+        ] {
+            assert_eq!(
+                read(purpose, native).err().unwrap().recovery().unwrap()["code"],
+                expected
+            );
+        }
+        cancel.cancel();
+        assert_eq!(
+            read(ValuePurpose::RepeatGuard, AX_FAILURE)
+                .err()
+                .unwrap()
+                .recovery()
+                .unwrap()["code"],
+            "CANCELLED"
+        );
+    }
+
+    #[test]
+    fn cua_action_names_failure_is_local_to_action_enumeration() {
+        let cancel = CancelToken::new();
+        assert!(
+            copy_action_names(&cancel, |_| AX_FAILURE)
+                .unwrap()
+                .is_empty()
+        );
+        for (native, expected) in [
+            (-25202, "STALE_SNAPSHOT"),
+            (-25204, "NATIVE_BUSY"),
+            (-25211, "PERMISSION_DENIED"),
+        ] {
+            let error = copy_action_names(&cancel, |_| native).unwrap_err();
+            assert_eq!(error.recovery().unwrap()["code"], expected);
+        }
+        let error = copy_optional(&cancel, absent, |_| AX_FAILURE)
+            .err()
+            .unwrap();
+        assert_eq!(error.recovery().unwrap()["code"], "NATIVE_ERROR");
+        cancel.cancel();
+        let error = copy_action_names(&cancel, |_| AX_FAILURE).unwrap_err();
+        assert_eq!(error.recovery().unwrap()["code"], "CANCELLED");
+    }
 }

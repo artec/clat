@@ -4,6 +4,9 @@ use super::{
 };
 use std::path::Path;
 
+use crate::i18n::{PresentedText, UiMessage};
+use std::time::{Duration, Instant};
+
 pub enum BackendConnection {
     Missing,
     Connected(HostClient),
@@ -42,6 +45,53 @@ impl PackagedBackend {
     pub fn stop_host(&self) -> Result<(), String> {
         let root = crate::control_storage::sentinel::default_storage_root()?;
         self.stop_at(&root)
+    }
+
+    /// Restart the exact packaged Host the frontend queried. Reuse the
+    /// existing trusted project and wait for the old writer to release storage.
+    pub fn restart_for_accessibility(
+        &self,
+        current: &HostClient,
+    ) -> Result<HostClient, PresentedText> {
+        let _guard = self
+            .coordination
+            .lock()
+            .map_err(|_| "backend coordination unavailable")?;
+        let description = current.description()?;
+        let BuildMatchPolicy::Backend { fingerprint, .. } = &self.policy else {
+            return Err(UiMessage::new("cua_settings.restart_unavailable").into());
+        };
+        if description["build_fingerprint"].as_str() != Some(fingerprint.as_str()) {
+            return Err(UiMessage::new("cua_settings.restart_unavailable").into());
+        }
+        let info = current.call("workbench.info", &serde_json::json!({}))?;
+        let project = Path::new(
+            info["project"]["root"]
+                .as_str()
+                .ok_or("host omitted project root")?,
+        );
+        if Self::project_needs_trust_presented(project)? {
+            return Err(UiMessage::new("desktop.restore_needs_trust").into());
+        }
+        let reply = current
+            .call_with_receipt(
+                "host.restart_idle",
+                &serde_json::json!({
+                    "expected_instance_id": current.instance_id()
+                }),
+            )
+            .map_err(|error| {
+                if error.code.as_deref() == Some("busy") {
+                    UiMessage::new("cua_settings.restart_busy").into()
+                } else {
+                    error.presented()
+                }
+            })?;
+        if reply["stopping"] != true {
+            return Err(UiMessage::new("host.takeover_unacknowledged").into());
+        }
+        wait_for_writer_release(current.storage_root())?;
+        self.open_project_inner(project, false)
     }
 
     fn stop_at(&self, root: &Path) -> Result<(), String> {
@@ -123,6 +173,22 @@ impl PackagedBackend {
             return Ok(BackendConnection::Connected(client));
         }
         activate(project).map(BackendConnection::Connected)
+    }
+}
+
+fn wait_for_writer_release(root: &Path) -> Result<(), PresentedText> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if crate::session::root_lease::try_acquire(root)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(UiMessage::new("cua_settings.restart_timeout").into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 

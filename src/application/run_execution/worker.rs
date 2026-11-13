@@ -87,8 +87,20 @@ impl RunWorker {
         self.deps.slots.clear();
     }
     pub(super) fn run(mut self) {
+        if self.input.turn == 1 {
+            self.schedule_autotitle();
+        }
         let result = self.rounds();
         self.finish(result);
+    }
+    fn schedule_autotitle(&self) {
+        if let Some(sender) = &self.deps.title_sender {
+            let _ = sender.try_send(AutotitleJob {
+                session_id: self.input.session_id.clone(),
+                config: self.deps.config.clone(),
+                credentials: self.deps.credentials.clone(),
+            });
+        }
     }
     fn rounds(&mut self) -> ApplicationRunResult {
         loop {
@@ -307,16 +319,8 @@ impl RunWorker {
         } else {
             result
         };
-        if let Ok(done) = &result
-            && !done.cancelled
-            && self.deps.titler.is_some()
-            && let Some(sender) = &self.deps.title_sender
-        {
-            let _ = sender.try_send(AutotitleJob {
-                session_id: self.input.session_id.clone(),
-                config: self.deps.config.clone(),
-                credentials: self.deps.credentials.clone(),
-            });
+        if result.as_ref().is_ok_and(|done| !done.cancelled) {
+            self.schedule_autotitle();
         }
         let result = self.close_target(result);
         let result = result

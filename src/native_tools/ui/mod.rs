@@ -46,6 +46,12 @@ struct App {
 type Handle = Arc<dyn Any + Send + Sync>;
 type Result<T> = std::result::Result<T, ToolError>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValuePurpose {
+    Read,
+    RepeatGuard,
+}
+
 /// An observation uses one deadline across all native requests. Handles are
 /// opaque, retained by the backend and never supplied by a caller.
 trait Backend: Send + Sync {
@@ -64,7 +70,12 @@ trait Backend: Send + Sync {
     ) -> Result<Vec<Handle>>;
     fn menu_bar(&self, node: &Handle, call: &CancelToken) -> Result<Option<Handle>>;
     fn describe(&self, node: &Handle, app: &App, call: &CancelToken) -> Result<Node>;
-    fn value(&self, node: &Node, call: &CancelToken) -> Result<Option<String>>;
+    fn value(
+        &self,
+        node: &Node,
+        purpose: ValuePurpose,
+        call: &CancelToken,
+    ) -> Result<Option<String>>;
     fn window(&self, node: &Node, app: &App, call: &CancelToken) -> Result<Option<Handle>>;
     fn dispatch(&self, node: &Node, action: &str, call: &CancelToken) -> Result<()>;
     fn target_fence(&self, standalone_terminal: bool) -> TargetFence;

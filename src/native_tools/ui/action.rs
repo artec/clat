@@ -158,7 +158,9 @@ impl PreparedAction {
         let value = if self.observed.node.secure() {
             None
         } else {
-            service.backend.value(&self.observed.node, &call)?
+            service
+                .backend
+                .value(&self.observed.node, ValuePurpose::RepeatGuard, &call)?
         };
         let (node, window) = self.revalidate()?;
         let current = node.element(&self.app, service.backend.as_ref(), &window, value);

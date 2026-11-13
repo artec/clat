@@ -1,6 +1,20 @@
 const { test, expect } = require('@playwright/test');
 const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
 
+test('a fresh backend connection opens Computer Use before any manual reload', async ({ page }) => {
+  const entry = hostInfo('workbench');
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  // Desktop opens a new document with the new Host instance and this fragment.
+  await page.goto(`${entry.origin}/?host=fixture-replacement#/settings/computer-use`);
+  await expect(page.locator('#landing')).toBeHidden(LIVE);
+  await expect(page.locator('#conn-status')).toHaveAttribute('data-state', 'live', LIVE);
+  const settings = page.locator('[data-settings-panel="computer-use"]');
+  await expect(settings).toBeVisible();
+  await expect(settings.locator('[data-action="refresh-accessibility"]')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('the global extension retains an open file and can be controlled from every feature page', async ({ page }) => {
   const fs = require('node:fs'), path = require('node:path');
   await openWorkbench(page, hostInfo('workbench'));

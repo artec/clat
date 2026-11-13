@@ -50,7 +50,8 @@ async function welcome(page, busy = false, withSidebar = false, loading = false,
   const runtime = fs.readFileSync(path.resolve(ui,'../../web/i18n.js'),'utf8');
   const catalogs=Object.fromEntries(['en','zh-Hans','zh-Hant'].map(id=>[id,JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales',id+'.json'),'utf8'))]));
   const windowBar = fs.readFileSync(path.join(ui, 'window-bar.js'), 'utf8');
-  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,loading,platform,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${windowBar}\n${bridge}`});
+  const updates = ['update-controller.js', 'update-rail.js'].map(name => fs.readFileSync(path.join(ui, name), 'utf8')).join('\n');
+  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,loading,platform,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${windowBar}\n${updates}\n${bridge}`});
   await page.goto('http://desktop.test/index.html');
   if (loading) return;
   await page.locator('#settings').click();
@@ -326,4 +327,89 @@ test('native navigation respects unsaved work owned outside the visible composer
   const actions = await page.evaluate(() => window.desktopCalls.filter(call =>
     ['desktop_install_update','desktop_open_project'].includes(call.command)));
   expect(actions).toEqual([]);
+});
+
+test('refresh reconnects the backend only after requesting missing Accessibility access', async ({page}) => {
+  await welcome(page);
+  await page.addScriptTag({path: path.resolve(ui, '../../web/project-context.js')});
+  const settingsSource = fs.readFileSync(path.resolve(ui, '../../web/settings-pages.js'), 'utf8');
+  await page.evaluate(() => {
+    const settings = document.createElement('div');
+    settings.innerHTML = '<nav class="settings-nav"></nav><div class="settings-content"></div>';
+    document.body.append(settings);
+    const host = {active: null, changed() {}};
+    const context = CLATProjectContext.create(settings, 'default', host);
+    host.active = context;
+    Object.assign(window, {
+      computerUseContext: context,
+      activateComputerUseContext: active => { host.active = active ? context : null; },
+      dom: {'settings-dialog': settings},
+      currentSettingsCategory: 'computer-use',
+      accessGranted: true,
+      workspacePrefix: 'fixture',
+      state: {sessionId:'test',selectionGeneration:1,workbench:{builtin_availability:{'builtin.native_ui':{enabled:true}}}},
+      pageIsOpen: () => true,
+      rpc: async (_method, {command}) => command.endsWith('request-accessibility')
+        ? {message:'request accepted'}
+        : {accessibility_granted: window.accessGranted, consents: []},
+      el(tag, cls, label) {
+        const node = document.createElement(tag);
+        node.className = cls;
+        if (label) node.textContent = typeof label === 'function' ? label() : label;
+        return node;
+      },
+      settingsGroup(parent) {
+        const group = document.createElement('div');
+        const body = document.createElement('div');
+        group.append(body);
+        parent.append(group);
+        return body;
+      },
+    });
+  });
+  await page.addScriptTag({content: `{
+    const window = computerUseContext.window, document = computerUseContext.document;
+    ${settingsSource}
+    installComputerUseSettings();
+    dom['settings-dialog'].querySelector('[data-settings-panel="computer-use"]').hidden = false;
+    dom['settings-dialog'].dispatchEvent(new Event('clat:page-enter'));
+  }`});
+  await page.evaluate(() => document.getElementById('clat-desktop-settings').close());
+  const refresh = page.locator('[data-action="refresh-accessibility"]');
+  const request = page.locator('[data-action="request-accessibility"]');
+  const restarts = () => page.evaluate(() => window.desktopCalls.filter(c => c.command === 'desktop_refresh_accessibility').length);
+  await refresh.click();
+  await expect(refresh).toBeEnabled();
+  expect(await restarts()).toBe(0);
+  const status = page.locator('[data-settings-panel="computer-use"] [role="status"]');
+  await page.evaluate(() => {
+    window.accessGranted = false;
+    dom['settings-dialog'].dispatchEvent(new Event('clat:page-enter'));
+  });
+  await expect(request).toBeVisible();
+  await refresh.click();
+  await expect(refresh).toBeEnabled();
+  expect(await restarts()).toBe(0);
+  await request.click();
+  await expect(status).toHaveText('request accepted');
+  expect(await restarts()).toBe(0);
+  await page.evaluate(() => { activateComputerUseContext(false); });
+  await refresh.click();
+  await expect(status).toHaveText(await localized(page, 'cua_settings.restart_unavailable'));
+  expect(await restarts()).toBe(0);
+  await page.evaluate(() => { activateComputerUseContext(true); });
+  await page.evaluate(() => {
+    window.blockBackendStop = event => event.preventDefault();
+    window.addEventListener('clat-desktop-action-request', window.blockBackendStop);
+  });
+  await refresh.click();
+  await expect(status).toHaveText(await localized(page, 'desktop.draft_warning'));
+  expect(await restarts()).toBe(0);
+  await page.evaluate(() => window.removeEventListener('clat-desktop-action-request', window.blockBackendStop));
+  await refresh.click();
+  await expect.poll(restarts).toBe(1);
+  await expect(refresh).toBeEnabled();
+  await refresh.click();
+  await expect(refresh).toBeEnabled();
+  expect(await restarts()).toBe(1);
 });

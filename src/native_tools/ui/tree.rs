@@ -19,6 +19,8 @@ pub(super) struct TreeRequest {
     element_index: Option<usize>,
     cursor: Option<usize>,
     include_values: Option<bool>,
+    max_depth: Option<usize>,
+    page_size: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -43,6 +45,7 @@ pub(super) struct Walk {
     seen: HashMap<u64, Vec<Handle>>,
     visited: usize,
     lookahead: Option<Observed>,
+    depth_limit: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -80,6 +83,7 @@ impl Walk {
             seen: HashMap::new(),
             visited: 0,
             lookahead: None,
+            depth_limit: None,
         }
     }
 
@@ -150,7 +154,7 @@ impl Walk {
     }
 
     fn enqueue_children(&mut self, observed: &Observed) {
-        if observed.node.secure() {
+        if observed.node.secure() || self.depth_limit == Some(observed.depth) {
             return;
         }
         let work = |source| Work::Children {
@@ -222,11 +226,19 @@ impl Service {
             element_index,
             cursor,
             include_values,
+            max_depth,
+            page_size,
         } = request;
+        let page_size = page_size.unwrap_or(PAGE);
+        if !(1..=PAGE).contains(&page_size)
+            || max_depth.is_some_and(|depth| depth > MAX_DEPTH || cursor.is_some())
+        {
+            return Err(error("INVALID_ARGUMENTS"));
+        }
         if let (None, None, Some(id), None, Some(offset)) =
             (&pid, &window_index, &snapshot_id, &element_index, cursor)
         {
-            return self.next_page(run, id, offset, include_values);
+            return self.next_page(run, id, offset, include_values, page_size);
         }
         let (app, lease, selected) = match (pid, window_index, snapshot_id, element_index, cursor) {
             (Some(pid), window, None, None, None) => {
@@ -248,14 +260,16 @@ impl Service {
         self.recheck_app(&app)?;
         let (root, window) = self.scope(&app, selected, &call)?;
         let id = run.snapshot_id();
+        let mut walk = Walk::new(root, window);
+        walk.depth_limit = max_depth;
         let mut snapshot = Snapshot {
             app,
             lease,
             nodes: Vec::new(),
-            walk: Walk::new(root, window),
+            walk,
             values,
         };
-        let result = self.page(&id, &mut snapshot, &call)?;
+        let result = self.page(&id, &mut snapshot, page_size, &call)?;
         active(&snapshot.lease.cancel)?;
         run.data
             .try_lock()
@@ -295,7 +309,14 @@ impl Service {
         }
     }
 
-    fn next_page(&self, run: &Run, id: &str, offset: usize, values: Option<bool>) -> Result<Value> {
+    fn next_page(
+        &self,
+        run: &Run,
+        id: &str,
+        offset: usize,
+        values: Option<bool>,
+        page_size: usize,
+    ) -> Result<Value> {
         let mut state = run.data.try_lock().map_err(|_| error("NATIVE_BUSY"))?;
         let snapshot = state.get_mut(id).map_err(safety_error)?;
         if offset != snapshot.nodes.len()
@@ -314,15 +335,21 @@ impl Service {
         }
         self.recheck_app(&snapshot.app)?;
         let call = deadline(&snapshot.lease.cancel, READ_TIME);
-        self.page(id, snapshot, &call)
+        self.page(id, snapshot, page_size, &call)
     }
 
-    fn page(&self, id: &str, snapshot: &mut Snapshot, call: &CancelToken) -> Result<Value> {
+    fn page(
+        &self,
+        id: &str,
+        snapshot: &mut Snapshot,
+        page_size: usize,
+        call: &CancelToken,
+    ) -> Result<Value> {
         // Failed pages leave the old cursor intact.
         let mut walk = snapshot.walk.clone();
         let mut nodes = Vec::new();
         let mut rows = Vec::new();
-        for _ in 0..PAGE {
+        for _ in 0..page_size {
             let Some(observed) = walk.next(self.backend.as_ref(), &snapshot.app, call)? else {
                 break;
             };
@@ -330,7 +357,7 @@ impl Service {
             rows.push(self.row(index, &observed, snapshot, call)?);
             nodes.push(observed);
         }
-        if nodes.len() == PAGE {
+        if nodes.len() == page_size {
             walk.lookahead = walk.next(self.backend.as_ref(), &snapshot.app, call)?;
         }
         active(call)?;
@@ -360,7 +387,7 @@ impl Service {
             self.control
                 .ui_authority
                 .authorized(&self.control, &snapshot.lease, || Ok(()))?;
-            let value = self.backend.value(node, call)?;
+            let value = self.backend.value(node, ValuePurpose::Read, call)?;
             value_state = if value.is_some() {
                 "visible"
             } else {

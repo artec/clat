@@ -28,9 +28,11 @@ struct Facts {
     kind: ApplicationKind,
     title: String,
     value: String,
+    value_unavailable: bool,
     count: usize,
     current_window: usize,
     supported: bool,
+    label_complete: bool,
     role: String,
     resolved_node: usize,
     unknown_dispatch: bool,
@@ -45,9 +47,11 @@ impl Default for Facts {
             kind: ApplicationKind::Other,
             title: "Open folder".into(),
             value: "ordinary value".into(),
+            value_unavailable: false,
             count: 2,
             current_window: 1,
             supported: true,
+            label_complete: true,
             role: "AXButton".into(),
             resolved_node: 2,
             unknown_dispatch: false,
@@ -142,14 +146,19 @@ impl Backend for Fake {
             } else {
                 Vec::new()
             },
-            label_complete: true,
+            label_complete: index != 2 || facts.label_complete,
             enabled: Some(true),
             focused: Some(index == 2),
             selected: None,
             expanded: None,
         })
     }
-    fn value(&self, node: &Node, cancel: &CancelToken) -> Result<Option<String>> {
+    fn value(
+        &self,
+        node: &Node,
+        purpose: ValuePurpose,
+        cancel: &CancelToken,
+    ) -> Result<Option<String>> {
         assert!(
             !node.secure(),
             "a secure field reached the platform value reader"
@@ -159,7 +168,14 @@ impl Backend for Fake {
         if let Some(hook) = hook {
             hook(cancel);
         }
-        Ok((index(&node.handle) == 2).then(|| self.facts.lock().unwrap().value.clone()))
+        let facts = self.facts.lock().unwrap();
+        if index(&node.handle) == 2 && facts.value_unavailable {
+            return match purpose {
+                ValuePurpose::Read => Err(error("NATIVE_ERROR")),
+                ValuePurpose::RepeatGuard => Ok(None),
+            };
+        }
+        Ok((index(&node.handle) == 2).then(|| facts.value.clone()))
     }
     fn window(&self, node: &Node, _: &App, _: &CancelToken) -> Result<Option<Handle>> {
         Ok((index(&node.handle) != 0)
@@ -252,6 +268,18 @@ impl Fixture {
             access,
             interactive.then_some(self.asker.as_ref() as &dyn UserAsker),
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn live_read_only() -> Self {
+        let mut f = Self::new(false);
+        f.service = Arc::new(Service::new(
+            f.service.control.clone(),
+            f.service.asker.clone(),
+            Arc::new(mac::Mac),
+        ));
+        f.begin("live-read", false, ToolAccessPolicy::all());
+        f
     }
 
     fn read(&self, operation: Operation, arguments: Value) -> Result<Value> {
@@ -356,6 +384,149 @@ fn cua_tree_pages_preserve_indices_and_allow_scoped_reads() {
         f.read(Operation::Tree, json!({"snapshot_id":id,"element_index":2})),
         "STALE_SNAPSHOT",
     );
+}
+
+#[test]
+fn cua_tree_overview_pages_keep_scope_and_actionable_indices() {
+    let f = Fixture::new(false);
+    f.fake.facts.lock().unwrap().count = 249;
+    for request in [
+        json!({"pid":42,"page_size":0}),
+        json!({"pid":42,"page_size":101}),
+        json!({"pid":42,"max_depth":65}),
+    ] {
+        code(f.read(Operation::Tree, request), "INVALID_ARGUMENTS");
+    }
+
+    let app = f
+        .read(
+            Operation::Tree,
+            json!({"pid":42,"max_depth":1,"page_size":1}),
+        )
+        .unwrap();
+    assert_eq!(app["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(app["next_cursor"], 1);
+    let continuation = json!({"snapshot_id":app["snapshot_id"],"cursor":app["next_cursor"]});
+    let mut changed_scope = continuation.clone();
+    changed_scope["max_depth"] = json!(2);
+    code(f.read(Operation::Tree, changed_scope), "INVALID_ARGUMENTS");
+    let window = f.read(Operation::Tree, continuation).unwrap();
+    assert_eq!(window["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(window["nodes"][0]["role"], "AXWindow");
+    assert_eq!(window["nodes"][0]["parent_index"], 0);
+    assert_eq!(window["has_more"], false);
+
+    let subtree = f
+        .read(
+            Operation::Tree,
+            json!({
+                "snapshot_id":app["snapshot_id"],"element_index":window["nodes"][0]["index"],
+                "max_depth":1,"page_size":2
+            }),
+        )
+        .unwrap();
+    let control = &subtree["nodes"][1];
+    assert_eq!(control["role"], "AXButton");
+    assert_eq!(control["title"], "Open folder");
+    assert_eq!(control["parent_index"], 0);
+    assert_eq!(subtree["next_cursor"], 2);
+    assert_eq!(f.fake.values.load(Ordering::Relaxed), 0);
+    assert_eq!(f.asker.calls.load(Ordering::Relaxed), 0);
+    let dispatched = f
+        .action(
+            json!({"snapshot_id":subtree["snapshot_id"],"element_index":control["index"],"action":"press"}),
+            PermissionMode::ReadOnly,
+            allow,
+        )
+        .unwrap();
+    assert_eq!(dispatched["dispatched"], true);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires Accessibility access and CLAT_CUA_TEST_PIDS for open windows with splitters"]
+fn cua_live_macos_splitter_does_not_abort_tree_read() {
+    let f = Fixture::live_read_only();
+    let input = std::env::var("CLAT_CUA_TEST_PIDS").unwrap();
+    let pids: Vec<i32> = input
+        .split_whitespace()
+        .map(|pid| pid.parse().unwrap())
+        .collect();
+    assert!(!pids.is_empty());
+    for pid in pids {
+        for arguments in [json!({"pid":pid}), json!({"pid":pid,"window_index":0})] {
+            let page = f
+                .read(Operation::Tree, arguments.clone())
+                .unwrap_or_else(|err| panic!("{arguments}: {err}"));
+            let nodes = page["nodes"].as_array().unwrap();
+            assert!(
+                nodes.iter().any(|node| node["role"] == "AXSplitter"),
+                "{arguments}: no splitter in the first page"
+            );
+            if page["has_more"] == true {
+                let next = f
+                    .read(
+                        Operation::Tree,
+                        json!({
+                            "snapshot_id":page["snapshot_id"], "cursor":page["next_cursor"]
+                        }),
+                    )
+                    .unwrap_or_else(|err| panic!("{arguments} continuation: {err}"));
+                assert_eq!(next["nodes"][0]["index"], page["next_cursor"]);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires Accessibility access and CLAT_CUA_FINDER_PID with a Finder window open"]
+fn cua_live_macos_finder_action_value_is_optional() {
+    let f = Fixture::live_read_only();
+    let pid: i32 = std::env::var("CLAT_CUA_FINDER_PID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let page = f
+        .read(Operation::Tree, json!({"pid":pid,"window_index":0}))
+        .unwrap();
+    let run = f.service.run(&f.cancel).unwrap();
+    let snapshot = page["snapshot_id"].as_str().unwrap();
+    let backend = f.service.backend.as_ref();
+    for (role, action) in [("AXWindow", "raise"), ("AXOutline", "show_menu")] {
+        let found = page["nodes"].as_array().unwrap().iter().any(|row| {
+            if row["role"] != role
+                || !row["actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a == action)
+            {
+                return false;
+            }
+            let index = row["index"].as_u64().unwrap() as usize;
+            let (app, lease, observed) = tree::get_observation(&run, snapshot, index).unwrap();
+            let call = deadline(&lease.cancel, Duration::from_secs(2));
+            let Err(err) = backend.value(&observed.node, ValuePurpose::Read, &call) else {
+                return false;
+            };
+            assert_eq!(err.recovery().unwrap()["code"], "NATIVE_ERROR");
+            assert!(
+                backend
+                    .value(&observed.node, ValuePurpose::RepeatGuard, &call)
+                    .unwrap()
+                    .is_none()
+            );
+            let live = backend
+                .describe(&observed.node.handle, &app, &call)
+                .unwrap();
+            assert!(live.actions.iter().any(|item| item == action));
+            let window = backend.window(&live, &app, &call).unwrap().unwrap();
+            assert!(backend.same(observed.window.as_ref().unwrap(), &window));
+            true
+        });
+        assert!(found, "no {role} with {action} and unavailable AXValue");
+    }
 }
 
 #[test]
@@ -472,13 +643,14 @@ fn cua_protected_and_shared_browser_targets_are_fenced_before_asking() {
 #[test]
 fn cua_action_revalidates_pid_window_role_title_and_action_after_approval() {
     type Mutation = (fn(&mut Facts), &'static str);
-    let mutations: [Mutation; 6] = [
+    let mutations: [Mutation; 7] = [
         (|facts| facts.start += 1, "STALE_APP"),
         (|facts| facts.current_window += 1, "STALE_SNAPSHOT"),
         (|facts| facts.title = "Delete".into(), "STALE_SNAPSHOT"),
         (|facts| facts.role = "AXLink".into(), "STALE_SNAPSHOT"),
         (|facts| facts.resolved_node += 1, "STALE_SNAPSHOT"),
         (|facts| facts.supported = false, "UNSUPPORTED_ACTION"),
+        (|facts| facts.label_complete = false, "STALE_SNAPSHOT"),
     ];
     for (mutate, expected) in mutations {
         let f = Fixture::new(false);
@@ -624,6 +796,33 @@ fn cua_action_fuse_and_dispatch_budget_are_per_run() {
     f.action(f.target(), PermissionMode::FullAccess, allow)
         .unwrap();
     assert_eq!(f.dispatches(), 21);
+}
+
+#[test]
+fn cua_action_without_value_still_dispatches_and_trips_repeat_guard() {
+    let f = Fixture::new(false);
+    f.fake.facts.lock().unwrap().value_unavailable = true;
+    let target = f.target();
+    for _ in 0..3 {
+        let result = f
+            .action(target.clone(), PermissionMode::ReadOnly, allow)
+            .unwrap();
+        assert_eq!(result["dispatched"], true);
+        assert_eq!(result["verified"], false);
+    }
+    code(
+        f.action(target, PermissionMode::ReadOnly, allow),
+        "UNCHANGED",
+    );
+    assert_eq!(f.dispatches(), 3);
+    code(
+        f.read(
+            Operation::Wait,
+            json!({"pid":42,"role":"AXButton",
+            "condition":"value_equals","value":"ordinary value"}),
+        ),
+        "NATIVE_ERROR",
+    );
 }
 
 #[test]

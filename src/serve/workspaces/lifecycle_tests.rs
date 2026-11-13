@@ -147,6 +147,32 @@ fn idle_host_accepts_instance_fenced_upgrade_takeover() {
 }
 
 #[test]
+fn accessibility_restart_requires_current_idle_host() {
+    let (host, storage, project) = fixture("accessibility-restart");
+    let method = "host.restart_idle";
+    let bad = host
+        .dispatch(method, &json!({"expected_instance_id":"old"}))
+        .unwrap_err();
+    assert_eq!(bad.code, super::super::protocol::ErrorCode::Busy);
+    assert!(!host.shutdown.load(Ordering::SeqCst));
+    let route = host.route("default").unwrap();
+    let permit = route.try_upload_permit().unwrap();
+    let request = json!({"expected_instance_id":host.instance});
+    let busy = host.dispatch(method, &request).unwrap_err();
+    assert_eq!(busy.code, super::super::protocol::ErrorCode::Busy);
+    assert!(!route.is_shutting_down());
+    drop(permit);
+    assert_eq!(host.dispatch(method, &request).unwrap()["stopping"], true);
+    assert!(host.shutdown.load(Ordering::SeqCst));
+    assert!(route.try_upload_permit().is_none());
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
 fn same_or_older_version_cannot_request_automatic_takeover() {
     let (host, storage, project) = fixture("non-newer-upgrade-takeover");
     for replacement in [env!("CARGO_PKG_VERSION"), "0.0.0"] {

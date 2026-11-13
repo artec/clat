@@ -280,6 +280,7 @@ function computerUseSettingsPanel(page, category) {
   const access = el('strong');
   const hint = el('small', '', () => t('system_hint'));
   const reload = el('button', 'secondary', () => t('refresh'));
+  reload.dataset.action = 'refresh-accessibility';
   const requestAccess = el('button', 'primary', () => t('request_accessibility'));
   const actions = el('div', 'settings-row-actions');
   reload.type = 'button';
@@ -340,6 +341,9 @@ function installComputerUseSettings() {
   const selection = () => JSON.stringify([workspacePrefix, state.sessionId, state.selectionGeneration]);
   let generation = 0;
   let shownFor = null;
+  let requestedAccess = false;
+  let restarting = false;
+  let checkingManually = false;
   const command = (args = '') => rpc('command.run', {
     command: '/ui-consents' + args, expected_selection_generation: state.selectionGeneration,
   });
@@ -347,6 +351,7 @@ function installComputerUseSettings() {
   const setAccess = key => {
     requestAccess.hidden = key !== 'not_granted';
     CLATI18n.bind(access, 'textContent', () => t(key));
+    CLATI18n.bind(hint, 'textContent', () => t(key === 'not_granted' ? 'access_recovery' : 'system_hint'));
   };
   async function change(args, target, success) {
     const current = () => active() && target === selection();
@@ -358,8 +363,20 @@ function installComputerUseSettings() {
       if (current()) showStatus(() => CLATI18n.present(error.presentation, error.message));
     }
   }
-  async function refresh(success = '') {
-    if (!active()) return;
+  async function restartAfterGrant(restart) {
+    restarting = true;
+    requestAccess.disabled = true;
+    showStatus(() => t('restarting'));
+    try {
+      await restart();
+      requestedAccess = false;
+    } finally {
+      restarting = false;
+      requestAccess.disabled = false;
+    }
+  }
+  async function refresh(success = '', manual = false) {
+    if (!active() || restarting || (!manual && checkingManually)) return;
     const request = ++generation, target = selection();
     const current = () => request === generation && active() && target === selection();
     if (shownFor !== target) {
@@ -379,6 +396,7 @@ function installComputerUseSettings() {
     if (consentsSection.hidden) setAccess('loading');
     reload.disabled = true;
     showStatus('');
+    let restartNeeded = false;
     try {
       const view = await command();
       if (!current()) return;
@@ -387,22 +405,42 @@ function installComputerUseSettings() {
       renderComputerUseConsents(list, view, (entry, success) =>
         change(` revoke ${entry.scope} ${entry.app_id}`, target, () => success));
       consentsSection.hidden = !Array.isArray(view.consents);
-      showStatus(success);
+      if (view.accessibility_granted === true) requestedAccess = false;
+      restartNeeded = manual && requestedAccess && view.accessibility_granted === false
+        && Boolean(window.__TAURI__);
+      if (restartNeeded) {
+        const restart = window.refreshDesktopAccessibility;
+        if (!restart) throw CLATI18n.msg('cua_settings.restart_unavailable');
+        await restartAfterGrant(restart);
+        return;
+      }
+      showStatus(success || (manual && view.accessibility_granted === false ? () => t('access_still_missing') : ''));
     } catch (error) {
       if (current()) {
-        setAccess('unknown');
-        showStatus(error.message);
+        if (!restartNeeded) setAccess('unknown');
+        showStatus(() => CLATI18n.present(error, error.message || String(error)));
       }
     } finally {
       if (current()) reload.disabled = false;
     }
   }
   nav.onclick = () => { selectSettingsCategory(category); void refresh(); };
-  reload.onclick = () => void refresh();
+  reload.onclick = async () => {
+    checkingManually = true;
+    try { await refresh('', true); }
+    finally { checkingManually = false; }
+  };
   requestAccess.onclick = async () => {
     requestAccess.disabled = true;
     try {
-      await change(' request-accessibility', selection(), reply => CLATI18n.present(reply.presentation, reply.message));
+      const target = selection();
+      const reply = await command(' request-accessibility');
+      if (active() && target === selection()) {
+        requestedAccess = true;
+        await refresh(() => CLATI18n.present(reply.presentation, reply.message));
+      }
+    } catch (error) {
+      if (active()) showStatus(() => CLATI18n.present(error.presentation, error.message));
     } finally { requestAccess.disabled = false; }
   };
   page.addEventListener('clat:page-enter', () => void refresh());

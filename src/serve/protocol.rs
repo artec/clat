@@ -76,6 +76,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "host.describe",
     "host.runtime_status",
     "host.stop",
+    "host.restart_idle",
     "host.takeover",
     "workspace.list",
     "workspace.directory",

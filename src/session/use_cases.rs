@@ -403,20 +403,20 @@ impl SessionService {
             let (title, message_count, turns, last_activity) = match &record {
                 Some(record) => {
                     let stats = &record.rows.get("stats").map(|row| &row.val);
-                    let title = record
-                        .rows
-                        .get("title")
-                        .and_then(crate::session::projection::checkpoint_title);
+                    let turns = stats
+                        .and_then(|stats| stats.get("turns"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let title = record.rows.get("title").and_then(|row| {
+                        crate::session::projection::checkpoint_title(row, turns > 0)
+                    });
                     (
                         title,
                         stats
                             .and_then(|stats| stats.get("messages"))
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
-                        stats
-                            .and_then(|stats| stats.get("turns"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                        turns,
                         stats
                             .and_then(|stats| stats.get("lastActivityMs"))
                             .and_then(Value::as_i64)

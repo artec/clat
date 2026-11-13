@@ -45,17 +45,45 @@ function thinkingLevelLabel(level) {
   return ['minimal','low','medium','high','xhigh','max'].includes(level)
     ? CLATI18n.msg('thinking_level.'+level) : level;
 }
+
+function bindThinkingTickHover(slider, ticks) {
+  const control = slider.parentElement;
+  function hover(tick) {
+    const previous = ticks.querySelector('[data-hovered]');
+    if (previous === tick) return;
+    previous?.removeAttribute('data-hovered');
+    if (tick) tick.dataset.hovered = '';
+  }
+  control.onpointermove = (event) => {
+    if (event.pointerType === 'touch' || slider.disabled && !('saving' in slider.dataset)) return hover(null);
+    const { left, top, width, height } = ticks.getBoundingClientRect();
+    const intervals = ticks.childElementCount - 1;
+    if (intervals < 1 || width <= 0) return hover(null);
+    const offset = event.clientX - left;
+    const step = width / intervals;
+    const index = Math.round(offset / step);
+    const distance = Math.hypot(offset - index * step, event.clientY - (top + height / 2));
+    hover(distance <= 9 ? ticks.children[index] : null);
+  };
+  control.onpointerleave = control.onpointercancel = () => hover(null);
+}
+
 function renderThinkingSlider(current) {
   const slider=document.getElementById('model-thinking'),output=document.getElementById('model-thinking-value');
   const ticks=document.getElementById('model-thinking-ticks'),levels=current.thinking_levels||[];
-  slider.dataset.levels=JSON.stringify(levels);slider.dataset.adjustable=String(levels.length>1);
+  const serialized = JSON.stringify(levels);
+  if (slider.dataset.levels !== serialized) {
+    ticks.replaceChildren(...levels.map((level,index)=>{
+      const tick=el('span');
+      tick.style.left=((index/(levels.length-1)||0)*100)+'%';return tick;
+    }));
+    slider.dataset.levels = serialized;
+    bindThinkingTickHover(slider, ticks);
+  }
+  slider.dataset.adjustable=String(levels.length>1);
   slider.max=String(Math.max(0,levels.length-1));
   slider.value=String(Math.max(0,levels.indexOf(current.thinking_level)));
   slider.disabled=levels.length<2||state.modelSelectionPending||state.runActive||state.switching||state.compactionActive;
-  ticks.replaceChildren(...levels.map((level,index)=>{
-    const tick=el('span','',()=>thinkingLevelLabel(level));
-    tick.style.left=((index/(levels.length-1)||0)*100)+'%';return tick;
-  }));
   function paint(preview) {
     const level=levels[Number(slider.value)];
     CLATI18n.bind(output,'textContent',()=>!levels.length?CLATI18n.msg('web.not_adjustable')

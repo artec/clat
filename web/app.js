@@ -67,7 +67,11 @@ function localMarkdownLink(label, destination) {
     const path = localMarkdownPath(destination, state.workbench?.project?.root);
     if (!path) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
     editorPopup([
-      {key:'open_file',icon:'open',disabled:!path.relative,run:()=>{document.getElementById('files-open').click();return developmentEditor?.openFile(path.relative,{fixed:true});}},
+      {key:'open_file',icon:'open',disabled:!path.relative,run:()=>{
+        node.closest('.user-message-reader[open]')?.close();
+        document.getElementById('files-open').click();
+        return developmentEditor?.openFile(path.relative,{fixed:true});
+      }},
       {key:'copy_absolute_path',icon:'copy',run:()=>navigator.clipboard.writeText(path.absolute)},
       {key:'copy_path',icon:'copy',disabled:!path.relative,run:()=>navigator.clipboard.writeText(path.relative)},
     ],node);
@@ -338,7 +342,7 @@ const ICON_PATHS = {
   agent: ['M6 4h12v4h4v4h-4v4h4v4h-4v-4h-4v4h-4v-4h-4v4H2v-4h4v-4H2V8h4V4z M6.2 8.2h11.6v3.8h-3.8v4H10.2v-4H6.2z'],
   tool: ['M20.5 6.5a5.5 5.5 0 0 1-7.4 6.7l-7 7a2 2 0 0 1-2.8-2.8l7-7a5.5 5.5 0 0 1 6.7-7.4l-3.5 3.5 3.5 3.5Z'],
   tools: ['M21 7.5a6 6 0 0 1-8.1 5.6l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8A6 6 0 0 1 16.5 3L13 6.5l4.5 4.5L21 7.5Z'],
-  trace: ['M5 17 9 9l4 6 3-10 3 12', 'M4 20h16'],
+  trace: ['M5 17 9 8l4 7 3-12 3 14', 'M4 21h16'],
   info: ['M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z', 'M12 7h.01M10 11h2v6m-2 0h4'],
   check: ['m5 12 4 4L19 6'],
   wasm: ['M5 5h14v14H5z', 'M9 9h6v6H9z'],
@@ -489,6 +493,7 @@ const state = {
   marketLoaded: false,
   marketFallback: false,
   workbenchRequest: 0,
+  sessionsRequest: 0,
   composerGeneration: 0,
   desktopUpdateLocked: false,
   suggestionRequest: 0,
@@ -953,6 +958,7 @@ function handleLive(event) {
     case 'run_started':
       conversationRounds.begin();
       void refreshWorkbench();
+      void refreshSessions();
       liveMessageBase=state.history.outline.at(-1)?.seq ?? -1; liveMessageNodes=[];
       resetOptimisticSteering();
       invalidateSuggestion(); clearRoundFollowups();
@@ -2651,10 +2657,12 @@ function updateRunDetail(serverActive) {
 }
 
 async function refreshSessions() {
-  const owner = [workspacePrefix, state.stream, state.selectionGeneration];
+  const request = ++state.sessionsRequest;
+  const stream = state.stream;
+  const selection = state.selectionGeneration;
   try {
     const value = await rpc('session.list', {});
-    if (!owner.every((v,i) => v === [workspacePrefix, state.stream, state.selectionGeneration][i])) return;
+    if (request !== state.sessionsRequest || stream !== state.stream || selection !== state.selectionGeneration) return;
     state.sessions = value.sessions || [];
     renderSessions();
   } catch (error) {
@@ -3575,18 +3583,21 @@ document.getElementById('inspector-context').addEventListener('click', async (ev
   }
 });
 document.getElementById('model-thinking').addEventListener('change', async (event) => {
-  const value = JSON.parse(event.target.dataset.levels||'[]')[Number(event.target.value)];
-  if (!value || event.target.disabled || state.modelSelectionPending || state.runActive || state.switching || state.compactionActive) return;
+  const slider = event.currentTarget;
+  const value = JSON.parse(slider.dataset.levels||'[]')[Number(slider.value)];
+  if (!value || slider.disabled || state.modelSelectionPending || state.runActive || state.switching || state.compactionActive) return;
   state.modelSelectionPending = true;
-  event.target.disabled = true;
+  slider.dataset.saving = '';
+  slider.disabled = true;
   try {
     await rpc('model.overrides.set', { field: 'thinking_level', state: 'set', value });
     await refreshWorkbench();
   } catch (error) { CLATI18n.bind(dom['model-picker-error'], "textContent", () => error.message); }
   finally {
-    state.modelSelectionPending = false;
     await refreshModelSettings();
+    state.modelSelectionPending = false;
     syncInteractionControls();
+    delete slider.dataset.saving;
   }
 });
 dom['model-picker-trigger'].addEventListener('click', () => modelPickerPopover?.toggle());
@@ -4333,7 +4344,7 @@ installConversationFind();
   installNavigationHelp();
   installTaskReview();
   installWorkbenchTools();
-  installWorkbenchShell();
+  const restoreWorkbenchPage = installWorkbenchShell();
   installNavigationPages();
   installDevelopmentSettings();
   installSettingsLayout();
@@ -4408,6 +4419,7 @@ function enterWorkbench() {
   state.token = '';
   hide(dom.landing);
   show(dom.app);
+  restoreWorkbenchPage();
   connect();
 }
 

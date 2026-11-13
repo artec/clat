@@ -16,7 +16,7 @@ a scrollable region reveals its thumb, which hides after about 1.2 seconds of
 inactivity. Hovering or dragging a custom thumb keeps it visible. High-contrast
 mode keeps scrollbars visible. Visual appearance and interaction are manually reviewed.
 
-The model picker uses a discrete thinking-intensity slider with a capsule track, an oversized round thumb and in-track stop dots aligned to its travel. Track fill follows the active CLAT theme; the current intensity appears above the track. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Selection is locked during a run and while saving.
+The model picker uses a discrete thinking-intensity slider with a capsule track, an oversized round thumb and in-track stop dots aligned to its travel. Track fill follows the active CLAT theme; the current intensity appears above the track. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. The entire slider shows a hand cursor when adjustable, and hovering over a stop enlarges its dot. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Selection is locked during a run and while saving, and the slider keeps its normal colors during the save.
 
 The composer toolbar groups add, permission, plan, context usage, model/thinking,
 pending messages and send/stop controls. Toolbar icons share a centered control
@@ -71,6 +71,9 @@ button opens the desktop project picker (or project settings in the browser),
 and its archive toggle shows archived conversations across the project list.
 Select **Show more** under a project to reveal six more conversations at a time.
 The button disappears when all conversations in that list are visible.
+A new conversation appears with a running indicator when its first turn starts.
+It shows an untitled label until the automatic title arrives during the run.
+Automatic titles omit Markdown heading markers, so they read as plain text.
 Double-clicking a project row opens the project files work area — the same
 entry as the work area's Project files.
 
@@ -111,7 +114,7 @@ Loading earlier messages preserves the current reading position without a scroll
 
 **History timeline** opens the shared Desktop and Web/PWA execution workbench. Recent sessions and cross-session results stay on the left. The timeline and collapsible turns show execution order, and the right pane loads details for the selected record. On narrow windows, details open in a drawer. Use **Refresh snapshot** to read newly committed records. See [history timeline](history.md) for search scope, precise navigation and the available record details.
 
-Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening the complete original text in a centered, scrollable reader with a blurred backdrop and Copy full text. Escape, Close or clicking the backdrop dismisses it without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the reader and highlight the match; precise message navigation opens the reader as well. Web and Desktop share this behavior.
+Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening a centered Markdown reader with a blurred backdrop. The reader fits its content up to the window height limit, then scrolls the message while keeping the header and Copy full text button visible. Copy full text copies the original message, including Markdown syntax. Escape, Close or clicking the backdrop dismisses the reader without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the original text and highlight the exact match. Precise message navigation opens the Markdown reader. Web and Desktop share this behavior.
 
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.

@@ -120,6 +120,73 @@ pub async fn desktop_retry_project(
 }
 
 #[tauri::command]
+pub async fn desktop_refresh_accessibility(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), UiMessage> {
+    guard(&window)?;
+    let address = window.url().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || refresh_accessibility(&app, address.as_str()))
+        .await
+        .map_err(|_| UiMessage::new("desktop.project_worker_failed"))?
+        .map_err(|error| error.message())
+}
+
+fn refresh_accessibility(
+    app: &tauri::AppHandle,
+    address: &str,
+) -> Result<(), clat_core::client_ports::presentation::PresentedText> {
+    let state = app.state::<Desktop>();
+    let _connection = state
+        .connection
+        .lock()
+        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+    if !cfg!(target_os = "macos")
+        || state
+            .updates
+            .lock()
+            .map_err(|_| UiMessage::new("desktop.update_state_unavailable"))?
+            .busy()
+    {
+        return Err(UiMessage::new("cua_settings.restart_unavailable").into());
+    }
+    let current = state
+        .host
+        .lock()
+        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?
+        .as_ref()
+        .ok_or_else(|| UiMessage::new("desktop.host_unverified"))?
+        .for_browser_url(address)?;
+    let backend = state
+        .backend
+        .as_ref()
+        .ok_or_else(|| UiMessage::new("desktop.backend_missing"))?;
+    crate::startup::save_project(app, &current)?;
+    let client = match backend.restart_for_accessibility(&current) {
+        Ok(client) => client,
+        Err(error) => {
+            // If startup failed after the old Host stopped, present the saved
+            // project retry on the welcome screen. Busy Hosts stay attached.
+            if current.description().is_err() {
+                state
+                    .host
+                    .lock()
+                    .map_err(|_| UiMessage::new("desktop.state_unavailable"))?
+                    .take();
+                *state
+                    .connection_error
+                    .lock()
+                    .map_err(|_| UiMessage::new("desktop.state_unavailable"))? =
+                    Some(error.clone());
+                crate::app::welcome(app)?;
+            }
+            return Err(error);
+        }
+    };
+    crate::app::connected_at(app, client, Some("/settings/computer-use")).map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn desktop_check_update(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

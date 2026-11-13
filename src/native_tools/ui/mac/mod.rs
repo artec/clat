@@ -88,7 +88,11 @@ impl Backend for Mac {
             [c"AXEnabled", c"AXFocused", c"AXSelected", c"AXExpanded"],
             call,
         )?;
-        let available = reference.actions(call)?;
+        let available = if label_complete {
+            reference.actions(call)?
+        } else {
+            Vec::new()
+        };
         Ok(Node {
             handle: node.clone(),
             role,
@@ -112,12 +116,17 @@ impl Backend for Mac {
         })
     }
 
-    fn value(&self, node: &Node, call: &CancelToken) -> Result<Option<String>> {
+    fn value(
+        &self,
+        node: &Node,
+        purpose: ValuePurpose,
+        call: &CancelToken,
+    ) -> Result<Option<String>> {
         if node.secure() || !verified_nonsecure_ancestry(&node.handle, call)? {
             return Ok(None);
         }
         Ok(ax(&node.handle)
-            .attr(c"AXValue", call)?
+            .value(purpose, call)?
             .as_ref()
             .and_then(Cf::scalar))
     }
@@ -159,11 +168,12 @@ fn secure(role: &str, subrole: Option<&str>) -> bool {
 }
 
 fn labels(node: &Handle, call: &CancelToken) -> Result<(String, Option<String>, bool)> {
-    let attrs = ax(node).attrs([c"AXTitle", c"AXDescription"], call)?;
+    let (attrs, complete) = ax(node).label_attrs(call)?;
     let title = text::<385>(&attrs[0]);
     let description = text::<385>(&attrs[1]);
-    let complete =
-        (attrs[0].is_none() || title.is_some()) && (attrs[1].is_none() || description.is_some());
+    let complete = complete
+        && (attrs[0].is_none() || title.is_some())
+        && (attrs[1].is_none() || description.is_some());
     Ok((title.unwrap_or_default(), description, complete))
 }
 

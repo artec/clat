@@ -1321,7 +1321,7 @@ fn explicit_session_title<'a>(
 
 /// The session list reads checkpoints without restoring or replaying the log.
 /// Re-derive fallback previews even when the cached display string is old.
-pub(crate) fn checkpoint_title(row: &CheckpointRow) -> Option<String> {
+pub(crate) fn checkpoint_title(row: &CheckpointRow, allow_preview: bool) -> Option<String> {
     let state = &row.val;
     let stored = state
         .get("explicitTitle")
@@ -1333,7 +1333,11 @@ pub(crate) fn checkpoint_title(row: &CheckpointRow) -> Option<String> {
         state["firstUserIsGoal"].as_bool().unwrap_or_default(),
     )
     .map(str::to_owned)
-    .or_else(|| nonempty_fallback(state["firstUserText"].as_str()))
+    .or_else(|| {
+        allow_preview
+            .then(|| nonempty_fallback(state["firstUserText"].as_str()))
+            .flatten()
+    })
 }
 
 fn nonempty_fallback(text: Option<&str>) -> Option<String> {

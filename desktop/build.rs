@@ -17,6 +17,7 @@ fn main() {
             "desktop_preferences",
             "desktop_quit",
             "desktop_stop_host",
+            "desktop_refresh_accessibility",
             "desktop_window",
             "desktop_background",
         ]);

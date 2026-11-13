@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-refresh-accessibility"
+description = "Enables the desktop_refresh_accessibility command without any pre-configured scope."
+commands.allow = ["desktop_refresh_accessibility"]
+
+[[permission]]
+identifier = "deny-desktop-refresh-accessibility"
+description = "Denies the desktop_refresh_accessibility command without any pre-configured scope."
+commands.deny = ["desktop_refresh_accessibility"]

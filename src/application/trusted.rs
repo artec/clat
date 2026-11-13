@@ -866,7 +866,7 @@ impl TrustedProjectApplication {
             },
             session: crate::WorkbenchSessionSnapshot {
                 id: self.current_session_id(),
-                title: self.effective_session_title(),
+                title: self.workbench_session_title()?,
                 committed_seq: self.committed_seq(),
                 recent_inputs: self
                     .sessions
@@ -1312,6 +1312,15 @@ impl TrustedProjectApplication {
     /// `ApplicationEvent::TitleUpdated` 的唯一数据源。
     fn effective_session_title(&self) -> Option<String> {
         self.sessions.title_state().0
+    }
+
+    fn workbench_session_title(&self) -> Result<Option<String>, ApplicationError> {
+        let (title, explicit_seq) = self.sessions.title_state();
+        if explicit_seq.is_some() || self.sessions.active_turns().map_err(session_error)? > 0 {
+            Ok(title)
+        } else {
+            Ok(None)
+        }
     }
 
     /// `/rename` 门槛查询（N4）：当前会话是否有显式标题事件（LLM 已

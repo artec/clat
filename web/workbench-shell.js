@@ -261,7 +261,7 @@ function createShellComposer(shell) {
   group(() => shellText('add_content'), [
     ['add-image', 'vision', () => CLATI18n.msg('web.add_images'), () => openImagePicker()],
     ['add-project-file', 'open', () => shellText('reference_file'), () => document.getElementById('files-open').click()],
-    ['add-session-share', 'trace', () => CLATI18n.msg('input.share_session'), () => openSessionSharePicker()],
+    ['add-session-share', 'chat', () => CLATI18n.msg('input.share_session'), () => openSessionSharePicker()],
   ]);
   group(() => shellText('work_mode'), [
     ['add-plan', 'plan', () => shellText('plan_mode'), () => toggleShellPlan()],
@@ -315,14 +315,20 @@ function installWorkbenchShell() {
     else if(path==='tasks/jobs'){taskCenter.restore(new URLSearchParams('type=jobs'));}
     else if(path==='tasks')taskCenter.restore(new URLSearchParams(raw.split('?')[1]||''));
     shell.routing = true;
-    try { if (target) shell.open(target[0]); else if(path.startsWith('tasks/'))shell.open('jobs-dialog'); else { shell.chat(false); shell.tools.restore(new URLSearchParams(raw.split('?')[1] || '')); } }
+    try { if (path === 'settings/computer-use') openSettings('computer-use'); else if (target) shell.open(target[0]); else if(path.startsWith('tasks/'))shell.open('jobs-dialog'); else { shell.chat(false); shell.tools.restore(new URLSearchParams(raw.split('?')[1] || '')); } }
     finally { shell.routing = false; }
   };
   window.addEventListener('popstate', route);
   window.addEventListener('clat:activated', route);
   window.addEventListener('clat:workbench-updated', () => { refreshApplicationToolbar(shell); void refreshShellContext(); });
-  if (context.isActive() && location.hash && location.hash !== '#/workbench') route();
+  if (context.isActive() && location.hash && location.hash !== '#/workbench'
+      && location.hash !== '#/settings/computer-use') route();
   context.renderDirectory();
+  // This route is used on a fresh document after restarting Desktop's Host.
+  // Its category and listeners are installed after the shell.
+  return () => {
+    if (context.isActive() && location.hash === '#/settings/computer-use') route();
+  };
 }
 
 function mayLeaveShellPages(shell,next,retry){
