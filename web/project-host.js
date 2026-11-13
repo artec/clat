@@ -104,14 +104,15 @@ function installTransientScrollbars() {
   let directory = [], refreshPending = null, directoryEpoch = 0, navigation = 0, nativeLocked = false;
   const appHistory = createApplicationHistory();
   installHistoryShortcuts(appHistory);
-  const host = { active: null, open, openConversation, readSessions, refresh, render, changed, history: appHistory,
+  const host = { active: null, open, openConversation, readSessions, setSessionPinned, refresh, render, changed, history: appHistory,
+    icon: name => host.active.view.icon(name),
     navigatePage: route => appHistory.push('#/' + route), navigationToken: () => navigation };
   const validRoute = route => /^(default|[a-f0-9-]{36})$/.test(route);
   const currentRoute = () => new URLSearchParams(location.search).get('workspace') ?? 'default';
   const message = key => CLATI18n.msg('workbench.' + key);
   const blocked = () => nativeLocked || CLATWorkbenchState.snapshot().composing;
   const tree = CLATProjectTree.create(host);
-  host.organization=CLATProjectOrganization.create({request:hostRpc,refresh,icon:name=>host.active.view.icon(name)});
+  host.organization=CLATProjectOrganization.create({request:hostRpc,refresh,icon:host.icon});
   const watchDirectory=createProjectDirectoryWatch(()=>refresh(true));
 
   function createApplicationHistory() {
@@ -220,6 +221,16 @@ function installTransientScrollbars() {
   function readSessions(row) {
     if (!validRoute(row.route_id)) return Promise.reject(CLATI18n.error(message('project_unopened')));
     return hostRpc('session.list', {}, '/workspace/' + row.route_id);
+  }
+
+  async function setSessionPinned(row, id, pinned) {
+    if (nativeLocked || !validRoute(row.route_id)) return;
+    const view = views.get(row.route_id)?.view;
+    if (view?.navigation().ready) await view.setSessionPinned(id, pinned);
+    else {
+      await hostRpc('session.organize', { id, pinned }, '/workspace/' + row.route_id);
+      await tree.load(row, true);
+    }
   }
 
   async function openConversation(row, session, fresh) {

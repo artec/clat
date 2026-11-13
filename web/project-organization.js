@@ -41,11 +41,10 @@
     }
     function menuButton(row,extra=[]){const item=button('icon-button project-more',null,()=>menu(row,item,null,extra));item.append(icon('more'));for(const attr of ['aria-label','title'])CLATI18n.attribute(item,attr,()=>text('more'));item.setAttribute('aria-haspopup','menu');return item;}
     function bind(target,row,anchor,extra=[]){target.classList.add('project-organizable');target.oncontextmenu=event=>{event.preventDefault();menu(row,anchor,event,extra);};}
-    function pin(row){const mark=icon('pin');mark.classList.add('project-pinned-mark');mark.classList.toggle('hidden',!current(row).pinned);CLATI18n.attribute(mark,'aria-label',()=>text('pin'));return mark;}
     function close(){closeMenu();closeDialog();}
     window.addEventListener('clat:project-activated',close);
     window.addEventListener('popstate',close);
-    return {accept,get:root=>records.get(root),rows:()=>ordered,menuButton,bind,pin,close};
+    return {accept,get:root=>records.get(root),rows:()=>ordered,menuButton,bind,setPinned:(row,pinned)=>update(row,{pinned}),close};
   }
   globalThis.CLATProjectOrganization=Object.freeze({create});
 })();

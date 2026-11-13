@@ -75,7 +75,11 @@ A new conversation appears with a running indicator when its first turn starts.
 It shows an untitled label until the automatic title arrives during the run.
 Automatic titles omit Markdown heading markers, so they read as plain text.
 Double-clicking a project row opens the project files work area — the same
-entry as the work area's Project files.
+entry as the work area's Project files. Hovering a pinned project swaps its
+folder icon for an unpin control; unpinned projects advertise nothing.
+Hover or focus a conversation row to reveal its pin control on the left, aligned
+with the project chevron. The running indicator occupies that slot while the
+conversation is running.
 
 Agent questions show options as a full-width list with descriptions below their
 labels. Select an option and send the answer, or enter a custom answer when
@@ -118,8 +122,7 @@ Long user messages show a six-line preview with a fading lower edge. The entire 
 
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.
-The running session has a trailing spinner in the project list. A separate
-current-action label below the live conversation has a rotating progress icon and uses a slow text-only spotlight
+The current-action label below the live conversation has a rotating progress icon and uses a slow text-only spotlight
 for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
 connection clears the live activity; reduced-motion and forced-color settings

@@ -87,8 +87,7 @@
         }
         lastProjectClick = { key, at: now };
       });
-      const pin=this.host.organization.pin(row);
-      title.append(glyph('M3 7h7l2-3h9v16H3z'), node('span', 'project-directory-name', () => row.title || row.root),pin);
+      title.append(glyph('M3 7h7l2-3h9v16H3z'), node('span', 'project-directory-name', () => row.title || row.root));
       CLATI18n.attribute(title, 'title', () => row.root);
       const badge = node('small'); title.append(badge);
       const fresh = button('project-new-session', () => text('new_in_project', { name: row.title }), () => {
@@ -107,13 +106,20 @@
       const retry = button('project-sessions-retry', () => text('retry_project'), () => { void this.load(row, true); });
       CLATI18n.bind(retry, 'textContent', () => text('retry_project'));
       const organization=this.host.organization.menuButton(row);this.host.organization.bind(header,row,organization);
-      header.append(toggle, title, organization, fresh); body.append(list, status, more, retry); group.append(header, body);
-      return { group, body, toggle, title, badge, list, status, more, retry, fresh, pin,
+      const unpin = node('button', 'icon-button project-unpin'); unpin.type = 'button';
+      unpin.dataset.action = 'unpin-project';
+      for (const attr of ['aria-label', 'title']) CLATI18n.attribute(unpin, attr, () => CLATI18n.msg('project_org.unpin'));
+      unpin.append(this.host.icon('pin'));
+      unpin.hidden = true;
+      unpin.addEventListener('click', () => { void this.host.organization.setPinned(row, false).catch(error => this.failure(error)); });
+      header.append(toggle, title, unpin, organization, fresh); body.append(list, status, more, retry); group.append(header, body);
+      return { group, body, toggle, title, badge, list, status, more, retry, fresh, unpin,
         identity: JSON.stringify([row.route_id, row.root]) };
     }
     renderSession(row, session) {
       const item = node('li'); item.dataset.sessionId = session.id;
-      const label = () => (session.pinned ? '★ ' : '') + (session.title || CLATI18n.t('web.untitled_session'))
+      item.dataset.pinned = String(Boolean(session.pinned));
+      const label = () => (session.title || CLATI18n.t('web.untitled_session'))
         + (session.archived ? CLATI18n.t('web.archived_suffix') : '');
       const link = button('session-item', label, () => { void this.open(row, session.id); });
       link.dataset.action = 'open-project-session';
@@ -129,7 +135,9 @@
       group.toggle.setAttribute('aria-expanded', String(value.expanded));
       labelButton(group.toggle, () => text(value.expanded ? 'collapse_project' : 'expand_project', { name: row.title || row.root }));
       group.title.setAttribute('aria-current', String(active));
-      group.body.hidden = !value.expanded;group.pin.classList.toggle('hidden',!row.pinned);
+      group.body.hidden = !value.expanded;
+      group.group.classList.toggle('pinned', !!row.pinned);
+      group.unpin.hidden = !row.pinned;
       CLATI18n.bind(group.title.querySelector('.project-directory-name'),'textContent',()=>row.title||row.root);
       if (label) group.title.append(group.badge); else group.badge.remove();
       CLATI18n.bind(group.badge, 'textContent', () => label ? text(label) : '');
@@ -141,6 +149,7 @@
       const value = this.state(row), active = row.route_id === context.route;
       const summary = this.views.get(row.route_id)?.view?.navigation();
       const source = summary?.ready ? summary.items : value.items;
+      let restoreFocus;
       group.status.hidden = true; group.retry.hidden = true;
       if (active && !group.list.children.length && navigation.ready && !navigation.query) {
         group.status.hidden = false;
@@ -152,12 +161,13 @@
           && (!query || (session.title || '').toLocaleLowerCase().includes(query) || session.id.toLocaleLowerCase().includes(query)));
         const revision = JSON.stringify(items);
         if (group.list.dataset.revision !== revision) {
-          const focused = group.list.contains(document.activeElement)
-            ? document.activeElement.closest('li')?.dataset.sessionId : null;
+          const focused = group.list.contains(document.activeElement) ? document.activeElement : null;
+          const focusedId = focused?.closest('li')?.dataset.sessionId;
+          const focusSelector = focused?.classList.contains('session-pin') ? '.session-pin' : '.session-item';
           group.list.dataset.revision = revision;
           group.list.replaceChildren(...items.map(item => this.renderSession(row, item)));
-          if (focused) [...group.list.children].find(item => item.dataset.sessionId === focused)
-            ?.querySelector('button')?.focus({ preventScroll: true });
+          if (focusedId) restoreFocus = () => [...group.list.children].find(item => item.dataset.sessionId === focusedId)
+            ?.querySelector(focusSelector)?.focus({ preventScroll: true });
         }
         if (!row.route_id || value.error || !source) {
           group.status.hidden = false;
@@ -169,8 +179,9 @@
         }
         if (value.expanded && row.route_id && !source && !value.error) void this.load(row);
       }
-      this.renderRunning(group,row);
+      this.renderSessionIndicators(group, row);
       this.renderSessionLimit(group, value.extraSessions, navigation.query);
+      restoreFocus?.();
     }
     renderSessionLimit(group, remaining, query) {
       let hasHiddenSessions = false;
@@ -188,12 +199,31 @@
       });
       group.more.hidden = !hasHiddenSessions;
     }
-    renderRunning(group,row) {
-      const summary=this.views.get(row.route_id)?.view?.summary();
-      const session=summary?summary.runningSession:(row.run_active?row.active_session_id:null);
-      for(const item of group.list.children){
-        const running=Boolean(session&&item.dataset.sessionId===session);
-        item.dataset.running=String(running);
+    createSessionPin(row, item) {
+      const pinned = () => item.dataset.pinned === 'true';
+      const pin = button('session-pin', () => CLATI18n.msg(pinned() ? 'web.unpin_session' : 'web.pin_session'), async () => {
+        if ('pending' in pin.dataset) return;
+        pin.dataset.pending = '';
+        try { await this.host.setSessionPinned(row, item.dataset.sessionId, !pinned()); }
+        catch (error) { this.failure(error); }
+        finally { delete pin.dataset.pending; }
+      });
+      pin.append(this.host.icon('pin'));
+      pin.setAttribute('aria-pressed', String(pinned()));
+      item.append(pin);
+      return pin;
+    }
+    renderSessionIndicators(group, row) {
+      const view = this.views.get(row.route_id)?.view;
+      const summary = view?.summary();
+      const session = summary ? summary.runningSession : (row.run_active ? row.active_session_id : null);
+      const busy = (summary?.running ?? (row.run_active || row.compacting))
+        || view?.navigation().locked || this.state(row).loading;
+      for (const item of group.list.children) {
+        const running = Boolean(session && item.dataset.sessionId === session);
+        item.dataset.running = String(running);
+        const pin = item.querySelector('.session-pin') || this.createSessionPin(row, item);
+        pin.disabled = Boolean(busy || running);
         let indicator=item.querySelector('.session-running');
         if(running&&!indicator){
           indicator=node('span','session-running');indicator.setAttribute('role','img');

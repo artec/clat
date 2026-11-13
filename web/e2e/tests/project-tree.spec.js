@@ -59,6 +59,24 @@ test('double-clicking a project row activates it and opens the project files wor
   await expect.poll(() => page.evaluate(() => dom.app.dataset.tool), LIVE).toBe('files');
 });
 
+test('pinned projects expose an unpin control that restores the folder icon', async ({ page }) => {
+  const fixture = hostInfo('project-tree'), root = fixture.secondaryProject.root;
+  await openWorkbench(page, fixture);
+  const route = await addWorkbenchProject(page, root);
+  const group = page.locator(`[data-project-owner="${route}"]`);
+  await group.locator('.project-group-head').hover();
+  await group.locator('.project-more').click();
+  await page.getByRole('menuitem').filter({ hasText: 'Pin project' }).click();
+  await group.locator('.project-group-head').hover();
+  const unpin = group.locator('[data-action="unpin-project"]');
+  await expect(unpin).toBeVisible(LIVE);
+  await expect(group.locator('.project-directory-row > svg')).toBeHidden(LIVE);
+  await unpin.click();
+  await expect(unpin).toBeHidden(LIVE);
+  await page.locator('#prompt').hover();
+  await expect(group.locator('.project-directory-row > svg')).toBeVisible(LIVE);
+});
+
 test('a conversation waiting for another project to connect cannot override a newer navigation', async ({ page }) => {
   const fixture = hostInfo('project-tree'), root = fixture.secondaryProject.root;
   let release;

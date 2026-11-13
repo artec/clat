@@ -9,6 +9,10 @@
 #settings-dialog .settings-nav-group:first-child .settings-group { margin-top:10px; }
 #settings-dialog .settings-nav-item { position:relative; margin:3px 0; }
 #settings-dialog .settings-nav-item > svg { position:absolute; inset-inline-start:13px; top:50%; transform:translateY(-50%); width:17px; height:17px; color:var(--text-muted); pointer-events:none; }
+/* The gear fills more of its viewBox than the terminal and folder outlines. */
+#settings-dialog .settings-nav-item:has(> [data-settings-category="appearance"]) > svg {
+  transform: translateY(-50%) scale(.88);
+}
 #settings-dialog .settings-nav-item > button { display:block; width:100%; min-height:36px; margin:0; padding:8px 12px 8px 40px; border:0; border-radius:8px; background:transparent; color:var(--text-soft); text-align:start; font:400 var(--text-size-ui)/1.5 var(--font-ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #settings-dialog .settings-nav-item > button:hover { background:var(--ink-3); color:var(--text); }
 #settings-dialog .settings-nav-item > button[aria-current=page] { background:var(--surface-input); color:var(--text); box-shadow:none; }

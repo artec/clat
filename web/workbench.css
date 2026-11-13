@@ -97,9 +97,9 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .session-nav > .section-row { flex: none; margin-bottom: 8px; }
 #session-panel { min-height: 0; flex: 1; overflow: auto; }
 #session-count { display: none; }
-.project-group { min-width: 0; }
-.project-group-head { display: flex; align-items: center; gap: 2px; padding: 0 4px; }
-.project-group-toggle, .project-new-session { display: grid; place-items: center; padding: 4px; width: 25px; height: 30px; flex: none; color: var(--text-muted); border-radius: 6px; }
+.project-group { --project-row-inset: 4px; --project-icon-slot: 25px; --session-title-inset: calc(var(--project-row-inset) + var(--project-icon-slot) + 5px); min-width: 0; }
+.project-group-head { position: relative; display: flex; align-items: center; gap: 2px; padding-inline: var(--project-row-inset); }
+.project-group-toggle, .project-new-session { display: grid; place-items: center; padding: 4px; width: var(--project-icon-slot); height: 30px; flex: none; color: var(--text-muted); border-radius: 6px; }
 .project-group-toggle:hover, .project-new-session:hover { color: var(--text); background: var(--surface-input); }
 .project-group-toggle svg { width: 12px; height: 12px; transition: transform 120ms var(--ease); }
 .project-group-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
@@ -107,8 +107,8 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 .project-group .project-directory-row { min-width: 0; gap: 8px; padding: 4px; font-size: var(--text-size-ui); font-weight: 600; }
 .project-group .project-directory-row > svg { flex: none; width: 16px; height: 16px; }
 .project-group .project-directory-name { flex: 1; }
-.project-group .session-list { padding: 4px 0 0 22px; overflow: visible; }
-.project-group .session-list .session-item { display: block; min-height: 34px; padding: 7px 28px 7px 12px; border: 0; border-radius: 8px; }
+.project-group .session-list { padding: 4px 0 0; overflow: visible; }
+.project-group .session-list .session-item { display: block; min-height: 34px; padding-block: 7px; padding-inline: var(--session-title-inset) 28px; border: 0; border-radius: 8px; }
 .project-group .session-copy strong { font-size: var(--text-size-ui); font-weight: 400; }
 .project-group .session-list .session-glyph, .project-group .session-copy small { display: none; }
 .project-group .session-more { top: 50%; right: 2px; width: 28px; height: 28px; font-size: 18px; }
@@ -578,13 +578,12 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .workflow-goal-form { display: grid; gap: 16px; max-width: 720px; }
 .workflow-goal-form textarea { width: 100%; resize: vertical; background: var(--surface-input); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 
-.round-suggestions .followup-choice>svg{width:16px;height:16px;flex:none;margin-block-start:calc((1lh - 16px)/2 + 1px);color:var(--text-muted)}
+.round-suggestions .followup-choice>svg{width:16px;height:16px;flex:none;margin-block-start:calc((var(--text-leading) * 1em - 16px)/2 + 1px);color:var(--text-muted)}
 .round-suggestions .followup-choice>span{min-width:0;line-height:inherit}
 .project-organizable>.project-more{display:none;flex:none;width:26px;min-width:26px;height:30px;min-height:30px;padding:5px;border-radius:6px;align-items:center;justify-content:center;color:var(--text-muted)}
 .project-organizable:is(:hover,:focus-within)>.project-more{display:inline-flex}
 .project-organizable>.project-more:hover{background:var(--surface-input);color:var(--text)}
 .project-more>svg{width:16px;height:16px}
-.project-pinned-mark{flex:none;width:12px!important;height:12px!important;color:var(--text-muted)}
 .project-rename-dialog{--dialog-width:420px}
 .project-rename-dialog form{display:grid;gap:14px}
 .project-rename-dialog .workbench-dialog-header,.project-rename-dialog p,.project-rename-dialog .workbench-dialog-actions{margin:0}
@@ -651,10 +650,50 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 @media(max-width:640px){.round-process-heading{width:100%;margin-inline-start:0}.compaction-disclosure{margin-inline-start:0}}
 .round-process-heading:disabled{opacity:1;cursor:default}
 
-/* Running sessions keep a fixed trailing slot separate from their actions menu. */
-.session-running{position:absolute;inset-inline-end:38px;top:50%;width:13px;height:13px;margin-top:-6.5px;border:1.5px solid var(--text-muted);border-inline-end-color:transparent;border-radius:50%;pointer-events:none;animation:session-running-spin 1s linear infinite}
-.session-running[hidden]{display:none}
-.project-group .session-list li[data-running=true] .session-item{padding-inline-end:60px}
+/* The project chevron, session pin and running indicator share a center line. */
+.session-pin { display: none; }
+.project-group .session-pin, .project-group .session-running {
+  position: absolute;
+  top: 50%;
+}
+.project-group .session-pin {
+  inset-inline-start: var(--project-row-inset);
+  width: var(--project-icon-slot);
+  height: 24px;
+  margin-top: -12px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+}
+.session-pin svg { width: 15px; height: 15px; }
+.project-group .session-list li:is(:hover, :focus-within) > .session-pin { opacity: 1; pointer-events: auto; }
+.session-pin[aria-pressed=true] { color: var(--accent); }
+.session-pin:hover:not(:disabled) { color: var(--text); background: var(--surface-input); }
+@media (hover: none) { .project-group .session-pin { opacity: 1; pointer-events: auto; } }
+.project-group .session-list li[data-running=true] > .session-pin { display: none; }
+.session-running {
+  --session-spinner-size: 13px;
+  inset-inline-start: calc(var(--project-row-inset) + (var(--project-icon-slot) - var(--session-spinner-size)) / 2);
+  width: var(--session-spinner-size);
+  height: var(--session-spinner-size);
+  margin-top: calc(var(--session-spinner-size) / -2);
+  border: 1.5px solid var(--text-muted);
+  border-inline-end-color: transparent;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: session-running-spin 1s linear infinite;
+}
+.session-running[hidden] { display: none; }
+.project-unpin{position:absolute;inset-inline-start:31px;top:50%;width:24px;height:24px;margin-top:-12px;display:none;place-items:center;padding:0;border:0;background:transparent;color:var(--text-muted);border-radius:6px}
+.project-unpin svg{width:16px;height:16px}
+.project-unpin:hover{color:var(--text);background:var(--surface-input)}
+.project-unpin[hidden]{display:none}
+.project-group.pinned .project-group-head:is(:hover,:focus-within) .project-unpin:not([hidden]){display:grid}
+.project-group.pinned .project-group-head:is(:hover,:focus-within) .project-directory-row>svg{visibility:hidden}
 @keyframes session-running-spin{to{transform:rotate(360deg)}}
 .run-activity{display:flex;align-items:center;min-height:28px;margin-block:6px 20px;margin-inline-start:36px;color:var(--text-muted);font:var(--text-size-ui)/1.6 var(--font-ui)}
 .run-activity>svg{opacity:.8}

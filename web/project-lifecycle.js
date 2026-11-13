@@ -92,6 +92,7 @@ function projectLifecycle() {
   return {
     activate, deactivate, navigateConversation,
     icon:svgIcon,
+    setSessionPinned: (id, pinned) => organizeSession({ id }, { pinned }),
     directoryChanged(){
       const project=state.workbench?.project;if(project)project.name=projectDisplayName(project.root,project.name);
       refreshViewContext();

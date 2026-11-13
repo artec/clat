@@ -330,8 +330,8 @@ const ICON_PATHS = {
   more: ['M5 12h.01M12 12h.01M19 12h.01'],
   open: ['M7 17 17 7M7 7h10v10'],
   copy: ['M9 9h12v12H9z', 'M5 15H3V3h12v2'],
-  pin: ['m16 3 5 5-4 1-2 5-2 2-5-5 2-2 5-2z', 'm8 16-5 5'],
-  unpin: ['m16 3 5 5-4 1-1 3M9 9l-1 2 5 5 2-2', 'm8 16-5 5M3 3l18 18'],
+  pin: ['M8 3h8a1.5 1.5 0 0 1 0 3H15v4.5l3 2.5v2.5H6V13l3-2.5V6H8a1.5 1.5 0 0 1 0-3Z', 'M12 15.5V21'],
+  unpin: ['M9 3h7a1.5 1.5 0 0 1 0 3H15v4.5l3 2.5v.75M9 10.5 6 13v2.5h7m-1 0V21', 'M3 3l18 18'],
   archive: ['M3 4h18v4H3z', 'M5 8v12h14V8M10 12h4'],
   restore: ['M3 4h18v4H3z', 'M5 8v12h14V8m-10 7 3-3 3 3m-3-3v5'],
   schedule: ['M5 5h14v15H5zM8 3v4m8-4v4M5 10h14', 'M12 12v3l2 1'],
@@ -2706,6 +2706,7 @@ function renderSessions() {
   for (const session of filtered) {
     const item = el('li', session.id === state.sessionId ? 'active' : '');
     item.dataset.sessionId = session.id;
+    item.dataset.pinned = String(Boolean(session.pinned));
     const button = el('button', 'session-item');
     button.type = 'button';
     button.disabled = state.switching || state.compactionActive;
@@ -2714,7 +2715,7 @@ function renderSessions() {
     const glyph = el('span', 'session-glyph', () => (String(title).trim().slice(0, 1).toLocaleUpperCase() || '·'));
     const copy = el('span', 'session-copy');
     copy.append(
-      el('strong', null, () => (`${session.pinned ? '★ ' : ''}${title}${session.archived ? CLATI18n.t('web.archived_suffix') : ''}`)),
+      el('strong', null, () => (`${title}${session.archived ? CLATI18n.t('web.archived_suffix') : ''}`)),
       el('small', null, () => (CLATI18n.msg("web.dynamic_value_turns_value_messages", {value1:(session.turns || 0),value2:(session.message_count || 0)}, "{value1} turns · {value2} messages"))),
     );
     button.append(glyph, copy);
@@ -2745,8 +2746,8 @@ function renderSessions() {
   }
   if (filtered.length === 0 && state.sessions.length > 0) show(dom['session-empty']);
   else hide(dom['session-empty']);
-  restoreSessionFocus(focus);
   context.changed();
+  restoreSessionFocus(focus);
 }
 
 let sessionMenu = null;
@@ -2756,13 +2757,15 @@ function rememberSessionFocus() {
   const active = document.activeElement;
   const source = sessionMenu?.contains(active) ? sessionMenuSource : active;
   if (!source || !dom['session-list'].contains(source)) return null;
-  return { id: source.closest('li')?.dataset.sessionId, more: source.classList.contains('session-more') };
+  const control = source.classList.contains('session-more') ? '.session-more'
+    : source.classList.contains('session-pin') ? '.session-pin' : '.session-item';
+  return { id: source.closest('li')?.dataset.sessionId, control };
 }
 
 function restoreSessionFocus(focus) {
   if (!focus) return;
   const item = [...dom['session-list'].children].find((row) => row.dataset.sessionId === focus.id);
-  const button = item?.querySelector(focus.more ? '.session-more' : '.session-item');
+  const button = item?.querySelector(focus.control) || item?.querySelector('.session-item');
   if (button && !button.disabled) button.focus({ preventScroll: true });
 }
 
