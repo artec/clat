@@ -33,7 +33,6 @@ function installPendingInputs() {
     if (!supportsPendingInputs() || dom.app.dataset.tool) return;
     if ((dom.app.dataset.page && !borrowedConversation) || commandPanelOpen() || pageIsOpen(dom['settings-dialog']) || pageIsOpen(dom['market-dialog'])) return;
     if (!popup.classList.contains('hidden')) { event.preventDefault(); pendingInputPopover.close(); return; }
-    if (state.runActive || pendingInputStore.interrupting) { event.preventDefault(); dom.cancel.click(); }
   });
   CLATI18n.onChange(() => { renderPendingInputs(pendingInputStore); });
 }
@@ -46,7 +45,7 @@ function renderPendingInputs(value) {
   dom['queue-enqueue'].hidden = true; dom['queue-recall'].hidden = true;
   const badge = pendingInputTrigger.querySelector('.pending-input-count');
   badge.hidden = !pendingInputStore.items.length; badge.textContent = String(pendingInputStore.items.length);
-  pendingInputTrigger.setAttribute('aria-busy', String(pendingInputStore.interrupting || optimisticInputInterrupt !== null));
+  pendingInputTrigger.setAttribute('aria-busy', String(pendingInputStore.interrupting));
   if (pendingInputStore.items.length || pendingInputStore.interrupting) clearRoundFollowups();
   for (const item of pendingInputStore.items) rememberInputReferences(item);
   reconcileOptimisticSteering(pendingInputStore.items);
@@ -60,9 +59,13 @@ function renderPendingInputs(value) {
 }
 function syncInputSubmitButtons() {
   const busy = state.runActive || (supportsPendingInputs() && pendingInputStore.interrupting);
-  const hasDraft = Boolean(dom.prompt.value.trim() || state.draft.images.length || sessionSharesFor().length);
-  const sending = supportsPendingInputs() ? (!busy || hasDraft) : !state.runActive;
-  dom.send.classList.toggle('hidden', !sending); dom.cancel.classList.toggle('hidden', sending);
+  dom.send.classList.toggle('hidden', busy);
+  dom.cancel.classList.toggle('hidden', !busy);
+  dom.send.disabled = composerSendDisabled();
+}
+function composerSendDisabled() {
+  return state.switching || state.compactionActive || state.desktopUpdateLocked || state.composerDraftLoading
+    || (Boolean(composerGoalDraft) && !canComposeGoal(composerWorkflow()));
 }
 function renderPendingInputPopup() {
   if (!pendingInputPopup) return;
@@ -86,7 +89,6 @@ function renderPendingInputPopup() {
   }
 }
 function renderPendingInputRow(item, index) {
-  if(optimisticInputInterrupt===item.id)item={...item,phase:'interrupting'};
   const row = el('div', 'pending-input-row'); row.dataset.inputId = item.id;
   const preview = el('div', 'pending-input-preview');
   preview.append(el('span', 'pending-input-number', String(index + 1)), el('span', 'pending-input-text', item.text || (() => inputText('images_only')))); row.append(preview);
@@ -102,12 +104,22 @@ function renderPendingInputRow(item, index) {
   if (attachments.children.length) row.append(attachments);
   if (pendingInputEditor(item.id)) { row.append(renderInputEditor(item)); return row; }
   const actions = el('div', 'pending-input-actions');
-  const interrupt = pendingButton('interrupt', () => performInputAction('interrupt', item)); interrupt.append(el('span', '', () => inputText('interrupt'))); interrupt.classList.add('input-interrupt');
+  if (state.workbench?.methods?.includes('input.interject')) {
+    actions.append(renderPendingInterjection(item));
+  }
   const edit = pendingButton('edit', () => beginPendingInputEdit(item), svgIcon('edit'));
   const recall = pendingButton('recall', () => recallPendingInput(item), 'corner-up-left');
   const remove = pendingButton('delete', () => performInputAction('delete', item), 'trash-2');
-  for (const button of [interrupt, edit, recall, remove]) { button.disabled = item.phase !== 'queued' || inputOperations.has(item.id); actions.append(button); }
-  interrupt.disabled ||= !state.runActive || pendingInputStore.interrupting || optimisticInputInterrupt !== null;
+  for (const button of [edit, recall, remove]) { button.disabled = item.phase !== 'queued' || inputOperations.has(item.id); actions.append(button); }
   if (item.phase !== 'queued') actions.append(el('small', '', () => inputText(item.phase === 'interrupting' ? 'interrupting' : 'receiving')));
   row.append(actions); return row;
+}
+function renderPendingInterjection(item) {
+  const sending = pendingInterjections.has(item.id);
+  const key = sending ? 'interject_submitting' : item.prioritized ? 'interject_queued' : 'interject';
+  const button = pendingButton(key, () => void performInputAction('interject', item));
+  button.dataset.action = 'interject';
+  button.disabled = item.phase !== 'queued' || item.prioritized || inputOperations.has(item.id);
+  button.append(el('span', '', () => inputText(key)));
+  return button;
 }

@@ -111,7 +111,10 @@ impl SummaryJob {
         let usage = Arc::new(Mutex::new(Usage::default()));
         let build: ModelBuildFn = {
             let providers = providers.clone();
-            let config = crate::model::internal_text_config(request.config);
+            let mut config = crate::model::internal_text_config(request.config);
+            if let Some(body) = config.extra_body.as_object_mut() {
+                body.remove("tool_choice");
+            }
             let credentials = request.credentials.clone();
             let ledger = request.spend_ledger.clone();
             let usage = usage.clone();
@@ -247,9 +250,6 @@ impl<'a> SummaryRun<'a> {
         input: &mut String,
         output: &mut u32,
     ) -> Result<Option<String>, PresentedText> {
-        if !response.tool_calls.is_empty() {
-            return Err("compaction summary must not call tools".into());
-        }
         if response.finish_reason == FinishReason::Cancelled {
             return Err(UiMessage::new("compaction.provider_cancelled").into());
         }

@@ -23,6 +23,7 @@ enum Reply {
     RetryAndRecover,
     LongOnce,
     LongAlways,
+    ToolUnlessDisabled,
     Panic,
 }
 #[derive(Clone)]
@@ -113,6 +114,15 @@ impl Model for Attempt {
         let exhausted = self.config.extra_body["reasoning_effort"] == "high"
             || request.options.output_limit.unwrap_or(0) < 4096;
         let long_answer = "证据".repeat(40000);
+        if matches!(self.factory.reply, Reply::ToolUnlessDisabled) && !request.tools.is_empty() {
+            let mut response = crate::test_support::response("", FinishReason::ToolCalls);
+            response.tool_calls.push(crate::ToolCall {
+                id: "unexpected-summary-call".into(),
+                name: request.tools[0].name.clone(),
+                arguments: serde_json::json!({}),
+            });
+            return Ok(response);
+        }
         let (text, finish) = match self.factory.reply {
             Reply::Thinking if exhausted => ("", FinishReason::MaxTokens),
             Reply::Thinking => (
@@ -122,6 +132,7 @@ impl Model for Attempt {
             Reply::LongOnce if attempt == 0 => (long_answer.as_str(), FinishReason::Completed),
             Reply::LongAlways => (long_answer.as_str(), FinishReason::Completed),
             Reply::LongOnce => ("Recovered short summary", FinishReason::Completed),
+            Reply::ToolUnlessDisabled => ("Recovered without tools", FinishReason::Completed),
             Reply::Truncated => ("An unfinished summary", FinishReason::MaxTokens),
             Reply::EmptyOnce if attempt == 0 => ("", FinishReason::Completed),
             Reply::EmptyAlways => ("", FinishReason::Completed),
@@ -277,12 +288,35 @@ fn compact_with_capacity(
         protected_head: None,
         spend_ledger: Some(factory.ledger.clone()),
         instructions: String::new(),
-        tool_definitions: vec![],
+        tool_definitions: if matches!(reply, Reply::ToolUnlessDisabled) {
+            vec![crate::tool::ToolDefinition {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                effect: crate::tool::ToolEffect::Read,
+                strict: false,
+            }]
+        } else {
+            vec![]
+        },
         force: true,
         cancel,
     });
     (outcome, factory, config)
 }
+#[test]
+fn summary_job_recovers_from_tool_calls_with_the_same_source_in_both_modes() {
+    for active in [false, true] {
+        let (outcome, factory, _) = compact(Reply::ToolUnlessDisabled, active);
+        let summary = outcome.summary.expect("summary retries without tools");
+        assert!(summary.contains("Recovered without tools"));
+        let inputs = factory.inputs.lock().unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0], inputs[1]);
+        assert!(inputs[1].contains("read "));
+    }
+}
+
 #[test]
 fn summary_job_keeps_reasoning_from_consuming_the_answer_budget_in_both_modes() {
     for active in [false, true] {

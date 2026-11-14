@@ -1,6 +1,37 @@
 use super::*;
 
 impl InputQueue {
+    /// Register priority on the queue, even between model steps or while
+    /// paused. The normal claim path owns delivery and the queue stays paused.
+    pub(crate) fn interject(&self, id: &str, version: u64) -> Result<&'static str, String> {
+        let mut state = self.0.lock().expect("pending input");
+        let index = state
+            .entries
+            .iter()
+            .position(|entry| entry.view.id == id)
+            .ok_or("input already received")?;
+        let entry = &state.entries[index];
+        if entry.view.version != version {
+            return Err("input changed; refresh before editing".into());
+        }
+        if entry.view.phase != "queued" {
+            return Ok("receiving");
+        }
+        if entry.view.prioritized {
+            return Ok("queued");
+        }
+        let next = usize::from(
+            state
+                .entries
+                .front()
+                .is_some_and(|entry| entry.view.phase == "claiming"),
+        );
+        let mut entry = state.entries.remove(index).expect("checked input");
+        entry.view.prioritized = true;
+        state.entries.insert(next, entry);
+        Ok("queued")
+    }
+
     pub(crate) fn replace(
         &self,
         id: &str,

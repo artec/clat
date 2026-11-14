@@ -53,13 +53,19 @@ pub(super) fn choose_range(
             historical_range(request.nodes, retain, request.protected_head)
         }
     }?;
-    protected_segment(request.nodes, range, &request.protected_boundaries)
+    protected_segment(
+        request.nodes,
+        range,
+        &request.protected_boundaries,
+        request.active_checkpoints.is_some(),
+    )
 }
 
 fn protected_segment(
     nodes: &[CompactionNode],
     range: Range<usize>,
     boundaries: &[usize],
+    active: bool,
 ) -> Option<Range<usize>> {
     let mut edges = vec![range.start];
     edges.extend(
@@ -84,7 +90,13 @@ fn protected_segment(
             {
                 end -= 1;
             }
-            (start < end).then_some(start..end)
+            let range = start..end;
+            if active {
+                return exchange_ends(&nodes[range])
+                    .last()
+                    .map(|end| start..start + end);
+            }
+            (!range.is_empty()).then_some(range)
         })
         .max_by_key(|range| {
             nodes[range.clone()]

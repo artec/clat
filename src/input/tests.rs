@@ -20,7 +20,7 @@ fn pending_share_keeps_snapshot_out_of_view_and_attaches_it_on_claim() {
         frozen_shares: vec!["private historical content".into()],
         ..Default::default()
     };
-    queue.enqueue("share".into(), message, draft).unwrap();
+    queue.enqueue("share".into(), message, draft, None).unwrap();
     let view = serde_json::to_string(&queue.snapshot()).unwrap();
     assert!(!view.contains("private historical content"));
     assert!(view.contains("draft"));
@@ -40,6 +40,7 @@ fn queued(queue: &InputQueue, id: &str) {
             id.to_owned(),
             PendingMessage::from_front_end(id, Some(id.to_owned()), Vec::new()),
             InputDraft::default(),
+            None,
         )
         .unwrap();
 }
@@ -69,6 +70,53 @@ fn pending_input_claim_is_retained_until_commit_and_fifo_is_preserved() {
     assert_eq!(
         queue.claim(false).unwrap().client_message_id.as_deref(),
         Some("second")
+    );
+}
+
+#[test]
+fn pending_input_interject_registers_before_a_claim_is_available() {
+    let queue = InputQueue::default();
+    queue.agent_started();
+    for id in ["claiming", "first", "chosen", "last"] {
+        queued(&queue, id);
+    }
+    let in_progress = queue.claim(false).unwrap();
+    assert_eq!(queue.interject("claiming", 1).unwrap(), "receiving");
+    assert!(queue.interject("chosen", 2).is_err());
+    assert_eq!(queue.interject("chosen", 1).unwrap(), "queued");
+    assert_eq!(queue.interject("chosen", 1).unwrap(), "queued");
+    assert!(queue.snapshot().items[1].prioritized);
+    assert!(queue.claim(false).is_none());
+
+    for id in ["claiming", "chosen", "first", "last"] {
+        let message = if id == "claiming" {
+            in_progress.clone()
+        } else {
+            queue.claim(false).unwrap()
+        };
+        assert_eq!(message.client_message_id.as_deref(), Some(id));
+        queue.committed(id, &message.request_digest()).unwrap();
+    }
+
+    assert!(queue.seal_if_no_steer());
+    queued(&queue, "older");
+    queued(&queue, "after");
+    queue.pause();
+    assert_eq!(queue.interject("after", 1).unwrap(), "queued");
+    assert!(queue.snapshot().paused);
+    assert!(queue.claim(true).is_none());
+    queued(&queue, "resume");
+    queue.prefer_initial("resume".into());
+    queue.begin_run();
+    let initial = queue.claim(true).unwrap();
+    assert_eq!(initial.client_message_id.as_deref(), Some("resume"));
+    queue
+        .committed("resume", &initial.request_digest())
+        .unwrap();
+    queue.agent_started();
+    assert_eq!(
+        queue.claim(false).unwrap().client_message_id.as_deref(),
+        Some("after")
     );
 }
 
@@ -257,6 +305,50 @@ fn pending_input_resubmission_during_cleanup_resumes_but_later_failure_pauses() 
     queue.agent_started();
     queue.settled(InputSettlement::Failed);
     assert!(queue.snapshot().paused);
+}
+
+#[test]
+fn pending_input_seals_at_the_final_model_boundary() {
+    let queue = InputQueue::default();
+    queue.agent_started();
+    queued(&queue, "before finish");
+    assert!(!queue.seal_if_no_steer());
+    let message = queue.claim(false).unwrap();
+    queue
+        .committed("before finish", &message.request_digest())
+        .unwrap();
+
+    assert!(queue.seal_if_no_steer());
+    let late = "late interjection";
+    let submit_to_round = |round| {
+        queue.enqueue(
+            late.into(),
+            PendingMessage::from_front_end(late, Some(late.into()), Vec::new()),
+            InputDraft::default(),
+            Some(round),
+        )
+    };
+    assert_eq!(
+        submit_to_round(1).unwrap_err().presentation().key,
+        "input.turn_changed"
+    );
+    queued(&queue, "after finish");
+    queue.settled(InputSettlement::Cancelled);
+    assert!(!queue.snapshot().paused);
+    assert_eq!(
+        queue.claim(true).unwrap().content.plain_text(),
+        "after finish"
+    );
+    queue.agent_started();
+    assert_eq!(
+        submit_to_round(1).unwrap_err().presentation().key,
+        "input.turn_changed"
+    );
+    queue.pause();
+    assert_eq!(
+        submit_to_round(2).unwrap_err().presentation().key,
+        "input.turn_changed"
+    );
 }
 
 #[test]

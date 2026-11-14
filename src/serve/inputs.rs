@@ -1,7 +1,7 @@
 //! Input protocol adapter. Application/Run own admission, queue order and interruption.
 use super::{
     approver,
-    protocol::{FanoutSink, RpcError},
+    protocol::{FanoutSink, RpcError, optional_str},
     state::ServeShared,
 };
 use crate::application::InputDraft;
@@ -56,19 +56,22 @@ pub(super) fn dispatch(
         .input_queue()
         .clone();
     if let Some(value) = queue.receipt(operation, &digest).map_err(|e| failed(&e))? {
-        dispatch_ready(shared);
+        if method != "input.interject" {
+            dispatch_ready(shared);
+        }
         return Ok(value);
     }
     let value = match method {
         "input.submit" => submit(params, shared)?,
-        "input.update" | "input.recall" | "input.delete" | "input.interrupt" => {
-            mutate(method, params, shared)?
-        }
+        "input.update" | "input.recall" | "input.delete" | "input.interject"
+        | "input.interrupt" => mutate(method, params, shared)?,
         _ => return Err(failed("unknown input operation")),
     };
     queue.remember(operation.to_owned(), digest, value.clone());
     shared.notify_queue_changed();
-    dispatch_ready(shared);
+    if method != "input.interject" {
+        dispatch_ready(shared);
+    }
     Ok(value)
 }
 
@@ -77,8 +80,9 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
         return Err(failed("compaction is active"));
     }
     let id = string(params, "clientMessageId")?;
+    let target = optional_str(params, "expectedTurn")?;
     let text = params.get("text").and_then(Value::as_str).unwrap_or("");
-    let mut draft = media::draft(params)?;
+    let draft = media::draft(params)?;
     let mut message = crate::message::PendingMessage::from_front_end(
         text,
         Some(id.to_owned()),
@@ -101,6 +105,22 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
         }
         return Ok(json!({"outcome":"received"}));
     }
+    let expected_round = target
+        .as_deref()
+        .map(|target| shared.matching_input_round(target).ok_or_else(turn_changed))
+        .transpose()?;
+    enqueue(shared, &app, id, message, draft, expected_round)?;
+    Ok(json!({"outcome":"queued"}))
+}
+
+fn enqueue(
+    shared: &ServeShared,
+    app: &crate::TrustedProjectApplication,
+    id: &str,
+    mut message: crate::message::PendingMessage,
+    mut draft: InputDraft,
+    expected_round: Option<u64>,
+) -> Result<(), RpcError> {
     let shares = app.freeze_session_shares(&draft.session_shares, &crate::CancelToken::new())?;
     for share in shares {
         draft
@@ -125,20 +145,39 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
             .map_err(|e| failed(&e))?;
         message.resolve_staged_attachments(paths);
     }
-    if let Err(error) = app.enqueue_input(id.to_owned(), message, draft.clone()) {
+    if let Err(error) =
+        app.enqueue_input_for_round(id.to_owned(), message, draft.clone(), expected_round)
+    {
         app.release_input_draft(&draft, false);
-        return Err(
-            if matches!(
-                error.presentation().key.as_str(),
-                "input.share_too_large" | "input.share_host_frame_too_large"
-            ) {
-                RpcError::from(error)
-            } else {
-                failed(&error.to_string())
-            },
-        );
+        return Err(match error.presentation().key.as_str() {
+            "input.turn_changed" => turn_changed(),
+            "input.share_too_large" | "input.share_host_frame_too_large" => RpcError::from(error),
+            _ => failed(&error.to_string()),
+        });
     }
-    Ok(json!({"outcome":"queued"}))
+    Ok(())
+}
+
+fn turn_changed() -> RpcError {
+    let message = crate::i18n::UiMessage::new("input.turn_changed");
+    RpcError::not_pending(message.english()).with_presentation(message)
+}
+
+fn interject(
+    app: &crate::TrustedProjectApplication,
+    id: &str,
+    version: u64,
+) -> Result<Value, RpcError> {
+    let outcome = match app.input_queue().interject(id, version) {
+        Ok(outcome) => outcome,
+        Err(error)
+            if error == "input already received" && app.committed_admission(id).is_some() =>
+        {
+            "received"
+        }
+        Err(error) => return Err(failed(&error)),
+    };
+    Ok(json!({"outcome":outcome}))
 }
 
 fn mutate(
@@ -158,6 +197,7 @@ fn mutate(
         .map_err(|_| failed("invalid draft image selection"))?;
     let app = shared.app.lock().expect("application");
     let result = match method {
+        "input.interject" => return interject(&app, id, version),
         "input.update" => app
             .update_pending_input(
                 id,

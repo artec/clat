@@ -341,7 +341,9 @@ fn acp_unnegotiated_optional_features_fail_before_payload_construction() {
     assert_eq!(session["systemPrompt"]["mode"], "append");
 
     let image = json!({"type":"image","data":"AAAA","mimeType":"image/png"});
-    assert!(parameters::checked_content(&json!({}), "use this", &[image.clone()]).is_err());
+    assert!(
+        parameters::checked_content(&json!({}), "use this", std::slice::from_ref(&image)).is_err()
+    );
     let blocks = parameters::checked_content(
         &json!({"promptCapabilities":{"image":true}}),
         "use this",

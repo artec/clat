@@ -48,6 +48,7 @@ pub struct PendingInputView {
     pub id: String,
     pub version: u64,
     pub phase: &'static str,
+    pub prioritized: bool,
     pub text: String,
     pub images: Vec<crate::message::AttachmentDescriptor>,
     pub draft: InputDraft,
@@ -75,9 +76,16 @@ struct State {
     handoff: Option<String>,
     initial: Option<String>,
     terminal: bool,
+    round: u64,
     resume_after_terminal: bool,
     receipts: VecDeque<(String, String, serde_json::Value)>,
     references: VecDeque<(String, Vec<serde_json::Value>)>,
+}
+
+impl State {
+    fn accepts_round(&self, round: u64) -> bool {
+        round != 0 && round == self.round && !self.terminal && !self.paused
+    }
 }
 
 #[derive(Clone, Default)]
@@ -108,15 +116,20 @@ impl InputQueue {
         self.0.lock().expect("pending input").entries.is_empty()
     }
 
-    pub(crate) fn ready(&self) -> bool {
-        let state = self.0.lock().expect("pending input");
-        !state.paused
+    /// Seal the current run's admission boundary on the same lock as enqueue.
+    pub(crate) fn seal_if_no_steer(&self) -> bool {
+        let mut state = self.0.lock().expect("pending input");
+        let ready = !state.paused
             && state.initial.is_none()
             && state.handoff.is_none()
             && state
                 .entries
                 .front()
-                .is_some_and(|e| e.view.phase == "queued")
+                .is_some_and(|e| e.view.phase == "queued");
+        if !ready {
+            state.terminal = true;
+        }
+        !ready
     }
 
     pub(crate) fn existing(&self, id: &str) -> Option<PendingMessage> {
@@ -134,22 +147,38 @@ impl InputQueue {
         id: String,
         message: PendingMessage,
         draft: InputDraft,
-    ) -> Result<(), String> {
-        let mut state = self.0.lock().map_err(|_| "pending input poisoned")?;
+        expected_round: Option<u64>,
+    ) -> Result<(), crate::ApplicationError> {
+        use crate::ApplicationError;
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| ApplicationError::from_message("pending input poisoned"))?;
         if let Some(e) = state.entries.iter().find(|e| e.view.id == id) {
             return if e.message.request_digest() == message.request_digest()
                 && e.view.draft == draft
             {
                 Ok(())
             } else {
-                Err("input id already has different content".into())
+                Err(ApplicationError::from_message(
+                    "input id already has different content",
+                ))
             };
         }
+        if expected_round.is_some_and(|round| !state.accepts_round(round)) {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "input.turn_changed",
+            )));
+        }
         if message.client_message_id.as_deref() != Some(id.as_str()) {
-            return Err("input id does not match its message".into());
+            return Err(ApplicationError::from_message(
+                "input id does not match its message",
+            ));
         }
         if id.is_empty() || id.len() > 200 || state.entries.len() >= 64 {
-            return Err("pending input limit reached".into());
+            return Err(ApplicationError::from_message(
+                "pending input limit reached",
+            ));
         }
         let images = message
             .content
@@ -161,6 +190,7 @@ impl InputQueue {
             id,
             version: 1,
             phase: "queued",
+            prioritized: false,
             text: message.content.plain_text(),
             images,
             draft,
@@ -262,6 +292,7 @@ impl InputQueue {
 
     pub(crate) fn begin_run(&self) {
         let mut state = self.0.lock().expect("pending input");
+        state.round = 0;
         state.terminal = false;
         state.resume_after_terminal = false;
     }
@@ -274,7 +305,9 @@ impl InputQueue {
     }
 
     pub(crate) fn agent_started(&self) {
-        self.0.lock().expect("pending input").terminal = false;
+        let mut state = self.0.lock().expect("pending input");
+        state.round += 1;
+        state.terminal = false;
     }
 
     pub(crate) fn terminal(&self) {

@@ -85,8 +85,18 @@ impl TrustedProjectApplication {
     pub fn enqueue_input(
         &self,
         id: String,
+        message: PendingMessage,
+        draft: InputDraft,
+    ) -> Result<(), ApplicationError> {
+        self.enqueue_input_for_round(id, message, draft, None)
+    }
+
+    pub(crate) fn enqueue_input_for_round(
+        &self,
+        id: String,
         mut message: PendingMessage,
         draft: InputDraft,
+        expected_round: Option<u64>,
     ) -> Result<(), ApplicationError> {
         if draft.session_shares.len() != draft.frozen_shares.len() {
             return Err(ApplicationError::presented(
@@ -101,6 +111,11 @@ impl TrustedProjectApplication {
         self.check_input_run()?;
         let idle = self.active_run.as_ref().is_none_or(|run| run.is_finished())
             && !self.pending_inputs().interrupting;
+        if idle && expected_round.is_some() {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "input.turn_changed",
+            )));
+        }
         let initial_id = id.clone();
         self.flush_input_references()?;
         references::validate(&message.content.plain_text(), &draft.references)?;
@@ -116,8 +131,7 @@ impl TrustedProjectApplication {
         let result = self
             .transient_inputs
             .queue
-            .enqueue(id, message, draft)
-            .map_err(ApplicationError::new);
+            .enqueue(id, message, draft, expected_round);
         if result.is_ok() {
             if idle {
                 self.input_queue().prefer_initial(initial_id);

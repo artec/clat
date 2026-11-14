@@ -192,6 +192,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "input.update",
     "input.recall",
     "input.delete",
+    "input.interject",
     "input.interrupt",
     "input.image",
     "queue.list",
@@ -1810,7 +1811,10 @@ fn required_str(params: &Map<String, Value>, field: &str) -> Result<String, RpcE
 
 /// MM-1A：可选字符串参数——缺席/Null = None；出现但非字符串/空/
 /// 超界 = bad-request（幂等键不吞畸形值）。
-fn optional_str(params: &Map<String, Value>, field: &str) -> Result<Option<String>, RpcError> {
+pub(super) fn optional_str(
+    params: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, RpcError> {
     match params.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) if !value.is_empty() && value.len() <= 256 => {

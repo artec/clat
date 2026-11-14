@@ -109,6 +109,7 @@ test('queued input feedback clears on receipt or expiry without hiding newer sta
 // input.submit 路径上锁定 INV-OE1/2/3。
 test('UX-1b queued text steering echoes into the transcript immediately and settles in place when claimed', async ({ page }) => {
   await open(page);
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
   const result = await page.evaluate(async () => {
     state.runActive = true; state.switching = false; state.compactionActive = false;
     // 宿主已广告 input.submit，提交默认走现代路径；本腿钉住 legacy
@@ -131,7 +132,7 @@ test('UX-1b queued text steering echoes into the transcript immediately and sett
       .filter((node) => node.textContent.includes('mid-run interjection echo'));
     return {
       echoed,
-      settledInPlace: matches.length === 1 && !matches[0].classList.contains('provisional'),
+      settledInPlace: matches.length === 1 && matches[0] === provisional && !matches[0].classList.contains('provisional'),
       promptCleared: dom.prompt.value === '',
     };
   });
@@ -142,6 +143,7 @@ test('UX-1b queued text steering echoes into the transcript immediately and sett
 
 test('UX-1c unclaimed steering echo leaves the transcript when the run ends and restores the draft', async ({ page }) => {
   await open(page);
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
   const result = await page.evaluate(async () => {
     state.runActive = true; state.switching = false; state.compactionActive = false;
     // 钉住 legacy steer.send 路径：本腿断言的「未 claim 退草稿」是 legacy

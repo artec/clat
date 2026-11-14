@@ -303,21 +303,38 @@ fn pending_input_receives_one_per_step_with_images_and_preserves_fifo() {
 }
 
 #[test]
-fn pending_input_idle_send_precedes_paused_queue_then_resumes_fifo() {
+fn pending_input_interjection_scheduled_while_paused_is_claimed_after_resume() {
     let (handle, storage, root) = spawn_serve("inputs-resume", TestBehavior::RunCommandPerTurn);
     input_rpc(handle.addr, "permission.set", json!({"mode":"read-only"}));
     let mut events = SseClient::connect(handle.addr);
     submit(handle.addr, "initial", "current task");
     events.wait_for("approval.requested", WAIT);
     submit(handle.addr, "old", "old queued");
+    submit(handle.addr, "chosen", "chosen queued");
     input_rpc(handle.addr, "run.cancel", json!({}));
     assert_eq!(settled_outcome_type(&events.wait_settled()), "cancelled");
     assert_eq!(pending(handle.addr)["paused"], true);
+    let interjection = json!({"id":"chosen","version":1,"operationId":"plan-while-paused"});
+    let receipt = input_rpc(handle.addr, "input.interject", interjection.clone());
+    assert_eq!(receipt["outcome"], "queued");
+    assert_eq!(
+        input_rpc(handle.addr, "input.interject", interjection),
+        receipt
+    );
+    let paused = pending(handle.addr);
+    assert_eq!(paused["paused"], true);
+    assert_eq!(paused["items"][0]["id"], "chosen");
+    assert_eq!(paused["items"][0]["prioritized"], true);
+    assert_eq!(count_keyed_user_messages(&storage, "chosen"), 0);
     submit(handle.addr, "fresh", "fresh draft");
     let fresh = events.wait_for("approval.requested", WAIT);
     assert_eq!(count_keyed_user_messages(&storage, "fresh"), 1);
     assert_eq!(count_keyed_user_messages(&storage, "old"), 0);
     allow(handle.addr, &fresh);
+    let chosen = events.wait_for("approval.requested", WAIT);
+    assert_eq!(count_keyed_user_messages(&storage, "chosen"), 1);
+    assert_eq!(count_keyed_user_messages(&storage, "old"), 0);
+    allow(handle.addr, &chosen);
     let old = events.wait_for("approval.requested", WAIT);
     assert_eq!(count_keyed_user_messages(&storage, "old"), 1);
     allow(handle.addr, &old);

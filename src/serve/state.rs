@@ -52,10 +52,17 @@ pub(crate) struct ActiveRun {
     pub(super) automatic: bool,
     pub rpc_id: String,
     pub started_ms: i64,
+    round: u64,
     buffer: Vec<String>,
     replay_before_seq: Option<u64>,
     pub(super) session_id: Option<String>,
     pub(super) notifications: Vec<(String, String)>,
+}
+
+impl ActiveRun {
+    fn turn_target(&self) -> String {
+        format!("{}:{}", self.rpc_id, self.round)
+    }
 }
 
 pub(crate) struct RunReplayPrefix {
@@ -489,9 +496,15 @@ impl ServeShared {
             // an unclaimed queue item must remain retryable after cancellation.
             self.commit_pending_steering(client_message_id);
         }
-        let data = super::shapes::realtime_data(event);
+        let mut data = super::shapes::realtime_data(event);
         let mut inner = self.inner.lock().expect("serve inner lock");
         if let Some(run) = inner.active_run.as_mut() {
+            if matches!(event, RunEvent::RunStarted { .. }) {
+                run.round += 1;
+                let mut envelope: Value = serde_json::from_str(&data).expect("run start wire JSON");
+                envelope["turn_target"] = json!(run.turn_target());
+                data = envelope.to_string();
+            }
             run.buffer.push(data.clone());
         }
         Self::deliver(
@@ -531,6 +544,7 @@ impl ServeShared {
             automatic: false,
             rpc_id: rpc_id.to_owned(),
             started_ms,
+            round: 0,
             buffer: Vec::new(),
             replay_before_seq: None,
             session_id: None,
@@ -668,9 +682,16 @@ impl ServeShared {
                 "prompt_rpc_id": run.rpc_id,
                 "started": run.started_ms,
                 "model": run.model,
+                "turn_target": (run.round != 0).then(|| run.turn_target()),
             }),
             None => Value::Null,
         }
+    }
+
+    pub(super) fn matching_input_round(&self, target: &str) -> Option<u64> {
+        let inner = self.inner.lock().expect("serve inner lock");
+        let run = inner.active_run.as_ref()?;
+        (!run.automatic && run.round != 0 && run.turn_target() == target).then_some(run.round)
     }
 
     pub(crate) fn active_compaction_info(&self) -> Value {

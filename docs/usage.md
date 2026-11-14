@@ -788,9 +788,8 @@ feedback actions. The strip disappears after acceptance, and the completed goal
 remains visible in **Plans and goals**. **Give feedback and continue** stores the feedback durably and resumes
 the same goal with that context. A model completion candidate for a human-acceptance goal stops execution
 at Awaiting acceptance; it is not counted as a failed verification. Typed pending
-input at a model boundary preserves an already-running goal. An explicit pending
-input interruption stops the old run, processes the selected message, then may
-continue the same authorized goal; a manual stop revokes that continuation.
+input at a model boundary preserves an already-running goal. A manual stop
+revokes its automatic continuation.
 File acceptance is project-relative and may be proposed by the model through
 `update_goal`, but CLAT verifies it before committing completion.
 
@@ -913,6 +912,9 @@ length-limited answer can be retried once. A complete answer that exceeds the
 summary size limit can be condensed once using its full text; CLAT never clips
 an answer to make it fit. Repeated invalid answers stop the request; incomplete
 text is never accepted as the replacement summary.
+If a summary response asks to run a tool, CLAT discards the response and
+retries once with the same source and no available tools. Summary requests
+only generate checkpoint text.
 
 Only each model request must fit the model's input and output capacity. History
 that fits this capacity is summarized in one request; larger history is split
@@ -2769,9 +2771,8 @@ filter, S cycles result status, and Page Up/Down changes pages. Enter opens the
 recorded arguments and result. A failed Cargo.lock maintenance step is shown
 independently of the original file operation's result.
 
-The web and desktop composer uses an arrow icon to send. While a run is active,
-the arrow remains available with a draft; an empty composer shows the square stop
-button instead. Stopping keeps the unsent draft.
+The web and desktop composer uses an arrow icon to send while idle. During a
+run the square Stop button takes its place. Stopping keeps the unsent draft.
 The sidebar's schedules, background jobs and history timeline entries keep their
 icons when collapsed, with localized tooltips and accessible names.
 
@@ -2793,13 +2794,15 @@ project's queue in that mounted project; it is never transferred to the new
 workspace. Non-empty queues prevent automatic host takeover and idle project
 reclamation. DSH terminals and the WeChat channel have no new queue entry point.
 
-### Web/Desktop pending messages and immediate interruption
+### Web/Desktop interjections and pending messages
 
-Send or Enter starts a run while idle and appends to the pending FIFO while busy.
-After the current model response and its tool calls settle, each next model
-request receives one pending message. It does not wait for the whole task to
-finish. Text, staged images and fixed file references travel together. A message
-leaves the pending list only after durable admission.
+Send or Enter starts a run while idle. While the run is active, press Enter to
+submit a supplement. After the current model response
+and its tool calls settle, the next model request receives one pending message
+in the same turn. If that turn ends before the Host accepts the message, the
+draft stays in the composer. You can send it manually. Text, staged images and fixed file
+references travel together. A message leaves the pending list only after
+durable admission.
 
 An interjection accepted while a run is active is visible immediately: the web
 transcript shows it as a dimmed user message at the tail, and the same node
@@ -2815,25 +2818,22 @@ pending count. At zero it is disabled;
 with pending messages, click or explicit keyboard activation opens the same
 popup surface as context usage. Pointer departure does not dismiss it; click
 the trigger again, click outside or press Esc to close. The popup aligns to the
-composer's right edge, has no close button, and lists **Interrupt now**, edit,
-return-to-input and delete actions. Editing stays inside the popup and supports
+composer's right edge. Choose **Interject** once to prioritize the message.
+The queue shows that it is scheduled, and the worker picks it up at the next
+available model step. If the queue is manually paused, the priority is retained
+until the user resumes it. Work already in progress finishes normally, and the other pending messages keep their
+relative order. The popup also supports editing, returning a message to the
+composer and deleting it. Editing stays inside the popup and supports
 adding/removing images. Returning a message preserves the current draft; a merge
 that exceeds the existing image limits leaves the queued message untouched.
 The recall request carries the current draft's selected upload IDs; previously
 removed staging files do not consume that message's capacity.
 
-**Interrupt now** reserves the selected pending message, requests cancellation,
-waits for the current worker and tools to stop, and automatically continues in
-the same conversation with that message first. Remaining queue order is retained.
-Only one such handoff runs at a time. Interrupt is available only while a run
-is still accepting input; the Host also rejects late interrupt requests. UI feedback is immediate; actual stop time
-depends on provider/tool cancellation support. Completed file changes are not
-rolled back and completed tools are not automatically repeated.
-
-Outside an open popup, Esc stops execution and also cancels an outstanding
-automatic handoff. Manual stop or failure pauses the queue without discarding
-its messages. Sending again, or explicitly choosing a pending message to run,
-resumes it. After the run ends, use Send to resume a paused queue. Claimed messages cannot be edited or deleted; a late edit is kept
+Use the square Stop button to stop the run. Esc closes an open popup or is
+available to the input method. Manual stop or failure pauses the queue
+without discarding its messages. Sending again, or explicitly choosing a
+pending message to run, resumes it. After the run ends, use Send to resume a
+paused queue. Claimed messages cannot be edited or deleted; a late edit is kept
 locally for recovery instead of overwriting history. Reconnection reads the Host's
 authoritative snapshot and reconciles already-authorized idle inputs. Retrying an
 acknowledged input also rechecks dispatch without admitting it twice. Explicitly
@@ -2859,8 +2859,11 @@ The Host rechecks the selection and journal revision at submission. A stale
 edit cannot replace newer history.
 
 The additive `input.submit`, `input.pending`, `input.update`, `input.recall`,
-`input.delete`, `input.interrupt` and `input.image` methods are advertised in
-`workbench.info.methods`. Mutations use an operation ID; pending items have stable
+`input.delete`, `input.interject`, `input.interrupt` and `input.image` methods are advertised in
+`workbench.info.methods`. The compatibility method `input.interrupt` serves
+older clients. A new composer interjection sets `expectedTurn` using the
+Host's turn target. The queue action schedules an existing message by ID
+and version. Mutations use an operation ID and pending items have stable
 IDs and versions. Selection generations fence stale mutations, and known receipt
 replays never mutate a newly selected conversation. Legacy `steer.send` and
 `queue.*` retain their previous meanings.

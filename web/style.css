@@ -498,7 +498,7 @@ button:disabled { cursor: default; opacity: .45; }
 .model-picker-error { min-height: 1.4em; margin: 7px 0 0; font-size: var(--text-size-secondary); }
 .model-picker-manage { width: 100%; padding: 8px 9px 2px; color: var(--text-muted); font: var(--text-size-ui) var(--font-mono); text-align: left; }
 .model-picker-manage:hover { color: var(--signal); }
-.composer-submit { flex: 0 0 36px; width: 36px; height: 36px; }
+.composer-submit { flex: none; display: flex; align-items: center; gap: 6px; }
 .composer-submit .send-button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 10px; }
 .send-button svg { width: 22px; height: 22px; }
 #cancel rect { fill: currentColor; stroke: none; }

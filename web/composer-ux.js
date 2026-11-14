@@ -139,6 +139,11 @@ function settleOptimisticSteering(clientMessageId) {
   if (!provisional) return false;
   optimisticSteering.delete(clientMessageId);
   provisional.node.classList.remove('provisional');
+  // A queued message can be promoted ahead of a message that was echoed first.
+  // Settle in the same order as the Host's durable receipts.
+  liveMessageNodes = liveMessageNodes.filter(node => node !== provisional.node);
+  dom.transcript.append(provisional.node);
+  liveMessageNodes.push(provisional.node);
   return true;
 }
 

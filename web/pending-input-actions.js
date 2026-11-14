@@ -1,6 +1,6 @@
 const inputOperations = new Set(), inputPreviews = new Map();
+const pendingInterjections = new Set();
 const inputSubmissions = new Map();
-let optimisticInputInterrupt = null;
 const inputRetryOperations = new Map(), inputRecallRecoveries = new Map();
 function rememberInputReferences(item, owner = composerScope) {
   if (!owner || !item.draft.references.length) return;
@@ -28,7 +28,7 @@ async function refreshPendingInputs() {
   try { const value = await rpc('input.pending', {}); if (composerOwns(owner)) renderPendingInputs(value); }
   catch (_) {}
 }
-async function submitPendingInput({ text, images, owner, draftEpoch, composerGeneration }) {
+async function submitPendingInput({ text, images, owner, draftEpoch, composerGeneration, turnTarget, interjecting }) {
   const params = { ...composerSubmissionParams(text, images, images.length ? state.draft.clientMessageId : newOpaqueClientId('input')) };
   const shares = [...sessionSharesFor(owner)];
   if (shares.some(share => share.needsRefresh)) throw CLATI18n.error(inputText('share_refresh_required'));
@@ -38,22 +38,25 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   const canonical = composerOwnerAliases.get(owner) || owner;
   let submission = inputSubmissions.get(canonical);
   if (!submission || submission.signature !== signature) {
-    submission = { signature, operationId: newOpaqueClientId('input-op'), clientMessageId: params.clientMessageId, selection: state.selectionGeneration };
+    submission = { signature, operationId: newOpaqueClientId('input-op'), clientMessageId: params.clientMessageId, selection: state.selectionGeneration, turnTarget, interjecting };
     inputSubmissions.set(canonical, submission);
   }
   Object.assign(params, { operationId: submission.operationId, clientMessageId: submission.clientMessageId });
   bindFileReferenceSubmission(owner, text, params);
   params.references = (pendingFileReferences.get(owner) || []).filter(ref => text.includes(ref.quote)).map(({path,version,quote}) => ({path,version,quote}));
   params.expected_selection_generation = submission.selection;
-  const deferredIntoRun = state.runActive;
-  const resumeFollow = deferredIntoRun ? null : followAcceptedPrompt(owner);
+  if (submission.interjecting) params.expectedTurn = submission.turnTarget || 'unavailable';
+  const resumeFollow = submission.interjecting ? null : followAcceptedPrompt(owner);
   try {
     const saved = persistComposerSubmission(submission.clientMessageId, images);
     if (saved) await saved;
     if (!composerOwns(owner) || composerGeneration !== state.composerGeneration) return;
     await rpc('input.submit', params);
   } catch (error) {
-    if (error.code === 'busy' && submission.selection !== state.selectionGeneration) {
+    if (error.presentation?.key === 'input.turn_changed') {
+      finishComposerSubmission(owner, submission.clientMessageId);
+      forgetInputSubmission(owner, submission);
+    } else if (error.code === 'busy' && submission.selection !== state.selectionGeneration) {
       forgetInputSubmission(owner, submission);
     }
     throw error;
@@ -62,10 +65,9 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   const retained = sessionSharesFor(owner);
   for (const share of shares) { const index = retained.indexOf(share); if (index >= 0) retained.splice(index, 1); }
   if (composerOwns(owner)) renderSessionShareDraft();
-  // INV-OE1：run 进行中的提交是 deferred 插话——立即乐观回显，等下一
-  // 模型请求边界 claim（steering_applied）原地转正。等待期间 run 已终结
-  // 则不回显：条目转为空闲队列，由下一 run_started 正常入转录。
-  if (deferredIntoRun && state.runActive) echoOptimisticSteering(params.clientMessageId, text);
+  if (submission.interjecting && composerOwns(owner) && state.runActive
+    && (!submission.turnTarget || submission.turnTarget === state.turnTarget)
+    && !composerReceiptIds.has(params.clientMessageId)) echoOptimisticSteering(params.clientMessageId, text);
   resumeFollow?.();
   clearOwnedSubmittedText(owner, composerGeneration);
   clearOwnedComposerImages(owner, images, draftEpoch);
@@ -118,20 +120,33 @@ function dismissAcceptedInputFeedback(clientMessageId) {
 }
 async function performInputAction(action, item, extra = {}) {
   if (inputOperations.has(item.id)) return;
-  if (action === 'interrupt' && !state.runActive) { await refreshPendingInputs(); return; }
   const owner = composerScope, editor = pendingInputEditor(item.id);
-  if(action==='interrupt')optimisticInputInterrupt=item.id;
   const retryKey = JSON.stringify([owner, action, item.id, item.version, extra]);
   if (!inputRetryOperations.has(retryKey)) inputRetryOperations.set(retryKey, newOpaqueClientId('input-op'));
-  inputOperations.add(item.id); renderPendingInputPopup();
+  inputOperations.add(item.id);
+  if (action === 'interject') pendingInterjections.add(item.id);
+  renderPendingInputPopup();
   try {
     const result = await rpc('input.' + action, { id: item.id, version: item.version, operationId: inputRetryOperations.get(retryKey), expected_selection_generation: state.selectionGeneration, ...extra });
     inputRetryOperations.delete(retryKey);
     if (action === 'update' && editor) pendingInputEditors.delete(editor.key);
-    if (action === 'interrupt' && composerOwns(owner) && state.runActive) updateRunState(inputText('interrupting'));
+    if (action === 'interject' && result?.outcome === 'queued' && composerOwns(owner)) {
+      const current = pendingInputStore.items.find(entry => entry.id === item.id);
+      if (current) current.prioritized = true;
+    }
     return result;
-  } catch (error) { if (composerOwns(owner)) updateRunState(error.message); }
-  finally { inputOperations.delete(item.id);if(action==='interrupt')optimisticInputInterrupt=null;if (composerOwns(owner)) await refreshPendingInputs(); }
+  } catch (error) {
+    if (error.code === 'not-pending') inputRetryOperations.delete(retryKey);
+    if (composerOwns(owner)) updateRunState(error.message);
+  }
+  finally {
+    inputOperations.delete(item.id);
+    pendingInterjections.delete(item.id);
+    if (composerOwns(owner)) {
+      if (action === 'interject' && !pendingInputPopup.classList.contains('hidden')) renderPendingInputPopup();
+      await refreshPendingInputs();
+    }
+  }
 }
 function renderInputEditor(item) { return buildInputEditor(item, pendingInputEditor(item.id)); }
 async function recallPendingInput(item, recovery = null) {

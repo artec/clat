@@ -197,13 +197,12 @@ fn terminal_program(command: &Path) -> Result<PathBuf, i64> {
         return Err(-32602);
     }
     std::env::var_os("PATH")
-        .map(|path| {
+        .and_then(|path| {
             std::env::split_paths(&path)
                 .filter(|dir| dir.is_absolute())
                 .map(|dir| dir.join(command))
                 .find(|path| path.is_file())
         })
-        .flatten()
         .and_then(|path| path.canonicalize().ok())
         .ok_or(-32602)
 }

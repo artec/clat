@@ -79,7 +79,7 @@ impl SummaryRun<'_> {
         &mut self,
         mut items: Vec<ModelItem>,
         system: Option<&str>,
-        tools: &[crate::tool::ToolDefinition],
+        mut tools: &[crate::tool::ToolDefinition],
     ) -> Result<String, crate::i18n::PresentedText> {
         let mut output = self.output();
         let mut recovery_text = String::new();
@@ -95,6 +95,17 @@ impl SummaryRun<'_> {
             let response = self.stream_summary(system, &request_items, tools, output)?;
             if self.cancelled() {
                 return Err(crate::i18n::UiMessage::new("compaction.cancelled").into());
+            }
+            if !response.tool_calls.is_empty() || response.finish_reason == FinishReason::ToolCalls
+            {
+                if recovery == 0 && !tools.is_empty() {
+                    // The historical tools help maintain the request prefix. If
+                    // the model proposes a new call, retry from the same source
+                    // with no callable tools and discard that response.
+                    tools = &[];
+                    continue;
+                }
+                return Err(crate::i18n::UiMessage::new("compaction.summary_tool_call").into());
             }
             if let Some(answer) =
                 self.accept(response, recovery, &mut recovery_text, &mut output)?

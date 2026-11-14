@@ -1,6 +1,134 @@
 const { test, expect } = require('@playwright/test');
 const { LIVE, hostInfo, openWorkbench } = require('../helpers/workbench');
 
+async function openCommandSession(page) {
+  await openWorkbench(page, hostInfo('run-command'));
+  const previousSelection = await page.evaluate(() => state.selectionGeneration);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await page.waitForFunction(previous => state.connected && !state.switching
+    && state.selectionGeneration !== previous, previousSelection, LIVE);
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
+}
+
+test('typing and sending an interjection keeps one active turn', async ({ page }) => {
+  await openCommandSession(page);
+  const prompt = page.locator('#prompt');
+  const send = page.locator('#send');
+  const interjection = '请补充这条说明';
+  const priority = '请优先处理这条补充';
+  await prompt.fill('Run the test command');
+  await send.click();
+  const approval = page.locator('.approval-card').last();
+  await expect(approval).toBeVisible(LIVE);
+
+  const cancellationRequests = [], submittedTurns = [];
+  page.on('request', request => {
+    if (/\/api\/(run\.cancel|input\.interrupt)$/.test(request.url())) {
+      cancellationRequests.push(request.url());
+    }
+    if (request.url().endsWith('/api/input.submit')) submittedTurns.push(request.postDataJSON().expectedTurn);
+  });
+  const target = await page.evaluate(async () => (await rpc('workbench.info', {})).active_run?.turn_target);
+  expect(target).toBeTruthy();
+  await prompt.evaluate(input => {
+    input.focus();
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    // macOS IMEs can exit composition before emitting the Escape keydown.
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }));
+  });
+  expect(cancellationRequests).toEqual([]);
+  await prompt.fill(interjection);
+  await prompt.press('Escape');
+  await expect(prompt).toHaveValue(interjection);
+  await expect(approval).toBeVisible();
+  await expect(send).toBeHidden(LIVE);
+  await prompt.press('Enter');
+  await expect(page.locator('#transcript .msg.user').last()).toContainText(interjection, LIVE);
+  await prompt.fill(priority);
+  await prompt.press('Enter');
+  await expect(page.locator('#transcript .msg.user').last()).toContainText(priority, LIVE);
+  expect(submittedTurns).toEqual([target, target]);
+  const queue = page.locator('#pending-input-trigger');
+  await queue.click();
+  const queuedMessage = page.locator('.pending-input-row').filter({ hasText: priority });
+  await expect(queuedMessage).toBeVisible(LIVE);
+  let releasePromotion;
+  const promotionGate = new Promise(resolve => { releasePromotion = resolve; });
+  await page.route('**/api/input.interject', async route => {
+    await promotionGate;
+    await route.continue();
+  }, { times: 1 });
+  const promoted = page.waitForResponse(response => response.url().endsWith('/api/input.interject'));
+  const interject = queuedMessage.locator('[data-action=interject]');
+  try {
+    await interject.click();
+    await expect(interject).toBeDisabled(LIVE);
+  } finally {
+    releasePromotion();
+  }
+  expect((await (await promoted).json()).ok).toBe(true);
+  await expect.poll(() => page.evaluate(async () => (await rpc('input.pending', {})).items[0]?.prioritized), LIVE).toBe(true);
+  await expect(interject).toBeDisabled(LIVE);
+  await page.keyboard.press('Escape');
+  await expect(queuedMessage).toBeHidden(LIVE);
+  await approval.getByRole('button', { name: 'Allow', exact: true }).focus();
+  await page.keyboard.press('Escape');
+  await expect(approval.getByRole('button', { name: 'Allow', exact: true })).toBeEnabled(LIVE);
+  expect(cancellationRequests).toEqual([]);
+  await approval.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(page.locator('#cancel')).toBeHidden(LIVE);
+  await expect.poll(async () => page.evaluate(async messages => {
+    const { events } = await rpc('session.history', {});
+    return {
+      starts: events.filter(event => event.type === 'user_message' && event.text === 'Run the test command').map(event => event.turn),
+      interjections: events.filter(event => event.type === 'user_message' && messages.includes(event.text)).map(event => [event.text, event.turn]),
+      ends: events.filter(event => event.type === 'turn_ended').map(event => [event.turn, event.reason]),
+    };
+  }, [interjection, priority]), LIVE).toEqual({
+    starts: [1], interjections: [[priority, 1], [interjection, 1]], ends: [[1, 'completed']],
+  });
+  await expect(page.locator('#transcript .msg.user').last()).toContainText(interjection, LIVE);
+  expect(cancellationRequests).toEqual([]);
+});
+
+test('an interjection arriving after its turn ends stays in the composer', async ({ page }) => {
+  await openCommandSession(page);
+  const prompt = page.locator('#prompt'), send = page.locator('#send');
+  await prompt.fill('Run the gated command');
+  await send.click();
+  const approval = page.locator('.approval-card').last().getByRole('button', { name: 'Allow', exact: true });
+  await expect(approval).toBeVisible(LIVE);
+
+  const supplement = '请补充迟到的消息';
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/input.submit', async route => {
+    await gate;
+    await route.continue();
+  }, { times: 1 });
+  const submission = page.waitForRequest(request => request.url().endsWith('/api/input.submit'));
+  const reply = page.waitForResponse(response => response.url().endsWith('/api/input.submit'));
+  try {
+    await prompt.fill(supplement);
+    await prompt.press('Enter');
+    await submission;
+    await approval.click();
+    await expect(page.locator('#cancel')).toBeHidden(LIVE);
+  } finally {
+    release();
+  }
+  const body = await (await reply).json();
+  expect(body.ok).toBe(false);
+  expect(body.error.presentation.key).toBe('input.turn_changed');
+  await expect(prompt).toHaveValue(supplement, LIVE);
+  await expect(page.locator('#run-state')).toHaveAttribute('data-presentation', 'input.turn_changed', LIVE);
+  const history = await page.evaluate(async () => (await rpc('session.history', {})).events);
+  expect(history.filter(event => event.type === 'user_message').map(event => event.text)).toEqual(['Run the gated command']);
+  expect(history.filter(event => event.type === 'turn_ended').map(event => event.reason)).toEqual(['completed']);
+  expect(await page.evaluate(async () => (await rpc('input.pending', {})).items)).toEqual([]);
+});
+
 
 test('send and stop preserve the draft and invoke only their own action', async ({ page }) => {
   await openWorkbench(page, hostInfo('rewind'));
@@ -20,9 +148,7 @@ test('send and stop preserve the draft and invoke only their own action', async 
   }
 
   await prompt.fill('保留草稿');
-  await expect(send).toBeVisible();
-  await expect(stop).toBeHidden();
-  await prompt.clear();
+  await expect(send).toBeHidden();
   await expect(stop).toBeVisible();
   // Type a draft after issuing Stop but before the Host receives it.
   await page.route('**/api/run.cancel', async route => {

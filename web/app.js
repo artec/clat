@@ -490,6 +490,8 @@ const state = {
   token: '',
   connected: false,
   runActive: false,
+  turnTarget: null,
+  turnRevision: 0,
   compactionActive: false,
   switching: false,
   composerDraftLoading: true,
@@ -649,7 +651,7 @@ async function rpc(method, params, options) {
   if (Number.isSafeInteger(state.selectionGeneration) && [
     'session.new', 'session.switch', 'session.rename', 'session.compact', 'permission.set',
     'draft.open', 'prompt.suggest', 'command.run', 'prompt.send', 'steer.send', 'run.cancel', 'model.overrides.set', 'turn.restore', 'session.organize',
-    'input.submit', 'input.update', 'input.recall', 'input.delete', 'input.interrupt',
+    'input.submit', 'input.update', 'input.recall', 'input.delete', 'input.interject',
   ].includes(method)) {
     params = { ...params, expected_selection_generation: (params?.expected_selection_generation ?? state.selectionGeneration) };
   }
@@ -788,6 +790,8 @@ async function connect() {
     conversationRounds.stop();
     runActivity.hide();
     state.runActive = false;
+  state.turnTarget = null;
+  state.turnRevision++;
     context.changed();
     updateRunState('');
     updateRunDetail();
@@ -844,7 +848,7 @@ function dispatchFrame(frame) {
   observePageNotification(frame.event, payload.ctl);
   switch (frame.event) {
     case 'replay': handleReplay(payload.replay); break;
-    case 'event': handleLive(payload.event); break;
+    case 'event': handleLive(payload.event, payload.turn_target); break;
     case 'subscribed': onSubscribed(payload.ctl || payload); break;
     case 'approval.requested': onApprovalRequested(payload.ctl); break;
     case 'prompt.settled': onSettled(payload.ctl); break;
@@ -859,6 +863,8 @@ function dispatchFrame(frame) {
       show(dom['empty-state']);
       state.run = null;
       state.runActive = false;
+      state.turnTarget = null;
+      state.turnRevision++;
       state.lastUsage = null;
       // ORDER-1/CONT-1：转录重建即清配对注册表与终态去重记忆，随后
       // replay/live 重建等价逻辑序（O3）。
@@ -981,7 +987,7 @@ function handleReplay(event) {
   conversationRounds.replay(event,node);
 }
 
-function handleLive(event) {
+function handleLive(event, turnTarget) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started': {
@@ -995,6 +1001,8 @@ function handleLive(event) {
       resetOptimisticSteering();
       invalidateSuggestion(); clearRoundFollowups();
       state.runActive = true;
+      state.turnTarget = turnTarget || null;
+      state.turnRevision++;
       runActivity.set(CLATI18n.msg('web.running'));
       // ORDER-1/CONT-1：新 run 开工即清配对与终态去重记忆——不同 run 的
       // 同名 call_id 不误合并，旧 run 的重复完成帧不再立第二张终态卡。
@@ -1109,6 +1117,8 @@ function finishRun(event) {
     state.run.assistant.finishBody();
   }
   state.runActive = false;
+  state.turnTarget = null;
+  state.turnRevision++;
   state.run = null;
   conversationRounds.finish();
   const restoredText = finishTextSteering();
@@ -2621,6 +2631,7 @@ function updateDocumentTitle(sessionTitle) {
 async function refreshWorkbench() {
   const request = ++state.workbenchRequest;
   const selection = state.selectionGeneration;
+  const turnRevision = state.turnRevision;
   try {
     const info = await rpc('workbench.info', {});
     if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
@@ -2640,7 +2651,10 @@ async function refreshWorkbench() {
     // 含其它客户端提交）——过期响应已在上方 request/switching/selection
     // 三重门拦截，此处落地即为当前会话列表。
     observeInputHistory(session.recent_inputs);
-    state.runActive = Boolean(info.active_run);
+    if (turnRevision === state.turnRevision) {
+      state.runActive = Boolean(info.active_run);
+      state.turnTarget = info.active_run?.turn_target || null;
+    }
     state.compactionActive = Boolean(info.active_compaction);
     void hydrateComposerDraft(info);
     void stageReadyComposerImages();
@@ -2975,7 +2989,6 @@ function syncSuggestionControl() {
 function syncInteractionControls() {
   const locked = state.switching || state.compactionActive || state.desktopUpdateLocked || state.composerDraftLoading;
   syncInputSubmitButtons();
-  dom.send.disabled = locked || (Boolean(composerGoalDraft) && !canComposeGoal(composerWorkflow()));
   syncComposerGoal();
   dom.prompt.disabled = locked;
   dom['attachment-open'].disabled = locked || !builtinReady('builtin.draft_images');
@@ -4267,12 +4280,13 @@ for (const id of ['suggestion-ignore', 'suggestion-dismiss']) {
 async function submitPrompt() {
   if (composerGoalDraft) return submitComposerGoal();
   const generation = state.composerGeneration, owner = composerScope;
+  const interjecting = state.runActive, turnTarget = state.turnTarget;
   if (!dom.prompt.value.trim().startsWith('/') && !await modelSetup.ensure()) return;
   if (generation !== state.composerGeneration || !composerOwns(owner)) return;
-  return submitConfiguredPrompt();
+  return submitConfiguredPrompt(interjecting, turnTarget);
 }
 
-async function submitConfiguredPrompt() {
+async function submitConfiguredPrompt(interjecting, turnTarget) {
   if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if(borrowedConversation && borrowedConversation.session !== state.sessionId) {updateRunState(pageText('conversation_unavailable'));return;}
   if(state.desktopUpdateLocked || state.composerDraftLoading)return;
@@ -4309,9 +4323,9 @@ async function submitConfiguredPrompt() {
   }
   state.draft.sending = images.length > 0 || sessionSharesFor(owner).length > 0;
   renderDraft();
-  const submission = { text, composerGeneration, images, draftEpoch, owner };
+  const submission = { text, composerGeneration, images, draftEpoch, owner, interjecting, turnTarget };
   try {
-    if (supportsPendingInputs() && (state.runActive || !text.startsWith('/'))) {
+    if (supportsPendingInputs() && (interjecting || !text.startsWith('/'))) {
       try { await submitPendingInput(submission); }
       catch (error) {
         if (composerOwns(owner)) {
@@ -4319,7 +4333,7 @@ async function submitConfiguredPrompt() {
             for (const share of sessionSharesFor(owner)) share.needsRefresh = true;
             renderSessionShareDraft();
           }
-          updateRunState(error.message);
+          updateRunState(error.presentation?.key === 'input.turn_changed' ? inputText('turn_changed') : error.message);
         }
       }
       return;

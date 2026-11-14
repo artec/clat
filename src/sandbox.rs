@@ -539,17 +539,15 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn seatbelt_probe_failure_explains_nested_sandboxes() {
-        let denied = std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 71"])
-            .status()
-            .unwrap();
+        // 直接构造 ExitStatus（unix wait 位布局：code << 8）——本文件受
+        // architecture_boundaries 的子串扫描管辖，测试也不得出现直派生
+        // 进程的写法；且免 spawn，断言更快更稳。
+        use std::os::unix::process::ExitStatusExt;
+        let denied = std::process::ExitStatus::from_raw(71 << 8);
         let nested = seatbelt_probe_failure(&denied);
         assert!(nested.contains("stacking Seatbelt profiles"), "{nested}");
         assert!(nested.contains("Full Access"), "{nested}");
-        let other = std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 1"])
-            .status()
-            .unwrap();
+        let other = std::process::ExitStatus::from_raw(1 << 8);
         assert!(!seatbelt_probe_failure(&other).contains("stacking"));
     }
 

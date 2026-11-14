@@ -77,6 +77,37 @@ fn active_compaction_selection_keeps_user_steering_and_latest_parallel_batch() {
     );
 }
 #[test]
+fn active_compaction_selection_requires_an_exchange_after_a_protected_boundary() {
+    let mut nodes = vec![
+        node(0, "task"),
+        CompactionNode {
+            checkpoint: false,
+            seq: 1,
+            item: ModelItem::assistant_text("long ordinary reply ".repeat(2000)),
+        },
+    ];
+    nodes.extend(group(2, &["older"]));
+    nodes.extend(group(4, &["latest"]));
+    let mut request = CompactionRequest {
+        config: &ModelConfig::default(),
+        credentials: &crate::ProviderCredentials::default(),
+        nodes: &nodes,
+        measured_input: None,
+        protected_boundaries: vec![2],
+        active_checkpoints: Some(&[]),
+        protected_head: None,
+        spend_ledger: None,
+        instructions: String::new(),
+        tool_definitions: vec![],
+        force: true,
+        cancel: CancelToken::new(),
+    };
+    assert_eq!(selection::choose_range(&request, None, "", &[]), Some(2..5));
+    request.protected_boundaries.push(4);
+    assert!(selection::choose_range(&request, None, "", &[]).is_none());
+}
+
+#[test]
 fn active_compaction_selection_requires_all_parallel_results() {
     let mut nodes = vec![node(0, "task")];
     nodes.extend(group(1, &["a", "b"]));

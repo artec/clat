@@ -103,12 +103,11 @@ impl SteeringQueue {
         let Ok(mut state) = self.pending.lock() else {
             return true;
         };
-        if self.inputs.ready() {
-            return false;
+        if state.sealed {
+            return true;
         }
-        if state.sealed || state.queue.is_empty() {
+        if state.queue.is_empty() && self.inputs.seal_if_no_steer() {
             state.sealed = true;
-            self.inputs.terminal();
             return true;
         }
         false
@@ -117,9 +116,11 @@ impl SteeringQueue {
     /// 无条件封口（fail/cancelled 等一切退出路径的兜底）：此后
     /// `try_push` 一律 `Sealed`。
     pub(crate) fn seal(&self) {
-        self.inputs.terminal();
         if let Ok(mut state) = self.pending.lock() {
+            self.inputs.terminal();
             state.sealed = true;
+        } else {
+            self.inputs.terminal();
         }
     }
 

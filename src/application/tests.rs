@@ -6543,6 +6543,7 @@ fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
                 vec![],
             ),
             InputDraft::default(),
+            None,
         )
         .unwrap();
     assert!(
@@ -6584,6 +6585,7 @@ fn followups_are_ephemeral_deduplicated_and_invalidated_by_new_input() {
                 vec![],
             ),
             InputDraft::default(),
+            None,
         )
         .unwrap();
     assert!(
