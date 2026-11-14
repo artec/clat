@@ -1177,9 +1177,10 @@ Read-only `interaction.catalog` projects the core command registry and existing
 skill overview as structured metadata (names, aliases, descriptions, argument
 hints, source/constraints and diagnostics), never skill bodies or an invocation.
 TUI/PWA own filtering and focus; selecting a candidate only edits input or opens
-an existing dedicated UI. Browser text drafts and conversation-find identities
-are page-local, non-durable UX state. Text draft ownership follows project,
-session selection and lazy session materialization; monotonic composer
+an existing dedicated UI. Browser and Desktop composers save unsent text and
+ordered image files in IndexedDB under the Host storage root, project and session.
+Host upload leases stay transient and are re-created for restored image drafts.
+Draft ownership follows lazy session materialization, and monotonic composer
 generation fences late submission/suggestion/upload completion. Find uses raw
 user/assistant body data and frontend-stable message identities, not DOM text
 or a second journal projection. `session.history` optionally checks

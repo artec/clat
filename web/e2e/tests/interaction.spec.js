@@ -14,9 +14,14 @@ async function open(page, host = 'success') {
 for (const steering of [false, true]) {
 test(`UX-1 late acknowledged ${steering ? 'steering' : 'prompt'} never reappears as an unsent session draft`, async ({ page }) => {
   await open(page);
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
   const result = await page.evaluate(async (steering) => {
     state.runActive = steering; state.switching = false; state.compactionActive = false;
-    observeComposerSession(null, 900);
+    const select = async (id, selection) => {
+      observeComposerSession(id, selection);
+      await hydrateComposerDraft(state.workbench);
+    };
+    await select(null, 900);
     dom.prompt.value = 'acknowledged first submission'; state.composerGeneration += 1; saveComposerText();
     const original = rpc;
     let acknowledge;
@@ -27,12 +32,12 @@ test(`UX-1 late acknowledged ${steering ? 'steering' : 'prompt'} never reappears
     // mock 上、提交已在途，再让 B 开始编辑——否则 generation 变更会让守卫
     // 直接丢弃提交（rpc 永不发出），「晚确认」场景就不成立。
     for (let i = 0; i < 400 && typeof acknowledge !== 'function'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    observeComposerSession('materialized-A', 900);
-    observeComposerSession('session-B', 901);
+    await select('materialized-A', 900);
+    await select('session-B', 901);
     dom.prompt.value = 'B is still editing'; state.composerGeneration += 1; saveComposerText();
     acknowledge(steering ? { outcome: 'queued' } : {}); await pending; rpc = original;
     const current = dom.prompt.value;
-    observeComposerSession('materialized-A', 902);
+    await select('materialized-A', 902);
     return { current, restored: dom.prompt.value };
   }, steering);
   expect(result.current).toBe('B is still editing');

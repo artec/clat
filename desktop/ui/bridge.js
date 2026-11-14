@@ -105,7 +105,8 @@
   function prepareDesktopAction(action) {
     if (!['install','open','quit','stop','refresh-accessibility'].includes(action)) return () => {};
     const request = new CustomEvent('clat-desktop-action-request', {cancelable:true, detail:{action}});
-    if (!window.dispatchEvent(request) || desktopComposing || document.querySelector('#prompt')?.value.trim() || document.querySelector('#attachment-rail .attachment-chip')) throw CLATI18n.msg('desktop.draft_warning');
+    const hasComposer = document.querySelector('#prompt')?.value.trim() || document.querySelector('#attachment-rail .attachment-chip');
+    if (!window.dispatchEvent(request) || desktopComposing || (hasComposer && (action !== 'quit' || !window.CLATWorkbenchState))) throw CLATI18n.msg('desktop.draft_warning');
     if (!['install','stop','refresh-accessibility'].includes(action)) return () => {};
     const guard = new CustomEvent('clat-desktop-install-lock',{cancelable:true});
     if (!window.dispatchEvent(guard)) throw CLATI18n.msg('desktop.draft_warning');

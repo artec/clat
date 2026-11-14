@@ -1705,6 +1705,8 @@
   "web.command_hint": "↑↓ 瀏覽 · Tab/Enter 選擇 · Esc 關閉 · 選擇不會執行命令",
   "web.commands_and_skills": "命令與技能",
   "web.commands_do_not_accept_draft_images_draft_retained": "命令不接受草稿圖片，草稿已保留",
+  "web.composer_draft_restore_failed": "無法還原此裝置上的草稿。",
+  "web.composer_draft_save_failed": "無法在此裝置上儲存草稿。請保持應用程式開啟，以免遺失。",
   "web.compact_history": "壓縮歷史",
   "web.compacting_history": "正在壓縮歷史",
   "web.compacting_short": "壓縮中",

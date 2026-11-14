@@ -1,7 +1,7 @@
 const inputOperations = new Set(), inputPreviews = new Map();
 const inputSubmissions = new Map();
 let optimisticInputInterrupt = null;
-const inputRetryOperations = new Map(), inputRecallRecoveries = new Map(), recalledInputFiles = new Map();
+const inputRetryOperations = new Map(), inputRecallRecoveries = new Map();
 function rememberInputReferences(item, owner = composerScope) {
   if (!owner || !item.draft.references.length) return;
   const refs = pendingFileReferences.get(owner) || [];
@@ -29,7 +29,7 @@ async function refreshPendingInputs() {
   catch (_) {}
 }
 async function submitPendingInput({ text, images, owner, draftEpoch, composerGeneration }) {
-  const params = { ...composerSubmissionParams(text, images) };
+  const params = { ...composerSubmissionParams(text, images, images.length ? state.draft.clientMessageId : newOpaqueClientId('input')) };
   const shares = [...sessionSharesFor(owner)];
   if (shares.some(share => share.needsRefresh)) throw CLATI18n.error(inputText('share_refresh_required'));
   if (shares.length) params.sessionShares = shares.map(({reference, recent_turns, version}) => ({reference, recent_turns, version}));
@@ -48,6 +48,9 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   const deferredIntoRun = state.runActive;
   const resumeFollow = deferredIntoRun ? null : followAcceptedPrompt(owner);
   try {
+    const saved = persistComposerSubmission(submission.clientMessageId, images);
+    if (saved) await saved;
+    if (!composerOwns(owner) || composerGeneration !== state.composerGeneration) return;
     await rpc('input.submit', params);
   } catch (error) {
     if (error.code === 'busy' && submission.selection !== state.selectionGeneration) {
@@ -64,12 +67,13 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   // 则不回显：条目转为空闲队列，由下一 run_started 正常入转录。
   if (deferredIntoRun && state.runActive) echoOptimisticSteering(params.clientMessageId, text);
   resumeFollow?.();
+  clearOwnedSubmittedText(owner, composerGeneration);
+  clearOwnedComposerImages(owner, images, draftEpoch);
   if (composerOwns(owner)) {
-    clearOwnedSubmittedText(owner, composerGeneration);
-    if (images.length && draftEpoch === state.draft.epoch) clearDraft();
     showAcceptedInputFeedback();
     void refreshPendingInputs();
   }
+  finishComposerSubmission(owner, submission.clientMessageId);
 }
 
 function forgetInputSubmission(owner, submission) {
@@ -149,21 +153,21 @@ async function recallPendingInput(item, recovery = null) {
     restoreSessionShares(recalled, owner);
     const files = previews.map(preview => new File([preview.blob], preview.name || String(inputText('image')), {type:preview.blob.type}));
     inputRecallRecoveries.delete(item.id);
-    if (!composerOwns(owner)) { recalledInputFiles.set(owner, [...(recalledInputFiles.get(owner) || []), ...files]); return; }
+    if (!composerOwns(owner)) {
+      const target = composerOwnerAliases.get(owner) || owner;
+      const images = [...(composerImageDrafts.get(target) || []), ...files.map(file => ({file, id: newOpaqueClientId('image')}))];
+      composerImageDrafts.set(target, images);
+      void writeComposerDraft(composerDraftKeys.get(target), {images});
+      return;
+    }
     recalled.draft.uploads.forEach((uploadId, index) => {
       const preview = previews[index];
       state.draft.images.push({ id: newOpaqueClientId('image'), uploadId, url: URL.createObjectURL(preview.blob), name: files[index].name, bytes: preview.bytes, type: files[index].type, width:0, height:0, status: 'uploaded', file:files[index] });
       URL.revokeObjectURL(preview.url);
       inputPreviews.delete(JSON.stringify([item.id,item.version,index]));
     });
-    state.draft.scope = scope; state.draft.clientMessageId = newOpaqueClientId('message'); renderDraft(); dom.prompt.focus();
+    state.draft.scope = scope; state.draft.clientMessageId = newOpaqueClientId('message');
+    saveComposerImages(); renderDraft(); dom.prompt.focus();
   } catch (error) { if (composerOwns(owner)) updateRunState(error.message); }
   finally { if (draftEpoch === state.draft.epoch) { state.draft.sending = false; renderDraft(); if (!pendingInputPopup.classList.contains('hidden')) renderPendingInputPopup(); } }
-}
-function restoreRecalledInputFiles() {
-  for (const [owner, files] of recalledInputFiles) {
-    if (!composerOwns(owner)) continue;
-    if (state.draft.images.length + files.length > MAX_DRAFT_IMAGES) { updateRunState(inputText('merge_limit')); continue; }
-    recalledInputFiles.delete(owner); void addDraftFiles(files);
-  }
 }

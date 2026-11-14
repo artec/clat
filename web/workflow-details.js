@@ -15,7 +15,7 @@ function requireBuiltin(id){if(!builtinReady(id))throw CLATI18n.error(CLATI18n.v
 const optionalResourceControlState=new WeakMap();
 function syncOptionalResourceControls(){
   for(const [id,names] of [['builtin.development',['files-open','review-open','terminal-open','nav-terminal','context-resources-files','context-files-open','context-changes-open','add-project-file']],['builtin.draft_images',['attachment-open','attachment-input','add-image']]]){
-    for(const name of names){const node=document.getElementById(name);if(node){node.disabled=!builtinReady(id)||(id==='builtin.draft_images'&&Boolean(state.switching||state.compactionActive||state.desktopUpdateLocked));CLATI18n.attribute(node,'title',()=>builtinReady(id)?'':builtinUnavailableReason(id));}}
+    for(const name of names){const node=document.getElementById(name);if(node){node.disabled=!builtinReady(id)||(id==='builtin.draft_images'&&Boolean(state.switching||state.compactionActive||state.desktopUpdateLocked||state.composerDraftLoading));CLATI18n.attribute(node,'title',()=>builtinReady(id)?'':builtinUnavailableReason(id));}}
   }
   for(const name of ['file-browser','workspace-review','terminal-page']){
     for(const node of document.getElementById(name)?.querySelectorAll?.('button,input,textarea,select')||[]){

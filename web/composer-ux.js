@@ -1,4 +1,4 @@
-// Page-local UX only. Session receipts and attachment leases remain host-owned.
+// Composer ownership and live UI state. Receipts and upload leases remain Host-owned.
 const composerDrafts = new Map();
 const composerOwnerAliases = new Map();
 let composerSession = undefined;
@@ -11,59 +11,72 @@ function installComposerGuard() {
   let composing = false;
   document.addEventListener('compositionstart', event => { if (event.target === dom.prompt) composing = true; });
   document.addEventListener('compositionend', event => { if (event.target === dom.prompt) composing = false; });
-  CLATWorkbenchState.register(workspacePrefix, () => ({
-    text: Boolean(dom.prompt.value.trim()) || [...composerDrafts.values()].some(draft => Boolean(draft.text.trim()))
-      || [...pendingSessionShares.values()].some(shares => shares.length > 0)
-      || [...document.querySelectorAll('.question-card:not(.resolved) textarea')].some(input => Boolean(input.value.trim())),
-    images: state.draft.images.length > 0,
-    submitting: composerGoalPending !== null || state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
-    composing,
-    busy: Boolean(document.querySelector('[data-unsaved=true]')) || Boolean(document.querySelector('[data-saving=true]')) || state.switching || state.compactionActive,
-  }));
+  CLATWorkbenchState.register(workspacePrefix, action => {
+    const protect = action !== 'quit' || composerDraftNeedsProtection();
+    const text = Boolean((inputHistory.draft ?? dom.prompt.value).trim()) ||
+      [...composerDrafts.values()].some(draft => Boolean(draft.text.trim()));
+    return {
+      text: (protect && text) || [...pendingSessionShares.values()].some(shares => shares.length > 0)
+        || [...document.querySelectorAll('.question-card:not(.resolved) textarea')].some(input => Boolean(input.value.trim())),
+      images: protect && (state.draft.images.length > 0 || composerImageDrafts.size > 0),
+      submitting: composerGoalPending !== null || state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
+      composing,
+      busy: Boolean(document.querySelector('[data-unsaved=true]')) || Boolean(document.querySelector('[data-saving=true]')) || state.switching || state.compactionActive,
+    };
+  });
+}
+
+function setComposerTextDraft(owner, draft) {
+  if (draft) composerDrafts.set(owner, draft);
+  else composerDrafts.delete(owner);
+  void saveComposerDraftText(composerDraftKeys.get(owner), draft);
 }
 
 function saveComposerText() {
-  if (composerScope) composerDrafts.set(composerScope, {
-    text: dom.prompt.value, generation: state.composerGeneration, goal: composerGoalDraft,
-  });
+  if (!composerScope || state.composerDraftLoading) return;
+  const text = dom.prompt.value;
+  exitInputHistoryBrowse();
+  const previous = composerDrafts.get(composerScope);
+  const goal = composerGoalDraft;
+  const revision = previous?.generation === state.composerGeneration && previous?.revision
+    || newOpaqueClientId('draft-edit');
+  setComposerTextDraft(composerScope, {text, generation: state.composerGeneration, goal, revision});
+}
+
+function materializeComposer(oldScope, scope, session) {
+  composerOwnerAliases.set(oldScope, scope);
+  for (const map of [composerDrafts, composerImageDrafts, inputSubmissions, pendingSessionShares]) {
+    if (map.has(oldScope)) map.set(scope, map.get(oldScope));
+    map.delete(oldScope);
+  }
+  migrateComposerDraft(oldScope, scope, session);
 }
 
 function observeComposerSession(id, selection) {
   const next = id || null;
   if (composerSession === next && composerSelection === selection) return;
-  const materializing = composerSession === null && next !== null && composerSelection === selection;
-  saveComposerText();
+  const materializing = composerSession === null && next !== null && composerSelection === selection
+    && !state.composerDraftLoading;
   const oldScope = composerScope;
+  const oldSession = composerSession;
   const scope = workspacePrefix + ':' + (next || 'new-' + (++freshComposer));
+  composerSession = next;
+  composerSelection = selection;
+  composerScope = scope;
   if (materializing) {
-    composerOwnerAliases.set(oldScope, scope);
-    composerDrafts.set(scope, composerDrafts.get(oldScope));
-    composerDrafts.delete(oldScope);
-    if (inputSubmissions.has(oldScope)) {
-      inputSubmissions.set(scope, inputSubmissions.get(oldScope));
-      inputSubmissions.delete(oldScope);
-    }
-    if (pendingSessionShares.has(oldScope)) {
-      pendingSessionShares.set(scope, pendingSessionShares.get(oldScope));
-      pendingSessionShares.delete(oldScope);
-    }
-  } else if (composerSession !== undefined) {
+    materializeComposer(oldScope, scope, next);
+  } else {
+    composerDraftKey = '';
+    state.composerDraftLoading = true;
     dom.prompt.value = composerDrafts.get(scope)?.text || '';
     composerGoalDraft = composerDrafts.get(scope)?.goal || null;
     state.composerGeneration += 1;
-    invalidateSuggestion(); clearRoundFollowups();
-    const hadImages = state.draft.images.length > 0;
-    clearDraft();
-    if (hadImages) {
-      updateRunState(CLATI18n.msg("web.session_changed_attachments_released_reattach_images_in_this_session", {}, "Session changed; attachments released. Reattach images in this session."));
-    }
+    if (oldSession !== undefined) clearDraft(true);
+    invalidateSuggestion();
+    clearRoundFollowups();
   }
-  composerScope = scope;
   renderSessionShareDraft();
   refreshRecalledSessionShares(scope, selection);
-  restoreRecalledInputFiles();
-  composerSession = next;
-  composerSelection = selection;
   // HIST-PWA-1/W1 + B8-R2-1：会话/selection 变化是**作废**不是迁移——
   // 旧会话的浏览游标与待还原暂存一并退役，不得经新会话的 ↑↓ 复原；
   // 新会话列表只能由匹配它的 workbench 快照重新提供。与同会话刷新的
@@ -73,11 +86,15 @@ function observeComposerSession(id, selection) {
   resizePrompt();
 }
 
-function clearOwnedSubmittedText(owner, generation) {
+function clearOwnedSubmittedText(owner, generation, revision) {
   const canonical = composerOwnerAliases.get(owner) || owner;
   const draft = composerDrafts.get(canonical);
-  if (draft && draft.generation === generation) composerDrafts.delete(canonical);
-  clearSubmittedPrompt(generation);
+  const sameRevision = revision && draft?.revision === revision;
+  if (canonical === composerScope) {
+    clearSubmittedPrompt(sameRevision && inputHistory.draft === null ? state.composerGeneration : generation);
+    return;
+  }
+  if (sameRevision || draft?.generation === generation) setComposerTextDraft(canonical, null);
 }
 
 function settleComposerGoalDraft(owner, generation, goal) {
@@ -91,18 +108,18 @@ function settleComposerGoalDraft(owner, generation, goal) {
   const canonical = composerOwnerAliases.get(owner) || owner;
   const draft = composerDrafts.get(canonical);
   if (draft?.goal !== goal) return;
-  if (draft.generation === generation) composerDrafts.delete(canonical);
-  else composerDrafts.set(canonical, { ...draft, goal: null });
+  if (draft.generation === generation) setComposerTextDraft(canonical, null);
+  else setComposerTextDraft(canonical, { ...draft, goal: null });
 }
 
 function composerOwns(owner) {
   return (composerOwnerAliases.get(owner) || owner) === composerScope;
 }
 
-function composerSubmissionParams(text, images) {
-  return images.length === 0 ? { text } : {
+function composerSubmissionParams(text, images, clientMessageId = state.draft.clientMessageId) {
+  return images.length === 0 ? { text, clientMessageId } : {
     text, draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
-    attachments: images.map((image) => image.uploadId), clientMessageId: state.draft.clientMessageId,
+    attachments: images.map((image) => image.uploadId), clientMessageId,
   };
 }
 
@@ -179,7 +196,7 @@ function restoreTextSteering(id, entry) {
   discardOptimisticSteering(id);
   pendingTextSteering.delete(id);
   const canonical = composerOwnerAliases.get(entry.owner) || entry.owner;
-  const current = composerOwns(entry.owner) ? dom.prompt.value : (composerDrafts.get(canonical)?.text || '');
+  const current = composerOwns(entry.owner) ? (inputHistory.draft ?? dom.prompt.value) : (composerDrafts.get(canonical)?.text || '');
   const text = entry.text + (current ? '\n' + current : '');
   if (composerOwns(entry.owner)) {
     dom.prompt.value = text;
@@ -187,8 +204,9 @@ function restoreTextSteering(id, entry) {
     resizePrompt();
     saveComposerText();
   } else {
-    composerDrafts.set(canonical, { ...composerDrafts.get(canonical), text, generation: (composerDrafts.get(canonical)?.generation || 0) + 1 });
+    setComposerTextDraft(canonical, { ...composerDrafts.get(canonical), text, revision: newOpaqueClientId('draft-edit'), generation: (composerDrafts.get(canonical)?.generation || 0) + 1 });
   }
+  if (id) finishComposerSubmission(entry.owner, id);
 }
 
 function finishTextSteering() {
@@ -206,13 +224,21 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
   if (!images.length) pendingTextSteering.set(clientMessageId, entry);
   let value;
   try {
+    const saved = persistComposerSubmission(clientMessageId, images);
+    if (saved) await saved;
+    if (!composerOwns(owner) || composerGeneration !== state.composerGeneration) {
+      pendingTextSteering.delete(clientMessageId);
+      return;
+    }
     const params={...composerSubmissionParams(text,images),clientMessageId};bindFileReferenceSubmission(owner,text,params);
     value = await rpc('steer.send', params);
   } catch (error) {
     pendingTextSteering.delete(clientMessageId);
     throw error;
   }
-  if (value && value.outcome === 'queued') clearOwnedSubmittedText(owner, composerGeneration);
+  if (value && value.outcome === 'queued' && !images.length) {
+    clearOwnedSubmittedText(owner, composerGeneration);
+  }
   if (!images.length) {
     if (!value || value.outcome !== 'queued') pendingTextSteering.delete(clientMessageId);
     else if (pendingTextSteering.has(clientMessageId)) {
@@ -226,6 +252,7 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
   }
   if (!composerOwns(owner) || draftEpoch !== state.draft.epoch) return;
   if (!value || value.outcome !== 'queued') {
+    finishComposerSubmission(owner, clientMessageId);
     updateRunState(CLATI18n.msg("web.run_ended_before_steering_was_accepted_draft_retained", {}, "run ended before steering was accepted; draft retained"));
     return;
   }
@@ -409,9 +436,7 @@ async function confirmAttachmentSelection() {
     updateRunState(CLATI18n.msg("web.wait_for_the_submitted_attachment_receipt_before_changing_sessions", {}, "Wait for the submitted attachment receipt before changing sessions."));
     return false;
   }
-  return state.draft.images.length === 0 || await CLATDialog.confirm(
-    CLATI18n.msg("web.changing_sessions_releases_these_draft_images_text_stays_with_its_session_continue", {}, "Changing sessions releases these draft images. Text stays with its session. Continue?")
-  );
+  return true;
 }
 
 async function copyMessageText(button, text) {

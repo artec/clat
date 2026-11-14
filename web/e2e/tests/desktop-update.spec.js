@@ -1,5 +1,5 @@
 const {test,expect}=require('@playwright/test');
-const {hostInfo,openWorkbench}=require('../helpers/workbench');
+const {LIVE,hostInfo,openWorkbench}=require('../helpers/workbench');
 
 test('desktop updates use the complete settings page and preserve the conversation draft',async({page},info)=>{
   const fs=require('node:fs'),path=require('node:path');
@@ -29,6 +29,7 @@ test('desktop updates use the complete settings page and preserve the conversati
 
 test('desktop installation lock protects actual workbench draft state and blocks late image selection',async({page})=>{
   await openWorkbench(page,hostInfo('success'));
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
   const result=await page.evaluate(async()=>{
     window.__TAURI__={}; // Only enables the local lock event; no native commands are called.
     const fire=()=>window.dispatchEvent(new CustomEvent('clat-desktop-install-lock',{cancelable:true}));

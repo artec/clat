@@ -1069,11 +1069,11 @@ restart.
 In the local web workbench, use **Add images**, paste an image into the
 composer, or drop PNG/JPEG files onto it. The rail supports multiple images,
 ordering, removal, image-only messages, and retry after an upload failure.
-Browser files first enter a short-lived server-minted draft scope; the browser
-sends only opaque upload IDs, never a local path or Base64 body. A successful
-send clears the browser draft; switching or creating a session clears and
-revokes it as well. While a run is active, an image draft is queued as steering
-and becomes durable only when that run claims it.
+The workbench saves original draft images in local browser storage and stages
+them with the Host under a short-lived scope. A restored draft stages its images
+again when the selected model and Host support image input. Submissions refer to
+opaque upload IDs. While a run is active, queued images enter the journal when
+the run claims the message.
 
 History thumbnails are fetched on demand through the authenticated local
 attachment endpoint and displayed with temporary `blob:` URLs. Attachment IDs
@@ -1961,7 +1961,7 @@ extensions, settings, and help. The project/session list can collapse within
 Conversations; global actions remain available. Settings, task center, history timeline, and extensions
 use full content pages. Moving between these pages preserves the current conversation,
 its reading position, and unsent text in this browser page. Back/Forward and hash routes
-return to the corresponding function page; refreshing still discards page-local drafts.
+return to the corresponding function page. Reloading restores the saved composer draft.
 The right work area is independent of the content page. Files, changes, or tasks
 opened there remain available while visiting resources, tasks, search, extensions,
 settings, or help. Its project/conversation scope is shown explicitly. Closing and
@@ -2124,8 +2124,8 @@ Resources reuses bounded project-file search, preview and checked snapshot
 quoting. It also lists attachments from the currently loaded conversation
 messages, not an all-session persistent library. Quoting a file returns to the
 conversation and appends to the retained draft.
-Browser storage is limited to presentation preferences and a
-private HttpOnly session cookie; session content, run state, permission mode, model state,
+Browser storage retains presentation preferences and unsent composer drafts.
+Authentication uses a private HttpOnly session cookie. Session content, run state, permission mode, model state,
 and MCP facts are rebuilt from authenticated snapshots, journal replay, and
 live events.
 Assistant replies and reasoning render a safe Markdown subset (headings, lists,
@@ -2133,14 +2133,14 @@ tables, quotes, fenced and inline code, emphasis, links, and rules) during
 streaming and on completion. Raw HTML and remote Markdown images are never
 interpreted, and only HTTP(S) links become clickable.
 
-Unsent PWA text stays with its project/session in this page's memory; switching
-back restores it. Each **New conversation** starts a separate draft, and the
-first accepted message transfers its identity to the materialized session.
-Reloading or closing the page discards these drafts. Draft images are not
-restored across sessions: changing sessions asks before releasing them, and
-cancelling preserves both text and images. A submitted attachment must finish
-its admission receipt before switching. Late completions cannot clear a newer
-draft or restore already-acknowledged text as an unsent message.
+The composer saves unsent text and ordered images on this device by Host
+storage root, project and session. Switching back, reloading the workbench or
+restarting Desktop restores them for the same browser or Desktop profile.
+A project also has a draft for a conversation that has yet to send its first
+message. The draft follows that conversation when it gets a session ID.
+Restoring a draft never sends it. Once the Host accepts a submission, the
+composer clears the accepted content and preserves newer edits. A submitted
+attachment must finish its admission receipt before switching.
 
 Settled replies and fenced code have **Copy reply** / **Copy code** actions
 that copy their original text, including Markdown/code line breaks. Selecting

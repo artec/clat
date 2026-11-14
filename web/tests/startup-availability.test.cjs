@@ -8,7 +8,7 @@ function fixture(){
   setConnStatus(){},openStream:()=>new Promise((resolve,reject)=>streams.push({resolve,reject})),
   closeQuestionCards(){},conversationRounds:{stop(){}},runActivity:{hide(){}},context:{changed(){}},
   updateRunState(){},updateRunDetail(){},setTimeout(){},
-  clearRoundFollowups(){},invalidateSuggestion(){},syncSuggestionControl(){},
+  clearRoundFollowups(){},invalidateSuggestion(){},syncSuggestionControl(){},hydrateComposerDraft(){},stageReadyComposerImages(){},
  };
  vm.createContext(scope);
  vm.runInContext(fs.readFileSync('web/workflow-details.js','utf8').replace(/\r\n/g,'\n'),scope);

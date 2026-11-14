@@ -1705,6 +1705,8 @@
   "web.command_hint": "↑↓ browse · Tab/Enter select · Esc close · selection never runs a command",
   "web.commands_and_skills": "Commands and skills",
   "web.commands_do_not_accept_draft_images_draft_retained": "commands do not accept draft images; draft retained",
+  "web.composer_draft_restore_failed": "Could not restore the saved draft on this device.",
+  "web.composer_draft_save_failed": "Could not save the draft on this device. Keep the app open to retain it.",
   "web.compact_history": "Compact history",
   "web.compacting_history": "compacting history",
   "web.compacting_short": "Compacting",

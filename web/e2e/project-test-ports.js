@@ -6,6 +6,7 @@ projectLifecycle = () => ({ ...lifecycle(), test: {
     set saveComposerText(value) { saveComposerText = value; },
     get observeComposerSession() { return observeComposerSession; },
     set observeComposerSession(value) { observeComposerSession = value; },
+    get hydrateComposerDraft() { return hydrateComposerDraft; },
     get pendingTextSteering() { return pendingTextSteering; },
     get inputHistory() { return inputHistory; },
     get observeInputHistory() { return observeInputHistory; },

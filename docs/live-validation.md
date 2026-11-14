@@ -341,9 +341,10 @@ saved session for the replay checks.
    returned usage/cache fields when the provider supplies them. Treat absent
    cache fields as unknown, not as a miss or hit.
 
-For the workbench, also verify file-picker, paste or drop staging; an upload
-failure must retain the ordered browser draft, while a session switch must
-revoke it. For the TUI, exercise explicit `/paste-image` on each platform that
+For the workbench, verify file-picker, paste and drop staging. An upload failure
+must retain the ordered draft. Switch away and back, and restart Desktop with
+an unsent draft to verify that the same images return in order. For the TUI,
+exercise explicit `/paste-image` on each platform that
 will be supported; ordinary terminal paste must not probe the system clipboard.
 After copying a non-sensitive image manually, the default-off
 `tui::attachments::tests::live_system_clipboard_image_is_readable_and_privately_staged`

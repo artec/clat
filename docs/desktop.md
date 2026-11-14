@@ -457,12 +457,13 @@ turns and context compaction. Other Host-owned state does not hold up installing
 the desktop package. Cancellation leaves work running; a new task racing the
 check keeps its original cached Host alive.
 
-Text drafts are currently page-local. Before updating, send or clear unsent text
-and images in every session, and finish any input-method composition. Before opening
-another project through the native project picker, finish the current draft.
-The in-page project list switches projects in the same window without losing
-page-local drafts or stopping their runs. The native project picker still
-navigates the window and requires finishing those drafts first.
+The composer saves unsent text and images locally for each project and
+conversation. Reopen a conversation after restarting Desktop to restore its
+draft. The composer also saves drafts before the first message is sent.
+Quit from the Desktop settings once draft writes finish. Before using the
+native project picker or updating, finish any protected work flagged by the
+desktop bridge. The in-page project list switches projects without stopping
+their runs.
 The workbench bridge checks inactive projects and conversations, staged images,
 unfinished submissions, composition and custom answers before its Open project,
 Install and Quit actions. Installation preflight checks all owners before any

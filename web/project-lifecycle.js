@@ -55,7 +55,6 @@ function projectLifecycle() {
     userMessageReader.close();
     conversationRounds.stop();
     runActivity.hide();
-    saveComposerText();
     window.dispatchEvent(new Event('clat:development-deactivated'));
     workbenchShell?.tools?.suspend();
     activeComposerPopup?.close();

@@ -1,7 +1,7 @@
 /* CLAT web workbench — a thin projection of Application/RPC/SSE facts.
  *
- * RF-1/RF-5: browser persistence contains presentation preferences and one
- * private HttpOnly browser session. Raw credentials are never newly persisted.
+ * Browser persistence contains presentation preferences and unsent composer
+ * drafts. Authentication uses a private HttpOnly browser session.
  * Local requests enter through the host protocol trust fence. Session content, run state, permission mode, model and MCP
  * state are rebuilt from serve. Dynamic model/tool text is written through
  * text nodes and DOM construction; this file never uses innerHTML.
@@ -487,6 +487,7 @@ const state = {
   runActive: false,
   compactionActive: false,
   switching: false,
+  composerDraftLoading: true,
   sessionId: null,
   sessions: [],
   workbench: null,
@@ -743,11 +744,19 @@ async function refreshBuiltinAvailability() {
   try {
     const description = await rpc('host.describe', {});
     if (request !== state.builtinAvailabilityRequest || prefix !== workspacePrefix) return;
-    if (typeof description.instance_id !== 'string' || !description.builtin_availability) return;
-    state.builtinAvailability = description.builtin_availability;
+    if (typeof description.instance_id === 'string' && description.builtin_availability) {
+      state.builtinAvailability = description.builtin_availability;
+    }
+    state.composerStorageRoot = description.storage_root ?? null;
+    void hydrateComposerDraft(state.workbench);
+    if (state.workbench) void stageReadyComposerImages();
     window.dispatchEvent(new Event('clat:builtin-availability'));
   } catch (error) {
-    if (request === state.builtinAvailabilityRequest) console.warn('[clat] startup availability failed:', error.message);
+    if (request === state.builtinAvailabilityRequest) {
+      state.composerStorageRoot ??= null;
+      void hydrateComposerDraft(state.workbench);
+      console.warn('[clat] startup availability failed:', error.message);
+    }
   }
 }
 
@@ -836,6 +845,7 @@ function dispatchFrame(frame) {
     case 'prompt.settled': onSettled(payload.ctl); break;
     case 'notice': onNotice(payload.ctl); break;
     case 'replay.begin':
+      composerReceiptIds.clear();
       conversationRounds.reset();
       runActivity.clear();
       resetConversationFind();
@@ -898,6 +908,7 @@ function handleReplay(event) {
   let node = null;
   switch (event.type) {
     case 'user_message':
+      acceptComposerReceipt(event.client_message_id);
       pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
       node = addUserMessage(event.text, event.content_blocks);
@@ -969,6 +980,7 @@ function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started':
+      acceptComposerReceipt(event.client_message_id);
       conversationRounds.begin();
       void refreshWorkbench();
       void refreshSessions();
@@ -1059,6 +1071,7 @@ function handleLive(event) {
       break;
     }
     case 'steering_applied':
+      acceptComposerReceipt(event.client_message_id);
       dismissAcceptedInputFeedback(event.client_message_id);
       void refreshPendingInputs();
       pendingTextSteering.delete(event.client_message_id);
@@ -1196,6 +1209,7 @@ function onApprovalRequested(ctl) {
 }
 
 function onSettled(ctl) {
+  if (ctl?.receipt?.state === 'committed') acceptComposerReceipt(ctl.receipt.client_message_id);
   const outcome = (ctl && ctl.outcome) || {};
   if (Array.isArray(ctl && ctl.message_outline)) {
     state.history.outline = ctl.message_outline;
@@ -2543,6 +2557,7 @@ async function refreshWorkbench() {
   try {
     const info = await rpc('workbench.info', {});
     if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
+    if (Number.isSafeInteger(info.selection_generation) && info.selection_generation !== selection) return;
     state.workbench = info;
     void refreshUsage();
     decorateConversationBookmarks();
@@ -2560,6 +2575,8 @@ async function refreshWorkbench() {
     observeInputHistory(session.recent_inputs);
     state.runActive = Boolean(info.active_run);
     state.compactionActive = Boolean(info.active_compaction);
+    void hydrateComposerDraft(info);
+    void stageReadyComposerImages();
     syncRunPresentation(info);
     renderPendingInputs(info.pending_inputs);
     syncPlanModeBadge();
@@ -2889,7 +2906,7 @@ function syncSuggestionControl() {
 }
 
 function syncInteractionControls() {
-  const locked = state.switching || state.compactionActive || state.desktopUpdateLocked;
+  const locked = state.switching || state.compactionActive || state.desktopUpdateLocked || state.composerDraftLoading;
   syncInputSubmitButtons();
   dom.send.disabled = locked || (Boolean(composerGoalDraft) && !canComposeGoal(composerWorkflow()));
   syncComposerGoal();
@@ -3774,6 +3791,7 @@ for (const button of document.querySelectorAll('[data-prompt]')) {
   button.addEventListener('click', () => {
     dom.prompt.value = button.dataset.prompt || '';
     state.composerGeneration += 1;
+    saveComposerText();
     resizePrompt();
     dom.prompt.focus();
   });
@@ -3934,7 +3952,7 @@ function renderDraft() {
   CLATI18n.bind(dom['attachment-summary'], "textContent", () => String(summary)+(notice ? ' · '+String(notice):''));
 }
 
-function clearDraft() {
+function clearDraft(retain = false) {
   state.draft.epoch += 1;
   for (const image of state.draft.images) URL.revokeObjectURL(image.url);
   state.draft.clientDraftId = newOpaqueClientId('draft');
@@ -3945,6 +3963,7 @@ function clearDraft() {
   state.draft.queuedClientMessageId = null;
   state.draft.notice = '';
   dom['attachment-input'].value = '';
+  if (!retain) saveComposerImages();
   renderDraft();
 }
 
@@ -3955,6 +3974,7 @@ function removeDraftImage(id) {
   const [image] = state.draft.images.splice(index, 1);
   URL.revokeObjectURL(image.url);
   if (state.draft.images.length === 0) state.draft.scope = null;
+  saveComposerImages();
   renderDraft();
 }
 
@@ -3962,6 +3982,7 @@ function moveDraftImage(from, to) {
   if (to < 0 || to >= state.draft.images.length || state.draft.sending || state.draft.queuedClientMessageId !== null) return;
   const [image] = state.draft.images.splice(from, 1);
   state.draft.images.splice(to, 0, image);
+  saveComposerImages();
   renderDraft();
 }
 
@@ -4014,7 +4035,7 @@ async function uploadDraftImage(image, epoch) {
 async function addDraftFiles(files) {
   if (state.workbench?.model?.image_input === false) { updateRunState(CLATI18n.msg('web.model_images_unsupported')); return; }
   if (!builtinReady("builtin.draft_images")) { updateRunState(CLATI18n.view(()=>builtinUnavailableReason("builtin.draft_images"))); return; }
-  if(state.desktopUpdateLocked)return;
+  if(state.desktopUpdateLocked || state.composerDraftLoading)return;
   if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if (state.compactionActive || state.switching) {
     updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
@@ -4048,37 +4069,64 @@ async function addDraftFiles(files) {
     accepted.push(file);
   }
   state.draft.notice = CLATI18n.view(()=>issues.join(' · '));
-  const epoch = state.draft.epoch;
-  const added = accepted.map((file, offset) => ({
-    id: newOpaqueClientId('image'), file, name: file.name || `image-${state.draft.images.length + offset + 1}`,
-    uploadName: uploadDisplayName(file, state.draft.images.length + offset), type: file.type,
-    bytes: file.size, width: 0, height: 0, url: URL.createObjectURL(file),
-    status: 'ready', uploadId: null, error: '',
-  }));
-  state.draft.images.push(...added);
+  const offset = state.draft.images.length;
+  state.draft.images.push(...accepted.map((file, index) => composerImage(file, offset + index)));
+  if (accepted.length) saveComposerImages();
   renderDraft();
-  for (const image of added) {
-    try {
-      const dimensions = await imageDimensions(image.file);
-      if (dimensions.width * dimensions.height > MAX_DRAFT_PIXELS) throw CLATI18n.error(CLATI18n.msg("web.dynamic_exceeds_the_value_pixel_limit", {value1:(MAX_DRAFT_PIXELS)}, "exceeds the {value1}-pixel limit"));
-      if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) continue;
-      image.width = dimensions.width;
-      image.height = dimensions.height;
-      renderDraft();
-      await uploadDraftImage(image, epoch);
-    } catch (error) {
-      if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) continue;
-      image.status = 'failed';
-      image.error = error.message || CLATI18n.msg("web.image_failed",{},"image validation failed");
-      renderDraft();
-    }
+  await stageReadyComposerImages();
+}
+
+function composerImage(file, index, id = newOpaqueClientId('image')) {
+  return {id, file, name: file.name || `image-${index + 1}`, uploadName: uploadDisplayName(file, index),
+    type: file.type, bytes: file.size, width: 0, height: 0, url: URL.createObjectURL(file),
+    status: 'ready', uploadId: null, error: ''};
+}
+
+function restoreComposerImages(images) {
+  if (state.draft.images.length) return;
+  state.draft.images = images.map(({file, id}, index) => composerImage(file, index, id));
+  renderDraft();
+  void stageReadyComposerImages();
+}
+
+async function stageReadyComposerImages() {
+  if (state.switching || state.compactionActive || state.desktopUpdateLocked || state.composerDraftLoading
+    || state.workbench?.model?.image_input === false || !builtinReady('builtin.draft_images')) return;
+  const epoch = state.draft.epoch;
+  for (const image of state.draft.images) {
+    if (epoch !== state.draft.epoch) return;
+    if (image.status !== 'ready') continue;
+    await stageComposerImage(image, epoch);
+  }
+}
+
+async function stageComposerImage(image, epoch) {
+  image.status = 'uploading';
+  renderDraft();
+  try {
+    const dimensions = await imageDimensions(image.file);
+    if (dimensions.width * dimensions.height > MAX_DRAFT_PIXELS) throw CLATI18n.error(CLATI18n.msg("web.dynamic_exceeds_the_value_pixel_limit", {value1:(MAX_DRAFT_PIXELS)}, "exceeds the {value1}-pixel limit"));
+    if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
+    image.width = dimensions.width;
+    image.height = dimensions.height;
+    renderDraft();
+    await uploadDraftImage(image, epoch);
+  } catch (error) {
+    if (epoch !== state.draft.epoch || !state.draft.images.includes(image)) return;
+    image.status = 'failed';
+    image.error = error.message || CLATI18n.msg("web.image_failed",{},"image validation failed");
+    renderDraft();
   }
 }
 
 async function retryDraftImage(image) {
   if (!image || state.draft.sending || state.draft.queuedClientMessageId !== null) return;
+  if (state.workbench?.model?.image_input === false) {
+    updateRunState(CLATI18n.msg('web.model_images_unsupported'));
+    return;
+  }
   image.uploadId = null;
-  await uploadDraftImage(image, state.draft.epoch);
+  await stageComposerImage(image, state.draft.epoch);
 }
 
 function updateRunState(text) {
@@ -4094,9 +4142,10 @@ function resizePrompt() {
 
 function clearSubmittedPrompt(generation) {
   if (generation !== state.composerGeneration) return;
-  dom.prompt.value = '';
+  dom.prompt.value = inputHistory.draft ?? '';
   state.composerGeneration += 1;
-  saveComposerText();
+  if (state.composerDraftLoading) setComposerTextDraft(composerScope, null);
+  else saveComposerText();
   resizePrompt();
 }
 
@@ -4134,6 +4183,7 @@ function useSuggestion() {
   }
   dom.prompt.value = state.suggestion.text;
   state.composerGeneration += 1;
+  saveComposerText();
   resizePrompt();
   dom.prompt.focus();
   state.suggestion = null;
@@ -4157,7 +4207,7 @@ async function submitPrompt() {
 async function submitConfiguredPrompt() {
   if (state.draft.sending) { updateRunState(inputText('draft_busy')); return; }
   if(borrowedConversation && borrowedConversation.session !== state.sessionId) {updateRunState(pageText('conversation_unavailable'));return;}
-  if(state.desktopUpdateLocked)return;
+  if(state.desktopUpdateLocked || state.composerDraftLoading)return;
   if (state.compactionActive || state.switching) {
     updateRunState(CLATI18n.msg("web.wait_for_history_compaction_to_finish", {}, "wait for history compaction to finish"));
     return;
@@ -4166,6 +4216,10 @@ async function submitConfiguredPrompt() {
   const composerGeneration = state.composerGeneration;
   const images = state.draft.images;
   if (images.length && state.workbench?.model?.image_input === false) { updateRunState(CLATI18n.msg('web.model_images_unsupported')); return; }
+  if (images.length && !builtinReady('builtin.draft_images')) {
+    updateRunState(CLATI18n.view(() => builtinUnavailableReason('builtin.draft_images')));
+    return;
+  }
   const draftEpoch = state.draft.epoch;
   const owner = composerScope;
   if (!text && images.length === 0 && !sessionSharesFor(owner).length) return;
@@ -4208,8 +4262,12 @@ async function submitConfiguredPrompt() {
     } else if (text.startsWith('/')) {
       if (!await submitComposerCommand(submission)) return;
     } else {
-      const params=composerSubmissionParams(text,images);bindFileReferenceSubmission(owner,text,params);
+      const params=composerSubmissionParams(text,images,images.length ? state.draft.clientMessageId : newOpaqueClientId('message'));
+      bindFileReferenceSubmission(owner,text,params);
       const resumeFollow = followAcceptedPrompt(owner);
+      const saved = persistComposerSubmission(params.clientMessageId, images);
+      if (saved) await saved;
+      if (!composerOwns(owner) || composerGeneration !== state.composerGeneration) return;
       await rpc('prompt.send', params);
       resumeFollow();
       // HIST-PWA-1/T2 + B8-R1：接纳即入史（回执在 journal 入账后），但仅当
@@ -4218,7 +4276,8 @@ async function submitConfiguredPrompt() {
       // submitComposerSteering，由 durable claim 后的快照补录。
       if (composerOwns(owner)) rememberSubmittedInput(text);
       clearOwnedSubmittedText(owner, composerGeneration);
-      if (images.length > 0 && draftEpoch === state.draft.epoch) clearDraft();
+      clearOwnedComposerImages(owner, images, draftEpoch);
+      finishComposerSubmission(owner, params.clientMessageId);
       return;
     }
     clearOwnedSubmittedText(owner, composerGeneration);
@@ -4246,15 +4305,18 @@ function settleQueuedDraft(clientMessageId) {
     && state.draft.clientMessageId === clientMessageId;
   if (!queuedClaim && !inFlightClaim) return false;
   clearDraft();
+  finishComposerSubmission(composerScope, clientMessageId);
   return true;
 }
 
 function restoreQueuedDraft() {
   if (state.draft.queuedClientMessageId === null) return false;
+  const id = state.draft.queuedClientMessageId;
   state.draft.queuedClientMessageId = null;
   for (const image of state.draft.images) {
     if (image.status === 'queued') image.status = 'uploaded';
   }
+  finishComposerSubmission(composerScope, id);
   state.draft.notice = CLATI18n.msg("web.the_run_ended_before_this_steering_was_claimed_draft_restored", {}, "the run ended before this steering was claimed; draft restored");
   renderDraft();
   return true;
@@ -4416,6 +4478,7 @@ function enterWorkbench() {
   state.token = '';
   hide(dom.landing);
   show(dom.app);
+  syncInteractionControls();
   restoreWorkbenchPage();
   connect();
 }

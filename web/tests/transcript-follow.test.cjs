@@ -129,6 +129,7 @@ function composerFixture(modern, running = false) {
     composerSubmissionParams: text => ({ text }),
     bindFileReferenceSubmission() {}, renderSessionShareDraft() {}, renderDraft() {},
     rememberSubmittedInput() {}, clearOwnedSubmittedText() {}, showAcceptedInputFeedback() {},
+    persistComposerSubmission() {}, finishComposerSubmission() {}, clearOwnedComposerImages() {},
     echoOptimisticSteering() {}, recoverComposerSubmission() {},
     rpc: async () => ({ outcome: 'queued' }),
   });

@@ -380,6 +380,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/composer-draft.js",
+        include_bytes!("../../web/composer-draft.js"),
+        "application/javascript",
+    ),
+    (
         "/command-picker.js",
         include_bytes!("../../web/command-picker.js"),
         "application/javascript",
@@ -561,6 +566,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/task-center.js",
     "/conversation-reader.js",
     "/composer-ux.js",
+    "/composer-draft.js",
     "/next-turn.js",
     "/pending-inputs.js",
     "/pending-input-actions.js",

@@ -24,6 +24,7 @@ function client() {
   });
   vm.runInContext(fs.readFileSync('web/i18n.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('web/resource-library.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('web/composer-draft.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(process.env.QUE_COMPOSER_SOURCE || 'web/composer-ux.js', 'utf8'), ctx);
   vm.runInContext("composerScope = 'session'; composerSession = 'session';", ctx);
   return ctx;

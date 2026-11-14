@@ -57,8 +57,77 @@ test('UX-1 text drafts stay with their session while switching', async ({ page }
   await page.fill('#prompt', '第二会话草稿');
   await page.locator(`[data-session-id="${first}"] .session-item`).click();
   await expect(page.locator('#prompt')).toHaveValue('仅属于第一会话的未发送文本', LIVE);
+  await expect.poll(() => page.evaluate(() => CLATWorkbenchState.snapshot('quit').text), LIVE).toBe(false);
+  await page.reload();
+  await expect(page.locator('#prompt')).toHaveValue('仅属于第一会话的未发送文本', LIVE);
+  await page.locator(`[data-session-id="${second}"] .session-item`).click();
+  await expect(page.locator('#prompt')).toHaveValue('第二会话草稿', LIVE);
   const saved = await page.evaluate(() => Object.keys(localStorage).filter((key) => /draft/i.test(key)));
   expect(saved).toEqual([]);
+});
+
+test('composer drafts survive a new document with ordered images and clear after admission', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBeNull();
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
+  const text = '未发送的文字\nSecond line';
+  await page.fill('#prompt', text);
+  await page.locator('#prompt').evaluate((prompt, bytes) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array(bytes)], 'first.png', {type: 'image/png'}));
+    prompt.dispatchEvent(new ClipboardEvent('paste', {clipboardData, bubbles: true, cancelable: true}));
+  }, [...solidPng(2, 2, [30, 60, 90])]);
+  await page.locator('#attachment-input').setInputFiles([
+    {name: 'second.png', mimeType: 'image/png', buffer: solidPng(3, 2, [90, 60, 30])},
+  ]);
+  const chips = page.locator('#attachment-rail .attachment-chip');
+  await expect(page.locator('#attachment-rail .is-uploaded')).toHaveCount(2, LIVE);
+  await chips.nth(1).locator('.attachment-order').first().click();
+  await expect.poll(() => page.evaluate(() => CLATWorkbenchState.snapshot('quit').images), LIVE).toBe(false);
+  await page.reload();
+  await expect(page.locator('#prompt')).toHaveValue(text, LIVE);
+  await expect(chips.locator('strong')).toHaveText(['second.png', 'first.png'], LIVE);
+  await expect(page.locator('#attachment-rail .is-uploaded')).toHaveCount(2, LIVE);
+  await expect(page.locator('.msg.user')).toHaveCount(0);
+  await page.click('#send');
+  await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('', LIVE);
+  await expect(chips).toHaveCount(0, LIVE);
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).not.toBeNull();
+  await page.reload();
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await expect(chips).toHaveCount(0);
+  await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
+});
+
+test('a lost first-send reply does not restore the accepted text or erase newer edits', async ({ page }) => {
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBeNull();
+  await expect(page.locator('#prompt')).toBeEnabled(LIVE);
+  let received;
+  const admitted = new Promise(resolve => { received = resolve; });
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/input.submit', async route => {
+    const response = await fetchBrowserRequest(route);
+    received(response.ok());
+    await hold;
+    await route.abort().catch(() => {});
+  }, {times: 1});
+  try {
+    await page.fill('#prompt', 'Accepted before the browser reloads');
+    await page.click('#send');
+    expect(await admitted).toBe(true);
+    await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
+    await page.fill('#prompt', 'Keep this later edit');
+    await expect.poll(() => page.evaluate(() => CLATWorkbenchState.snapshot('quit').text), LIVE).toBe(false);
+    await page.reload();
+    await expect(page.locator('#prompt')).toHaveValue('Keep this later edit', LIVE);
+    await expect(page.locator('.msg.user')).toHaveCount(1, LIVE);
+  } finally { release(); }
 });
 
 test('UX-1 copies original Markdown and code and quotes without losing a newer draft', async ({ page }) => {
