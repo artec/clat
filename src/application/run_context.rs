@@ -103,7 +103,7 @@ impl TrustedProjectApplication {
             plan_layers(self.plan_state(), self.plan_mode.is_some());
         if self.plan_mode_active()
             && let Ok(documents) = self.sessions.plan_documents()
-            && let Some(doc) = documents.plans.iter().rev().find(|p| !p.approved)
+            && let Some(doc) = documents.current_draft()
         {
             instructions = Some(crate::plan_mode::compose_workflow_instructions(
                 instructions.unwrap_or_default(),

@@ -455,6 +455,52 @@ fn plan_mode_menu_revises_the_current_goals_bound_plan() {
     app.close().unwrap();
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }
+
+#[test]
+fn plan_mode_after_a_completed_goal_keeps_the_old_plan_as_history() {
+    let (mut app, root) = mount(TestBehavior::Success);
+    seed(&mut app);
+    app.set_plan_mode(true).unwrap();
+    let plan = app.plan_service().unwrap().clone();
+    let first = plan.save_draft(None, 0, "# First plan").unwrap();
+    plan.approve_document(&first.id, first.revision).unwrap();
+    let goal_id = format!("goal-{}", uuid::Uuid::new_v4());
+    let goal = plan
+        .bind_goal_atomically(&first.id, first.revision, &goal_id, |event| {
+            app.goal
+                .as_ref()
+                .unwrap()
+                .create_for_plan(&first.title, &goal_id, &[event])
+        })
+        .unwrap();
+    let completed = app
+        .goal_complete(goal.state.revision, "First work verified")
+        .unwrap();
+
+    action(
+        &mut app,
+        WorkflowIntent::Mode {
+            mode: "plan".into(),
+        },
+    );
+    assert!(app.plan_mode_active());
+    assert_eq!(
+        plan.documents().unwrap().len(),
+        1,
+        "entering Plan Mode must not revise the completed goal's plan"
+    );
+    let second = plan
+        .save_draft(None, 0, "# Independent second plan")
+        .unwrap();
+    assert_ne!(second.id, first.id);
+    assert_eq!(second.revision, 1);
+    let documents = plan.documents().unwrap();
+    assert!(documents[0].approved);
+    assert_eq!(documents[0].goal_id.as_deref(), Some(goal_id.as_str()));
+    assert_eq!(app.goal().unwrap().unwrap().state, completed.state);
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}
 #[test]
 fn human_acceptance_feedback_resumes_the_same_goal_with_durable_context() {
     let (mut app, root) = mount(TestBehavior::Success);

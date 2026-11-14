@@ -22,6 +22,16 @@ pub(crate) struct Documents {
     pub version: u64,
     pub plans: Vec<PlanDocument>,
     pub operations: BTreeMap<String, Operation>,
+    /// Set by a draft save, cleared at a Plan Mode boundary.
+    pub current_draft: Option<(String, u64)>,
+}
+impl Documents {
+    pub(crate) fn current_draft(&self) -> Option<&PlanDocument> {
+        let (id, revision) = self.current_draft.as_ref()?;
+        self.plans
+            .iter()
+            .find(|doc| doc.id == *id && doc.revision == *revision && !doc.approved)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +81,8 @@ pub(crate) fn fold(state: &mut Documents, value: &Value) -> Result<(), String> {
         return Err("plan revision drift".into());
     }
     if let Some(doc) = change.document {
+        let identity = (doc.id.clone(), doc.revision);
+        let approved = doc.approved;
         if let Some(previous) = state
             .plans
             .iter_mut()
@@ -97,6 +109,11 @@ pub(crate) fn fold(state: &mut Documents, value: &Value) -> Result<(), String> {
                 return Err("new plan revisions must start as drafts".into());
             }
             state.plans.push(doc);
+        }
+        if !approved {
+            state.current_draft = Some(identity);
+        } else if state.current_draft.as_ref() == Some(&identity) {
+            state.current_draft = None;
         }
     }
     if let Some((id, operation)) = change.operation {
@@ -141,6 +158,9 @@ pub(crate) fn validate_snapshot(state: &Documents) -> Result<(), String> {
             })
             .map_err(|e| e.to_string())?,
         )?;
+    }
+    if state.current_draft.is_some() && state.current_draft().is_none() {
+        return Err("current plan draft is unavailable".into());
     }
     if state.version < (state.plans.len() + state.operations.len()) as u64 {
         return Err("plan checkpoint version regressed".into());

@@ -192,8 +192,12 @@ function installWorkModeMenu(trigger) {
   function render(){
     popup.replaceChildren(el('h3','',()=>workflowText('work_mode')));
     const value=composerWorkflow();
-    for(const [mode,key,icon]of [['normal','normal','chat'],['plan',state.runActive?'stop_and_plan':'planning','plan'],['goal','goal_mode','goal']]){
-      const row=shellButton('',icon,()=>workflowText(key),()=>void setMode(mode),false);
+    for(const [mode,icon,label]of [
+      ['normal','chat',()=>workflowText('normal')],
+      ['plan','plan',()=>workflowText(state.runActive?'stop_and_plan':'planning')],
+      ['goal','goal',()=>CLATI18n.msg('web.goal')],
+    ]){
+      const row=shellButton('',icon,label,()=>void setMode(mode),false);
       const check = svgIcon('check');
       check.classList.add('work-mode-check');
       row.dataset.workMode=mode;

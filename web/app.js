@@ -984,7 +984,9 @@ function handleReplay(event) {
 function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
-    case 'run_started':
+    case 'run_started': {
+      const previousPencil = lastUserBubble()?.querySelector('.message-rewind-pencil');
+      if (previousPencil) previousPencil.hidden = true;
       acceptComposerReceipt(event.client_message_id);
       conversationRounds.begin();
       void refreshWorkbench();
@@ -1007,6 +1009,7 @@ function handleLive(event) {
         liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks));
       }
       break;
+    }
     case 'model_requested':
       runActivity.set(CLATI18n.msg('web.thinking_in_progress'));
       // ORDER-LIVE-1/O1：不急开回复气泡——气泡由首个正文/reasoning 增量懒
@@ -1151,6 +1154,7 @@ function onSubscribed(ctl) {
   conversationRounds.scope(state.sessionId);
   state.history.outline = Array.isArray(ctl && ctl.message_outline) ? ctl.message_outline : [];
   renderMessageMap(); syncMessageTimes(); void refreshUsage();
+  if (state.lastTurnEndReason?.aborted === 'user') refreshStoppedMessageEditor();
   if(!state.runActive)void loadRoundFollowups('', 'read');
   syncPlanModeBadge();
   refreshWorkbench();
@@ -1240,6 +1244,7 @@ function onSettled(ctl) {
         }
         break;
       case 'cancelled':
+        refreshStoppedMessageEditor();
         if (noteRunOutcome('cancelled')) {
           addVerdict('cancelled', CLATI18n.msg("web.line_cancelled_after_value_turns",{value1:((outcome.turns || 0))},"cancelled after {value1} turns"));
         }
@@ -1798,62 +1803,114 @@ function addUserMessage(text, blocks) {
   return appendTranscript(msg);
 }
 
+const stoppedMessageEditors = new WeakMap();
+
+function lastUserBubble() {
+  const users = dom.transcript.querySelectorAll('.msg.user');
+  return users[users.length - 1];
+}
+
+function refreshStoppedMessageEditor() {
+  stoppedMessageEditors.get(lastUserBubble())?.();
+}
+
 function attachLastTurnEditor(message, body, original) {
   const actions = message.querySelector('.message-actions');
-  const pencil = el('button', 'message-rewind-pencil');
+  const pencil = el('button', 'icon-button message-action-icon message-rewind-pencil');
   pencil.type = 'button';
-  pencil.textContent = '✎';
+  pencil.append(svgIcon('edit'));
   CLATI18n.attribute(pencil, 'aria-label', () => CLATI18n.msg('web.rewind_edit'));
   CLATI18n.attribute(pencil, 'title', () => CLATI18n.msg('web.rewind_edit'));
   pencil.hidden = true;
-  actions.append(pencil);
+  actions.prepend(pencil);
   let receipt = null;
   let checking = false;
-  message.addEventListener('pointerenter', async () => {
-    if (checking || body.hidden || !message.dataset.seq || !state.sessionId) return;
-    const users = message.parentElement?.querySelectorAll('.msg.user');
-    if (users && users[users.length - 1] !== message) return;
+  const current = () => state.connected && !state.stream?.signal.aborted
+    && !state.switching && !state.history.replaying
+    && !state.runActive && !state.compactionActive && lastUserBubble() === message;
+  const refresh = async () => {
+    if (checking || !current() || body.hidden || !message.dataset.seq || !state.sessionId) return;
+    const { sessionId: id, selectionGeneration: generation, stream } = state;
+    const seq = Number(message.dataset.seq);
+    // Keep the confirmed action available while the Host checks it again.
     checking = true;
-    pencil.hidden = true;
-    const target = { id: state.sessionId, seq: Number(message.dataset.seq) };
-    const generation = state.selectionGeneration;
     try {
-      const result = await rpc('session.rewind.check', target);
-      if (message.isConnected && generation === state.selectionGeneration && result.eligible) {
-        receipt = { ...target, revision: result.revision, expected_selection_generation: result.generation };
-        pencil.hidden = false;
-      }
-    } catch { /* Hosts without the endpoint keep the action unavailable. */ }
+      const result = await rpc('session.rewind.check', { id, seq });
+      if (!current() || stream !== state.stream || id !== state.sessionId
+        || generation !== state.selectionGeneration || seq !== Number(message.dataset.seq)) return;
+      receipt = result.eligible && result.generation === generation
+        ? { id, seq, revision: result.revision, expected_selection_generation: generation }
+        : null;
+      pencil.hidden = body.hidden || !receipt;
+    } catch { /* A failed refresh does not change the last confirmed result. */ }
     finally { checking = false; }
+  };
+  stoppedMessageEditors.set(message, refresh);
+  message.addEventListener('pointerenter', refresh);
+  message.addEventListener('focusin', () => {
+    if (pencil.hidden && !body.hidden) void refresh();
   });
   pencil.addEventListener('click', () => {
-    if (!receipt || body.hidden) return;
-    editLastTurn(message, body, pencil, original, receipt);
+    if (!receipt || body.hidden || !current() || receipt.id !== state.sessionId
+      || receipt.seq !== Number(message.dataset.seq)
+      || receipt.expected_selection_generation !== state.selectionGeneration) return;
+    editLastTurn(message, body, pencil, original, receipt, () => current() && Boolean(receipt));
   });
 }
 
-function editLastTurn(message, body, pencil, original, receipt) {
-  const editor = el('form', 'body message-rewind-editor');
-  const input = el('textarea');
+function fitRewindInput(input) {
+  const fit = () => {
+    const scrollTop = input.scrollTop;
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+    input.scrollTop = scrollTop;
+  };
+  let width;
+  const observer = new ResizeObserver(([entry]) => {
+    if (!input.isConnected) {
+      observer.disconnect();
+      return;
+    }
+    if (entry.contentRect.width !== width) {
+      width = entry.contentRect.width;
+      fit();
+    }
+  });
+  input.addEventListener('input', fit);
+  observer.observe(input);
+  fit();
+  return () => observer.disconnect();
+}
+
+function editLastTurn(message, body, pencil, original, receipt, canEdit) {
+  const editor = el('form', 'message-rewind-editor');
+  const input = el('textarea', 'message-rewind-input');
+  input.rows = 1;
   input.value = original;
   CLATI18n.attribute(input, 'aria-label', () => CLATI18n.msg('web.rewind_edit'));
-  const send = el('button');
+  const send = el('button', 'primary');
   send.type = 'submit';
   CLATI18n.bind(send, 'textContent', () => CLATI18n.msg('web.rewind_send'));
-  const cancel = el('button');
+  const cancel = el('button', 'ghost');
   cancel.type = 'button';
   CLATI18n.bind(cancel, 'textContent', () => CLATI18n.msg('web.rewind_cancel'));
-  const error = el('p');
+  const error = el('p', 'message-rewind-status');
   error.setAttribute('role', 'status');
-  editor.append(input, send, cancel, error);
+  const footer = el('div', 'message-rewind-footer');
+  const actions = el('div', 'message-rewind-actions');
+  actions.append(cancel, send);
+  footer.append(error, actions);
+  editor.append(input, footer);
   body.after(editor);
   body.hidden = true;
   pencil.hidden = true;
+  const stopFitting = fitRewindInput(input);
   cancel.addEventListener('click', () => {
+    stopFitting();
     editor.remove();
     body.hidden = false;
-    pencil.hidden = false;
-    pencil.focus();
+    pencil.hidden = !canEdit();
+    if (!pencil.hidden) pencil.focus();
   });
   editor.addEventListener('submit', async event => {
     event.preventDefault();

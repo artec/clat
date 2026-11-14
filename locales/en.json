@@ -3410,6 +3410,7 @@
   "web.tool_action.ui_tree": "Read application interface",
   "web.tool_action.ui_wait": "Wait for an interface condition",
   "acp.title": "External Agents",
+  "acp.configured_agents": "Configured Agents",
   "acp.delegate": "Delegate to an external Agent",
   "acp.external_help": "External assistance",
   "acp.new_session": "New external session",

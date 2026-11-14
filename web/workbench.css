@@ -466,6 +466,55 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
   }
 }
 .msg.user .message-actions { justify-content: flex-end; }
+.msg.user:has(> .message-rewind-editor) > .message-actions { display: none; }
+.message-rewind-editor {
+  grid-column: 2 / -1;
+  min-inline-size: 0;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-input);
+}
+.app[data-message-layout="bubbles"] .message-rewind-editor { inline-size: min(100%, 680px); }
+.message-rewind-editor:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); }
+.message-rewind-input {
+  display: block;
+  inline-size: 100%;
+  max-block-size: min(35dvh, 18em);
+  padding: 2px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  caret-color: var(--accent);
+  font: 400 var(--text-size-reading)/var(--text-leading) var(--font-ui);
+  overflow-wrap: anywhere;
+  resize: none;
+}
+.message-rewind-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+.message-rewind-status {
+  flex: 1 1 190px;
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--text-size-secondary);
+  overflow-wrap: anywhere;
+}
+.message-rewind-status:empty { flex-basis: 0; }
+.message-rewind-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.message-rewind-actions button { min-block-size: 34px; padding: 5px 12px; font-size: var(--text-size-ui); }
+.message-rewind-actions .ghost:hover:not(:disabled) { background: var(--ink-3); color: var(--text); }
+@media (max-width: 760px) {
+  .message-rewind-editor { grid-column: 1; }
+  .message-rewind-actions button { min-block-size: 40px; }
+}
 .round-suggestions { display: grid; gap: 3px; margin: 12px 0 20px 36px; padding-top: 12px; border-top: 1px solid var(--line); background: transparent; }
 .round-suggestions .followup-choice { display:flex;align-items:flex-start;gap:9px; padding: 7px 0; text-align: left; font-size: var(--text-size-reading); line-height:var(--text-leading); font-weight: 400; color: var(--text-muted); border: 0; background: transparent; }
 .round-suggestions .followup-choice:hover { color: var(--text); }

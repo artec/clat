@@ -1086,7 +1086,11 @@ impl TrustedProjectApplication {
             || self.reject_next_turn_session_switch().is_err()
             || self.pending_inputs().interrupting
             || self.plan_mode_active()
-            || self.goal()?.is_some()
+            // Keep unfinished goals fenced. A completed goal in the retained
+            // prefix is safe; the journal gate still refuses goal events in the tail.
+            || self
+                .goal()?
+                .is_some_and(|goal| goal.armed || goal.state.phase != crate::goal::GoalPhase::Complete)
             || self.task_state()?.is_some()
             || self.has_schedule_rules(Some(id.as_str()))?
             || self.library_references_tail(id, seq.saturating_sub(1))?

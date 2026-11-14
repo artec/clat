@@ -757,7 +757,8 @@ The model receives only bounded run-start injection and the read-only
 `/context` reports the actual injected byte count (zero when no future prompt is
 known) and the fixed 8 KiB injection budget.
 
-Each session may have one current goal:
+Each session may have one current goal. After completing it, you can create
+another goal in the same session:
 
 ```text
 /goal show
@@ -2325,8 +2326,12 @@ failed starts keep the document and approved state for an explicit retry.
 To replan a goal started in the composer, pause it and enter Plan mode.
 When reviewing the new plan, choose **Approve and continue current goal**.
 This links the reviewed revision to the paused goal and preserves its objective,
-progress and limits. Later planning revises the linked plan. A plan already
-linked to a different goal cannot be attached through this action.
+progress and limits. Entering Plan Mode revises the linked plan for an unfinished
+goal. After the goal is complete, you can enter Plan Mode for new work in the
+same session. Earlier drafts stay in plan history. To continue a particular
+draft or revise an approved plan, use **Revise** on its document.
+A plan already linked to a different goal cannot be attached through the
+continuation action.
 
 In Web and Desktop, choose **+ → Goal**, enter the objective and send it.
 The bottom work mode control shows **Goal** while drafting. Open that control
@@ -2837,9 +2842,10 @@ cached next-step suggestions as well as new suggestion generation.
 Pending state and operation receipts are process-local;
 they are not a persistent queue across Host restarts.
 
-After explicitly stopping a text-only run in Web/Desktop, hover over its last
-user message. When the Host verifies the stopped turn is eligible, the pencil
-opens an editor inside the bubble. **Send and rerun** replaces the last turn in
+After explicitly stopping a text-only run in Web/PWA/Desktop, hover over its last
+user message. For an eligible turn, the pencil is the first action in the
+bubble's action row and opens an editor that grows as the text wraps. **Send and rerun**
+replaces the last turn in
 the same conversation and starts the edited text through normal input
 admission. The original message and its response are removed from replay and
 model context. Earlier turns and project files are preserved.
@@ -2847,6 +2853,8 @@ model context. Earlier turns and project files are preserved.
 The first version permits only a user-stopped ordinary text turn with no tool
 activity. Attachments, steering, context maintenance, workflow state or
 unrecognized records in the affected turn can make the action unavailable.
+An earlier completed goal is preserved and does not block editing a later
+stopped text turn.
 The Host rechecks the selection and journal revision at submission. A stale
 edit cannot replace newer history.
 

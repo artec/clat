@@ -70,6 +70,7 @@
 #settings-dialog .settings-card > button.settings-link-row:hover { background:var(--ink-3); }
 #settings-dialog .settings-link-row > svg { width:17px; height:17px; flex:none; color:var(--text-muted); }
 #settings-dialog .settings-card.managed-settings-list > .settings-note { padding:12px 20px; }
+#settings-dialog [data-settings-panel=acp] .settings-row-copy { overflow-wrap:anywhere; }
 #settings-dialog .settings-group-block > .managed-settings-editor { margin-top:0; }
 #settings-dialog .managed-settings-editor > button:first-child { margin-top:0; }
 #settings-dialog .settings-card.managed-settings-editor > .settings-note { margin:10px 0 0; padding:0; }

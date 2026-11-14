@@ -10,16 +10,11 @@ impl PlanModeService {
         if !self.state().active {
             return Err("exit_plan_mode is available only while Plan Mode is active".into());
         }
-        let latest = self
-            .sessions
-            .plan_documents()?
-            .plans
-            .into_iter()
-            .rev()
-            .find(|p| !p.approved);
+        let documents = self.sessions.plan_documents()?;
+        let latest = documents.current_draft();
         let doc = self.save_draft(
-            latest.as_ref().map(|p| p.id.as_str()),
-            latest.as_ref().map_or(0, |p| p.revision),
+            latest.map(|p| p.id.as_str()),
+            latest.map_or(0, |p| p.revision),
             plan,
         )?;
         let asker = self

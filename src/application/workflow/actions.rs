@@ -118,6 +118,7 @@ impl TrustedProjectApplication {
             WorkflowIntent::Mode { mode } => {
                 if mode == "plan"
                     && let Some(goal) = self.goal().map_err(|e| e.to_string())?
+                    && goal.state.phase != crate::goal::GoalPhase::Complete
                     && let Some(doc) = self
                         .plan_plugin()?
                         .documents()?

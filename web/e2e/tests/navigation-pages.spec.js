@@ -7,16 +7,28 @@ test('a first-message file snapshot is linked to its committed message and bookm
  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');await expect.poll(()=>page.evaluate(()=>state.sessionId),LIVE).toBeNull();await expect(page.locator('#send')).toBeEnabled(LIVE);
  await expect.poll(()=>page.evaluate(()=>!!state.workbench),LIVE).toBe(true);const root=await page.evaluate(()=>state.workbench.project.root),file=path.join(root,'navigation-reference.md');fs.writeFileSync(file,'Exact navigation snapshot\n');
  try{
-  await page.click('#nav-resources');await page.locator('#resource-files input[type=search]').fill('navigation-reference');await page.locator('#resource-files .review-file').click();
-  await expect(page.locator('#resource-files pre')).toContainText('Exact navigation snapshot',LIVE);await page.locator('#resource-files [data-action=quote-file-snapshot]').click();
-  await page.click('#send');await expect(page.locator('#cancel')).toBeHidden(LIVE);await expect.poll(()=>page.evaluate(()=>state.sessionId),LIVE).not.toBeNull();
-  await expect.poll(()=>page.evaluate(async()=>(await rpc('library.list',{})).entries.filter(e=>e.kind==='snapshot').length),LIVE).toBe(1);
-  const metadata=await page.evaluate(async()=>(await rpc('library.list',{})).entries.find(e=>e.kind==='snapshot'));expect(metadata.path).toBe('navigation-reference.md');expect(metadata.quote).toBeUndefined();expect(metadata.excerpt).toBeUndefined();
+  const resources=page.locator('#resources-dialog');
+  await page.click('#nav-resources');await resources.getByRole('searchbox').fill('navigation-reference');
+  await resources.getByRole('treeitem',{name:'navigation-reference.md'}).click();
+  await expect(resources.locator('pre')).toContainText('Exact navigation snapshot',LIVE);
+  await resources.locator('[data-action=quote-file-snapshot]').click();
+  await expect(page.locator('#prompt')).toHaveValue(/Exact navigation snapshot/);
+  await page.click('#send');
+  const message=page.locator('.msg.user[data-seq]').filter({hasText:'Exact navigation snapshot'});
+  await expect(message).toBeVisible(LIVE);
+  const reference={session:await page.evaluate(()=>state.sessionId),seq:Number(await message.getAttribute('data-seq'))};
+  const snapshots=()=>page.evaluate(async ref=>(await rpc('library.list',{})).entries.filter(e=>e.kind==='snapshot'&&e.reference.session===ref.session&&e.reference.seq===ref.seq),reference);
+  await expect.poll(async()=>(await snapshots()).length,LIVE).toBe(1);
+  const [metadata]=await snapshots();expect(metadata.path).toBe('navigation-reference.md');expect(metadata.quote).toBeUndefined();expect(metadata.excerpt).toBeUndefined();
   const storage=await page.evaluate(async()=>(await rpc('host.describe',{})).storage_root);const privateMetadata=fs.readFileSync(path.join(storage,'library-v1.json'),'utf8');expect(privateMetadata).not.toContain('Exact navigation snapshot');
-  const button=page.locator('.msg.user [data-action=bookmark]').last();await button.click();await expect(button).toHaveAttribute('aria-pressed','true');
+  await message.hover();
+  const button=message.locator('[data-action=bookmark]');await button.click();await expect(button).toHaveAttribute('aria-pressed','true');
   await page.reload();await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
-  const entries=await page.evaluate(async()=>(await rpc('library.list',{})).entries);expect(entries.some(e=>e.kind==='bookmark')).toBe(true);
-  await page.click('#nav-resources');await page.locator('#resources-dialog [data-tab=bookmarks]').click();await expect(page.locator('#resources-dialog .page-object').first()).toBeVisible(LIVE);
+  const entries=await page.evaluate(async()=>(await rpc('library.list',{})).entries);
+  expect(entries).toContainEqual(expect.objectContaining({kind:'bookmark',reference:expect.objectContaining(reference)}));
+  await page.click('#nav-resources');await resources.getByRole('tab',{name:'Bookmarks'}).click();
+  await resources.getByRole('button').filter({hasText:reference.session+' · #'+reference.seq}).click();
+  await expect(resources.locator('.reader-messages')).toContainText('Exact navigation snapshot',LIVE);
  }finally{fs.rmSync(file,{force:true});}
 });
 

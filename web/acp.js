@@ -101,74 +101,130 @@ function installAcpSettings() {
   const section = el('section', 'settings-section');
   section.hidden = true; section.dataset.settingsPanel = 'acp';
   section.append(el('h2', '', () => acpText('title')), el('p', 'settings-note', () => acpText('authority')));
-  page.querySelector('.settings-content').append(section);
-  const list = el('div', 'settings-card');
+  const heading = el('div', 'settings-group-heading');
+  heading.append(el('h3', '', () => acpText('configured_agents')), acpButton('sessions', openAcpSessions));
+  const list = el('div', 'settings-card managed-settings-list');
   const status = el('p', 'settings-note');
-  const actions = el('div', 'settings-actions');
-  actions.append(acpButton('add', () => openAcpAgentEditor(null)), acpButton('sessions', openAcpSessions));
-  section.append(list, actions, status);
+  status.setAttribute('role', 'status');
+  section.append(heading, list, status);
+  page.querySelector('.settings-content').append(section);
+  const editor = installAcpAgentEditor(section);
+  const active = () => !section.hidden && pageIsOpen(page);
+  let serial = 0, rendered = 0;
   acpSettingsRefresh = async () => {
+    if (!active()) return;
+    const request = ++serial;
     const generation = state.selectionGeneration;
+    const current = () => active() && serial === request && generation === state.selectionGeneration;
     try {
       const agents = await rpc('acp.agents.list', {});
-      if (section.hidden || generation !== state.selectionGeneration) return;
-      list.replaceChildren(...agents.map(agent => acpAgentRow(agent, status)));
+      if (!current()) return;
+      rendered = request;
+      const ownsRows = () => active() && rendered === request && generation === state.selectionGeneration;
+      list.replaceChildren(...agents.map(agent => acpAgentRow(agent, editor, status, ownsRows)));
       if (!agents.length) list.append(el('p', 'settings-note', () => acpText('no_agents')));
-    } catch (error) { if (!section.hidden) acpShowError(status, error); }
+      status.textContent = '';
+    } catch (error) { if (current()) acpShowError(status, error); }
   };
+  page.addEventListener('clat:page-enter', () => void acpSettingsRefresh());
+  page.addEventListener('clat:settings-leave', () => {
+    serial++;
+    rendered = 0;
+    editor.close();
+    list.replaceChildren();
+    status.textContent = '';
+  });
 }
 
-function acpAgentRow(agent, status) {
+function acpAgentRow(agent, editor, status, current) {
   const row = el('div', 'settings-row');
   const copy = el('span', 'settings-row-copy');
   copy.append(el('strong', '', agent.label), el('small', '', agent.program));
-  const actions = el('div', 'settings-actions');
-  actions.append(acpButton('edit', () => openAcpAgentEditor(agent)));
-  actions.append(acpButton(agent.trusted ? 'revoke' : 'trust', () => confirmAcpTrust(agent)));
+  const actions = el('div', 'settings-row-actions');
+  actions.append(acpButton('edit', () => editor.open(agent)));
+  actions.append(acpButton(agent.trusted ? 'revoke' : 'trust', () => confirmAcpTrust(agent, status, current)));
   actions.append(acpButton('remove', async () => {
-    if (!await CLATDialog.confirm(acpText('remove_agent', { agent:agent.label }))) return;
-    try { await rpc('acp.agents.remove', { id:agent.id, revision:agent.revision }); void acpSettingsRefresh(); }
-    catch (error) { acpShowError(status, error); }
+    if (!await CLATDialog.confirm(acpText('remove_agent', { agent:agent.label })) || !current()) return;
+    try {
+      await rpc('acp.agents.remove', { id:agent.id, revision:agent.revision });
+      if (current() && editor.editing(agent.id)) editor.close();
+      if (current()) void acpSettingsRefresh();
+    } catch (error) { if (current()) acpShowError(status, error); }
   }));
   row.append(copy, actions);
   return row;
 }
 
-async function confirmAcpTrust(agent) {
+async function confirmAcpTrust(agent, status, current) {
   const root = state.workbench?.project?.root || '';
   const message = acpText(agent.trusted ? 'revoke_notice' : 'trust_notice', { agent:agent.label, program:agent.program, root });
-  if (!await CLATDialog.confirm(message)) return;
-  rpc('acp.agents.trust', { id:agent.id, revision:agent.revision, allow:!agent.trusted })
-    .then(() => acpSettingsRefresh()).catch(error => updateRunState(error.message));
+  if (!await CLATDialog.confirm(message) || !current()) return;
+  try {
+    await rpc('acp.agents.trust', { id:agent.id, revision:agent.revision, allow:!agent.trusted });
+    if (current()) void acpSettingsRefresh();
+  } catch (error) { if (current()) acpShowError(status, error); }
 }
 
-function openAcpAgentEditor(agent) {
-  const view = acpDialog(agent ? 'edit' : 'add');
-  const label = acpField(view.fields, 'label', el('input'));
-  const program = acpField(view.fields, 'program', el('input'));
-  const args = acpField(view.fields, 'arguments', el('textarea'));
-  const env = acpField(view.fields, 'environment', el('textarea'));
-  label.value = agent?.label || '';
-  program.value = agent?.program || '';
-  args.value = JSON.stringify(agent?.args || []);
-  env.value = JSON.stringify(agent?.env || []);
-  if (agent?.argumentsHidden) view.status.textContent = acpText('update_arguments');
-  const save = acpButton('save', async () => {
+function installAcpAgentEditor(section) {
+  const editor = managedSettingsEditor(section, acpText);
+  const { add, form, message, field } = editor;
+  const label = el('input'), program = el('input');
+  const args = el('textarea'), env = el('textarea');
+  label.autocomplete = 'off'; program.autocomplete = 'off'; args.rows = 2; env.rows = 2;
+  field('label', label); field('program', program); field('arguments', args); field('environment', env);
+  const notice = el('p', 'settings-note', () => acpText('update_arguments'));
+  form.append(notice);
+  let agent = null, version = 0;
+  function close() {
+    version++;
+    agent = null;
+    editor.close();
+    for (const input of [label, program, args, env]) input.value = '';
+    message.textContent = '';
+    acknowledgeSettingsSave(section);
+  }
+  function open(entry) {
+    close();
+    agent = entry;
+    label.value = entry?.label || '';
+    program.value = entry?.program || '';
+    args.value = entry?.argumentsHidden ? '' : JSON.stringify(entry?.args || []);
+    env.value = JSON.stringify(entry?.env || []);
+    notice.hidden = !entry?.argumentsHidden;
+    save.disabled = false;
+    editor.open(label, !!entry);
+  }
+  function asArray(value) {
     try {
-      save.disabled = true;
-      const asArray = value => {
-        const parsed = JSON.parse(value);
-        if (!Array.isArray(parsed) || parsed.some(item => typeof item !== 'string')) throw Error(acpText('array_required'));
-        return parsed;
-      };
-      await rpc('acp.agents.save', { id:agent?.id || null, agent:{
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) return parsed;
+    } catch (_) {}
+    throw Error(acpText('array_required'));
+  }
+  const save = acpButton('save', async () => {
+    const request = version;
+    const token = settingsSaveToken(section);
+    save.disabled = true;
+    message.textContent = '';
+    try {
+      const saved = await rpc('acp.agents.save', { id:agent?.id || null, agent:{
         label:label.value, program:program.value, args:asArray(args.value), env:asArray(env.value),
       } });
-      view.dialog.close();
-      void acpSettingsRefresh();
-    } catch (error) { acpShowError(view.status, error); save.disabled = false; }
+      if (request !== version) {
+        if (context.isActive()) void acpSettingsRefresh();
+        return;
+      }
+      if (settingsSaveToken(section) === token) { close(); add.focus(); }
+      else agent = saved;
+      await acpSettingsRefresh();
+    } catch (error) { if (request === version) acpShowError(message, error); }
+    finally { if (request === version) save.disabled = false; }
   }, true);
-  view.actions.append(save);
+  const actions = el('div', 'settings-actions');
+  actions.append(save, acpButton('cancel', () => { close(); add.focus(); }));
+  form.append(actions);
+  add.onclick = () => open(null);
+  return { open, close, editing: id => agent?.id === id };
 }
 
 function openAcpSessions() {

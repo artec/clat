@@ -10,6 +10,7 @@ const HOSTS = ['queue-command', 'run-command', 'long-stream', 'success', 'reason
 HOSTS.push('native-jobs');
 HOSTS.push('workbench');
 HOSTS.push('project-tree');
+HOSTS.push('rewind');
 if (process.env.CLAT_PLG2_MARKET_URL) HOSTS.push('plugin-market');
 if (process.env.CLAT_LIVE_GLM_E2E === '1') HOSTS.push('live-glm');
 // CLAT_E2E_HOSTS=success[,key2,...]: start only the named hosts for fast

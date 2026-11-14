@@ -49,6 +49,33 @@ fn plan_document_is_saved_before_review_and_missing_markdown_is_rebuilt() {
     f.service.document(&doc.id, doc.revision).unwrap();
     assert_eq!(std::fs::read_to_string(f.path(&doc)).unwrap(), doc.text);
 }
+
+#[test]
+fn a_new_planning_period_does_not_resume_a_draft_left_by_the_previous_one() {
+    let f = Fixture::new();
+    let previous = f.service.save_draft(None, 0, "# Earlier draft").unwrap();
+    f.service.set_durable(false).unwrap();
+    f.service.set_durable(true).unwrap();
+
+    // Review saves its draft before checking whether an interactive client is available.
+    let error = f
+        .service
+        .request_review("# Separate plan", &CancelToken::new())
+        .unwrap_err();
+    assert!(error.contains("interactive user asker"));
+    let plans = f.service.documents().unwrap();
+    assert_eq!(plans[0], previous);
+    assert_ne!(plans[1].id, previous.id);
+    assert_eq!(plans[1].revision, 1);
+
+    let second = plans[1].clone();
+    let _ = f
+        .service
+        .request_review("# Refine the separate plan", &CancelToken::new());
+    let plans = f.service.documents().unwrap();
+    assert_eq!(plans[2].id, second.id);
+    assert_eq!(plans[2].revision, 2);
+}
 #[test]
 fn plan_approval_is_exact_version_and_never_changes_approved_text() {
     let f = Fixture::new();

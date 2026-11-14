@@ -3410,6 +3410,7 @@
   "web.tool_action.ui_tree": "讀取應用程式介面",
   "web.tool_action.ui_wait": "等待介面符合條件",
   "acp.title": "外部 Agent",
+  "acp.configured_agents": "已設定的 Agent",
   "acp.delegate": "委派給外部 Agent",
   "acp.external_help": "外部協助",
   "acp.new_session": "新增外部工作階段",

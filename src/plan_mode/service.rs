@@ -33,8 +33,11 @@ impl PlanModeService {
             return Err("plan changed; inspect again".into());
         }
         if let Some(doc) = latest.filter(|p| !p.approved && p.text == text) {
-            self.sessions.materialize_plan(doc)?;
-            return Ok(doc.clone());
+            if state.current_draft() == Some(doc) {
+                self.sessions.materialize_plan(doc)?;
+                return Ok(doc.clone());
+            }
+            return self.save_document(state.version, doc.clone());
         }
         let title = text
             .lines()
@@ -56,9 +59,13 @@ impl PlanModeService {
             approved: false,
             goal_id: None,
         };
+        self.save_document(state.version, doc)
+    }
+
+    fn save_document(&self, version: u64, doc: PlanDocument) -> Result<PlanDocument, String> {
         self.sessions.commit_plan_change(
             Change {
-                version: state.version + 1,
+                version: version + 1,
                 document: Some(doc.clone()),
                 operation: None,
             },

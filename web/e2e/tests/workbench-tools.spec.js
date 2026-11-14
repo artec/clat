@@ -92,33 +92,36 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
   await expect(page.locator('#turn-review')).toContainText('unconfirmed future bytes');
 });
 
-test('FS-1 bounded real file preview, stale refusal and fixed range quote preserves draft', async ({ page }, info) => {
+test('FS-1 bounded real file preview, stale refusal and fixed range quote preserves draft', async ({ page }) => {
   const root = await open(page);
   const file = path.join(root, 'quote-中文.md');
   fs.writeFileSync(file, '# original\nline two\nline three\n');
   fs.writeFileSync(path.join(root, '.env'), 'secret-not-for-preview');
   await page.fill('#prompt', 'existing draft');
-  await openWorkbenchTool(page, 'files-open');
-  await page.getByRole('searchbox', { name: 'Find project file' }).fill('quote-中文');
-  await page.locator('#file-browser .review-file').click();
-  await expect(page.locator('#file-browser')).toContainText('# original', LIVE);
-  await page.getByRole('spinbutton', { name: 'First line', exact: true }).fill('2');
-  await page.getByRole('spinbutton', { name: 'Last line', exact: true }).fill('2');
-  await page.getByRole('button', { name: 'Read / recheck' }).click();
-  await expect(page.locator('#file-browser pre')).toHaveText('line two', LIVE);
+  await page.click('#nav-resources');
+  const resources = page.locator('#resources-dialog');
+  const preview = resources.locator('pre');
+  const recheck = resources.locator('[data-action=refresh-file-preview]');
+  const quote = resources.locator('[data-action=quote-file-snapshot]');
+  await resources.getByRole('searchbox').fill('quote-中文');
+  await resources.getByRole('treeitem', {name:'quote-中文.md'}).click();
+  await expect(preview).toContainText('# original', LIVE);
+  await resources.getByRole('spinbutton', { name: 'First line', exact: true }).fill('2');
+  await resources.getByRole('spinbutton', { name: 'Last line', exact: true }).fill('2');
+  await recheck.click();
+  await expect(preview).toHaveText('line two', LIVE);
   fs.writeFileSync(file, '# changed\nnew second\n');
-  await page.getByRole('button', { name: 'Quote snapshot to draft' }).click();
-  await expect(page.locator('#file-browser')).toContainText('File changed since preview', LIVE);
+  await quote.click();
+  await expect(resources.getByRole('status')).toContainText('File changed since preview', LIVE);
   await expect(page.locator('#prompt')).toHaveValue('existing draft');
-  await page.getByRole('button', { name: 'Read / recheck' }).click();
-  await expect(page.locator('#file-browser pre')).toHaveText('new second', LIVE);
-  await expect(page.locator('#file-browser')).not.toContainText('File changed since preview');
-  await expect(page.locator('#file-browser')).toContainText('Modified');
+  await recheck.click();
+  await expect(preview).toHaveText('new second', LIVE);
+  await expect(resources.getByRole('status')).not.toContainText('File changed since preview');
 
   await page.setViewportSize({ width: 390, height: 844 });
 
-  await page.getByRole('button', { name: 'Quote snapshot to draft' }).click();
-  await expect(page.locator('#file-browser')).not.toBeVisible();
+  await quote.click();
+  await expect(resources).toBeHidden();
   await expect(page.locator('#prompt')).toHaveValue(/existing draft[\s\S]*lines 2-2[\s\S]*> new second/);
   await expect(page.locator('#prompt')).toBeFocused();
   fs.writeFileSync(file, 'third edit');
@@ -260,11 +263,11 @@ test('UX-8 streaming keeps following the bottom until the reader scrolls away', 
 
 test('UX-7 readonly task facts expose bounded logs without mutating tasks', async ({ page }) => {
   await open(page);
-  await openWorkbenchTool(page, 'tasks-open');
-  await expect(page.locator('#task-review')).toBeVisible(LIVE);
-  await page.getByRole('button', { name: 'Close tasks' }).click();
   const mutations = [];
-  page.on('request', request => { if (/\/api\/tasks\.(?!list|logs)/.test(request.url())) mutations.push(request.url()); });
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (/\/api\/tasks\./.test(path) && !/\/api\/tasks\.(list|logs)$/.test(path)) mutations.push(path);
+  });
   await page.evaluate(() => {
     const original = rpc;
     rpc = async (method, params) => {
@@ -274,10 +277,17 @@ test('UX-7 readonly task facts expose bounded logs without mutating tasks', asyn
       return original(method, params);
     };
   });
-  await openWorkbenchTool(page, 'tasks-open'); await page.locator('#task-review .review-file').click();
-  await expect(page.locator('#task-review')).toContainText('bounded log', LIVE);
-  await expect(page.locator('#task-review')).toContainText('exit 2');
-  await expect(page.locator('#task-review')).toContainText('earlier omitted');
+  await openWorkbenchTool(page, 'tasks-open');
+  const tasks = page.locator('#task-review');
+  await tasks.locator('[data-task="7"]').click();
+  await expect(tasks.locator('pre').filter({hasText:'bounded log'})).toBeVisible(LIVE);
+  await expect(tasks.locator('pre').filter({hasText:'error'})).toBeVisible();
+  await expect(tasks).toContainText('exit 2');
+  await expect(tasks).toContainText('earlier omitted');
+  await expect(tasks).toContainText('<script>command</script>');
+  await expect(tasks.locator('script')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(tasks).toBeHidden();
+  await expect(page.locator('#prompt')).toBeVisible();
   expect(mutations).toEqual([]);
-  expect(await page.evaluate(() => document.querySelector('#task-review script') !== null)).toBe(false);
 });

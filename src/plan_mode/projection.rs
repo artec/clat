@@ -21,7 +21,7 @@ impl ProjectionUnit for DocumentUnit {
         "plan-documents"
     }
     fn state_version(&self) -> u64 {
-        1
+        2
     }
     fn as_of(&self) -> i64 {
         self.as_of
@@ -29,6 +29,8 @@ impl ProjectionUnit for DocumentUnit {
     fn fold(&mut self, event: &SessionEvent) -> Result<(), String> {
         if event.event_type == EVENT {
             fold(&mut self.state, &event.data)?;
+        } else if event.event_type == "plan/mode" {
+            self.state.current_draft = None;
         }
         self.as_of = event.seq as i64;
         Ok(())

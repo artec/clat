@@ -3997,6 +3997,51 @@ fn serve_e2e_host_long_stream() {
     );
 }
 
+struct RewindScript;
+
+impl crate::test_support::TestModelScript for RewindScript {
+    fn stream(
+        &self,
+        request: crate::model::ModelRequest<'_>,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<crate::model::ModelResponse, crate::model::ModelError> {
+        use crate::model::{ContentPart, FinishReason, ModelEvent, ModelItem};
+        let last_user = request.items.iter().rev().find_map(|item| match item {
+            ModelItem::User { content } => Some(content),
+            _ => None,
+        });
+        let waits_for_stop = last_user.is_some_and(|content| {
+            content.iter().any(|part| {
+                matches!(part, ContentPart::Text(text) if text.ends_with("stopped question"))
+            })
+        });
+        let text = if waits_for_stop {
+            "An unfinished answer"
+        } else {
+            "A completed answer"
+        };
+        events.emit(ModelEvent::TextDelta { delta: text.into() });
+        if waits_for_stop {
+            let deadline = Instant::now() + WAIT;
+            while !request.cancel.is_cancelled() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let reason = if request.cancel.is_cancelled() {
+            FinishReason::Cancelled
+        } else {
+            FinishReason::Completed
+        };
+        Ok(crate::test_support::response(text, reason))
+    }
+}
+
+#[test]
+#[ignore = "Playwright rewind host; needs CLAT_E2E_HOST=1"]
+fn serve_e2e_host_rewind() {
+    host_serve_for_playwright("rewind", TestBehavior::Scripted(Arc::new(RewindScript)), 0);
+}
+
 #[test]
 #[ignore = "PLG-2 signed staging Playwright host, armed by explicit test environment"]
 fn serve_e2e_host_plugin_market() {
