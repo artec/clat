@@ -33,8 +33,6 @@
       getComputedStyle: window.getComputedStyle.bind(window),
       getSelection: () => context.isActive() ? window.getSelection() : null,
       setTimeout: window.setTimeout.bind(window),
-      confirm: message => context.isActive() && window.confirm(message),
-      prompt: (...args) => context.isActive() ? window.prompt(...args) : null,
       focus: () => { void host.open({ route_id: route }).catch(() => {}); window.focus(); },
       addEventListener(type, handler, options) {
         if (type.startsWith('clat:')) localEvents.addEventListener(type, handler, options);

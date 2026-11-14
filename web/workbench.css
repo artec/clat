@@ -609,12 +609,16 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 #transcript > .msg.user:not(:first-child):has(+ .round-process-heading) {
   margin-block-start: 48px;
 }
-#transcript > .msg.user:has(+ .round-process-heading) > .message-actions {
+#transcript > .msg.user > .message-actions {
   padding-block-start: 2px;
 }
 #transcript > .msg.user + .round-process-heading {
   margin-block-start: 0;
   padding-block-start: 0;
+}
+/* A mid-round message has no process header of its own. */
+#transcript > .msg.user:not(:first-child, :has(+ .round-process-heading)) {
+  margin-block: 32px 6px;
 }
 
 .compaction-disclosure{margin:14px 0 20px 36px;color:var(--text-muted);font-size:var(--text-size-secondary)}

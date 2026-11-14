@@ -18,12 +18,13 @@ function restoreProjectReading() {
   const saved = projectReading;
   const anchor = dom.transcript.contains(saved.anchor) ? saved.anchor
     : saved.seq ? dom.transcript.querySelector('[data-seq="' + CSS.escape(saved.seq) + '"]') : null;
-  const behavior = viewport.style.scrollBehavior;
-  viewport.style.scrollBehavior = 'auto';
   if (saved.follow) snapToLatest();
-  else if (anchor) viewport.scrollTop += anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top - saved.offset;
-  else viewport.scrollTop = saved.top;
-  viewport.style.scrollBehavior = behavior;
+  else {
+    transcriptFollow.pause();
+    if (anchor) viewport.scrollTop += anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top - saved.offset;
+    else viewport.scrollTop = saved.top;
+    transcriptFollow.rememberPosition();
+  }
 }
 
 function projectLifecycle() {

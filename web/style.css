@@ -234,7 +234,7 @@ button:disabled { cursor: default; opacity: .45; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .permission-badge { padding: 4px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--text-soft); font: 11px var(--font-mono); }
 #header-permission[data-mode="danger-full-access"], #composer-permission[data-mode="danger-full-access"] { color: var(--ansi-yellow); }
-.transcript-scroll { position: relative; min-height: 0; overflow-y: auto; scroll-behavior: smooth; }
+.transcript-scroll { position: relative; min-height: 0; overflow-y: auto; }
 /* Fade the scroll viewport itself: translucent composer backgrounds cannot hide text. */
 .conversation > .transcript-scroll {
   --transcript-bottom-mask: linear-gradient(to bottom, #000 0, #000 max(0px, calc(100% - var(--composer-height))), transparent max(0px, calc(100% - var(--composer-height) + 32px)));

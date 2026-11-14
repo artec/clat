@@ -1,5 +1,5 @@
 const {test,expect}=require('@playwright/test');
-const {hostInfo,openWorkbench}=require('../helpers/workbench');
+const {hostInfo,openWorkbench,LIVE}=require('../helpers/workbench');
 
 test('Settings offers independent user/project Skill creation and removal, not an Extensions tab',async({page})=>{
   await openWorkbench(page,hostInfo('success'));
@@ -12,13 +12,15 @@ test('Settings offers independent user/project Skill creation and removal, not a
   await panel.locator('input').first().fill('managed-e2e-review');
   await panel.locator('input').nth(1).fill('Browser-managed skill');
   await panel.locator('textarea').fill('Review every change and cite actual source lines.');
-  await panel.locator('button.primary').click();
+  await panel.locator('button.primary:not([hidden])').click();
   await expect.poll(()=>page.evaluate(async()=> (await rpc('skill.manage.list',{})).user.some(e=>e.name==='managed-e2e-review'))).toBe(true);
   const source=await page.evaluate(async()=>rpc('interaction.catalog',{}));
   expect(source.skills.entries.some(e=>e.name==='managed-e2e-review')).toBe(true);
   const row=panel.locator('.settings-row').filter({hasText:'managed-e2e-review'}).first();
-  page.once('dialog',d=>d.accept());
   await row.getByRole('button',{name:'Delete'}).click();
+  const removeSkill=page.locator('dialog.clat-dialog');
+  await expect(removeSkill).toBeVisible(LIVE);
+  await removeSkill.locator('[data-role="accept"]').click();
   await expect.poll(()=>page.evaluate(async()=> (await rpc('skill.manage.list',{})).user.some(e=>e.name==='managed-e2e-review'))).toBe(false);
 });
 test('MCP settings manage disabled server without starting a process',async({page})=>{
@@ -29,15 +31,17 @@ test('MCP settings manage disabled server without starting a process',async({pag
   await panel.locator('input').first().fill('managed-e2e-disabled');
   await panel.locator('input').nth(1).fill('unavailable-fixture-for-ui-test');
   await panel.locator('input[type=checkbox]').uncheck();
-  await panel.locator('button.primary').click();
+  await panel.locator('button.primary:not([hidden])').click();
   await expect.poll(()=>page.evaluate(async()=>{
     const v=await rpc('mcp.manage.list',{project_root:state.workbench.project.root});
     return v.user.some(e=>e.name==='managed-e2e-disabled'&&e.enabled===false);
   })).toBe(true);
   const v=await page.evaluate(async()=>rpc('mcp.manage.list',{project_root:state.workbench.project.root}));
   expect(JSON.stringify(v)).not.toContain('unavailable-fixture-for-ui-test');
-  page.once('dialog',d=>d.accept());
   await panel.locator('.settings-row').filter({hasText:'managed-e2e-disabled'}).getByRole('button',{name:'Delete'}).click();
+  const removeServer=page.locator('dialog.clat-dialog');
+  await expect(removeServer).toBeVisible(LIVE);
+  await removeServer.locator('[data-role="accept"]').click();
   await expect.poll(()=>page.evaluate(async()=>{
     const next=await rpc('mcp.manage.list',{project_root:state.workbench.project.root});
     return next.user.some(e=>e.name==='managed-e2e-disabled');

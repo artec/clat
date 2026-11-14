@@ -76,7 +76,7 @@ function renderWorkflowGoal(view,goal){
     workflowViewButton(view,'pause_goal',()=>action('pause'),!value.goal.armed&&!value.busy),
     workflowViewButton(view,'accept_goal',()=>action('complete'),value.busy),
     workflowViewButton(view,'feedback_continue',()=>renderWorkflowGoalFeedback(view,goal),value.busy||value.plan_mode),
-    workflowViewButton(view,'end_goal',()=>{if(confirm(workflowText('end_goal_confirm')))void action('clear');},value.busy));
+    workflowViewButton(view,'end_goal',async()=>{if(await CLATDialog.confirm(workflowText('end_goal_confirm')))void action('clear');},value.busy));
   if(!builtinEnabled(value,'builtin.goal')){
     for(const button of actions.querySelectorAll('button'))disableBuiltin(button,value,'builtin.goal');
     detail.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));

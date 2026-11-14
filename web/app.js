@@ -850,11 +850,9 @@ function dispatchFrame(frame) {
       break;
     case 'replay.end':
       syncEmptyState();
-      dom['transcript-scroll'].style.scrollBehavior = 'auto';
-      snapToLatest();
-      requestAnimationFrame(() => { dom['transcript-scroll'].style.scrollBehavior = ''; });
       state.history.replaying = false;
       conversationRounds.refresh();
+      snapToLatest();
       syncActiveMapItem();
       // O3/C1（J1 冷恢复/重连，AG5-R1 F5）：回放重建后，最后一个 turn
       // 的真实终态同样要可再现——run 状态栏恢复与 live 相同词汇的常驻
@@ -1846,10 +1844,8 @@ function streamingMarkdown(container, source) {
   function flush() {
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    const follow = container.isConnected && followPinned &&
-      !(findActive && !document.getElementById('find-bar').classList.contains('hidden'));
     renderMarkdown(container, source());
-    if (follow) snapToLatest();
+    if (container.isConnected) scrollIfFollowing();
   }
   return {
     schedule() {
@@ -2211,53 +2207,13 @@ function addTraceEvent(eventId, detail) {
   addNoticeLine(detail || '', eventId);
 }
 
-function nearEnd() {
-  const viewport = dom['transcript-scroll'];
-  return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 180;
-}
-
-// Sticky follow-latest: streaming output follows the bottom only while the
-// reader is pinned to it. Any upward user scroll detaches — live output must
-// never yank the page back down — and returning within FOLLOW_REATTACH_PX,
-// or the back-to-latest ball, re-pins. Programmatic snaps only scroll down
-// toward the bottom, so they can never trip the detach rule; a user wheel-up
-// interrupting a smooth snap must still detach. Layout shrinks (collapsing
-// a round) re-anchor the viewport without the reader moving — those never
-// detach either.
-const FOLLOW_REATTACH_PX = 32;
-let followPinned = true;
-let followLastTop = 0;
-let followLastHeight = 0;
-
-function isFollowingLatest() { return followPinned; }
-
-function snapToLatest() {
-  const viewport = dom['transcript-scroll'];
-  followPinned = true;
-  viewport.scrollTop = viewport.scrollHeight;
-}
-
-function trackFollowScroll() {
-  const viewport = dom['transcript-scroll'];
-  followLastTop = viewport.scrollTop;
-  followLastHeight = viewport.scrollHeight;
-  viewport.addEventListener('scroll', () => {
-    const top = viewport.scrollTop;
-    const height = viewport.scrollHeight;
-    const layoutShrink = height < followLastHeight;
-    if (!layoutShrink) {
-      const distanceFromEnd = height - top - viewport.clientHeight;
-      if (distanceFromEnd <= FOLLOW_REATTACH_PX) followPinned = true;
-      else if (top < followLastTop) followPinned = false;
-    }
-    followLastTop = top;
-    followLastHeight = height;
-  }, { passive: true });
-}
+const transcriptFollow = createTranscriptFollow(dom['transcript-scroll'], syncHistoryNavigation);
+function isFollowingLatest() { return transcriptFollow.isPinned(); }
+function snapToLatest() { transcriptFollow.resume(); }
 
 function scrollIfFollowing() {
   if (findActive && !document.getElementById('find-bar').classList.contains('hidden')) return;
-  if (followPinned) snapToLatest();
+  transcriptFollow.schedule();
 }
 
 function syncHistoryStatus() {
@@ -2448,7 +2404,12 @@ async function jumpToMessage(seq) {
       if (!await loadOlderHistory()) break;
       row = dom.transcript.querySelector(`:scope > [data-seq="${seq}"]`);
     }
-    if (row) { conversationRounds.reveal(row);userMessageReader.reveal(row);row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    if (row) {
+      transcriptFollow.pause();
+      conversationRounds.reveal(row);
+      userMessageReader.reveal(row);
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
   } finally {
     state.history.jumping = false;
     dom['message-map-track'].querySelector(`[data-seq="${seq}"]`)?.classList.remove('is-jumping');
@@ -2930,7 +2891,7 @@ async function switchSession(id) {
     closeMobileSidebar();
     return;
   }
-  if (!confirmAttachmentSelection()) return;
+  if (!await confirmAttachmentSelection()) return;
   setSwitching(true);
   try {
     await rpc('session.switch', { id });
@@ -2944,7 +2905,7 @@ async function switchSession(id) {
 
 async function newSession() {
   if (state.switching || state.compactionActive || state.desktopUpdateLocked) return;
-  if (!confirmAttachmentSelection()) return;
+  if (!await confirmAttachmentSelection()) return;
   setSwitching(true);
   try {
     await rpc('session.new', {});
@@ -2956,12 +2917,14 @@ async function newSession() {
   }
 }
 
+// 原生 window.prompt 在桌面 webview（wry WKWebView 未实现 JS 对话框面板）
+// 中是无 UI 的静默 no-op；重命名一律走共享应用内对话框（CLATDialog）。
 dom['session-title'].addEventListener('click', async () => {
   if (!state.sessionId || state.switching || state.compactionActive) return;
-  const title = window.prompt(CLATI18n.msg("web.session_title", {}, "Session title"), dom['session-title'].textContent || '');
-  if (title === null || title.trim() === '') return;
+  const title = await CLATDialog.prompt(CLATI18n.msg("web.session_title", {}, "Session title"), dom['session-title'].textContent || '');
+  if (title === null || !title.trim()) return;
   try {
-    await rpc('session.rename', { id: state.sessionId, title });
+    await rpc('session.rename', { id: state.sessionId, title: title.trim() });
     CLATI18n.bind(dom['session-title'], "textContent", () => title.trim());
     updateDocumentTitle(title.trim());
     refreshSessions();
@@ -3423,7 +3386,7 @@ function renderModelProfile(name, active, imageInput) {
     CLATI18n.attribute(button,'aria-label',()=>CLATI18n.msg("web.line_value_profile_value",{value1:(label),value2:(name)},"{value1} profile {value2}"));
     button.addEventListener('click', () => modelAction(button, async () => {
       if (action === 'Edit') return loadModelProfile(name);
-      if (action === 'Delete' && !window.confirm(CLATI18n.msg("web.line_delete_profile_value_an_active_profile_falls_back_to_the_next_saved_profile_or_an_unconfigured_model",{value1:(name)},"Delete profile “{value1}”? An active profile falls back to the next saved profile, or an unconfigured model."))) return;
+      if (action === 'Delete' && !await CLATDialog.confirm(CLATI18n.msg("web.line_delete_profile_value_an_active_profile_falls_back_to_the_next_saved_profile_or_an_unconfigured_model",{value1:(name)},"Delete profile “{value1}”? An active profile falls back to the next saved profile, or an unconfigured model."))) return;
       await rpc('model.profile.delete', { name });
     }));
     row.appendChild(button);
@@ -3523,7 +3486,7 @@ function renderWorkspaceDirectory(projects){
   const list=document.getElementById('workspace-list'),error=document.getElementById('workspace-error');list.replaceChildren();
   for(const workspace of projects){
     const row=el('article','project-setting-row'),copy=el('div'),name=el('strong','project-title-line');
-    name.append(context.organization.pin(workspace),el('span','',()=>workspace.title));copy.append(name,el('small','',workspace.root));
+    name.append(el('span','',()=>workspace.title));copy.append(name,el('small','',workspace.root));
     copy.append(el('small','',()=>workspace.run_active?pageText('running'):workspace.root===state.workbench?.project?.root?pageText('current_project'):''));
     const open=pageAction('switch_project',()=>void context.openProject(workspace).catch(failure=>{error.textContent=failure.message;}));
     const link=el('a','workspace-link',()=>pageText('new_window'));link.href='/?workspace='+encodeURIComponent(workspace.route_id||'default');link.hidden=!workspace.route_id;link.target='_blank';link.rel='noopener';
@@ -3717,7 +3680,7 @@ dom['wechat-bind'].addEventListener('click', async () => {
   CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   hide(dom['wechat-pairing']);
   const replacing = dom['wechat-bind'].dataset.bound === 'true';
-  if (replacing && !window.confirm(CLATI18n.msg("web.replace_the_current_binding_existing_user_grants_are_kept_until_the_new_qr_is_conf", {}, "Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared."))) return;
+  if (replacing && !await CLATDialog.confirm(CLATI18n.msg("web.replace_the_current_binding_existing_user_grants_are_kept_until_the_new_qr_is_conf", {}, "Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared."))) return;
   dom['wechat-bind'].disabled = true;
   const epoch=++wechatSensitiveEpoch;
   try {
@@ -3762,7 +3725,7 @@ dom['wechat-pair'].addEventListener('click', async () => {
 });
 
 dom['wechat-unbind'].addEventListener('click', async () => {
-  if (!window.confirm(CLATI18n.msg("web.remove_the_wechat_credential_paired_users_and_chat_mappings", {}, "Remove the WeChat credential, paired users, and chat mappings?"))) return;
+  if (!await CLATDialog.confirm(CLATI18n.msg("web.remove_the_wechat_credential_paired_users_and_chat_mappings", {}, "Remove the WeChat credential, paired users, and chat mappings?"))) return;
   CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
   const epoch=wechatSensitiveEpoch;
   try {
@@ -4343,7 +4306,6 @@ installConversationFind();
   developmentTerminal = installDevelopmentTerminal();
   installSessionOrganization();
   installWorkflowDetails();
-  trackFollowScroll();
   installNavigationHelp();
   installTaskReview();
   installWorkbenchTools();

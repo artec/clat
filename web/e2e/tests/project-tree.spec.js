@@ -49,6 +49,16 @@ test('project conversations open their own session and retain each project draft
   await expect(page.locator('#project-root')).toHaveText(root);
 });
 
+test('settings projects panel lists trusted projects', async ({ page }) => {
+  // 回归（a3355a6d）：renderWorkspaceDirectory 仍调用已被移除的
+  // organization.pin，首行即抛 TypeError，已信任项目列表在所有前端为空。
+  await openWorkbench(page, hostInfo('project-tree'));
+  await page.click('#nav-settings');
+  await page.click('[data-settings-category="projects"]');
+  await expect(page.locator('[data-settings-panel="projects"]')).toBeVisible(LIVE);
+  await expect(page.locator('#workspace-list .project-setting-row').first()).toBeVisible(LIVE);
+});
+
 test('double-clicking a project row activates it and opens the project files work area', async ({ page }) => {
   const fixture = hostInfo('project-tree'), root = fixture.secondaryProject.root;
   await openWorkbench(page, fixture);
@@ -115,8 +125,10 @@ test('archive tabs classify selected conversations in both active and retained p
   const archive = async id => {
     await expect.poll(() => page.evaluate(() => state.switching), LIVE).toBe(false);
     await page.locator(`[data-session-id="${id}"] .session-more`).click();
-    page.once('dialog', dialog => dialog.accept());
     await page.getByRole('menuitem', { name: 'Archive session…', exact: true }).click();
+    const archiveDialog = page.locator('dialog.clat-dialog');
+    await expect(archiveDialog).toBeVisible(LIVE);
+    await archiveDialog.locator('[data-role="accept"]').click();
     await expect(entry(page,id)).toBeHidden(LIVE);
     expect(await page.evaluate(() => state.sessionId)).toBe(id);
   };

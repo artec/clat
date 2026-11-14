@@ -7,7 +7,7 @@ function harness({staged=false,confirm=true,phase='completed',afterStage=()=>{},
   let current=owner;
   const calls=[],questions=[],errors=[];
   const ctx=vm.createContext({
-    window:{confirm(message){questions.push(message);return confirm;}},
+    CLATDialog:{confirm:async message=>{questions.push(message);return confirm;},prompt:async()=>null},
     devText:key=>key,devId:()=>String(calls.length+1),navigator:{language:'en'},
     localStorage:{setItem(){},removeItem(){}},CLATI18n:{present:(_,fallback)=>fallback},
     gitConflicted:f=>Boolean(f.conflict),

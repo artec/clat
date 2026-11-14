@@ -5,12 +5,12 @@ function installDevelopmentFileActions(editor,ui){
   const fail=error=>devReport(ui.status,error);
   CLATI18n.onChange(()=>diff?.setPhrases(devEditorPhrases()));
   editor.create=async directory=>{
-    const name=window.prompt(devText(directory?'folder_name':'file_name'));if(!name)return;
+    const name=await CLATDialog.prompt(devText(directory?'folder_name':'file_name'));if(!name)return;
     const path=[parent(),name].filter(Boolean).join('/');
     try{await rpc('editor.create',{operationId:devId(),path,directory});await ui.reveal(path,directory);if(!directory)await editor.openFile(path,{fixed:true});}catch(error){fail(error);}
   };
   editor.rename=async()=>{
-    const path=ui.selectedPath(),directory=ui.selectedDirectory();if(!path)return;const target=window.prompt(devText('rename_path'),path);if(!target||target===path)return;
+    const path=ui.selectedPath(),directory=ui.selectedDirectory();if(!path)return;const target=await CLATDialog.prompt(devText('rename_path'),path);if(!target||target===path)return;
     try{const snapshot=await rpc('editor.inspect',{path});await rpc('editor.rename',{operationId:devId(),path,target,version:snapshot.version});
       for(const [key,doc]of [...docs])if(key===path||key.startsWith(path+'/')){docs.delete(key);doc.path=target+key.slice(path.length);docs.set(doc.path,doc);ui.queueDraft({...doc,path:key,dirty:false});ui.queueDraft(doc);}ui.refreshDocument();ui.setPath(target,directory);ui.renderTabs();await ui.reveal(target,directory);
     }catch(error){fail(error);}

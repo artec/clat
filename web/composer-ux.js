@@ -243,7 +243,7 @@ async function submitComposerSteering({ text, images, owner, draftEpoch, compose
 async function submitComposerCommand({ text, owner }) {
   if ((text === '/new' || text === '/clear') && borrowedConversation) {updateRunState(pageText('fixed_task_session'));return false;}
   if (text === '/new' || text === '/clear') {
-    if (!confirmAttachmentSelection()) return false;
+    if (!await confirmAttachmentSelection()) return false;
     await rpc('session.new', {});
     if (!composerOwns(owner)) return true;
     addNoticeLine(CLATI18n.msg("tui.new_conversation", {}, "new conversation"));
@@ -405,12 +405,12 @@ function navigateInputHistory(direction) {
   return true;
 }
 
-function confirmAttachmentSelection() {
+async function confirmAttachmentSelection() {
   if (state.draft.sending || state.draft.queuedClientMessageId !== null) {
     updateRunState(CLATI18n.msg("web.wait_for_the_submitted_attachment_receipt_before_changing_sessions", {}, "Wait for the submitted attachment receipt before changing sessions."));
     return false;
   }
-  return state.draft.images.length === 0 || window.confirm(
+  return state.draft.images.length === 0 || await CLATDialog.confirm(
     CLATI18n.msg("web.changing_sessions_releases_these_draft_images_text_stays_with_its_session_continue", {}, "Changing sessions releases these draft images. Text stays with its session. Continue?")
   );
 }

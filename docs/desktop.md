@@ -122,6 +122,8 @@ Long user messages show a six-line preview with a fading lower edge. The entire 
 
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.
+Mid-round user messages have extra space above the bubble to separate them from
+the preceding activity, with a smaller gap before the conversation continues.
 The current-action label below the live conversation has a rotating progress icon and uses a slow text-only spotlight
 for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
@@ -326,6 +328,9 @@ Opening Settings → Projects shows the trusted project directory immediately an
 refreshes it, whether entered from the settings list or a conversation breadcrumb.
 Conversation text fades out above the floating composer and stays hidden beneath
 the input area, including when window transparency is enabled.
+Live output follows the bottom of the conversation. Scrolling up pauses follow
+immediately, even while the agent is writing or running tools. Scroll back to the
+bottom or use the floating latest-message button to resume.
 Extension navigation, built-in extension lists and overviews, composer shortcuts,
 and extension help use the same puzzle-piece icon.
 

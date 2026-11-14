@@ -115,7 +115,7 @@ function renderScheduleTask(detail,rule,{actionsPort,deliveries,current}){
       const menu=el('details','task-actions-menu');menu.append(el('summary','',()=>pageText('actions')));
       const commands=el('div','task-menu-items');commands.append(pageAction('duplicate',()=>{menu.open=false;actionsPort.duplicate(rule);}));
       if(rule.phase==='paused')commands.append(pageAction('resume',()=>void actionsPort.change(rule,'resume')));
-      commands.append(pageAction('delete',()=>{if(window.confirm(CLATI18n.msg('schedule.delete_confirm')))void actionsPort.change(rule,'delete');}));menu.append(commands);actions.append(menu);
+      commands.append(pageAction('delete',async()=>{if(await CLATDialog.confirm(CLATI18n.msg('schedule.delete_confirm')))void actionsPort.change(rule,'delete');}));menu.append(commands);actions.append(menu);
       if(rule.spec.trigger.kind==='job'&&!builtinEnabled(state.workbench,'builtin.jobs')){
         for(const button of actions.querySelectorAll('button'))if(['edit','duplicate','review','resume'].some(key=>button.dataset.action===key))disableBuiltin(button,state.workbench,'builtin.jobs');
         detail.append(el('p','settings-note',()=>CLATI18n.msg('extension.job_source_paused')));

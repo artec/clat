@@ -14,7 +14,7 @@ function installOperationCapture(host,turn,{current:owned,owner}){
     }catch(error){if(owns())body.replaceChildren(el('p','error',error.message),pageAction('retry',()=>void load(path)));}
   }
   async function recover(value,button){
-    if(!current()||!window.confirm(CLATI18n.msg('web.restore_only_captured_native_files_whose_current_identity_and_contents_still_match')))return;button.disabled=true;
+    if(!current()||!await CLATDialog.confirm(CLATI18n.msg('web.restore_only_captured_native_files_whose_current_identity_and_contents_still_match')))return;button.disabled=true;
     try{const result=await rpc('turn.restore',{turn,revision:value.revision,confirmed:true,expected_selection_generation:owner[1]});if(!current())return;body.replaceChildren(el('h3','',()=>CLATI18n.msg('web.recovery_results')));for(const file of result.files)body.append(el('p','',()=>[file.path,file.status,file.note,file.recovery_path].filter(Boolean).join(' · ')));}
     catch(error){if(current()){body.append(el('p','error',error.message));button.disabled=false;}}
   }

@@ -2,7 +2,7 @@
 function installDevelopmentTerminal(){
   let projects=[],selected=null,active=false,epoch=0,refreshEpoch=0,preferredShell='',menuClose=null,creating=false,renderStamp='';
   const terminals=new Map(),expanded=new Map();
-  const actions={render,canCreate:()=>devAvailable()&&!creating,hasSelection:()=>Boolean(selected),create:project=>void createTerminal('',project),select:(project,row)=>void choose(project,row),claim:()=>void claim(true),find:()=>{const text=window.prompt(devText('find_terminal'));if(text)selected?.widget.search.findNext(text);},copy:()=>void navigator.clipboard.writeText(selected?.widget.term.getSelection()||'').catch(report),clear:()=>selected?.widget.term.clear(),menu:rowMenu,cleanup:project=>void cleanup(project),shellMenu:source=>void shellMenu(source),more:source=>{menuClose=terminalMenu(source,[['refresh','refresh',refresh],['close_ended','trash',()=>cleanup()]]);}};
+  const actions={render,canCreate:()=>devAvailable()&&!creating,hasSelection:()=>Boolean(selected),create:project=>void createTerminal('',project),select:(project,row)=>void choose(project,row),claim:()=>void claim(true),find:async()=>{const text=await CLATDialog.prompt(devText('find_terminal'));if(text)selected?.widget.search.findNext(text);},copy:()=>void navigator.clipboard.writeText(selected?.widget.term.getSelection()||'').catch(report),clear:()=>selected?.widget.term.clear(),menu:rowMenu,cleanup:project=>void cleanup(project),shellMenu:source=>void shellMenu(source),more:source=>{menuClose=terminalMenu(source,[['refresh','refresh',refresh],['close_ended','trash',()=>cleanup()]]);}};
   const ui=createTerminalPage(actions),{node,mount,status}=ui;document.body.append(node);
   const trigger=devButton('terminal',()=>presentPage(node));trigger.id='terminal-open';trigger.hidden=true;document.body.append(trigger);
   const visible=()=>active&&context.isActive()&&devAvailable(),report=error=>devReport(status,error);
@@ -52,11 +52,11 @@ function installDevelopmentTerminal(){
   }
   const projectRpc=(project,method,params)=>terminalProjectRpc(project,method,params,currentProject().root);
   let directoryTick=0;
-  async function remove(project,row){if(row.phase==='running'&&!window.confirm(devText('close_terminal_confirm')))return;
+  async function remove(project,row){if(row.phase==='running'&&!await CLATDialog.confirm(devText('close_terminal_confirm')))return;
     try{await projectRpc(project,'terminal.remove',{operationId:devId(),id:row.id,confirmed:true});await refresh();}catch(error){report(error);}}
-  async function cleanup(project){const targets=project?[project]:projects,count=targets.reduce((n,p)=>n+p.terminals.filter(row=>row.phase!=='running').length,0);if(!count||!window.confirm(devText('close_ended_confirm',{count})))return;
+  async function cleanup(project){const targets=project?[project]:projects,count=targets.reduce((n,p)=>n+p.terminals.filter(row=>row.phase!=='running').length,0);if(!count||!await CLATDialog.confirm(devText('close_ended_confirm',{count})))return;
     const failures=[];for(const row of targets){try{await projectRpc(row,'terminal.removeEnded',{operationId:devId()});}catch(error){failures.push(error.message);}}await refresh();if(failures.length)report(new Error(failures.join('\n')));}
-  function rowMenu(project,row,source){menuClose=terminalMenu(source,[['rename','edit',async()=>{const name=window.prompt(devText('terminal_name'),row.name);if(name)try{await projectRpc(project,'terminal.rename',{id:row.id,name});await refresh();}catch(error){report(error);}}],['copy_id','copy',()=>navigator.clipboard.writeText(row.id).catch(report)],['close_terminal','close',()=>remove(project,row)]]);}
+  function rowMenu(project,row,source){menuClose=terminalMenu(source,[['rename','edit',async()=>{const name=await CLATDialog.prompt(devText('terminal_name'),row.name);if(name)try{await projectRpc(project,'terminal.rename',{id:row.id,name});await refresh();}catch(error){report(error);}}],['copy_id','copy',()=>navigator.clipboard.writeText(row.id).catch(report)],['close_terminal','close',()=>remove(project,row)]]);}
   async function shellMenu(source){try{const data=await rpc('terminal.shells',{});menuClose=terminalMenu(source,data.shells.map(path=>[()=>devText('shell_for_project',{project:currentProject().title,shell:path.split(/[\\/]/).pop()}),'terminal',()=>{preferredShell=path;void createTerminal();}]));}catch(error){report(error);}}
   const attach=seat=>startTerminalStream(seat,{visible,isSelected:()=>selected===seat,refresh,has:()=>terminals.has(seat.id),attach,status});
   new ResizeObserver(()=>{if(visible())requestAnimationFrame(()=>void fit());}).observe(mount);

@@ -134,12 +134,12 @@ function installMcpSettings(){
       if(request===serial)await refresh();}catch(error){if(request===serial)showStatus(error.message);}
   }
   async function remove(item){
-    if(!window.confirm(t('confirm_delete')))return;
+    if(!await CLATDialog.confirm(t('confirm_delete')))return;
     const request=++serial;try{await rpc('mcp.manage.remove',{project_root:project(),scope:scope.value,name:item.name,revision});
       if(request===serial)await refresh();}catch(error){if(request===serial)showStatus(error.message);}
   }
   async function test(item){
-    if(!window.confirm(t('confirm_test')))return;
+    if(!await CLATDialog.confirm(t('confirm_test')))return;
     const request=++serial;try{const value=await rpc('mcp.manage.test',{project_root:project(),scope:scope.value,name:item.name,confirm_execution:true});
       if(request===serial)showStatus(t('connected')+' · '+value.tools+' '+t('tools'));}catch(error){if(request===serial)showStatus(error.message);}
   }
@@ -250,7 +250,7 @@ function installSkillSettings(){
   add.onclick=start;
   scope.onchange=()=>{editor.close();editingName=null;CLATI18n.bind(status,'textContent',()=>'');renderRows();};
   async function removeSkill(item){
-    if(!window.confirm(t('confirm_delete')))return;
+    if(!await CLATDialog.confirm(t('confirm_delete')))return;
     const request=++epoch;try{await rpc('skill.manage.remove',{scope:scope.value,name:item.name,revision:item.revision});
       if(request===epoch){await refresh();void refreshCommandCatalog();}}
     catch(error){if(request===epoch)CLATI18n.bind(status,'textContent',()=>error.message);}
@@ -470,7 +470,7 @@ function setupWechatUsers() {
   async function refresh(){const request=++epoch;try{const data=await rpc('wechat.users.list',{});if(request!==epoch||!active())return;
     list.replaceChildren();for(const user of data.users){const row=el('article','project-setting-row'),copy=el('div');copy.append(el('strong','',user.user_id),el('small','',()=>[user.paired?pageText('paired_grant'):'',user.manual?pageText('manual_grant'):''].filter(Boolean).join(' · ')));
       if(user.sessions.length)copy.append(el('small','',user.sessions.join(' · ')));
-      row.append(copy,pageAction('revoke',async()=>{if(!window.confirm(pageText('revoke_confirm')))return;const request=epoch;try{await rpc('wechat.user.revoke',{userId:user.user_id});if(request!==epoch||!active())return;const refreshed=request+1;await refresh();if(refreshed===epoch&&active())await refreshWechatStatus();}catch(error){if(request===epoch&&active())list.append(el('p','error',error.message));}}));list.append(row);}
+      row.append(copy,pageAction('revoke',async()=>{if(!await CLATDialog.confirm(pageText('revoke_confirm')))return;const request=epoch;try{await rpc('wechat.user.revoke',{userId:user.user_id});if(request!==epoch||!active())return;const refreshed=request+1;await refresh();if(refreshed===epoch&&active())await refreshWechatStatus();}catch(error){if(request===epoch&&active())list.append(el('p','error',error.message));}}));list.append(row);}
     if(!data.users.length)list.append(pageEmpty('no_authorized_users'));
   }catch(error){if(request===epoch&&active())list.replaceChildren(el('p','error',error.message),pageAction('retry',()=>void refresh()));}}
   const heading=el('div','settings-group-heading');heading.append(section.querySelector('h3'),pageAction('refresh',()=>void refresh()));section.prepend(heading);

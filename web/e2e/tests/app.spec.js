@@ -100,10 +100,11 @@ test('UX-1 cancelled attachment switch leaves text and staged images untouched',
       file: new File(['bytes'], 'one.png', { type: 'image/png' }), size: 5, status: 'failed' });
     renderDraft();
   });
-  let confirmed = false;
-  page.once('dialog', (dialog) => { confirmed = true; return dialog.dismiss(); });
   await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
-  expect(confirmed).toBe(true);
+  const keepDraft = page.locator('dialog.clat-dialog');
+  await expect(keepDraft).toBeVisible(LIVE);
+  await expect(keepDraft).toContainText('releases these draft images');
+  await keepDraft.locator('[data-role="cancel"]').click();
   await expect(page.locator('#prompt')).toHaveValue('附件草稿');
   expect(await page.evaluate(() => state.draft.images.length)).toBe(1);
 });
@@ -345,17 +346,29 @@ test('session actions support right click keyboard and more button', async ({ pa
   expect(copied).toMatch(/^[0-9a-f-]+$/i);
   expect(copied.length).toBeGreaterThan(16);
   await page.locator('.session-more').first().click();
-  const prompt = page.waitForEvent('dialog');
-  await Promise.all([
-    page.getByRole('menuitem', { name: 'Rename session' }).click(),
-    prompt.then(async (dialog) => {
-      expect(dialog.message()).toBe('Session title');
-      await dialog.dismiss();
-    }),
-  ]);
+  await page.getByRole('menuitem', { name: 'Rename session' }).click();
+  const renameDialog = page.locator('dialog.clat-dialog');
+  await expect(renameDialog).toBeVisible(LIVE);
+  await renameDialog.locator('.workbench-dialog-actions .secondary').click();
+  await expect(renameDialog).toBeHidden(LIVE);
   await page.locator('.session-more').first().click();
   await page.getByRole('menuitem', { name: 'Open session' }).click();
   await expect(page.getByRole('menu')).toHaveCount(0);
+});
+
+// 桌面 webview（wry WKWebView）不实现原生 JS 对话框面板：window.confirm 恒返
+// false。确认型操作必须走应用内对话框，否则桌面端表现为“点了没反应”。
+test('confirm-gated actions use the in-app dialog when native confirm is unavailable', async ({ page }) => {
+  await page.addInitScript(() => { window.confirm = () => false; });
+  await openWorkbench(page, hostInfo('history'));
+  const row = page.locator('#session-list li.active .session-item').first();
+  await expect(row).toBeVisible(LIVE);
+  await row.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Archive session…', exact: true }).click();
+  const dialog = page.locator('dialog.clat-dialog');
+  await expect(dialog).toBeVisible(LIVE);
+  await dialog.locator('[data-role="accept"]').click();
+  await expect(page.locator('#session-list li.active')).toHaveCount(0, LIVE);
 });
 
 test('model intensity uses host choices and preserves the composer', async ({ page }, testInfo) => {
@@ -627,8 +640,10 @@ test('model profiles are editable in PWA and broadcast without echoing API keys'
   expect(responses.every((response) => !response.includes(secret))).toBeTruthy();
   await page.click('#nav-settings');
   await page.click('[data-settings-category="models"]');
-  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Delete profile ' + name, exact: true }).click();
+  const deleteProfile = page.locator('dialog.clat-dialog');
+  await expect(deleteProfile).toBeVisible(LIVE);
+  await deleteProfile.locator('[data-role="accept"]').click();
   await other.click('#nav-workbench');
   await other.click('#model-picker-trigger');
   await expect(other.getByRole('radio', { name: 'Use ' + name, exact: true })).toHaveCount(0, LIVE);
@@ -1023,15 +1038,22 @@ test.describe('acceptance ① approval + run lifecycle', () => {
     await expect(page.locator('#session-list li.active')).toHaveCount(1, LIVE);
     await expect(page.locator('.msg.user .body').last()).toHaveText('try a command', LIVE);
 
-    // 重命名（对话窗 handle prompt 对话框）。
-    page.once('dialog', (dialog) => dialog.accept('renamed by e2e'));
-    await page.click('#session-title');
+    // 重命名走「会话菜单 → 应用内对话框」：原生 window.prompt 在桌面
+    // webview（wry WKWebView 未实现 JS 对话框面板）中是静默 no-op。
+    await page.locator('#session-list li.active .session-more').click();
+    await page.getByRole('menuitem', { name: 'Rename session' }).click();
+    const renameDialog = page.locator('dialog.clat-dialog');
+    await expect(renameDialog).toBeVisible(LIVE);
+    await renameDialog.locator('input').fill('renamed by e2e');
+    await renameDialog.locator('.workbench-dialog-actions .primary').click();
     await expect(page.locator('#session-title')).toHaveText('renamed by e2e', LIVE);
   });
 });
 
 // User titles are data; visual clipping is reviewed manually.
 test('session titles retain full user text across rename and reload', async ({ page }) => {
+  // 模拟桌面 webview：window.prompt 不可用时重命名仍须可用（应用内对话框）。
+  await page.addInitScript(() => { window.prompt = () => undefined; });
   await openWorkbench(page, hostInfo('success'));
   await page.click('.project-group:has(#session-list) [data-action=new-project-session]'); await expect(page.locator('#send')).toBeEnabled(LIVE);
   await page.fill('#prompt', 'title persistence'); await page.click('#send');
@@ -1043,7 +1065,12 @@ test('session titles retain full user text across rename and reload', async ({ p
   const titles = ['这条标题用来验证窄视口下会话标题只做视觉省略而完整保存不会把残缺词句写回存储层',
     '修复生产环境中用户登录失败以及无法访问的问题场景'];
   for (const title of titles) {
-    page.once('dialog', dialog => dialog.accept(title)); await page.click('#session-title');
+    await page.locator('#session-list li.active .session-item').click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Rename session' }).click();
+    const renameDialog = page.locator('dialog.clat-dialog');
+    await expect(renameDialog).toBeVisible(LIVE);
+    await renameDialog.locator('input').fill(title);
+    await renameDialog.locator('.workbench-dialog-actions .primary').click();
     await expect(page.locator('#session-title')).toHaveText(title, LIVE);
     expect(await page.evaluate(async id => (await rpc('session.list', {})).sessions.find(s => s.id === id).title, id)).toBe(title);
   }
@@ -2057,16 +2084,13 @@ test('switching sessions revokes the local image draft instead of carrying it ac
 
   const previous = page.locator('#session-list li:not(.active) .session-item').first();
   await expect(previous).toBeVisible(LIVE);
-  let confirmed = false;
-  page.once('dialog', async (dialog) => {
-    expect(dialog.message()).toContain('releases these draft images');
-    confirmed = true;
-    await dialog.accept();
-  });
   await previous.click();
+  const releaseImages = page.locator('dialog.clat-dialog');
+  await expect(releaseImages).toBeVisible(LIVE);
+  await expect(releaseImages).toContainText('releases these draft images');
+  await releaseImages.locator('[data-role="accept"]').click();
   await expect(page.locator('#send')).toBeEnabled(LIVE);
   await expect(page.locator('.attachment-chip')).toHaveCount(0, LIVE);
-  expect(confirmed).toBe(true);
   await expect(page.locator('#attachment-rail')).toBeHidden(LIVE);
 });
 

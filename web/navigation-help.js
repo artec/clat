@@ -61,6 +61,81 @@ function installPageNotifications() {
   document.querySelector('[data-settings-panel=appearance]').append(notificationGroup);
 }
 
+function createTranscriptFollow(viewport, onChange) {
+  let pinned = true;
+  let lastTop = viewport.scrollTop;
+  let frame = null;
+  let touchY = null;
+
+  function setPinned(value) {
+    if (pinned === value) return;
+    pinned = value;
+    onChange();
+  }
+  function rememberPosition() { lastTop = viewport.scrollTop; }
+  function scrollToEnd() {
+    viewport.scrollTop = viewport.scrollHeight;
+    rememberPosition();
+  }
+  function observeScroll() {
+    if (!viewport.clientHeight) return;
+    const top = viewport.scrollTop;
+    const previous = lastTop;
+    lastTop = top;
+    if (top === previous) return;
+    const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const atBottom = top >= bottom - 1; // scrollTop can be fractional.
+    // A layout shrink can clamp scrollTop down to the new bottom.
+    if (top < previous && !atBottom) setPinned(false);
+    else if (top > previous && atBottom) setPinned(true);
+  }
+  function pause() {
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null;
+    rememberPosition();
+    setPinned(false);
+  }
+  function resume() {
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null;
+    scrollToEnd();
+    setPinned(true);
+  }
+  function schedule() {
+    if (!pinned || frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      // A scrollbar drag or keyboard scroll can move before its scroll event is delivered.
+      observeScroll();
+      if (pinned && viewport.clientHeight) scrollToEnd();
+    });
+  }
+  function beforeUpwardScroll(target) {
+    if (!pinned || viewport.scrollTop <= 0) return;
+    // Let scrollable reasoning and tool output handle their own gestures first.
+    for (let node = target; node && node !== viewport; node = node.parentElement) {
+      if (node.scrollTop > 0 && /^(auto|scroll|overlay)$/.test(getComputedStyle(node).overflowY)) return;
+    }
+    pause();
+  }
+
+  viewport.addEventListener('wheel', event => {
+    if (!event.ctrlKey && !event.shiftKey && event.deltaY < 0 && -event.deltaY >= Math.abs(event.deltaX)) {
+      beforeUpwardScroll(event.target);
+    }
+  }, { passive: true });
+  viewport.addEventListener('touchstart', event => {
+    touchY = event.touches.length === 1 ? event.touches[0].clientY : null;
+  }, { passive: true });
+  viewport.addEventListener('touchmove', event => {
+    const nextY = event.touches.length === 1 ? event.touches[0].clientY : null;
+    if (touchY !== null && nextY !== null && nextY > touchY) beforeUpwardScroll(event.target);
+    touchY = nextY;
+  }, { passive: true });
+  viewport.addEventListener('scroll', observeScroll, { passive: true });
+  return { isPinned: () => pinned, pause, resume, schedule, rememberPosition };
+}
+
 // Floating history controls share the existing scroll owner and run lifecycle.
 function createHistoryNavigation(){
   const viewport=dom['transcript-scroll'],latest=el('button','back-to-latest hidden');
@@ -87,18 +162,16 @@ function createHistoryNavigation(){
 function preserveHistoryPosition(update, anchor = viewportAnchor()) {
   const viewport = dom['transcript-scroll'];
   const offset = anchor ? anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top : null;
-  const behavior = viewport.style.scrollBehavior;
   const anchoring = viewport.style.overflowAnchor;
-  viewport.style.scrollBehavior = 'auto';
   viewport.style.overflowAnchor = 'none';
   try {
     update();
     if (anchor?.isConnected && offset !== null) {
       const delta = anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top - offset;
       viewport.scrollTop = viewport.scrollTop + delta;
+      transcriptFollow.rememberPosition();
     }
   } finally {
     viewport.style.overflowAnchor = anchoring;
-    viewport.style.scrollBehavior = behavior;
   }
 }

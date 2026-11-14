@@ -32,8 +32,10 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
   await expect(page.locator('#turn-review')).toContainText('human dirty baseline');
   await expect(page.locator('#turn-review')).toContainText('Captured native result (not current disk)');
   fs.writeFileSync(path.join(root, 'generated.txt'), 'later human edit');
-  page.once('dialog', d => d.accept());
   await page.getByRole('button', { name: 'Restore captured files…' }).click();
+  const restoreConflict = page.locator('dialog.clat-dialog');
+  await expect(restoreConflict).toBeVisible(LIVE);
+  await restoreConflict.locator('[data-role="accept"]').click();
   await expect(page.locator('#turn-review')).toContainText('conflict', LIVE);
   expect(fs.readFileSync(path.join(root, 'generated.txt'), 'utf8')).toBe('later human edit');
   await page.getByRole('button', { name: 'Close captured operations' }).click();
@@ -44,8 +46,10 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
   await openWorkbenchTool(page, 'turn-review-open');
   await expect(page.locator('#turn-review .review-file')).toContainText('safe', LIVE);
-  page.once('dialog', d => d.accept());
   await page.getByRole('button', { name: 'Restore captured files…' }).click();
+  const restoreSafe = page.locator('dialog.clat-dialog');
+  await expect(restoreSafe).toBeVisible(LIVE);
+  await restoreSafe.locator('[data-role="accept"]').click();
   await expect(page.locator('#turn-review')).toContainText('restored', LIVE);
   await expect(page.locator('#turn-review .review-file')).toContainText('restored');
   expect(fs.readFileSync(path.join(root, 'generated.txt'), 'utf8')).toBe('later human edit');
@@ -111,9 +115,12 @@ test('UX-4 explicit archive and shared reload/restore keep selected transcript',
   const row = page.locator('[data-session-id="' + id + '"]');
   await row.locator('.session-more').click(); await page.getByRole('menuitem', { name: 'Pin session', exact: true }).click();
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).pinned, id), LIVE).toBe(true);
-  await expect(row.locator('.session-copy strong')).toContainText('★', LIVE);
-  await row.locator('.session-more').click(); page.once('dialog', d => d.accept());
+  await expect(row).toHaveAttribute('data-pinned', 'true', LIVE);
+  await row.locator('.session-more').click();
   await page.getByRole('menuitem', { name: 'Archive session…' }).click();
+  const archiveSession = page.locator('dialog.clat-dialog');
+  await expect(archiveSession).toBeVisible(LIVE);
+  await archiveSession.locator('[data-role="accept"]').click();
   await expect(row).toBeHidden(LIVE);
   expect(await page.evaluate(() => state.sessionId)).toBe(id);
   await page.reload(); await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
@@ -145,9 +152,14 @@ test('UX-5 structured Plan/Goal details preserve four concepts and confirm actio
   await expect(page.locator('#workflow-details')).toContainText('Approved plan (durable text)');
   await expect(page.locator('#workflow-details')).toContainText('Todo (model-maintained list; not Goal completion)');
   await expect(page.locator('#workflow-details')).toContainText('Rounds 0/8');
-  page.once('dialog', d => d.dismiss()); await page.getByRole('button', { name: 'Clear goal', exact: true }).click();
+  const clearGoal = page.locator('dialog.clat-dialog');
+  await page.getByRole('button', { name: 'Clear goal', exact: true }).click();
+  await expect(clearGoal).toBeVisible(LIVE);
+  await clearGoal.locator('[data-role="cancel"]').click();
   await expect(page.locator('#workflow-details')).toContainText('structured objective');
-  page.once('dialog', d => d.accept()); await page.getByRole('button', { name: 'Clear goal', exact: true }).click();
+  await page.getByRole('button', { name: 'Clear goal', exact: true }).click();
+  await expect(clearGoal).toBeVisible(LIVE);
+  await clearGoal.locator('[data-role="accept"]').click();
   await expect(page.locator('#workflow-details')).toContainText('No current goal', LIVE);
   expect(await page.evaluate(async () => {
     const facts = await rpc('workflow.details', {}); facts.todos_truncated = true;

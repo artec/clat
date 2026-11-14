@@ -74,8 +74,11 @@ test('TITLE-OBS-1 capture: original TITLE-CUT-1 flow with failure-scene observat
     sessionId = await page.evaluate(() => state.sessionId);
 
     const longTitle = '这条标题用来验证窄视口下会话标题只做视觉省略而完整保存不会把残缺词句写回存储层';
-    page.once('dialog', (dialog) => dialog.accept(longTitle));
     await page.click('#session-title');
+    const renameDialog = page.locator('dialog.clat-dialog');
+    await expect(renameDialog).toBeVisible(LIVE);
+    await renameDialog.locator('input').fill(longTitle);
+    await renameDialog.locator('[data-role="accept"]').click();
     await expect(page.locator('#session-title')).toHaveText(longTitle, LIVE);
 
     const rowTitle = page.locator(`[data-session-id="${sessionId}"] .session-copy strong`);

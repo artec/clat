@@ -303,11 +303,14 @@ test('composer creates a Goal and controls the same durable objective after paus
   await expect(objectiveMessages).toHaveCount(1, LIVE);
   await expect(page.locator('.msg.user')).toHaveCount(2, LIVE);
 
-  page.once('dialog', d => d.dismiss());
+  const clearGoal = page.locator('dialog.clat-dialog');
   await remove.click();
+  await expect(clearGoal).toBeVisible(LIVE);
+  await clearGoal.locator('[data-role="cancel"]').click();
   expect((await facts()).goal.goal.id).toBe(created.goal.goal.id);
-  page.once('dialog', d => d.accept());
   await remove.click();
+  await expect(clearGoal).toBeVisible(LIVE);
+  await clearGoal.locator('[data-role="accept"]').click();
   await expect(bar).toBeHidden(LIVE);
   await expect.poll(async () => {
     const value = await facts(); return [value.goal.goal, value.busy];

@@ -10,6 +10,11 @@ use std::borrow::Cow;
 
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
+        "/dialog-host.js",
+        include_bytes!("../../web/dialog-host.js"),
+        "application/javascript",
+    ),
+    (
         "/rail-popover.js",
         include_bytes!("../../web/rail-popover.js"),
         "application/javascript",

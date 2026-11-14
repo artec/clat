@@ -79,8 +79,11 @@ test('TITLE-OBS-1 diagnostic: attributable DOM observation across repeated mater
       const sessionId = await roundPage.evaluate(() => state.sessionId);
 
       const longTitle = `第${round}轮这条标题用来验证窄视口下会话标题只做视觉省略而完整保存不会把残缺词句写回存储层`;
-      roundPage.once('dialog', (dialog) => dialog.accept(longTitle));
       await roundPage.click('#session-title');
+      const renameDialog = roundPage.locator('dialog.clat-dialog');
+      await expect(renameDialog).toBeVisible({ timeout: 30_000 });
+      await renameDialog.locator('input').fill(longTitle);
+      await renameDialog.locator('[data-role="accept"]').click();
       await expect(roundPage.locator('#session-title')).toHaveText(longTitle, { timeout: 30_000 });
 
       const rowTitle = roundPage.locator(`[data-session-id="${sessionId}"] .session-copy strong`);

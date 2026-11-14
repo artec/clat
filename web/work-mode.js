@@ -83,7 +83,7 @@ function installComposerGoalBar() {
   async function act(verb) {
     const value = composerWorkflow(), goal = value?.goal?.goal;
     if (!goal || acting || goalComposerLocked()) return;
-    if (verb === 'clear' && !confirm(workflowText('end_goal_confirm'))) return;
+    if (verb === 'clear' && !await CLATDialog.confirm(workflowText('end_goal_confirm'))) return;
     const owner = composerScope, stream = state.stream;
     acting = true; render();
     try {
@@ -184,7 +184,7 @@ function installWorkModeMenu(trigger) {
     if(composerGoalDraft && mode==='normal' && !composerWorkflow()?.plan_mode){setComposerGoalMode(false);return;}
     const owner = composerScope, draft = composerGoalDraft, stream = state.stream;
     try{
-      if(mode==='plan'&&state.runActive&&!confirm(workflowText('stop_and_plan_confirm')))return;
+      if(mode==='plan'&&state.runActive&&!await CLATDialog.confirm(workflowText('stop_and_plan_confirm')))return;
       const result = await sendWorkflowIntent({action:'mode',mode});
       if(result!==undefined && draft && composerOwns(owner) && draft===composerGoalDraft)setComposerGoalMode(false);
     }catch(error){if(composerOwns(owner) && stream===state.stream)updateRunState(error.message);}

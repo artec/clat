@@ -50,7 +50,10 @@ test('late setting saves retain newer input and leaving clears a delayed pairing
  await expect.poll(()=>page.evaluate(()=>globalThis.remoteRead)).toBeGreaterThanOrEqual(2);
  await expect(page.locator('#wechat-pair')).toBeDisabled();await expect(page.locator('[data-settings-panel=remote]')).toContainText('user-a');
  await page.evaluate(()=>globalThis.releaseOldStatus());await expect(page.locator('#wechat-pair')).toBeDisabled();
- page.once('dialog',dialog=>dialog.accept());await page.locator('[data-settings-panel=remote] [data-action=revoke]').click();
+ await page.locator('[data-settings-panel=remote] [data-action=revoke]').click();
+ const revokeDialog=page.locator('dialog.clat-dialog');
+ await expect(revokeDialog).toBeVisible(LIVE);
+ await revokeDialog.locator('[data-role="accept"]').click();
  await expect.poll(()=>page.evaluate(()=>globalThis.revokedUser)).toBe('user-a');await expect(page.locator('[data-settings-panel=remote]')).not.toContainText('user-a');
  await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>method==='wechat.binding.start'?{qr_svg:'<svg xmlns="http://www.w3.org/2000/svg"/>'}:method==='wechat.binding.poll'?{state:'need_verify_code'}:original(method,params);});
  await page.click('#wechat-bind');await expect(page.locator('#wechat-verify-code')).toBeVisible();

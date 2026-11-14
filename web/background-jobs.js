@@ -16,7 +16,7 @@ function renderJobDetail(detail, job, current, fail) {
     } catch (error) { if (current()) fail(error); }
   }
   actions.append(pageAction('refresh', () => void read()), pageAction('stop', async () => {
-    if (!window.confirm(msg('stop_confirm'))) return;
+    if (!await CLATDialog.confirm(msg('stop_confirm'))) return;
     try { await rpc('jobs.kill', {job_id:job.id, confirm:job.id}); await taskCenter.refresh(); } catch (error) { if (current()) fail(error); }
   }));
   actions.lastChild.disabled = job.finished_at !== null;

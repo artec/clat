@@ -9,8 +9,11 @@ function installInteractionDock() {
   const previous = shellButton('interaction-previous', 'previous', () => shellText('previous'), () => select(-1));
   const next = shellButton('interaction-next', 'next', () => shellText('next'), () => select(1));
   const origin = shellButton('interaction-origin', 'history', () => shellText('original_message'), () => {
-    if (model.current?.anchor.closest('.schedule-interactions')) workbenchShell.open('schedules-dialog');
-    model.current?.anchor.scrollIntoView({block:'center', behavior:'smooth'});
+    const anchor = model.current?.anchor;
+    if (!anchor) return;
+    if (anchor.closest('.schedule-interactions')) workbenchShell.open('schedules-dialog');
+    else transcriptFollow.pause();
+    anchor.scrollIntoView({block:'center', behavior:'smooth'});
   });
   const collapse = shellButton('interaction-collapse', 'panel-collapse', () => shellText('collapse_interaction'), () => {
     model.collapsed = !model.collapsed; render();

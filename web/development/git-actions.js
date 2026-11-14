@@ -6,7 +6,7 @@ function createGitActions({seat,call,refresh,render,report,result}){
     if(['commit','generate'].includes(action)){
       if(!await prepareSubmission(owner,action)||seat()!==owner||owner.operation||owner.pending)return;
     }
-    if(['discard','delete_untracked','branch.delete'].includes(action)&&!window.confirm(devText('git_destructive')))return;
+    if(['discard','delete_untracked','branch.delete'].includes(action)&&!await CLATDialog.confirm(devText('git_destructive')))return;
     if(['branch.switch','pull'].includes(action)&&developmentEditor?.docs&&[...developmentEditor.docs.values()].some(doc=>doc.dirty)){report({message:devText('save_before_switch')});return;}
     if(action==='delete_untracked'){try{const path=[owner.path,extra.paths[0]].filter(Boolean).join('/'),stat=await rpc('editor.inspect',{path});await rpc('editor.delete',{operationId:devId(),path,version:stat.version,confirmed:true});await refresh();}catch(error){report(error);}return;}
     const request={operationId:devId(),repositoryId:owner.id,action,expected:owner.snapshot,message:owner.draft,language:owner.language,systemLanguage:navigator.language,...extra};
@@ -24,9 +24,11 @@ function createGitActions({seat,call,refresh,render,report,result}){
     if(files.some(gitConflicted)){report({message:devText('submission_conflicts')});return false;}
     const paths=files.filter(f=>f.unstaged||f.untracked).map(f=>f.path);
     if(!paths.length)return false;
-    if(!window.confirm(devText(action==='generate'?'stage_generate_confirm':'stage_commit_confirm')))return false;
+    // 确认对话框是异步的：preparing 守卫必须在 await 之前落下，否则确认
+    // 期间的第二次提交会绕过防重复提交（原同步 confirm 靠线程阻塞保证）。
     const edit=owner.edit;owner.preparing=true;render();
     try{
+      if(!await CLATDialog.confirm(devText(action==='generate'?'stage_generate_confirm':'stage_commit_confirm')))return false;
       const view=await start('stage',{paths});
       return view?.phase==='completed'&&!view.localUnknown&&seat()===owner&&owner.edit===edit
         &&!owner.operation&&!owner.pending&&Boolean(owner.snapshot?.files.some(f=>f.staged));

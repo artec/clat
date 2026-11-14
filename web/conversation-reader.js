@@ -25,7 +25,7 @@ async function selectConversationTarget(reference, current) {
   if (reference.project !== state.workbench?.project?.root) throw CLATI18n.error(pageText('other_project'));
   if (state.sessionId !== reference.session) {
     if (state.runActive || state.compactionActive || state.switching) throw CLATI18n.error(pageText('conversation_busy'));
-    if(!confirmAttachmentSelection())return false;
+    if(!await confirmAttachmentSelection())return false;
     const generation=state.selectionGeneration;setSwitching(true);
     try{await rpc('session.switch',{id:reference.session,expected_selection_generation:generation});resubscribe();}
     catch(error){setSwitching(false);throw error;}
