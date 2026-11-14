@@ -54,6 +54,6 @@ function registerGlobalViewContexts(shell){
   registerView(settings,{id:settings.id,sidebar:nav,crumbs:()=>[{label:()=>shellText('settings'),run:()=>{viewListPreferences.write(settings.id,false);refreshViewContext();nav.querySelector('button')?.focus();}},...(currentSettingsCategory?[{label:()=>settingsCategoryLabel(currentSettingsCategory)}]:[])],actions:()=>[]});
 }
 function settingsCategoryLabel(category){
-  const keys={appearance:'web.appearance',projects:'web.projects',models:'web.models',utility:'web.companion',skills:'skill_settings.title',mcp:'mcp_settings.title',permissions:'web.permissions','computer-use':'cua_settings.title',wechat:'web.remote_settings',remote:'web.remote_settings',web:'webtool.title',desktop:'pages.updates_about',terminal:'dev.terminal',git:'dev.git'};
+  const keys={appearance:'web.appearance',projects:'web.projects',models:'web.models',utility:'web.companion',skills:'skill_settings.title',mcp:'mcp_settings.title',acp:'acp.title',permissions:'web.permissions','computer-use':'cua_settings.title',wechat:'web.remote_settings',remote:'web.remote_settings',web:'webtool.title',desktop:'pages.updates_about',terminal:'dev.terminal',git:'dev.git'};
   return keys[category]?CLATI18n.msg(keys[category]):shellText('settings');
 }

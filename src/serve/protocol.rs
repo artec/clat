@@ -59,6 +59,20 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "terminal.input",
     "terminal.resize",
     "terminal.close",
+    "acp.agents.list",
+    "acp.agents.save",
+    "acp.agents.trust",
+    "acp.agents.remove",
+    "acp.sessions.list",
+    "acp.sessions.remote",
+    "acp.sessions.status",
+    "acp.sessions.start",
+    "acp.sessions.action",
+    "acp.sessions.cancel",
+    "acp.delegations.list",
+    "acp.delegations.status",
+    "acp.delegations.start",
+    "acp.delegations.cancel",
     "mcp.manage.list",
     "mcp.manage.get",
     "mcp.manage.save",
@@ -451,6 +465,9 @@ pub(crate) fn dispatch(
     if method == "question.respond" {
         return super::questions::respond(shared, params);
     }
+    if method == "acp.sessions.remote" {
+        return super::acp::remote(shared, params);
+    }
     if matches!(method, "conversation.stats" | "prompt.followups") {
         return super::conversation::dispatch(method, params, shared);
     }
@@ -485,6 +502,9 @@ fn dispatch_guarded_project(
     {
         return replay_after_selection_change(method, params, shared);
     }
+    if method.starts_with("acp.") {
+        return super::acp::dispatch(shared, method, params);
+    }
     if method == "workflow.action" {
         return super::workflow::action(shared, params);
     }
@@ -517,6 +537,9 @@ fn replay_after_selection_change(
     params: &Value,
     shared: &Arc<ServeShared>,
 ) -> Result<Value, RpcError> {
+    if let Some(receipt) = super::acp::replay_start(shared, method, params) {
+        return receipt;
+    }
     // Only replay an already-produced receipt across a selection change.
     // This cannot pop input from the newly selected session.
     if matches!(method, "prompt.send" | "steer.send")
@@ -1951,7 +1974,16 @@ fn project_mutation(method: &str) -> bool {
             | "model.overrides.set"
             | "turn.restore"
             | "workflow.action"
-    ) || method.starts_with("input.") && !matches!(method, "input.pending" | "input.image")
+    ) || method.starts_with("acp.")
+        && !matches!(
+            method,
+            "acp.agents.list"
+                | "acp.sessions.list"
+                | "acp.sessions.status"
+                | "acp.delegations.list"
+                | "acp.delegations.status"
+        )
+        || method.starts_with("input.") && !matches!(method, "input.pending" | "input.image")
         || method.starts_with("schedule.")
             && !matches!(method, "schedule.list" | "schedule.deliveries")
 }

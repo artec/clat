@@ -234,9 +234,9 @@ fn finish(
     }
     settlement
 }
-struct ScopedSink {
-    shared: Arc<ServeShared>,
-    session: String,
+pub(super) struct ScopedSink {
+    pub(super) shared: Arc<ServeShared>,
+    pub(super) session: String,
 }
 impl crate::EventSink for ScopedSink {
     fn emit(&mut self, event: crate::RunEvent) {

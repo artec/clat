@@ -59,7 +59,7 @@ function installSettingsLayout() {
   const groups = [
     ['workbench', [['appearance','settings'],['terminal','terminal'],['projects','folder']]],
     ['capabilities', [['models','chip'],['utility','sparkles'],['skills','book-open'],['permissions','permission-write'],['computer-use','monitor-pointer']]],
-    ['integrations', [['mcp','mcp'],['web','search'],['remote','remote'],['git','branch']]],
+    ['integrations', [['mcp','mcp'],['acp','remote'],['web','search'],['remote','remote'],['git','branch']]],
     ['application', [['desktop','info']]],
   ];
   function filter() {

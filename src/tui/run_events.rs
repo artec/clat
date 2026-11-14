@@ -4,6 +4,12 @@ impl App {
     /// 主循环收到一条 worker 消息：流事件、权限请求或运行结束。
     pub(super) fn handle_worker_message(&mut self, message: WorkerMessage) {
         match message {
+            WorkerMessage::AcpReply {
+                epoch,
+                identity,
+                refresh,
+                value,
+            } => self.on_acp_reply(epoch, identity, refresh, value),
             WorkerMessage::Event(event) => self.handle_run_event(event),
             WorkerMessage::HistoryReadCompleted(token, result) => {
                 self.history_read_completed(token, result)
@@ -425,6 +431,9 @@ impl App {
             && self.running
             && result.as_ref().is_ok_and(|done| !done.cancelled);
         if epoch != self.run_epoch || !self.running {
+            return;
+        }
+        if self.finish_acp_run() {
             return;
         }
         self.settle_finished_run(epoch, result);

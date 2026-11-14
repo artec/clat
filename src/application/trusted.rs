@@ -1696,6 +1696,7 @@ impl TrustedProjectApplication {
     }
 
     fn close_inner(&mut self) -> Result<(), ApplicationError> {
+        self.close_acp();
         if let Some(utility) = &self.utility {
             utility.revoke();
         }

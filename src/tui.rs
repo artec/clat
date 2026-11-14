@@ -14,6 +14,7 @@ use crate::tui::worker::{
     ChannelApprover, ChannelEventSink, ChannelUserAsker, DeferredChannelEventSink, PreparedTuiRun,
     RunStartFinished, RunStartGate, SteeringAdmissionFinished, UiEvent, WorkerMessage,
 };
+mod acp;
 mod command_picker;
 pub(crate) mod conversation;
 mod conversation_find;
@@ -314,6 +315,7 @@ use clat_core::client_ports::presentation::{LanguagePreference, LocaleContext, U
 
 struct App {
     locale: LocaleContext,
+    acp: acp::UiState,
     language_picker: Option<usize>,
     native: Option<native::NativeState>,
     project: Project,
@@ -595,6 +597,7 @@ impl App {
         let status = abbreviate_home(project.root());
         Ok(Self {
             locale: LocaleContext::default(),
+            acp: Default::default(),
             language_picker: None,
             native: None,
             project,
@@ -711,6 +714,7 @@ impl App {
         let (config, credentials) = initial_model_state();
         Ok(Self {
             locale: LocaleContext::default(),
+            acp: Default::default(),
             language_picker: None,
             native: None,
             project: Project::new(&cwd),
@@ -1056,6 +1060,7 @@ impl App {
             self.poll_loading();
             // dsh：自动重连排程 + 审批/问答应答排水（每帧轮询）。
             self.poll_dsh();
+            self.poll_acp();
             terminal.draw(|frame| self.draw(frame))?;
         }
         drop(events); // Pending plugin replies now drop their RAII tickets.

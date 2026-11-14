@@ -94,6 +94,11 @@
         this.state(row).expanded = true; this.host.render(); void this.open(row, null, true);
       });
       fresh.dataset.action = 'new-project-session'; fresh.append(glyph('M12 5v14M5 12h14'));
+      const external = button('project-new-session', () => CLATI18n.msg('acp.new_session'), () => {
+        void this.host.openConversation(row, null, 'acp').catch(error => this.failure(error));
+      });
+      external.dataset.action = 'new-external-session';
+      external.append(glyph('M4 4h16v16H4zm4 8h8m-4-4 4 4-4 4'));
       const body = node('div', 'project-group-body');
       const list = node('ul', 'session-list');
       const status = node('p', 'project-branch-status'); status.setAttribute('role', 'status');
@@ -112,8 +117,8 @@
       unpin.append(this.host.icon('pin'));
       unpin.hidden = true;
       unpin.addEventListener('click', () => { void this.host.organization.setPinned(row, false).catch(error => this.failure(error)); });
-      header.append(toggle, title, unpin, organization, fresh); body.append(list, status, more, retry); group.append(header, body);
-      return { group, body, toggle, title, badge, list, status, more, retry, fresh, unpin,
+      header.append(toggle, title, unpin, organization, external, fresh); body.append(list, status, more, retry); group.append(header, body);
+      return { group, body, toggle, title, badge, list, status, more, retry, fresh, external, unpin,
         identity: JSON.stringify([row.route_id, row.root]) };
     }
     renderSession(row, session) {
@@ -130,6 +135,8 @@
       const value = this.state(row), active = row.route_id === context.route;
       const summary = this.views.get(row.route_id)?.view?.summary();
       group.fresh.disabled = Boolean(this.views.get(row.route_id)?.view?.navigation().locked);
+      group.external.hidden = !active;
+      group.external.disabled = group.fresh.disabled;
       const label = summary?.pending ? 'project_pending' : (summary ? summary.running : row.run_active || row.compacting) ? 'project_running' : null;
       group.group.dataset.active = String(active);
       group.toggle.setAttribute('aria-expanded', String(value.expanded));

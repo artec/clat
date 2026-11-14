@@ -322,6 +322,11 @@ const ICON_PATHS = {
   trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
   terminal: ['M6 4h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z', 'm7.5 8.5 3.5 3.5-3.5 3.5M14 15.5h3'],
   remote: ['M7 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM9 18h2', 'M17 5a6 6 0 0 1 4 6M17 8a3 3 0 0 1 1.5 3'],
+  'task-handoff': [
+    'M4 3.5h6a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5V5A1.5 1.5 0 0 1 4 3.5Z',
+    'M16 12.5h4a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5h-4a1.5 1.5 0 0 1-1.5-1.5v-5a1.5 1.5 0 0 1 1.5-1.5Z',
+    'M5.5 7.5h3M7 14v1.5a1 1 0 0 0 1 1h3.5m-2-2 2 2-2 2',
+  ],
   'terminal-take-input': ['M9 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2', 'M3 12h12m-4-4 4 4-4 4m5 0h2'],
   'terminal-clear-screen': ['M13 5H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6M3 9h10', 'm18 3 1.2 3.8L23 8l-3.8 1.2L18 13l-1.2-3.8L13 8l3.8-1.2Z'],
   chat: ['M4 4h16v12H9l-5 4V4Z', 'M8 8h8M8 12h5'],
@@ -1169,7 +1174,7 @@ function onApprovalResolved(ctl) {
 function onApprovalRequested(ctl) {
   if (!ctl || !ctl.rpc_id) return;
   const request = ctl.request || {};
-  if(!ctl.automatic_session_id||ctl.automatic_session_id===state.sessionId)runActivity.wait(CLATI18n.msg('round.waiting_approval'),ctl.rpc_id);
+  if(!ctl.acp_session_id && (!ctl.automatic_session_id||ctl.automatic_session_id===state.sessionId))runActivity.wait(CLATI18n.msg('round.waiting_approval'),ctl.rpc_id);
   const card = el('div', 'approval-card');
   card.dataset.rpcId = ctl.rpc_id;
   const title = el('div', 'title', () => (CLATI18n.msg("web.line_permission_required_value",{value1:toolDisplayName(request.tool)},"Permission required — {value1}")));
@@ -1204,7 +1209,8 @@ function onApprovalRequested(ctl) {
     actions.appendChild(button);
   }
   card.append(title, meta, args, actions, note);
-  appendHostInteraction(card, ctl.automatic_session_id);
+  if (ctl.acp_session_id) appendAcpInteraction(ctl.acp_session_id, card);
+  else appendHostInteraction(card, ctl.automatic_session_id);
   scrollIfFollowing();
 }
 
@@ -1511,8 +1517,10 @@ function onQuestionNotice(ctl) {
       resolveQuestionCard(existing, CLATI18n.msg("web.answered_or_closed_by_host_2", {}, "Answered or closed by host."));
     }
   } else if (!existing && payload.question && typeof payload.question.question === 'string') {
-    if(!payload.automatic_session_id||payload.automatic_session_id===state.sessionId)runActivity.wait(CLATI18n.msg('round.waiting_answer'),payload.rpc_id);
-    appendHostInteraction(createQuestionCard(payload), payload.automatic_session_id);
+    if(!payload.acp_session_id && (!payload.automatic_session_id||payload.automatic_session_id===state.sessionId))runActivity.wait(CLATI18n.msg('round.waiting_answer'),payload.rpc_id);
+    const card = createQuestionCard(payload);
+    if (payload.acp_session_id) appendAcpInteraction(payload.acp_session_id, card);
+    else appendHostInteraction(card, payload.automatic_session_id);
     scrollIfFollowing();
   }
   return true;
@@ -1629,6 +1637,8 @@ function permissionEffectLabel(effect) {
 }
 function toolDisplayName(name) {
   const raw = String(name || '');
+  if (raw === 'acp.write_text_file') return CLATI18n.msg('web.tool_action.write_file');
+  if (raw === 'acp.terminal') return CLATI18n.msg('web.tool_action.run_command');
   let action = Object.hasOwn(TOOL_PRESENTATION_KEYS, raw) ? TOOL_PRESENTATION_KEYS[raw] : null;
   const hostAction = raw.match(/:host:(ui_apps|ui_tree|ui_wait|ui_act)$/)?.[1];
   const external = Boolean(hostAction) || /^(mcp_|mcp__|plugin_)/.test(raw);
@@ -3243,6 +3253,7 @@ function selectSettingsCategory(category) {
     else button.removeAttribute('aria-current');
   }
   settingsLayout?.select(category);
+  if (category === 'acp') void acpSettingsRefresh?.();
   if (category === 'projects') {
     renderWorkspaceDirectory(context.organization.rows());
     void refreshWorkspaces();
@@ -4406,6 +4417,8 @@ installConversationFind();
   const restoreWorkbenchPage = installWorkbenchShell();
   installNavigationPages();
   installDevelopmentSettings();
+  installAcpSettings();
+  installAcpRail();
   installSettingsLayout();
 
 const composerSeat = document.querySelector('.conversation');

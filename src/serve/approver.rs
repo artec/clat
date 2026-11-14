@@ -22,11 +22,24 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub(crate) struct ServeApprover {
     shared: Arc<ServeShared>,
+    external: Option<String>,
 }
 
 impl ServeApprover {
     pub(crate) fn new(shared: Arc<ServeShared>) -> Self {
-        Self { shared }
+        Self {
+            shared,
+            external: None,
+        }
+    }
+}
+
+impl ServeApprover {
+    pub(super) fn external(shared: Arc<ServeShared>, id: String) -> Self {
+        Self {
+            shared,
+            external: Some(id),
+        }
     }
 }
 
@@ -34,9 +47,15 @@ impl PermissionApprover for ServeApprover {
     fn decide(&self, request: PermissionRequest, cancel: &CancelToken) -> PermissionDecision {
         let rpc_id = uuid::Uuid::new_v4().to_string();
         let (decision_tx, decision_rx) = std::sync::mpsc::channel::<PermissionDecision>();
-        let ctl = self
+        let mut ctl = self
             .shared
             .scope_interaction(super::shapes::approval_requested_ctl(&rpc_id, &request));
+        if let Some(id) = &self.external {
+            ctl["acp_session_id"] = serde_json::json!(id);
+            if let Some(object) = ctl.as_object_mut() {
+                object.remove("automatic_session_id");
+            }
+        }
         let data = super::shapes::ctl_data(&ctl);
         {
             let mut pending = self.shared.pending.lock().expect("serve pending lock");

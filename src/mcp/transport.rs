@@ -61,6 +61,52 @@ impl McpError {
     }
 }
 
+/// GUI/launchd 启动的宿主进程 PATH 常被精简为系统目录
+/// （/usr/bin:/bin:/usr/sbin:/sbin），用户 shell 环境里的
+/// Homebrew/nvm/volta/别名全部丢失——stdio MCP 服务器用裸命令
+/// （npx/node/uvx）时 spawn 直接 ENOENT。解析顺序：绝对路径
+/// 直用 → 宿主 PATH 命中直用 → 经用户登录 shell（$SHELL -lc，
+/// 无交互噪声、不污染 stdio 协议通道）command -v 解析。
+fn resolve_stdio_program(command: &str) -> String {
+    #[cfg(unix)]
+    {
+        use std::path::Path;
+        if !command.contains('/') && !Path::new(command).is_file() {
+            let in_host_path = std::env::var_os("PATH").is_some_and(|paths| {
+                std::env::split_paths(&paths)
+                    .filter(|dir| !dir.as_os_str().is_empty())
+                    .any(|dir| dir.join(command).is_file())
+            });
+            if !in_host_path {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+                    if cfg!(target_os = "macos") {
+                        "/bin/zsh".to_owned()
+                    } else {
+                        "/bin/bash".to_owned()
+                    }
+                });
+                let query = format!("command -v {}", shell_single_quote(command));
+                if let Ok(output) = std::process::Command::new(&shell)
+                    .arg("-lc")
+                    .arg(&query)
+                    .output()
+                {
+                    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                    if output.status.success() && !resolved.is_empty() {
+                        return resolved;
+                    }
+                }
+            }
+        }
+    }
+    command.to_owned()
+}
+
+#[cfg(unix)]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 impl McpError {
     fn spawn(command: &str, error: std::io::Error) -> Self {
         let kind = if error.kind() == std::io::ErrorKind::NotFound {
@@ -70,10 +116,15 @@ impl McpError {
         } else {
             "startup_failed"
         };
-        Self {
-            message: format!("spawn MCP server `{command}`: {error}"),
-            kind,
+        let mut message = format!("spawn MCP server `{command}`: {error}");
+        // 相对名命令解析失败的最常见原因：GUI/launchd 启动的宿主
+        // PATH 被精简，终端里的 nvm/别名/工具链目录全部缺席。
+        if error.kind() == std::io::ErrorKind::NotFound && !command.contains('/') {
+            message.push_str(
+                "; the command was not found in the host PATH or the user login environment (GUI-launched hosts do not inherit terminal PATH): use an absolute path or a command resolvable from your login shell",
+            );
         }
+        Self { message, kind }
     }
 }
 
@@ -447,7 +498,8 @@ impl StdioSession {
         env: &[(String, String)],
         cwd: &std::path::Path,
     ) -> Result<Self, McpError> {
-        let mut command_builder = Command::new(command);
+        let command = resolve_stdio_program(command);
+        let mut command_builder = Command::new(&command);
         command_builder
             .args(args)
             .envs(env.iter().cloned())
@@ -461,7 +513,7 @@ impl StdioSession {
             .stderr(Stdio::piped());
         let mut child = command_builder
             .spawn()
-            .map_err(|error| McpError::spawn(command, error))?;
+            .map_err(|error| McpError::spawn(&command, error))?;
         let stdin = require_pipe(child.stdin.take(), "MCP server stdin unavailable")?;
         let stdout = require_pipe(child.stdout.take(), "MCP server stdout unavailable")?;
         let stderr = require_pipe(child.stderr.take(), "MCP server stderr unavailable")?;
@@ -1166,6 +1218,41 @@ pub fn parse_sse_messages(body: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_stdio_program_layers() {
+        // 绝对路径直用。
+        assert_eq!(
+            super::resolve_stdio_program("/usr/bin/true"),
+            "/usr/bin/true"
+        );
+        // 宿主 PATH 命中的命令原样返回（spawn 走宿主 PATH 搜索）。
+        assert_eq!(super::resolve_stdio_program("sh"), "sh");
+        // 两层都解析不到的命令原样返回：spawn 失败信息带可操作指引。
+        assert_eq!(
+            super::resolve_stdio_program("definitely-not-a-real-mcp-cmd-42"),
+            "definitely-not-a-real-mcp-cmd-42"
+        );
+    }
+
+    #[test]
+    fn spawn_error_message_carries_gui_path_guidance() {
+        let missing = super::McpError::spawn(
+            "npx",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "nope"),
+        );
+        assert!(missing.message.contains("host PATH"), "{}", missing.message);
+        let absolute = super::McpError::spawn(
+            "/usr/bin/true",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "nope"),
+        );
+        assert!(
+            !absolute.message.contains("host PATH"),
+            "{}",
+            absolute.message
+        );
+    }
 
     #[test]
     fn ga3_rework_http_annotations_clean_but_headers_never_rewrite_contracts() {

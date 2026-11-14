@@ -271,6 +271,9 @@ impl App {
     pub(super) fn next_repaint_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
         let mut deadline = self.status_until.filter(|until| *until > now);
+        if let Some(at) = self.acp_deadline() {
+            deadline = Some(deadline.map_or(at, |current| current.min(at)));
+        }
         if let Some(at) = self.plugin_repaint_deadline() {
             deadline = Some(deadline.map_or(at, |current| current.min(at)));
         }

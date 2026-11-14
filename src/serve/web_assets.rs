@@ -360,6 +360,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/acp.js",
+        include_bytes!("../../web/acp.js"),
+        "application/javascript",
+    ),
+    (
         "/workbench-shell.js",
         include_bytes!("../../web/workbench-shell.js"),
         "application/javascript",
@@ -599,6 +604,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/plan-artifact.js",
     "/workbench-resize.js",
     "/application-toolbar.js",
+    "/acp.js",
     "/workbench-shell.js",
     "/project-lifecycle.js",
     "/app.js",

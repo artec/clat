@@ -19,6 +19,7 @@
 //! 本模块不安装进程级信号处理器：关停旗由进程边界（main.rs 的
 //! Ctrl-C 处理器）注入（exec 同款纪律）。
 
+mod acp;
 pub(crate) mod approver;
 mod auth;
 mod automatic;

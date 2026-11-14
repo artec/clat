@@ -27,6 +27,7 @@ pub(crate) fn bounded_reason(reason: &str) -> String {
     reason.chars().take(160).collect()
 }
 
+pub(crate) mod acp;
 mod bootstrap;
 mod enhancement_features;
 use enhancement_features::{ImageToolPort, InstructionPort};

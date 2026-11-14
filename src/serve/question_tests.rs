@@ -75,6 +75,7 @@ fn host_question_arbitration_rejects_invalid_expired_cancelled_and_cross_project
         PendingQuestion {
             plan_review: None,
             session: None,
+            acp: None,
             question: question(),
             sender: tx,
             cancel: cancel.clone(),
@@ -214,6 +215,7 @@ fn host_question_concurrent_valid_answers_have_exactly_one_winner() {
         PendingQuestion {
             plan_review: None,
             session: None,
+            acp: None,
             question: question(),
             sender: tx,
             cancel: CancelToken::new(),

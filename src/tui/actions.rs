@@ -737,7 +737,7 @@ impl App {
         }
         let value = self.input.take();
         let value = value.trim().to_owned();
-        if self.handle_share_command(&value) {
+        if self.handle_acp_command(&value) || self.handle_share_command(&value) {
             return;
         }
         if self.handle_attachment_command(&value) {

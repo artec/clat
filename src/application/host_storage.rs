@@ -15,6 +15,7 @@ pub(super) struct HostStorage {
     pub(super) control: Arc<ControlStorage>,
     pub(super) history: Arc<crate::session_query::QueryIndex>,
     pub(super) job_capacity: Arc<crate::background_jobs::JobCapacity>,
+    pub(super) acp: Arc<crate::acp::Service>,
     pub(super) scheduler: Arc<crate::scheduler::HostScheduler>,
     pub(super) model_updates: Mutex<()>,
     pub(super) skill_writes: Mutex<()>,
@@ -48,6 +49,7 @@ impl HostStorage {
             .map_err(|error| ApplicationError::new(error.to_string()))?;
         let control = Arc::new(control);
         Ok(Arc::new(Self {
+            acp: Default::default(),
             scheduler: Arc::new(crate::scheduler::HostScheduler::new(control.clone())),
             control,
             history: Arc::new(crate::session_query::QueryIndex::new(root.to_path_buf())),

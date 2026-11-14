@@ -139,6 +139,7 @@ struct PipedSpawnOptions {
     stdout_capacity: usize,
     stderr_capacity: usize,
     strip_credential_env: bool,
+    isolated_env: Option<Vec<(OsString, OsString)>>,
     background_scratch: Option<PathBuf>,
 }
 
@@ -150,6 +151,7 @@ impl Default for PipedSpawnOptions {
             stdout_capacity: STREAM_RING_BYTES,
             stderr_capacity: STREAM_RING_BYTES,
             strip_credential_env: false,
+            isolated_env: None,
             background_scratch: None,
         }
     }
@@ -205,6 +207,38 @@ impl ManagedStdioLease {
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn stderr_tail(&self) -> Vec<u8> {
         self.shared.entry.stderr_snapshot_raw()
+    }
+
+    pub(crate) fn terminate(&self) {
+        self.shared.entry.request_terminate();
+    }
+
+    pub(crate) fn terminal_output(
+        &self,
+        limit: usize,
+    ) -> (String, bool, Option<serde_json::Value>) {
+        use serde_json::json;
+        let entry = &self.shared.entry;
+        let state = entry.state.lock().expect("process entry lock");
+        let mut bytes = state.stdout.snapshot();
+        bytes.extend(state.stderr.snapshot());
+        let mut truncated = bytes.len() > limit
+            || !state.stdout.starts_line_at(0)
+            || !state.stderr.starts_line_at(0);
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if text.len() > limit {
+            truncated = true;
+            let mut start = text.len() - limit;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            text.drain(..start);
+        }
+        let status = state
+            .terminal
+            .as_ref()
+            .map(|terminal| json!({"exitCode":terminal.exit_code,"signal":terminal.signal}));
+        (text, truncated, status)
     }
 
     pub(crate) fn sandbox_facts(&self) -> SandboxFacts {
@@ -411,13 +445,52 @@ impl ProcessService {
         &self,
         request: ManagedStdioStart,
     ) -> Result<ManagedStdioLease, String> {
-        let server_id = request.server_id.trim();
-        if server_id.is_empty() || server_id.len() > 64 {
-            return Err("managed stdio server id must contain 1..=64 bytes".into());
-        }
         let planned = self
             .sandbox
             .plan_project_read_temp_write(request.program, request.args)?;
+        self.acquire_stdio(
+            request.server_id.trim(),
+            planned,
+            None,
+            self.project.root().to_path_buf(),
+        )
+    }
+
+    pub(crate) fn acquire_acp_stdio(
+        &self,
+        id: &str,
+        program: OsString,
+        args: Vec<OsString>,
+        env: Vec<(OsString, OsString)>,
+    ) -> Result<ManagedStdioLease, String> {
+        let planned = crate::sandbox::trusted_agent_plan(program, args);
+        self.acquire_stdio(id, planned, Some(env), self.project.root().to_path_buf())
+    }
+
+    pub(crate) fn acquire_acp_terminal(
+        &self,
+        id: &str,
+        program: OsString,
+        args: Vec<OsString>,
+        env: Vec<(OsString, OsString)>,
+        workdir: PathBuf,
+    ) -> Result<ManagedStdioLease, String> {
+        let planned = self.sandbox.plan_project_read_temp_write(program, args)?;
+        let lease = self.acquire_stdio(id, planned, Some(env), workdir)?;
+        lease.shared.entry.close_stdin();
+        Ok(lease)
+    }
+
+    fn acquire_stdio(
+        &self,
+        server_id: &str,
+        planned: crate::sandbox::PlannedCommand,
+        isolated_env: Option<Vec<(OsString, OsString)>>,
+        workdir: PathBuf,
+    ) -> Result<ManagedStdioLease, String> {
+        if server_id.is_empty() || server_id.len() > 64 {
+            return Err("managed stdio server id must contain 1..=64 bytes".into());
+        }
         let mut state = self.state.lock().expect("process service lock");
         if state.closed {
             return Err("process service is closed".into());
@@ -440,10 +513,16 @@ impl ProcessService {
                 shared: Arc::clone(shared),
             });
         }
-        if state.managed.len() >= MAX_MANAGED_STDIO_PROCESSES {
-            return Err(format!(
-                "managed stdio process limit reached ({MAX_MANAGED_STDIO_PROCESSES})"
-            ));
+        let acp = isolated_env.is_some();
+        let limit = if acp { 8 } else { MAX_MANAGED_STDIO_PROCESSES };
+        if state
+            .managed
+            .keys()
+            .filter(|key| key.starts_with("acp-") == acp)
+            .count()
+            >= limit
+        {
+            return Err(format!("managed stdio process limit reached ({limit})"));
         }
         let id = state.next_process_id;
         state.next_process_id = state.next_process_id.wrapping_add(1).max(1);
@@ -456,7 +535,7 @@ impl ProcessService {
             id,
             &owner,
             format!("managed stdio `{server_id}`"),
-            self.project.root().to_path_buf(),
+            workdir,
             planned,
             None,
             PipedSpawnOptions {
@@ -465,6 +544,7 @@ impl ProcessService {
                 stdout_capacity: MANAGED_STDOUT_RING_BYTES,
                 stderr_capacity: MANAGED_STDERR_RING_BYTES,
                 strip_credential_env: true,
+                isolated_env,
                 background_scratch: None,
             },
         )?;
@@ -1515,6 +1595,9 @@ fn background_piped_command(
     options: &PipedSpawnOptions,
 ) -> std::process::Command {
     let mut command = piped_command(planned, workdir, options.strip_credential_env);
+    if let Some(env) = &options.isolated_env {
+        command.env_clear().envs(env.iter().cloned());
+    }
     if let Some(scratch) = &options.background_scratch {
         command.env("CLAT_JOB_SCRATCH", scratch);
     }

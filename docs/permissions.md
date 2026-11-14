@@ -619,3 +619,18 @@ project/conversation data. It cannot act as an Agent execution or change model
 capability permissions. Model settings remain shared across the same Host storage
 root, and setup APIs use the existing authenticated RPC channel. Deferring model
 setup does not prevent separately authorized manual file, Git or terminal use.
+
+
+## ACP external Agents
+
+Trust is explicit per project and tied to the executable and launch
+configuration. A trusted local Agent runs with the Host account's permissions
+and may act within its own process without an ACP request. CLAT mediates only
+the actions that come through its ACP callbacks. Project text writes require
+approval and a target recheck. Client-hosted terminal requests are subject to
+the advertised platform policy and approval. Revoking trust cancels active
+work and closes idle connections for that project.
+
+The result of a user delegation becomes reference material in the original
+CLAT session's normal admission path. That session's current permissions
+apply. See [ACP external Agents](acp.md).

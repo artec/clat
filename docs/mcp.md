@@ -69,6 +69,14 @@ Installed packages also support enable, disable, rollback and uninstall; see
 }
 ```
 
+stdio commands are resolved in layers, so entries like the `npx` example
+work even when CLAT is launched from a desktop/GUI session whose PATH is
+reduced to system directories: absolute paths are used as-is, the host
+PATH is searched, and otherwise the command is resolved through your
+login shell (`$SHELL -lc`, no interactive noise — the stdio protocol
+channel stays clean). Shell aliases do not participate in resolution —
+use a login-resolvable command name or an absolute path.
+
 Each entry chooses exactly one transport:
 
 - **stdio** — `command`, optional `args`, `env`, and fixed `cwd`;

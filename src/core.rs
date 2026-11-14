@@ -1,3 +1,4 @@
+mod acp;
 #[cfg(test)]
 #[path = "test_support/agent_eval.rs"]
 mod agent_eval;

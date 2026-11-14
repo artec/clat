@@ -321,7 +321,7 @@ impl App {
     }
 
     fn native_local_command(&mut self, text: &str) -> bool {
-        if self.handle_share_command(text) {
+        if self.handle_acp_command(text) || self.handle_share_command(text) {
             return true;
         }
         if HostClient::is_detach_command(text) {

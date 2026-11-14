@@ -1,5 +1,8 @@
 //! Narrow internal client ports. Stateful owners are deliberately not exported.
 //! This surface is not a plugin ABI; internal workspace crates evolve together.
+pub mod acp {
+    pub use crate::acp::Interaction;
+}
 pub mod presentation {
     pub use crate::i18n::*;
 }

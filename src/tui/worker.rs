@@ -55,6 +55,12 @@ pub(crate) enum UiEvent {
 }
 
 pub(crate) enum WorkerMessage {
+    AcpReply {
+        epoch: u64,
+        identity: Option<(u64, u64)>,
+        refresh: bool,
+        value: Result<serde_json::Value, String>,
+    },
     Event(RunEvent),
     HistoryReadCompleted(
         String,

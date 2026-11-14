@@ -49,7 +49,8 @@ function projectLifecycle() {
     if (!(fresh && state.connected && !state.switching) && !await waitForNavigation(current)) return;
     if (!current()) return;
     workbenchShell.chat();
-    if (fresh) await newSession(); else if (session) await switchSession(session);
+    if (fresh === 'acp') openAcpPicker(false);
+    else if (fresh) await newSession(); else if (session) await switchSession(session);
   }
   function deactivate() {
     userMessageReader.close();

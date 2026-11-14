@@ -43,6 +43,13 @@ pub struct PermissionRequest {
 
 impl PermissionRequest {
     pub fn reason_presentation(&self) -> Option<crate::i18n::UiMessage> {
+        match self.tool.as_str() {
+            "acp.write_text_file" => {
+                return Some(crate::i18n::UiMessage::new("acp.write_approval"));
+            }
+            "acp.terminal" => return Some(crate::i18n::UiMessage::new("acp.terminal_approval")),
+            _ => {}
+        }
         let target = self.arguments.get("target")?;
         (self.effect == ToolEffect::UIAction).then(|| {
             crate::i18n::UiMessage::new(if target["high_risk"] == true {

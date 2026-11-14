@@ -255,7 +255,11 @@ function createShellComposer(shell) {
   CLATI18n.attribute(menu, 'aria-label', () => shellText('add'));
   const group = (label, rows) => {
     const block = el('div', 'composer-add-group'); block.append(el('h3', '', label));
-    for (const [id, icon, text, run] of rows) block.append(shellButton(id, icon, text, () => { popover.close(); run(); }));
+    for (const [id, icon, text, run, hint] of rows) {
+      const button = shellButton(id, icon, text, () => { popover.close(); run(); }, !hint);
+      if (hint) CLATI18n.attribute(button, 'title', hint);
+      block.append(button);
+    }
     menu.append(block);
   };
   group(() => shellText('add_content'), [
@@ -271,6 +275,7 @@ function createShellComposer(shell) {
   group(() => shellText('capabilities'), [
     ['add-skills', 'tool', () => shellText('skills'), () => { dom.prompt.focus(); dom.prompt.value += (dom.prompt.value ? '\n' : '') + '/'; state.composerGeneration++; resizePrompt(); dom.prompt.dispatchEvent(new Event('input', {bubbles:true})); }],
     ['add-extensions', 'extensions', () => shellText('extensions'), () => openMarket()],
+    ['add-acp-delegation', 'task-handoff', () => acpText('external_help'), () => openAcpPicker(true), () => acpText('delegate')],
   ]);
   const plan = shellButton('composer-plan-toggle', 'plan', () => workflowText(composerGoalDraft?'goal_mode':'work_mode'), () => {}, false);
   installWorkModeMenu(plan);

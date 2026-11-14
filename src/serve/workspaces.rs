@@ -142,6 +142,7 @@ impl WorkspaceHost {
         host.restore_automatic_projects();
         shared.spawn_notice_forwarder();
         shared.spawn_automatic();
+        shared.spawn_acp_continuation();
         host
     }
 
@@ -152,11 +153,15 @@ impl WorkspaceHost {
             .get("default")
             .expect("default route")
             .clone();
-        let roots = default
-            .app
-            .lock()
-            .expect("application lock")
-            .automatic_projects();
+        let roots = {
+            let app = default.app.lock().expect("application lock");
+            app.automatic_projects().and_then(|mut roots| {
+                roots.extend(app.acp_pending_projects()?);
+                roots.sort();
+                roots.dedup();
+                Ok(roots)
+            })
+        };
         match roots {
             Ok(roots) => {
                 for root in roots {
@@ -405,6 +410,7 @@ impl WorkspaceHost {
         *shared.host.lock().expect("host link") = Arc::downgrade(self);
         shared.spawn_notice_forwarder();
         shared.spawn_automatic();
+        shared.spawn_acp_continuation();
         shared
     }
 
@@ -421,6 +427,7 @@ impl WorkspaceHost {
         for shared in &routes {
             shared.mark_shutting_down();
             shared.cancel_active_run();
+            shared.app.lock().expect("application lock").close_acp();
             shared.clear_subscribers();
         }
         for shared in &routes {

@@ -16,6 +16,7 @@ pub(super) struct Questions(pub Mutex<BTreeMap<String, PendingQuestion>>);
 
 pub(super) struct PendingQuestion {
     session: Option<String>,
+    acp: Option<String>,
     question: AskQuestion,
     plan_review: Option<Value>,
     sender: mpsc::Sender<AskAnswer>,
@@ -23,11 +24,14 @@ pub(super) struct PendingQuestion {
     deadline: Instant,
 }
 
-pub(super) struct ServeAsker(std::sync::Weak<ServeShared>);
+pub(super) struct ServeAsker(std::sync::Weak<ServeShared>, Option<String>);
 
 impl ServeAsker {
     pub(super) fn new(shared: &Arc<ServeShared>) -> Self {
-        Self(Arc::downgrade(shared))
+        Self(Arc::downgrade(shared), None)
+    }
+    pub(super) fn external(shared: &Arc<ServeShared>, id: String) -> Self {
+        Self(Arc::downgrade(shared), Some(id))
     }
 }
 
@@ -41,7 +45,9 @@ fn notice(kind: &str, payload: Value) -> SseFrame {
 impl PendingQuestion {
     pub(super) fn frame(&self, id: &str) -> SseFrame {
         let mut data = json!({"rpc_id":id,"question":self.question,"plan_review":self.plan_review});
-        if let Some(session) = &self.session {
+        if let Some(id) = &self.acp {
+            data["acp_session_id"] = json!(id);
+        } else if let Some(session) = &self.session {
             data["automatic_session_id"] = json!(session);
         }
         notice("question_requested", data)
@@ -63,25 +69,36 @@ impl UserAsker for ServeAsker {
         let (sender, receiver) = mpsc::channel();
         let deadline = Instant::now() + WAIT_LIMIT;
         {
-            let mut pending = shared.questions.0.lock().expect("questions lock");
-            if pending.len() >= 32 {
-                return AskAnswer::Declined;
-            }
-            let entry = PendingQuestion {
-                session: shared
+            let plan_review = if self.1.is_none() {
+                shared
+                    .app
+                    .lock()
+                    .expect("application")
+                    .workflow_review()
+                    .and_then(|plan| serde_json::to_value(plan).ok())
+            } else {
+                None
+            };
+            let session = if self.1.is_none() {
+                shared
                     .inner
                     .lock()
                     .expect("serve inner lock")
                     .active_run
                     .as_ref()
-                    .filter(|r| r.automatic)
-                    .and_then(|r| r.session_id.clone()),
-                plan_review: shared
-                    .app
-                    .lock()
-                    .expect("application")
-                    .workflow_review()
-                    .and_then(|plan| serde_json::to_value(plan).ok()),
+                    .filter(|run| run.automatic)
+                    .and_then(|run| run.session_id.clone())
+            } else {
+                None
+            };
+            let mut pending = shared.questions.0.lock().expect("questions lock");
+            if pending.len() >= 32 {
+                return AskAnswer::Declined;
+            }
+            let entry = PendingQuestion {
+                session,
+                acp: self.1.clone(),
+                plan_review,
                 question,
                 sender,
                 cancel: cancel.clone(),

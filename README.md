@@ -116,6 +116,9 @@ it remains off unless `serve` is started with `--im wechat`.
   on macOS/Windows; project trust; path fences; fail-closed headless behavior.
 - **Sessions** — crash-resilient, append-only, DSH-compatible journals under
   `~/.clat`, with local replay and per-project resume state.
+- **ACP external Agents** — run a trusted, locally installed ACP v1 Agent in a
+  separate conversation or delegate a task from the composer. CLAT can pick up
+  a successful result in the original conversation. See [ACP integration](docs/acp.md).
 - **MCP Servers and Skills** — independently managed in PWA/Desktop **Settings**
   (user or current-project scope, with links from Project Settings); the Host
   owns MCP connections, safe reloads, and layered Skill files. Attached TUI

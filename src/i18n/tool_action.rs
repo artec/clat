@@ -34,8 +34,8 @@ pub fn tool_action(tool: &str) -> UiMessage {
         // apply_patch 已于 2026-11-08 退役;该 arm 保留用于历史会话回放
         // 的展示映射(旧 journal 中的 tool/call 仍按名渲染)。
         "edit_file" | "apply_patch" => "web.tool_action.edit_file",
-        "write_file" => "web.tool_action.write_file",
-        "run_command" => "web.tool_action.run_command",
+        "write_file" | "acp.write_text_file" => "web.tool_action.write_file",
+        "run_command" | "acp.terminal" => "web.tool_action.run_command",
         "view_image" => "web.tool_action.view_image",
         "ask_user" | "ask_user_question" => "web.tool_action.ask_user",
         "update_plan" => "web.tool_action.update_plan",

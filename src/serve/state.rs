@@ -227,12 +227,14 @@ impl ServeShared {
             && !app.has_development_work()
             && !app.has_background_jobs()
             && !app.has_automatic_work()
+            && !app.has_active_acp()
     }
     pub(crate) fn is_idle_for_reclaim(&self) -> bool {
         let inner = self.inner.lock().expect("serve inner lock");
         let idle = inner.active_run.is_none() && inner.subscribers.is_empty();
         drop(inner);
-        idle && Arc::strong_count(&self.app) == 2
+        idle && !self.app.lock().expect("application lock").has_active_acp()
+            && Arc::strong_count(&self.app) == 2
             && self.active_compaction_info().is_null()
             && self.pending.lock().expect("approvals").is_empty()
             && self.questions.0.lock().expect("questions").is_empty()
@@ -716,10 +718,9 @@ impl ServeShared {
     // —— 后台线程 ————————————————————————————————————————————————————
 
     pub(crate) fn register_worker(&self, handle: JoinHandle<()>) {
-        self.workers
-            .lock()
-            .expect("serve workers lock")
-            .push(handle);
+        let mut workers = self.workers.lock().expect("serve workers lock");
+        workers.retain(|worker| !worker.is_finished());
+        workers.push(handle);
     }
 
     pub(crate) fn register_connection(&self, handle: JoinHandle<()>) {

@@ -3689,3 +3689,11 @@ conversation keeps a configuration entry, and sending an ordinary prompt before
 configuration preserves its draft and returns to setup. Finishing setup never
 automatically sends a message. Connection checks are also available in Models
 settings. See [Desktop](desktop.md#first-use-setup) for recovery and startup details.
+
+
+## External Agents and ACP delegation
+
+Use **Settings → External Agents** in Web, PWA or Desktop to configure a local
+Agent. Select **Delegate to an external Agent** in the composer, or open a new
+external session from the project sidebar. In TUI, use `/acp`. See [ACP external
+Agents](acp.md) for configuration, commands and capability coverage.

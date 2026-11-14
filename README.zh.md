@@ -104,6 +104,8 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
   macOS/Windows 的 Project Write 原生命令绑定实际沙盒后免审；项目信任、路径围栏，以及无头场景的失败关闭。
 - **会话**——`~/.clat` 下可从崩溃恢复的追加式 DSH 兼容日志、本地 replay
   与按项目恢复当前会话。
+- **ACP 外部 Agent**——从输入框手动委派任务，或新建独立外部会话。
+  外协成功后，CLAT 可在原会话继续处理。支持范围见 [ACP 接入](docs/acp.md)。
 - **MCP 服务器与技能（Skills）**——在 PWA/桌面版的**设置**中分别管理，
   可选用户级与当前项目范围；项目设置提供对应入口。Host 负责 MCP 连接和安全
   重载，以及多层 Skill 文件；连接 Host 的 TUI 支持 `/mcp manage` 与

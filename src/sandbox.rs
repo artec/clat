@@ -382,6 +382,15 @@ fn seatbelt_probe_failure(status: &std::process::ExitStatus) -> String {
     message
 }
 
+pub(crate) fn trusted_agent_plan(program: OsString, args: Vec<OsString>) -> PlannedCommand {
+    raw_plan(
+        program,
+        args,
+        SandboxLevel::FullAccess,
+        Some("trusted external agent"),
+    )
+}
+
 fn raw_plan(
     program: OsString,
     args: Vec<OsString>,

@@ -61,7 +61,8 @@ impl TrustedProjectApplication {
             || !request.message.staged_attachments.is_empty()
             || request.message.content.has_images()
             || !request.config.is_configured()
-            || request.config.effective_run_token_budget().is_none()
+            || (!matches!(request.source, AutomaticSource::Acp { .. })
+                && request.config.effective_run_token_budget().is_none())
             || request.timeout.is_zero()
             || request.timeout > Duration::from_secs(86400)
         {
@@ -162,6 +163,9 @@ impl TrustedProjectApplication {
 }
 #[derive(Clone, Debug)]
 pub(crate) enum AutomaticSource {
+    Acp {
+        delegation: String,
+    },
     Job {
         job_id: String,
     },
@@ -174,6 +178,7 @@ pub(crate) enum AutomaticSource {
 impl AutomaticSource {
     fn value(&self) -> serde_json::Value {
         match self {
+            Self::Acp { delegation } => serde_json::json!({"kind":"acp","delegationId":delegation}),
             Self::Job { job_id } => serde_json::json!({"kind":"job","jobId":job_id}),
             Self::Schedule {
                 id,
