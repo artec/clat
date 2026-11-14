@@ -396,6 +396,14 @@ task-rendering fixtures. Those fixtures do not prove native OS notification
 delivery or mobile background execution; native ProcessService tests own log
 semantics. Delivery still requires the full gate and native Windows CI.
 
+e2e hosts that execute real commands apply their own Seatbelt confinement.
+macOS refuses to stack a second profile on an already-sandboxed process
+(`sandbox_apply: Operation not permitted`, probe exit 71) — even a maximally
+permissive outer profile cannot change this. When an agent verifies these
+suites from inside a Read Only or Project Write session, run the verification
+command unconfined (Full Access); otherwise only hosts that never self-sandbox
+can run. The seatbelt probe reports this signature with explicit guidance.
+
 Test volume is over half the codebase; these rules keep it an asset
 instead of a tax. Each rule was paid for by a real incident.
 

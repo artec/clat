@@ -49,7 +49,8 @@ function installInteractionDock() {
       model.entries.splice(model.entries.indexOf(entry), 1);
     }
     for (const card of document.querySelectorAll('#transcript .question-card:not(.resolved), #transcript .approval-card:not(.resolved), .schedule-interactions .question-card:not(.resolved), .schedule-interactions .approval-card:not(.resolved)')) {
-      const anchor = shellButton('', 'info', () => shellText('respond_below'), () => {
+      const icon = card.matches('.question-card:not(.plan-review-card)') ? 'help' : 'info';
+      const anchor = shellButton('', icon, () => shellText('respond_below'), () => {
         workbenchShell.chat();
         model.current = model.entries.find(entry => entry.card === card); model.collapsed = false; render();
         dock.scrollIntoView({block:'nearest'}); card.querySelector('button,textarea')?.focus();

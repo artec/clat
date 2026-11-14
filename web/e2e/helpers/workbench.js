@@ -37,6 +37,14 @@ async function openWorkbenchTool(page, id) {
   const pages = { 'settings-open':'nav-settings', 'market-open':'nav-extensions', 'history-open':'nav-history', 'jobs-open':'nav-tasks', 'help-open':'nav-help' };
   if (pages[id]) return page.click('#' + pages[id]);
   if (id === 'schedules-open') { await page.click('#nav-tasks'); return page.selectOption('#task-type','schedules'); }
+  // Transcript-header triggers live in the hidden legacy strip by design;
+  // the tools menu is the real user path (WORKSPACE_TOOLS → tool-<key>).
+  const toolMenu = { 'files-open':'tool-files', 'review-open':'tool-changes', 'turn-review-open':'tool-turn', 'tasks-open':'tool-tasks', 'workflow-open':'tool-workflow' };
+  if (toolMenu[id]) {
+    if (await page.locator('#' + id).isVisible()) return page.click('#' + id);
+    await page.click('#tools-open');
+    return page.click('#workbench-tools [data-action="' + toolMenu[id] + '"]');
+  }
   if (!await page.locator('#' + id).isVisible()) await page.click('#tools-open');
   await page.click('#' + id);
 }

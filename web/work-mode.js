@@ -135,7 +135,7 @@ function syncComposerGoal() {
     }
     const label = () => workflowText(mode === 'goal' ? 'goal_mode' : mode === 'plan' ? 'planning' : 'work_mode');
     CLATI18n.attribute(trigger,'aria-label',label);
-    CLATI18n.bind(trigger.querySelector('.shell-label'),'textContent',label);
+    CLATI18n.bind(trigger.querySelector('.shell-label'),'textContent', () => mode === 'goal' ? CLATI18n.msg('web.goal') : label());
     trigger.setAttribute('aria-pressed', String(mode !== 'normal'));
   }
   const addPlan = document.getElementById('add-plan');

@@ -205,7 +205,15 @@ function renderFencedCode(lines, index, fence) {
   return { node: pre, nextIndex: index };
 }
 
-function renderMarkdown(container, source) {
+function appendMarkdownLines(node, lines, preserveLineBreaks) {
+  if (!preserveLineBreaks) return appendInlineMarkdown(node, lines.join(' '));
+  for (const [index, line] of lines.entries()) {
+    if (index > 0) node.append(el('br'));
+    appendInlineMarkdown(node, line);
+  }
+}
+
+function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) {
   const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
   const fragment = document.createDocumentFragment();
   for (let index = 0; index < lines.length;) {
@@ -260,7 +268,7 @@ function renderMarkdown(container, source) {
         copy.push(lines[index].replace(/^ {0,3}>\s?/, ''));
         index += 1;
       }
-      appendInlineMarkdown(quote, copy.join(' '));
+      appendMarkdownLines(quote, copy, preserveLineBreaks);
       fragment.append(quote);
       continue;
     }
@@ -272,7 +280,7 @@ function renderMarkdown(container, source) {
       index += 1;
     }
     const node = el('p');
-    appendInlineMarkdown(node, paragraph.join(' '));
+    appendMarkdownLines(node, paragraph, preserveLineBreaks);
     fragment.append(node);
   }
   container.replaceChildren(fragment);
@@ -307,7 +315,7 @@ const ICON_PATHS = {
   plus: ["M12 5v14M5 12h14"],
   "chevron-down": ["m6 9 6 6 6-6"],
   refresh: ["M20 11a8 8 0 1 0-2 7M20 4v7h-7"],
-  edit: ['M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z', 'm14.5 5.5 3 3'],
+  edit: ['M3.5 20.5 5.1 14.1 15 4.2a2.65 2.65 0 0 1 3.75 0l1.05 1.05a2.65 2.65 0 0 1 0 3.75L9.9 18.9Z', 'M13.2 6l4.8 4.8'],
   goal: ['M20.6 10a9 9 0 1 1-6.6-6.6M17 12a5 5 0 1 1-5-5M12 12l7-7m-3 0h3v3'],
   pause: ['M9 5v14m6-14v14'],
   play: ['m8 5 12 7-12 7z'],
@@ -351,6 +359,13 @@ const ICON_PATHS = {
   'monitor-pointer': ['M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2ZM12 17v4m-4 0h8', 'm10 7 6 4-3.5.5-2.5 2.5Z'],
   extensions: ['M3 4h5v2a2 2 0 0 0 4 0V4h5v5h1a3 3 0 0 1 0 6h-1v5H3Z'],
   mcp: ['M4 12h5m6-5h5m-5 10h5', 'M9 12l6-5m-6 5 6 5'],
+  'mcp-call': [
+    'M9.65 6.5a3.15 3.15 0 1 0-6.3 0 3.15 3.15 0 1 0 6.3 0Z',
+    'M20.65 6.5a3.15 3.15 0 1 0-6.3 0 3.15 3.15 0 1 0 6.3 0Z',
+    'M9.65 17.5a3.15 3.15 0 1 0-6.3 0 3.15 3.15 0 1 0 6.3 0Z',
+    'M20.65 17.5a3.15 3.15 0 1 0-6.3 0 3.15 3.15 0 1 0 6.3 0Z',
+    'M8.73 15.27 15.27 8.73',
+  ],
   vision: ['M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'],
 };
 
@@ -1749,7 +1764,6 @@ function addUserMessage(text, blocks) {
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('user'));
   const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
-  renderMarkdown(body, text);
   userMessageReader.attach(msg, body, text);
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
@@ -2211,6 +2225,21 @@ const transcriptFollow = createTranscriptFollow(dom['transcript-scroll'], syncHi
 function isFollowingLatest() { return transcriptFollow.isPinned(); }
 function snapToLatest() { transcriptFollow.resume(); }
 
+function followAcceptedPrompt(owner) {
+  const selection = state.selectionGeneration;
+  const viewport = dom['transcript-scroll'];
+  const position = viewport.scrollTop;
+  const wasFollowing = isFollowingLatest();
+  return () => {
+    // Preserve a reading position chosen while the submission was in flight.
+    if (!context.isActive() || state.switching || !composerOwns(owner)
+      || selection !== state.selectionGeneration || !viewport.clientHeight) return;
+    if (isFollowingLatest() || wasFollowing || viewport.scrollTop !== position) return;
+    if (!document.getElementById('find-bar').classList.contains('hidden')) setConversationFindOpen(false);
+    snapToLatest();
+  };
+}
+
 function scrollIfFollowing() {
   if (findActive && !document.getElementById('find-bar').classList.contains('hidden')) return;
   transcriptFollow.schedule();
@@ -2322,8 +2351,9 @@ function showMapPreview(item) {
   const fragment = document.createDocumentFragment();
   for (const row of rows && rows.length > 0 ? rows : fallback) {
     const line = el('div', `map-preview-row ${row.role === 'user' ? 'is-user' : 'is-assistant'}`);
-    line.append(el('span', 'map-preview-role', () => (row.role === 'user' ? CLATI18n.msg("web.you_short",{},"You") : CLATI18n.msg("web.agent_short",{},"Agent"))));
-    line.append(el('span', 'map-preview-text', () => (row.text)));
+    CLATI18n.attribute(line, 'aria-label', () => row.role === 'user' ? CLATI18n.msg('web.you_short') : CLATI18n.msg('web.agent_short'));
+    line.setAttribute('role', 'group');
+    line.append(el('span', 'map-preview-text', () => row.text));
     fragment.append(line);
   }
   dom['message-map-preview'].replaceChildren(fragment);
@@ -4179,7 +4209,9 @@ async function submitConfiguredPrompt() {
       if (!await submitComposerCommand(submission)) return;
     } else {
       const params=composerSubmissionParams(text,images);bindFileReferenceSubmission(owner,text,params);
+      const resumeFollow = followAcceptedPrompt(owner);
       await rpc('prompt.send', params);
+      resumeFollow();
       // HIST-PWA-1/T2 + B8-R1：接纳即入史（回执在 journal 入账后），但仅当
       // 提交仍归属当前会话（owner 未变）——迟到的成功回执不得把旧会话
       // 提示词写进新会话历史。失败路径不入史；steering 走

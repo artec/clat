@@ -1,3 +1,7 @@
+function renderUserMessageMarkdown(container, source) {
+  renderMarkdown(container, source, { preserveLineBreaks: true });
+}
+
 /* Bounded user-message presentation; original text remains the search/model source. */
 function createUserMessageReader() {
   const entries = new Map();
@@ -41,7 +45,7 @@ function createUserMessageReader() {
       content.append(mark, document.createTextNode(entry.source.slice(match.offset + match.length)));
     } else {
       content.classList.add('rich-text');
-      renderMarkdown(content, entry.source);
+      renderUserMessageMarkdown(content, entry.source);
     }
     if (!dialog.open) dialog.showModal();
     content.scrollTop = 0;
@@ -50,7 +54,8 @@ function createUserMessageReader() {
   function attach(node, body, source) {
     if (!source) return;
     const content = el('div', 'user-message-preview rich-text');
-    content.append(...body.childNodes); body.classList.remove('rich-text'); body.append(content);
+    renderUserMessageMarkdown(content, source);
+    body.classList.remove('rich-text'); body.append(content);
     const entry = { node, body, source:String(source) }; entries.set(content, entry);
     body.onclick = event => {
       if (!body.classList.contains('user-message-collapsed') || window.getSelection()?.toString()) return;
@@ -61,12 +66,20 @@ function createUserMessageReader() {
     };
     observer.observe(content);
   }
+  function update(node, source) {
+    const content = node.querySelector('.user-message-preview');
+    const entry = entries.get(content);
+    if (!entry) return;
+    entry.source = String(source);
+    renderUserMessageMarkdown(content, entry.source);
+    measure(content);
+  }
   function reveal(node, match) {
     const entry = [...entries.values()].find(entry => entry.node === node);
     if (entry?.body.classList.contains('user-message-collapsed')) open(entry, match);
   }
   function reset() { close(); observer.disconnect(); entries.clear(); }
-  return { attach, reveal, reset, close, refresh };
+  return { attach, update, reveal, reset, close, refresh };
 }
 function createUserReaderDialog(getActive, onClose) {
     const text = key => CLATI18n.msg('user_reader.' + key);

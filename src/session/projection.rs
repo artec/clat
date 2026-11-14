@@ -1068,7 +1068,7 @@ impl ProjectionUnit for MessageOutlineUnit {
     }
 
     fn state_version(&self) -> u64 {
-        4
+        5
     }
 
     fn as_of(&self) -> i64 {
@@ -1149,9 +1149,11 @@ impl ProjectionUnit for MessageOutlineUnit {
 fn preview_lines(text: &str, max_lines: usize) -> String {
     const MAX_CHARS_PER_LINE: usize = 160;
     text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
         .take(max_lines)
         .map(|line| {
-            let mut chars = line.trim().chars();
+            let mut chars = line.chars();
             let preview = chars.by_ref().take(MAX_CHARS_PER_LINE).collect::<String>();
             if chars.next().is_some() {
                 format!("{preview}…")
@@ -1783,7 +1785,7 @@ mod tests {
                 "user/message",
                 1,
                 2,
-                payloads::user_message("question first line\nquestion second line"),
+                payloads::user_message("\nquestion first line\nquestion second line"),
             )
             .append(Vec::new()),
             SessionEvent::new(
@@ -1794,7 +1796,7 @@ mod tests {
                     7,
                     0,
                     vec![payloads::text_block(
-                        "answer one\nanswer two\nanswer three\nanswer four",
+                        "answer one\n\nanswer two\n  \nanswer three\nanswer four",
                     )],
                     "test",
                     "test",

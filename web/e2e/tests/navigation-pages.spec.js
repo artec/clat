@@ -35,8 +35,13 @@ test('late setting saves retain newer input and leaving clears a delayed pairing
  await openWorkbench(page,hostInfo('workbench'));await page.click('#nav-settings');await page.click('[data-settings-category=utility]');
  await page.evaluate(()=>{const original=rpc;globalThis.releaseUtility=null;rpc=async(method,params)=>method==='model.utility.set'?new Promise(resolve=>{globalThis.releaseUtility=()=>resolve({});}):original(method,params);});
  const naming=page.locator('#utility-naming-enabled');await expect(naming).toBeChecked(LIVE);await naming.uncheck();await page.click('#utility-settings-save');await expect.poll(()=>page.evaluate(()=>!!globalThis.releaseUtility)).toBe(true);await naming.check();await page.evaluate(()=>globalThis.releaseUtility());await expect(page.locator('#utility-settings-save')).toBeEnabled(LIVE);await expect(naming).toBeChecked();await expect(page.locator('[data-settings-panel=utility]')).toHaveAttribute('data-unsaved','true');
+ await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>{
+   // 进入面板前桩住 status：绑定态让 #wechat-pair 由产品渲染自然启用，
+   // 且不会随后被真实（未绑定）响应重新禁用（app.js: disabled = !bound）。
+   if(method==='wechat.binding.status')return {bound:true,paired_users:1,mapped_chats:0};
+   if(method==='wechat.pairing.create')return new Promise(resolve=>{globalThis.releasePair=()=>resolve({code:'private-delayed-code'});});
+   return original(method,params);};});
  await page.click('[data-settings-category=remote]');
- await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>method==='wechat.pairing.create'?new Promise(resolve=>{globalThis.releasePair=()=>resolve({code:'private-delayed-code'});}):original(method,params);dom['wechat-pair'].disabled=false;});
  await page.click('#wechat-pair');await expect.poll(()=>page.evaluate(()=>!!globalThis.releasePair)).toBe(true);await page.click('#nav-help');await page.evaluate(()=>globalThis.releasePair());await page.click('#nav-settings');await page.click('[data-settings-category=remote]');await expect(page.locator('[data-settings-panel=remote]')).toBeVisible();await expect(page.locator('#wechat-pairing-code')).toBeEmpty();
  await page.click('[data-settings-category=appearance]');
  await page.evaluate(()=>{const original=rpc;globalThis.remoteRead=0;globalThis.remoteUsers=[{user_id:'user-a',paired:true,manual:true,sessions:[]}];globalThis.revokedUser=null;rpc=async(method,params)=>{

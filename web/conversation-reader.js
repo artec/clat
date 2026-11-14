@@ -42,7 +42,10 @@ function createConversationReader(parent, reference, {trusted = false, editable 
   function messageNode(message) {
     const node = el('article', 'reader-message ' + message.role); node.dataset.seq = String(message.reference.seq);
     node.append(el('small', '', () => pageText(message.role)));
-    const body = el('div', 'body rich-text'); renderMarkdown(body, message.text); node.append(body);
+    const body = el('div', 'body rich-text');
+    if (message.role === 'user') renderUserMessageMarkdown(body, message.text);
+    else renderMarkdown(body, message.text);
+    node.append(body);
     const actions = el('div', 'reader-actions');
     const bookmark=navigationIcon(()=>pageText('bookmark'),'bookmark',async()=>{
       try{await rpc('library.bookmark.add', {reference: message.reference});

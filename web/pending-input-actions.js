@@ -46,6 +46,7 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   params.references = (pendingFileReferences.get(owner) || []).filter(ref => text.includes(ref.quote)).map(({path,version,quote}) => ({path,version,quote}));
   params.expected_selection_generation = submission.selection;
   const deferredIntoRun = state.runActive;
+  const resumeFollow = deferredIntoRun ? null : followAcceptedPrompt(owner);
   try {
     await rpc('input.submit', params);
   } catch (error) {
@@ -62,6 +63,7 @@ async function submitPendingInput({ text, images, owner, draftEpoch, composerGen
   // 模型请求边界 claim（steering_applied）原地转正。等待期间 run 已终结
   // 则不回显：条目转为空闲队列，由下一 run_started 正常入转录。
   if (deferredIntoRun && state.runActive) echoOptimisticSteering(params.clientMessageId, text);
+  resumeFollow?.();
   if (composerOwns(owner)) {
     clearOwnedSubmittedText(owner, composerGeneration);
     if (images.length && draftEpoch === state.draft.epoch) clearDraft();

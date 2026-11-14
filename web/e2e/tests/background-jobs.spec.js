@@ -26,7 +26,10 @@ test('native background job survives a new conversation and frontend reconnect; 
   await expect.poll(()=>page.evaluate(async id=>(await rpc('jobs.list',{})).jobs.find(j=>j.id===id).state,job.id),LIVE).toBe('killed');
   expect(await page.evaluate(async id=>(await rpc('jobs.output',{job_id:id,offset:0})).job.session,job.id)).toEqual(job.session);
   const rule=await page.evaluate(async job=>(await rpc('schedule.create',{session:job.session,title:'Job follow-up',instruction:'Inspect the actual result of this job.',trigger:{kind:'job',job_id:job.id},budget:{max_runs:1,max_tokens:100000,max_seconds:300,run_tokens:100000,run_seconds:300,max_paid_web_calls:0,run_paid_web_calls:0},model_profile:null})).rule,job);
-  await dialog.locator('[data-action=refresh]').first().click();await dialog.locator('[data-task-id="'+rule.id+'"]').click();await dialog.locator('[data-action=edit]').click();
+  // 触发器 #nav-tasks 自带 presentPage+refresh（task-center.js:74）；列表型
+  // 视图的刷新动作在应用工具栏（#jobs-dialog 之外），详情态下对话框内的
+  // refresh 属作业输出重读——重新点触发器才是刷新列表的真实用户路径。
+  await page.click('#nav-tasks');await dialog.locator('[data-task-id="'+rule.id+'"]').click();await dialog.locator('[data-action=edit]').click();
   await page.locator('#schedule-editor [name=title]').fill('Renamed job follow-up');await page.locator('#schedule-editor [data-action=save]').click();await expect(page.locator('.schedule-review')).toBeVisible(LIVE);
   const edited=await page.evaluate(async id=>(await rpc('schedule.list',{})).rules.find(r=>r.id===id),rule.id);expect(edited.spec.trigger).toEqual({kind:'job',job_id:job.id});expect(edited.scope.session).toBe(job.session);
   await page.locator('.schedule-review [data-action=cancel]').click();

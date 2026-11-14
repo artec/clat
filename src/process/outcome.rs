@@ -107,6 +107,11 @@ pub(crate) fn classify_tool_error(message: &str) -> CommandOutcome {
         || message.starts_with("process completed-session limit reached (")
     {
         Some("session_limit")
+    } else if message.starts_with("sandbox: ") {
+        // Confinement could not be established — probe refused (nested host
+        // sandbox), backend missing, or provider unavailable — so the command
+        // never ran. DSH parity: SANDBOX_UNAVAILABLE.
+        Some("sandbox_unavailable")
     } else {
         None
     };
@@ -114,4 +119,40 @@ pub(crate) fn classify_tool_error(message: &str) -> CommandOutcome {
         || outcome("unknown_failure", "tool_error", "operation_context"),
         |reason| outcome("environment_failure", reason, "operation_context"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_tool_error;
+
+    // DSH SANDBOX_UNAVAILABLE parity: confinement failures are
+    // environment failures with a machine-readable reason, never
+    // "the command ran and failed".
+    #[test]
+    fn sandbox_unavailable_failures_carry_their_reason() {
+        let probe = classify_tool_error(
+            "sandbox: sandbox-exec rejected the functional probe (exit status: 71); refusing unconfined execution",
+        );
+        assert_eq!(probe.kind, "environment_failure");
+        assert_eq!(probe.reason, "sandbox_unavailable");
+        let runner = classify_tool_error(
+            "sandbox: runner failure: sandbox-exec: sandbox_apply: Operation not permitted; the wrapped command never ran under the requested confinement",
+        );
+        assert_eq!(runner.kind, "environment_failure");
+        assert_eq!(runner.reason, "sandbox_unavailable");
+    }
+
+    #[test]
+    fn unrelated_failures_stay_uncategorized() {
+        // Preparation-style failures do not claim backend unavailability.
+        assert_eq!(
+            classify_tool_error("sandbox roots: canonicalize failed").reason,
+            "tool_error"
+        );
+        assert_eq!(classify_tool_error("process exited 3").reason, "tool_error");
+        assert_eq!(
+            classify_tool_error("process spawn failed: nope").reason,
+            "spawn_failed"
+        );
+    }
 }

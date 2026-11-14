@@ -63,29 +63,40 @@ function installPageNotifications() {
 
 function createTranscriptFollow(viewport, onChange) {
   let pinned = true;
-  let lastTop = viewport.scrollTop;
+  let lastTop, lastBottom;
   let frame = null;
-  let touchY = null;
+  viewport.dataset.followingLatest = 'true';
+  rememberPosition();
 
   function setPinned(value) {
     if (pinned === value) return;
     pinned = value;
+    viewport.dataset.followingLatest = String(value);
     onChange();
   }
-  function rememberPosition() { lastTop = viewport.scrollTop; }
+  function bottomEdge() { return Math.max(0, viewport.scrollHeight - viewport.clientHeight); }
+  function rememberPosition() {
+    lastBottom = bottomEdge();
+    lastTop = viewport.scrollTop;
+  }
   function scrollToEnd() {
-    viewport.scrollTop = viewport.scrollHeight;
+    const bottom = bottomEdge();
+    if (viewport.scrollTop !== bottom) viewport.scrollTop = bottom;
     rememberPosition();
   }
   function observeScroll() {
     if (!viewport.clientHeight) return;
+    const bottom = bottomEdge();
     const top = viewport.scrollTop;
     const previous = lastTop;
+    const resized = bottom !== lastBottom;
     lastTop = top;
+    lastBottom = bottom;
     if (top === previous) return;
-    const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
     const atBottom = top >= bottom - 1; // scrollTop can be fractional.
-    // A layout shrink can clamp scrollTop down to the new bottom.
+    // A render can clamp the viewport, then grow it again before the scroll event.
+    // Use movement at a stable layout to infer scrolling from the scrollbar or keyboard.
+    if (resized) return;
     if (top < previous && !atBottom) setPinned(false);
     else if (top > previous && atBottom) setPinned(true);
   }
@@ -119,6 +130,13 @@ function createTranscriptFollow(viewport, onChange) {
     pause();
   }
 
+  trackUpwardGestures(viewport, beforeUpwardScroll);
+  viewport.addEventListener('scroll', observeScroll, { passive: true });
+  return { isPinned: () => pinned, pause, resume, schedule, rememberPosition };
+}
+
+function trackUpwardGestures(viewport, beforeUpwardScroll) {
+  let touchY = null;
   viewport.addEventListener('wheel', event => {
     if (!event.ctrlKey && !event.shiftKey && event.deltaY < 0 && -event.deltaY >= Math.abs(event.deltaX)) {
       beforeUpwardScroll(event.target);
@@ -132,26 +150,29 @@ function createTranscriptFollow(viewport, onChange) {
     if (touchY !== null && nextY !== null && nextY > touchY) beforeUpwardScroll(event.target);
     touchY = nextY;
   }, { passive: true });
-  viewport.addEventListener('scroll', observeScroll, { passive: true });
-  return { isPinned: () => pinned, pause, resume, schedule, rememberPosition };
 }
 
 // Floating history controls share the existing scroll owner and run lifecycle.
 function createHistoryNavigation(){
-  const viewport=dom['transcript-scroll'],latest=el('button','back-to-latest hidden');
+  const viewport=dom['transcript-scroll'],latest=el('button','back-to-latest');
   latest.id='back-to-latest';latest.type='button';
   const arrow=svgIcon('arrow-down');arrow.classList.add('history-latest-arrow');
   const dots=el('span','history-running-dots');dots.setAttribute('aria-hidden','true');
   dots.append(el('i'),el('i'),el('i'));latest.append(arrow,dots);viewport.after(latest);
   function sync(){
-    const running=Boolean(state.connected&&state.runActive&&!state.switching&&context.isActive());
-    latest.dataset.running=String(running);
-    latest.classList.toggle('hidden',isFollowingLatest());
-    for(const attr of ['title','aria-label'])CLATI18n.attribute(latest,attr,()=>CLATI18n.msg(running?'history_nav.running_latest':'history_nav.latest'));
+    const running=String(Boolean(state.connected&&state.runActive&&!state.switching&&context.isActive()));
+    const following=String(isFollowingLatest());
+    if(latest.dataset.following!==following)latest.dataset.following=following;
+    if(latest.dataset.running===running)return;
+    latest.dataset.running=running;
+    for(const attr of ['title','aria-label'])CLATI18n.attribute(latest,attr,()=>CLATI18n.msg(running==='true'?'history_nav.running_latest':'history_nav.latest'));
   }
   latest.onclick=()=>{snapToLatest();sync();};
   viewport.addEventListener('scroll',sync,{passive:true});
-  if(typeof ResizeObserver==='function')new ResizeObserver(sync).observe(dom.transcript);
+  if(typeof ResizeObserver==='function'){
+    const observer=new ResizeObserver(()=>{scrollIfFollowing();sync();});
+    observer.observe(dom.transcript);observer.observe(viewport);
+  }
   window.addEventListener('clat:workbench-updated',sync);
   window.addEventListener('clat:activated',sync);
   sync();return {sync};

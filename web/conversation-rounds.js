@@ -33,8 +33,16 @@ function addModelRequestTrace(event){
   modelRequestPresentation.add(event,value=>CLATI18n.bind(detail,'textContent',()=> ' · '+value));
 }
 function toolPresentationIcon(name){
-  const icons={run_command:'terminal',exec_command:'terminal',write_stdin:'terminal',read_file:'file',list_files:'folder',search:'search',web_search:'globe',web_search_prime:'globe',web_fetch:'globe',edit_file:'edit',write_file:'edit',apply_patch:'edit',view_image:'file',update_plan:'plan',exit_plan_mode:'plan'};
-  return icons[name]||'tool'; // External identifiers never imply an action.
+  const icons={
+    run_command:'terminal',exec_command:'terminal',write_stdin:'terminal',
+    read_file:'book-open',list_files:'folder',search:'search',view_image:'file',
+    web_search:'globe',web_search_prime:'globe',web_fetch:'globe',
+    edit_file:'edit',write_file:'edit',apply_patch:'edit',
+    ask_user:'help',ask_user_question:'help',update_plan:'plan',exit_plan_mode:'plan',
+  };
+  // The MCP namespace identifies the integration, without inferring its action.
+  if (typeof name === 'string' && name.startsWith('mcp_')) return 'mcp-call';
+  return Object.hasOwn(icons,name)?icons[name]:'tool';
 }
 function createConversationRounds(){
   let seats=new Map(),owners=new WeakMap(),live=null,timer=null,serial=0,scopeId=null;

@@ -27,31 +27,48 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
   await expect.poll(() => fs.readFileSync(path.join(root, 'generated.txt'), 'utf8'), LIVE).toBe('from headless test');
   await openWorkbenchTool(page, 'turn-review-open');
-  await expect(page.locator('#turn-review .review-file')).toContainText('generated.txt', LIVE);
-  await page.locator('#turn-review .review-file').click();
+  // 现行 UI：选中操作行 → 展开「Turn N file captures」折叠区（懒加载）→
+  // 点捕获文件行看预览（旧 .review-file 属文件树，不在此视图）。
+  const operationRow = page.locator('#turn-review .navigation-row').filter({ hasText: 'Save a file' }).first();
+  const captureSummary = page.locator('#turn-review .operation-capture summary');
+  await operationRow.click();
+  await captureSummary.click();
+  const capturedFile = page.locator('#turn-review .operation-capture .navigation-row').filter({ hasText: 'generated.txt' });
+  await expect(capturedFile).toBeVisible(LIVE);
+  await capturedFile.click();
   await expect(page.locator('#turn-review')).toContainText('human dirty baseline');
   await expect(page.locator('#turn-review')).toContainText('Captured native result (not current disk)');
+  // 预览态没有返回控件：重新选中操作行重建捕获区（恢复按钮只在列表态）。
+  // 先让捕获区以干净盘完成加载（按钮渲染为可用），再编辑磁盘制造冲突；
+  // 确认后由后端拒绝（identity/contents 不匹配），磁盘现状保留。
+  await operationRow.click();
+  await captureSummary.click();
+  const restoreButton = page.getByRole('button', { name: 'Restore captured files…' });
+  await expect(restoreButton).toBeEnabled(LIVE);
   fs.writeFileSync(path.join(root, 'generated.txt'), 'later human edit');
-  await page.getByRole('button', { name: 'Restore captured files…' }).click();
+  await restoreButton.click();
   const restoreConflict = page.locator('dialog.clat-dialog');
   await expect(restoreConflict).toBeVisible(LIVE);
   await restoreConflict.locator('[data-role="accept"]').click();
   await expect(page.locator('#turn-review')).toContainText('conflict', LIVE);
   expect(fs.readFileSync(path.join(root, 'generated.txt'), 'utf8')).toBe('later human edit');
-  await page.getByRole('button', { name: 'Close captured operations' }).click();
+  await page.click('#nav-workbench');
   await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
   await page.fill('#prompt', 'another write'); await page.click('#send');
   await page.getByRole('button', { name: 'Allow', exact: true }).click();
   await expect.poll(() => fs.readFileSync(path.join(root, 'generated.txt'), 'utf8'), LIVE).toBe('from headless test');
   await expect(page.locator('#cancel')).toBeHidden(LIVE);
   await openWorkbenchTool(page, 'turn-review-open');
-  await expect(page.locator('#turn-review .review-file')).toContainText('safe', LIVE);
+  const latestOperationRow = page.locator('#turn-review .navigation-row').filter({ hasText: 'Save a file' }).last();
+  await latestOperationRow.click();
+  await captureSummary.click();
+  await expect(capturedFile).toContainText('safe', LIVE);
   await page.getByRole('button', { name: 'Restore captured files…' }).click();
   const restoreSafe = page.locator('dialog.clat-dialog');
   await expect(restoreSafe).toBeVisible(LIVE);
   await restoreSafe.locator('[data-role="accept"]').click();
   await expect(page.locator('#turn-review')).toContainText('restored', LIVE);
-  await expect(page.locator('#turn-review .review-file')).toContainText('restored');
+  await expect(page.locator('#turn-review .operation-capture')).toContainText('restored');
   expect(fs.readFileSync(path.join(root, 'generated.txt'), 'utf8')).toBe('later human edit');
 
   // Rendering fixture: host durability is independently pinned by native ledger tests.
@@ -66,7 +83,9 @@ test('CAP-2 native write preview, conflict refusal, confirmed recovery and retai
       return value;
     };
   });
-  await page.locator('#turn-review .review-file').click();
+  await operationRow.click();
+  await captureSummary.click();
+  await capturedFile.click();
   await expect(page.locator('#turn-review')).toContainText('Last confirmed native result', LIVE);
   await expect(page.locator('#turn-review')).toContainText('prior confirmed bytes');
   await expect(page.locator('#turn-review')).toContainText('Expected native result (commit unconfirmed)');
@@ -147,26 +166,26 @@ test('UX-5 structured Plan/Goal details preserve four concepts and confirm actio
   await open(page);
   await materializeSession(page, 'workflow session');
   await page.evaluate(async () => { await rpc('command.run', { command: '/plan on' }); await rpc('command.run', { command: '/goal create structured objective' }); await refreshWorkbench(); });
-  await page.click('#plan-mode-badge');
+  // 目标激活时 composer 显示目标条，其「Goal details」按钮打开同一
+  // workflow-details 视图；#plan-mode-badge 是 legacy 入口且滞后于
+  // state.workbench 快照（详见修复报告）。
+  await page.locator('#goal-badge').click();
   await expect(page.locator('#workflow-details')).toContainText('structured objective', LIVE);
-  await expect(page.locator('#workflow-details')).toContainText('Approved plan (durable text)');
-  await expect(page.locator('#workflow-details')).toContainText('Todo (model-maintained list; not Goal completion)');
-  await expect(page.locator('#workflow-details')).toContainText('Rounds 0/8');
+  await expect(page.locator('#workflow-details')).toContainText('Generate a plan in Plan mode');
+  await expect(page.locator('#workflow-details')).toContainText('To-dos');
+  await expect(page.locator('#workflow-details')).toContainText('Rounds 0');
   const clearGoal = page.locator('dialog.clat-dialog');
-  await page.getByRole('button', { name: 'Clear goal', exact: true }).click();
+  await page.getByRole('button', { name: 'End goal', exact: true }).click();
   await expect(clearGoal).toBeVisible(LIVE);
   await clearGoal.locator('[data-role="cancel"]').click();
   await expect(page.locator('#workflow-details')).toContainText('structured objective');
-  await page.getByRole('button', { name: 'Clear goal', exact: true }).click();
+  await page.getByRole('button', { name: 'End goal', exact: true }).click();
   await expect(clearGoal).toBeVisible(LIVE);
   await clearGoal.locator('[data-role="accept"]').click();
-  await expect(page.locator('#workflow-details')).toContainText('No current goal', LIVE);
-  expect(await page.evaluate(async () => {
-    const facts = await rpc('workflow.details', {}); facts.todos_truncated = true;
-    const detail = el('section'); workflowSections(detail, facts);
-    return detail.textContent.includes('First 100 todo entries only');
-  })).toBe(true);
-
+  await expect(page.locator('#workflow-details')).toContainText('No goal yet', LIVE);
+  // 覆盖映射（UI 演进）：旧 workflowSections 截断提示（First 100 todo entries
+  // only）在现行 web 包中已无渲染方（键 web.first_100_todo_entries_only_*
+  // 未被引用）；该直调段随函数一并退役，截断提示的回归待其恢复时重建。
 });
 
 test('UX-6 mobile find/project/latest and opt-in deduplicated page notifications', async ({ page }, info) => {

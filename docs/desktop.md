@@ -20,7 +20,8 @@ The model picker uses a discrete thinking-intensity slider with a capsule track,
 
 The composer toolbar groups add, permission, plan, context usage, model/thinking,
 pending messages and send/stop controls. Toolbar icons share a centered control
-size and stroke weight. Permissions are recognizable by shape and theme-aware
+size and stroke weight. The work mode button shows **Plan** or **Goal** beside
+the active mode icon. Permissions are recognizable by shape and theme-aware
 color: a blue eye for read-only, a green shield with a pen for project write,
 and an amber unlocked padlock for full access. The permission popup opens on click or explicit keyboard activation.
 Its left edge aligns with the composer's left border, with viewport avoidance.
@@ -120,6 +121,8 @@ Loading earlier messages preserves the current reading position without a scroll
 
 Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening a centered Markdown reader with a blurred backdrop. The reader fits its content up to the window height limit, then scrolls the message while keeping the header and Copy full text button visible. Copy full text copies the original message, including Markdown syntax. Escape, Close or clicking the backdrop dismisses the reader without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the original text and highlight the exact match. Precise message navigation opens the Markdown reader. Web and Desktop share this behavior.
 
+User messages preserve entered line breaks in the conversation and full-message reader.
+
 Each Agent round has one process header below its initial user message. While
 running, it displays an updating elapsed time and keeps process entries visible.
 Mid-round user messages have extra space above the bubble to separate them from
@@ -129,8 +132,13 @@ for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
 connection clears the live activity; reduced-motion and forced-color settings
 use static, readable status indicators.
-Conversation body text uses 15 px at weight 400 with platform font smoothing. Emphasis and interface labels retain their separate weights. Thinking uses a compact brain icon; known native web-search and web-fetch actions use a globe. Known native tools use action icons with a recognizable pencil for edits and a rounded terminal for commands; external tools retain a generic wrench icon and
-original identifiers in their details. Once the actual terminal event arrives,
+Conversation body text uses 15 px at weight 400 with platform font smoothing.
+Emphasis and interface labels retain their separate weights. Thinking uses a
+compact brain icon. In the conversation and history timeline, web searches use a
+globe, file reads use an open book, file writes and edits use a pencil, and
+commands use a rounded terminal. Agent questions use a circled question mark,
+and MCP calls use four small circles. Other unrecognized tools use a wrench.
+Tool details show the original identifier. Once the actual terminal event arrives,
 the process collapses behind the elapsed-time chevron, leaving the last nonempty
 answer visible. User inputs, failures, permission refusals and interruptions
 remain visible. The process reading preference can keep completed rounds open;
@@ -141,8 +149,9 @@ based on message timestamps are marked approximate; missing times remain unknown
 
 The conversation map appears even for a single known round and remains available
 with the desktop sidebar open; it is hidden only in narrow reading areas. It has one mark per round, with its question and last answer
-in the hover preview, using the session list font size with at most one line for the question
-and three lines for the answer. Steering does not add marks. Search and exact message
+in the hover preview. The question is on top, followed by the answer, using the session
+list font size. The preview reserves one line for the question and three for the answer,
+and skips blank lines in the source. Steering does not add marks. Search and exact message
 navigation reveal hidden process content when needed. Completed compactions have
 an independent disclosure showing the available journal range, distinct record
 count, estimated source tokens and expandable context summary. Missing legacy
@@ -330,7 +339,12 @@ Conversation text fades out above the floating composer and stays hidden beneath
 the input area, including when window transparency is enabled.
 Live output follows the bottom of the conversation. Scrolling up pauses follow
 immediately, even while the agent is writing or running tools. Scroll back to the
-bottom or use the floating latest-message button to resume.
+bottom or use the floating latest-message button to resume. Sending a new question
+from the current conversation also resumes follow when the send is accepted,
+provided you stayed at the same reading position while it was being sent.
+While reading earlier messages during a run, the button shows animated dots and
+reveals the down arrow on hover or keyboard focus. With reduced motion enabled,
+it shows static dots.
 Extension navigation, built-in extension lists and overviews, composer shortcuts,
 and extension help use the same puzzle-piece icon.
 

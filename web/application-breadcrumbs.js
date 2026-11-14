@@ -4,7 +4,7 @@ function createApplicationBreadcrumbs(host,shell){
   function render(view){
     crumbs=(view.crumbs?.()||[]).filter(crumb=>String((typeof crumb.label==='function'?crumb.label():crumb.label)||'').trim());const next=JSON.stringify(crumbs.map(c=>[typeof c.label==='function'?c.label():c.label,Boolean(c.run),Boolean(c.close),Boolean(c.session)]));
     if(next!==signature){signature=next;overflow.open=false;menu.hidden=true;host.replaceChildren();nodes=[];menu.replaceChildren();
-      crumbs.forEach((crumb,index)=>{const row=el('span','breadcrumb-level');if(index)row.append(el('span','application-separator','/'));const name=el(crumb.run?'button':'span','breadcrumb-name',crumb.label);CLATI18n.attribute(name,'title',crumb.label);if(crumb.run){name.type='button';name.onclick=crumb.run;}row.append(name);
+      crumbs.forEach((crumb,index)=>{const row=el('span','breadcrumb-level');if(index)row.append(el('span','application-separator','/'));const name=el(crumb.run?'button':'span','breadcrumb-name',crumb.label);CLATI18n.attribute(name,'title',typeof crumb.label==='function'?crumb.label:()=>crumb.label);if(crumb.run){name.type='button';name.onclick=crumb.run;}row.append(name);
         if(crumb.session){const badge=el('small','conversation-indicator');badge.setAttribute('role','status');row.append(badge);row.dataset.session='true';}
         if(crumb.close){const close=navigationIcon(()=>viewText('close_tool'),'close',crumb.close);close.id='workspace-tool-close';row.append(close);}host.append(row);nodes.push(row);
       });

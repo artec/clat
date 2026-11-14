@@ -739,19 +739,22 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 
 /* History navigation: arrows for navigation, a wave only while the run is active. */
 .back-to-latest,.history-status{box-sizing:border-box;width:34px;height:34px;min-height:34px;padding:7px;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--text-muted);box-shadow:0 3px 12px #0002;cursor:pointer}
-.back-to-latest{display:flex;align-items:center;justify-content:center}
+.back-to-latest{display:grid;place-items:center}
+.back-to-latest[data-following=true]{visibility:hidden}
+.back-to-latest>*{grid-area:1 / 1;pointer-events:none}
 .history-status{display:block;margin:0 auto -34px}
 .back-to-latest>svg,.history-status>svg{display:block;width:18px;height:18px;flex:none;stroke-width:1.65}
 .back-to-latest:hover,.back-to-latest:focus-visible,.history-status:hover{color:var(--text);border-color:var(--line-strong)}
-.history-running-dots{display:none;align-items:center;justify-content:center;gap:3px;width:18px;height:18px}
-.history-running-dots>i{display:block;width:4px;height:4px;border-radius:50%;background:currentColor;animation:history-dot-wave 1s ease-in-out infinite backwards}
-.history-running-dots>i:nth-child(2){animation-delay:90ms}.history-running-dots>i:nth-child(3){animation-delay:180ms}
-.back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-latest-arrow{display:none}
-.back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-running-dots{display:flex}
+.history-running-dots{display:flex;align-items:center;justify-content:center;gap:3px;width:18px;height:18px;opacity:0}
+.history-running-dots>i{display:block;width:4px;height:4px;border-radius:50%;background:currentColor}
+.back-to-latest[data-running=true] .history-running-dots>i{will-change:transform;animation:history-dot-wave 1s ease-in-out var(--wave-delay,0ms) infinite backwards}
+.history-running-dots>i:nth-child(2){--wave-delay:90ms}.history-running-dots>i:nth-child(3){--wave-delay:180ms}
+.back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-latest-arrow{opacity:0}
+.back-to-latest[data-running=true]:not(:hover):not(:focus-visible)>.history-running-dots{opacity:1}
 .history-status[data-loading=true]>svg{animation:run-loading-turn 2s linear infinite}
 @keyframes history-dot-wave {
   0%, 28%, 56%, 100% { transform:translateY(0); opacity:.55; }
   14% { transform:translateY(3px); opacity:1; }
   42% { transform:translateY(-3px); opacity:1; }
 }
-@media(prefers-reduced-motion:reduce){.history-running-dots>i,.history-status[data-loading=true]>svg{animation:none}}
+@media(prefers-reduced-motion:reduce){.back-to-latest[data-running=true] .history-running-dots>i,.history-status[data-loading=true]>svg{animation:none;will-change:auto}}

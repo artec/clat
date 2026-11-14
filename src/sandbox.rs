@@ -357,12 +357,29 @@ fn probe_seatbelt(executable: &Path) -> Result<(), String> {
             if status.success() {
                 Ok(())
             } else {
-                Err(format!(
-                    "sandbox: sandbox-exec rejected the functional probe ({status}); refusing unconfined execution"
-                ))
+                Err(seatbelt_probe_failure(&status))
             }
         })
         .clone()
+}
+
+#[cfg(target_os = "macos")]
+fn seatbelt_probe_failure(status: &std::process::ExitStatus) -> String {
+    let mut message = format!(
+        "sandbox: sandbox-exec rejected the functional probe ({status}); refusing unconfined execution"
+    );
+    // Exit 71 is sandbox-exec's apply failure. macOS will not stack a second
+    // Seatbelt profile on a process that already runs inside one — verified
+    // with `(allow default)` as the outer profile, so no wider profile fixes
+    // it. The only working postures are a Full Access host or child process.
+    if status.code() == Some(71) {
+        message.push_str(
+            "; exit 71 usually means this process already runs inside a host sandbox and \
+             macOS forbids stacking Seatbelt profiles: rerun this workload from a Full \
+             Access host, or grant this process Full Access",
+        );
+    }
+    message
 }
 
 fn raw_plan(
@@ -508,6 +525,74 @@ mod tests {
         assert!(profile.contains("(deny network*)"));
         assert!(profile.contains("a\\\"b"));
         assert!(profile.contains("(deny file-write*)"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_probe_failure_explains_nested_sandboxes() {
+        let denied = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 71"])
+            .status()
+            .unwrap();
+        let nested = seatbelt_probe_failure(&denied);
+        assert!(nested.contains("stacking Seatbelt profiles"), "{nested}");
+        assert!(nested.contains("Full Access"), "{nested}");
+        let other = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 1"])
+            .status()
+            .unwrap();
+        assert!(!seatbelt_probe_failure(&other).contains("stacking"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_runner_failure_is_reported_as_sandbox_unavailable() {
+        let base = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "clat-seatbelt-runner-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let project_root = base.join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let mode = Arc::new(RwLock::new(PermissionMode::ProjectWrite));
+        let sandbox = Arc::new(
+            SandboxService::new(
+                project_root.clone(),
+                SandboxModeSource::Shared(Arc::clone(&mode)),
+            )
+            .unwrap(),
+        );
+        let service = crate::process::ProcessService::new(Project::new(&project_root), sandbox);
+        let generation = service
+            .bind_run("seatbelt-runner", CancelToken::new())
+            .unwrap();
+        // Lock the existing DSH-parity contract (RUNNER_FAILURE_RULES.seatbelt):
+        // a sandbox-exec wrapper failure is reported on the output — classified
+        // sandbox_unavailable with a machine-readable reason — never as a
+        // plain command failure carrying the wrapper's exit status.
+        let output = service
+            .run_compat(
+                "echo 'sandbox-exec: sandbox_apply: Operation not permitted' >&2; exit 71",
+                Duration::from_secs(5),
+                false,
+                SandboxRequest::Required,
+            )
+            .unwrap();
+        assert_eq!(output.sandbox.provider, "seatbelt");
+        assert_eq!(output.exit_code, Some(71));
+        assert!(output.sandbox_unavailable, "stderr: {}", output.stderr);
+        assert_eq!(
+            output.command_outcome.json()["reason"].as_str(),
+            Some("sandbox_unavailable")
+        );
+        let _ = generation;
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

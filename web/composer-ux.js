@@ -152,8 +152,7 @@ function reconcileOptimisticSteering(items) {
     if (!item) { discardOptimisticSteering(id); continue; }
     if (typeof item.text === 'string' && item.text !== provisional.text) {
       provisional.text = item.text;
-      const body = provisional.node.querySelector('.body');
-      if (body) renderMarkdown(body, item.text);
+      userMessageReader.update(provisional.node, item.text);
     }
   }
 }
