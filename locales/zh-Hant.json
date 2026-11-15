@@ -1714,6 +1714,8 @@
   "web.close_workspace_review": "關閉工作區審核",
   "web.collapse_sidebar": "收合側邊欄",
   "web.command_completed": "命令已完成",
+  "web.command_browse": "瀏覽",
+  "web.command_fill": "填入",
   "web.command_hint": "↑↓ 瀏覽 · Tab/Enter 選擇 · Esc 關閉 · 選擇不會執行命令",
   "web.commands_and_skills": "命令與技能",
   "web.commands_do_not_accept_draft_images_draft_retained": "命令不接受草稿圖片，草稿已保留",

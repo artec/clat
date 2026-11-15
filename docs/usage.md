@@ -580,7 +580,12 @@ only where CLAT has graduated `sandbox="required"` enforcement; any script still
 runs only through the ordinary Execute tools, approvals, ProcessService, and
 sandbox policy.
 
-`/skill` (alias `/skills`) works on the same catalog from the human side:
+`/skill` (alias `/skills`) uses the same catalog.
+
+In the CLAT TUI, PWA and Desktop, typing `/skill` opens the current project's
+skill choices. Type a space and part of the name or description to narrow the
+list. Selecting a skill fills `/skill <name>`; send that command, then enter
+the message that should use the skill.
 
 - `/skill` lists every cataloged skill with its source layer
   (bundled/user/project) and `requires-execution` marking, plus discovery
@@ -3448,7 +3453,8 @@ start off.
   still asks before staging.
 - **Push after committing** runs Git push after a successful local commit,
   using the repository’s push configuration. A failed push keeps the local
-  commit. CLAT reports the push separately and never retries it automatically.
+  commit. CLAT keeps failed or uncertain push results visible and never retries
+  them automatically. A successful commit and push closes the operation result.
 - **Commit instructions** guides the model when generating a commit message,
   whether you choose Generate Message or commit with the message field empty.
   Handwritten messages are used as entered.
@@ -3463,6 +3469,8 @@ are bounded; oversized operations fail with the source intact. A project mounted
 the repository root cannot commit staged files outside that project: open the root first.
 
 **Terminal** is a separate left-navigation page with a terminal list and selected shell.
+CLAT shows localized operation notices in the toolbar and keeps raw errors in
+expandable technical details. Shell and command output is shown as written.
 It supports up to eight running shells per project, resizing, interactive TUI applications,
 search, copying, clear, rename and explicit input takeover. Only one client controls a
 terminal; other clients observe it. Ctrl+C belongs to the foreground shell program, and

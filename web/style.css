@@ -675,12 +675,49 @@ button:disabled { cursor: default; opacity: .45; }
 .selection-quote { position: fixed; z-index: 80; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--text); background: var(--surface-raised); box-shadow: 0 8px 28px rgb(0 0 0 / 18%); cursor: pointer; }
 @media (max-width: 760px) { .message-actions { grid-column: 1; } }
 .composer-shell { position: relative; }
-.command-panel { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 18; max-height: min(360px, 48vh); padding: 12px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: 0 12px 38px rgb(0 0 0 / 20%); }
+.command-panel {
+  position: absolute; inset-inline-start: 0; bottom: calc(100% + 10px); z-index: 18;
+  display: flex; flex-direction: column; width: min(100%, 620px);
+  max-height: min(410px, 52dvh); overflow: hidden;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-md);
+  background: var(--surface-raised); box-shadow: var(--shadow);
+}
 .picker-hint { color: var(--text-muted); font: 11px/1.5 var(--font-ui); }
-.command-option { display: grid; gap: 3px; width: 100%; padding: 8px 10px; text-align: left; border: 0; border-radius: var(--radius-sm); color: var(--text); background: transparent; cursor: pointer; }
-.command-option small { color: var(--text-muted); }
-.command-option[aria-selected="true"], .command-option:hover { background: var(--surface); outline: 1px solid var(--line-strong); }
+.command-picker-list { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 6px; }
+.command-picker-group + .command-picker-group { margin-block-start: 7px; padding-block-start: 5px; border-block-start: 1px solid var(--line); }
+.command-picker-heading { margin: 3px 10px 5px; color: var(--text-muted); font-size: var(--text-size-secondary); font-weight: 600; }
+.command-picker-status { margin: 0; padding: 14px 16px; color: var(--text-muted); font-size: var(--text-size-ui); }
+.command-option {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 2px 12px;
+  width: 100%; padding: 8px 10px; text-align: start; border: 0; border-radius: var(--radius-sm);
+  color: var(--text); background: transparent; cursor: pointer;
+}
+.command-option + .command-option { margin-block-start: 2px; }
+.command-option-title { grid-area: 1 / 1; overflow-wrap: anywhere; font-size: var(--text-size-ui); font-weight: 600; line-height: 1.45; }
+.command-option-description, .command-option-meta, .command-option-usage { color: var(--text-muted); font-size: var(--text-size-secondary); line-height: 1.45; }
+.command-option-description { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.command-option-meta, .command-option-usage { grid-area: 1 / 2; }
+.command-option-meta { display: grid; justify-items: end; gap: 2px; text-align: end; padding-block-start: 2px; }
+.command-option-usage { max-width: min(180px, 25vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-block-start: 2px; }
+.command-option:hover { background: var(--surface-input); }
+.command-option[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 13%, var(--surface-raised)); }
 .command-option[aria-disabled="true"] { opacity: .65; cursor: not-allowed; }
+.command-picker-footer {
+  flex: none; display: flex; flex-wrap: wrap; gap: 6px 14px;
+  padding: 7px 14px; border-block-start: 1px solid var(--line);
+  color: var(--text-muted); font-size: var(--text-size-secondary);
+}
+.command-picker-shortcut { display: inline-flex; align-items: center; gap: 4px; }
+.command-picker-shortcut > span { margin-inline-start: 2px; }
+.command-picker-shortcut kbd {
+  border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 4px;
+  font: 11px/1.55 var(--font-ui); color: var(--text-soft);
+}
+@media (hover: none) { .command-picker-footer { display: none; } }
+@media (max-width: 420px) {
+  .command-option { column-gap: 7px; }
+  .command-option-meta { max-width: 6em; }
+}
 /* The input row has its own vertical inset; balance it below the final text row. */
 .find-bar { --find-field-inset: 7px; --menu-gap: var(--toolbar-menu-gap); position: fixed; z-index: 100; inset: auto; width: min(460px, calc(100% - 24px)); padding: var(--menu-padding-block) 10px calc(var(--menu-padding-block) + var(--find-field-inset)); border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); display: grid; gap: 8px; }
 .find-bar.hidden { display: none; }

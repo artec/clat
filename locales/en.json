@@ -1714,6 +1714,8 @@
   "web.close_workspace_review": "Close workspace review",
   "web.collapse_sidebar": "Collapse sidebar",
   "web.command_completed": "command completed",
+  "web.command_browse": "Browse",
+  "web.command_fill": "Fill input",
   "web.command_hint": "↑↓ browse · Tab/Enter select · Esc close · selection never runs a command",
   "web.commands_and_skills": "Commands and skills",
   "web.commands_do_not_accept_draft_images_draft_retained": "commands do not accept draft images; draft retained",

@@ -45,6 +45,26 @@ pub(super) struct CommandPicker {
     status: PresentedText,
 }
 
+fn skill_command(name: &str) -> bool {
+    name.eq_ignore_ascii_case("skill") || name.eq_ignore_ascii_case("skills")
+}
+
+fn skill_argument(query: &str) -> Option<&str> {
+    let (name, argument) = query.split_once([' ', '\t'])?;
+    skill_command(name).then(|| argument.trim_start_matches([' ', '\t']))
+}
+
+fn picker_query(input: &str) -> Option<&str> {
+    // The Host-attached TUI has a separate management command at this spelling.
+    let query = input
+        .strip_prefix('/')
+        .filter(|query| *query != "skill manage")?;
+    let word = skill_argument(query).unwrap_or(query);
+    word.chars()
+        .all(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_')
+        .then_some(query)
+}
+
 impl CommandPicker {
     pub(super) fn new(request: u64) -> Self {
         Self {
@@ -177,13 +197,26 @@ impl CommandPicker {
 
     fn filtered(&self) -> Vec<&Choice> {
         let query = self.query.to_lowercase();
+        let bare_skill = skill_command(&query);
+        let argument = skill_argument(&query);
+        let skill_query = if bare_skill {
+            ""
+        } else {
+            argument.unwrap_or(&query)
+        };
         let mut choices: Vec<_> = self
             .choices
             .iter()
             .filter(|entry| {
+                if !entry.skill && (bare_skill || argument.is_some()) {
+                    return bare_skill
+                        && (entry.text.trim() == "/skill"
+                            || entry.aliases.split_whitespace().any(|alias| alias == query));
+                }
+                let needle = if entry.skill { skill_query } else { &query };
                 format!("{} {} {}", entry.label, entry.description, entry.aliases)
                     .to_lowercase()
-                    .contains(&query)
+                    .contains(needle)
             })
             .collect();
         choices.sort_by_key(|entry| {
@@ -193,9 +226,10 @@ impl CommandPicker {
                 .trim_start_matches('/')
                 .trim_start_matches("skill ")
                 .to_lowercase();
-            if text == query {
+            let needle = if entry.skill { skill_query } else { &query };
+            if text == needle {
                 (entry.skill, 0)
-            } else if text.starts_with(&query) {
+            } else if text.starts_with(needle) {
                 (entry.skill, 1)
             } else {
                 (entry.skill, 2)
@@ -316,13 +350,7 @@ impl App {
     }
 
     pub(super) fn update_command_query(&mut self) {
-        let text = self.input.text();
-        let valid = text.strip_prefix('/').filter(|query| {
-            query
-                .chars()
-                .all(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_')
-        });
-        if let Some(query) = valid {
+        if let Some(query) = picker_query(self.input.text()) {
             if let Some(picker) = &mut self.discovery.picker {
                 picker.query = query.into();
                 picker.selected = 0;
@@ -583,6 +611,45 @@ mod tests {
         picker.load(&json!({"commands":[{"name":"quit", "unavailable_reason":"busy"}]}));
         picker.query.clear();
         assert!(!picker.selected_command_matches("/quit"));
+    }
+
+    #[test]
+    fn skill_command_lists_all_skills_and_filters_after_space() {
+        let mut picker = CommandPicker::new(1);
+        picker.load(
+            &json!({"commands":[{"name":"skill","aliases":["skills"]},{"name":"mcp"}],
+            "skills":{"entries":[
+                {"name":"clat-upgrade-check","description":"检查升级"},
+                {"name":"audit","description":"Review code"}
+            ]}}),
+        );
+        for text in ["/skill", "/skills", "/skill "] {
+            picker.query = picker_query(text).unwrap().into();
+            assert!(
+                picker
+                    .filtered()
+                    .iter()
+                    .any(|row| row.text == "/skill clat-upgrade-check ")
+            );
+            assert!(
+                picker
+                    .filtered()
+                    .iter()
+                    .any(|row| row.text == "/skill audit ")
+            );
+        }
+        for text in ["/skill upgrade", "/skills 检查"] {
+            picker.query = picker_query(text).unwrap().into();
+            assert_eq!(picker.filtered().len(), 1);
+            assert_eq!(
+                picker.selected_text().as_deref(),
+                Some("/skill clat-upgrade-check ")
+            );
+            assert!(!picker.selected_command_matches(text));
+        }
+        assert!(picker_query("/skill manage").is_none());
+        assert!(picker_query("/skill manage list").is_none());
+        assert!(picker_query("/mcp codegraph").is_none());
     }
 
     #[test]

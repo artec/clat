@@ -502,6 +502,7 @@ existing GitHub updater and manual installers remain the GitHub channel's paths.
 An account approval alone does not constitute an approved Store app or delivery
 pipeline. Store integration must explicitly distinguish these update channels.
 
+The Windows setup executable and language picker use the CLAT product icon.
 GitHub Windows releases currently use per-user NSIS installers without
 Authenticode publisher signatures. SmartScreen warnings and endpoint-security
 blocks can prevent installation. Self-signed test certificates and CLAT's update

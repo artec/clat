@@ -36,3 +36,65 @@ test('terminalInputPolicy demotes after the retry budget is exhausted', () => {
   assert.equal(policy({ code: 'busy' }, 4).action, 'demote');
   assert.equal(policy({ name: 'AbortError' }, 5).action, 'demote');
 });
+
+const terminalView=fs.readFileSync('web/development/terminal-view.js','utf8');
+
+test('terminal directory renders and preserves the project menu with the shared organization API',()=>{
+  const node=()=>({
+    children:[],dataset:{},classList:{add(){},toggle(){}},setAttribute(){},
+    append(...items){this.children.push(...items);},
+    replaceChildren(){this.children=[];},
+  });
+  const bound=[];
+  const menu=node();
+  const scope=vm.createContext({
+    el:node,svgIcon:node,navigationIcon:node,
+    CLATI18n:{attribute(){}},
+    context:{organization:{
+      menuButton(project,items){bound.push({project,items});return menu;},
+      bind(_header,project,button){assert.equal(button,menu);assert.equal(project,bound.at(-1).project);},
+    }},
+  });
+  vm.runInContext(terminalView,scope);
+  const project={root:'/project',title:'Project',pinned:true,terminals:[{id:'pty',name:'Shell'}]};
+  const ui={list:node(),query:{value:''}};
+  const actions={};
+  scope.renderTerminalDirectory(ui,[project],null,actions,new Map());
+  assert.equal(ui.list.children.length,1);
+  assert.equal(bound[0].project,project);
+  let cleaned;
+  actions.cleanup=value=>{cleaned=value;};
+  bound[0].items[0][2]();
+  assert.equal(cleaned,project);
+});
+
+test('terminal notices keep raw errors in collapsed details and clear only the recovered error',()=>{
+  const scope=vm.createContext({
+    devText:key=>'localized:'+key,
+    devStatus:(element,key)=>{element.textContent='localized:'+key;},
+    CLATI18n:{
+      bind:(element,property,value)=>{element[property]=value();},
+      present:(presentation,fallback)=>presentation?'localized:'+presentation.key:fallback,
+    },
+  });
+  vm.runInContext(terminalView,scope);
+  const status={classList:new Set()};
+  status.classList.remove=status.classList.delete;
+  const diagnostic={hidden:true,open:false},body={textContent:''};
+  const notice=scope.createTerminalStatus(status,diagnostic,body);
+  const clientError=new TypeError('Internal diagnostic text');
+  notice.report(clientError);
+  assert.equal(status.textContent,'localized:failed');
+  assert.equal(diagnostic.open,false);
+  assert.equal(diagnostic.hidden,false);
+  assert.equal(body.textContent,clientError.message);
+  const hostError={presentation:{key:'dev.observer'},technical:'terminal_observer'};
+  notice.report(hostError);
+  notice.clear(clientError);
+  assert.equal(status.textContent,'localized:dev.observer');
+  assert.equal(body.textContent,'terminal_observer');
+  notice.clear(hostError);
+  assert.equal(status.textContent,'');
+  assert.equal(diagnostic.hidden,true);
+  assert.equal(body.textContent,'');
+});

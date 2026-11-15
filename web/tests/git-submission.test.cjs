@@ -133,3 +133,17 @@ test('new operations and reconciled operations cannot expose a previous result o
     assert.equal(h.owner.result.phase,'completed');
   }
 });
+
+test('successful commit and push dismiss the operation result while issues remain visible',()=>{
+  const ctx=vm.createContext({});
+  vm.runInContext(fs.readFileSync('web/development/git.js','utf8'),ctx);
+  const completed={phase:'completed'};
+  assert.equal(ctx.gitResultVisible(completed,false,null),false);
+  assert.equal(ctx.gitResultVisible({...completed,result:{push:{status:'completed'}}},false,null),false);
+  for(const status of ['failed','unknown']){
+    assert.equal(ctx.gitResultVisible({...completed,result:{push:{status}}},false,null),true);
+  }
+  assert.equal(ctx.gitResultVisible({phase:'failed'},false,null),true);
+  assert.equal(ctx.gitResultVisible(null,true,null),true);
+  assert.equal(ctx.gitResultVisible(completed,false,{message:'Selection failed'}),true);
+});

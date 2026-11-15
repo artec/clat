@@ -13,11 +13,36 @@ function createTerminalPage(actions){
   const {element:search,input:query}=navigationSearch(null,()=>devText('terminal_search'));
   const list=el('nav','terminal-project-list');sidebar.append(head,search,list);
   const detail=el('section','dev-terminal-detail navigation-detail'),bar=el('header','terminal-toolbar navigation-toolbar'),name=el('strong',''),status=el('span','terminal-state'),mount=el('div','dev-terminal-mount'),empty=el('div','terminal-empty');
+  const diagnostic=el('details','dev-technical terminal-diagnostic'),diagnosticBody=el('pre');
+  diagnostic.hidden=true;diagnostic.append(el('summary','',()=>devText('technical_details')),diagnosticBody);
+  const notice=createTerminalStatus(status,diagnostic,diagnosticBody);
   const back=terminalIcon('back_list','previous',()=>delete node.dataset.detail);back.classList.add('navigation-back');
   bar.append(back,name,status,terminalIcon('take_control','terminal-take-input',()=>actions.claim()),terminalIcon('copy','copy',()=>actions.copy()),terminalIcon('clear','terminal-clear-screen',()=>actions.clear()));
-  empty.append(svgIcon('terminal'),el('p','',()=>devText('terminal_empty')),devButton('new_terminal',()=>actions.create()));mount.append(empty);detail.append(bar,mount);node.append(sidebar,detail);
+  empty.append(svgIcon('terminal'),el('p','',()=>devText('terminal_empty')),devButton('new_terminal',()=>actions.create()));mount.append(empty);detail.append(bar,diagnostic,mount);node.append(sidebar,detail);
   registerView(node,{sidebar,actions:()=>[viewAction('create','plus',()=>devText('new_terminal'),()=>actions.create(),true,actions.canCreate),viewAction('find','search',()=>devText('find'),()=>actions.find(),true,actions.hasSelection),viewAction('settings','settings',()=>devText('terminal_settings'),()=>openSettings('terminal')),viewAction('shell','terminal',()=>devText('shell_choice'),event=>actions.shellMenu(event.currentTarget),false),viewAction('cleanup','trash',()=>devText('close_ended'),()=>actions.cleanup(),false)]});
-  query.oninput=()=>actions.render();return {node,list,query,detail,status,mount,name,empty};
+  query.oninput=()=>actions.render();return {node,list,query,detail,notice,mount,name,empty};
+}
+function createTerminalStatus(status,diagnostic,body){
+  let failure=null;
+  function reset(){
+    failure=null;diagnostic.open=false;diagnostic.hidden=true;body.textContent='';
+    status.classList.remove('error');
+  }
+  return {
+    show(key){reset();devStatus(status,key);},
+    unavailable(){reset();devUnavailable(status);},
+    clear(error){
+      if(!error||failure!==error)return;
+      reset();CLATI18n.bind(status,'textContent',()=>'');
+    },
+    report(error){
+      reset();failure=error;
+      const detail=error?.technical||error?.message||'';
+      body.textContent=detail;diagnostic.hidden=!detail;
+      CLATI18n.bind(status,'textContent',()=>CLATI18n.present(error?.presentation,devText('failed')));
+      status.classList.add('error');
+    },
+  };
 }
 function terminalMenu(source,items){
   globalThis.CLATTerminalMenuClose?.();
@@ -32,8 +57,8 @@ function renderTerminalDirectory(ui,projects,selected,actions,expanded){
   ui.list.replaceChildren();const query=ui.query.value.trim().toLocaleLowerCase();
   for(const project of projects){
     const rows=project.terminals.filter(row=>!query||[row.name,project.title,project.root].join(' ').toLocaleLowerCase().includes(query));if(query&&!rows.length)continue;
-    const group=el('section','project-group'),head=el('div','project-group-head'),toggle=terminalIcon('expand_project','chevron-down',()=>{expanded.set(project.root,expanded.get(project.root)===false);actions.render();}),label=el('button','project-directory-row');label.type='button';label.append(svgIcon('folder'),el('span','project-directory-name',project.title));label.onclick=()=>{expanded.set(project.root,expanded.get(project.root)===false);actions.render();};CLATI18n.attribute(label,'title',()=>project.root);
-    const extras=[[()=>devText('close_ended'),'trash',()=>actions.cleanup(project)]],more=context.organization.menuButton(project,extras);label.append(context.organization.pin(project));context.organization.bind(head,project,more,extras);
+    const group=el('section','project-group'),head=el('div','project-group-head'),toggle=terminalIcon('expand_project','chevron-down',()=>{expanded.set(project.root,expanded.get(project.root)===false);actions.render();}),label=el('button','project-directory-row');label.type='button';label.append(svgIcon(project.pinned?'pin':'folder'),el('span','project-directory-name',project.title));label.onclick=()=>{expanded.set(project.root,expanded.get(project.root)===false);actions.render();};CLATI18n.attribute(label,'title',()=>project.root);
+    const extras=[[()=>devText('close_ended'),'trash',()=>actions.cleanup(project)]],more=context.organization.menuButton(project,extras);context.organization.bind(head,project,more,extras);
     head.append(toggle,label,more,terminalIcon('new_terminal','plus',()=>actions.create(project)));group.append(head);
     const body=el('ul','session-list');body.hidden=!query&&expanded.get(project.root)===false;toggle.setAttribute('aria-expanded',String(!body.hidden));
     for(const row of [...rows].reverse()){

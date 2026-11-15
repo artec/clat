@@ -8,9 +8,9 @@ function installDevelopmentGit(){
   function result(view){
     const owner=seat(),busy=Boolean(owner.operation||owner.preparing),wasHidden=output.hidden;
     const push=view?.result?.push;
-    const running=Boolean(owner.preparing||busy&&!view),visible=Boolean(owner.notice||running||push||view&&view.phase!=='completed');
+    const running=Boolean(owner.preparing||busy&&!view),visible=gitResultVisible(view,running,owner.notice);
     output.hidden=!visible;if(!visible)output.open=false;else if(wasHidden||running)output.open=true;
-    outputBody.hidden=running||!view;CLATI18n.bind(outputBody,'textContent',()=>view?[view.message,view.result?.output,push&&devText('git_push_after_commit_'+push.status),push?.error,view.error,CLATI18n.present(view.presentation)].filter(Boolean).join('\n\n'):'');
+    outputBody.hidden=running||!view;CLATI18n.bind(outputBody,'textContent',()=>view?[push&&devText('git_push_after_commit_'+push.status),CLATI18n.present(view.presentation),view.error,push?.error,view.message,view.result?.output].filter(Boolean).join('\n\n'):'');
     ui.status.classList.toggle('error',Boolean(owner.notice||push&&push.status!=='completed'));
     if(owner.notice)devReport(ui.status,owner.notice);else if(running)devStatus(ui.status,'phase_'+(owner.phase||'pending'));else CLATI18n.bind(ui.status,'textContent',()=>'');
   }
@@ -77,4 +77,9 @@ function renderGitChanges(host,owner,{open,start,openFile}){
     for(const file of files){const data={...file,staged},actions=[{label:staged?'unstage':'stage',icon:staged?'minus':'plus',run:()=>void start(staged?'unstage':'stage',{paths:[file.path]})}];if(key==='changes')actions.push({label:file.untracked?'delete':'discard',icon:file.untracked?'trash':'restore',run:()=>void start(file.untracked?'delete_untracked':'discard',{paths:[file.path],confirmed:true})});group.append(gitFileRow(file,{selected:owner.tab?.file.path===file.path&&owner.tab.file.staged===staged,open:()=>void open(data),pin:()=>void open(data,true),actions,openFile}));}host.append(group);
   }
   if(!owner.snapshot.files.length)host.append(pageEmpty('git_clean'));host.scrollTop=owner.scroll||0;host.onscroll=()=>{owner.scroll=host.scrollTop;};
+}
+
+function gitResultVisible(view,running,notice){
+  const push=view?.result?.push;
+  return Boolean(notice||running||view&&view.phase!=='completed'||push&&push.status!=='completed');
 }
