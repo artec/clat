@@ -273,7 +273,9 @@ fn acp_stdio_delegation_keeps_origin_and_runs_continuation_once() {
         .acp_client_call("acp.delegations.start", &params, ui())
         .unwrap();
     assert_eq!(started["id"], retry["id"]);
-    let wait = std::time::Instant::now() + Duration::from_secs(6);
+    // Windows launches a fresh PowerShell process under the full suite's
+    // parallel load. Use the shared hang watchdog for that startup and RPC.
+    let wait = std::time::Instant::now() + crate::test_support::HANG;
     let row = loop {
         let row = app
             .acp_client_call("acp.sessions.status", &json!({"id":started["id"]}), ui())

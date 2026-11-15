@@ -93,7 +93,7 @@ fn replay_snapshot(
 fn write_reconstruction(
     connection: &mut SseConnection<'_>,
     snapshot: ReplaySnapshot,
-    prefix: Vec<String>,
+    prefix: Vec<SseFrame>,
     deadline: Instant,
 ) -> std::io::Result<()> {
     write_before_deadline(
@@ -117,8 +117,8 @@ fn write_reconstruction(
         &super::shapes::ctl_data(&snapshot.subscribed),
         deadline,
     )?;
-    for data in prefix {
-        write_before_deadline(connection, "event", &data, deadline)?;
+    for frame in prefix {
+        write_before_deadline(connection, frame.event, &frame.data, deadline)?;
     }
     Ok(())
 }

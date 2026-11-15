@@ -34,6 +34,7 @@ pub(crate) const MAX_CONCURRENT_ATTACHMENT_DOWNLOADS: usize = 4;
 pub(crate) const MAX_ACTIVE_CONNECTIONS: usize = 64;
 
 /// 一条下行帧：`event` 是 SSE frame-type，`data` 是单行 JSON 载荷。
+#[derive(Clone)]
 pub(crate) struct SseFrame {
     pub event: &'static str,
     pub data: String,
@@ -53,7 +54,7 @@ pub(crate) struct ActiveRun {
     pub rpc_id: String,
     pub started_ms: i64,
     round: u64,
-    buffer: Vec<String>,
+    buffer: Vec<SseFrame>,
     replay_before_seq: Option<u64>,
     pub(super) session_id: Option<String>,
     pub(super) notifications: Vec<(String, String)>,
@@ -66,7 +67,7 @@ impl ActiveRun {
 }
 
 pub(crate) struct RunReplayPrefix {
-    pub frames: Vec<String>,
+    pub frames: Vec<SseFrame>,
     pub before_seq: Option<u64>,
 }
 
@@ -367,7 +368,11 @@ impl ServeShared {
     #[cfg(test)]
     pub(crate) fn register_subscriber(&self) -> (u64, Receiver<SseFrame>, Option<Vec<String>>) {
         let (id, queue, prefix) = self.register_replay_subscriber();
-        (id, queue, prefix.map(|prefix| prefix.frames))
+        (
+            id,
+            queue,
+            prefix.map(|prefix| prefix.frames.into_iter().map(|frame| frame.data).collect()),
+        )
     }
 
     pub(crate) fn register_replay_subscriber(
@@ -496,24 +501,29 @@ impl ServeShared {
             // an unclaimed queue item must remain retryable after cancellation.
             self.commit_pending_steering(client_message_id);
         }
-        let mut data = super::shapes::realtime_data(event);
+        let frame = SseFrame {
+            event: "event",
+            data: super::shapes::realtime_data(event),
+        };
         let mut inner = self.inner.lock().expect("serve inner lock");
-        if let Some(run) = inner.active_run.as_mut() {
-            if matches!(event, RunEvent::RunStarted { .. }) {
-                run.round += 1;
-                let mut envelope: Value = serde_json::from_str(&data).expect("run start wire JSON");
-                envelope["turn_target"] = json!(run.turn_target());
-                data = envelope.to_string();
-            }
-            run.buffer.push(data.clone());
+        if let Some(run) = inner.active_run.as_mut()
+            && matches!(event, RunEvent::RunStarted { .. })
+        {
+            run.round += 1;
+            let boundary = SseFrame {
+                event: "notice",
+                data: super::shapes::ctl_data(&json!({
+                    "kind": "run_turn_target",
+                    "payload": { "turn_target": run.turn_target() },
+                })),
+            };
+            run.buffer.push(boundary.clone());
+            Self::deliver(&mut inner, boundary);
         }
-        Self::deliver(
-            &mut inner,
-            SseFrame {
-                event: "event",
-                data,
-            },
-        );
+        if let Some(run) = inner.active_run.as_mut() {
+            run.buffer.push(frame.clone());
+        }
+        Self::deliver(&mut inner, frame);
     }
 
     /// 有界投递：**非阻塞** `try_send`——满/断即摘除该订阅者（INV-S7

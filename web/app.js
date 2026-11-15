@@ -491,6 +491,7 @@ const state = {
   connected: false,
   runActive: false,
   turnTarget: null,
+  nextTurnTarget: null,
   turnRevision: 0,
   compactionActive: false,
   switching: false,
@@ -790,8 +791,9 @@ async function connect() {
     conversationRounds.stop();
     runActivity.hide();
     state.runActive = false;
-  state.turnTarget = null;
-  state.turnRevision++;
+    state.turnTarget = null;
+    state.nextTurnTarget = null;
+    state.turnRevision++;
     context.changed();
     updateRunState('');
     updateRunDetail();
@@ -848,7 +850,7 @@ function dispatchFrame(frame) {
   observePageNotification(frame.event, payload.ctl);
   switch (frame.event) {
     case 'replay': handleReplay(payload.replay); break;
-    case 'event': handleLive(payload.event, payload.turn_target); break;
+    case 'event': handleLive(payload.event); break;
     case 'subscribed': onSubscribed(payload.ctl || payload); break;
     case 'approval.requested': onApprovalRequested(payload.ctl); break;
     case 'prompt.settled': onSettled(payload.ctl); break;
@@ -864,6 +866,7 @@ function dispatchFrame(frame) {
       state.run = null;
       state.runActive = false;
       state.turnTarget = null;
+      state.nextTurnTarget = null;
       state.turnRevision++;
       state.lastUsage = null;
       // ORDER-1/CONT-1：转录重建即清配对注册表与终态去重记忆，随后
@@ -987,7 +990,7 @@ function handleReplay(event) {
   conversationRounds.replay(event,node);
 }
 
-function handleLive(event, turnTarget) {
+function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started': {
@@ -1001,7 +1004,8 @@ function handleLive(event, turnTarget) {
       resetOptimisticSteering();
       invalidateSuggestion(); clearRoundFollowups();
       state.runActive = true;
-      state.turnTarget = turnTarget || null;
+      state.turnTarget = state.nextTurnTarget;
+      state.nextTurnTarget = null;
       state.turnRevision++;
       runActivity.set(CLATI18n.msg('web.running'));
       // ORDER-1/CONT-1：新 run 开工即清配对与终态去重记忆——不同 run 的
@@ -1417,6 +1421,9 @@ function onNotice(ctl) {
   }
   const payload = ctl && ctl.payload;
   switch (ctl && ctl.kind) {
+    case 'run_turn_target':
+      state.nextTurnTarget = payload?.turn_target || null;
+      break;
     case 'background_job':
       window.dispatchEvent(new CustomEvent('clat:job-change',{detail:payload}));
       break;

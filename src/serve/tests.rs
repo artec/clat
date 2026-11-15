@@ -2345,6 +2345,28 @@ fn mid_run_subscription_gets_full_replay_and_complete_run_buffer() {
     // 的最后事实——permission_checked 在 decide 返回后才发射，此刻尚
     // 不存在）。到达即证明前缀完整投递、无中段截断。
     second.wait_for_run_event("tool_requested", WAIT);
+    let boundary = |client: &SseClient| {
+        client
+            .frames
+            .iter()
+            .find_map(|frame| {
+                if frame.event.as_deref() != Some("notice") {
+                    return None;
+                }
+                let control = ctl_of(frame);
+                (control["kind"] == "run_turn_target").then(|| {
+                    control["payload"]["turn_target"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+            })
+            .expect("the live prefix includes the turn target")
+    };
+    let target = boundary(&first);
+    assert_eq!(boundary(&second), target);
+    let (_, workbench) = post_rpc_json(handle.addr, TEST_TOKEN, "workbench.info", "{}");
+    assert_eq!(workbench["value"]["active_run"]["turn_target"], target);
     let replay_types: Vec<String> = second
         .frames
         .iter()
