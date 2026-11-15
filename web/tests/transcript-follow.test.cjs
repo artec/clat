@@ -5,7 +5,11 @@ const vm = require('node:vm');
 const appSource = fs.readFileSync('web/app.js', 'utf8').replace(/\r\n/g, '\n');
 
 function loadAppFunctions(scope, start, end) {
-  vm.runInContext(appSource.slice(appSource.indexOf(start), appSource.indexOf(end)), scope);
+  const from = appSource.indexOf(start);
+  assert.notEqual(from, -1, start);
+  const to = appSource.indexOf(end, from + start.length);
+  assert.notEqual(to, -1, end);
+  vm.runInContext(appSource.slice(from, to), scope);
 }
 
 function fixture() {
@@ -118,7 +122,7 @@ function composerFixture(modern, running = false) {
   Object.assign(scope, {
     transcriptFollow: follow, syncHistoryNavigation() {},
     context: { isActive: () => true },
-    state: { selectionGeneration: 1, runActive: running, draft: { images: [], queuedClientMessageId: null } },
+    state: { selectionGeneration: 1, runActive: running, turnTarget: running ? 'turn-1' : null, draft: { images: [], queuedClientMessageId: null } },
     dom: { prompt: { value: 'A new question' }, 'transcript-scroll': viewport },
     document: { getElementById: () => ({ classList: { contains: () => true } }) },
     composerScope: 'session', composerOwns: owner => owner === scope.composerScope,
@@ -131,12 +135,13 @@ function composerFixture(modern, running = false) {
     rememberSubmittedInput() {}, clearOwnedSubmittedText() {}, showAcceptedInputFeedback() {},
     persistComposerSubmission() {}, finishComposerSubmission() {}, clearOwnedComposerImages() {},
     echoOptimisticSteering() {}, recoverComposerSubmission() {},
+    composerReceiptIds: new Set(),
     rpc: async () => ({ outcome: 'queued' }),
   });
   loadAppFunctions(scope, 'function isFollowingLatest()', 'function syncHistoryStatus()');
-  loadAppFunctions(scope, 'async function submitConfiguredPrompt()', 'function settleQueuedDraft(');
+  loadAppFunctions(scope, 'async function submitConfiguredPrompt(', 'function settleQueuedDraft(');
   vm.runInContext(fs.readFileSync('web/pending-input-actions.js', 'utf8'), scope);
-  return { ...view, send: () => scope.submitConfiguredPrompt() };
+  return { ...view, send: () => scope.submitConfiguredPrompt(scope.state.runActive, scope.state.turnTarget) };
 }
 
 test('sending a new question resumes following even when reading earlier messages', async () => {

@@ -92,25 +92,6 @@ fn acp_executable_trust_requires_matching_bytes() {
 }
 
 #[cfg(unix)]
-fn file_read_agent(project: &std::path::Path) -> Value {
-    let script = project.join("fixture.sh");
-    std::fs::write(&script, br#"
-read -r initialize
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
-read -r session
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"external"}}'
-read -r prompt
-printf '%s%s%s\n' '{"jsonrpc":"2.0","id":"read-1","method":"fs/read_text_file","params":{"sessionId":"external","path":"' "$PWD" '/input.txt"}}'
-read -r file
-case "$file" in *'fixture text'*) ;; *) exit 17;; esac
-printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"external","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"verified"}}}}'
-printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
-while read -r line; do :; done
-"#).unwrap();
-    json!({"label":"ACP fake","program":"/bin/sh","args":[script]})
-}
-
-#[cfg(unix)]
 #[test]
 fn acp_request_scoped_form_ignores_wrong_request_and_allows_review_edits() {
     use crate::interaction::{AskAnswer, AskQuestion, UserAsker};
@@ -196,35 +177,17 @@ while read -r line; do :; done
     let _ = std::fs::remove_dir_all(storage.parent().unwrap());
 }
 
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 fn file_read_agent(project: &std::path::Path) -> Value {
-    use base64::Engine;
-    let _ = project;
-    let script = r#"
-$null = [Console]::ReadLine()
-[Console]::WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}')
-$session = [Console]::ReadLine() | ConvertFrom-Json
-[Console]::WriteLine('{"jsonrpc":"2.0","id":2,"result":{"sessionId":"external"}}')
-$null = [Console]::ReadLine()
-$read = @{jsonrpc='2.0';id='read-1';method='fs/read_text_file';params=@{
-    sessionId='external';path=$session.params.cwd.TrimEnd('\')+'\input.txt'
-}}
-[Console]::WriteLine(($read | ConvertTo-Json -Compress -Depth 5))
-$file = [Console]::ReadLine() | ConvertFrom-Json
-if ($file.result.content -ne 'fixture text') { exit 17 }
-[Console]::WriteLine('{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"external","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"verified"}}}}')
-[Console]::WriteLine('{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}')
-while ($null -ne [Console]::ReadLine()) {}
-"#;
-    let command = base64::engine::general_purpose::STANDARD.encode(
-        script
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>(),
-    );
-    let program = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    json!({"label":"ACP fake","program":program,"args":["-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",command]})
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../src/acp/test_fixtures/stdio_agent.rs");
+    let executable = project.join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
+    crate::process::compile_rust_test_helper(&source, &executable).unwrap();
+    let read_request = json!({
+        "jsonrpc": "2.0", "id": "read-1", "method": "fs/read_text_file",
+        "params": {"sessionId": "external", "path": project.canonicalize().unwrap().join("input.txt")},
+    });
+    json!({"label":"ACP fake","program":executable,"args":[read_request.to_string()]})
 }
 
 #[cfg(any(unix, windows))]
