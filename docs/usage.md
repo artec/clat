@@ -3439,6 +3439,20 @@ changing its language or cancelling generation stops automatic continuation. Cha
 HEAD/index invalidate approval; the generated description remains available for review.
 Retries reconcile the original operation rather than producing another commit.
 
+Settings → Git saves the following preferences per project. Both switches
+start off.
+
+- **Stage automatically when nothing is staged** skips the staging confirmation
+  when committing and stages the listed working changes, including untracked
+  files. An existing staged selection is committed as-is. Generate Message
+  still asks before staging.
+- **Push after committing** runs Git push after a successful local commit,
+  using the repository’s push configuration. A failed push keeps the local
+  commit. CLAT reports the push separately and never retries it automatically.
+- **Custom push instructions for AI** adds project guidance to subsequent Agent
+  runs, scoped to pushes the user requests. It does not grant permissions or
+  change the Git arguments used for automatic push.
+
 Git uses installed system Git and its credential helper/SSH agent, hooks, filters and
 signing. Set up missing authentication in the built-in terminal. Pull follows explicit
 repository configuration, or uses fast-forward-only when none is configured. Unsaved
@@ -3569,7 +3583,7 @@ explanation instead of an ordinary editable comparison.
 
 With working changes, both Commit and Generate message are clickable. When nothing is staged, clicking either asks to stage all current changes in the selected repository and continue with that action. Declining makes no changes. Conflicts must be resolved first. An unsuccessful or uncertain stage, repository switch or message edit stops the continuation. Existing staged selections are used as-is: unstaged content is never silently added. Generate message never commits.
 
-When the selected working tree is clean and has a configured upstream, the main button becomes **Push N ↑** for outgoing commits, or **Pull N ↓** when incoming commits must be integrated first. Counts use local tracking refs, without an automatic fetch. Clicking performs only the displayed action; committing never pushes automatically. Without an upstream, the existing Git actions remain available and no outgoing count is guessed.
+When the selected working tree is clean and has a configured upstream, the main button becomes **Push N ↑** for outgoing commits, or **Pull N ↓** when incoming commits must be integrated first. Counts use local tracking refs, without an automatic fetch. The commit button also pushes if you enable **Push after committing** in Settings → Git. Without an upstream, the existing Git actions remain available and no outgoing count is guessed.
 
 Commits still include staged changes only. An empty message authorizes generation
 and commit, while Generate message only fills the draft. The existing project

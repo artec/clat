@@ -16,13 +16,7 @@ function installDevelopmentSettings(){
   const actions=el('div','settings-action-bar');terminal.append(actions);actions.append(devButton('reset_defaults',()=>{Object.assign(values,DEV_TERMINAL_DEFAULTS);for(const [key,input]of inputs){if(input.type==='checkbox')input.checked=values[key];else input.value=values[key];}void saveDevTerminalSettings(values).then(()=>syncFonts()).catch(error=>devReport(fontStatus,error));}));
   fonts.after(fontStatus);const previewGroup=el('section','settings-group-block');previewGroup.append(el('h4','',()=>settingsUi('preview')),preview);terminal.append(previewGroup);
   installTerminalLicenses(terminal);
-  const language=devLanguageSelect('system'),label=settingsControlRow(()=>devText('commit_language'),language);const gitCard=el('div','settings-card');gitCard.append(label);git.append(gitCard);
-  const gitStatus=el('p','picker-hint');git.append(gitStatus);
-  const scope=el('select');for(const key of ['all','current']){const option=el('option','',()=>devText('history_'+key));option.value=key;scope.append(option);}
-  scope.value=readGitGraphScope();const scopeRow=settingsControlRow(()=>devText('graph_scope'),scope);gitCard.append(scopeRow);
-  scope.onchange=()=>{try{localStorage.setItem('clat.git.graph.scope',scope.value);developmentGit?.refresh();}catch(error){git.append(el('p','error',error.message));}};
-  language.onchange=async()=>{try{await rpc('git.settings.set',{language:language.value});developmentGit?.refresh();}catch(error){git.append(el('p','error',error.message));}};
-  dom['settings-dialog'].addEventListener('clat:page-enter',()=>{if(!devAvailable()){devUnavailable(gitStatus);return;}scope.value=readGitGraphScope();void rpc('git.settings',{}).then(value=>{language.value=value.language;}).catch(()=>{});});
+  installGitSettings(git);
   const sizePreview=()=>{if(!widget)return;const screen=preview.querySelector('.xterm-screen');if(screen&&widget.term.rows)preview.style.setProperty('--terminal-preview-height',Math.ceil(screen.offsetHeight/widget.term.rows*6+26)+'px');};
   const renderPreview=()=>{if(!preview.clientHeight||!preview.clientWidth)return;if(!widget&&terminalAppearance.current){widget=globalThis.CLATDevelopmentWidgets.terminal(preview,devTerminalOptions());widget.term.options.disableStdin=true;widget.term.write('CLAT · abc 0123 · 中文\r\n\x1b[1mBold 粗体\x1b[0m  \x1b[3mItalic\x1b[0m\r\n\ue0b0 \ue0b2 \uf126 \uf120 \uf09b  ✓ →  😀\r\n┌──────┬──────┐\r\n│ Nerd │ Font │\r\n└──────┴──────┘',sizePreview);}widget?.fit.fit();};
   new ResizeObserver(renderPreview).observe(preview);
@@ -71,4 +65,68 @@ function installTerminalFontLibrary(controls,custom,values,status,apply){
     void globalThis.CLATFontCatalog.then(rows=>{catalog=rows;loaded=true;for(const family of [...new Set(rows.map(row=>row.family))]){const option=el('option');option.value=family;names.append(option);}}).catch(error=>{loaded=true;devReport(status,error);}).finally(()=>{loading=false;sync();});
   }
   sync();return {sync};
+}
+
+function installGitSettings(panel){
+  const page=dom['settings-dialog'];
+  const language=devLanguageSelect('system'),scope=el('select');
+  const autoStage=el('input','settings-switch'),autoPush=el('input','settings-switch');
+  autoStage.type=autoPush.type='checkbox';
+  for(const key of ['all','current']){
+    const option=el('option','',()=>devText('history_'+key));option.value=key;scope.append(option);
+  }
+  scope.value=readGitGraphScope();
+  const workflow=settingsGroup(panel,()=>devText('git_workflow'));
+  workflow.append(
+    settingsControlRow(()=>devText('commit_language'),language),
+    settingsControlRow(()=>devText('graph_scope'),scope),
+    settingsControlRow(()=>devText('git_auto_stage'),autoStage,()=>devText('git_auto_stage_hint')),
+    settingsControlRow(()=>devText('git_auto_push'),autoPush,()=>devText('git_auto_push_hint')),
+  );
+  const instructions=settingsGroup(panel,()=>devText('git_push_instructions'));
+  const prompt=el('textarea'),save=devButton('save',()=>void patch({pushInstructions:prompt.value}),'primary');
+  prompt.rows=5;CLATI18n.attribute(prompt,'aria-label',()=>devText('git_push_instructions'));
+  const block=el('div','settings-form git-instructions-form'),actions=el('div','settings-action-bar');
+  actions.append(save);block.append(el('p','settings-note',()=>devText('git_push_instructions_hint')),prompt,actions);
+  instructions.append(block);
+  const status=el('p','picker-hint');status.hidden=true;status.setAttribute('role','status');panel.append(status);
+  let epoch=0,settings=null;
+  const active=()=>currentSettingsCategory==='git'&&pageIsOpen(page);
+  const enable=ready=>{for(const field of [language,autoStage,autoPush,prompt,save])field.disabled=!ready;};
+  function paint(){
+    language.value=settings.language;
+    autoStage.checked=settings.autoStage;
+    autoPush.checked=settings.autoPush;
+  }
+  async function refresh(){
+    if(!active())return;
+    const version=++epoch,route=context.route;
+    settings=null;enable(false);status.hidden=true;prompt.value='';scope.value=readGitGraphScope();
+    if(!devAvailable()){status.hidden=false;devUnavailable(status);return;}
+    try{
+      const next=await rpc('git.settings',{});
+      if(version!==epoch||route!==context.route||!active())return;
+      settings=next;paint();prompt.value=settings.pushInstructions;enable(true);
+    }catch(error){if(version===epoch&&route===context.route&&active()){status.hidden=false;devReport(status,error);}}
+  }
+  async function patch(change){
+    if(!settings||!active())return;
+    const version=epoch,route=context.route;
+    enable(false);status.hidden=true;
+    try{
+      const next=await rpc('git.settings.set',change);
+      if(version!==epoch||route!==context.route||!active())return;
+      settings=next;
+      if(Object.hasOwn(change,'pushInstructions')){status.classList.remove('error');status.hidden=false;devStatus(status,'saved');}
+      void developmentGit?.refresh();
+    }catch(error){if(version===epoch&&route===context.route&&active()){status.hidden=false;devReport(status,error);}}
+    finally{if(version===epoch&&route===context.route&&active()){paint();enable(true);}}
+  }
+  scope.onchange=()=>{try{localStorage.setItem('clat.git.graph.scope',scope.value);void developmentGit?.refresh();}catch(error){status.hidden=false;devReport(status,error);}};
+  language.onchange=()=>void patch({language:language.value});
+  autoStage.onchange=()=>void patch({autoStage:autoStage.checked});
+  autoPush.onchange=()=>void patch({autoPush:autoPush.checked});
+  for(const event of ['clat:page-enter','clat:git-settings-enter'])page.addEventListener(event,()=>void refresh());
+  page.addEventListener('clat:settings-leave',()=>{epoch++;settings=null;enable(false);});
+  enable(false);
 }

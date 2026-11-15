@@ -6,7 +6,7 @@ use crate::test_support::{
     CountingApprover, SharedEvents, TestBehavior, TestModelScript, TestProviderPlugin,
     configure_test_model, roots,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, mpsc};
 
 fn mount(
@@ -354,6 +354,43 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
 }
 
 #[test]
+fn development_git_push_guidance_reaches_the_model_and_can_be_cleared() {
+    let (storage_root, project_root) = roots("context-git-push-guidance");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let script = Arc::new(ContextProbe::default());
+    let mut application = mount(
+        &Project::new(&project_root),
+        &storage_root,
+        TestBehavior::Scripted(script.clone()),
+    );
+    configure_test_model(&application);
+    let dev = application.development().unwrap();
+    let guidance = "Check that origin points to the team repository.";
+    let save = |value| {
+        dev.request(
+            "git.settings.set",
+            serde_json::json!({"pushInstructions":value}),
+            None,
+        )
+        .unwrap();
+    };
+    save(guidance);
+    run_request(&mut application, "Review my Git changes").unwrap();
+    save("");
+    run_request(&mut application, "Continue").unwrap();
+    let captured = script.0.lock().unwrap();
+    let [first, second] = captured.as_slice() else {
+        panic!("expected two model requests, got {}", captured.len());
+    };
+    assert!(first.contains(guidance));
+    assert!(first.contains("only when the user has requested a Git push"));
+    assert!(!second.contains(guidance));
+
+    application.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+#[test]
 fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
     let (storage_root, project_root) = roots("context-shared-layers");
     std::fs::create_dir_all(project_root.join(".clat/skills/shared-layer")).unwrap();
@@ -458,15 +495,19 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
-struct CountingScript(AtomicUsize);
+#[derive(Default)]
+struct ContextProbe(Mutex<Vec<String>>);
 
-impl TestModelScript for CountingScript {
+impl TestModelScript for ContextProbe {
     fn stream(
         &self,
-        _request: crate::ModelRequest<'_>,
+        request: crate::ModelRequest<'_>,
         events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.0
+            .lock()
+            .unwrap()
+            .push(request.instructions.unwrap_or_default().to_owned());
         events.emit(crate::ModelEvent::TextDelta {
             delta: "done".into(),
         });
@@ -486,7 +527,7 @@ impl TestModelScript for CountingScript {
 fn context_command_is_read_only_zero_durable_and_starts_no_model() {
     let (storage_root, project_root) = roots("context-zero-durable");
     std::fs::create_dir_all(&project_root).unwrap();
-    let script = Arc::new(CountingScript(AtomicUsize::new(0)));
+    let script = Arc::new(ContextProbe::default());
     let project = Project::new(&project_root);
     let mut application = mount(
         &project,
@@ -497,7 +538,7 @@ fn context_command_is_read_only_zero_durable_and_starts_no_model() {
     run_request(&mut application, "materialize history").unwrap();
     let id = application.current_session_id().expect("session");
     let before_events = durable_event_count(&storage_root, &id);
-    let before_calls = script.0.load(Ordering::SeqCst);
+    let before_calls = script.0.lock().unwrap().len();
 
     let outcome = application.dispatch_command("/context").unwrap();
     let CommandOutcome::ShowContext(snapshot) = outcome else {
@@ -505,7 +546,7 @@ fn context_command_is_read_only_zero_durable_and_starts_no_model() {
     };
     assert_estimate_identity(&snapshot);
     assert!(snapshot.history_estimate > 0);
-    assert_eq!(script.0.load(Ordering::SeqCst), before_calls);
+    assert_eq!(script.0.lock().unwrap().len(), before_calls);
     assert_eq!(durable_event_count(&storage_root, &id), before_events);
 
     application.close().unwrap();

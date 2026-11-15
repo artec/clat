@@ -2,8 +2,8 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-function harness({staged=false,confirm=true,phase='completed',afterStage=()=>{},onStart=()=>{}}={}){
-  const owner={id:'project',snapshot:{files:[{path:'selected.txt',staged,unstaged:!staged}]},draft:'',edit:0,pending:null,operation:null};
+function harness({staged=false,autoStage=false,confirm=true,phase='completed',afterStage=()=>{},onStart=()=>{}}={}){
+  const owner={id:'project',autoStage,snapshot:{files:[{path:'selected.txt',staged,unstaged:!staged}]},draft:'',edit:0,pending:null,operation:null};
   let current=owner;
   const calls=[],questions=[],errors=[];
   const ctx=vm.createContext({
@@ -33,6 +33,15 @@ test('empty input stages only after consent then continues requested action',asy
     assert.equal(h.calls[1].message,'');assert.equal(h.questions.length,1);
     assert.deepEqual(Array.from(h.calls[0].paths),['selected.txt']);
   }
+});
+test('auto-stage preference submits one commit without opening the confirmation',async()=>{
+  const h=harness({autoStage:true,confirm:false});
+  await h.api.start('commit');
+  assert.deepEqual(h.calls.map(request=>request.action),['commit']);
+  assert.equal(h.questions.length,0);
+  await h.api.start('generate');
+  assert.equal(h.calls.length,1);
+  assert.equal(h.questions.length,1);
 });
 test('declining stage permission has no mutation or generation',async()=>{
   const h=harness({confirm:false});await h.api.start('commit');assert.equal(h.calls.length,0);

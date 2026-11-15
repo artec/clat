@@ -60,3 +60,5 @@
 .dev-git[data-git-graph-open=false] .git-bottom{border-top:1px solid var(--line)}
 .git-splitter[hidden]{display:none}
 .git-commit-text{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:var(--text-size-code)/1.6 var(--font-mono)}
+
+.git-instructions-form{display:grid;gap:12px;padding:16px 20px}.git-instructions-form textarea{width:100%;resize:vertical}.git-instructions-form .settings-note{margin:0}

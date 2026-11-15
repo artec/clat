@@ -3331,6 +3331,7 @@ function selectSettingsCategory(category) {
   }
   settingsLayout?.select(category);
   if (category === 'acp') void acpSettingsRefresh?.();
+  if (category === 'git') dom['settings-dialog'].dispatchEvent(new Event('clat:git-settings-enter'));
   if (category === 'projects') {
     renderWorkspaceDirectory(context.organization.rows());
     void refreshWorkspaces();

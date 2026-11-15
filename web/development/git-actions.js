@@ -22,13 +22,15 @@ function createGitActions({seat,call,refresh,render,report,result}){
     if(files.some(f=>f.staged))return true;
     if(!files.length){report({message:devText('nothing_staged')});return false;}
     if(files.some(gitConflicted)){report({message:devText('submission_conflicts')});return false;}
+    if(action==='commit'&&owner.autoStage)return true;
     const paths=files.filter(f=>f.unstaged||f.untracked).map(f=>f.path);
     if(!paths.length)return false;
     // 确认对话框是异步的：preparing 守卫必须在 await 之前落下，否则确认
     // 期间的第二次提交会绕过防重复提交（原同步 confirm 靠线程阻塞保证）。
-    const edit=owner.edit;owner.preparing=true;render();
+    const edit=owner.edit,snapshot=owner.snapshot;owner.preparing=true;render();
     try{
       if(!await CLATDialog.confirm(devText(action==='generate'?'stage_generate_confirm':'stage_commit_confirm')))return false;
+      if(seat()!==owner||owner.edit!==edit||['head','index','status'].some(key=>owner.snapshot?.[key]!==snapshot[key]))return false;
       const view=await start('stage',{paths});
       return view?.phase==='completed'&&!view.localUnknown&&seat()===owner&&owner.edit===edit
         &&!owner.operation&&!owner.pending&&Boolean(owner.snapshot?.files.some(f=>f.staged));

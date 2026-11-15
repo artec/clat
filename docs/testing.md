@@ -322,6 +322,17 @@ they never read the user's MCP configuration or call a paid provider.
 For compiled-artifact acceptance and the additional Node-free/ambient-file/EOF
 check, see [Official web tools](web.md#verification). Bun is required only
 when building that artifact, not by the default CI fixture.
+The gated Rust suite omits the installed DSH ACP SDK interoperability probe
+when both `CLAT_ACP_DSH_FIXTURE` and `CLAT_ACP_DSH_BUN` are unset. Set these to
+the fixture script and Bun executable, respectively, to include it. If either
+variable is set, the probe runs and reports an incomplete or invalid setup.
+The regular ACP tests use the in-tree stdio fixture and still run in CI.
+
+On macOS, the same gate runs the native Accessibility splitter and Finder probes
+only when `CLAT_CUA_TEST_PIDS` and `CLAT_CUA_FINDER_PID`, respectively, are set
+to processes with the appropriate windows open. These probes require the
+test runner to have Accessibility access.
+
 After a failure, repair and rerun the failed/affected checks; do not restart
 every already-green check without a reason. Test failures are evidence to
 investigate, not permission to retry until green.

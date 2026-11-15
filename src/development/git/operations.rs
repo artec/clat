@@ -1,9 +1,26 @@
 use super::*;
+
+const ACTIONS: &[&str] = &[
+    "stage",
+    "unstage",
+    "discard",
+    "commit",
+    "generate",
+    "branch.create",
+    "branch.switch",
+    "branch.delete",
+    "fetch",
+    "pull",
+    "push",
+    "restore",
+];
+
 impl GitService {
     pub(super) fn start(
         self: &Arc<Self>,
         request: Value,
         model: Option<GitModel>,
+        settings_owner: &Self,
     ) -> Result<Value, String> {
         let id = identity(&request, "operationId")?;
         let signature = digest(request.to_string().as_bytes());
@@ -28,22 +45,7 @@ impl GitService {
             return Err("host_closed".into());
         }
         let action = text(&request, "action")?;
-        if ![
-            "stage",
-            "unstage",
-            "discard",
-            "commit",
-            "generate",
-            "branch.create",
-            "branch.switch",
-            "branch.delete",
-            "fetch",
-            "pull",
-            "push",
-            "restore",
-        ]
-        .contains(&action)
-        {
+        if !ACTIONS.contains(&action) {
             return Err("invalid_action".into());
         }
         if operations
@@ -59,9 +61,15 @@ impl GitService {
         {
             return Err("git_busy".into());
         }
+        let settings = if action == "commit" {
+            settings_owner.preferences()?
+        } else {
+            GitSettings::default()
+        };
         let op = Arc::new(Operation {
             saved: Mutex::new(SavedOperation {
                 signature,
+                push_after_commit: settings.auto_push,
                 request: compact_request(&request),
                 view: OperationView::pending(&id),
             }),
@@ -73,7 +81,7 @@ impl GitService {
             self.operations.lock().map_err(|_| "git_busy")?.remove(&id);
             return Err(error);
         }
-        self.spawn_operation(op, request, model)?;
+        self.spawn_operation(op, request, model, settings.auto_stage)?;
         self.operation(&json!({"operationId":id}), false)
     }
     fn spawn_operation(
@@ -81,6 +89,7 @@ impl GitService {
         op: Arc<Operation>,
         request: Value,
         model: Option<GitModel>,
+        auto_stage: bool,
     ) -> Result<(), String> {
         let producer = self.store.lifetime.producer()?;
         let service = self.clone();
@@ -89,7 +98,7 @@ impl GitService {
             .name("clat-human-git".into())
             .spawn(move || {
                 let _producer = producer;
-                service.run_operation(&worker_op, &request, model)
+                service.run_operation(&worker_op, &request, model, auto_stage)
             }) {
             Ok(thread) => {
                 self.workers.lock().map_err(|_| "git_busy")?.push(thread);
@@ -108,15 +117,21 @@ impl GitService {
             }
         }
     }
-    fn run_operation(&self, op: &Operation, request: &Value, model: Option<GitModel>) {
+    fn run_operation(
+        &self,
+        op: &Operation,
+        request: &Value,
+        model: Option<GitModel>,
+        auto_stage: bool,
+    ) {
         let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.execute(op, request, model)
+            self.execute(op, request, model, auto_stage)
         }))
         .unwrap_or_else(|_| Err("operation_failed".into()));
         if result.is_err() {
             let saved = op.saved.lock().expect("git operation").clone();
-            if saved.view.phase == "committing" && self.commit_matches(&saved) {
-                result = Ok(json!({"reconciled":true}));
+            if saved.view.phase == "committing" && self.commit_was_written(&saved) {
+                result = Ok(reconciled_commit(&saved));
             }
         }
         {
@@ -167,17 +182,22 @@ impl GitService {
             view.phase = "unknown".into();
             view.error = Some("operation_unknown".into());
             view.presentation = Some(errors::presentation("operation_unknown"));
-            if saved.request["action"] == "commit"
-                && view.message.is_some()
-                && self.commit_matches(saved)
-            {
+            if saved.request["action"] == "commit" && self.commit_was_written(saved) {
                 view.phase = "completed".into();
                 view.error = None;
                 view.presentation = None;
-                view.result = Some(json!({"reconciled":true}));
+                view.result = Some(reconciled_commit(saved));
             }
         }
         view
+    }
+    fn commit_was_written(&self, saved: &SavedOperation) -> bool {
+        saved
+            .view
+            .result
+            .as_ref()
+            .is_some_and(|result| result["push"]["status"] == "unknown")
+            || (saved.view.message.is_some() && self.commit_matches(saved))
     }
     pub(super) fn phase(
         &self,
@@ -218,4 +238,13 @@ fn compact_result(mut value: Value) -> Value {
         snapshot.remove("files");
     }
     value
+}
+
+fn reconciled_commit(saved: &SavedOperation) -> Value {
+    let mut result = saved.view.result.clone().unwrap_or_else(|| json!({}));
+    result["reconciled"] = json!(true);
+    if saved.push_after_commit {
+        result["push"] = json!({"status":"unknown"});
+    }
+    result
 }

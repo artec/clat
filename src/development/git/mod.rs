@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod actions;
 mod backups;
 mod command;
+mod commit_workflow;
 mod history;
 mod index;
 mod model;
@@ -14,6 +15,8 @@ mod query;
 mod reconcile;
 mod recovery;
 mod repositories;
+mod settings;
+use settings::GitSettings;
 #[cfg(test)]
 pub(super) fn test_repository_lock(project: &Project) -> Result<Arc<Mutex<()>>, String> {
     command::repo_lock(project)
@@ -22,6 +25,8 @@ pub use model::GitModel;
 #[derive(Serialize, Deserialize, Clone)]
 struct SavedOperation {
     signature: String,
+    #[serde(default)]
+    push_after_commit: bool,
     request: Value,
     view: OperationView,
 }
@@ -36,6 +41,7 @@ struct Operation {
 pub(super) struct GitService {
     repositories: Mutex<BTreeMap<String, Arc<GitService>>>,
     project: Project,
+    settings_write: Mutex<()>,
     store: store::Store,
     operations: Mutex<BTreeMap<String, Arc<Operation>>>,
     closed: AtomicBool,
@@ -46,6 +52,7 @@ impl GitService {
         Self {
             repositories: Mutex::new(BTreeMap::new()),
             project,
+            settings_write: Mutex::new(()),
             store,
             operations: Mutex::new(BTreeMap::new()),
             closed: AtomicBool::new(false),
@@ -68,15 +75,16 @@ impl GitService {
                 .as_object_mut()
                 .ok_or("invalid_request")?
                 .remove("repositoryId");
-            return service.request_local(method, &scoped, model);
+            return service.request_local(method, &scoped, model, self);
         }
-        self.request_local(method, value, model)
+        self.request_local(method, value, model, self)
     }
     fn request_local(
         self: &Arc<Self>,
         method: &str,
         value: &Value,
         model: Option<GitModel>,
+        settings_owner: &Self,
     ) -> Result<Value, String> {
         match method {
             "git.snapshot" => self.snapshot(),
@@ -86,10 +94,10 @@ impl GitService {
             "git.history" => self.history(value),
             "git.commit.files" => self.commit_files(value),
             "git.commit.detail" => self.commit_detail(value),
-            "git.settings" | "git.settings.set" => self.settings(method, value),
+            "git.settings" | "git.settings.set" => settings_owner.settings(method, value),
             "git.operation" => self.operation(value, false),
             "git.cancel" => self.operation(value, true),
-            "git.start" => self.start(value.clone(), model),
+            "git.start" => self.start(value.clone(), model, settings_owner),
             _ => Err("unknown_method".into()),
         }
     }
@@ -126,20 +134,5 @@ impl GitService {
         } else {
             Ok(())
         }
-    }
-    fn settings(&self, method: &str, value: &Value) -> Result<Value, String> {
-        let mut settings: Value = self.store.load("git-settings.json")?;
-        if method == "git.settings.set" {
-            let locale = text(value, "language")?;
-            if !["system", "en", "zh-Hans", "zh-Hant"].contains(&locale) {
-                return Err("invalid_language".into());
-            }
-            settings = json!({"language":locale});
-            self.store.save("git-settings.json", &settings)?;
-        }
-        if settings.is_null() {
-            settings = json!({"language":"system"});
-        }
-        Ok(settings)
     }
 }

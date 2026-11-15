@@ -6,10 +6,11 @@ impl GitService {
         op: &Operation,
         request: &Value,
         model: Option<GitModel>,
+        auto_stage: bool,
     ) -> Result<Value, String> {
         let action = text(request, "action")?;
         if matches!(action, "commit" | "generate") {
-            return self.commit(op, request, model);
+            return self.commit(op, request, model, auto_stage);
         }
         let lock = command::repo_lock(&self.project)?;
         let _guard = lock.lock().map_err(|_| "git_busy")?;
@@ -84,7 +85,11 @@ impl GitService {
             _ => Err("invalid_action".into()),
         }
     }
-    fn file_arguments(&self, action: &str, value: &Value) -> Result<Vec<String>, String> {
+    pub(super) fn file_arguments(
+        &self,
+        action: &str,
+        value: &Value,
+    ) -> Result<Vec<String>, String> {
         let paths = value["paths"].as_array().ok_or("invalid_paths")?;
         if paths.is_empty() || paths.len() > 500 {
             return Err("invalid_paths".into());

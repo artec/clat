@@ -88,6 +88,10 @@ impl DevelopmentService {
         }
         self.terminals.request(method, &value)
     }
+    pub(crate) fn git_push_guidance(&self) -> Option<String> {
+        self.git.push_guidance()
+    }
+
     pub fn error_presentation(reason: &str) -> crate::i18n::UiMessage {
         errors::presentation(reason)
     }

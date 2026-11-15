@@ -15,6 +15,8 @@ pub(super) fn presentation(reason: &str) -> crate::i18n::UiMessage {
         "file_large" => "dev.file_large",
         "directory_large" => "dev.directory_large",
         "terminal_limit" => "dev.terminal_limit",
+        "submission_conflicts" => "dev.submission_conflicts",
+        "invalid_push_instructions" => "dev.invalid_push_instructions",
         "nothing_staged" => "dev.nothing_staged",
         "git_repository_missing" => "dev.git_repository_missing",
         "git_output_large" => "dev.git_output_large",

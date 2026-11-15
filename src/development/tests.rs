@@ -315,6 +315,173 @@ fn development_git_stage_commit_exact_index_and_duplicate_reopen() {
     assert_eq!(head, f.git(&["rev-parse", "HEAD"]));
 }
 #[test]
+fn development_git_workflow_preferences_are_project_scoped_and_patchable() {
+    let f = Fixture::new();
+    assert_eq!(
+        f.call("git.settings", json!({})).unwrap(),
+        json!({"language":"system","autoStage":false,"autoPush":false,"pushInstructions":""})
+    );
+    f.service
+        .store
+        .save("git-settings.json", &json!({"language":"zh-Hans"}))
+        .unwrap();
+    f.call(
+        "git.settings.set",
+        json!({"autoStage":true,"autoPush":true}),
+    )
+    .unwrap();
+    let expected = json!({
+        "language":"zh-Hans","autoStage":true,"autoPush":true,
+        "pushInstructions":"Verify the remote branch before pushing."
+    });
+    f.call(
+        "git.settings.set",
+        json!({"pushInstructions":expected["pushInstructions"]}),
+    )
+    .unwrap();
+    assert!(
+        f.call(
+            "git.settings.set",
+            json!({"autoStage":false,"pushInstructions":"x".repeat(4097)})
+        )
+        .is_err()
+    );
+    let reopened = Arc::new(DevelopmentService::new(
+        Project::new(&f.project),
+        &f.storage,
+    ));
+    assert_eq!(
+        reopened.request("git.settings", json!({}), None).unwrap(),
+        expected
+    );
+    let sibling = Arc::new(DevelopmentService::new(Project::new(&f.base), &f.storage));
+    let other = sibling.request("git.settings", json!({}), None).unwrap();
+    assert_eq!(other["autoStage"], false);
+    assert_eq!(other["pushInstructions"], "");
+}
+
+#[test]
+fn development_git_auto_stage_respects_snapshot_and_existing_selection() {
+    let f = Fixture::new();
+    f.repository();
+    fs::write(f.project.join("file.txt"), "edited").unwrap();
+    fs::write(f.project.join("new.txt"), "new file").unwrap();
+    let row = f.operation("commit", json!({"message":"Should require staging"}));
+    assert_eq!(row["phase"], "failed");
+    assert_eq!(row["error"], "nothing_staged");
+    f.call("git.settings.set", json!({"autoStage":true}))
+        .unwrap();
+    let snapshot = f.snapshot();
+    fs::write(f.project.join("new.txt"), "later").unwrap();
+    let stale = f.run(json!({"operationId":"stale-commit","action":"commit","expected":snapshot,"message":"Stale"}),None);
+    assert_eq!(stale["error"], "git_changed", "{stale}");
+    assert_eq!(f.git(&["diff", "--cached"]), "");
+    let row = f.operation("commit", json!({"message":"Commit the visible changes"}));
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(f.git(&["show", "HEAD:new.txt"]), "later");
+    assert_eq!(f.git(&["show", "HEAD:file.txt"]), "edited");
+
+    fs::write(f.project.join("file.txt"), "selected").unwrap();
+    f.git(&["add", "--", "file.txt"]);
+    fs::write(f.project.join("new.txt"), "excluded").unwrap();
+    let row = f.operation("commit", json!({"message":"Commit only the selection"}));
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(f.git(&["show", "HEAD:file.txt"]), "selected");
+    assert_eq!(f.git(&["show", "HEAD:new.txt"]), "later");
+}
+
+#[test]
+fn development_git_auto_push_preserves_commit_and_never_replays() {
+    let f = Fixture::new();
+    f.repository();
+    let remote = f.base.join("remote.git");
+    f.git(&["init", "--bare", "-q", remote.to_str().unwrap()]);
+    f.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    f.git(&["config", "push.default", "current"]);
+    f.call(
+        "git.settings.set",
+        json!({"autoStage":true,"autoPush":true}),
+    )
+    .unwrap();
+    fs::write(f.project.join("file.txt"), "push me").unwrap();
+    let row = f.operation("commit", json!({"message":"Push the first change"}));
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(row["result"]["push"]["status"], "completed", "{row}");
+    let branch = f.git(&["branch", "--show-current"]);
+    let remote_ref = format!("refs/heads/{branch}");
+    let remote_head = || {
+        f.git(&[
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "rev-parse",
+            &remote_ref,
+        ])
+    };
+    let pushed = f.git(&["rev-parse", "HEAD"]);
+    assert_eq!(remote_head(), pushed);
+
+    let invalid = f.base.join("missing.git");
+    f.git(&["remote", "set-url", "origin", invalid.to_str().unwrap()]);
+    fs::write(f.project.join("file.txt"), "keep me locally").unwrap();
+    let request = json!({"operationId":"push-failed","action":"commit","expected":f.snapshot(),"message":"Keep the second change"});
+    let failed = f.run(request.clone(), None);
+    assert_eq!(failed["phase"], "completed", "{failed}");
+    assert_eq!(failed["result"]["push"]["status"], "failed", "{failed}");
+    let local = f.git(&["rev-parse", "HEAD"]);
+    assert_ne!(local, pushed);
+    f.git(&["remote", "set-url", "origin", remote.to_str().unwrap()]);
+    let reopened = Arc::new(DevelopmentService::new(
+        Project::new(&f.project),
+        &f.storage,
+    ));
+    assert_eq!(
+        reopened.request("git.start", request, None).unwrap(),
+        failed
+    );
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), local);
+    assert_eq!(remote_head(), pushed);
+}
+
+#[test]
+fn development_git_restart_preserves_completed_commit_with_uncertain_push() {
+    let f = Fixture::new();
+    f.repository();
+    f.call(
+        "git.settings.set",
+        json!({"autoStage":true,"autoPush":true}),
+    )
+    .unwrap();
+    fs::write(f.project.join("file.txt"), "clat commit").unwrap();
+    let request = json!({"operationId":"push-in-flight","action":"commit","expected":f.snapshot(),"message":"Local CLAT commit"});
+    let done = f.run(request, None);
+    assert_eq!(done["phase"], "completed", "{done}");
+    f.service.close().unwrap();
+
+    // Simulate reopening from the durable pre-push checkpoint after an external commit.
+    let mut saved: Value = f.service.store.load("git-operations.json").unwrap();
+    let view = &mut saved["rows"]["push-in-flight"]["view"];
+    view["phase"] = json!("committing");
+    view["result"]["push"] = json!({"status":"unknown"});
+    f.service.store.save("git-operations.json", &saved).unwrap();
+    fs::write(f.project.join("file.txt"), "external commit").unwrap();
+    f.git(&["commit", "-qam", "External commit"]);
+    let reopened = Arc::new(DevelopmentService::new(
+        Project::new(&f.project),
+        &f.storage,
+    ));
+    let recovered = reopened
+        .request(
+            "git.operation",
+            json!({"operationId":"push-in-flight"}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(recovered["phase"], "completed", "{recovered}");
+    assert_eq!(recovered["result"]["push"]["status"], "unknown");
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "External commit");
+}
+
+#[test]
 fn development_git_rejects_changed_worktree_even_if_porcelain_status_same() {
     let f = Fixture::new();
     f.repository();

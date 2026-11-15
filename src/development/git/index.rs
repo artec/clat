@@ -89,7 +89,7 @@ impl GitService {
         }
         Ok(frozen)
     }
-    fn check_commit_scope(&self) -> Result<(), String> {
+    pub(super) fn check_commit_scope(&self) -> Result<(), String> {
         let prefix = command::query(&self.project, &["rev-parse", "--show-prefix"])?;
         if !prefix.iter().all(u8::is_ascii_whitespace) {
             let prefix = String::from_utf8(prefix).map_err(|_| "git_encoding")?;

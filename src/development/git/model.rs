@@ -90,17 +90,23 @@ impl GitService {
         op: &Operation,
         value: &Value,
         model: Option<GitModel>,
+        auto_stage: bool,
     ) -> Result<Value, String> {
         let lock = command::repo_lock(&self.project)?;
-        let (index, staged) = {
+        let (request, index, staged) = {
             let _guard = lock.lock().map_err(|_| "git_busy")?;
-            let index = self.freeze_index(value)?;
+            let mut request = value.clone();
+            if auto_stage {
+                self.stage_for_commit(op, &mut request)?;
+            }
+            let index = self.freeze_index(&request)?;
             let staged = self.staged_diff(&index)?;
-            (index, staged)
+            (request, index, staged)
         };
         if staged.is_empty() {
             return Err("nothing_staged".into());
         }
+        let value = &request;
         let raw = value["message"].as_str().unwrap_or("");
         let generate = raw.trim().is_empty() || value["action"] == "generate";
         let message = if generate {
@@ -131,10 +137,27 @@ impl GitService {
         self.check_expected(value, true)?;
         self.approve_tree(op, &index)?;
         self.phase(op, "committing", Some(message.clone()))?;
+        let output = self.write_commit(op, value, &index, &message)?;
+        let mut result = json!({"message":message,"output":String::from_utf8_lossy(&output)});
+        if op.saved.lock().expect("git operation").push_after_commit {
+            result["push"] = self.push_committed_change(op, &result);
+        }
+        if let Ok(snapshot) = self.snapshot() {
+            result["snapshot"] = snapshot;
+        }
+        Ok(result)
+    }
+    fn write_commit(
+        &self,
+        op: &Operation,
+        value: &Value,
+        index: &super::index::FrozenIndex,
+        message: &str,
+    ) -> Result<Vec<u8>, String> {
         let id = identity(value, "operationId")?;
         let dir = self.store.dir()?;
         let name = format!("commit-{id}.txt");
-        crate::private_fs::write_text_atomic_in_dir(&dir, &name, &message)?;
+        crate::private_fs::write_text_atomic_in_dir(&dir, &name, message)?;
         let path = self.store.path(&name);
         let args = vec![
             "commit".into(),
@@ -145,10 +168,7 @@ impl GitService {
         let outcome =
             command::run_index(&self.project, &args, true, &op.cancel, Some(index.path()));
         let _ = dir.remove_file(&name);
-        let output = outcome?;
-        Ok(
-            json!({"message":message,"output":String::from_utf8_lossy(&output),"snapshot":self.snapshot()?}),
-        )
+        outcome
     }
 }
 fn language(value: &Value) -> Result<&'static str, String> {

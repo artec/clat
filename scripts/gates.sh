@@ -127,15 +127,31 @@ else
     echo "--rust-only：跳过 npm 测试——这不是完整的 CI 镜像"
 fi
 
-step "Gated tests (cargo test --lib -- --ignored --skip visual_snapshot_)"
-cargo test --lib -- --ignored --skip visual_snapshot_
+gated_tests() {
+    local filters=(--skip visual_snapshot_)
+    if [[ -z "${CLAT_ACP_DSH_FIXTURE+x}${CLAT_ACP_DSH_BUN+x}" ]]; then
+        echo "Skipping external ACP SDK interoperability fixture (neither input is configured)."
+        filters+=(--skip acp_interop_dsh_sdk_fixture)
+    fi
+    # Native CUA acceptance needs a real desktop and explicitly selected processes.
+    if [[ -z "${CLAT_CUA_TEST_PIDS+x}" ]]; then
+        filters+=(--skip cua_live_macos_splitter_does_not_abort_tree_read)
+    fi
+    if [[ -z "${CLAT_CUA_FINDER_PID+x}" ]]; then
+        filters+=(--skip cua_live_macos_finder_action_value_is_optional)
+    fi
+    cargo test --lib -- --ignored "${filters[@]}"
+}
+
+step "Gated tests (cargo test --lib -- --ignored)"
+gated_tests
 
 i=1
 while [ "$i" -le "$stress" ]; do
     step "Stress $i/$stress — Test (时序敏感复跑)"
     rust_tests --all-targets --all-features
     step "Stress $i/$stress — Gated"
-    cargo test --lib -- --ignored --skip visual_snapshot_
+    gated_tests
     i=$((i + 1))
 done
 

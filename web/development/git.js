@@ -7,10 +7,11 @@ function installDevelopmentGit(){
   const output=el('details','git-result'),outputBody=el('pre');output.hidden=true;output.append(el('summary','',()=>devText('operation_result')),ui.status,outputBody);ui.commit.parentElement.append(output);
   function result(view){
     const owner=seat(),busy=Boolean(owner.operation||owner.preparing),wasHidden=output.hidden;
-    const running=Boolean(owner.preparing||busy&&!view),visible=Boolean(owner.notice||running||view&&view.phase!=='completed');
+    const push=view?.result?.push;
+    const running=Boolean(owner.preparing||busy&&!view),visible=Boolean(owner.notice||running||push||view&&view.phase!=='completed');
     output.hidden=!visible;if(!visible)output.open=false;else if(wasHidden||running)output.open=true;
-    outputBody.hidden=running||!view;CLATI18n.bind(outputBody,'textContent',()=>view?[view.message,view.result?.output,view.error,CLATI18n.present(view.presentation)].filter(Boolean).join('\n\n'):'');
-    ui.status.classList.toggle('error',Boolean(owner.notice));
+    outputBody.hidden=running||!view;CLATI18n.bind(outputBody,'textContent',()=>view?[view.message,view.result?.output,push&&devText('git_push_after_commit_'+push.status),push?.error,view.error,CLATI18n.present(view.presentation)].filter(Boolean).join('\n\n'):'');
+    ui.status.classList.toggle('error',Boolean(owner.notice||push&&push.status!=='completed'));
     if(owner.notice)devReport(ui.status,owner.notice);else if(running)devStatus(ui.status,'phase_'+(owner.phase||'pending'));else CLATI18n.bind(ui.status,'textContent',()=>'');
   }
   const report=error=>{seat().notice=error;result(seat().result);},tabs=createGitTabs(ui,{seat,call,report,openFile});
@@ -38,7 +39,7 @@ function installDevelopmentGit(){
     if(!devAvailable()){devUnavailable(ui.status);return;}
     const version=++epoch,owner=seat();try{const [snapshot,settings,repositories]=await Promise.all([call('git.snapshot',{},owner).catch(error=>({error})),rpc('git.settings',{}),rpc('git.repositories',{})]);if(version!==epoch||seat()!==owner||!active)return;
       directory=repositories.repositories;ui.repositoryStatus.hidden=!repositories.truncated;devStatus(ui.repositoryStatus,'repositories_truncated');if(snapshot.error){owner.snapshot=null;renderRepositories();renderSubmission();tabs.overview();report(snapshot.error);return;}
-      const changed=owner.snapshot&&JSON.stringify([owner.snapshot.head,owner.snapshot.index,owner.snapshot.status,owner.snapshot.tracking])!==JSON.stringify([snapshot.head,snapshot.index,snapshot.status,snapshot.tracking]);owner.snapshot=snapshot;owner.language=settings.language;directory=repositories.repositories;
+      const changed=owner.snapshot&&JSON.stringify([owner.snapshot.head,owner.snapshot.index,owner.snapshot.status,owner.snapshot.tracking])!==JSON.stringify([snapshot.head,snapshot.index,snapshot.status,snapshot.tracking]);owner.snapshot=snapshot;owner.language=settings.language;owner.autoStage=settings.autoStage;directory=repositories.repositories;
       const row=directory.find(r=>r.id===repository);owner.path=row?.path||'';ui.repoName.textContent=gitRepositoryName(row);ui.branch.textContent=(snapshot.branch||devText('detached'))+(snapshot.tracking?' · '+snapshot.tracking.behind+'↓ '+snapshot.tracking.ahead+'↑':'');renderSubmission();renderChanges();renderRepositories();
       if(changed)await tabs.reload();else tabs.refresh();if(version!==epoch||seat()!==owner||!active)return;if(!graph)installGraph(owner);await graph.load();if(version===epoch&&seat()===owner&&active)result(owner.result);
     }catch(error){if(version===epoch&&seat()===owner){report(error);if(!owner.tab)tabs.overview();}}
