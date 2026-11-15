@@ -6,11 +6,11 @@ impl GitService {
         op: &Operation,
         request: &Value,
         model: Option<GitModel>,
-        auto_stage: bool,
+        settings: &GitSettings,
     ) -> Result<Value, String> {
         let action = text(request, "action")?;
         if matches!(action, "commit" | "generate") {
-            return self.commit(op, request, model, auto_stage);
+            return self.commit(op, request, model, settings);
         }
         let lock = command::repo_lock(&self.project)?;
         let _guard = lock.lock().map_err(|_| "git_busy")?;

@@ -3449,9 +3449,9 @@ start off.
 - **Push after committing** runs Git push after a successful local commit,
   using the repository’s push configuration. A failed push keeps the local
   commit. CLAT reports the push separately and never retries it automatically.
-- **Custom push instructions for AI** adds project guidance to subsequent Agent
-  runs, scoped to pushes the user requests. It does not grant permissions or
-  change the Git arguments used for automatic push.
+- **Commit instructions** guides the model when generating a commit message,
+  whether you choose Generate Message or commit with the message field empty.
+  Handwritten messages are used as entered.
 
 Git uses installed system Git and its credential helper/SSH agent, hooks, filters and
 signing. Set up missing authentication in the built-in terminal. Pull follows explicit

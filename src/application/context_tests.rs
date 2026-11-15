@@ -354,8 +354,8 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
 }
 
 #[test]
-fn development_git_push_guidance_reaches_the_model_and_can_be_cleared() {
-    let (storage_root, project_root) = roots("context-git-push-guidance");
+fn development_git_commit_instructions_stay_out_of_chat_requests() {
+    let (storage_root, project_root) = roots("context-git-commit-guidance");
     std::fs::create_dir_all(&project_root).unwrap();
     let script = Arc::new(ContextProbe::default());
     let mut application = mount(
@@ -365,26 +365,19 @@ fn development_git_push_guidance_reaches_the_model_and_can_be_cleared() {
     );
     configure_test_model(&application);
     let dev = application.development().unwrap();
-    let guidance = "Check that origin points to the team repository.";
-    let save = |value| {
-        dev.request(
-            "git.settings.set",
-            serde_json::json!({"pushInstructions":value}),
-            None,
-        )
-        .unwrap();
-    };
-    save(guidance);
+    let guidance = "Prefix the commit subject with RELEASE.";
+    dev.request(
+        "git.settings.set",
+        serde_json::json!({"commitInstructions":guidance}),
+        None,
+    )
+    .unwrap();
     run_request(&mut application, "Review my Git changes").unwrap();
-    save("");
-    run_request(&mut application, "Continue").unwrap();
     let captured = script.0.lock().unwrap();
-    let [first, second] = captured.as_slice() else {
-        panic!("expected two model requests, got {}", captured.len());
+    let [instructions] = captured.as_slice() else {
+        panic!("expected one model request, got {}", captured.len());
     };
-    assert!(first.contains(guidance));
-    assert!(first.contains("only when the user has requested a Git push"));
-    assert!(!second.contains(guidance));
+    assert!(!instructions.contains(guidance));
 
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());

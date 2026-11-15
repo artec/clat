@@ -83,11 +83,13 @@ function installGitSettings(panel){
     settingsControlRow(()=>devText('git_auto_stage'),autoStage,()=>devText('git_auto_stage_hint')),
     settingsControlRow(()=>devText('git_auto_push'),autoPush,()=>devText('git_auto_push_hint')),
   );
-  const instructions=settingsGroup(panel,()=>devText('git_push_instructions'));
-  const prompt=el('textarea'),save=devButton('save',()=>void patch({pushInstructions:prompt.value}),'primary');
-  prompt.rows=5;CLATI18n.attribute(prompt,'aria-label',()=>devText('git_push_instructions'));
-  const block=el('div','settings-form git-instructions-form'),actions=el('div','settings-action-bar');
-  actions.append(save);block.append(el('p','settings-note',()=>devText('git_push_instructions_hint')),prompt,actions);
+  const instructions=settingsGroup(panel,()=>devText('git_commit_instructions'));
+  const prompt=el('textarea'),save=devButton('save',()=>void patch({commitInstructions:prompt.value}),'primary');
+  prompt.rows=4;
+  CLATI18n.attribute(prompt,'aria-label',()=>devText('git_commit_instructions'));
+  CLATI18n.attribute(prompt,'placeholder',()=>devText('git_commit_instructions_hint'));
+  const block=el('div','git-instructions-form');
+  block.append(prompt,save);
   instructions.append(block);
   const status=el('p','picker-hint');status.hidden=true;status.setAttribute('role','status');panel.append(status);
   let epoch=0,settings=null;
@@ -106,7 +108,7 @@ function installGitSettings(panel){
     try{
       const next=await rpc('git.settings',{});
       if(version!==epoch||route!==context.route||!active())return;
-      settings=next;paint();prompt.value=settings.pushInstructions;enable(true);
+      settings=next;paint();prompt.value=settings.commitInstructions;enable(true);
     }catch(error){if(version===epoch&&route===context.route&&active()){status.hidden=false;devReport(status,error);}}
   }
   async function patch(change){
@@ -117,7 +119,7 @@ function installGitSettings(panel){
       const next=await rpc('git.settings.set',change);
       if(version!==epoch||route!==context.route||!active())return;
       settings=next;
-      if(Object.hasOwn(change,'pushInstructions')){status.classList.remove('error');status.hidden=false;devStatus(status,'saved');}
+      if(Object.hasOwn(change,'commitInstructions')){status.classList.remove('error');status.hidden=false;devStatus(status,'saved');}
       void developmentGit?.refresh();
     }catch(error){if(version===epoch&&route===context.route&&active()){status.hidden=false;devReport(status,error);}}
     finally{if(version===epoch&&route===context.route&&active()){paint();enable(true);}}

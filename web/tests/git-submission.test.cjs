@@ -2,7 +2,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-function harness({staged=false,autoStage=false,confirm=true,phase='completed',afterStage=()=>{},onStart=()=>{}}={}){
+function harness({staged=false,autoStage=false,confirm=true,phase='completed',afterStage=()=>{},commitOutcome,onStart=()=>{}}={}){
   const owner={id:'project',autoStage,snapshot:{files:[{path:'selected.txt',staged,unstaged:!staged}]},draft:'',edit:0,pending:null,operation:null};
   let current=owner;
   const calls=[],questions=[],errors=[];
@@ -11,8 +11,9 @@ function harness({staged=false,autoStage=false,confirm=true,phase='completed',af
     devText:key=>key,devId:()=>String(calls.length+1),navigator:{language:'en'},
     localStorage:{setItem(){},removeItem(){}},CLATI18n:{present:(_,fallback)=>fallback},
     gitConflicted:f=>Boolean(f.conflict),
-    async devOperation(request){
+    async devOperation(request,_progress,resume){
       onStart(owner);calls.push(request);
+      if(request.action==='commit'&&commitOutcome)return commitOutcome(resume);
       if(request.action==='stage'){
         if(phase==='completed')owner.snapshot={files:[{path:'selected.txt',staged:true}]};
         await afterStage(owner,()=>{current={...owner,id:'other'};});
@@ -75,6 +76,37 @@ test('simultaneous submissions of an already staged selection execute once',asyn
   const h=harness({staged:true});
   await Promise.all([h.api.start('commit'),h.api.start('commit')]);
   assert.equal(h.calls.length,1);
+});
+
+test('returning to Git during commit and push cannot start a second monitor',async()=>{
+  let complete;
+  const outcome={phase:'completed',message:'Commit from the host',result:{push:{status:'completed'}}};
+  const inFlight=new Promise(resolve=>{complete=resolve;});
+  const h=harness({autoStage:true,commitOutcome:()=>inFlight});
+  const submitted=h.api.start('commit');
+  await Promise.resolve();
+  assert.equal(h.calls.length,1);
+  const reopened=h.api.reconcile();
+  complete(outcome);
+  await Promise.all([reopened,submitted]);
+  assert.equal(h.calls.length,1);
+  assert.deepEqual(h.errors,[]);
+  assert.equal(h.owner.result,outcome);
+  assert.equal(h.owner.draft,'');
+  assert.equal(h.owner.pending,null);
+});
+
+test('reopening an uncertain submission monitors the original operation',async()=>{
+  const h=harness({staged:true,commitOutcome:resume=>resume
+    ? {phase:'completed',message:'Confirmed commit',result:{push:{status:'completed'}}}
+    : {phase:'unknown',localUnknown:true}});
+  await h.api.start('commit');
+  assert.ok(h.owner.pending);
+  await h.api.reconcile();
+  assert.equal(h.calls[0].operationId,h.calls[1].operationId);
+  assert.equal(h.owner.result.phase,'completed');
+  assert.equal(h.owner.result.result.push.status,'completed');
+  assert.equal(h.owner.pending,null);
 });
 
 test('main action follows repository facts after commit and push',()=>{

@@ -319,30 +319,37 @@ fn development_git_workflow_preferences_are_project_scoped_and_patchable() {
     let f = Fixture::new();
     assert_eq!(
         f.call("git.settings", json!({})).unwrap(),
-        json!({"language":"system","autoStage":false,"autoPush":false,"pushInstructions":""})
+        json!({"language":"system","autoStage":false,"autoPush":false,"commitInstructions":""})
     );
     f.service
         .store
-        .save("git-settings.json", &json!({"language":"zh-Hans"}))
+        .save(
+            "git-settings.json",
+            &json!({"language":"zh-Hans","pushInstructions":"Legacy text"}),
+        )
         .unwrap();
     f.call(
         "git.settings.set",
         json!({"autoStage":true,"autoPush":true}),
     )
     .unwrap();
+    assert_eq!(
+        f.call("git.settings", json!({})).unwrap()["commitInstructions"],
+        "Legacy text"
+    );
     let expected = json!({
         "language":"zh-Hans","autoStage":true,"autoPush":true,
-        "pushInstructions":"Verify the remote branch before pushing."
+        "commitInstructions":"Use a Conventional Commits subject."
     });
     f.call(
         "git.settings.set",
-        json!({"pushInstructions":expected["pushInstructions"]}),
+        json!({"commitInstructions":expected["commitInstructions"]}),
     )
     .unwrap();
     assert!(
         f.call(
             "git.settings.set",
-            json!({"autoStage":false,"pushInstructions":"x".repeat(4097)})
+            json!({"autoStage":false,"commitInstructions":"x".repeat(4097)})
         )
         .is_err()
     );
@@ -357,7 +364,7 @@ fn development_git_workflow_preferences_are_project_scoped_and_patchable() {
     let sibling = Arc::new(DevelopmentService::new(Project::new(&f.base), &f.storage));
     let other = sibling.request("git.settings", json!({}), None).unwrap();
     assert_eq!(other["autoStage"], false);
-    assert_eq!(other["pushInstructions"], "");
+    assert_eq!(other["commitInstructions"], "");
 }
 
 #[test]
@@ -613,6 +620,46 @@ fn model(script: Script) -> (GitModel, Box<dyn Send>) {
         Box::new(lease),
     )
 }
+#[test]
+fn development_git_commit_instructions_apply_to_generation_only() {
+    let f = Fixture::new();
+    f.repository();
+    fs::write(f.project.join("file.txt"), "STAGED_EVIDENCE").unwrap();
+    f.git(&["add", "--", "file.txt"]);
+    let guidance = "Prefix the subject with feat(core):";
+    f.call("git.settings.set", json!({"commitInstructions":guidance}))
+        .unwrap();
+    let (provider, _lease) = model(Arc::new(move |request| {
+        assert!(request.instructions.unwrap().contains(guidance));
+        let input = format!("{:?}", request.items);
+        assert!(input.contains("STAGED_EVIDENCE"), "{input}");
+        assert!(!input.contains(guidance));
+        "feat(core): Describe staged changes".into()
+    }));
+    let initial = f.git(&["rev-parse", "HEAD"]);
+    for action in ["generate", "commit"] {
+        let row = f.run(
+            json!({"operationId":dev_id(),"action":action,"expected":f.snapshot(),"message":""}),
+            Some(provider.clone()),
+        );
+        assert_eq!(row["phase"], "completed", "{row}");
+        assert_eq!(row["message"], "feat(core): Describe staged changes");
+        if action == "generate" {
+            assert_eq!(f.git(&["rev-parse", "HEAD"]), initial);
+        }
+    }
+    assert_eq!(
+        f.git(&["log", "-1", "--format=%s"]),
+        "feat(core): Describe staged changes"
+    );
+    fs::write(f.project.join("file.txt"), "Second change").unwrap();
+    f.git(&["add", "--", "file.txt"]);
+    let handwritten = "Keep this handwritten subject";
+    let row = f.operation("commit", json!({"message":handwritten}));
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), handwritten);
+}
+
 #[test]
 fn development_git_canonical_private_paths_preserve_staged_index_and_commit() {
     let mut f = Fixture::new();
@@ -1196,6 +1243,11 @@ fn development_failed_receipt_admission_never_leaves_a_live_operation() {
 fn development_private_state_rejects_directory_aliases_between_projects() {
     let f = Fixture::new();
     f.call("git.settings", json!({})).unwrap();
+    assert!(
+        !f.storage.join("development").exists(),
+        "reading defaults is read-only"
+    );
+    f.service.store.dir().unwrap();
     let developer = f.storage.join("development");
     let owner = fs::read_dir(&developer)
         .unwrap()
@@ -1207,6 +1259,11 @@ fn development_private_state_rejects_directory_aliases_between_projects() {
     fs::rename(&owner, &other).unwrap();
     std::os::unix::fs::symlink("other-project", &owner).unwrap();
     assert!(f.call("git.settings", json!({})).is_err());
+    assert!(
+        f.call("git.settings.set", json!({"autoPush":true}))
+            .is_err(),
+        "writing must reject the same alias"
+    );
     assert!(!other.join("git-settings.json").exists());
 }
 

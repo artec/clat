@@ -66,7 +66,6 @@ impl TrustedProjectApplication {
         );
         ContextSources {
             base,
-            git_guidance: self.git_push_guidance(),
             plan_instructions,
             plan_header,
             skills,
@@ -79,10 +78,6 @@ impl TrustedProjectApplication {
             subagents_enabled,
         }
         .freeze()
-    }
-
-    fn git_push_guidance(&self) -> Option<String> {
-        self.development.as_ref()?.git_push_guidance()
     }
 
     pub(super) fn context_tool_access(
@@ -236,7 +231,6 @@ fn route_header(config: &ModelConfig) -> serde_json::Map<String, Value> {
 /// The two instruction views advance together through the same ordered layers.
 struct ContextSources {
     base: String,
-    git_guidance: Option<String>,
     plan_instructions: Option<String>,
     plan_header: Option<Value>,
     skills: Arc<crate::skills::SkillCatalogSnapshot>,
@@ -252,7 +246,6 @@ impl ContextSources {
     fn freeze(self) -> RunContextSnapshot {
         let Self {
             base,
-            git_guidance,
             plan_instructions,
             plan_header,
             skills,
@@ -270,10 +263,7 @@ impl ContextSources {
         let capabilities = tools.capability_view(Some(&tool_access));
         let tool_definitions: Arc<[crate::tool::ToolDefinition]> =
             capabilities.definitions().into();
-        let guidance = crate::plan_mode::compose_workflow_instructions(
-            super::workflow::guidance::instructions(&capabilities),
-            git_guidance.as_deref(),
-        );
+        let guidance = super::workflow::guidance::instructions(&capabilities);
         let (instructions, workflow_base, workflow_instructions) = InstructionLayers::assemble(
             base,
             &guidance,
@@ -491,7 +481,6 @@ impl TrustedProjectApplication {
             .map(|cell| *cell.read().expect("target permission"));
         Ok(ContextSources {
             base: crate::plugins::services::base_model_instructions(&self.prompts, mode),
-            git_guidance: self.git_push_guidance(),
             plan_instructions,
             plan_header,
             skills,

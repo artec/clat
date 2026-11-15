@@ -61,7 +61,7 @@ impl GitService {
         {
             return Err("git_busy".into());
         }
-        let settings = if action == "commit" {
+        let settings = if matches!(action, "commit" | "generate") {
             settings_owner.preferences()?
         } else {
             GitSettings::default()
@@ -69,7 +69,7 @@ impl GitService {
         let op = Arc::new(Operation {
             saved: Mutex::new(SavedOperation {
                 signature,
-                push_after_commit: settings.auto_push,
+                push_after_commit: action == "commit" && settings.auto_push,
                 request: compact_request(&request),
                 view: OperationView::pending(&id),
             }),
@@ -81,7 +81,7 @@ impl GitService {
             self.operations.lock().map_err(|_| "git_busy")?.remove(&id);
             return Err(error);
         }
-        self.spawn_operation(op, request, model, settings.auto_stage)?;
+        self.spawn_operation(op, request, model, settings)?;
         self.operation(&json!({"operationId":id}), false)
     }
     fn spawn_operation(
@@ -89,7 +89,7 @@ impl GitService {
         op: Arc<Operation>,
         request: Value,
         model: Option<GitModel>,
-        auto_stage: bool,
+        settings: GitSettings,
     ) -> Result<(), String> {
         let producer = self.store.lifetime.producer()?;
         let service = self.clone();
@@ -98,7 +98,7 @@ impl GitService {
             .name("clat-human-git".into())
             .spawn(move || {
                 let _producer = producer;
-                service.run_operation(&worker_op, &request, model, auto_stage)
+                service.run_operation(&worker_op, &request, model, settings)
             }) {
             Ok(thread) => {
                 self.workers.lock().map_err(|_| "git_busy")?.push(thread);
@@ -122,10 +122,10 @@ impl GitService {
         op: &Operation,
         request: &Value,
         model: Option<GitModel>,
-        auto_stage: bool,
+        settings: GitSettings,
     ) {
         let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.execute(op, request, model, auto_stage)
+            self.execute(op, request, model, &settings)
         }))
         .unwrap_or_else(|_| Err("operation_failed".into()));
         if result.is_err() {

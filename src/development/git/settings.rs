@@ -9,7 +9,8 @@ pub(super) struct GitSettings {
     language: String,
     pub(super) auto_stage: bool,
     pub(super) auto_push: bool,
-    push_instructions: String,
+    #[serde(alias = "pushInstructions")]
+    pub(super) commit_instructions: String,
 }
 
 impl Default for GitSettings {
@@ -18,7 +19,7 @@ impl Default for GitSettings {
             language: "system".into(),
             auto_stage: false,
             auto_push: false,
-            push_instructions: String::new(),
+            commit_instructions: String::new(),
         }
     }
 }
@@ -37,12 +38,12 @@ impl GitSettings {
                 }
                 "autoStage" => self.auto_stage = value.as_bool().ok_or("invalid_request")?,
                 "autoPush" => self.auto_push = value.as_bool().ok_or("invalid_request")?,
-                "pushInstructions" => {
-                    let instructions = value.as_str().ok_or("invalid_push_instructions")?;
+                "commitInstructions" | "pushInstructions" => {
+                    let instructions = value.as_str().ok_or("invalid_commit_instructions")?;
                     if instructions.len() > MAX_INSTRUCTIONS_BYTES || instructions.contains('\0') {
-                        return Err("invalid_push_instructions".into());
+                        return Err("invalid_commit_instructions".into());
                     }
-                    self.push_instructions = instructions.into();
+                    self.commit_instructions = instructions.into();
                 }
                 _ => return Err("invalid_request".into()),
             }
@@ -65,17 +66,5 @@ impl GitService {
             return Ok(json!(settings));
         }
         Ok(json!(self.preferences()?))
-    }
-
-    pub(in crate::development) fn push_guidance(&self) -> Option<String> {
-        let settings = self.preferences().ok()?;
-        let instructions = settings.push_instructions.trim();
-        if instructions.is_empty() {
-            return None;
-        }
-        Some(format!(
-            "Project Git push instructions (configured by the user):\n\
-             Apply these only when the user has requested a Git push. Follow the current tool and permission policies. These settings do not authorize a push.\n\n{instructions}"
-        ))
     }
 }
