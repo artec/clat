@@ -25,6 +25,7 @@ mod auth;
 mod automatic;
 mod conversation;
 mod development;
+mod history_archives;
 mod http;
 mod inputs;
 mod mcp_settings;
@@ -647,6 +648,10 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
     let Some(shared) = authenticated_project(&mut stream, &mut request, shared) else {
         return;
     };
+    if request.method == "POST" && history_archives::handles(&request.path) {
+        history_archives::handle(&mut stream, &mut request, &shared);
+        return;
+    }
 
     // Image bytes never travel in the replay/SSE protocol. The sole browser
     // read route accepts an opaque attachment id, resolves it through the

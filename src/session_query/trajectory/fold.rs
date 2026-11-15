@@ -5,6 +5,18 @@ use crate::session::{
 };
 impl Projection {
     pub(super) fn push(&mut self, event: &SessionEvent) {
+        self.push_replay(event);
+        self.raw(event);
+    }
+
+    pub(super) fn push_imported(&mut self, event: &SessionEvent) {
+        let mut view = event.clone();
+        crate::session::portable::import_images(&mut view);
+        self.push_replay(&view);
+        self.raw(event);
+    }
+
+    fn push_replay(&mut self, event: &SessionEvent) {
         if replay_kind(&event.event_type) == ReplayKind::TurnStart {
             self.turn = event.data["turn"].as_u64().filter(|t| *t > 0);
         }
@@ -14,7 +26,6 @@ impl Projection {
         for item in replay {
             self.item(event, item);
         }
-        self.raw(event);
     }
     fn item(&mut self, event: &SessionEvent, item: ReplayEvent) {
         let turn = event.data["turn"]

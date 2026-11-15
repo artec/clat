@@ -127,6 +127,9 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "history.event.read",
     "history.trajectory",
     "history.trajectory.detail",
+    "history.archive.list",
+    "history.archive.trajectory",
+    "history.archive.trajectory.detail",
     "web.settings.get",
     "web.settings.set",
     "interaction.catalog",
@@ -1508,6 +1511,9 @@ fn dispatch_workbench_tools(
         | "history.events"
         | "history.trajectory"
         | "history.trajectory.detail"
+        | "history.archive.list"
+        | "history.archive.trajectory"
+        | "history.archive.trajectory.detail"
         | "history.event.read" => super::page_queries::history(shared, method, params),
         "operations.list" | "operations.detail" => {
             super::page_queries::operations(shared, method, params)

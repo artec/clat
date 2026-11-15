@@ -98,6 +98,17 @@ pub(crate) struct ControlStorage {
 }
 
 impl ControlStorage {
+    pub(crate) fn history_archives_dir(&self, bucket: &str, create: bool) -> std::io::Result<Dir> {
+        use crate::session::root_dir::SessionRootDir;
+        let open = if create {
+            SessionRootDir::open_or_create_child
+        } else {
+            SessionRootDir::open_child
+        };
+        let dir = open(&self.dir, Path::new("history-archives"))?;
+        open(&dir, Path::new(bucket))
+    }
+
     pub(crate) fn root_path(&self) -> &Path {
         &self.root
     }

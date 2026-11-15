@@ -231,12 +231,16 @@ async function reconcileFileReferences() {
   }while(after!==null&&pending.length);}catch(_){}finally{referenceReconciliation=false;}
 }
 
-function showHistoricalAttachment(reference, attachment, trusted = false) {
+function showHistoricalAttachment(reference, attachment, trusted = false, imported = false) {
   const dialog=el('dialog','image-preview'); const status=el('p','settings-note',()=>pageText('loading'));
   const close=pageAction('cancel',()=>dialog.close());dialog.append(close,status);document.body.append(dialog);dialog.showModal();let url=null;
   dialog.addEventListener('close',()=>{if(url)URL.revokeObjectURL(url);dialog.remove();},{once:true});
-  void rpc('history.attachment',{reference,attachment_id:attachment.attachment_id,trusted_projects:trusted}).then(value=>{
-    if(!dialog.open)return;const bytes=Uint8Array.from(atob(value.base64),c=>c.charCodeAt(0));url=URL.createObjectURL(new Blob([bytes],{type:value.media_type}));
+  const request={reference,attachment_id:attachment.attachment_id,trusted_projects:trusted};
+  const imageBlob=imported
+    ? requestHistoryArchive('image',request).then(response=>response.blob())
+    : rpc('history.attachment',request).then(value=>new Blob([Uint8Array.from(atob(value.base64),c=>c.charCodeAt(0))],{type:value.media_type}));
+  void imageBlob.then(blob=>{
+    if(!dialog.open)return;url=URL.createObjectURL(blob);
     const image=el('img');image.src=url;image.alt=attachment.display_name||attachment.attachment_id;status.replaceWith(image);
   }).catch(error=>{if(dialog.open)status.textContent=error.message;});
 }

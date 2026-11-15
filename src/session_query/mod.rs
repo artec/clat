@@ -1,9 +1,11 @@
 //! Read-only history queries over an explicitly authorized corpus.
+mod archives;
 mod conversation;
 mod index;
 mod inspect;
 mod operations;
 mod trajectory;
+pub(crate) use archives::{ArchiveListRequest, ArchiveRequest, ArchiveRow, HistoryArchive};
 pub use conversation::{ConversationMessage, ConversationPage, ConversationRequest};
 pub use operations::{
     OperationDetail, OperationDetailRequest, OperationFilter, OperationRow, OperationsPage,

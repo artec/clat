@@ -50,6 +50,14 @@ pub(crate) fn write_text_new_atomic_in_dir(
     name: &str,
     text: &str,
 ) -> Result<(), String> {
+    write_bytes_new_atomic_in_dir(dir, name, text.as_bytes())
+}
+
+pub(crate) fn write_bytes_new_atomic_in_dir(
+    dir: &cap_std::fs::Dir,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     let temporary = temp_file_name(name);
     let result = (|| {
         let mut options = cap_std::fs::OpenOptions::new();
@@ -62,7 +70,7 @@ pub(crate) fn write_text_new_atomic_in_dir(
         let mut file = dir
             .open_with(&temporary, &options)
             .map_err(|e| e.to_string())?;
-        file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
         dir.hard_link(&temporary, dir, name)

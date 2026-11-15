@@ -5,6 +5,15 @@ impl SessionQueryService {
         request: TrajectoryRequest,
         cancel: &CancelToken,
     ) -> Result<TrajectoryPage, QueryError> {
+        self.trajectory_from(request, cancel, false)
+    }
+
+    pub(crate) fn trajectory_from(
+        &self,
+        request: TrajectoryRequest,
+        cancel: &CancelToken,
+        imported: bool,
+    ) -> Result<TrajectoryPage, QueryError> {
         if request.query.len() > 2048 {
             return Err(QueryError::new("invalid_query"));
         }
@@ -19,6 +28,7 @@ impl SessionQueryService {
             expected,
             cancel,
             Projection::new(request.query.trim(), None),
+            imported,
         )?;
         let entries = projection.entries;
         let matched: Vec<_> = entries
@@ -64,6 +74,15 @@ impl SessionQueryService {
         request: TrajectoryDetailRequest,
         cancel: &CancelToken,
     ) -> Result<TrajectoryDetail, QueryError> {
+        self.trajectory_detail_from(request, cancel, false)
+    }
+
+    pub(crate) fn trajectory_detail_from(
+        &self,
+        request: TrajectoryDetailRequest,
+        cancel: &CancelToken,
+        imported: bool,
+    ) -> Result<TrajectoryDetail, QueryError> {
         if request.id.len() > 128 {
             return Err(QueryError::new("invalid_reference"));
         }
@@ -73,6 +92,7 @@ impl SessionQueryService {
             Some(&request.snapshot),
             cancel,
             Projection::new("", Some(request.id)),
+            imported,
         )?;
         projection
             .entries

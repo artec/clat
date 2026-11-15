@@ -328,7 +328,19 @@ impl App {
                 true
             }
             KeyCode::Enter | KeyCode::Tab => {
-                if key.code == KeyCode::Enter && picker.selected_command_matches(self.input.text())
+                // 裸 /skill(/skills)（无参数）本身是完整命令——空参打开技能
+                // 对话框；Enter 必须提交而不是把候选技能名填进参数位
+                // （CI 43693098030，skills_dialog_snapshot）。
+                let bare_skill = key.code == KeyCode::Enter
+                    && self
+                        .input
+                        .text()
+                        .trim()
+                        .strip_prefix('/')
+                        .is_some_and(skill_command);
+                if bare_skill
+                    || (key.code == KeyCode::Enter
+                        && picker.selected_command_matches(self.input.text()))
                 {
                     self.discovery.picker = None;
                     return false;

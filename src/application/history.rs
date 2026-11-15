@@ -37,7 +37,8 @@ impl crate::message::PendingMessage {
         self.submission_digest = Some(format!("{:x}", hasher.finalize()));
     }
 }
-/// A cloneable, read-only port. Heavy indexing never holds an Application lock.
+/// A cloneable history port with read-only access to session journals.
+/// Archive imports write to their own storage. Heavy queries run without the Application lock.
 #[derive(Clone)]
 pub struct HistoryReader(Option<Arc<crate::session_query::SessionQueryService>>);
 impl TrustedProjectApplication {
@@ -102,6 +103,66 @@ impl TrustedProjectApplication {
     }
 }
 impl HistoryReader {
+    pub(crate) fn import_archive(
+        &self,
+        bytes: &[u8],
+        cancel: &CancelToken,
+    ) -> Result<Vec<crate::session_query::ArchiveRow>, ApplicationError> {
+        self.service()?.import_archive(bytes, cancel).map_err(error)
+    }
+
+    pub(crate) fn list_archives(
+        &self,
+        request: crate::session_query::ArchiveListRequest,
+        cancel: &CancelToken,
+    ) -> Result<Vec<crate::session_query::ArchiveRow>, ApplicationError> {
+        self.service()?
+            .list_archives(request, cancel)
+            .map_err(error)
+    }
+
+    pub(crate) fn imported_trajectory(
+        &self,
+        request: TrajectoryRequest,
+        cancel: &CancelToken,
+    ) -> Result<TrajectoryPage, ApplicationError> {
+        self.service()?
+            .trajectory_from(request, cancel, true)
+            .map_err(error)
+    }
+
+    pub(crate) fn imported_trajectory_detail(
+        &self,
+        request: TrajectoryDetailRequest,
+        cancel: &CancelToken,
+    ) -> Result<TrajectoryDetail, ApplicationError> {
+        self.service()?
+            .trajectory_detail_from(request, cancel, true)
+            .map_err(error)
+    }
+
+    pub(crate) fn archive_image(
+        &self,
+        reference: &HistoryReference,
+        all: bool,
+        attachment: &str,
+        cancel: &CancelToken,
+    ) -> Result<(Vec<u8>, &'static str), ApplicationError> {
+        self.service()?
+            .import_image(reference, all, attachment, cancel)
+            .map_err(error)
+    }
+
+    pub(crate) fn export_archive(
+        &self,
+        request: crate::session_query::ArchiveRequest,
+        cancel: &CancelToken,
+    ) -> Result<crate::session_query::HistoryArchive, ApplicationError> {
+        self.service()?
+            .export_archive(request, cancel)
+            .map_err(error)
+    }
+
     pub fn share_at_version(
         &self,
         reference: &HistoryReference,

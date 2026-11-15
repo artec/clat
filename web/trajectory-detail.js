@@ -27,7 +27,7 @@ function trajectoryJSON(value) {
   return root;
 }
 
-function createTrajectoryDetail(parent, { close, locate, reference, trusted }) {
+function createTrajectoryDetail(parent, { close, locate, reference, trusted, sourceId }) {
   const pane = el('aside', 'trajectory-inspector');
   const head = el('header');
   const title = el('strong');
@@ -36,7 +36,7 @@ function createTrajectoryDetail(parent, { close, locate, reference, trusted }) {
   const footer = el('footer');
   const jump = el('button', 'trajectory-locate');
   jump.append(svgIcon('crosshair'), el('span', '', () => trajectoryText('locate')));
-  const currentProject = () => reference.project === state.workbench?.project?.root;
+  const currentProject = () => !sourceId && reference.project === state.workbench?.project?.root;
   let value = null, tab = 'overview', loading = false;
   const tabs = navigationTabs(
     ['overview', 'preview', 'raw', 'source'].map(key => [key, () => trajectoryText('tab_' + key)]),
@@ -49,7 +49,7 @@ function createTrajectoryDetail(parent, { close, locate, reference, trusted }) {
   head.append(icon, title, navigationIcon(() => trajectoryText('close_details'), 'close', close));
   jump.type = 'button';
   jump.disabled = jump.hidden = true;
-  jump.onclick = () => { if (value) locate(value.record); };
+  jump.onclick = () => { if (value) locate?.(value.record); };
   footer.append(jump);
   pane.append(head, tabs.element, body, footer);
   parent.append(pane);
@@ -109,7 +109,7 @@ function createTrajectoryDetail(parent, { close, locate, reference, trusted }) {
       open.type = 'button';
       open.onclick = () => {
         const seq = value.record.source_seqs.at(-1) ?? value.record.seq;
-        showHistoricalAttachment({ ...reference, seq }, attachment, trusted);
+        showHistoricalAttachment({ ...reference, seq }, attachment, trusted, Boolean(sourceId));
       };
       body.append(open);
     }
@@ -126,7 +126,7 @@ function createTrajectoryDetail(parent, { close, locate, reference, trusted }) {
   function source() {
     const row = value.record;
     field('project', reference.project);
-    field('session', reference.session);
+    field('session', sourceId || reference.session);
     field('event_sequences', row.source_seqs.join(', '));
     field('provider', row.provider);
     field('identifier', row.tool);

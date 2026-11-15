@@ -17,6 +17,14 @@ pub(super) fn history(
     let cancel = crate::CancelToken::new();
     let value = Value::Object(params.clone());
     let result = match method {
+        "history.archive.list" => serde_json::to_value(
+            reader
+                .list_archives(decode(value)?, &cancel)
+                .map_err(app_error)?,
+        ),
+        "history.archive.trajectory" | "history.archive.trajectory.detail" => {
+            return archive_trajectory(shared, &reader, method, value, &cancel);
+        }
         "history.trajectory" => serde_json::to_value(
             reader
                 .trajectory(decode(value)?, &cancel)
@@ -61,6 +69,32 @@ pub(super) fn history(
             serde_json::to_value(reader.read(decode(value)?, &cancel).map_err(app_error)?)
         }
         _ => unreachable!(),
+    };
+    result.map_err(|e| RpcError::internal(e.to_string()))
+}
+
+fn archive_trajectory(
+    shared: &Arc<ServeShared>,
+    reader: &crate::application::HistoryReader,
+    method: &str,
+    value: Value,
+    cancel: &crate::CancelToken,
+) -> Result<Value, RpcError> {
+    let _permit = shared
+        .try_attachment_download_permit()
+        .ok_or_else(|| RpcError::busy("archive read limit reached"))?;
+    let result = if method == "history.archive.trajectory" {
+        serde_json::to_value(
+            reader
+                .imported_trajectory(decode(value)?, cancel)
+                .map_err(app_error)?,
+        )
+    } else {
+        serde_json::to_value(
+            reader
+                .imported_trajectory_detail(decode(value)?, cancel)
+                .map_err(app_error)?,
+        )
     };
     result.map_err(|e| RpcError::internal(e.to_string()))
 }

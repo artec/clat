@@ -1,5 +1,5 @@
 /* The history page owns this frozen snapshot independently of the composer. */
-function createHistoryTrajectory(parent, reference, { trusted, current, locate }) {
+function createHistoryTrajectory(parent, reference, { trusted, current, locate, sourceId }) {
   const host = el('section', 'history-trajectory');
   const toolbar = el('div', 'trajectory-toolbar');
   const find = el('input');
@@ -26,6 +26,7 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
   const initialWorkspace = workspacePrefix;
   const valid = () => !suspended && current() && workspacePrefix === initialWorkspace;
   const scope = { reference: { ...reference, seq: null }, trusted_projects: trusted };
+  const method = sourceId ? 'history.archive.trajectory' : 'history.trajectory';
   const refresh = navigationIcon(() => trajectoryText('refresh'), 'refresh', refreshSnapshot);
   const reopen = navigationIcon(() => trajectoryText(host.classList.contains('has-inspector') ? 'close_details' : 'open_details'), 'panel', () => {
     if (host.classList.contains('has-inspector')) closeDetail(false);
@@ -63,8 +64,8 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
     },
   });
   const inspector = createTrajectoryDetail(workspace, {
-    reference, trusted, close: closeDetail,
-    locate: row => locate({ ...reference, seq: row.source_seqs.at(-1) ?? row.seq }),
+    reference, trusted, sourceId, close: closeDetail,
+    locate: locate && (row => locate({ ...reference, seq: row.source_seqs.at(-1) ?? row.seq })),
   });
 
   function closeDetail(focus = true) {
@@ -107,7 +108,7 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
     paint();
     CLATI18n.bind(notice, 'textContent', () => trajectoryText('loading'));
     try {
-      const page = await rpc('history.trajectory', {
+      const page = await rpc(method, {
         ...scope, snapshot: params.refresh ? null : snapshot,
         query, cursor: params.cursor ?? null, anchor_seq: params.anchor ?? null,
       });
@@ -157,7 +158,7 @@ function createHistoryTrajectory(parent, reference, { trusted, current, locate }
     reopen.setAttribute('aria-expanded', 'true');
     for (const attr of ['title', 'aria-label']) CLATI18n.attribute(reopen, attr, () => trajectoryText('close_details'));
     try {
-      const value = await rpc('history.trajectory.detail', { ...scope, snapshot, id });
+      const value = await rpc(method + '.detail', { ...scope, snapshot, id });
       if (stillCurrent()) inspector.show(value);
     } catch (error) {
       if (!stillCurrent()) return;

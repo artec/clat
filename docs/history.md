@@ -19,3 +19,18 @@ Cross-session search includes titles, visible user and assistant text, and reada
 The Host maintains a private disposable SQLite FTS5 cache under `history-index/` in the storage root. Unicode word and trigram indexes serve normal queries; short queries use bounded literal scans. Queries are parameterized, never evaluated as FTS operators or regular expressions. Each operation has a 30-second deadline, checks cancellation, and bounds candidates/pages. The model receives fewer results than the user interface; truncation requests a narrower query. Source revisions drive incremental reconciliation of appends, truncations, deletions and external writes. Corrupt derived databases are rebuilt; source read failures remain errors, never false empty results.
 
 The event inspection commands list committed events with optional exact event-type filtering and pagination. JSON is redacted, bounded and version-pinned for continuation. The trajectory loads full content only when a record is selected. These reads use the query-only port and preserve the original journal.
+
+## Transfer timelines with DeepSeek Harness
+
+In CLAT **History**, select a project timeline and click **Export DSH ZIP** in the top toolbar. The archive uses the DSH 0.2.2 V4 layout for the session log, subagent logs and attachment objects. CLAT adapts the copied journal to DSH source ordering and tool lifecycle rules. A denied tool call keeps its recorded reason and is marked as unstarted in the copy. The archive can contain original prompts, tool output, paths and attachments. Review it before sharing it with someone else. If a referenced object is unavailable, the archive includes `attachments-missing.txt`.
+
+To open a ZIP exported by DSH, go to the trusted project where you want to keep the copy and click **Import DSH ZIP**. The archive appears in **Imported timelines**. You can inspect its turns, search within a timeline, select subagent timelines, and view available images. Exporting an imported timeline downloads the original ZIP, including any files it contained. CLAT stores imported archives separately from runnable sessions. Reimporting the same ZIP in the same project reuses its existing entry. The compressed and expanded archive each have a 64 MiB limit.
+
+To take a CLAT ZIP to DSH, prepare a fresh DSH data directory. The optional final path associates the copied logs with an existing project directory on the destination computer.
+
+```sh
+clat history unpack-dsh ./dsh-session-example.zip ./dsh-transfer /path/to/project
+DSH_HOME="$PWD/dsh-transfer" dsh web
+```
+
+Open the corresponding project in DSH and select the imported session in its trajectory view. DSH 0.2.2 provides a ZIP export action. The CLAT command prepares the DSH log and attachment store for the reverse direction. Choose a new destination directory for each transfer and use archives from sources you trust when opening them as DSH sessions.

@@ -1,11 +1,15 @@
 use clat::client_ports::{
-    history::{HistoryCommandRequest, parse_history_command},
+    history::{HistoryCommandRequest, parse_history_command, unpack_dsh_archive},
     host::HostClient,
     presentation::{LocaleContext, UiMessage},
 };
 use std::process::ExitCode;
 pub(super) fn run(args: impl Iterator<Item = String>, locale: LocaleContext) -> ExitCode {
-    let request = match parse_history_command(&args.collect::<Vec<_>>().join(" ")) {
+    let args = args.collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "unpack-dsh") {
+        return unpack(&args[1..], locale);
+    }
+    let request = match parse_history_command(&args.join(" ")) {
         Ok(request) => request,
         Err(error) => {
             eprintln!("{}", locale.render(&error));
@@ -25,6 +29,36 @@ pub(super) fn run(args: impl Iterator<Item = String>, locale: LocaleContext) -> 
                 "{}",
                 locale.render(&UiMessage::new("common.error").arg("detail", detail))
             );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn unpack(args: &[String], locale: LocaleContext) -> ExitCode {
+    if !(2..=3).contains(&args.len()) {
+        eprintln!(
+            "{}",
+            locale.render(&UiMessage::new("history.archive_cli_help"))
+        );
+        return ExitCode::from(2);
+    }
+    use std::path::Path;
+    match unpack_dsh_archive(
+        Path::new(&args[0]),
+        Path::new(&args[1]),
+        args.get(2).map(Path::new),
+    ) {
+        Ok(()) => {
+            println!(
+                "{}",
+                locale.render(
+                    &UiMessage::new("history.archive_cli_done").arg("directory", args[1].clone())
+                )
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{}", locale.render(&error.presentation()));
             ExitCode::FAILURE
         }
     }

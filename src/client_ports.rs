@@ -111,6 +111,14 @@ pub mod history {
         TrajectoryPage, TrajectoryRequest,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
+
+    pub fn unpack_dsh_archive(
+        zip: &std::path::Path,
+        home: &std::path::Path,
+        project: Option<&std::path::Path>,
+    ) -> Result<(), crate::application::ApplicationError> {
+        crate::session::portable::unpack_dsh_archive(zip, home, project)
+    }
 }
 
 pub mod workflow {

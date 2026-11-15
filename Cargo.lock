@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "clat"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "clat-core"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aes",
  "async-trait",
@@ -791,12 +791,13 @@ dependencies = [
  "wasmtime-wasi-io",
  "windows",
  "windows-sys 0.61.2",
+ "zip",
  "zstd",
 ]
 
 [[package]]
 name = "clat-desktop"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "base64 0.22.1",
  "clat-core",
@@ -870,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "clat-wasm-net"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "brotli-decompressor 5.0.0",
  "bytes",
@@ -8673,6 +8674,7 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap 2.14.0",
  "memchr",
 ]

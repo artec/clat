@@ -23,6 +23,7 @@ pub(crate) mod jsonl;
 pub(crate) mod key;
 pub(crate) mod path_layout;
 pub(crate) mod persistence;
+pub(crate) mod portable;
 pub(crate) mod preflight;
 pub(crate) mod projection;
 pub(crate) mod recorder;
