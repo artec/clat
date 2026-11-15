@@ -244,27 +244,64 @@ function createResourceLibrary(shell) {
   const page=el('section','resources-page');page.id='resources-dialog';
   const view=createNavigationPage(page,{title:()=>shellText('resources'),searchLabel:()=>pageText('search_resources')});
   const seats=new Map();let tab='files';
-  const fileSeat={list:el('nav'),body:el('section'),status:el('div'),query:view.query,show:path=>{fileSeat.title=path;view.show(path);}};
-  const files=createProjectFileBrowser({id:'resource-files',inline:true,navigationView:fileSeat,onClose:quoted=>{if(quoted){shell.chat();dom.prompt.focus();}}});
-  seats.set('files',fileSeat);
-  const tabs=navigationTabs(['files','materials','bookmarks'].map(key=>[key,()=>pageText(key)]),select);view.filters.append(tabs.element);
-  const introduction=key=>navigationOverview({title:()=>pageText(key),description:()=>pageText('resource_'+key+'_intro'),icon:key==='bookmarks'?'bookmark':'folder',items:['files','materials','bookmarks'].filter(item=>item!==key).map(item=>({title:()=>pageText(item),description:()=>pageText('resource_'+item+'_intro'),icon:item==='bookmarks'?'bookmark':item==='files'?'folder':'file',action:()=>select(item)}))});
-  fileSeat.body.append(introduction('files'));
-  const status=el('div','navigation-status');view.sidebar.insertBefore(status,view.list);
-  const refresh=()=>{if(tab==='files')void files.refresh();else{seats.get(tab)?.dispose?.();seats.delete(tab);select(tab);}};
-  view.actions([viewAction('refresh','refresh',()=>pageText('refresh'),refresh)]);
-  view.context({crumbs:()=>[{label:()=>shellText('resources'),run:()=>{delete page.dataset.detail;}},{label:()=>projectDisplayName(state.workbench?.project?.root,state.workbench?.project?.name),run:()=>openSettings('projects')},{label:()=>pageText(tab)},...(seats.get(tab)?.title?[{label:()=>seats.get(tab).title}]:[])]});
-  function select(key){
-    const prior=seats.get(tab);if(prior){prior.scroll=[view.list.scrollTop,view.body.scrollTop];prior.query=view.query.value;}
-    files.suspend();tab=key;tabs.select(key);
-    let seat=seats.get(key);if(!seat){seat={list:el('nav'),body:el('section'),status:el('div'),query:'',scroll:[0,0],filter:()=>{},overview:()=>introduction(key)};seat.body.append(seat.overview());seats.set(key,seat);}
-    view.query.value=typeof seat.query==='string'?seat.query:'';view.list.replaceChildren(seat.list);view.body.replaceChildren(seat.body);status.replaceChildren(seat.status);
-    CLATI18n.bind(view.name,'textContent',()=>seat.title||pageText(key));if(!seat.title)delete page.dataset.detail;view.list.scrollTop=seat.scroll?.[0]||0;view.body.scrollTop=seat.scroll?.[1]||0;
-    refreshViewContext();if(key==='files'){fileSeat.query=view.query;files.open();}else if(!seat.loaded)void loadResourceMetadata(view,seat,key,()=>pageIsOpen(page)&&tab===key&&seats.get(key)===seat&&context.isActive());else seat.resume?.();
+  const editorHost=el('div','resource-editor-host');editorHost.hidden=true;page.append(editorHost);
+  const sectionControl=el('div','resource-section-select'),sectionSelect=el('select');
+  sectionSelect.id='resource-section';
+  CLATI18n.attribute(sectionSelect,'aria-label',()=>shellText('resources'));
+  for(const key of ['files','materials','bookmarks']){
+    const option=el('option','',()=>pageText(key));option.value=key;sectionSelect.append(option);
   }
-  view.query.addEventListener('input',()=>{if(tab!=='files')seats.get(tab)?.filter?.();});
-  page.addEventListener('clat:page-leave',()=>{files.suspend();});
-  const trigger=shellButton('resources-open','folder',()=>shellText('resources'),()=>{presentPage(page);select(tab);});trigger.hidden=true;document.body.append(trigger,page);
+  sectionControl.append(sectionSelect,svgIcon('chevron-down'));
+  sectionSelect.onchange=()=>select(sectionSelect.value);
+  view.head.append(sectionControl);
+  const introduction=key=>navigationOverview({title:()=>pageText(key),description:()=>pageText('resource_'+key+'_intro'),icon:key==='bookmarks'?'bookmark':'file'});
+  const status=el('div','navigation-status');view.sidebar.insertBefore(status,view.list);
+  const refresh=()=>{const seat=seats.get(tab);seat?.dispose?.();seats.delete(tab);select(tab);};
+  function crumbs(){
+    const editor=tab==='files'?developmentEditor?.selected:null;
+    const layout=editorHost.firstElementChild||page;
+    return [{label:()=>shellText('resources'),run:()=>{delete layout.dataset.detail;}},{label:()=>projectDisplayName(state.workbench?.project?.root,state.workbench?.project?.name),run:()=>openSettings('projects')},{label:()=>pageText(tab)},...(editor?[{label:()=>editor.path}]:seats.get(tab)?.title?[{label:()=>seats.get(tab).title}]:[])];
+  }
+  function showMetadata(key){
+    let seat=seats.get(key);
+    if(!seat){
+      seat={list:el('nav'),body:el('section'),status:el('div'),query:'',scroll:[0,0],filter:()=>{},overview:()=>introduction(key)};
+      seat.body.append(seat.overview());seats.set(key,seat);
+    }
+    view.query.value=seat.query;view.list.replaceChildren(seat.list);view.body.replaceChildren(seat.body);status.replaceChildren(seat.status);
+    CLATI18n.bind(view.name,'textContent',()=>seat.title||pageText(key));if(!seat.title)delete page.dataset.detail;
+    view.list.scrollTop=seat.scroll[0];view.body.scrollTop=seat.scroll[1];
+    if(!seat.loaded)void loadResourceMetadata(view,seat,key,()=>pageIsOpen(page)&&tab===key&&seats.get(key)===seat&&context.isActive());
+    else seat.resume?.();
+  }
+  function select(key){
+    const changing=tab!==key,focused=document.activeElement===sectionSelect;
+    const prior=seats.get(tab);if(prior){prior.scroll=[view.list.scrollTop,view.body.scrollTop];prior.query=view.query.value;}
+    tab=key;sectionSelect.value=key;
+    const files=key==='files';page.dataset.tab=key;
+    editorHost.hidden=!files;
+    view.sidebar.hidden=view.detail.hidden=files;
+    if(files){
+      shell.tools.embed('file-browser',editorHost);
+      const editor=viewContexts.get('file-browser');
+      const head=editor.sidebar.querySelector('.navigation-head');
+      if(changing)delete editor.node.dataset.detail;
+      if(sectionControl.parentElement!==head)head.append(sectionControl);
+      view.context({sidebar:editor.sidebar,layoutNode:editor.node,actions:editor.actions,crumbs});
+    }else{
+      if(changing)delete page.dataset.detail;
+      if(sectionControl.parentElement!==view.head)view.head.append(sectionControl);
+      shell.tools.release('file-browser');
+      view.context({sidebar:view.sidebar,layoutNode:null,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),refresh)],crumbs});
+      showMetadata(key);
+    }
+    if(focused)sectionSelect.focus({preventScroll:true});
+  }
+  view.query.addEventListener('input',()=>seats.get(tab)?.filter?.());
+  page.addEventListener('clat:page-enter',()=>select(tab));
+  page.addEventListener('clat:page-leave',()=>{view.head.append(sectionControl);shell.tools.release('file-browser');});
+  const trigger=shellButton('resources-open','folder',()=>shellText('resources'),()=>presentPage(page));
+  trigger.hidden=true;document.body.append(trigger,page);
   window.addEventListener('clat:workbench-updated',()=>void reconcileFileReferences());
 }
 async function loadResourceMetadata(view,seat,key,current){

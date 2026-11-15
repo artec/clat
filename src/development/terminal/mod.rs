@@ -149,13 +149,5 @@ impl Drop for Terminals {
     }
 }
 
-pub(super) fn retained(store: &store::Store) -> Result<Value, String> {
-    let mut registry: Registry = store.load_existing("terminals.json")?;
-    for row in &mut registry.terminals {
-        row.phase = "ended".into();
-    }
-    Ok(json!({"terminals":registry.terminals}))
-}
-
 #[cfg(test)]
 mod lifecycle_tests;

@@ -1964,9 +1964,9 @@ divider lines. The conversation map appears only when the message column has
 enough room; opening a list or work area can hide it even in a wide window. Its
 outline and navigation remain available when space returns.
 
-The permanent global navigation opens conversations, resources, task center, history timeline,
+The permanent global navigation opens conversations, resources, tasks, history,
 extensions, settings, and help. The project/session list can collapse within
-Conversations; global actions remain available. Settings, task center, history timeline, and extensions
+Conversations; global actions remain available. Settings, tasks, history, and extensions
 use full content pages. Moving between these pages preserves the current conversation,
 its reading position, and unsent text in this browser page. Back/Forward and hash routes
 return to the corresponding function page. Reloading restores the saved composer draft.
@@ -3267,8 +3267,12 @@ without selecting an execution target; raw event inspection remains under Advanc
 Continuing a conversation explicitly selects the target, while obeying the single
 Run constraint. Cross-project reading does not imply permission to send there.
 
-Task center combines background jobs and scheduled work, with project/type/status
-filters. Selecting a scheduled task retains its list and shows its fixed conversation;
+Tasks opens on the current project. Select **All trusted projects** to expand
+the list without opening other projects. **Type** distinguishes scheduled work
+(including job-triggered continuations) from background jobs. **Status** filters
+for running, next executions or tasks that need attention, and combines with Type.
+The all-project list names each task's project. Selecting a task in another project
+opens its project and task details. Selecting a scheduled task retains its list and shows its fixed conversation;
 selecting a process task shows actual process state and output. Reading does not
 select an execution target. Continuing explicitly selects the conversation and shares
 its existing text draft. A busy project cannot silently redirect the send to another
@@ -3397,8 +3401,10 @@ monitor cache; hovering never causes an additional provider balance query.
 ## Project editor, Git and terminals
 
 The Files and Workspace Changes tools reuse the workbench's list/detail area.
-Editor tabs, unsaved buffers and Git selections belong to the project and survive
-conversation switches. Returning to Conversation restores the transcript and draft.
+Resources opens the same project file editor under Project Files. Switching
+between Resources and the conversation Files tool keeps one set of editor tabs
+and unsaved buffers. Use the Resources drop-down to open Conversation Materials or Bookmarks. Editor tabs, unsaved buffers and Git selections belong
+to the project and survive conversation switches. Returning to Conversation restores the transcript and draft.
 These are human development controls: Agent planning/read-only mode does not prevent
 your own edits or shell input, and these ports are not registered as Agent tools.
 
@@ -3475,7 +3481,8 @@ It supports up to eight running shells per project, resizing, interactive TUI ap
 search, copying, clear, rename and explicit input takeover. Only one client controls a
 terminal; other clients observe it. Ctrl+C belongs to the foreground shell program, and
 Esc does not cancel an Agent run. Page/conversation switches detach the view, not the shell.
-Host restart ends the old terminal records and never re-executes their commands.
+Host restart clears the previous terminals and their in-memory output from the
+directory. It never re-executes their commands.
 On Windows, terminal input/output stays attached to ConPTY even when the Host's
 own standard streams are redirected to files, pipes or a service launcher.
 The header omits the Shell name when it matches the terminal name. The output
@@ -3502,11 +3509,13 @@ Its sidebar lists terminals across all registered projects and supports search a
 per-row action menus. Each terminal row aligns its status icon, name and centered
 action button on one line. The project plus button creates a shell in that project;
 the title plus button targets the current project. The shell menu names its target.
-Running terminals use green icons; ended terminals use gray icons and remain
-selectable for reading retained output and removing the record.
+Running terminals use green icons. Ended terminals use gray icons and stay
+selectable while their output is available. Reopening or reloading the terminal
+page can replay that output. Entries with no output disappear automatically
+after the Host finishes reading the terminal stream.
 Closing a running terminal requires confirmation and stops its process tree before
-removing the record. Ended records can be removed directly, including records left
-by a Host restart. Per-project and global cleanup remove ended terminals only.
+removing the record. Ended records can be removed directly. Per-project and
+global cleanup remove ended terminals only.
 
 Terminal font settings provide System Default and a custom
 installed family name. Desktop offers searchable installed families and their real

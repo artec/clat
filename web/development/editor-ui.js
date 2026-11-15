@@ -7,7 +7,7 @@ function developmentFileIcon(path){
 function editorMenu(items,source,x,y){
   const menu=el('div','session-context-menu'),listeners=new AbortController();menu.setAttribute('role','menu');
   let closed=false;const close=()=>{if(closed)return;closed=true;listeners.abort();menu.remove();};
-  for(const item of items){const button=el('button');button.type='button';button.setAttribute('role','menuitem');button.append(svgIcon(item.icon),el('span','',()=>devText(item.key)));button.disabled=Boolean(item.disabled);button.onclick=()=>{close();if(!context.isActive())return;source.focus({preventScroll:true});void Promise.resolve().then(item.run).catch(error=>updateRunState(error.message));};menu.append(button);}
+  for(const item of items){const button=el('button');button.type='button';button.setAttribute('role','menuitem');button.dataset.action=item.key;button.append(svgIcon(item.icon),el('span','',()=>devText(item.key)));button.disabled=Boolean(item.disabled);button.onclick=()=>{close();if(!context.isActive())return;source.focus({preventScroll:true});void Promise.resolve().then(item.run).catch(error=>updateRunState(error.message));};menu.append(button);}
   const dialog = source.closest('dialog[open]');
   (dialog || document.body).append(menu);positionSessionMenu(menu,x,y,source);
   dialog?.addEventListener('close',close,{signal:listeners.signal});

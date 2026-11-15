@@ -100,27 +100,31 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
   await page.fill('#prompt', 'existing draft');
   await page.click('#nav-resources');
   const resources = page.locator('#resources-dialog');
-  const preview = resources.locator('pre');
-  const recheck = resources.locator('[data-action=refresh-file-preview]');
-  const quote = resources.locator('[data-action=quote-file-snapshot]');
+  const row = resources.getByRole('treeitem', {name:'quote-中文.md'});
   await resources.getByRole('searchbox').fill('quote-中文');
-  await resources.getByRole('treeitem', {name:'quote-中文.md'}).click();
-  await expect(preview).toContainText('# original', LIVE);
-  await resources.getByRole('spinbutton', { name: 'First line', exact: true }).fill('2');
-  await resources.getByRole('spinbutton', { name: 'Last line', exact: true }).fill('2');
-  await recheck.click();
-  await expect(preview).toHaveText('line two', LIVE);
+  await row.click();
+  await expect(resources.locator('.cm-content')).toContainText('# original', LIVE);
+
+  const snapshot = await page.evaluate(() => rpc('files.preview', {path:'quote-中文.md',start_line:2,end_line:2}));
+  expect(snapshot.content).toBe('line two');
   fs.writeFileSync(file, '# changed\nnew second\n');
-  await quote.click();
-  await expect(resources.getByRole('status')).toContainText('File changed since preview', LIVE);
+  const stale = await page.evaluate(async version => {
+    try { await rpc('files.reference', {path:'quote-中文.md',start_line:2,end_line:2,version}); }
+    catch(error) { return error.technical; }
+  }, snapshot.version);
+  expect(stale).toContain('File changed since preview');
   await expect(page.locator('#prompt')).toHaveValue('existing draft');
-  await recheck.click();
-  await expect(preview).toHaveText('new second', LIVE);
-  await expect(resources.getByRole('status')).not.toContainText('File changed since preview');
+  await resources.locator('.editor-head-actions').getByRole('button',{name:'Refresh',exact:true}).click();
+  await expect(resources.locator('.cm-content')).toContainText('new second', LIVE);
 
   await page.setViewportSize({ width: 390, height: 844 });
-
-  await quote.click();
+  const editor = resources.locator('.cm-content');
+  await editor.getByText('new second',{exact:true}).click();
+  await page.keyboard.press('Home');
+  await page.keyboard.press('Shift+End');
+  expect(await page.evaluate(()=>window.getSelection().toString())).toBe('new second');
+  await resources.locator('.dev-editor-toolbar').getByRole('button',{name:'File actions'}).click();
+  await page.locator('[role=menuitem][data-action=quote]').click();
   await expect(resources).toBeHidden();
   await expect(page.locator('#prompt')).toHaveValue(/existing draft[\s\S]*lines 2-2[\s\S]*> new second/);
   await expect(page.locator('#prompt')).toBeFocused();

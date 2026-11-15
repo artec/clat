@@ -151,6 +151,17 @@ impl SchedulerService {
             .filter(|r| r.scope.project == project)
             .collect())
     }
+    pub(crate) fn task_directory(&self) -> Result<(Vec<Rule>, Vec<Delivery>), ScheduleError> {
+        let mut cache = self
+            .lane
+            .lock()
+            .map_err(|_| ScheduleError::new("unavailable"))?;
+        let mut doc = self.read(&mut cache)?;
+        for rule in &mut doc.rules {
+            rule.review = None;
+        }
+        Ok((doc.rules, doc.deliveries))
+    }
     pub(crate) fn create(&self, scope: WorkScope, spec: WorkSpec) -> Result<Rule, ScheduleError> {
         if !self
             .control

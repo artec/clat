@@ -28,16 +28,28 @@ function installDevelopmentFileActions(editor,ui){
   };
   editor.quote=async()=>{
     const doc=editor.selected;if(!doc)return;
+    const selection=editor.selection(),slice=selection&&selection.from!==selection.to;
     if(doc.dirty){
-      const selection=editor.selection();const excerpt=selection&&selection.from!==selection.to?doc.text.slice(selection.from,selection.to):doc.text.split('\n').slice(0,200).join('\n');
+      const excerpt=slice?doc.text.slice(selection.from,selection.to):doc.text.split('\n').slice(0,200).join('\n');
       if(new TextEncoder().encode(excerpt).length>65536){devStatus(ui.status,'quote_large');return;}
       appendQuote(devText('unsaved_quote',{path:doc.path})+'\n```text\n'+excerpt+'\n```');return;
     }
-    const session=state.sessionId;
-    try{const preview=await rpc('files.preview',{path:doc.path,start_line:1,end_line:200});const reference=await rpc('files.reference',{path:doc.path,start_line:preview.start_line,end_line:preview.end_line,version:preview.version});
-      if(session!==state.sessionId||!context.isActive())return;
+    const owner=composerScope,session=state.sessionId;
+    const current=()=>composerOwns(owner)&&session===state.sessionId&&toolViewIsOpen(node)&&editor.selected===doc&&!doc.dirty&&!state.switching&&!state.compactionActive&&!dom.prompt.disabled;
+    const lineAt=offset=>doc.text.slice(0,offset).split('\n').length;
+    const start=slice?lineAt(selection.from):1,end=slice?lineAt(selection.to-1):200;
+    if(end-start>=200){devStatus(ui.status,'quote_large');return;}
+    const path=doc.path,version=doc.version,visibleText=doc.text.split('\n').slice(start-1,end).join('\n');
+    try{
+      const preview=await rpc('files.preview',{path,start_line:start,end_line:end});if(!current())return;
+      const content=preview.content.replace(/\r\n/g,'\n');
+      if(doc.version!==version||visibleText!==(start===1?content.replace(/^\uFEFF/,''):content)){
+        devStatus(ui.status,'external_change');return;
+      }
+      const reference=await rpc('files.reference',{path,start_line:preview.start_line,end_line:preview.end_line,version:preview.version});
+      if(!current()||doc.path!==path||doc.version!==version)return;
       queueFileReference(reference);appendQuote(reference.reference);
-    }catch(error){fail(error);}
+    }catch(error){if(current())fail(error);}
   };
   function appendQuote(text){dom.prompt.value+=(dom.prompt.value?'\n\n':'')+text+'\n';state.composerGeneration++;saveComposerText();invalidateSuggestion();resizePrompt();closeWorkbenchTool();dom.prompt.focus();}
   editor.terminalHere=async()=>{await developmentTerminal?.openDirectory(parent());};

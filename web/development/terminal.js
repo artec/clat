@@ -12,7 +12,7 @@ function installDevelopmentTerminal(){
     if(!devAvailable()){notice.unavailable();return;}
     const request=++refreshEpoch,previous=currentProject().terminals,previousIndex=previous.findIndex(row=>row.id===selected?.id);
     try{const data=await rpc('terminal.directory',{});if(request!==refreshEpoch)return;projects=data.projects;
-      const local=currentProject();for(const [id,seat]of terminals){const row=local.terminals.find(row=>row.id===id);if(!row){dispose(seat);if(selected===seat)selected=null;terminals.delete(id);}else seat.row=row;}
+      const local=currentProject();for(const [id,seat]of terminals){const row=local.terminals.find(row=>row.id===id);if(!row){dispose(seat);if(selected===seat){selected=null;notice.reset();delete node.dataset.detail;}terminals.delete(id);}else seat.row=row;}
       render();notice.clear(directoryError);directoryError=null;
       if(!selected&&visible()&&!creating){const row=local.terminals[Math.min(Math.max(previousIndex,0),local.terminals.length-1)];if(row)await select(row);else{const other=projects.find(p=>p.terminals.length);if(other)await choose(other,other.terminals.at(-1));}}
     }catch(error){if(request===refreshEpoch){directoryError=error;report(error);}}
@@ -28,8 +28,15 @@ function installDevelopmentTerminal(){
     const request=++epoch;await devLoadTerminalFonts();if(request!==epoch)return;
     selected?.stream?.abort();if(selected)selected.element.hidden=true;
     let seat=terminals.get(row.id);if(!seat){seat=makeSeat(row.id,row);terminals.set(row.id,seat);}seat.row=row;selected=seat;seat.element.hidden=false;node.dataset.detail='true';render();
-    if(row.phase==='running'){await claim(false);if(request!==epoch)return;await fit();if(visible())void attach(seat);if(focus&&seat.controlled)seat.widget.term.focus();}
-    else{seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('ended');}
+    await resumeSelected(focus);
+  }
+  async function resumeSelected(focus=false){
+    const seat=selected,request=epoch;if(!seat)return;
+    if(seat.row.phase==='running')await claim(false);
+    else if(seat.row.phase==='ended'){seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('ended');}
+    else return;
+    if(request!==epoch||selected!==seat)return;
+    await fit();if(visible()&&request===epoch&&selected===seat){void attach(seat);if(focus&&seat.controlled)seat.widget.term.focus();}
   }
   async function claim(takeover){
     if(!selected||selected.row.phase!=='running')return;const seat=selected;
@@ -66,7 +73,7 @@ function installDevelopmentTerminal(){
   new ResizeObserver(()=>{if(visible())requestAnimationFrame(()=>void fit());}).observe(mount);
   window.addEventListener('clat:workbench-updated',()=>{if(active){if(devAvailable())void refresh();else{selected?.stream?.abort();notice.unavailable();}}});
   window.addEventListener('clat:projects-updated',()=>{if(visible())void refresh();});
-  node.addEventListener('clat:page-enter',async()=>{active=true;await refresh();if(selected?.row.phase==='running'){await claim(false);await fit();void attach(selected);}});
+  node.addEventListener('clat:page-enter',async()=>{active=true;await refresh();if(visible())await resumeSelected();});
   const leave=()=>{active=false;epoch++;menuClose?.();globalThis.CLATTerminalMenuClose?.();selected?.stream?.abort();};node.addEventListener('clat:page-leave',leave);window.addEventListener('clat:development-deactivated',leave);
   window.addEventListener('clat:activated',()=>{if(pageIsOpen(node)){active=true;void refresh();}});
   node.addEventListener('keydown',event=>{if(event.key==='Escape'||mount.contains(event.target))event.stopPropagation();});
@@ -118,10 +125,11 @@ async function readTerminalOutput(seat,{visible,isSelected,refresh,has,attach,no
       while(!controller.signal.aborted){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let end;
         while((end=buffer.indexOf('\n\n'))!==-1){const frame=parseSseBlock(buffer.slice(0,end));buffer=buffer.slice(end+2);if(!frame)continue;const chunk=JSON.parse(frame.data);if(controller.signal.aborted)return;
           if(chunk.reset){seat.widget.term.reset();notice.show('history_truncated');}await new Promise(resolve=>seat.widget.term.write(Uint8Array.from(atob(chunk.data),c=>c.charCodeAt(0)),resolve));seat.offset=chunk.offset;
-          if(chunk.lease!==seat.lease){seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('observer');}if(chunk.ended){seat.row.phase='ended';notice.show('ended');await refresh();return;}
+          if(chunk.ended){seat.outputComplete=true;seat.row.phase='ended';seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('ended');await refresh();return;}
+          if(seat.row.phase==='running'&&chunk.lease!==seat.lease){seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('observer');}
         }
       }
-      if(!controller.signal.aborted&&visible()&&isSelected()){await refresh();if(has()&&seat.row.phase==='running')setTimeout(()=>{if(visible()&&isSelected())void attach(seat);},1000);}
+      if(!controller.signal.aborted&&visible()&&isSelected()){await refresh();if(has())setTimeout(()=>{if(visible()&&isSelected())void attach(seat);},1000);}
     }catch(error){if(!controller.signal.aborted){notice.show('disconnected');if(visible()&&isSelected())setTimeout(()=>{if(visible()&&isSelected()&&has())void attach(seat);},1500);}}finally{if(seat.stream===controller)seat.stream=null;}
   }
 
@@ -129,6 +137,6 @@ function startTerminalStream(seat,ports){
   if(seat.reading&&seat.stream&&!seat.stream.signal.aborted)return seat.reading;
   const generation=(seat.attachVersion||0)+1;seat.attachVersion=generation;
   const previous=seat.reading||Promise.resolve();
-  const reading=previous.catch(()=>{}).then(()=>{if(generation!==seat.attachVersion||!ports.visible()||!ports.isSelected()||seat.row.phase!=='running')return;return readTerminalOutput(seat,ports);});
+  const reading=previous.catch(()=>{}).then(()=>{if(generation!==seat.attachVersion||seat.outputComplete||!ports.visible()||!ports.isSelected())return;return readTerminalOutput(seat,ports);});
   seat.reading=reading;void reading.finally(()=>{if(seat.reading===reading)seat.reading=null;}).catch(()=>{});return reading;
 }

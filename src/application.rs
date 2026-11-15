@@ -68,6 +68,7 @@ mod skill_management;
 mod task_acceptance;
 #[cfg(test)]
 mod task_acceptance_tests;
+mod task_directory;
 mod task_recovery;
 #[cfg(test)]
 mod task_recovery_tests;

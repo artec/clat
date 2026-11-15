@@ -205,8 +205,8 @@ pub fn desktop_take_tray_intent(
         .take())
 }
 pub fn activate(app: &tauri::AppHandle, id: &str) {
-    if id == "tray-quit" {
-        app.exit(0);
+    if matches!(id, "tray-quit" | "desktop-quit") {
+        let _ = crate::quit::request(app);
         return;
     }
     let intent = if matches!(id, "tray-settings" | "desktop-about") {

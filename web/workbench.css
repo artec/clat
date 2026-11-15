@@ -380,7 +380,9 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .reader-message.search-target { border-inline-start: 3px solid var(--accent); padding-inline-start: 16px; }
 .history-advanced { margin-top: 24px; color: var(--text-muted); }
 .settings-draft-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding: 12px 14px; border-radius: 9px; background: var(--surface-input); color: var(--text-muted); font-size: var(--text-size-secondary); }
-.task-overview { display: flex; flex-wrap: wrap; gap: 8px; }
+.task-filter-row { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 8px; }
+.task-filter-row > .task-filter-field { display: grid; gap: 4px; min-width: 0; color: var(--text-muted); font-size: var(--text-size-secondary); }
+.shell-pages .task-filter-field select { min-height: 34px; padding: 5px 24px 5px 9px; text-overflow: ellipsis; cursor: pointer; }
 .image-preview { max-width: min(1000px,90vw); max-height: 90dvh; border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--surface); color: var(--text); }
 .image-preview img { display: block; max-width: 80vw; max-height: 75dvh; object-fit: contain; }
 .task-examples { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 20px 0; max-width: 700px; margin: auto; }
@@ -807,3 +809,25 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
   42% { transform:translateY(-3px); opacity:1; }
 }
 @media(prefers-reduced-motion:reduce){.back-to-latest[data-running=true] .history-running-dots>i,.history-status[data-loading=true]>svg{animation:none;will-change:auto}}
+
+.global-rail :is(.global-links,.global-bottom) > .shell-button { position: relative; }
+.global-rail .shell-button > .shell-label {
+  position: absolute;
+  inset-inline-start: calc(100% + 6px);
+  inset-block-start: 50%;
+  z-index: 1;
+  transform: translateY(-50%);
+  width: max-content;
+  max-width: min(240px, calc(100vw - var(--global-rail-width) - 20px));
+  padding: 6px 11px;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  font: 500 var(--text-size-ui)/1.35 var(--font-ui);
+  white-space: normal;
+  pointer-events: none;
+}
+.global-rail .shell-button:focus-visible > .shell-label { display: block; }
+@media(hover:hover){ .global-rail .shell-button:hover > .shell-label { display: block; } }

@@ -31,9 +31,10 @@ function createTerminalStatus(status,diagnostic,body){
   return {
     show(key){reset();devStatus(status,key);},
     unavailable(){reset();devUnavailable(status);},
+    reset(){reset();CLATI18n.bind(status,'textContent',()=>'');},
     clear(error){
       if(!error||failure!==error)return;
-      reset();CLATI18n.bind(status,'textContent',()=>'');
+      this.reset();
     },
     report(error){
       reset();failure=error;

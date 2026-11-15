@@ -170,13 +170,3 @@ pub(super) fn io(error: std::io::Error) -> String {
 
 #[cfg(test)]
 mod tests;
-
-pub(crate) fn retained_terminals(project: &Project, private: &Path) -> Result<Value, String> {
-    let root = project.root();
-    let store = store::Store::new(
-        private
-            .join("development")
-            .join(digest(root.to_string_lossy().as_bytes())),
-    );
-    terminal::retained(&store)
-}

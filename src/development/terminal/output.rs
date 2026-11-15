@@ -2,6 +2,14 @@ use super::*;
 use base64::Engine;
 const RING: usize = 2 * 1024 * 1024;
 impl Entry {
+    pub(super) fn has_pending_or_retained_output(&self) -> Result<bool, String> {
+        if !self.output_done.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+        let output = self.output.lock().map_err(|_| "terminal_busy")?;
+        Ok(output.end > 0)
+    }
+
     pub(super) fn append(&self, bytes: &[u8]) {
         {
             let mut output = self.output.lock().expect("terminal output");

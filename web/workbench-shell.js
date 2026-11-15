@@ -16,7 +16,7 @@ function createShellRail(shell) {
   const rail = el('nav', 'global-rail'); rail.id = 'global-nav';
   CLATI18n.attribute(rail, 'aria-label', () => shellText('navigation'));
   const links = el('div', 'global-links');
-  const home = shellButton('nav-workbench', 'agent', () => shellText('workbench'), () => { closeMobileSidebar(); shell.chat(); });
+  const home = shellButton('nav-workbench', 'agent', () => shellText('workbench'), () => { closeMobileSidebar(); shell.chat(); }, false);
   const logo = el('span', 'clat-status-icon'); logo.setAttribute('aria-hidden', 'true');
   home.querySelector('svg').replaceWith(logo); links.append(home);
   for (const [id, icon, label, run] of [
@@ -25,11 +25,13 @@ function createShellRail(shell) {
     ['nav-tasks', 'schedule', 'tasks', () => shell.open('jobs-dialog')],
     ['nav-history', 'history', 'history', () => shell.open('history-dialog')],
     ['nav-extensions', 'extensions', 'extensions', () => openMarket()],
-  ]) links.append(shellButton(id, icon, () => shellText(label), () => { closeMobileSidebar(); run(); }));
+  ]) links.append(shellButton(id, icon, () => shellText(label), () => { closeMobileSidebar(); run(); }, false));
   const bottom = el('div', 'global-bottom sidebar-footer');
-  bottom.append(shellButton('nav-settings', 'settings', () => shellText('settings'), () => openSettings()),
-    shellButton('nav-help', 'help', () => shellText('help'), () => openHelp()));
-  rail.append(links, bottom); dom.app.prepend(rail);
+  bottom.append(shellButton('nav-settings', 'settings', () => shellText('settings'), () => openSettings(), false),
+    shellButton('nav-help', 'help', () => shellText('help'), () => openHelp(), false));
+  rail.append(links, bottom);
+  rail.querySelectorAll('.shell-label').forEach(label=>label.setAttribute('aria-hidden','true'));
+  dom.app.prepend(rail);
   return rail;
 }
 

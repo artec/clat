@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { LIVE, hostInfo, openWorkbench, fetchBrowserRequest } = require('../helpers/workbench');
+const { LIVE, hostInfo, openWorkbench, openWorkbenchTool, fetchBrowserRequest } = require('../helpers/workbench');
 
 test('a fresh backend connection opens Computer Use before any manual reload', async ({ page }) => {
   const entry = hostInfo('workbench');
@@ -44,37 +44,49 @@ test('Computer Use refreshes a connected Windows Host without requesting macOS a
   expect(new Set(commands)).toEqual(new Set(['/ui-consents']));
 });
 
-test('the global extension retains an open file and can be controlled from every feature page', async ({ page }) => {
+test('resources and the conversation files tool share the open editor and unsaved changes', async ({ page }) => {
   const fs = require('node:fs'), path = require('node:path');
   await openWorkbench(page, hostInfo('workbench'));
   const root = await page.evaluate(async () => (await rpc('workbench.info', {})).project.root);
   const file = path.join(root, 'global-extension-example.md');
-  fs.writeFileSync(file, 'Retained global file review');
+  fs.writeFileSync(file, 'Original on disk');
   try {
+    const editor = page.locator('#file-browser');
+    const resources = page.locator('#resources-dialog');
+    const content = editor.locator('.cm-content');
     await page.fill('#prompt', 'Unsent conversation draft');
-    await page.click('#composer-add'); await page.click('#add-project-file');
-    await page.locator('#file-browser input[type="search"]').fill('global-extension-example');
-    await page.locator('#file-browser .review-file').click();
-    const preview = page.locator('#file-browser pre');
-    await expect(preview).toHaveText('Retained global file review', LIVE);
-    for (const id of ['nav-resources', 'nav-tasks', 'nav-history', 'nav-extensions', 'nav-settings', 'nav-help']) {
-      await page.click('#tools-open');
-      await expect(page.locator('#workbench-tools')).toBeVisible();
-      await page.click('#' + id);
-      await expect(page.locator('#workbench-tools')).toBeHidden();
-      await expect(preview).toBeVisible();
-      await page.click('#inspector-toggle'); await expect(preview).toBeHidden();
-      await page.click('#inspector-toggle');
-      await expect(preview).toBeVisible();
-      await expect(preview).toHaveText('Retained global file review');
+    const nav = page.locator('#nav-resources');
+    await expect(nav.locator('.shell-label')).toBeHidden();
+    await nav.hover();
+    await expect(nav.locator('.shell-label')).toBeVisible();
+    await nav.click();
+    await expect(resources.locator('#file-browser')).toBeVisible();
+    await editor.getByRole('searchbox').fill('global-extension-example');
+    await editor.getByRole('treeitem',{name:'global-extension-example.md'}).click();
+    await expect(content).toContainText('Original on disk', LIVE);
+    await content.fill('Unsaved in the shared editor');
+    const section=resources.locator('#resource-section');
+    for(const value of ['materials','bookmarks']){
+      await section.selectOption(value);
+      await expect(editor).toBeHidden();
     }
-    await page.click('#nav-tasks'); await page.selectOption('#task-type','schedules');
-    await expect(preview).toBeVisible();
-    await page.locator('#file-browser [data-action="quote-file-snapshot"]').click();
-    await expect(page.locator('#prompt')).toBeVisible();
-    await expect(page.locator('#prompt')).toHaveValue(/Unsent conversation draft[\s\S]*Retained global file review/);
+    await section.selectOption('files');
+    await expect(content).toHaveText('Unsaved in the shared editor');
+
     await page.click('#nav-workbench');
-    await expect(page.locator('#prompt')).toHaveValue(/Unsent conversation draft/);
+    await openWorkbenchTool(page, 'files-open');
+    await expect(page.locator('#workspace-tool-host #file-browser')).toBeVisible();
+    await expect(content).toHaveText('Unsaved in the shared editor');
+    expect(await editor.count()).toBe(1);
+    expect(fs.readFileSync(file,'utf8')).toBe('Original on disk');
+    await content.press('ControlOrMeta+s');
+    await expect.poll(()=>fs.readFileSync(file,'utf8'),LIVE).toBe('Unsaved in the shared editor');
+
+    await page.click('#nav-resources');
+    await expect(resources.locator('#file-browser')).toBeVisible();
+    await expect(content).toHaveText('Unsaved in the shared editor');
+    await page.click('#nav-workbench');
+    await expect(page.locator('#prompt')).toHaveValue('Unsent conversation draft');
   } finally { fs.rmSync(file, { force: true }); }
 });
 
@@ -125,10 +137,13 @@ test('resources quote a checked project snapshot back into the retained conversa
   try {
     await page.fill('#prompt', 'Keep this draft');
     await page.click('#nav-resources');
-    await page.locator('#resource-files input[type="search"]').fill('resource-architecture-example');
-    await page.locator('#resource-files .review-file').click();
-    await expect(page.locator('#resource-files pre')).toHaveText('Original resource snapshot', LIVE);
-    await page.locator('#resource-files [data-action="quote-file-snapshot"]').click();
+    const editor = page.locator('#resources-dialog #file-browser');
+    const row = editor.getByRole('treeitem',{name:'resource-architecture-example.md'});
+    await editor.getByRole('searchbox').fill('resource-architecture-example');
+    await row.click();
+    await expect(editor.locator('.cm-content')).toHaveText('Original resource snapshot', LIVE);
+    await row.click({button:'right'});
+    await page.locator('[role=menuitem][data-action=quote]').click();
     await expect(page.locator('#prompt')).toBeVisible();
     await expect(page.locator('#prompt')).toHaveValue(/Keep this draft[\s\S]*Original resource snapshot/);
     fs.writeFileSync(file, 'Later disk edit');
@@ -152,9 +167,8 @@ test('workbench navigation and side review preserve the unsent conversation draf
   await page.click('#composer-add');
   await page.click('#add-project-file');
   await expect(page.locator('#file-browser')).toBeVisible();
-  await expect(page.locator('#prompt')).toBeVisible();
+  await page.click('#nav-workbench');
   await expect(page.locator('#prompt')).toHaveValue('Keep this conversation draft');
-  await page.click('#inspector-close');
   await page.click('#nav-tasks');
   await expect(page.locator('#jobs-dialog')).toBeVisible();
   await page.selectOption('#task-type','schedules');

@@ -123,6 +123,40 @@ fn terminal_directory_sources_do_not_mount_or_create_project_sessions() {
     crate::test_support::cleanup_tree(&root);
 }
 
+#[cfg(unix)]
+#[test]
+fn terminal_directory_omits_old_rows_for_unmounted_projects() {
+    use serde_json::json;
+
+    let (root, mut host, project, _) = fixture("terminal-directory-no-output");
+    let mounted = host.attach(project.clone()).unwrap();
+    mounted.lock().unwrap().ensure_registered().unwrap();
+    let service = mounted.lock().unwrap().development().unwrap();
+    service
+        .request(
+            "terminal.create",
+            json!({"operationId":"old-shell","clientId":"owner","shell":"/bin/sh"}),
+            None,
+        )
+        .unwrap();
+    service
+        .request("terminal.close", json!({"id":"old-shell"}), None)
+        .unwrap();
+    drop(service);
+    drop(mounted);
+    assert!(
+        host.unmount_idle(&project.root().canonicalize().unwrap())
+            .unwrap()
+    );
+    let sources = host.terminal_directory_sources();
+    assert_eq!(sources.len(), 1);
+    assert!(!sources[0].0.mounted);
+    assert_eq!(sources[0].1.read().unwrap()["terminals"], json!([]));
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}
+
 #[test]
 fn project_organization_updates_live_titles_without_mounting_or_selecting() {
     let (root, mut host, first, _) = fixture("directory-organization");

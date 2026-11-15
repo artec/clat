@@ -30,9 +30,9 @@ test('review the application content pages and nested conversation workspace', a
       await page.click('#' + nav); await shot(name);
     }
     await page.click('#nav-resources');
-    await page.locator('#resource-files input[type="search"]').fill('design-review');
-    await page.locator('#resource-files .review-file').click();
-    await expect(page.locator('#resource-files pre')).toContainText('页面内容与对话工作区', LIVE);
+    await page.locator('#resources-dialog #file-browser input[type="search"]').fill('design-review');
+    await page.locator('#resources-dialog #file-browser .review-file').click();
+    await expect(page.locator('#resources-dialog #file-browser .cm-content')).toContainText('页面内容与对话工作区', LIVE);
     await shot('resources');
     await page.setViewportSize({ width: 390, height: 844 });
     await shot('resources-phone');

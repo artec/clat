@@ -42,16 +42,21 @@ impl Terminals {
         }
     }
     pub(super) fn list(&self) -> Result<Value, String> {
-        let mut registry: Registry = self.store.load_existing("terminals.json")?;
+        let registry: Registry = self.store.load_existing("terminals.json")?;
         let entries = self.entries.lock().map_err(|_| "terminal_busy")?;
-        for row in &mut registry.terminals {
-            if let Some(entry) = entries.get(&row.id) {
-                *row = entry.metadata.lock().map_err(|_| "terminal_busy")?.clone();
-            } else {
-                row.phase = "ended".into();
+        let mut visible = Vec::new();
+        // The registry also deduplicates creates across restarts. A row on disk
+        // alone has no process or output to show in the directory.
+        for row in registry.terminals {
+            let Some(entry) = entries.get(&row.id) else {
+                continue;
+            };
+            let metadata = entry.metadata.lock().map_err(|_| "terminal_busy")?.clone();
+            if metadata.phase != "ended" || entry.has_pending_or_retained_output()? {
+                visible.push(metadata);
             }
         }
-        Ok(json!({"terminals":registry.terminals}))
+        Ok(json!({"terminals":visible}))
     }
     fn claim(&self, entry: &Entry, value: &Value) -> Result<Value, String> {
         let client = identity(value, "clientId")?;

@@ -112,7 +112,13 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<()> {
             &Item::hide_others(app, Some(l.text("desktop.menu_others")))?,
             &Item::show_all(app, Some(l.text("desktop.menu_show")))?,
             &Item::separator(app)?,
-            &Item::quit(app, Some(l.text("desktop.menu_quit")))?,
+            &MenuItem::with_id(
+                app,
+                "desktop-quit",
+                l.text("desktop.menu_quit"),
+                true,
+                Some("CmdOrCtrl+Q"),
+            )?,
         ],
     )?;
     let edit = Submenu::with_items(

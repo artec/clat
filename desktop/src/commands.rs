@@ -240,20 +240,7 @@ pub fn desktop_preferences(
 #[tauri::command]
 pub fn desktop_quit(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), UiMessage> {
     guard(&window)?;
-    let state = app.state::<Desktop>();
-    let updates = state
-        .updates
-        .lock()
-        .map_err(|_| UiMessage::new("desktop.update_state_unavailable"))?;
-    if !updates.allow_exit(false) {
-        return Err(UiMessage::new("update.cannot_cancel"));
-    }
-    state
-        .quitting
-        .store(true, std::sync::atomic::Ordering::Release);
-    drop(updates);
-    app.exit(0);
-    Ok(())
+    crate::quit::request(&app)
 }
 #[tauri::command]
 pub async fn desktop_stop_host(

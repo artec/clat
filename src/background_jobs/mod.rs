@@ -21,6 +21,7 @@ use crate::{
         use_cases::SessionService,
     },
 };
+pub(crate) use recovery::read_unmounted_jobs;
 pub(crate) use registry::{JobCapacity, JobRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

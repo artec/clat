@@ -39,14 +39,14 @@ function syncViewList(view){
   const mobile=matchMedia('(max-width: 760px)').matches,collapsed=!mobile&&viewListPreferences.read(view.id);
   dom.app.dataset.viewSidebar=collapsed?'collapsed':'expanded';
   if(!view.sidebar)return false;
-  view.sidebar.inert=collapsed||(mobile&&(view.id==='conversation'?dom.app.dataset.mobileSidebar!=='open':view.node.dataset.detail==='true'));
+  view.sidebar.inert=collapsed||(mobile&&(view.id==='conversation'?dom.app.dataset.mobileSidebar!=='open':(view.layoutNode||view.node).dataset.detail==='true'));
   view.sidebar.setAttribute('aria-hidden',String(view.sidebar.inert));return !view.sidebar.inert;
 }
 function toggleViewList(shell){
   const view=activeViewContext(shell);if(!view.sidebar)return;
-  if(matchMedia('(max-width: 760px)').matches){if(view.id==='conversation')dom.app.dataset.mobileSidebar=dom.app.dataset.mobileSidebar==='open'?'closed':'open';else delete view.node.dataset.detail;}
+  if(matchMedia('(max-width: 760px)').matches){if(view.id==='conversation')dom.app.dataset.mobileSidebar=dom.app.dataset.mobileSidebar==='open'?'closed':'open';else delete (view.layoutNode||view.node).dataset.detail;}
   else viewListPreferences.write(view.id,!viewListPreferences.read(view.id));
-  refreshApplicationToolbar(shell);view.node.dispatchEvent(new Event('clat:view-resize'));
+  refreshApplicationToolbar(shell);(view.layoutNode||view.node).dispatchEvent(new Event('clat:view-resize'));
 }
 
 function registerGlobalViewContexts(shell){

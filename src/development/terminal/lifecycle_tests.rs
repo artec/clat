@@ -177,3 +177,28 @@ fn terminal_list_does_not_queue_behind_the_input_lane() {
     lane_holder.thread().unpark();
     lane_holder.join().unwrap();
 }
+
+#[test]
+fn terminal_list_keeps_running_and_draining_rows_then_hides_empty_ended_rows() {
+    let (send, receive) = mpsc::channel();
+    let entry = probe_entry(Box::new(ChannelReader(receive)));
+    let terminals = probe_terminals();
+    terminals
+        .entries
+        .lock()
+        .unwrap()
+        .insert("probe".into(), entry.clone());
+    terminals.persist().unwrap();
+    let listed = || terminals.list().unwrap()["terminals"].clone();
+    // The process monitor can publish "ended" before the PTY reader drains.
+    let running = listed();
+    entry.metadata.lock().unwrap().phase = "ended".into();
+    let draining = listed();
+    drop(send);
+    entry.close().unwrap();
+    let empty = listed();
+    std::fs::remove_dir_all(terminals.store.path("terminals.json").parent().unwrap()).unwrap();
+    assert_eq!(running[0]["phase"], "running");
+    assert_eq!(draining[0]["phase"], "ended");
+    assert_eq!(empty, json!([]));
+}

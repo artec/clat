@@ -6,6 +6,12 @@ function navigationSearch(input,label){
   input ||= el('input');input.type='search';const search=el('label','session-search');
   CLATI18n.attribute(input,'placeholder',label);CLATI18n.attribute(input,'aria-label',label);search.append(svgIcon('search'),input);return {element:search,input};
 }
+function navigationTrustedProjects(id){
+  const input=el('input');input.id=id;input.type='checkbox';
+  const text=()=>CLATI18n.msg('history.all_projects'),element=el('label','navigation-project-scope');
+  element.append(input,el('span','',text));
+  return {element,input,text};
+}
 function navigationTabs(items,choose){
   const tabs=el('nav','session-tabs navigation-tabs');tabs.setAttribute('role','tablist');const buttons=new Map();
   for(const [id,label]of items){const button=el('button');button.type='button';button.setAttribute('role','tab');button.onclick=()=>choose(id);CLATI18n.bind(button,'textContent',label);tabs.append(button);buttons.set(id,button);}

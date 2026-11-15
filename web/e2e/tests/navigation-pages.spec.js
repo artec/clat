@@ -10,8 +10,9 @@ test('a first-message file snapshot is linked to its committed message and bookm
   const resources=page.locator('#resources-dialog');
   await page.click('#nav-resources');await resources.getByRole('searchbox').fill('navigation-reference');
   await resources.getByRole('treeitem',{name:'navigation-reference.md'}).click();
-  await expect(resources.locator('pre')).toContainText('Exact navigation snapshot',LIVE);
-  await resources.locator('[data-action=quote-file-snapshot]').click();
+  await expect(resources.locator('.cm-content')).toContainText('Exact navigation snapshot',LIVE);
+  await resources.getByRole('treeitem',{name:'navigation-reference.md'}).click({button:'right'});
+  await page.locator('[role=menuitem][data-action=quote]').click();
   await expect(page.locator('#prompt')).toHaveValue(/Exact navigation snapshot/);
   await page.click('#send');
   const message=page.locator('.msg.user[data-seq]').filter({hasText:'Exact navigation snapshot'});
@@ -26,7 +27,7 @@ test('a first-message file snapshot is linked to its committed message and bookm
   await page.reload();await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
   const entries=await page.evaluate(async()=>(await rpc('library.list',{})).entries);
   expect(entries).toContainEqual(expect.objectContaining({kind:'bookmark',reference:expect.objectContaining(reference)}));
-  await page.click('#nav-resources');await resources.getByRole('tab',{name:'Bookmarks'}).click();
+  await page.click('#nav-resources');await resources.locator('#resource-section').selectOption('bookmarks');
   await resources.getByRole('button').filter({hasText:reference.session+' · #'+reference.seq}).click();
   await expect(resources.locator('.reader-messages')).toContainText('Exact navigation snapshot',LIVE);
  }finally{fs.rmSync(file,{force:true});}
@@ -38,8 +39,31 @@ test('a task retains its conversation and draft across feature and project navig
  await page.click('#nav-tasks');await page.locator('[data-task-id="'+rule.id+'"]').click();await expect(page.locator('#prompt')).toBeVisible(LIVE);await page.fill('#prompt','Retained task draft');
  await page.click('#nav-history');await page.keyboard.press('Escape');await expect(page.locator('#history-dialog')).toBeVisible();
  await page.click('#nav-tasks');await expect(page.locator('#prompt')).toBeVisible(LIVE);await expect(page.locator('#prompt')).toHaveValue('Retained task draft');
- const origin=page.url();const root=fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(),'clat-navigation-project-')));
- try{await addWorkbenchProject(page,root);await page.click('#nav-tasks');await page.selectOption('#task-project',new URL(origin).searchParams.get('workspace')||'default');await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);await page.click('#nav-tasks');await page.locator('[data-task-id="'+rule.id+'"]').click();await expect(page.locator('#prompt')).toBeVisible(LIVE);await expect(page.locator('#prompt')).toHaveValue('Retained task draft');}
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(),'clat-navigation-project-')));
+ try {
+   const currentRoute=await addWorkbenchProject(page,root);
+   await page.click('#nav-tasks');
+   const task=page.locator('[data-task-id="'+rule.id+'"]');
+   const scope=page.locator('#task-all-projects');
+   await expect(scope).not.toBeChecked();
+   await expect(task).toHaveCount(0);
+   await scope.check();
+   await expect(task).toBeVisible(LIVE);
+   expect(new URL(page.url()).searchParams.get('workspace')).toBe(currentRoute);
+   await page.selectOption('#task-status','running');
+   await expect(task).toHaveCount(0);
+   await page.selectOption('#task-status','attention');
+   await expect(task).toBeVisible();
+   await page.selectOption('#task-type','jobs');
+   await expect(task).toHaveCount(0);
+   await page.selectOption('#task-type','schedules');
+   await expect(task).toBeVisible();
+   await task.click();
+   await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
+   await expect(scope).toBeChecked();
+   await expect(page.locator('#prompt')).toBeVisible(LIVE);
+   await expect(page.locator('#prompt')).toHaveValue('Retained task draft');
+ }
  finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 

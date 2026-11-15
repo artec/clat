@@ -13,6 +13,8 @@ mod localization;
 mod notifications;
 mod policy;
 #[cfg(any(target_os = "macos", windows))]
+mod quit;
+#[cfg(any(target_os = "macos", windows))]
 mod startup;
 #[cfg(any(target_os = "macos", windows))]
 mod tray;

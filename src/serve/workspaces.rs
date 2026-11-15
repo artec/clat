@@ -40,6 +40,7 @@ pub(crate) const HOST_METHODS: &[&str] = &[
     "workspace.directory",
     "workspace.update",
     "terminal.directory",
+    "task.directory",
     "workspace.open",
 ];
 
@@ -204,6 +205,16 @@ impl WorkspaceHost {
     ) -> Result<Value, RpcError> {
         if method == "terminal.directory" {
             return self.terminal_directory();
+        }
+        if method == "task.directory" {
+            let reader = self
+                .projects
+                .lock()
+                .expect("host projects")
+                .application
+                .task_directory_reader();
+            let value = reader.read().map_err(super::protocol::app_error)?;
+            return serde_json::to_value(value).map_err(|e| RpcError::internal(e.to_string()));
         }
         if method == "workspace.update" {
             return self.update_workspace(params);

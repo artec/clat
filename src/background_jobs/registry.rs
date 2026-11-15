@@ -20,6 +20,13 @@ impl JobCapacity {
             counts: Mutex::new((0, 0)),
         }
     }
+    pub(super) fn scope(&self, project: &ProjectKey) -> String {
+        use sha2::{Digest, Sha256};
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(&self.root, &project.header_cwd)).unwrap())
+        )
+    }
     fn acquire(self: &Arc<Self>) -> Result<Arc<Permit>, JobError> {
         let mut counts = self
             .counts
@@ -100,13 +107,9 @@ impl JobRegistry {
         project: ProjectKey,
         capacity: Arc<JobCapacity>,
     ) -> Self {
-        use sha2::{Digest, Sha256};
         #[cfg(test)]
         crate::test_support::execution_observation::record("jobs.create");
-        let scope = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&(&capacity.root, &project.header_cwd)).unwrap())
-        );
+        let scope = capacity.scope(&project);
         Self {
             scope,
             #[cfg(test)]

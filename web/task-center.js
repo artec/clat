@@ -6,74 +6,221 @@ async function loadTaskCenterContent(availability,call=rpc){
   results.forEach((result,index)=>{const key=requests[index][2];if(result.status==='fulfilled')content[key]=result.value[key];else content.errors.push(result.reason);});
   return content;
 }
+const TASK_TYPES = ['all', 'schedules', 'jobs'];
+const TASK_STATUSES = ['all', 'running', 'upcoming', 'attention'];
+
+function taskRows(project) {
+  const latest = new Map(), active = new Set();
+  for (const delivery of project.deliveries) {
+    if (delivery.finished_at == null) active.add(delivery.rule_id);
+    if ((latest.get(delivery.rule_id)?.started_at ?? -Infinity) <= delivery.started_at) {
+      latest.set(delivery.rule_id, delivery);
+    }
+  }
+  const schedules = project.rules.map(rule => ({
+    id: rule.id, type: 'schedules', value: rule, project,
+    name: rule.spec.title || rule.spec.instruction.split('\n')[0],
+    running: active.has(rule.id),
+    upcoming: rule.phase === 'enabled' && !rule.blocked && (rule.next_at != null || rule.spec.trigger.kind === 'job'),
+    attention: Boolean(rule.blocked) || ['draft', 'exhausted'].includes(rule.phase)
+      || ['failed', 'interrupted'].includes(latest.get(rule.id)?.phase),
+  }));
+  const jobs = project.jobs.map(job => ({
+    id: job.id, type: 'jobs', value: job, project, name: job.label,
+    running: ['starting', 'running'].includes(job.state),
+    attention: ['failed', 'interrupted', 'unknown'].includes(job.state)
+      || Boolean(job.persistence_error || job.cleanup_error),
+  }));
+  return [...schedules, ...jobs];
+}
+
+function taskFilterControl(id, label, options, allKey) {
+  const select = el('select'); select.id = id;
+  for (const key of options) {
+    const option = el('option', '', () => pageText(key === 'all' ? allKey : key));
+    option.value = key; select.append(option);
+  }
+  const field = el('label', 'task-filter-field');
+  const control = el('span', 'task-filter-select');
+  control.append(select, svgIcon('chevron-down'));
+  field.append(el('span', '', () => pageText(label)), control);
+  return { select, field };
+}
+
 /* Lists and details belong to the task page; the global inspector is independent. */
 let taskCenter = null;
 function createTaskCenter() {
   const page = el('section', 'task-center'); page.id = 'jobs-dialog';
-
-  const filter = el('select'); filter.id = 'task-type';
-  for (const key of ['all', 'schedules', 'jobs', 'attention', 'running', 'upcoming']) { const o = el('option', '', () => pageText(key)); o.value = key; filter.append(o); }
-  const query = el('input'); query.type = 'search';CLATI18n.bind(query,'placeholder',()=>pageText('search_tasks')); CLATI18n.attribute(query, 'aria-label', () => pageText('search_tasks'));
-  const status = el('p', 'settings-note'); status.setAttribute('role', 'status');
-  const view=createNavigationPage(page,{title:()=>shellText('tasks'),query,searchLabel:()=>pageText('search_tasks')}),list=view.list,detail=view.body,head=view.head;
-  const actions=()=>[viewAction('refresh','refresh',()=>pageText('refresh'),()=>refresh()),...(scheduleActions?[viewAction('create','plus',()=>pageText('create_task'),()=>scheduleActions.create(),true,()=>builtinEnabled(state.workbench,'builtin.scheduler'))]:[])];
-  view.context({actions});
-  const toolbar=view.filters;toolbar.append(filter);
-  const project=el('select');project.id='task-project';CLATI18n.attribute(project,'aria-label',()=>pageText('project_scope'));toolbar.prepend(project);
-  project.onchange=()=>{const row=project.options[project.selectedIndex];void context.openProject({route_id:row.value,root:row.dataset.root},{hash:'#/tasks'}).then(target=>target?.root.querySelector('#nav-tasks')?.click()).catch(fail);};
-  function renderProjects(){if(!pageIsOpen(page)||!context.isActive())return;project.replaceChildren();for(const row of context.organization.rows()){const o=el('option','',()=>row.title);o.value=row.route_id||'';o.dataset.root=row.root;o.selected=row.root===state.workbench?.project?.root;project.append(o);}}
-  page.addEventListener('clat:page-enter',()=>{renderProjects();void context.refreshDirectory().catch(()=>{});});
-  window.addEventListener('clat:projects-updated',renderProjects);
-  status.className='navigation-status';view.sidebar.insertBefore(status,list);document.body.append(page);
-  let generation = 0, selection = 0, selected = null, restoreId=null, rules = [], jobs = [], deliveries = [], reader = null, scheduleActions = null,reading=0;
-  const fail = error => CLATI18n.bind(status, 'textContent', () => error.message);
-  function rows() {
-    const top=list.scrollTop;list.replaceChildren();
-    const objects = [...rules.map(r => ({id:r.id, name:r.spec.title || r.spec.instruction.split('\n')[0], phase:r.blocked ? 'attention' : r.phase, type:'schedules', value:r})), ...jobs.map(j => ({id:j.id, name:j.label, phase:j.state, type:'jobs', value:j}))];
-    const visible = objects.filter(row => (filter.value === 'all' || row.type === filter.value || filter.value==='running'&&(['running','starting'].includes(row.phase)||row.type==='schedules'&&deliveries.some(d=>d.rule_id===row.id&&d.finished_at===null)) || filter.value==='upcoming'&&row.type==='schedules'&&row.value.phase==='enabled' || filter.value === 'attention' && ['attention','failed','interrupted','unknown','exhausted','draft'].includes(row.phase)) && row.name.toLowerCase().includes(query.value.toLowerCase()));
-    for (const row of visible) {
-      const button=navigationRow({title:row.name,icon:row.type==='schedules'?'schedule':'jobs',selected:selected?.id===row.id,action:()=>show(row)});button.dataset.taskId=row.id;
-      button.setAttribute('aria-current', String(selected?.id === row.id));
-      button.querySelector('.navigation-row-copy').append(el('small','',()=>row.type==='schedules'?CLATI18n.msg('schedule.'+row.value.phase)+' · '+scheduleTriggerText(row.value.spec.trigger):CLATI18n.msg('job.'+row.value.state)));
-      button.onclick = () => show(row); list.append(button);
-    }
-    if (!visible.length) list.append(pageEmpty('empty_tasks'));list.scrollTop=top;
+  const type = taskFilterControl('task-type', 'task_type', TASK_TYPES, 'all_types');
+  const phase = taskFilterControl('task-status', 'task_status', TASK_STATUSES, 'all_statuses');
+  const {element: scope, input: all, text: trustedProjects} = navigationTrustedProjects('task-all-projects');
+  const fields = el('div', 'task-filter-row'); fields.append(type.field, phase.field);
+  const status = el('p', 'navigation-status'); status.setAttribute('role', 'status');
+  const view = createNavigationPage(page, {title: () => shellText('tasks'), searchLabel: () => pageText('search_tasks')});
+  const {list, body: detail, query} = view;
+  view.filters.append(scope, fields);
+  view.sidebar.insertBefore(status, list); document.body.append(page);
+  let generation = 0, selection = 0, selected = null, restoreId = null;
+  let projects = [], items = [], reader = null, scheduleActions = null, reading = 0;
+  const projectRoot = () => state.workbench?.project?.root;
+  const fail = error => CLATI18n.bind(status, 'textContent', () => CLATI18n.present(error?.presentation, error?.message || ''));
+  view.context({
+    actions: () => [viewAction('refresh', 'refresh', () => pageText('refresh'), () => refresh()),
+      ...(scheduleActions ? [viewAction('create', 'plus', () => pageText('create_task'),
+        () => scheduleActions.create(), true, () => builtinEnabled(state.workbench, 'builtin.scheduler'))] : [])],
+    crumbs: () => [
+      {label: () => shellText('tasks'), run: () => { delete page.dataset.detail; }},
+      {label: () => all.checked ? trustedProjects() : projectDisplayName(projectRoot(), state.workbench?.project?.name)},
+      ...(selected && all.checked ? [{label: () => selected.project.title}] : []),
+      ...(selected ? [{label: () => selected.name}] : []),
+    ],
+  });
+  const same = (first, second) => first?.id === second.id && first?.type === second.type
+    && first?.project.root === second.project.root;
+  const filtered = row => (type.select.value === 'all' || row.type === type.select.value)
+    && (phase.select.value === 'all' || row[phase.select.value]);
+  function route(id = null) {
+    const params = new URLSearchParams();
+    if (type.select.value !== 'all') params.set('type', type.select.value);
+    if (phase.select.value !== 'all') params.set('status', phase.select.value);
+    if (all.checked) params.set('scope', 'trusted');
+    if (id) params.set('task', id);
+    const search = params.toString();
+    return search ? 'tasks?' + search : 'tasks';
   }
-  function show(row,preserve=false) {
-    const top=preserve?reading:0;
-    selected = row; restoreId=row.id;view.show(row.name||row.value.spec?.title||row.value.label||row.id);
-    if(!workbenchShell.routing){const route='tasks?type='+encodeURIComponent(filter.value)+'&task='+encodeURIComponent(row.id);dom.app.dataset.page=route;context.navigatePage(route);}
-    selection++; reader?.dispose(); returnConversationPane(); detail.classList.remove('has-live-conversation'); detail.replaceChildren(); rows();
-    for(const node of [...view.bar.children])if(node!==view.name&&!node.classList.contains('navigation-back'))node.remove();
+  function navigate() {
+    if (workbenchShell.routing || !context.isActive()) return;
+    const address = route(restoreId); dom.app.dataset.page = address;
+    context.navigatePage(address);
+  }
+  function rows() {
+    const top = list.scrollTop, term = query.value.trim().toLocaleLowerCase();
+    list.replaceChildren();
+    for (const row of items) {
+      if (!filtered(row) || !(row.name.toLocaleLowerCase().includes(term)
+          || all.checked && row.project.title.toLocaleLowerCase().includes(term))) continue;
+      const meta = () => [
+        all.checked ? row.project.title : '',
+        row.type === 'schedules'
+          ? (row.running ? pageText('running') : row.attention ? pageText('attention') : CLATI18n.msg('schedule.' + row.value.phase))
+            + ' · ' + scheduleTriggerText(row.value.spec.trigger)
+          : CLATI18n.msg('job.' + row.value.state),
+      ].filter(Boolean).join(' · ');
+      const button = navigationRow({title: row.name, meta, icon: row.type === 'schedules' ? 'schedule' : 'jobs',
+        selected: same(selected, row), action: () => void choose(row)});
+      button.dataset.taskId = row.id;
+      if (all.checked) button.title = row.project.root;
+      list.append(button);
+    }
+    if (!list.childElementCount) list.append(pageEmpty('empty_tasks'));
+    list.scrollTop = top;
+  }
+  async function choose(row) {
+    if (row.project.root === projectRoot()) { show(row); return; }
+    try {
+      await context.openProject({root: row.project.root}, {hash: '#/' + route(row.id)});
+    } catch (error) { if (context.isActive()) fail(error); }
+  }
+  function clearSelection() {
+    selection++; reader?.dispose(); reader = null; selected = null;
+    returnConversationPane(); detail.classList.remove('has-live-conversation'); view.reset();
+    for (const child of [...view.bar.children]) {
+      if (child !== view.name && !child.classList.contains('navigation-back')) child.remove();
+    }
+  }
+  function show(row, preserve = false) {
+    const top = preserve ? reading : 0;
+    clearSelection(); selected = row; restoreId = row.id;
+    view.show(row.name); navigate(); rows();
     const owner = selection, current = () => owner === selection && pageIsOpen(page) && context.isActive();
     if (row.type === 'schedules') {
-      reader=renderScheduleTask(detail,row.value,{actionsPort:scheduleActions,deliveries,current});
+      reader = renderScheduleTask(detail, row.value, {actionsPort: scheduleActions, deliveries: row.project.deliveries, current});
     } else renderJobDetail(detail, row.value, current, fail);
-    detail.querySelector(':scope > h3')?.remove();const actions=detail.querySelector(':scope > .page-toolbar');if(actions)view.bar.append(actions);
-    const restore=()=>{if(current())detail.scrollTop=top;};requestAnimationFrame(restore);if(reader?.ready)void reader.ready.then(restore);
+    detail.querySelector(':scope > h3')?.remove();
+    const actions = detail.querySelector(':scope > .page-toolbar'); if (actions) view.bar.append(actions);
+    const restore = () => { if (current()) detail.scrollTop = top; };
+    requestAnimationFrame(restore); if (reader?.ready) void reader.ready.then(restore);
+  }
+  function overview() {
+    if (selected) return;
+    const create = pageAction('create_task', () => scheduleActions.create(), true);
+    disableBuiltin(create, state.workbench, 'builtin.scheduler');
+    detail.replaceChildren(pageEmpty('task_intro', create));
+    const examples = el('div', 'task-examples');
+    for (const key of ['example_review', 'example_summary']) {
+      const button = pageAction(key, () => scheduleActions.create(key));
+      disableBuiltin(button, state.workbench, 'builtin.scheduler');
+      button.classList.add('task-example');
+      button.append(el('small', '', () => pageText(key + '_description'))); examples.append(button);
+    }
+    detail.append(examples);
+  }
+  function currentProject(values = {jobs: [], rules: [], deliveries: []}) {
+    return {...values, root: projectRoot(), title: projectDisplayName(projectRoot(), state.workbench?.project?.name)};
+  }
+  async function load() {
+    if (all.checked) return rpc('task.directory', {});
+    const local = await loadTaskCenterContent(state.workbench);
+    return {projects: [currentProject(local)], errors: local.errors};
   }
   async function refresh() {
-    const request = ++generation;
+    if (!pageIsOpen(page) || !context.isActive()) return;
+    const request = ++generation, active = () => request === generation && pageIsOpen(page) && context.isActive();
     try {
-      const values=await loadTaskCenterContent(state.workbench);
-      if (request !== generation || !pageIsOpen(page)) return;
-      ({jobs,rules,deliveries}=values);
-      CLATI18n.bind(status,'textContent',()=>[...['builtin.jobs','builtin.scheduler'].filter(id=>!builtinEnabled(state.workbench,id)).map(id=>builtinReason(state.workbench,id)),...values.errors.map(error=>error.message)].join(' · '));rows();
-      if(restoreId && selected?.id!==restoreId){const rule=rules.find(r=>r.id===restoreId),job=jobs.find(j=>j.id===restoreId);if(rule)show({id:rule.id,type:'schedules',value:rule});else if(job)show({id:job.id,type:'jobs',value:job});}
-      if(selected){const latest=(selected.type==='schedules'?rules:jobs).find(item=>item.id===selected.id);if(!latest){selected=null;returnConversationPane();view.reset();detail.classList.remove('has-live-conversation');}else if(latest.revision!==selected.value.revision || latest.state!==selected.value.state){reading=detail.scrollTop;show({...selected,value:latest},true);}}
-      if (!selected) {const create=pageAction('create_task', () => scheduleActions.create(), true);disableBuiltin(create,state.workbench,'builtin.scheduler');detail.replaceChildren(pageEmpty('task_intro', create));const overview=el('div','task-overview');for(const key of ['attention','running','upcoming']){const button=pageAction(key,()=>{filter.value=key;rows();});overview.append(button);}detail.prepend(overview);const examples=el('div','task-examples');for(const key of ['example_review','example_summary']){const button=pageAction(key,()=>scheduleActions.create(key));disableBuiltin(button,state.workbench,'builtin.scheduler');button.classList.add('task-example');button.append(el('small','',()=>pageText(key+'_description')));examples.append(button);}detail.append(examples);}
-    } catch (error) { if (request === generation) fail(error); }
+      const values = await load(); if (!active()) return;
+      projects = values.projects; items = projects.flatMap(taskRows);
+      CLATI18n.bind(status, 'textContent', () => [
+        ...['builtin.jobs', 'builtin.scheduler'].filter(id => !builtinEnabled(state.workbench, id)).map(id => builtinReason(state.workbench, id)),
+        ...values.errors.map(error => CLATI18n.present(error.presentation || error, error.message || '')),
+      ].join(' · '));
+      const latest = items.find(row => row.id === restoreId && row.project.root === projectRoot());
+      if (latest && (!selected || !same(selected, latest) || latest.value.revision !== selected.value.revision
+          || latest.value.state !== selected.value.state)) {
+        reading = detail.scrollTop; show(latest, Boolean(selected));
+      } else if (!latest && selected) { restoreId = null; clearSelection(); navigate(); }
+      rows(); overview();
+    } catch (error) { if (active()) { fail(error); rows(); overview(); } }
   }
-  filter.onchange=()=>{rows();const route='tasks?type='+filter.value+(selected?'&task='+encodeURIComponent(selected.id):'');dom.app.dataset.page=route;context.navigatePage(route);};query.oninput=rows;
-  page.addEventListener('clat:page-capture',()=>{reading=detail.scrollTop;});
-  page.addEventListener('clat:page-enter',()=>{if(selected)show(selected,true);});
+  function filtersChanged() {
+    if (selected && !filtered(selected)) { restoreId = null; clearSelection(); overview(); }
+    rows(); navigate();
+  }
+  function updateScope() {
+    projects = []; items = []; list.replaceChildren(); restoreId = null; clearSelection();
+    CLATI18n.bind(status, 'textContent', () => pageText('loading'));
+    navigate(); overview(); void refresh();
+  }
+  type.select.onchange = phase.select.onchange = filtersChanged;
+  all.onchange = updateScope; query.oninput = rows;
+  page.addEventListener('clat:page-capture', () => { reading = detail.scrollTop; });
+  page.addEventListener('clat:page-enter', () => { if (selected) show(selected, true); refreshViewContext(); });
   page.addEventListener('clat:page-leave', () => { generation++; selection++; reader?.dispose(); returnConversationPane(); });
-  for (const type of ['clat:job-change','clat:background-run']) window.addEventListener(type, () => { if (pageIsOpen(page)) void refresh(); });
-  window.addEventListener('clat:workbench-updated',()=>{if(pageIsOpen(page))void refresh();if(borrowedConversation && borrowedConversation.session!==state.sessionId && selected)show(selected);});
+  for (const event of ['clat:job-change', 'clat:background-run']) window.addEventListener(event, () => void refresh());
+  window.addEventListener('clat:workbench-updated', () => {
+    if (borrowedConversation && borrowedConversation.session !== state.sessionId && selected && pageIsOpen(page)) show(selected);
+    void refresh();
+  });
   const trigger = sidebarToolButton('jobs-open', 'jobs', () => shellText('tasks')); trigger.hidden = true;
-  trigger.onclick = () => { presentPage(page); void refresh(); };
+  trigger.onclick = () => { presentPage(page); navigate(); void refresh(); };
   document.querySelector('.sidebar-footer').append(trigger);
-  return {page, interactionHost:view.detail, refresh, fail, restore(params){filter.value=params.get('type')||'all';restoreId=params.get('task');}, register(actions) { scheduleActions = actions;refreshViewContext(); }, openSchedules() { filter.value = 'schedules'; trigger.click(); }, showSchedule(rule) { show({id:rule.id, name:rule.spec.title || rule.spec.instruction, type:'schedules', value:rule}); }};
+  return {
+    page, interactionHost: view.detail, refresh, fail,
+    restore(params) {
+      const nextType = params.get('type'), nextStatus = params.get('status') || nextType;
+      type.select.value = TASK_TYPES.includes(nextType) ? nextType : 'all';
+      phase.select.value = TASK_STATUSES.includes(nextStatus) ? nextStatus : 'all';
+      const scopeChanged = all.checked !== (params.get('scope') === 'trusted');
+      all.checked = params.get('scope') === 'trusted'; restoreId = params.get('task');
+      if (scopeChanged) { projects = []; items = []; list.replaceChildren(); }
+      if (scopeChanged || selected?.id !== restoreId) clearSelection();
+    },
+    register(actions) { scheduleActions = actions; refreshViewContext(); },
+    openSchedules() { type.select.value = 'schedules'; phase.select.value = 'all'; trigger.click(); },
+    showSchedule(rule) {
+      const local = projects.find(project => project.root === projectRoot()) || currentProject();
+      show(taskRows({...local, rules: [rule]})[0]);
+    },
+  };
 }
 
 function installTaskNotifications() {

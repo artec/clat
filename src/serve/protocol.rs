@@ -49,6 +49,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "git.cancel",
     "git.start",
     "terminal.directory",
+    "task.directory",
     "terminal.remove",
     "terminal.removeEnded",
     "terminal.list",

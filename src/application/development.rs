@@ -50,16 +50,14 @@ pub(super) fn canonical_root(project: &Project) -> PathBuf {
 pub enum TerminalDirectoryReader {
     Unavailable(crate::i18n::UiMessage),
     Mounted(Arc<DevelopmentService>),
-    Retained(Project, PathBuf),
+    Unmounted,
 }
 impl TerminalDirectoryReader {
     pub fn read(&self) -> Result<Value, crate::i18n::PresentedText> {
         let result = match self {
             Self::Unavailable(reason) => return Err(reason.clone().into()),
             Self::Mounted(service) => service.request("terminal.list", serde_json::json!({}), None),
-            Self::Retained(project, private) => {
-                crate::development::retained_terminals(project, private)
-            }
+            Self::Unmounted => Ok(serde_json::json!({"terminals":[]})),
         };
         result.map_err(|error| crate::i18n::PresentedText {
             raw: error.clone(),
@@ -93,10 +91,7 @@ impl super::HostApplication {
                             .expect("enabled composition"),
                     )
                 } else {
-                    TerminalDirectoryReader::Retained(
-                        Project::new(&row.root),
-                        self.storage.control.root_path().to_owned(),
-                    )
+                    TerminalDirectoryReader::Unmounted
                 };
                 (row, reader)
             })

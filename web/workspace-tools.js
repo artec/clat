@@ -8,7 +8,7 @@ const WORKSPACE_TOOLS = [
 ];
 function toolViewIsOpen(node) { return Boolean(workbenchShell?.tools?.isActive(node.id)); }
 function openWorkbenchTool(node) { workbenchShell.tools.open(node.id); }
-function closeWorkbenchTool() { workbenchShell.tools.chat(); }
+function closeWorkbenchTool() { if(workbenchShell.page)workbenchShell.chat();else workbenchShell.tools.chat(); }
 function installWorkspaceTools(shell) {
   const seats = new Map(); let selected = null, active = false, owner = state.sessionId, navigating = false;
   const host = el('section', 'workspace-tool-host hidden'); host.id = 'workspace-tool-host';
@@ -21,7 +21,7 @@ function installWorkspaceTools(shell) {
     host.classList.toggle('hidden', !active); host.inert = !active;
     conversation.classList.toggle('hidden', active || Boolean(shell.page)); conversation.inert = active || Boolean(shell.page);
     if (active) dom.app.dataset.tool = seats.get(selected).key; else delete dom.app.dataset.tool;
-    for (const [id, seat] of seats) { seat.node.hidden = !(active && selected === id); seat.node.inert = seat.node.hidden; }
+    for (const [id, seat] of seats) { if(seat.embedded)continue; seat.node.hidden = !(active && selected === id); seat.node.inert = seat.node.hidden; }
     CLATI18n.render(); refreshApplicationToolbar(shell); syncPanelAccessibility();
   }
   function suspend() {
@@ -41,10 +41,26 @@ function installWorkspaceTools(shell) {
   function open(id) {
     if (!seats.has(id)) return;
     motion.cancel();
-    if (shell.page) shell.chat(false);
+    if (shell.page) { shell.chat(false); if(shell.page)return; }
     if (owner !== state.sessionId) resetOwner();
     if (selected !== id) suspend();
     selected = id; activate(); route();
+  }
+  function embed(id, target) {
+    const seat=seats.get(id);
+    if(!seat||seat.embedded)return;
+    seat.embedded=true;
+    target.append(seat.node);
+    seat.node.hidden=false;seat.node.inert=false;
+    seat.node.dispatchEvent(new Event('clat:tool-enter'));
+  }
+  function release(id) {
+    const seat=seats.get(id);
+    if(!seat?.embedded)return;
+    seat.node.dispatchEvent(new Event('clat:tool-leave'));
+    seat.embedded=false;
+    seat.node.hidden=true;seat.node.inert=true;
+    host.append(seat.node);
   }
   function resetOwner(){
     motion.cancel();
@@ -70,8 +86,8 @@ function installWorkspaceTools(shell) {
     current:()=>active&&selected?{id:selected,...seats.get(selected)}:null,
     status:()=>({pending,unread,running:state.runActive||state.compactionActive}),
     location:()=>active&&selected?'workbench?tool='+seats.get(selected).key+'&session='+encodeURIComponent(owner||''):'workbench',
-    open, chat: showChat, suspend: () => { motion.cancel();suspend(); sync(); },
-    isActive: id => active && selected === id && owner === state.sessionId,
+    open, embed, release, chat: showChat, suspend: () => { motion.cancel();suspend(); sync(); },
+    isActive: id => Boolean(seats.get(id)?.embedded || (active && selected === id && owner === state.sessionId)),
     register(id, key) {
       const node=document.getElementById(id);mountWorkspaceToolRegion(node,host,key);seats.set(id,{node,key});
     },

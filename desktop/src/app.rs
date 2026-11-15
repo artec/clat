@@ -17,6 +17,7 @@ pub struct Desktop {
     pub updates: Mutex<crate::update::Updates>,
     pub language: Mutex<clat_core::client_ports::presentation::LanguagePreference>,
     pub quitting: AtomicBool,
+    pub quit_pending: AtomicBool,
     pub notification_targets:
         Mutex<BTreeMap<i32, (HostClient, clat_core::client_ports::host::HostNotification)>>,
     pub streams: Mutex<BTreeMap<String, clat_core::client_ports::host::HostEventsInterrupt>>,
@@ -83,8 +84,12 @@ fn initial_preferences(app: &tauri::AppHandle) -> bool {
     })
 }
 
+pub fn smoke_mode() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("CLAT_DESKTOP_SMOKE").is_some()
+}
+
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let smoke = cfg!(debug_assertions) && std::env::var_os("CLAT_DESKTOP_SMOKE").is_some();
+    let smoke = smoke_mode();
     let prepared = (|| {
         if smoke {
             return Err("isolated UI validation mode: shared Host is disconnected".to_owned());
@@ -116,6 +121,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         updates: Mutex::new(crate::update::Updates::new(auto_check)),
         language: Mutex::new(crate::localization::load(app.handle())),
         quitting: AtomicBool::new(false),
+        quit_pending: AtomicBool::new(false),
         notification_targets: Mutex::new(BTreeMap::new()),
         streams: Mutex::new(BTreeMap::new()),
     });
@@ -229,7 +235,12 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = crate::tray::menu(app.handle())?;
     let tray = TrayIconBuilder::with_id("clat")
         .menu(&menu)
-        .on_menu_event(|app, event| crate::tray::activate(app, event.id().as_ref()))
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            if id.starts_with("tray-") {
+                crate::tray::activate(app, id);
+            }
+        })
         .icon(tauri::include_image!("icons/clat-stat.png"))
         .icon_as_template(false)
         .tooltip("CLAT")
@@ -292,7 +303,7 @@ pub fn run() {
             crate::window_frame::navigate_menu(app, event.id().as_ref());
             if matches!(
                 event.id().as_ref(),
-                "desktop-about" | "desktop-check-update"
+                "desktop-about" | "desktop-check-update" | "desktop-quit"
             ) {
                 crate::tray::activate(app, event.id().as_ref());
             }
@@ -316,15 +327,7 @@ pub fn run() {
 fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     match event {
         tauri::RunEvent::ExitRequested { code, api, .. } => {
-            if !app
-                .state::<Desktop>()
-                .updates
-                .lock()
-                .expect("updates")
-                .allow_exit(code == Some(tauri::RESTART_EXIT_CODE))
-            {
-                api.prevent_exit();
-            }
+            crate::quit::on_exit_requested(app, code, api);
         }
         tauri::RunEvent::Exit => {
             let state = app.state::<Desktop>();

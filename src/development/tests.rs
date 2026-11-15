@@ -918,8 +918,8 @@ fn development_pty_single_writer_resize_replay_and_close() {
         &f.storage,
     ));
     assert_eq!(
-        reopened.request("terminal.list", json!({}), None).unwrap()["terminals"][0]["phase"],
-        "ended"
+        reopened.request("terminal.list", json!({}), None).unwrap()["terminals"],
+        json!([])
     );
     assert!(reopened.terminal_output("terminal-one", 0).is_err());
 }
@@ -1353,23 +1353,14 @@ fn development_terminal_ended_cleanup_preserves_live_and_other_project() {
     assert_eq!(rows["terminals"].as_array().unwrap().len(), 1);
     assert_eq!(rows["terminals"][0]["id"], "live");
     assert!(f.service.has_live_work());
-    assert_eq!(
-        other.call("terminal.list", json!({})).unwrap()["terminals"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    assert!(other.service.terminal_output("ended", 0).is_ok());
 }
 #[cfg(unix)]
 #[test]
 fn development_terminal_cold_records_can_rename_remove_and_not_resurrect() {
     let f = Fixture::new();
-    f.call(
-        "terminal.create",
-        json!({"operationId":"old","clientId":"owner","shell":"/bin/sh"}),
-    )
-    .unwrap();
+    let create = json!({"operationId":"old","clientId":"owner","shell":"/bin/sh"});
+    f.call("terminal.create", create.clone()).unwrap();
     f.service.close().unwrap();
     let reopened = Arc::new(DevelopmentService::new(
         Project::new(&f.project),
@@ -1383,7 +1374,9 @@ fn development_terminal_cold_records_can_rename_remove_and_not_resurrect() {
         )
         .unwrap();
     assert_eq!(
-        reopened.request("terminal.list", json!({}), None).unwrap()["terminals"][0]["name"],
+        reopened
+            .request("terminal.create", create.clone(), None)
+            .unwrap()["name"],
         "retained"
     );
     reopened
@@ -1393,11 +1386,11 @@ fn development_terminal_cold_records_can_rename_remove_and_not_resurrect() {
             None,
         )
         .unwrap();
-    assert!(
-        reopened.request("terminal.list", json!({}), None).unwrap()["terminals"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        reopened
+            .request("terminal.create", create, None)
+            .unwrap_err(),
+        "terminal_ended"
     );
 }
 
