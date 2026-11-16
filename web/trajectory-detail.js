@@ -69,13 +69,7 @@ function createTrajectoryDetail(parent, { close, locate, reference, trusted, sou
     if (!text) return;
     heading(label);
     const node = el('div', 'rich-text');
-    renderMarkdown(node, text);
-    // The shared Markdown file actions resolve against the mounted project.
-    if (!currentProject()) {
-      for (const link of node.querySelectorAll('.markdown-file-link')) {
-        link.replaceWith(el('span', '', link.textContent));
-      }
-    }
+    renderMarkdown(node, text, {projectRoot:currentProject() ? undefined : null});
     body.append(node);
   }
 

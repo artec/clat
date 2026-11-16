@@ -1,3 +1,4 @@
+//! Read-only discovery for external launchers. Only the child receives any PATH addition.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -8,15 +9,32 @@ use crate::i18n::UiMessage;
 #[cfg(unix)]
 mod installed;
 
-pub(super) struct LaunchPath {
+pub(crate) struct LaunchPath {
     pub path: Option<OsString>,
     pub fallbacks: Vec<PathBuf>,
     #[cfg(unix)]
     inventory: installed::Inventory,
 }
 
+#[derive(Debug)]
+pub(crate) struct RuntimeError {
+    pub runtime: String,
+    pub ambiguous: bool,
+}
+
+impl RuntimeError {
+    pub(crate) fn message(&self) -> UiMessage {
+        UiMessage::new(if self.ambiguous {
+            "acp.runtime_ambiguous"
+        } else {
+            "acp.runtime_unavailable"
+        })
+        .arg("runtime", self.runtime.as_str())
+    }
+}
+
 impl LaunchPath {
-    pub(super) fn host() -> Self {
+    pub(crate) fn host() -> Self {
         Self {
             path: std::env::var_os("PATH"),
             fallbacks: common_dirs(),
@@ -26,7 +44,7 @@ impl LaunchPath {
     }
 
     #[cfg(test)]
-    pub(super) fn fixture(path: Option<OsString>, fallbacks: Vec<PathBuf>) -> Self {
+    pub(crate) fn fixture(path: Option<OsString>, fallbacks: Vec<PathBuf>) -> Self {
         Self {
             path,
             fallbacks,
@@ -35,24 +53,68 @@ impl LaunchPath {
         }
     }
 
-    pub(super) fn for_program(
+    pub(crate) fn for_program(
         &self,
         program: &Path,
         project: &Path,
-    ) -> Result<Option<OsString>, UiMessage> {
+    ) -> Result<Option<OsString>, RuntimeError> {
+        self.for_child(program, project, project)
+    }
+
+    pub(crate) fn for_child(
+        &self,
+        program: &Path,
+        cwd: &Path,
+        project: &Path,
+    ) -> Result<Option<OsString>, RuntimeError> {
         #[cfg(unix)]
         if let Some(interpreter) = unix::interpreter(program) {
-            return unix::with_interpreter(self, &interpreter, project);
+            return unix::with_interpreter(self, &interpreter, cwd, project);
         }
         #[cfg(not(unix))]
-        let _ = (program, project);
+        let _ = (program, cwd, project);
         Ok(self.path.clone())
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn path_program(&self, name: &str, cwd: &Path) -> Option<PathBuf> {
+        self.path
+            .as_ref()
+            .into_iter()
+            .flat_map(std::env::split_paths)
+            .map(|dir| cwd.join(dir).join(name))
+            .find(|program| unix::executable(program))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn installed_program(
+        &self,
+        name: &str,
+        project: &Path,
+    ) -> Result<PathBuf, RuntimeError> {
+        self.inventory
+            .active
+            .iter()
+            .chain(&self.fallbacks)
+            .find_map(|dir| unix::usable_dir(dir, name, project))
+            .map_or_else(
+                || match self.inventory.find(name, project) {
+                    installed::Lookup::Found(dir) => Ok(dir),
+                    installed::Lookup::Missing => Err(runtime_error(name, false)),
+                    installed::Lookup::Ambiguous => Err(runtime_error(name, true)),
+                },
+                Ok,
+            )
+            .map(|dir| dir.join(name))
     }
 }
 
 #[cfg(unix)]
-fn missing_runtime(interpreter: &str) -> UiMessage {
-    UiMessage::new("acp.runtime_unavailable").arg("runtime", interpreter)
+fn runtime_error(runtime: &str, ambiguous: bool) -> RuntimeError {
+    RuntimeError {
+        runtime: runtime.to_owned(),
+        ambiguous,
+    }
 }
 
 fn common_dirs() -> Vec<PathBuf> {
@@ -151,12 +213,13 @@ mod unix {
     pub(super) fn with_interpreter(
         launch: &LaunchPath,
         interpreter: &str,
+        cwd: &Path,
         project: &Path,
-    ) -> Result<Option<OsString>, UiMessage> {
+    ) -> Result<Option<OsString>, RuntimeError> {
         if Path::new(interpreter).is_absolute() {
             return executable(Path::new(interpreter))
                 .then(|| launch.path.clone())
-                .ok_or_else(|| missing_runtime(interpreter));
+                .ok_or_else(|| runtime_error(interpreter, false));
         }
         let mut dirs = launch.path.as_ref().map_or_else(
             || vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")],
@@ -164,31 +227,15 @@ mod unix {
         );
         if dirs
             .iter()
-            .any(|dir| executable(&project.join(dir).join(interpreter)))
+            .any(|dir| executable(&cwd.join(dir).join(interpreter)))
         {
             return Ok(launch.path.clone());
         }
-        let common = launch
-            .inventory
-            .active
-            .iter()
-            .chain(&launch.fallbacks)
-            .find_map(|dir| usable_dir(dir, interpreter, project));
-        let dir = if let Some(dir) = common {
-            dir
-        } else {
-            match launch.inventory.find(interpreter, project) {
-                installed::Lookup::Found(dir) => dir,
-                installed::Lookup::Missing => return Err(missing_runtime(interpreter)),
-                installed::Lookup::Ambiguous => {
-                    return Err(UiMessage::new("acp.runtime_ambiguous").arg("runtime", interpreter));
-                }
-            }
-        };
-        dirs.push(dir);
+        let program = launch.installed_program(interpreter, project)?;
+        dirs.push(program.parent().expect("absolute runtime path").to_owned());
         std::env::join_paths(dirs)
             .map(Some)
-            .map_err(|_| missing_runtime(interpreter))
+            .map_err(|_| runtime_error(interpreter, false))
     }
 
     pub(super) fn usable_dir(dir: &Path, interpreter: &str, project: &Path) -> Option<PathBuf> {
@@ -201,7 +248,7 @@ mod unix {
             .then_some(dir)
     }
 
-    fn executable(path: &Path) -> bool {
+    pub(in crate::process::launch_path) fn executable(path: &Path) -> bool {
         fs::metadata(path)
             .is_ok_and(|info| info.is_file() && info.permissions().mode() & 0o111 != 0)
     }
@@ -231,7 +278,7 @@ mod unix {
             vec![project.clone(), shadow],
         );
         let missing = launch.for_program(&launcher, &project).unwrap_err();
-        assert_eq!(missing.key, "acp.runtime_unavailable");
+        assert_eq!(missing.message().key, "acp.runtime_unavailable");
 
         launch.fallbacks.push(custom.clone());
         let path = launch.for_program(&launcher, &project).unwrap().unwrap();

@@ -91,9 +91,14 @@ impl HostApplication {
         let config =
             McpManaged::configured(&storage, &root, scope, name).map_err(ApplicationError::new)?;
         let cwd = prepare_cwd(&storage, &config).map_err(ApplicationError::new)?;
-        let server = McpServer::connect(name, &config, &cwd, None).map_err(|_| {
-            ApplicationError::new(
-                "MCP connection test failed; inspect configuration and server logs",
+        let server = McpServer::connect(name, &config, &cwd, &root, None).map_err(|error| {
+            error.presentation.map_or_else(
+                || {
+                    ApplicationError::new(
+                        "MCP connection test failed; inspect configuration and server logs",
+                    )
+                },
+                ApplicationError::presented,
             )
         })?;
         let tools = server

@@ -23,6 +23,7 @@ const scope = vm.createContext({
   el: element,
   document: { createDocumentFragment: () => element('fragment'), createTextNode: text => text },
   ResizeObserver: class {},
+  queueMicrotask() {},
   URL,
   state: { workbench: { project: { root: '/repo' } } },
   CLATI18n: { msg: key => key, attribute() {} },
@@ -50,15 +51,16 @@ test('regular Markdown still folds soft line breaks into spaces', () => {
 test('assistant references preserve delimiters and only turn safe destinations into actions', () => {
   const body = element('div');
   const options = {replyLinks:true, projectRoot:'/repo'};
-  const source = 'summary.md. `report.md` 和 docs/结果.csv；`C:\\repo\\report.md`；(http://[::1]:3000/a_b_c). ' +
+  const source = 'summary.md. `report.md` `builtin.development` 和 docs/结果.csv；`C:\\repo\\report.md`；(http://[::1]:3000/a_b_c). ' +
     'localhost:3000?mode=clean [空格](</repo/a b.md>) [bad](%6Aavascript:alert) ' +
     'https://someone@localhost:3000 private@example.md [network](//remote/share.md)';
   scope.renderMarkdown(body, source, options);
   const parts = body.children[0].children;
   assert.deepEqual(parts.filter(node => node.tag === 'button').map(visibleText), [
-    'summary.md', 'report.md', 'docs/结果.csv', 'C:\\repo\\report.md',
-    'http://[::1]:3000/a_b_c', 'localhost:3000?mode=clean', '空格',
+    'http://[::1]:3000/a_b_c', 'localhost:3000?mode=clean',
   ]);
+  assert.ok(parts.some(node => node.tag === 'code' && visibleText(node) === 'builtin.development'));
+  assert.ok(parts.some(node => node.tag === 'code' && visibleText(node) === 'report.md'));
   assert.equal(scope.markdownWebAddress('localhost:3000?mode=clean'), 'http://localhost:3000?mode=clean');
   assert.match(visibleText(body), /\(http:\/\/\[::1\]:3000\/a_b_c\)\./);
   assert.match(visibleText(body), /\[bad\]\(%6Aavascript:alert\)/);

@@ -84,6 +84,12 @@ fn file_symlink_and_cross_project_directory_symlink_are_rejected() {
     std::os::unix::fs::symlink(outside.join("secret"), root.join("secret")).unwrap();
     assert!(browser.preview("secret", 1, 1).is_err());
     assert!(browser.preview("link/secret", 1, 1).is_err());
+    assert_eq!(
+        browser
+            .resolve(&["secret".into(), "link/secret".into()])
+            .unwrap()["paths"],
+        json!([])
+    );
     assert!(
         browser.search("secret").unwrap()["paths"]
             .as_array()
@@ -121,6 +127,17 @@ fn navigation_directory_listing_is_bounded_and_keeps_private_and_path_fences() {
     );
     assert!(browser.list("../").is_err());
     assert!(browser.list("private-db").is_err());
+    std::fs::write(root.join("private-db/data.txt"), "private").unwrap();
+    assert_eq!(
+        browser
+            .resolve(&[
+                "source".into(),
+                "source/file.rs".into(),
+                "private-db/data.txt".into()
+            ])
+            .unwrap()["paths"],
+        json!(["source/file.rs"])
+    );
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(root.join("source"), root.join("linked-source")).unwrap();

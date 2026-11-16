@@ -1,13 +1,14 @@
-function renderUserMessageMarkdown(container, source, clientMessageId) {
+function renderUserMessageMarkdown(container, source, clientMessageId, projectRoot) {
   const handoff = splitAcpHandoff(source, clientMessageId);
+  const options = {preserveLineBreaks:true, projectRoot};
   container.classList.toggle('acp-handoff-message', Boolean(handoff));
   if (!handoff) {
-    renderMarkdown(container, source, { preserveLineBreaks: true });
+    renderMarkdown(container, source, options);
     return;
   }
   const section = (title, text, args) => {
     const content = el('div', 'rich-text');
-    renderMarkdown(content, text, { preserveLineBreaks: true });
+    renderMarkdown(content, text, options);
     const block = el('section');
     block.append(el('p', 'acp-handoff-label', () => CLATI18n.msg(title, args)), content);
     return block;

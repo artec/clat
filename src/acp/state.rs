@@ -57,7 +57,9 @@ impl AgentEdit {
         &self,
         project: &Path,
     ) -> Result<Option<OsString>, crate::i18n::UiMessage> {
-        super::launch_path::LaunchPath::host().for_program(&self.program, project)
+        crate::process::launch_path::LaunchPath::host()
+            .for_program(&self.program, project)
+            .map_err(|error| error.message())
     }
 
     pub(super) fn environment(

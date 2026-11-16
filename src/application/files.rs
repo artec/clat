@@ -126,6 +126,31 @@ impl FileBrowser {
         Ok(json!({"paths":paths,"truncated":truncated,"scope":"current_project","limit":100}))
     }
 
+    /// Resolve only explicit, regular project files without reading their contents.
+    pub fn resolve(&self, paths: &[String]) -> Result<Value, String> {
+        if paths.len() > 64 {
+            return Err("Too many project file references".into());
+        }
+        let storage = self
+            .private_storage
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        let found: Vec<_> = paths
+            .iter()
+            .filter(|path| {
+                valid_path(path).is_ok()
+                    && self.project.file_snapshot(path, 0).is_ok()
+                    && self
+                        .project
+                        .root()
+                        .join(path)
+                        .canonicalize()
+                        .is_ok_and(|target| !target.starts_with(&storage))
+            })
+            .collect();
+        Ok(json!({"paths":found}))
+    }
+
     pub fn preview(&self, path: &str, start: u64, end: u64) -> Result<Value, String> {
         valid_path(path)?;
         let storage = self

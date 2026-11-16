@@ -364,10 +364,10 @@ fn shutdown_session(session: Session) -> Result<(), McpError> {
 }
 
 impl Transport {
-    fn new_session(&self, cwd: &Path) -> Result<Session, McpError> {
+    fn new_session(&self, cwd: &Path, project: &Path) -> Result<Session, McpError> {
         match self {
             Self::Stdio { command, args, env } => Ok(Session::Stdio(StdioSession::spawn(
-                command, args, env, cwd,
+                command, args, env, cwd, project,
             )?)),
             Self::Http { url, headers } => Ok(Session::Http(
                 super::transport::HttpSession::connect(url, headers)?,
@@ -416,6 +416,7 @@ impl McpServer {
         name: &str,
         config: &McpServerConfig,
         cwd: &Path,
+        project: &Path,
         server_requests: Option<Arc<dyn McpServerRequestHandler>>,
     ) -> Result<Self, McpError> {
         let transport = if config.is_http() {
@@ -438,7 +439,7 @@ impl McpServer {
                     .collect(),
             }
         };
-        let probe = transport.new_session(cwd)?;
+        let probe = transport.new_session(cwd, project)?;
         let mut server = match Self::discover(&probe) {
             Ok((server_version, capabilities)) => Self {
                 capability_lifetime: std::sync::Arc::new(()),
@@ -453,7 +454,7 @@ impl McpServer {
             },
             Err(modern_error) => {
                 let _ = shutdown_session(probe);
-                let session = transport.new_session(cwd)?;
+                let session = transport.new_session(cwd, project)?;
                 let (server_version, negotiated_version, capabilities) = match Self::handshake(
                     &session,
                 ) {
@@ -1492,7 +1493,8 @@ for line in sys.stdin:
             ..Default::default()
         };
         let server =
-            McpServer::connect("echo", &config, Path::new("/tmp"), None).expect("handshake");
+            McpServer::connect("echo", &config, Path::new("/tmp"), Path::new("/tmp"), None)
+                .expect("handshake");
         assert_eq!(server.server_version(), "1.0");
         // 版本协商：服务器只支持旧版时返回其版本，客户端接受并继续。
         assert_eq!(server.negotiated_version(), "2025-06-18");
@@ -1629,6 +1631,7 @@ while True:
             "fixture",
             &config,
             Path::new("/tmp"),
+            Path::new("/tmp"),
             Some(Arc::new(EchoHandler)),
         )
         .expect("connect");
@@ -1668,6 +1671,7 @@ while True:
         let server = McpServer::connect(
             "fixture",
             &config,
+            Path::new("/tmp"),
             Path::new("/tmp"),
             Some(Arc::new(empty_host)),
         )
@@ -1735,7 +1739,8 @@ for line in sys.stdin:
             args: vec!["-c".into(), script.into()],
             ..Default::default()
         };
-        let server = McpServer::connect("v2", &config, Path::new("/tmp"), None).expect("modern");
+        let server = McpServer::connect("v2", &config, Path::new("/tmp"), Path::new("/tmp"), None)
+            .expect("modern");
         assert_eq!(server.negotiated_version(), MODERN_PROTOCOL_VERSION);
         assert_eq!(server.server_version(), "2.0");
         let tools = server.list_tools().expect("tools");
@@ -1875,7 +1880,8 @@ for line in sys.stdin:
             ..McpServerConfig::default()
         };
         let server_session =
-            McpServer::connect("glm-search", &config, Path::new("."), None).expect("connect");
+            McpServer::connect("glm-search", &config, Path::new("."), Path::new("."), None)
+                .expect("connect");
         assert_eq!(server_session.negotiated_version(), "2025-06-18");
         let tools = server_session.list_tools().expect("list tools over sse");
         assert_eq!(tools.len(), 1);
@@ -1963,7 +1969,7 @@ for line in sys.stdin:
             ..McpServerConfig::default()
         };
         let started = std::time::Instant::now();
-        let outcome = McpServer::connect("hung", &config, Path::new("."), None);
+        let outcome = McpServer::connect("hung", &config, Path::new("."), Path::new("."), None);
         let elapsed = started.elapsed();
         // 握手成功、通知被挂起：connect 必须以错误返回且有界。
         assert!(
@@ -2107,8 +2113,14 @@ for line in sys.stdin:
             args: vec!["-u".into(), "-c".into(), script.into()],
             ..Default::default()
         };
-        let server = McpServer::connect("pager", &config, std::path::Path::new("/tmp"), None)
-            .expect("handshake");
+        let server = McpServer::connect(
+            "pager",
+            &config,
+            std::path::Path::new("/tmp"),
+            std::path::Path::new("/tmp"),
+            None,
+        )
+        .expect("handshake");
         let error = server
             .list_tools_with_budget(std::time::Duration::from_millis(300))
             .expect_err("the total budget must end endless pagination");

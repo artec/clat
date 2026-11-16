@@ -1,5 +1,5 @@
 use super::{Preset, UiMessage, state};
-use crate::acp::launch_path::LaunchPath;
+use crate::process::launch_path::LaunchPath;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, Metadata},
@@ -51,7 +51,7 @@ impl<'a> Search<'a> {
             Detection::Ready(candidate) if !self.windows => {
                 match self.launch.for_program(&candidate.path, self.project) {
                     Ok(_) => Detection::Ready(candidate),
-                    Err(error) => Detection::MissingRuntime(candidate, error),
+                    Err(error) => Detection::MissingRuntime(candidate, error.message()),
                 }
             }
             detection => detection,

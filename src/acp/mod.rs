@@ -1,7 +1,6 @@
 //! The ACP client owns the external connection and its local transcript.
 //! Admission keys belong to the project and never authorize another project.
 mod callbacks;
-mod launch_path;
 mod parameters;
 pub(crate) mod presets;
 mod schema;

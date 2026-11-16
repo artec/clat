@@ -20,7 +20,7 @@ use crate::model::CancelToken;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -50,6 +50,7 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub struct McpError {
     message: String,
     pub(crate) kind: &'static str,
+    pub(crate) presentation: Option<crate::i18n::UiMessage>,
 }
 
 impl McpError {
@@ -57,57 +58,26 @@ impl McpError {
         Self {
             message: message.into(),
             kind: "connection_failed",
+            presentation: None,
         }
     }
-}
-
-/// GUI/launchd 启动的宿主进程 PATH 常被精简为系统目录
-/// （/usr/bin:/bin:/usr/sbin:/sbin），用户 shell 环境里的
-/// Homebrew/nvm/volta/别名全部丢失——stdio MCP 服务器用裸命令
-/// （npx/node/uvx）时 spawn 直接 ENOENT。解析顺序：绝对路径
-/// 直用 → 宿主 PATH 命中直用 → 经用户登录 shell（$SHELL -lc，
-/// 无交互噪声、不污染 stdio 协议通道）command -v 解析。
-fn resolve_stdio_program(command: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::path::Path;
-        if !command.contains('/') && !Path::new(command).is_file() {
-            let in_host_path = std::env::var_os("PATH").is_some_and(|paths| {
-                std::env::split_paths(&paths)
-                    .filter(|dir| !dir.as_os_str().is_empty())
-                    .any(|dir| dir.join(command).is_file())
-            });
-            if !in_host_path {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-                    if cfg!(target_os = "macos") {
-                        "/bin/zsh".to_owned()
-                    } else {
-                        "/bin/bash".to_owned()
-                    }
-                });
-                let query = format!("command -v {}", shell_single_quote(command));
-                if let Ok(output) = std::process::Command::new(&shell)
-                    .arg("-lc")
-                    .arg(&query)
-                    .output()
-                {
-                    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                    if output.status.success() && !resolved.is_empty() {
-                        return resolved;
-                    }
-                }
-            }
-        }
-    }
-    command.to_owned()
-}
-
-#[cfg(unix)]
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 impl McpError {
+    #[cfg(unix)]
+    pub(super) fn runtime(error: crate::process::launch_path::RuntimeError) -> Self {
+        let presentation = error.message();
+        Self {
+            message: crate::i18n::LocaleContext::default().render(&presentation),
+            kind: if error.ambiguous {
+                "ambiguous_dependency"
+            } else {
+                "missing_dependency"
+            },
+            presentation: Some(presentation),
+        }
+    }
+
     fn spawn(command: &str, error: std::io::Error) -> Self {
         let kind = if error.kind() == std::io::ErrorKind::NotFound {
             "missing_dependency"
@@ -124,7 +94,11 @@ impl McpError {
                 "; the command was not found in the host PATH or the user login environment (GUI-launched hosts do not inherit terminal PATH): use an absolute path or a command resolvable from your login shell",
             );
         }
-        Self { message, kind }
+        Self {
+            message,
+            kind,
+            presentation: None,
+        }
     }
 }
 
@@ -497,12 +471,11 @@ impl StdioSession {
         args: &[String],
         env: &[(String, String)],
         cwd: &std::path::Path,
+        project: &std::path::Path,
     ) -> Result<Self, McpError> {
-        let command = resolve_stdio_program(command);
-        let mut command_builder = Command::new(&command);
-        command_builder
+        let mut child = super::launch::command(command, env, cwd, project)?
             .args(args)
-            .envs(env.iter().cloned())
+            .envs(env.iter().map(|(key, value)| (key, value)))
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -510,10 +483,9 @@ impl StdioSession {
             // 服务器日志泼进 TUI，把整个界面顶出可视区（2026-08-20
             // 用户实测）；管道不排又会写满阻塞子进程。日志进有界尾
             // 缓冲，挂载失败时并入错误消息（见 push_diagnostic）。
-            .stderr(Stdio::piped());
-        let mut child = command_builder
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| McpError::spawn(&command, error))?;
+            .map_err(|error| McpError::spawn(command, error))?;
         let stdin = require_pipe(child.stdin.take(), "MCP server stdin unavailable")?;
         let stdout = require_pipe(child.stdout.take(), "MCP server stdout unavailable")?;
         let stderr = require_pipe(child.stderr.take(), "MCP server stderr unavailable")?;
@@ -1220,23 +1192,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(unix)]
-    fn resolve_stdio_program_layers() {
-        // 绝对路径直用。
-        assert_eq!(
-            super::resolve_stdio_program("/usr/bin/true"),
-            "/usr/bin/true"
-        );
-        // 宿主 PATH 命中的命令原样返回（spawn 走宿主 PATH 搜索）。
-        assert_eq!(super::resolve_stdio_program("sh"), "sh");
-        // 两层都解析不到的命令原样返回：spawn 失败信息带可操作指引。
-        assert_eq!(
-            super::resolve_stdio_program("definitely-not-a-real-mcp-cmd-42"),
-            "definitely-not-a-real-mcp-cmd-42"
-        );
-    }
-
-    #[test]
     fn spawn_error_message_carries_gui_path_guidance() {
         let missing = super::McpError::spawn(
             "npx",
@@ -1505,6 +1460,7 @@ for line in sys.stdin:
                 serde_json::json!({"nested":{"credential":secret}}).to_string(),
             )],
             &std::env::temp_dir(),
+            &std::env::temp_dir(),
         )
         .unwrap();
         let error = session
@@ -1547,6 +1503,7 @@ time.sleep(300)
             &["-c".to_owned(), script.to_owned()],
             &[],
             std::path::Path::new("/tmp"),
+            std::path::Path::new("/tmp"),
         )
         .expect("spawn");
         // 排水是异步的：轮询等待两条噪声进入尾缓冲（有界预算）。
@@ -1583,6 +1540,7 @@ time.sleep(300)
             ],
             &[],
             std::path::Path::new("/tmp"),
+            std::path::Path::new("/tmp"),
         )
         .expect("spawn");
         let outcome = session.call("initialize", json!({}), Duration::from_secs(2));
@@ -1604,6 +1562,7 @@ time.sleep(300)
             &["-c".to_owned(), script.to_owned()],
             &[],
             std::path::Path::new("/tmp"),
+            std::path::Path::new("/tmp"),
         )
         .expect("spawn");
         let outcome = session.call("tools/list", json!({}), Duration::from_secs(5));
@@ -1621,6 +1580,7 @@ time.sleep(300)
             "python3",
             &["-c".to_owned(), "import time; time.sleep(300)".to_owned()],
             &[],
+            std::path::Path::new("/tmp"),
             std::path::Path::new("/tmp"),
         )
         .expect("spawn");
@@ -1661,6 +1621,7 @@ for line in sys.stdin:
             "python3",
             &["-c".to_owned(), script.to_owned()],
             &[],
+            std::path::Path::new("/tmp"),
             std::path::Path::new("/tmp"),
         )
         .expect("spawn");
@@ -1748,6 +1709,7 @@ for line in sys.stdin:
                 marker.to_string_lossy().into_owned(),
             ],
             &[],
+            std::path::Path::new("/tmp"),
             std::path::Path::new("/tmp"),
         )
         .expect("spawn");

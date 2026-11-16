@@ -17,6 +17,7 @@ pub(super) struct RunWorker {
     pub(super) subagent_bind_error: Option<String>,
     pub(super) captured_text: Arc<Mutex<String>>,
     pub(super) ui_sink: Arc<Mutex<Box<dyn EventSink + Send>>>,
+    pub(super) automatic_summary_failed: Arc<AtomicBool>,
 }
 struct RoundAccounting {
     usage: Usage,
@@ -78,6 +79,7 @@ impl RunWorker {
             subagent_bind_error,
             captured_text,
             ui_sink,
+            automatic_summary_failed: Arc::default(),
         }
     }
     fn clear_run_slots(&self) {

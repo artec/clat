@@ -43,7 +43,7 @@ function createConversationReader(parent, reference, {trusted = false, editable 
     const node = el('article', 'reader-message ' + message.role); node.dataset.seq = String(message.reference.seq);
     node.append(el('small', '', () => pageText(message.role)));
     const body = el('div', 'body rich-text');
-    if (message.role === 'user') renderUserMessageMarkdown(body, message.text, message.client_message_id);
+    if (message.role === 'user') renderUserMessageMarkdown(body, message.text, message.client_message_id, message.reference.project);
     else renderMarkdown(body, message.text, {replyLinks:message.role === 'assistant', projectRoot:message.reference.project});
     node.append(body);
     const actions = el('div', 'reader-actions');

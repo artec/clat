@@ -4,6 +4,7 @@
 //! `plugins/mcp.rs`。
 
 mod capability;
+mod launch;
 mod schema_privacy;
 pub(crate) mod transport;
 

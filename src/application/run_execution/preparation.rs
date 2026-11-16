@@ -42,6 +42,7 @@ impl worker::RunWorker {
         // Startup and active requests both prune/offload before paying for a summary.
         // A switch must fit before the target request header can be published.
         if over
+            && !self.automatic_summary_failed.load(Ordering::Relaxed)
             && let Some(compactor) = &self.deps.compactor
             && self.deps.task_service.cap().is_none()
         {
@@ -171,6 +172,7 @@ impl worker::RunWorker {
             instructions: instructions.to_owned(),
             definitions: self.context.tool_definitions.to_vec(),
             force: switched,
+            automatic_summary_failed: Some(&self.automatic_summary_failed),
         }
         .execute();
         if switched {

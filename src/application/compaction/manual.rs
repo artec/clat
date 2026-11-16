@@ -158,6 +158,7 @@ impl ManualCompactionWork {
             instructions: self.instructions,
             definitions: self.definitions,
             force: true,
+            automatic_summary_failed: None,
         }
         .execute()
     }

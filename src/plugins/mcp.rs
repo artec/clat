@@ -495,6 +495,50 @@ fn register_prompts(
     }
 }
 
+fn connect_contributions(
+    name: &str,
+    config: &McpServerConfig,
+    cwd: &std::path::Path,
+    project: &std::path::Path,
+    handler: Arc<McpHostHandler>,
+) -> Result<ConnectedContributions, (String, &'static str)> {
+    let requests: Arc<dyn McpServerRequestHandler> = handler.clone();
+    let server = McpServer::connect(name, config, cwd, project, Some(requests))
+        .map_err(|error| (format!("mcp `{name}`: {error}"), error.kind))?;
+    if server.supports_clat_host_services() {
+        handler.enable_host_services();
+    }
+    let tools = match server.list_tools() {
+        Ok(tools) => tools,
+        Err(error) => {
+            let tail = crate::mcp::client::format_stderr_tail_public(&server.stderr_tail());
+            let _ = server.shutdown();
+            return Err((format!("mcp `{name}`: {error}{tail}"), error.kind));
+        }
+    };
+    let arguments = BTreeMap::from([("cwd".to_owned(), project.to_string_lossy().into_owned())]);
+    let prompts = server.list_system_prompts().and_then(|items| {
+        items
+            .into_iter()
+            .map(|prompt| {
+                server
+                    .get_system_prompt(&prompt, &arguments)
+                    .map(|text| (prompt, text))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    });
+    let (prompts, prompt_failure) = match prompts {
+        Ok(prompts) => (prompts, None),
+        Err(error) => (Vec::new(), Some(format!("mcp `{name}` prompts: {error}"))),
+    };
+    Ok(ConnectedContributions {
+        server,
+        tools,
+        prompts,
+        prompt_failure,
+    })
+}
+
 fn run_startup(inputs: McpStartupInputs) {
     let McpStartupInputs {
         config,
@@ -539,72 +583,22 @@ fn run_startup(inputs: McpStartupInputs) {
         pending += 1;
         // 每 server 一个 McpHostHandler：服务端请求带 server 名过桥。
         let server_handler = Arc::new(McpHostHandler::new(Arc::clone(&host), name));
-        let server_requests: Option<Arc<dyn McpServerRequestHandler>> =
-            Some(server_handler.clone());
         let tx = tx.clone();
         let thread_name = name.clone();
         let name = name.clone();
         let server_config = server_config.clone();
         let server_cwd = resolved_server_cwd;
         let project_root = project_root.clone();
-        let server_handler = Arc::clone(&server_handler);
         let spawned = std::thread::Builder::new()
             .name(format!("clat-mcp-connect-{thread_name}"))
             .spawn(move || {
-                let outcome =
-                    match McpServer::connect(&name, &server_config, &server_cwd, server_requests) {
-                        Ok(server) => {
-                            if server.supports_clat_host_services() {
-                                server_handler.enable_host_services();
-                            }
-                            match server.list_tools() {
-                                Ok(infos) => {
-                                    let mut arguments = BTreeMap::new();
-                                    arguments.insert(
-                                        "cwd".to_owned(),
-                                        project_root.to_string_lossy().into_owned(),
-                                    );
-                                    let prompt_result =
-                                        server.list_system_prompts().and_then(|items| {
-                                            items
-                                                .into_iter()
-                                                .map(|prompt| {
-                                                    server
-                                                        .get_system_prompt(&prompt, &arguments)
-                                                        .map(|text| (prompt, text))
-                                                })
-                                                .collect::<Result<Vec<_>, _>>()
-                                        });
-                                    match prompt_result {
-                                        Ok(prompts) => Ok(ConnectedContributions {
-                                            server,
-                                            tools: infos,
-                                            prompts,
-                                            prompt_failure: None,
-                                        }),
-                                        Err(error) => Ok(ConnectedContributions {
-                                            server,
-                                            tools: infos,
-                                            prompts: Vec::new(),
-                                            prompt_failure: Some(format!(
-                                                "mcp `{name}` prompts: {error}"
-                                            )),
-                                        }),
-                                    }
-                                }
-                                Err(error) => {
-                                    // 失败消息带上服务器 stderr 尾部——npx/npm 的
-                                    // 报错就在这里；连上但列具失败的连接显式关闭。
-                                    let tail = crate::mcp::client::format_stderr_tail_public(
-                                        &server.stderr_tail(),
-                                    );
-                                    let _ = server.shutdown();
-                                    Err((format!("mcp `{name}`: {error}{tail}"), error.kind))
-                                }
-                            }
-                        }
-                        Err(error) => Err((format!("mcp `{name}`: {error}"), error.kind)),
-                    };
+                let outcome = connect_contributions(
+                    &name,
+                    &server_config,
+                    &server_cwd,
+                    &project_root,
+                    server_handler,
+                );
                 let transport = if server_config.is_http() {
                     "http"
                 } else {

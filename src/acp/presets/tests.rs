@@ -29,7 +29,7 @@ impl Fixture {
             dirs: vec![self.bin.clone()],
             project: &self.project,
             windows,
-            launch: crate::acp::launch_path::LaunchPath::fixture(
+            launch: crate::process::launch_path::LaunchPath::fixture(
                 Some(std::env::join_paths([&self.bin]).unwrap()),
                 vec![],
             ),

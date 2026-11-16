@@ -114,7 +114,7 @@ impl Pool {
 
 fn family(name: &str) -> Option<Family> {
     match name {
-        "node" => Some(Family::Node),
+        "node" | "npm" | "npx" => Some(Family::Node),
         "python" | "python3" => Some(Family::Python),
         name if name.starts_with("python3.") => Some(Family::Python),
         _ => None,
@@ -283,7 +283,7 @@ mod tests {
         ];
         fs::write(&script, b"#!/usr/bin/env node\n").unwrap();
         let error = launch.for_program(&script, &project).unwrap_err();
-        assert_eq!(error.key, "acp.runtime_ambiguous");
+        assert_eq!(error.message().key, "acp.runtime_ambiguous");
         fs::write(default_node, "22\n").unwrap();
         let path = launch.for_program(&script, &project).unwrap().unwrap();
         assert_eq!(std::env::split_paths(&path).last(), Some(selected));

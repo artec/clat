@@ -5,6 +5,7 @@ use crate::model::{ModelItem, ModelOptions, RunSpendLedger, Usage};
 use crate::run::RequestContextManager;
 use crate::tool::ToolDefinition;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(in crate::application) struct ActiveContext {
     pub(in crate::application) compactor: Option<Arc<dyn HistoryCompactor>>,
@@ -22,6 +23,7 @@ pub(in crate::application) struct ActiveContext {
         Arc<Mutex<Vec<std::sync::mpsc::Sender<ApplicationEvent>>>>,
     pub(in crate::application) ledger: Arc<RunSpendLedger>,
     pub(in crate::application) checkpoints: BTreeMap<u64, String>,
+    pub(in crate::application) automatic_summary_failed: Arc<AtomicBool>,
 }
 
 impl RequestContextManager for ActiveContext {
@@ -89,7 +91,7 @@ impl RequestContextManager for ActiveContext {
         };
         let images = self.maintain_images(items, instructions, definitions, options, false)?;
         self.notify_maintenance(pruned, images);
-        if cost(items) <= target || self.compactor.is_none() {
+        if cost(items) <= target || !self.can_summarize() {
             return Ok(());
         }
         broadcast_to(
@@ -139,6 +141,10 @@ impl RequestContextManager for ActiveContext {
 }
 
 impl ActiveContext {
+    pub(super) fn can_summarize(&self) -> bool {
+        self.compactor.is_some() && !self.automatic_summary_failed.load(Ordering::Relaxed)
+    }
+
     pub(super) fn boundary(&self) -> Result<(), String> {
         self.recorder
             .lock()
@@ -204,6 +210,9 @@ impl ActiveContext {
             }
             let Some(summary) = &outcome.summary else {
                 reason = outcome.degraded.clone();
+                if outcome.attempted {
+                    self.automatic_summary_failed.store(true, Ordering::Relaxed);
+                }
                 self.record_unapplied(
                     &outcome,
                     reason.as_deref().unwrap_or("compaction deferred"),
@@ -211,6 +220,7 @@ impl ActiveContext {
                 break;
             };
             if !self.apply(items, &nodes, summary, &outcome, cost, revision)? {
+                self.automatic_summary_failed.store(true, Ordering::Relaxed);
                 break;
             }
             count += 1;

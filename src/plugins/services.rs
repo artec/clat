@@ -656,6 +656,8 @@ pub(crate) struct CompactionRequest<'a> {
 /// 是从 shadowed_start 开始的被遮蔽节点数。
 #[derive(Debug, Default)]
 pub(crate) struct CompactionOutcome {
+    /// A range was selected and summary generation entered, even if no usable text came back.
+    pub attempted: bool,
     pub summary: Option<String>,
     pub shadowed_start: usize,
     pub shadowed_count: usize,

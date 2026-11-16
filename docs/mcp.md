@@ -69,13 +69,15 @@ Installed packages also support enable, disable, rollback and uninstall; see
 }
 ```
 
-stdio commands are resolved in layers, so entries like the `npx` example
-work even when CLAT is launched from a desktop/GUI session whose PATH is
-reduced to system directories: absolute paths are used as-is, the host
-PATH is searched, and otherwise the command is resolved through your
-login shell (`$SHELL -lc`, no interactive noise — the stdio protocol
-channel stays clean). Shell aliases do not participate in resolution —
-use a login-resolvable command name or an absolute path.
+On macOS and Linux, CLAT can start stdio launchers from a desktop session
+with a minimal `PATH`. It uses explicit paths directly. For bare commands
+such as `npx`, it checks the Host's `PATH`, known installation locations,
+and then the login shell. Shell aliases are skipped. For launchers with a
+recognized interpreter line such as `#!/usr/bin/env node`, CLAT uses the
+same runtime discovery as External Agents. It checks existing installations
+and configured manager defaults, adding the runtime directory to the child
+process only. Automatic discovery excludes candidates inside the project.
+An explicit `env.PATH` takes precedence and is used as configured.
 
 Each entry chooses exactly one transport:
 

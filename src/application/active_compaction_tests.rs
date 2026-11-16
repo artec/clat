@@ -10,6 +10,8 @@ use crate::test_support::TestModelScript;
 enum SummaryMode {
     Normal,
     Failure,
+    FailureThenCapacity,
+    ImageTurn,
     Cancel,
     Persistence,
     Steering,
@@ -54,12 +56,15 @@ impl TestModelScript for LongTask {
         }
         if request.items.last().is_some_and(|item|matches!(item, ModelItem::User {content} if matches!(content.first(),Some(crate::model::ContentPart::Text(text)) if text.contains("context compaction")))) {
             self.summaries.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.mode, SummaryMode::ImageTurn | SummaryMode::FailureThenCapacity) {
+                assert_eq!(request.items.iter().flat_map(crate::model::model_item_image_parts).count(), 0, "the just-admitted images belong to the main request, not the summary");
+            }
             assert!(
                 self.main.load(Ordering::SeqCst) >= 2,
                 "must compact inside a running user turn"
             );
             match self.mode {
-                SummaryMode::Failure => {
+                SummaryMode::Failure | SummaryMode::FailureThenCapacity => {
                     return Err(ModelError::request("injected summary refusal"));
                 }
                 SummaryMode::Cancel => {
@@ -97,7 +102,7 @@ impl TestModelScript for LongTask {
                         fail_batch_write: true,
                         ..Default::default()
                     }),
-                SummaryMode::Normal => {}
+                SummaryMode::Normal | SummaryMode::ImageTurn => {}
             }
             let finish = if request.cancel.is_cancelled() {
                 FinishReason::Cancelled
@@ -111,6 +116,20 @@ impl TestModelScript for LongTask {
         }
         let n = self.main.fetch_add(1, Ordering::SeqCst);
         self.snapshots.lock().unwrap().push(request.items.to_vec());
+        if matches!(self.mode, SummaryMode::FailureThenCapacity)
+            && self.summaries.load(Ordering::SeqCst) > 0
+        {
+            return Err(ModelError::with_kind(
+                crate::model::ModelErrorKind::ContextCapacity,
+                "fixture rejected the current context",
+            ));
+        }
+        if n >= 8 && matches!(self.mode, SummaryMode::ImageTurn) {
+            return Ok(crate::test_support::response(
+                "done",
+                FinishReason::Completed,
+            ));
+        }
         let goal = self.goal_input.load(Ordering::SeqCst);
         if goal && n == 8 {
             return Ok(crate::test_support::response(
@@ -324,15 +343,7 @@ fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt
         "oversized request must not reach provider after failed summary"
     );
     let seen = script.main.load(Ordering::SeqCst);
-    // 结构性上界（原 `<= 3` 按 Linux 目录尺寸调死，ui_* 目录随平台出现
-    // 后触发点后移一轮即红——A 桌 2026-11-13）：维护重试的形状是
-    // "每次摘要尝试至多再派发一轮"，故 seen ≤ summaries + 1 平台无关；
-    // 触发点本身（第几轮超限）不是被测不变量。
-    assert!(
-        seen <= script.summaries.load(Ordering::SeqCst) + 1,
-        "failed reduction cannot dispatch beyond its summary attempts"
-    );
-    assert!(script.summaries.load(Ordering::SeqCst) >= 1);
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
     app.close().unwrap();
     let events = load_events(&storage);
     assert!(
@@ -354,6 +365,177 @@ fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt
                 && event.data["usage"]["inputTokens"].as_u64().unwrap_or(0) > 0)
     );
     crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn startup_summary_failure_cannot_restart_through_active_maintenance_or_capacity_recovery() {
+    let (mut app, script, storage) = fixture(SummaryMode::FailureThenCapacity, None);
+    configure_test_model_with_budget(&app, u32::MAX);
+    run(&mut app, "KEEP_USER_INTENT").expect("seed completed tool exchanges");
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 0);
+    let history = app.context_snapshot().unwrap().total_estimate;
+    configure_test_model_with_budget(&app, u32::try_from(history * 11 / 10).unwrap());
+
+    let failed = run(&mut app, "KEEP_USER_INTENT").expect_err("provider rejects capacity");
+    assert!(
+        failed
+            .error
+            .contains("fixture rejected the current context")
+    );
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
+    let main_after_failure = script.main.load(Ordering::SeqCst);
+    assert_eq!(
+        main_after_failure, 9,
+        "one main request after the summary failure"
+    );
+
+    app.close().unwrap();
+    let events = load_events(&storage);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "compaction/end" && event.data["error"].is_string())
+            .count(),
+        1
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.event_type == "compaction/summary")
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "tool/result")
+            .count(),
+        14
+    );
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn two_images_cross_automatic_compaction_threshold_and_survive_either_outcome() {
+    for (attachments, fail) in [(false, false), (true, false), (true, true)] {
+        let mode = if fail {
+            SummaryMode::FailureThenCapacity
+        } else {
+            SummaryMode::ImageTurn
+        };
+        let (mut app, script, storage) = fixture(mode, None);
+        let (mut config, credentials) = app.model_state().unwrap();
+        config
+            .capabilities
+            .input_modalities
+            .push(crate::model::Modality::Image);
+        config.capabilities.image_input_verified = true;
+        config.overrides.max_context_tokens = crate::Override::Set(u32::MAX);
+        app.save_model_state(&config, &credentials).unwrap();
+        assert_eq!(
+            app.model_state().unwrap().0.max_context_tokens,
+            Some(u32::MAX)
+        );
+        run(&mut app, "KEEP_USER_INTENT").expect("seed identical complete tool exchanges");
+        assert_eq!(script.summaries.load(Ordering::SeqCst), 0);
+
+        let dimensions = [(1806, 754), (1796, 842)];
+        let image_tokens = dimensions
+            .iter()
+            .map(|&(w, h)| {
+                crate::media::estimate_image_tokens_from_dimensions(Some((
+                    u64::from(w),
+                    u64::from(h),
+                )))
+            })
+            .sum::<u64>();
+        let input = app.context_snapshot().unwrap().input_estimate;
+        config.overrides.max_context_tokens =
+            crate::Override::Set(u32::try_from((input + image_tokens / 2) * 5 / 4).unwrap());
+        app.save_model_state(&config, &credentials).unwrap();
+        let effective = app.model_state().unwrap().0;
+        assert!(effective.capabilities.accepts_image_input());
+        let budget = crate::model::ContextBudget::resolve(&effective)
+            .unwrap()
+            .unwrap();
+        assert!(input < budget.threshold && budget.threshold < input + image_tokens);
+        let images = if attachments {
+            compaction_images(storage.parent().unwrap(), dimensions)
+        } else {
+            Vec::new()
+        };
+        let result = run_with_attachments(&mut app, "KEEP_USER_INTENT", images);
+        let summaries = script.summaries.load(Ordering::SeqCst);
+        if fail {
+            assert!(
+                result
+                    .unwrap_err()
+                    .error
+                    .contains("fixture rejected the current context")
+            );
+            assert_eq!(
+                summaries, 1,
+                "capacity recovery cannot repeat a failed summary"
+            );
+        } else {
+            assert_eq!(result.unwrap().output, "done");
+            assert_eq!(
+                summaries > 0,
+                attachments,
+                "only the image turn crosses the threshold"
+            );
+        }
+        assert_eq!(script.main.load(Ordering::SeqCst), 9);
+        let expected_images = if attachments { 2 } else { 0 };
+        assert_eq!(
+            script
+                .snapshots
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .iter()
+                .flat_map(crate::model::model_item_image_parts)
+                .count(),
+            expected_images
+        );
+        assert_eq!(
+            app.context_snapshot().unwrap().image_count,
+            expected_images as u64
+        );
+        app.close().unwrap();
+        let events = load_events(&storage);
+        assert_eq!(
+            events
+                .iter()
+                .filter(
+                    |event| event.event_type == "compaction/end" && event.data["error"].is_string()
+                )
+                .count(),
+            usize::from(fail)
+        );
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| event.event_type == "compaction/summary"),
+            attachments && !fail
+        );
+        crate::test_support::cleanup_tree(storage.parent().unwrap());
+    }
+}
+
+fn compaction_images(root: &std::path::Path, dimensions: [(u32, u32); 2]) -> Vec<PathBuf> {
+    dimensions
+        .into_iter()
+        .enumerate()
+        .map(|(i, (width, height))| {
+            let path = root.join(format!("pressure-{i}.png"));
+            std::fs::write(
+                &path,
+                crate::test_support::png_bytes(width, height, [i as u8, 180, 40]),
+            )
+            .unwrap();
+            path
+        })
+        .collect()
 }
 
 #[test]

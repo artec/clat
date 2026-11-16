@@ -896,9 +896,12 @@ missing provider usage uses the conservative request estimate and output reserve
 A run's token cap does not interrupt compaction, but normal agent requests still
 honor an explicitly configured cap after maintenance. Each applied checkpoint
 must shrink the actual request. Maintenance stops when the request fits, the
-caller cancels, or no safe progress is possible. A summary failure leaves that
-selected history intact; a persistence failure stops execution without repeating
-tools already executed.
+caller cancels, or no safe progress is possible. If summary generation fails,
+CLAT retains the selected history and pauses automatic summarization for the
+rest of that run, including capacity recovery and subsequent Goal rounds.
+Requests that fit can continue. A new run or an explicit `/compact` can try
+summarizing again. A persistence failure stops execution without repeating tools
+already executed.
 
 `/compact` manually selects the largest safe balanced history span with zero
 recent-tail budget while no run is active; the final node group and protected
@@ -1933,10 +1936,11 @@ printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
 
-In Web, PWA, and Desktop, assistant replies turn HTTP(S) addresses and recognizable
-file references into links. Click a file reference to open its actions menu and
-copy the relative or absolute path. Project text files can open in the shared
-editor. Use a Markdown link or wrap a path in backticks if it contains spaces.
+In Web, PWA, and Desktop, assistant replies turn HTTP(S) addresses and verified
+project file paths into links. A bare filename in prose or inline code stays as
+written. Use a project-relative path such as `./README.md` or `web/app.js`, or an
+explicit Markdown link to the file. Click the link to open or copy its path.
+Wrap a path containing spaces in backticks or use a Markdown link.
 Click a web address to open its actions menu, then open it in the browser or copy
 the URL. A loopback address such as `localhost:3000` points to the device running
 the browser. When the Host runs on another device, use an address the browser

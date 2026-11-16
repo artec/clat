@@ -96,29 +96,39 @@ test('completed replies open project files and let users copy paths and preview 
   await openWorkbench(page, entry);
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   const root = await page.evaluate(async () => (await rpc('workbench.info', {})).project.root);
-  const relative = 'reply-artifact-fixture.md';
+  const directory = 'reply-artifact-fixture';
+  const bare = 'application-breadcrumbs.js';
+  const relative = `${directory}/${bare}`;
   const absolute = path.join(root, relative);
   const preview = entry.origin + '/reply_preview?view=latest';
   const localHost = 'http://127.0.0.1:2691/';
   const otherRoot = root + '-other';
+  fs.mkdirSync(path.dirname(absolute));
   fs.writeFileSync(absolute, 'File made by the reply');
   try {
-    await page.evaluate(({relative, preview, localHost, otherRoot}) => {
+    await page.evaluate(({relative, bare, preview, localHost, otherRoot}) => {
       // Replay can deliver the transcript before the project metadata.
       const metadata = state.workbench;
       state.workbench = null;
       const reply = addAssistantMessage();
       reply.node.dataset.replyFixture = 'true';
-      reply.appendBody(`File ${relative}. Preview (${preview}).\n\nLocal Host: \`${localHost}\`\n\n[Outside](<${otherRoot}/other file.pdf>)`);
+      reply.appendBody(`File \`${relative}\`. Preview (${preview}).\n\nLocal Host: \`${localHost}\`\n\n[Outside](<${otherRoot}/other file.pdf>)`
+        + `\n\n| Item | Result |\n| --- | --- |\n| Filename | \`${bare}\` |\n\n- Capability \`builtin.development\`\n- Unresolved \`./missing-from-reply.js\``);
       reply.finishBody();
       state.workbench = metadata;
-    }, {relative, preview, localHost, otherRoot});
+    }, {relative, bare, preview, localHost, otherRoot});
     const reply = page.locator('[data-reply-fixture]');
     const fileLink = reply.getByRole('button', {name:relative, exact:true});
     const urlLink = reply.getByRole('button', {name:preview, exact:true});
     const menu = page.getByRole('menu');
     const action = key => menu.locator(`[data-action="${key}"]`);
     const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
+
+    await expect(fileLink).toBeVisible(LIVE);
+    for (const reference of [bare, 'builtin.development', './missing-from-reply.js']) {
+      await expect(reply.getByText(reference, {exact:true})).toBeVisible();
+      await expect(reply.getByRole('button', {name:reference, exact:true})).toHaveCount(0);
+    }
 
     await urlLink.click();
     await action('copy_url').click();
@@ -154,7 +164,7 @@ test('completed replies open project files and let users copy paths and preview 
     await fileLink.click();
     await action('open_file').click();
     await expect(page.locator('#file-browser .cm-content')).toHaveText('File made by the reply', LIVE);
-  } finally { fs.rmSync(absolute, {force:true}); }
+  } finally { fs.rmSync(path.dirname(absolute), {recursive:true, force:true}); }
 });
 
 test('application toolbar history returns between features without losing their work', async ({ page }) => {

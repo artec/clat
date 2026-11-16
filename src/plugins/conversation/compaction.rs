@@ -132,8 +132,16 @@ impl DefaultHistoryCompactor {
         let plan = plan::CompactionPlan::new(request.nodes, range)?;
         // Empty is an effective snapshot, never a request to restore registry defaults.
         let _ = (&self.prompts, &self.tools);
-        let job = summary::SummaryJob::new(&self.providers, request, self.guidance.clone())
-            .map_err(|error| error.to_string())?;
+        let job = match summary::SummaryJob::new(&self.providers, request, self.guidance.clone()) {
+            Ok(job) => job,
+            Err(error) => {
+                return Ok(CompactionOutcome {
+                    attempted: true,
+                    degraded: Some(error.to_string().into()),
+                    ..Default::default()
+                });
+            }
+        };
         let result = job.execute(&plan.items());
         let accepted = result.summary.and_then(|summary| {
             plan.validate_summary(&summary)
@@ -142,6 +150,7 @@ impl DefaultHistoryCompactor {
         });
         Ok(match accepted {
             Ok(summary) => CompactionOutcome {
+                attempted: true,
                 summary: Some(summary),
                 shadowed_start: plan.range().start,
                 shadowed_count: plan.range().len(),
@@ -151,6 +160,7 @@ impl DefaultHistoryCompactor {
                 degraded: None,
             },
             Err(reason) => CompactionOutcome {
+                attempted: true,
                 usage: result.usage,
                 degraded: Some(reason),
                 ..Default::default()

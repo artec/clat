@@ -146,6 +146,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "turn.restore",
     "files.list",
     "files.search",
+    "files.resolve",
     "files.preview",
     "files.reference",
     "workflow.details",
@@ -1522,7 +1523,7 @@ fn dispatch_workbench_tools(
             super::page_queries::operations(shared, method, params)
         }
         "turn.changes" | "turn.restore" => dispatch_turn_review(shared, method, params),
-        "files.list" | "files.search" | "files.preview" | "files.reference" => {
+        "files.list" | "files.search" | "files.resolve" | "files.preview" | "files.reference" => {
             dispatch_files(shared, method, params)
         }
         "session.organize" => dispatch_organization(shared, params),
@@ -1694,6 +1695,22 @@ fn dispatch_files(
     let result = match method {
         "files.list" => browser.list(&optional_str(params, "directory")?.unwrap_or_default()),
         "files.search" => browser.search(&optional_str(params, "query")?.unwrap_or_default()),
+        "files.resolve" => {
+            let paths = params
+                .get("paths")
+                .and_then(Value::as_array)
+                .filter(|paths| paths.len() <= 64)
+                .ok_or_else(|| RpcError::bad_request("invalid project file references"))?;
+            let paths = paths
+                .iter()
+                .map(|path| {
+                    path.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| RpcError::bad_request("invalid project file reference"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            browser.resolve(&paths)
+        }
         "files.preview" | "files.reference" => {
             let path = required_str(params, "path")?;
             let line = |name: &str, default| {

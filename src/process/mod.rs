@@ -21,6 +21,7 @@ mod error;
 pub(crate) use error::ProcessError;
 mod failures;
 mod launch;
+pub(crate) mod launch_path;
 mod outcome;
 mod playwright;
 mod playwright_json;

@@ -86,6 +86,7 @@ fn workbench_methods_advertise_actual_bounded_read_surfaces() {
         "turn.changes",
         "turn.restore",
         "files.search",
+        "files.resolve",
         "files.preview",
         "files.reference",
         "session.organize",
@@ -100,6 +101,13 @@ fn workbench_methods_advertise_actual_bounded_read_surfaces() {
     }
     let found = protocol::dispatch("files.search", &json!({"query":"code"}), &shared).unwrap();
     assert_eq!(found["paths"], json!(["code.rs"]));
+    let links = protocol::dispatch(
+        "files.resolve",
+        &json!({"paths":["code.rs","missing.js",".env","../code.rs"]}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(links, json!({"paths":["code.rs"]}));
     let preview = protocol::dispatch(
         "files.preview",
         &json!({"path":"code.rs","start_line":2,"end_line":2}),

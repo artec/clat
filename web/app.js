@@ -36,7 +36,6 @@ const REPLY_REFERENCES = [
   `https?://${URL_TEXT}+`,
   String.raw`(?:localhost|127\.0\.0\.1|\[::1\]):\d{1,5}(?![\p{L}\p{N}])(?:[/#?]${URL_TEXT}*)?`,
   /(?:file:\/\/|[a-z]:[\\/]|\.{1,2}[\\/]|\/|[\p{L}\p{N}_.-]+[\\/])[\p{L}\p{N}\p{M}._%+~@\\/:#-]+/u.source,
-  /[\p{L}\p{N}][\p{L}\p{N}\p{M}_.-]*\.(?:md|txt|pdf|csv|tsv|json|jsonl|log|html|zip|png|jpe?g|webp|svg|docx|xlsx|pptx)(?::\d+(?::\d+)?)?(?![\p{L}\p{N}_/\\-]|\.[\p{L}\p{N}])/u.source,
 ];
 const REPLY_INLINE_MARKDOWN = new RegExp(
   INLINE_MARKDOWN.source + String.raw`|(^|[^\p{L}\p{N}_@/\\:])(${REPLY_REFERENCES.join('|')})`, 'giu',
@@ -82,16 +81,71 @@ function localMarkdownPath(value, projectRoot) {
   return { relative, absolute: native(root + '/' + relative) };
 }
 
-function localMarkdownLink(label, target, projectRoot, code = false) {
+const pendingMarkdownFiles = new Map();
+let markdownFileCheckScheduled = false, validatingMarkdownFiles = false;
+
+function scheduleMarkdownFileCheck() {
+  if (markdownFileCheckScheduled || !pendingMarkdownFiles.size) return;
+  markdownFileCheckScheduled = true;
+  queueMicrotask(() => {
+    markdownFileCheckScheduled = false;
+    void verifyMarkdownFiles();
+  });
+}
+
+function localMarkdownReference(label, target, projectRoot, {implicit, code}) {
+  const placeholder = el(code ? 'code' : 'span', '', label);
+  if (pendingMarkdownFiles.size >= 512) return placeholder;
+  pendingMarkdownFiles.set(placeholder, {label, target, projectRoot, implicit, code});
+  scheduleMarkdownFileCheck();
+  return placeholder;
+}
+
+async function verifyMarkdownFiles() {
+  const root = state.workbench?.project?.root;
+  if (!root || validatingMarkdownFiles || !pendingMarkdownFiles.size) return;
+  validatingMarkdownFiles = true;
+  const paths = new Map();
+  try {
+    for (const [placeholder, reference] of pendingMarkdownFiles) {
+      if (!placeholder.isConnected || (reference.projectRoot && reference.projectRoot !== root)) continue;
+      const path = localMarkdownPath(reference.target, root);
+      if (!path) continue;
+      const replace = () => {
+        if (placeholder.isConnected && root === state.workbench?.project?.root) {
+          placeholder.replaceWith(localMarkdownLink(reference.label, path, root, reference.code));
+        }
+      };
+      if (!path.relative) {
+        // An explicit external path can be copied as written. It receives no project lookup.
+        if (!reference.implicit) replace();
+        continue;
+      }
+      if (!paths.has(path.relative)) paths.set(path.relative, []);
+      paths.get(path.relative).push(replace);
+    }
+    pendingMarkdownFiles.clear();
+    const entries = [...paths.keys()];
+    for (let index = 0; index < entries.length && root === state.workbench?.project?.root; index += 64) {
+      const requested = entries.slice(index, index + 64);
+      const result = await rpc('files.resolve', {paths:requested});
+      for (const path of requested) {
+        if (result.paths?.includes(path)) for (const replace of paths.get(path)) replace();
+      }
+    }
+  } catch (_) { /* Leave unverified references as ordinary text. */ }
+  finally {
+    validatingMarkdownFiles = false;
+    scheduleMarkdownFileCheck();
+  }
+}
+
+function localMarkdownLink(label, path, root, code) {
   const node = el('button', 'markdown-file-link', code ? undefined : label); node.type = 'button';
   if (code) node.append(el('code', '', label));
+  const canOpen = () => path.relative && root === state.workbench?.project?.root && devAvailable();
   const items = () => {
-    // Replay can render before workbench.info arrives. That transcript belongs
-    // to this project context. Independent history can carry its own root.
-    const root = projectRoot || state.workbench?.project?.root;
-    const path = root && localMarkdownPath(target, root);
-    if (!path) return [];
-    const canOpen = () => path.relative && root === state.workbench?.project?.root && devAvailable();
+    if (root !== state.workbench?.project?.root) return [];
     return [
       {key:'open_file',icon:'open',disabled:!canOpen(),run:()=>{
         if (!canOpen()) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
@@ -177,13 +231,12 @@ function markdownReference(label, destination, options, {implicit = false, code 
   if (implicit && !/^file:\/\//i.test(destination)) {
     const path = target.split('/');
     const name = path.at(-1);
-    if (!/\.[\p{L}\p{N}]{1,16}$/u.test(name)
-      || /[?*"<>|=:]/.test(target.replace(/^[a-z]:\//i, ''))
+    if (/[?*"<>|=:]/.test(target.replace(/^[a-z]:\//i, ''))
       || !/^[\p{L}\p{N}_.%+~ -]+$/u.test(name)
-      || (path.length === 1 ? /\s/.test(name) : /\s/.test(path[0]))) return null;
+      || path.length === 1 || /\s/.test(path[0])) return null;
   }
   const root = options.projectRoot === undefined ? state.workbench?.project?.root : options.projectRoot;
-  return localMarkdownLink(label, target, root, code);
+  return localMarkdownReference(label, target, root, {implicit, code});
 }
 
 function trimReplyReference(value) {
@@ -2771,6 +2824,7 @@ async function refreshWorkbench() {
     if (request !== state.workbenchRequest || state.switching || selection !== state.selectionGeneration) return;
     if (Number.isSafeInteger(info.selection_generation) && info.selection_generation !== selection) return;
     state.workbench = info;
+    scheduleMarkdownFileCheck();
     void refreshUsage();
     decorateConversationBookmarks();
     void reconcileFileReferences();

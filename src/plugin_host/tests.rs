@@ -1488,8 +1488,14 @@ fn dsh_adapter_demo_end_to_end_over_mcp() {
     );
     bridge.update_run_metadata("dsh-host-session", &[ModelItem::user_text("hello")]);
     let handler = Arc::new(McpHostHandler::new(Arc::clone(&bridge), "demo"));
-    let server = McpServer::connect("demo", &config, &project_root, Some(handler.clone()))
-        .expect("connect to the dsh-adapter demo");
+    let server = McpServer::connect(
+        "demo",
+        &config,
+        &project_root,
+        &project_root,
+        Some(handler.clone()),
+    )
+    .expect("connect to the dsh-adapter demo");
     assert!(server.supports_clat_host_services());
     handler.enable_host_services();
 
@@ -1610,8 +1616,14 @@ fn dsh_adapter_real_web_search_exa_end_to_end() {
         args: vec![bin.display().to_string()],
         ..Default::default()
     };
-    let server =
-        McpServer::connect("web-search-exa", &config, Path::new("/tmp"), None).expect("connect");
+    let server = McpServer::connect(
+        "web-search-exa",
+        &config,
+        Path::new("/tmp"),
+        Path::new("/tmp"),
+        None,
+    )
+    .expect("connect");
 
     let tools = server.list_tools().expect("tools");
     assert_eq!(tools.len(), 1, "only the built-in web_search is exposed");

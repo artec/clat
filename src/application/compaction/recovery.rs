@@ -27,7 +27,7 @@ impl ActiveContext {
         }
         let pruned = self.prune_results(items)?;
         self.notify_maintenance(pruned, 0);
-        if cost(items) >= before && self.compactor.is_some() {
+        if cost(items) >= before && self.can_summarize() {
             // Active selection still protects user input and the newest complete tool exchange.
             let _ = self.reduce(items, usage, instructions, definitions, &cost, 0)?;
         }
