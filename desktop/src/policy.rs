@@ -21,6 +21,15 @@ pub fn permitted_page(url: &str) -> bool {
     )
 }
 
+pub fn browser_destination(value: &str) -> Option<url::Url> {
+    let url = url::Url::parse(value).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.host().is_some()
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then_some(url)
+}
+
 pub fn validate_update(value: &Value, current: &str, target: &str) -> Result<String, UiMessage> {
     let version = newer_formal_version(value, current)?
         .ok_or(UiMessage::new("update.newer_formal_required"))?;
@@ -55,7 +64,7 @@ pub fn verify_index(bytes: &[u8], signature: &str, expected: &Value) -> Result<(
 mod tests {
     use super::*;
     #[test]
-    fn tray_navigation_commands_are_admitted_for_the_main_workbench() {
+    fn curated_commands_are_admitted_for_the_main_workbench() {
         let capability: Value =
             serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
         let permissions = capability["permissions"].as_array().unwrap();
@@ -64,6 +73,7 @@ mod tests {
             "desktop_remember_conversation",
             "desktop_take_tray_intent",
             "desktop_fonts",
+            "desktop_open_browser",
         ] {
             assert!(
                 manifest.contains(&format!("\"{command}\"")),
@@ -98,6 +108,25 @@ mod tests {
             "file:///etc/passwd",
         ] {
             assert!(!permitted_page(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn browser_destination_accepts_loopback_and_web_urls_only() {
+        for url in [
+            "http://127.0.0.1:2691/",
+            "http://[::1]:3000/",
+            "https://example.com/",
+        ] {
+            assert_eq!(browser_destination(url).unwrap().as_str(), url);
+        }
+        for url in [
+            "file:///tmp/test",
+            "tauri://localhost/",
+            "javascript:alert(1)",
+            "https://user:secret@example.com/",
+        ] {
+            assert!(browser_destination(url).is_none(), "{url}");
         }
     }
     #[test]

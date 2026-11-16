@@ -3300,6 +3300,18 @@ const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
     // web/tests 夹具里"远程 URL 必须被拒"的反例；RFC 2606 保留域
     // 永不解析，仅存在于测试源码，非运行时目的地。
     "https://example.com",
+    // ACP 面向用户的运行时安装指引（External Agents 设置页"去哪装
+    // node/python/bun/deno/WSL"），官方厂商文档页，静态展示不发请求。
+    "https://nodejs.org/en/download",
+    "https://www.python.org/downloads/",
+    "https://bun.sh/docs/installation",
+    "https://docs.deno.com/runtime/getting_started/installation/",
+    "https://learn.microsoft.com/windows/wsl/install",
+    // web/tests markdown 自动链接夹具；loopback 字面量仅存在于测试
+    // 源码（含"带凭据形态必须被脱敏"的反例），非运行时目的地。
+    "http://[::1]:3000/a_b_c",
+    "https://someone@localhost:3000",
+    "http://localhost:3000?mode=clean",
 ];
 
 #[test]
@@ -3387,7 +3399,11 @@ fn urls_in_line(line: &str) -> Vec<String> {
                         || matches!(character, '"' | '\'' | '`' | '<' | '>' | '(' | ')')
                 })
                 .unwrap_or(candidate.len());
-            urls.push(candidate[..end].to_owned());
+            // 裸 scheme 字面量（`'http://' + host` 拼接、`.startsWith('https://')`
+            // 校验）不带主机，不是目的地——只跳过这两种，空主机之外的照收。
+            if end > scheme.len() {
+                urls.push(candidate[..end].to_owned());
+            }
             rest = &candidate[end..];
         }
     }

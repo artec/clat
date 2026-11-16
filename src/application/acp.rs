@@ -6,7 +6,45 @@ use std::{sync::atomic::AtomicU64, time::Duration};
 
 pub(crate) type AcpInteractions = Arc<dyn Fn(&str) -> Interaction + Send + Sync>;
 
+pub(crate) struct AcpPresetSettings {
+    storage: Arc<super::host_storage::HostStorage>,
+    project: std::path::PathBuf,
+}
+
+impl AcpPresetSettings {
+    pub(crate) fn list(&self) -> Result<Value, ApplicationError> {
+        self.storage
+            .acp
+            .agent_presets(&self.storage.control, &self.project)
+            .map_err(ApplicationError::presented)
+    }
+
+    pub(crate) fn add(&self, request: acp::presets::AddPreset) -> Result<Value, ApplicationError> {
+        self.storage
+            .acp
+            .add_agent_preset(&self.storage.control, &self.project, request)
+            .map_err(ApplicationError::presented)
+    }
+
+    pub(crate) fn add_presets(
+        &self,
+        request: acp::presets::AddPresets,
+    ) -> Result<Value, ApplicationError> {
+        self.storage
+            .acp
+            .add_agent_presets(&self.storage.control, &self.project, request)
+            .map_err(ApplicationError::presented)
+    }
+}
+
 impl TrustedProjectApplication {
+    pub(crate) fn acp_preset_settings(&self) -> AcpPresetSettings {
+        AcpPresetSettings {
+            storage: self.host_storage.clone(),
+            project: self.canonical_root.clone(),
+        }
+    }
+
     fn acp_project(&self) -> &str {
         self.canonical_root.to_str().unwrap_or_default()
     }
@@ -111,6 +149,10 @@ impl TrustedProjectApplication {
             });
         }
         let scope = self.acp_scope(interaction)?;
+        self.host_storage
+            .acp
+            .check_agent_runtime(&self.control, self.acp_project(), &request.agent)
+            .map_err(ApplicationError::presented)?;
         if request.delegation {
             if request.text.trim().is_empty() || request.text.len() > 64 * 1024 {
                 return Err(self.acp_error("invalid ACP delegation task".into()));

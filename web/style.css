@@ -284,7 +284,8 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.assistant .body { color: var(--text); }
 .msg.assistant:has(.body:empty):has(.reasoning.hidden) { display: none; }
 .rich-text { font-size: var(--text-size-reading); font-weight: 300; line-height: var(--text-leading); }
-.markdown-file-link { color:var(--signal); text-decoration:underline; font:inherit; padding:0; border:0; background:transparent; cursor:pointer; }
+:is(.markdown-file-link, .markdown-web-link) { color:var(--signal); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:.18em; font:inherit; padding:0; border:0; background:transparent; cursor:pointer; max-width:100%; text-align:start; overflow-wrap:anywhere; }
+.rich-text :is(.markdown-file-link, .markdown-web-link, a) > code { color:inherit; white-space:normal; }
 .msg.user .rich-text { font-weight: 400; }
 .rich-text strong, .rich-text b { font-weight: var(--text-weight-emphasis); }
 .msg .rich-text.is-rendered { white-space: normal; }
@@ -301,7 +302,7 @@ button:disabled { cursor: default; opacity: .45; }
 .rich-text pre { max-width: 100%; margin: .65em 0 .9em; padding: 13px 15px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-input); font: var(--text-size-code)/1.7 var(--font-mono); white-space: pre; }
 .rich-text pre code { padding: 0; border: 0; border-radius: 0; background: none; font: inherit; }
 .rich-text :not(pre) > code { padding: .12em .36em; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-input); font: 1em/1.6 var(--font-mono); }
-.rich-text a { color: var(--signal); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+.rich-text a { color: var(--signal); text-decoration-thickness: 1px; text-underline-offset: .18em; overflow-wrap:anywhere; }
 .rich-text hr { height: 1px; margin: 1em 0; border: 0; background: var(--line-strong); }
 .rich-text .table-scroll { max-width: 100%; margin: .7em 0 1em; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .rich-text table { width: 100%; min-width: max-content; border-collapse: collapse; font: inherit; }

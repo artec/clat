@@ -23,6 +23,19 @@ pub(crate) fn guard(window: &tauri::WebviewWindow) -> Result<(), UiMessage> {
 }
 
 #[tauri::command]
+pub fn desktop_open_browser(window: tauri::WebviewWindow, url: String) -> Result<(), UiMessage> {
+    use tauri_plugin_opener::OpenerExt;
+
+    guard(&window)?;
+    let url = crate::policy::browser_destination(&url)
+        .ok_or_else(|| UiMessage::new("web.open_url_failed"))?;
+    window
+        .opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| UiMessage::new("web.open_url_failed"))
+}
+
+#[tauri::command]
 pub async fn desktop_info(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

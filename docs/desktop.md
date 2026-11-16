@@ -67,6 +67,9 @@ preferences. The Host-attached TUI can manage the same sources with
 
 ## Conversation and contextual tools
 
+In an Agent reply, click a web address and select **Open in browser** to open it
+in the system browser. This also works for the default local CLAT Host address.
+
 The conversation sidebar groups projects under a Projects heading. Its add
 button opens the desktop project picker (or project settings in the browser),
 and its archive toggle shows archived conversations across the project list.
@@ -446,7 +449,9 @@ Windows has no application menu bar.
 The panel identifies
 the available desktop version and shows download progress. Choose **Download
 update**, then **Install version …** after signature verification. Successful
-installation restarts the desktop app. Background checks only announce updates.
+installation restarts the desktop app. On macOS, the updater waits for the old
+process to exit, then reopens the same installed app through Launch Services.
+Background checks only announce updates.
 
 The desktop updater and `clat upgrade` have separate installation targets and
 signing roots. Neither overwrites the other's executable. Both use the same

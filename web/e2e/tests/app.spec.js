@@ -1315,8 +1315,9 @@ test('message Markdown is readable without turning model text into executable HT
   await expect(body.locator('pre code')).toHaveText('const x = 1');
   await expect(body).toContainText('<script id="web2-attack">');
   await expect(page.locator('#web2-attack')).toHaveCount(0);
-  await expect(body.locator('a')).toHaveCount(1);
-  await expect(body.locator('a')).toHaveAttribute('href', 'https://example.com');
+  await expect(body.getByRole('button', {name:'good', exact:true})).toBeVisible();
+  await expect(body.getByRole('button', {name:'bad', exact:true})).toHaveCount(0);
+  await expect(body.getByRole('link', {name:'bad', exact:true})).toHaveCount(0);
   await expect(body.locator('table')).toHaveCount(1);
   await expect(body.locator('th')).toHaveCount(2);
   await expect(body.locator('tbody tr')).toHaveCount(2);

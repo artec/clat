@@ -1933,6 +1933,15 @@ printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
 
+In Web, PWA, and Desktop, assistant replies turn HTTP(S) addresses and recognizable
+file references into links. Click a file reference to open its actions menu and
+copy the relative or absolute path. Project text files can open in the shared
+editor. Use a Markdown link or wrap a path in backticks if it contains spaces.
+Click a web address to open its actions menu, then open it in the browser or copy
+the URL. A loopback address such as `localhost:3000` points to the device running
+the browser. When the Host runs on another device, use an address the browser
+can reach.
+
 In Web, PWA, or Desktop, open the composer's **+** menu and choose **Share
 conversation content** under **Add content**. Choose another active or archived
 conversation in this project, then select all turns or the most recent N turns.

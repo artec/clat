@@ -6,6 +6,8 @@ use tauri::Manager;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::watch;
 
+#[cfg(target_os = "macos")]
+mod relaunch;
 mod state;
 pub use state::Phase;
 pub type Updates = state::State<Update>;
@@ -170,12 +172,29 @@ async fn install_verified(app: &tauri::AppHandle) -> Result<(), UiMessage> {
         .lock()
         .expect("updates")
         .enter_install()?;
+    #[cfg(target_os = "macos")]
+    let relaunch = relaunch::installed_app_command(app);
     // No cancellable select here: once the installer starts it owns the result.
     // Retain the same verified bytes in state for retry if the native installer fails.
     tauri::async_runtime::spawn_blocking(move || update.install(bytes.as_slice()))
         .await
         .map_err(|_| UiMessage::new("update.install_worker_failed"))?
         .map_err(|e| UiMessage::new("update.install_failed").arg("detail", e.to_string()))?;
+    #[cfg(target_os = "macos")]
+    if let Some(mut command) = relaunch {
+        let state = app.state::<Desktop>();
+        let mut updates = state.updates.lock().expect("updates");
+        updates.installed();
+        command
+            .spawn()
+            .map_err(|e| UiMessage::new("update.relaunch_failed").arg("detail", e.to_string()))?;
+        state
+            .quitting
+            .store(true, std::sync::atomic::Ordering::Release);
+        drop(updates);
+        app.exit(0);
+        return Ok(());
+    }
     app.state::<Desktop>()
         .quitting
         .store(true, std::sync::atomic::Ordering::Release);
@@ -188,7 +207,9 @@ pub async fn install(app: &tauri::AppHandle) -> Result<(), UiMessage> {
         Ok(()) => install_verified(app).await,
         Err(error) => Err(error),
     };
-    finish(app, &result);
+    if result.is_err() {
+        finish(app, &result);
+    }
     result
 }
 

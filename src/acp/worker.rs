@@ -208,10 +208,7 @@ impl Service {
             if record.actions.len() >= 512 {
                 return Err("ACP action history limit reached".into());
             }
-            if action.action == "authenticate"
-                && record.request.origin.is_some()
-                && (record.remote.is_some() || record.stop.is_some())
-            {
+            if action.action == "authenticate" && !record.can_authenticate() {
                 return Err("ACP delegation already dispatched".into());
             }
             if record.request.origin.is_some()
@@ -554,7 +551,10 @@ impl Connection {
                 &format!("acp-{}", new_id()),
                 agent.edit.program.as_os_str().to_owned(),
                 agent.edit.args.iter().map(Into::into).collect(),
-                agent.edit.environment(),
+                agent
+                    .edit
+                    .environment(&scope.root)
+                    .map_err(|error| error.english())?,
             )
             .map_err(|_| "cannot start ACP executable")?;
         let mut connection = Self {

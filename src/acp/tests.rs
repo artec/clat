@@ -93,6 +93,61 @@ fn acp_executable_trust_requires_matching_bytes() {
 
 #[cfg(unix)]
 #[test]
+fn acp_start_reports_missing_runtime_before_creating_a_session() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (storage, project) = crate::test_support::roots("acp-missing-runtime");
+    std::fs::create_dir_all(&project).unwrap();
+    let launcher = project.join("agent");
+    let runtime = project.join("missing-interpreter");
+    std::fs::write(&launcher, format!("#!{}\n", runtime.display())).unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let interaction = || Interaction {
+        approver: Arc::new(|_: crate::PermissionRequest, _: &CancelToken| {
+            crate::PermissionDecision::Deny {
+                reason: "test".into(),
+            }
+        }),
+        asker: None,
+    };
+    let mut app = BootstrapApplication::open(Project::new(&project), storage)
+        .unwrap()
+        .authorize_and_mount(crate::ProjectAuthorization::grant())
+        .unwrap();
+    let agent = app
+        .acp_client_call(
+            "acp.agents.save",
+            &json!({"agent":{
+                "label":"Fixture", "program":launcher,
+            }}),
+            interaction(),
+        )
+        .unwrap();
+    app.acp_client_call(
+        "acp.agents.trust",
+        &json!({
+            "id":agent["id"], "revision":agent["revision"], "allow":true,
+        }),
+        interaction(),
+    )
+    .unwrap();
+    let error = app
+        .acp_client_call(
+            "acp.delegations.start",
+            &json!({
+                "agent":agent["id"], "requestId":"missing-runtime", "text":"Sample task",
+            }),
+            interaction(),
+        )
+        .unwrap_err();
+    assert_eq!(error.presentation().key, "acp.runtime_unavailable");
+    assert!(app.current_session_id().is_none());
+    drop(app);
+    crate::test_support::cleanup_tree(project.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
 fn acp_request_scoped_form_ignores_wrong_request_and_allows_review_edits() {
     use crate::interaction::{AskAnswer, AskQuestion, UserAsker};
     use crate::permission::{PermissionDecision, PermissionRequest};

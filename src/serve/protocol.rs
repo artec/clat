@@ -61,6 +61,9 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "terminal.resize",
     "terminal.close",
     "acp.agents.list",
+    "acp.agents.presets",
+    "acp.agents.addPreset",
+    "acp.agents.addPresets",
     "acp.agents.save",
     "acp.agents.trust",
     "acp.agents.remove",
@@ -1989,6 +1992,7 @@ fn project_mutation(method: &str) -> bool {
         && !matches!(
             method,
             "acp.agents.list"
+                | "acp.agents.presets"
                 | "acp.sessions.list"
                 | "acp.sessions.status"
                 | "acp.delegations.list"

@@ -25,6 +25,9 @@ pub(super) fn dispatch(
     let revision = || field(params, "revision");
     match method {
         "acp.agents.list" => with_app(shared, |app| app.acp_agents()).map_err(app_error),
+        "acp.agents.presets" | "acp.agents.addPreset" | "acp.agents.addPresets" => {
+            dispatch_presets(shared, method, params)
+        }
         "acp.agents.save" => {
             let edit = decode::<AgentEdit>(&params["agent"])?;
             with_app(shared, |app| {
@@ -83,6 +86,21 @@ pub(super) fn dispatch(
         }
         _ => Err(RpcError::not_found("unknown ACP method")),
     }
+}
+
+fn dispatch_presets(
+    shared: &Arc<ServeShared>,
+    method: &str,
+    params: &Value,
+) -> Result<Value, RpcError> {
+    let settings = with_app(shared, |app| app.acp_preset_settings());
+    match method {
+        "acp.agents.presets" => settings.list(),
+        "acp.agents.addPreset" => settings.add(decode(params)?),
+        "acp.agents.addPresets" => settings.add_presets(decode(params)?),
+        _ => return Err(RpcError::not_found("unknown ACP method")),
+    }
+    .map_err(app_error)
 }
 
 fn request_params(params: &Value) -> Value {

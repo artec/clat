@@ -1,7 +1,9 @@
 //! The ACP client owns the external connection and its local transcript.
 //! Admission keys belong to the project and never authorize another project.
 mod callbacks;
+mod launch_path;
 mod parameters;
+pub(crate) mod presets;
 mod schema;
 mod state;
 mod updates;
@@ -15,6 +17,7 @@ use serde_json::{Value, json};
 pub(crate) use state::{AgentEdit, Start};
 use std::{collections::BTreeMap, sync::Mutex};
 pub(crate) use worker::{Action, Scope, Work};
+const MAX_AGENTS: usize = 64;
 
 #[derive(Default)]
 pub(crate) struct Service {
@@ -54,7 +57,10 @@ fn load(control: &ControlStorage) -> Result<Catalog, String> {
         return Ok(Catalog::default());
     };
     let catalog: Catalog = serde_json::from_str(&data).map_err(|_| "invalid ACP storage")?;
-    if catalog.version != 1 || catalog.records.len() > MAX_RECORDS || catalog.agents.len() > 64 {
+    if catalog.version != 1
+        || catalog.records.len() > MAX_RECORDS
+        || catalog.agents.len() > MAX_AGENTS
+    {
         return Err("unsupported ACP storage".into());
     }
     Ok(catalog)
@@ -106,6 +112,29 @@ impl Service {
         agent.trusted(project)
     }
 
+    pub(crate) fn check_agent_runtime(
+        &self,
+        control: &ControlStorage,
+        project: &str,
+        id: &str,
+    ) -> Result<(), crate::i18n::UiMessage> {
+        let edit = self
+            .inspect(control, |catalog| {
+                catalog
+                    .agents
+                    .get(id)
+                    .filter(|agent| agent.trusted.contains_key(project))
+                    .map(|agent| agent.edit.clone())
+            })
+            .map_err(|error| {
+                crate::i18n::UiMessage::new("acp.operation_error").arg("detail", error)
+            })?;
+        if let Some(edit) = edit {
+            edit.launch_path(std::path::Path::new(project))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn origin_receipt(
         &self,
         control: &ControlStorage,
@@ -155,18 +184,13 @@ impl Service {
             if id.is_some_and(|id| !state.agents.contains_key(id)) {
                 return Err("ACP Agent no longer exists".into());
             }
-            if id.is_none() && state.agents.len() >= 64 {
+            if id.is_none() && state.agents.len() >= MAX_AGENTS {
                 return Err("ACP Agent limit reached".into());
             }
             let id = id.map(str::to_owned).unwrap_or_else(new_id);
-            let agent = Agent {
-                id: id.clone(),
-                revision: new_id(),
-                executable_fingerprint: state::fingerprint(&edit.program)?,
-                edit,
-                trusted: BTreeMap::new(),
-            };
-            state.agents.insert(id, agent.clone());
+            let fingerprint = state::fingerprint(&edit.program)?;
+            let agent = Agent::configured(id, edit, fingerprint);
+            state.agents.insert(agent.id.clone(), agent.clone());
             self.cancel_matching(&agent.id, None);
             cancel_pending(state.records.values_mut(), &agent.id, None);
             Ok(agent)

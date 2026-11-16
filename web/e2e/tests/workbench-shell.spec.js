@@ -90,6 +90,73 @@ test('resources and the conversation files tool share the open editor and unsave
   } finally { fs.rmSync(file, { force: true }); }
 });
 
+test('completed replies open project files and let users copy paths and preview URLs', async ({ page }) => {
+  const fs = require('node:fs'), path = require('node:path');
+  const entry = hostInfo('workbench');
+  await openWorkbench(page, entry);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const root = await page.evaluate(async () => (await rpc('workbench.info', {})).project.root);
+  const relative = 'reply-artifact-fixture.md';
+  const absolute = path.join(root, relative);
+  const preview = entry.origin + '/reply_preview?view=latest';
+  const localHost = 'http://127.0.0.1:2691/';
+  const otherRoot = root + '-other';
+  fs.writeFileSync(absolute, 'File made by the reply');
+  try {
+    await page.evaluate(({relative, preview, localHost, otherRoot}) => {
+      // Replay can deliver the transcript before the project metadata.
+      const metadata = state.workbench;
+      state.workbench = null;
+      const reply = addAssistantMessage();
+      reply.node.dataset.replyFixture = 'true';
+      reply.appendBody(`File ${relative}. Preview (${preview}).\n\nLocal Host: \`${localHost}\`\n\n[Outside](<${otherRoot}/other file.pdf>)`);
+      reply.finishBody();
+      state.workbench = metadata;
+    }, {relative, preview, localHost, otherRoot});
+    const reply = page.locator('[data-reply-fixture]');
+    const fileLink = reply.getByRole('button', {name:relative, exact:true});
+    const urlLink = reply.getByRole('button', {name:preview, exact:true});
+    const menu = page.getByRole('menu');
+    const action = key => menu.locator(`[data-action="${key}"]`);
+    const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
+
+    await urlLink.click();
+    await action('copy_url').click();
+    await expect.poll(clipboard).toBe(preview);
+    await page.context().route(preview, route => route.fulfill({body:'Preview service'}));
+    await urlLink.click();
+    const popupEvent = page.waitForEvent('popup');
+    await action('open_in_browser').click();
+    const popup = await popupEvent;
+    await expect(popup).toHaveURL(preview);
+    await popup.close();
+
+    await page.evaluate(() => {
+      globalThis.CLATDesktop = {openInBrowser: url => { globalThis.replyOpenedUrl = url; }};
+    });
+    await reply.getByRole('button', {name:localHost, exact:true}).click();
+    await action('open_in_browser').click();
+    await expect.poll(() => page.evaluate(() => globalThis.replyOpenedUrl)).toBe(localHost);
+    await page.evaluate(() => { delete globalThis.CLATDesktop; });
+
+    await reply.getByRole('button', {name:'Outside'}).click();
+    await expect(action('open_file')).toBeDisabled();
+    await expect(action('copy_path')).toBeDisabled();
+    await action('copy_absolute_path').click();
+    await expect.poll(clipboard).toBe(path.join(otherRoot, 'other file.pdf'));
+
+    await fileLink.click();
+    await action('copy_path').click();
+    await expect.poll(clipboard).toBe(relative);
+    await fileLink.click();
+    await action('copy_absolute_path').click();
+    await expect.poll(clipboard).toBe(absolute);
+    await fileLink.click();
+    await action('open_file').click();
+    await expect(page.locator('#file-browser .cm-content')).toHaveText('File made by the reply', LIVE);
+  } finally { fs.rmSync(absolute, {force:true}); }
+});
+
 test('application toolbar history returns between features without losing their work', async ({ page }) => {
   await openWorkbench(page, hostInfo('workbench'));
   await page.fill('#prompt', 'Retain through toolbar history');

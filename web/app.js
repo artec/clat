@@ -30,24 +30,45 @@ function el(tag, cls, text) {
 
 // A deliberately small Markdown surface: no raw HTML, remote images, or
 // arbitrary URL schemes. The DOM is assembled from text nodes only.
-const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^\s)\n]+\))/g;
+const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\((?:<[^<>\n]+>|[^\s)\n]+)\))/g;
+const URL_TEXT = /[^\s<>"`“”‘’，。；、！？（）【】]/.source;
+const REPLY_REFERENCES = [
+  `https?://${URL_TEXT}+`,
+  String.raw`(?:localhost|127\.0\.0\.1|\[::1\]):\d{1,5}(?![\p{L}\p{N}])(?:[/#?]${URL_TEXT}*)?`,
+  /(?:file:\/\/|[a-z]:[\\/]|\.{1,2}[\\/]|\/|[\p{L}\p{N}_.-]+[\\/])[\p{L}\p{N}\p{M}._%+~@\\/:#-]+/u.source,
+  /[\p{L}\p{N}][\p{L}\p{N}\p{M}_.-]*\.(?:md|txt|pdf|csv|tsv|json|jsonl|log|html|zip|png|jpe?g|webp|svg|docx|xlsx|pptx)(?::\d+(?::\d+)?)?(?![\p{L}\p{N}_/\\-]|\.[\p{L}\p{N}])/u.source,
+];
+const REPLY_INLINE_MARKDOWN = new RegExp(
+  INLINE_MARKDOWN.source + String.raw`|(^|[^\p{L}\p{N}_@/\\:])(${REPLY_REFERENCES.join('|')})`, 'giu',
+);
 
 // File operations always go through the project editor's path fence.
-function localMarkdownPath(destination, projectRoot) {
-  if (!projectRoot || /^(?!file:)[a-z][a-z0-9+.-]*:(?!\d+(?::\d+)?(?:#|$))/i.test(destination) && !/^[a-z]:[\\/]/i.test(destination)) return null;
+function localMarkdownTarget(destination, decode) {
+  if (!destination || /^[\\/]{2}/.test(destination)) return null;
   let value;
   try {
-    if (/^file:/i.test(destination)) {
+    if (/^file:\/\//i.test(destination)) {
       const url = new URL(destination); if (url.host && url.host !== 'localhost') return null;
       value = decodeURIComponent(url.pathname).replace(/^\/(?=[a-z]:\/)/i, '');
-    } else value = decodeURIComponent(destination.split('#')[0]);
+    } else {
+      const path = decode ? destination.split('#')[0] : destination.replace(/#L\d+(?:-L\d+)?$/i, '');
+      value = decode ? decodeURIComponent(path) : path;
+    }
   } catch (_) { return null; }
+  if (!value || /[\u0000-\u001f\u007f]/.test(value) || /^[\\/]{2}/.test(value)) return null;
   value = value.replace(/:\d+(?::\d+)?$/, '').replace(/\\/g, '/');
+  if (!value || (!/^[a-z]:\//i.test(value) && /^[a-z][a-z0-9+.-]*:/i.test(value))) return null;
+  return value;
+}
+
+function localMarkdownPath(value, projectRoot) {
   const root = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const windows = /^[a-z]:/i.test(root);
+  const native = path => windows ? path.replace(/\//g, '\\') : path;
   const absolute = value.startsWith('/') || /^[a-z]:\//i.test(value);
   if (absolute) {
-    const compare = /^[a-z]:\//i.test(root) ? s => s.toLowerCase() : s => s;
-    if (!compare(value).startsWith(compare(root + '/'))) return { relative: null, absolute: value };
+    const compare = windows ? s => s.toLowerCase() : s => s;
+    if (!compare(value).startsWith(compare(root + '/'))) return { relative: null, absolute: native(value) };
     value = value.slice(root.length + 1);
   }
   const parts = [];
@@ -58,51 +79,153 @@ function localMarkdownPath(destination, projectRoot) {
   }
   if (!parts.length) return null;
   const relative = parts.join('/');
-  return { relative, absolute: root + '/' + relative };
+  return { relative, absolute: native(root + '/' + relative) };
 }
 
-function localMarkdownLink(label, destination) {
-  const node = el('button', 'markdown-file-link', label); node.type = 'button';
-  node.onclick = () => {
-    const path = localMarkdownPath(destination, state.workbench?.project?.root);
-    if (!path) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
-    editorPopup([
-      {key:'open_file',icon:'open',disabled:!path.relative,run:()=>{
+function localMarkdownLink(label, target, projectRoot, code = false) {
+  const node = el('button', 'markdown-file-link', code ? undefined : label); node.type = 'button';
+  if (code) node.append(el('code', '', label));
+  const items = () => {
+    // Replay can render before workbench.info arrives. That transcript belongs
+    // to this project context. Independent history can carry its own root.
+    const root = projectRoot || state.workbench?.project?.root;
+    const path = root && localMarkdownPath(target, root);
+    if (!path) return [];
+    const canOpen = () => path.relative && root === state.workbench?.project?.root && devAvailable();
+    return [
+      {key:'open_file',icon:'open',disabled:!canOpen(),run:()=>{
+        if (!canOpen()) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
         node.closest('.user-message-reader[open]')?.close();
         document.getElementById('files-open').click();
         return developmentEditor?.openFile(path.relative,{fixed:true});
       }},
-      {key:'copy_absolute_path',icon:'copy',run:()=>navigator.clipboard.writeText(path.absolute)},
-      {key:'copy_path',icon:'copy',disabled:!path.relative,run:()=>navigator.clipboard.writeText(path.relative)},
-    ],node);
+      {key:'copy_absolute_path',icon:'copy',run:()=>copyMarkdownReference(path.absolute)},
+      {key:'copy_path',icon:'copy',disabled:!path.relative,run:()=>copyMarkdownReference(path.relative)},
+    ];
   };
+  setMarkdownLinkMenu(node, items);
   CLATI18n.attribute(node,'title',()=>CLATI18n.msg('web.local_file_actions'));
   return node;
 }
 
-function appendInlineMarkdown(parent, text) {
+function setMarkdownLinkMenu(node, items) {
+  node.setAttribute('aria-haspopup', 'menu');
+  node.onclick = () => openMarkdownMenu(node, items());
+  node.oncontextmenu = event => {
+    event.preventDefault();
+    openMarkdownMenu(node, items(), event);
+  };
+  node.onkeydown = event => {
+    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+    event.preventDefault();
+    openMarkdownMenu(node, items());
+  };
+}
+
+function openMarkdownMenu(node, items, event) {
+  if (!items.length) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
+  if (event && (event.clientX || event.clientY)) editorMenu(items, node, event.clientX, event.clientY);
+  else editorPopup(items, node);
+}
+
+async function copyMarkdownReference(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (_) { throw CLATI18n.error(CLATI18n.msg('web.copy_failed')); }
+}
+
+function markdownWebAddress(value) {
+  const destination = /^(?:localhost|127\.0\.0\.1|\[::1\]):\d/i.test(value) ? 'http://' + value : value;
+  if (!/^https?:\/\/[^/]/i.test(destination) || /[\s\\]/.test(destination)) return null;
+  try {
+    const url = new URL(destination);
+    return url.username || url.password ? null : destination;
+  } catch (_) { return null; }
+}
+
+function markdownWebLink(label, destination, replyLinks, code = false) {
+  const node = el(replyLinks ? 'button' : 'a', replyLinks ? 'markdown-web-link' : '', code ? undefined : label);
+  if (code) node.append(el('code', '', label));
+  if (replyLinks) {
+    node.type = 'button';
+    setMarkdownLinkMenu(node, () => [
+      {key:'open_in_browser',icon:'open',run:()=>openMarkdownUrl(destination)},
+      {key:'copy_url',icon:'copy',run:()=>copyMarkdownReference(destination)},
+    ]);
+  } else {
+    node.href = destination;
+    node.target = '_blank';
+    node.rel = 'noopener noreferrer';
+  }
+  return node;
+}
+
+async function openMarkdownUrl(destination) {
+  try {
+    if (globalThis.CLATDesktop?.openInBrowser) await globalThis.CLATDesktop.openInBrowser(destination);
+    else globalThis.open(destination, '_blank', 'noopener,noreferrer');
+  } catch (error) {
+    throw CLATI18n.error(CLATI18n.present(error, CLATI18n.msg('web.open_url_failed')));
+  }
+}
+
+function markdownReference(label, destination, options, {implicit = false, code = false} = {}) {
+  const address = markdownWebAddress(destination);
+  if (address) return markdownWebLink(label, address, options.replyLinks, code);
+  if (options.projectRoot === null) return null;
+  const target = localMarkdownTarget(destination, !implicit);
+  if (!target) return null;
+  if (implicit && !/^file:\/\//i.test(destination)) {
+    const path = target.split('/');
+    const name = path.at(-1);
+    if (!/\.[\p{L}\p{N}]{1,16}$/u.test(name)
+      || /[?*"<>|=:]/.test(target.replace(/^[a-z]:\//i, ''))
+      || !/^[\p{L}\p{N}_.%+~ -]+$/u.test(name)
+      || (path.length === 1 ? /\s/.test(name) : /\s/.test(path[0]))) return null;
+  }
+  const root = options.projectRoot === undefined ? state.workbench?.project?.root : options.projectRoot;
+  return localMarkdownLink(label, target, root, code);
+}
+
+function trimReplyReference(value) {
+  let trimmed = value.replace(/[.,;:!?]+$/, '');
+  for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}']]) {
+    const excess = trimmed.split(close).length - trimmed.split(open).length;
+    for (let count = 0; count < excess && trimmed.endsWith(close); count++) trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
+function appendStyledMarkdown(tag, value, options) {
+  if (!options.replyLinks) return el(tag, null, value);
+  const node = el(tag);
+  appendInlineMarkdown(node, value, options);
+  return node;
+}
+
+function appendInlineMarkdown(parent, text, options) {
   let offset = 0;
-  for (const match of text.matchAll(INLINE_MARKDOWN)) {
-    parent.append(document.createTextNode(text.slice(offset, match.index)));
-    const token = match[0];
+  for (const match of text.matchAll(options.replyLinks ? REPLY_INLINE_MARKDOWN : INLINE_MARKDOWN)) {
+    const start = match.index + (match[2]?.length || 0);
+    parent.append(document.createTextNode(text.slice(offset, start)));
+    let token = match[3] ?? match[0];
     let node;
-    if (token.startsWith('`')) node = el('code', null, () => (token.slice(1, -1)));
-    else if (token.startsWith('**') || token.startsWith('__')) node = el('strong', null, () => (token.slice(2, -2)));
-    else if (token.startsWith('~~')) node = el('del', null, () => (token.slice(2, -2)));
-    else if (token.startsWith('*') || token.startsWith('_')) node = el('em', null, () => (token.slice(1, -1)));
+    if (match[3]) {
+      token = trimReplyReference(token);
+      node = markdownReference(token, token, options, {implicit:true}) || document.createTextNode(token);
+    } else if (token.startsWith('`')) {
+      const code = token.slice(1, -1);
+      node = options.replyLinks && markdownReference(code, code, options, {implicit:true,code:true});
+      node ||= el('code', null, code);
+    } else if (token.startsWith('**') || token.startsWith('__')) node = appendStyledMarkdown('strong', token.slice(2, -2), options);
+    else if (token.startsWith('~~')) node = appendStyledMarkdown('del', token.slice(2, -2), options);
+    else if (token.startsWith('*') || token.startsWith('_')) node = appendStyledMarkdown('em', token.slice(1, -1), options);
     else {
-      const parts = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
-      const url = parts && parts[2];
-      if (url && /^https?:\/\//i.test(url)) {
-        node = el('a', null, () => (parts[1]));
-        node.href = url;
-        node.target = '_blank';
-        node.rel = 'noopener noreferrer';
-      } else if (parts && localMarkdownPath(url, state.workbench?.project?.root)) node = localMarkdownLink(parts[1], url);
-      else node = document.createTextNode(token);
+      const parts = /^\[([^\]]+)\]\((?:<(.+)>|([^\s)]+))\)$/.exec(token);
+      node = parts && markdownReference(parts[1], parts[2] ?? parts[3], options);
+      node ||= document.createTextNode(token);
     }
     parent.append(node);
-    offset = match.index + token.length;
+    offset = start + token.length;
   }
   parent.append(document.createTextNode(text.slice(offset)));
 }
@@ -154,14 +277,14 @@ function tableDefinition(lines, index) {
   return { header, alignments };
 }
 
-function renderMarkdownTable(lines, index, definition) {
+function renderMarkdownTable(lines, index, definition, inline) {
   const table = el('table');
   const head = el('thead');
   const heading = el('tr');
   definition.header.forEach((value, column) => {
     const cell = el('th');
     cell.style.textAlign = definition.alignments[column];
-    appendInlineMarkdown(cell, value);
+    inline(cell, value);
     heading.append(cell);
   });
   head.append(heading);
@@ -174,7 +297,7 @@ function renderMarkdownTable(lines, index, definition) {
     definition.header.forEach((_header, column) => {
       const cell = el('td');
       cell.style.textAlign = definition.alignments[column];
-      appendInlineMarkdown(cell, values[column] || '');
+      inline(cell, values[column] || '');
       row.append(cell);
     });
     body.append(row);
@@ -205,15 +328,17 @@ function renderFencedCode(lines, index, fence) {
   return { node: pre, nextIndex: index };
 }
 
-function appendMarkdownLines(node, lines, preserveLineBreaks) {
-  if (!preserveLineBreaks) return appendInlineMarkdown(node, lines.join(' '));
+function appendMarkdownLines(node, lines, preserveLineBreaks, inline) {
+  if (!preserveLineBreaks) return inline(node, lines.join(' '));
   for (const [index, line] of lines.entries()) {
     if (index > 0) node.append(el('br'));
-    appendInlineMarkdown(node, line);
+    inline(node, line);
   }
 }
 
-function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) {
+function renderMarkdown(container, source, options = {}) {
+  const inline = (node, text) => appendInlineMarkdown(node, text, options);
+  const {preserveLineBreaks = false} = options;
   const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
   const fragment = document.createDocumentFragment();
   for (let index = 0; index < lines.length;) {
@@ -228,7 +353,7 @@ function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) 
     }
     const definition = tableDefinition(lines, index);
     if (definition) {
-      const rendered = renderMarkdownTable(lines, index, definition);
+      const rendered = renderMarkdownTable(lines, index, definition, inline);
       fragment.append(rendered.node);
       index = rendered.nextIndex;
       continue;
@@ -236,7 +361,7 @@ function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) 
     const heading = /^ {0,3}(#{1,4})\s+(.+?)\s*#*\s*$/.exec(line);
     if (heading) {
       const node = el(`h${Math.min(heading[1].length + 1, 5)}`);
-      appendInlineMarkdown(node, heading[2]);
+      inline(node, heading[2]);
       fragment.append(node);
       index += 1;
       continue;
@@ -254,7 +379,7 @@ function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) 
         const item = /^ {0,3}([-*+]|\d+[.)])\s+(.+)$/.exec(lines[index]);
         if (!item || /\d/.test(item[1][0]) !== ordered) break;
         const row = el('li');
-        appendInlineMarkdown(row, item[2]);
+        inline(row, item[2]);
         group.append(row);
         index += 1;
       }
@@ -268,7 +393,7 @@ function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) 
         copy.push(lines[index].replace(/^ {0,3}>\s?/, ''));
         index += 1;
       }
-      appendMarkdownLines(quote, copy, preserveLineBreaks);
+      appendMarkdownLines(quote, copy, preserveLineBreaks, inline);
       fragment.append(quote);
       continue;
     }
@@ -280,7 +405,7 @@ function renderMarkdown(container, source, { preserveLineBreaks = false } = {}) 
       index += 1;
     }
     const node = el('p');
-    appendMarkdownLines(node, paragraph, preserveLineBreaks);
+    appendMarkdownLines(node, paragraph, preserveLineBreaks, inline);
     fragment.append(node);
   }
   container.replaceChildren(fragment);
@@ -927,7 +1052,7 @@ function handleReplay(event) {
       acceptComposerReceipt(event.client_message_id);
       pendingTextSteering.delete(event.client_message_id);
       settleQueuedDraft(event.client_message_id);
-      node = addUserMessage(event.text, event.content_blocks);
+      node = addUserMessage(event.text, event.content_blocks, event.client_message_id);
       break;
     case 'assistant_message': {
       // ORDER-LIVE-1/O1：无正文且无 reasoning 的中间模型步（纯 tool_calls
@@ -1020,7 +1145,7 @@ function handleLive(event) {
       syncInteractionControls();
       state.run = null;
       if (event.prompt || event.content_blocks?.length) {
-        liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks));
+        liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks, event.client_message_id));
       }
       break;
     }
@@ -1806,13 +1931,13 @@ function openImageLightbox(src, label) {
   if (!dialog.open) dialog.showModal();
 }
 
-function addUserMessage(text, blocks) {
+function addUserMessage(text, blocks, clientMessageId) {
   const msg = el('article', 'msg user');
   CLATI18n.attribute(msg,'aria-label',()=>CLATI18n.msg("web.your_message", {}, "Your message"));
   const marker = el('span', 'marker');
   marker.appendChild(svgIcon('user'));
   const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
-  userMessageReader.attach(msg, body, text);
+  userMessageReader.attach(msg, body, text, clientMessageId);
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
   msg.append(marker, body);
   if (attachments) msg.appendChild(attachments);
@@ -1953,12 +2078,12 @@ function editLastTurn(message, body, pencil, original, receipt, canEdit) {
 }
 
 // Coalesce stream updates and retain the source for final rendering and copying.
-function streamingMarkdown(container, source) {
+function streamingMarkdown(container, source, projectRoot) {
   let timer = null;
-  function flush() {
+  function flush(replyLinks = false) {
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    renderMarkdown(container, source());
+    renderMarkdown(container, source(), {projectRoot, replyLinks});
     if (container.isConnected) scrollIfFollowing();
   }
   return {
@@ -1992,7 +2117,7 @@ function addAssistantMessage() {
   );
   const reasoningCopy = el('div', 'reasoning-copy rich-text');
   let reasoningText = '';
-  const bodyStream = streamingMarkdown(body, () => bodyChunks.join(''));
+  const bodyStream = streamingMarkdown(body, () => bodyChunks.join(''), state.workbench?.project?.root);
   const reasoningStream = streamingMarkdown(reasoningCopy, () => reasoningText);
   reasoning.append(reasoningSummary, reasoningCopy);
   msg.append(reasoning, body);
@@ -2007,7 +2132,7 @@ function addAssistantMessage() {
     },
     finishBody() {
       if (bodyRendered) return;
-      bodyStream.flush();
+      bodyStream.flush(true);
       bodyRendered = true;
       addMessageCopyAction(msg, () => bodyChunks.join(''), true);
     },

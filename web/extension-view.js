@@ -6,7 +6,7 @@ function createExtensionNavigation(page,{cancel,refresh}){
   const builtinConfig=el('section','builtin-config-editor');
   const review=el('div'),content=el('section'),frame=el('section','navigation-content'),status=el('p','navigation-status'),catalogStatus=dom['market-status'];catalogStatus.className='navigation-status';catalogStatus.hidden=true;view.sidebar.insertBefore(catalogStatus,view.list);status.setAttribute('role','status');frame.append(builtinConfig,content,review);view.body.append(frame);view.sidebar.insertBefore(status,view.list);
   const seats=Object.fromEntries(['installed','builtins','discover'].map(key=>[key,{rows:[],cards:new Map(),selected:null,query:'',scroll:0,read:0,configuring:false}])),{installed,discover}=seats;let current='builtins',pending=false,epoch=0,beforeLeaveBuiltins=()=>true;
-  const tabs=navigationTabs(['builtins','installed','discover'].map(key=>[key,()=>tabTitle(key)]),key=>void chooseTab(key));tabs.element.classList.add('extension-category-tabs');view.filters.append(tabs.element);tabs.select(current);
+  const tabs=navigationTabs(['builtins','installed','discover'].map(key=>[key,()=>tabTitle(key)]),key=>void chooseTab(key));view.filters.append(tabs.element);tabs.select(current);
   const website=viewAction('extension-website','open',()=>CLATI18n.msg('web.open_pi_at_cn'),()=>{
     // Desktop's navigation handler opens external HTTP(S) URLs in the system
     // browser. Use it directly rather than depending on WebView popup support.

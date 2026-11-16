@@ -3,9 +3,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm');
 
 const source=fs.readFileSync('web/app.js','utf8').replace(/\r\n/g,'\n');
-const start=source.indexOf('function localMarkdownPath('), end=source.indexOf('\nfunction localMarkdownLink(',start);
+// 真实管线是 markdownReference → localMarkdownTarget（锚点剥落/编码/
+// scheme 拒绝）→ localMarkdownPath（项目内解析）——两段一起提取，
+// 表格输入先过 target 再进 path，镜像产品路径。
+const start=source.indexOf('function localMarkdownTarget('), end=source.indexOf('\nfunction localMarkdownLink(',start);
 assert.ok(start>=0 && end>start);
 const scope={URL};vm.createContext(scope);vm.runInContext(source.slice(start,end),scope);
+const resolve=(value,root)=>{const target=scope.localMarkdownTarget(value,true);return target?scope.localMarkdownPath(target,root):null;};
 
 test('local links resolve within the current project and reject traversal or remote URLs',()=>{
   for (const [value,root,expected] of [
@@ -17,7 +21,7 @@ test('local links resolve within the current project and reject traversal or rem
     ['../secret','/repo',null], ['%2e%2e/secret','/repo',null],
     ['/repo-other/a','/repo',null], ['file://remote/repo/a','/repo',null],
     ['https://example.com','/repo',null],
-  ]) assert.equal(scope.localMarkdownPath(value,root)?.relative??null,expected,value);
-  assert.equal(scope.localMarkdownPath('/repo-other/a','/repo').absolute,'/repo-other/a');
-  assert.equal(scope.localMarkdownPath('file:///outside/file.md','/repo').relative,null);
+  ]) assert.equal(resolve(value,root)?.relative??null,expected,value);
+  assert.equal(resolve('/repo-other/a','/repo').absolute,'/repo-other/a');
+  assert.equal(resolve('file:///outside/file.md','/repo').relative,null);
 });

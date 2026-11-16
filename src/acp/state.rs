@@ -11,6 +11,7 @@ use std::{
 pub(super) const MAX_TEXT: usize = 64 * 1024;
 pub(super) const MAX_RECORDS: usize = 512;
 pub(super) const MAX_HISTORY: usize = 8 * 1024 * 1024;
+pub(super) const MAX_EXECUTABLE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -52,7 +53,17 @@ impl AgentEdit {
         Ok(self)
     }
 
-    pub(super) fn environment(&self) -> Vec<(OsString, OsString)> {
+    pub(super) fn launch_path(
+        &self,
+        project: &Path,
+    ) -> Result<Option<OsString>, crate::i18n::UiMessage> {
+        super::launch_path::LaunchPath::host().for_program(&self.program, project)
+    }
+
+    pub(super) fn environment(
+        &self,
+        project: &Path,
+    ) -> Result<Vec<(OsString, OsString)>, crate::i18n::UiMessage> {
         const BASE: &[&str] = &[
             "HOME",
             "USERPROFILE",
@@ -69,11 +80,25 @@ impl AgentEdit {
             "APPDATA",
             "LOCALAPPDATA",
         ];
-        BASE.iter()
+        let path = self.launch_path(project)?;
+        Ok(BASE
+            .iter()
             .copied()
-            .chain(self.env.iter().map(String::as_str))
-            .filter_map(|name| std::env::var_os(name).map(|val| (name.into(), val)))
-            .collect()
+            .chain(
+                self.env
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| *name != "PATH"),
+            )
+            .filter_map(|name| {
+                let value = if name == "PATH" {
+                    path.clone()
+                } else {
+                    std::env::var_os(name)
+                };
+                value.map(|val| (name.into(), val))
+            })
+            .collect())
     }
 }
 
@@ -98,12 +123,12 @@ pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
     let info = file
         .metadata()
         .map_err(|_| "cannot inspect ACP executable")?;
-    if !info.is_file() || info.len() > 1024 * 1024 * 1024 {
+    if !info.is_file() || info.len() > MAX_EXECUTABLE_BYTES {
         return Err("ACP executable is not a supported regular file".into());
     }
     let mut digest = Sha256::new();
     let mut buffer = [0; 64 * 1024];
-    let mut reader = (&mut file).take(1024 * 1024 * 1024 + 1);
+    let mut reader = (&mut file).take(MAX_EXECUTABLE_BYTES + 1);
     let mut read = 0;
     loop {
         let count = reader
@@ -122,6 +147,16 @@ pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
 }
 
 impl Agent {
+    pub(super) fn configured(id: String, edit: AgentEdit, executable_fingerprint: String) -> Self {
+        Self {
+            id,
+            revision: super::new_id(),
+            executable_fingerprint,
+            edit,
+            trusted: BTreeMap::new(),
+        }
+    }
+
     pub(super) fn view(&self, project: &str) -> Value {
         let args = self
             .edit
@@ -214,12 +249,17 @@ pub(super) struct Record {
 }
 
 impl Record {
+    pub(super) fn can_authenticate(&self) -> bool {
+        self.request.origin.is_none() || (self.remote.is_none() && self.stop.is_none())
+    }
+
     pub(super) fn view(&self, history: bool) -> Value {
         json!({
             "id": self.id, "agent": self.agent, "label":self.agent_label,
             "origin":self.request.origin, "task":self.request.text, "phase":self.phase,
             "handoff":self.handoff, "result":history.then_some(&self.result),
             "stop":self.stop, "error":self.error, "capabilities":self.capabilities,
+            "canAuthenticate":self.can_authenticate(),
             "options":self.session_options,"updates":history.then_some(&self.updates),
         })
     }

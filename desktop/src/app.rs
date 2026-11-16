@@ -281,6 +281,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             crate::commands::desktop_info,
+            crate::commands::desktop_open_browser,
             crate::fonts::desktop_fonts,
             crate::commands::desktop_locale,
             crate::commands::desktop_open_project,

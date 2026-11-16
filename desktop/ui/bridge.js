@@ -27,6 +27,7 @@
   }
   Object.defineProperty(window, 'CLATDesktop', { value: Object.freeze({
     version: 1, showSettings, refreshAccessibility,
+    openInBrowser: url => invoke('desktop_open_browser', {url}),
   }) });
   const createPanel = () => {
     const host = document.createElement('div'); host.id = 'clat-desktop-controls';

@@ -104,6 +104,12 @@ impl<T: Clone> State<T> {
             self.status = Some(error.clone());
         }
     }
+    #[cfg(target_os = "macos")]
+    pub(super) fn installed(&mut self) {
+        self.pending = None;
+        self.bytes = None;
+        self.finish(&Ok(()));
+    }
     pub fn allow_exit(&self, restart: bool) -> bool {
         if self.phase == Phase::Installing && !restart {
             return false;

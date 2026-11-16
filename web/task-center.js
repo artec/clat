@@ -36,14 +36,13 @@ function taskRows(project) {
 
 function taskFilterControl(id, label, options, allKey) {
   const select = el('select'); select.id = id;
+  CLATI18n.attribute(select, 'aria-label', () => pageText(label));
   for (const key of options) {
     const option = el('option', '', () => pageText(key === 'all' ? allKey : key));
     option.value = key; select.append(option);
   }
-  const field = el('label', 'task-filter-field');
-  const control = el('span', 'task-filter-select');
-  control.append(select, svgIcon('chevron-down'));
-  field.append(el('span', '', () => pageText(label)), control);
+  const field = el('span', 'task-filter-select');
+  field.append(select, svgIcon('chevron-down'));
   return { select, field };
 }
 
