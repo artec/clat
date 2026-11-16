@@ -2190,6 +2190,12 @@ and IDs, not their message content. Both frontends display up to 2,000 matches.
 The header **Tools** menu groups Workspace changes, Captured operations, Files,
 Plan / Goal, Tasks and Help without crowding the reading surface.
 
+Open **Help** in the workbench sidebar to search the in-app guides. The
+page-specific help action opens the guide for the current tool or settings
+page. Guides include steps for sharing conversation content, opening links in
+replies, transferring DSH timelines and setting up Skills, MCP, external
+Agents and Computer Use.
+
 **Workspace changes** opens a read-only file list and loads a selected file's
 staged/unstaged diff on demand. It shows current project working-tree facts,
 including pre-existing user edits and changes left after failed/cancelled runs;
