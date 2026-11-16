@@ -9,20 +9,36 @@ async function loadTaskCenterContent(availability,call=rpc){
 const TASK_TYPES = ['all', 'schedules', 'jobs'];
 const TASK_STATUSES = ['all', 'running', 'upcoming', 'attention'];
 
-function taskRows(project) {
+function completeOneTimeTask(rule, delivery) {
+  return (rule.spec.trigger.kind === 'job' || rule.spec.trigger.rule.kind === 'at')
+    && delivery?.phase === 'completed' && !rule.next_at
+    && (rule.phase === 'enabled' || rule.phase === 'exhausted');
+}
+
+function taskDeliveryFacts(deliveries) {
   const latest = new Map(), active = new Set();
-  for (const delivery of project.deliveries) {
+  for (const delivery of deliveries) {
     if (delivery.finished_at == null) active.add(delivery.rule_id);
     if ((latest.get(delivery.rule_id)?.started_at ?? -Infinity) <= delivery.started_at) {
       latest.set(delivery.rule_id, delivery);
     }
   }
+  return {latest, active};
+}
+
+function scheduleNeedsAttention(rule, delivery) {
+  return Boolean(rule.blocked) || rule.phase === 'draft'
+    || rule.phase === 'exhausted' && !completeOneTimeTask(rule, delivery);
+}
+
+function taskRows(project) {
+  const {latest, active} = taskDeliveryFacts(project.deliveries);
   const schedules = project.rules.map(rule => ({
     id: rule.id, type: 'schedules', value: rule, project,
     name: rule.spec.title || rule.spec.instruction.split('\n')[0],
-    running: active.has(rule.id),
+    running: active.has(rule.id), lastDelivery:latest.get(rule.id),
     upcoming: rule.phase === 'enabled' && !rule.blocked && (rule.next_at != null || rule.spec.trigger.kind === 'job'),
-    attention: Boolean(rule.blocked) || ['draft', 'exhausted'].includes(rule.phase)
+    attention: scheduleNeedsAttention(rule, latest.get(rule.id))
       || ['failed', 'interrupted'].includes(latest.get(rule.id)?.phase),
   }));
   const jobs = project.jobs.map(job => ({
@@ -46,6 +62,69 @@ function taskFilterControl(id, label, options, allKey) {
   return { select, field };
 }
 
+function taskDetailChanged(previous, next) {
+  const a = previous.value, b = next.value;
+  return a.revision !== b.revision || a.state !== b.state || a.phase !== b.phase
+    || a.blocked !== b.blocked || a.next_at !== b.next_at || previous.running !== next.running
+    || previous.lastDelivery?.id !== next.lastDelivery?.id || previous.lastDelivery?.phase !== next.lastDelivery?.phase;
+}
+function taskPhaseText(rule, delivery) {
+  if (completeOneTimeTask(rule, delivery)) return pageText('completed');
+  return rule.phase === 'exhausted' ? pageText('task_limit_reached') : CLATI18n.msg('schedule.' + rule.phase);
+}
+function taskRowGroup(row) {
+  if (row.type === 'jobs') return 'jobs';
+  return row.value.phase === 'paused' ? 'paused' : 'schedules';
+}
+function makeTaskRow(row, {isSelected, choose, showProject, canManage, onMenu}) {
+  const schedule = row.type === 'schedules';
+  const status = () => {
+    if (!schedule) return CLATI18n.msg('job.' + row.value.state);
+    if (row.running) return pageText('running');
+    if (row.attention && row.value.phase === 'enabled') return pageText('attention');
+    return taskPhaseText(row.value, row.lastDelivery);
+  };
+  const meta = () => [
+    showProject ? row.project.title : '',
+    status(),
+    schedule ? scheduleTriggerText(row.value.spec.trigger) : '',
+  ].filter(Boolean).join(' · ');
+  const item = el('div', 'task-directory-item');
+  const button = navigationRow({title:row.name, meta, icon:schedule ? 'schedule' : 'jobs',
+    selected:isSelected, action:() => void choose(row)});
+  button.dataset.taskId = row.id;
+  if (showProject) button.title = row.project.root;
+  item.append(button);
+  if (schedule && canManage) item.append(taskMenuButton(event => onMenu(event.currentTarget, row.value)));
+  return item;
+}
+function renderTaskList(list, items, context) {
+  const top = list.scrollTop;
+  list.replaceChildren();
+  for (const key of ['schedules', 'paused', 'jobs']) {
+    const rows = items.filter(row => taskRowGroup(row) === key);
+    if (!rows.length) continue;
+    const section = el('section', 'task-directory-group');
+    section.append(el('h3', '', () => key === 'paused' ? CLATI18n.msg('schedule.paused') : pageText(key)));
+    for (const row of rows) section.append(makeTaskRow(row, {...context, isSelected:context.isSelected(row), canManage:context.canManage(row)}));
+    list.append(section);
+  }
+  if (!items.length) list.append(pageEmpty('empty_tasks'));
+  list.scrollTop = top;
+}
+function taskOverview(actions) {
+  const overview = navigationOverview({
+    title:() => pageText('task_overview_title'), description:() => pageText('task_intro'), icon:'schedule',
+    items:[['example_review', 'branch'], ['example_summary', 'task-list']].map(([key, icon]) => ({
+      title:() => pageText(key), description:() => pageText(key + '_description'), icon,
+      action:() => actions.create(key),
+    })),
+  });
+  overview.classList.add('task-overview');
+  overview.querySelectorAll('button').forEach(button => disableBuiltin(button, state.workbench, 'builtin.scheduler'));
+  return overview;
+}
+
 /* Lists and details belong to the task page; the global inspector is independent. */
 let taskCenter = null;
 function createTaskCenter() {
@@ -55,20 +134,21 @@ function createTaskCenter() {
   const {element: scope, input: all, text: trustedProjects} = navigationTrustedProjects('task-all-projects');
   const fields = el('div', 'task-filter-row'); fields.append(type.field, phase.field);
   const status = el('p', 'navigation-status'); status.setAttribute('role', 'status');
-  const view = createNavigationPage(page, {title: () => shellText('tasks'), searchLabel: () => pageText('search_tasks')});
+  const view = createNavigationPage(page, {title: () => shellText('tasks'), searchLabel: () => pageText('search_tasks'), onOverview:returnToOverview});
   const {list, body: detail, query} = view;
-  view.filters.append(scope, fields);
+  const create = shellButton('task-create', 'plus', () => pageText('create_task'), () => scheduleActions?.create(), false);
+  create.dataset.action = 'create_task'; create.classList.add('task-create');
+  view.head.after(create); view.filters.append(scope, fields);
   view.sidebar.insertBefore(status, list); document.body.append(page);
+  const menus = createTaskMenu();
   let generation = 0, selection = 0, selected = null, restoreId = null;
   let projects = [], items = [], reader = null, scheduleActions = null, reading = 0;
   const projectRoot = () => state.workbench?.project?.root;
   const fail = error => CLATI18n.bind(status, 'textContent', () => CLATI18n.present(error?.presentation, error?.message || ''));
   view.context({
-    actions: () => [viewAction('refresh', 'refresh', () => pageText('refresh'), () => refresh()),
-      ...(scheduleActions ? [viewAction('create', 'plus', () => pageText('create_task'),
-        () => scheduleActions.create(), true, () => builtinEnabled(state.workbench, 'builtin.scheduler'))] : [])],
+    actions: () => [viewAction('refresh', 'refresh', () => pageText('refresh'), () => refresh())],
     crumbs: () => [
-      {label: () => shellText('tasks'), run: () => { delete page.dataset.detail; }},
+      {label: () => shellText('tasks'), run: returnToOverview},
       {label: () => all.checked ? trustedProjects() : projectDisplayName(projectRoot(), state.workbench?.project?.name)},
       ...(selected && all.checked ? [{label: () => selected.project.title}] : []),
       ...(selected ? [{label: () => selected.name}] : []),
@@ -93,26 +173,15 @@ function createTaskCenter() {
     context.navigatePage(address);
   }
   function rows() {
-    const top = list.scrollTop, term = query.value.trim().toLocaleLowerCase();
-    list.replaceChildren();
-    for (const row of items) {
-      if (!filtered(row) || !(row.name.toLocaleLowerCase().includes(term)
-          || all.checked && row.project.title.toLocaleLowerCase().includes(term))) continue;
-      const meta = () => [
-        all.checked ? row.project.title : '',
-        row.type === 'schedules'
-          ? (row.running ? pageText('running') : row.attention ? pageText('attention') : CLATI18n.msg('schedule.' + row.value.phase))
-            + ' · ' + scheduleTriggerText(row.value.spec.trigger)
-          : CLATI18n.msg('job.' + row.value.state),
-      ].filter(Boolean).join(' · ');
-      const button = navigationRow({title: row.name, meta, icon: row.type === 'schedules' ? 'schedule' : 'jobs',
-        selected: same(selected, row), action: () => void choose(row)});
-      button.dataset.taskId = row.id;
-      if (all.checked) button.title = row.project.root;
-      list.append(button);
-    }
-    if (!list.childElementCount) list.append(pageEmpty('empty_tasks'));
-    list.scrollTop = top;
+    menus.close();
+    const term = query.value.trim().toLocaleLowerCase();
+    const matches = items.filter(row => filtered(row) && (row.name.toLocaleLowerCase().includes(term)
+      || all.checked && row.project.title.toLocaleLowerCase().includes(term)));
+    renderTaskList(list, matches, {
+      isSelected:row => same(selected, row), choose, showProject:all.checked,
+      canManage:row => Boolean(scheduleActions) && row.project.root === projectRoot(),
+      onMenu:(source, rule) => menus.open(source, scheduleMenuActions(rule, scheduleActions)),
+    });
   }
   async function choose(row) {
     if (row.project.root === projectRoot()) { show(row); return; }
@@ -121,10 +190,10 @@ function createTaskCenter() {
     } catch (error) { if (context.isActive()) fail(error); }
   }
   function clearSelection() {
-    selection++; reader?.dispose(); reader = null; selected = null;
+    selection++; reader?.dispose(); reader = null; selected = null; menus.close();
     returnConversationPane(); detail.classList.remove('has-live-conversation'); view.reset();
     for (const child of [...view.bar.children]) {
-      if (child !== view.name && !child.classList.contains('navigation-back')) child.remove();
+      if (child !== view.name && !child.matches('.navigation-back, .navigation-overview-back')) child.remove();
     }
   }
   function show(row, preserve = false) {
@@ -133,7 +202,7 @@ function createTaskCenter() {
     view.show(row.name); navigate(); rows();
     const owner = selection, current = () => owner === selection && pageIsOpen(page) && context.isActive();
     if (row.type === 'schedules') {
-      reader = renderScheduleTask(detail, row.value, {actionsPort: scheduleActions, deliveries: row.project.deliveries, current});
+      reader = renderScheduleTask(detail, row.value, {actionsPort:scheduleActions, deliveries:row.project.deliveries, current, menus});
     } else renderJobDetail(detail, row.value, current, fail);
     detail.querySelector(':scope > h3')?.remove();
     const actions = detail.querySelector(':scope > .page-toolbar'); if (actions) view.bar.append(actions);
@@ -141,18 +210,12 @@ function createTaskCenter() {
     requestAnimationFrame(restore); if (reader?.ready) void reader.ready.then(restore);
   }
   function overview() {
-    if (selected) return;
-    const create = pageAction('create_task', () => scheduleActions.create(), true);
-    disableBuiltin(create, state.workbench, 'builtin.scheduler');
-    detail.replaceChildren(pageEmpty('task_intro', create));
-    const examples = el('div', 'task-examples');
-    for (const key of ['example_review', 'example_summary']) {
-      const button = pageAction(key, () => scheduleActions.create(key));
-      disableBuiltin(button, state.workbench, 'builtin.scheduler');
-      button.classList.add('task-example');
-      button.append(el('small', '', () => pageText(key + '_description'))); examples.append(button);
-    }
-    detail.append(examples);
+    if (selected || !scheduleActions) return;
+    detail.replaceChildren(taskOverview(scheduleActions));
+  }
+  function returnToOverview() {
+    restoreId = null; reading = 0;
+    clearSelection(); overview(); rows(); detail.scrollTop = 0; navigate();
   }
   function currentProject(values = {jobs: [], rules: [], deliveries: []}) {
     return {...values, root: projectRoot(), title: projectDisplayName(projectRoot(), state.workbench?.project?.name)};
@@ -164,6 +227,7 @@ function createTaskCenter() {
   }
   async function refresh() {
     if (!pageIsOpen(page) || !context.isActive()) return;
+    disableBuiltin(create, state.workbench, 'builtin.scheduler');
     const request = ++generation, active = () => request === generation && pageIsOpen(page) && context.isActive();
     try {
       const values = await load(); if (!active()) return;
@@ -173,8 +237,7 @@ function createTaskCenter() {
         ...values.errors.map(error => CLATI18n.present(error.presentation || error, error.message || '')),
       ].join(' · '));
       const latest = items.find(row => row.id === restoreId && row.project.root === projectRoot());
-      if (latest && (!selected || !same(selected, latest) || latest.value.revision !== selected.value.revision
-          || latest.value.state !== selected.value.state)) {
+      if (latest && (!selected || !same(selected, latest) || taskDetailChanged(selected, latest))) {
         reading = detail.scrollTop; show(latest, Boolean(selected));
       } else if (!latest && selected) { restoreId = null; clearSelection(); navigate(); }
       rows(); overview();
@@ -193,7 +256,7 @@ function createTaskCenter() {
   all.onchange = updateScope; query.oninput = rows;
   page.addEventListener('clat:page-capture', () => { reading = detail.scrollTop; });
   page.addEventListener('clat:page-enter', () => { if (selected) show(selected, true); refreshViewContext(); });
-  page.addEventListener('clat:page-leave', () => { generation++; selection++; reader?.dispose(); returnConversationPane(); });
+  page.addEventListener('clat:page-leave', () => { generation++; selection++; menus.close(); reader?.dispose(); returnConversationPane(); });
   for (const event of ['clat:job-change', 'clat:background-run']) window.addEventListener(event, () => void refresh());
   window.addEventListener('clat:workbench-updated', () => {
     if (borrowedConversation && borrowedConversation.session !== state.sessionId && selected && pageIsOpen(page)) show(selected);
@@ -212,12 +275,15 @@ function createTaskCenter() {
       all.checked = params.get('scope') === 'trusted'; restoreId = params.get('task');
       if (scopeChanged) { projects = []; items = []; list.replaceChildren(); }
       if (scopeChanged || selected?.id !== restoreId) clearSelection();
+      if (!restoreId) overview();
     },
     register(actions) { scheduleActions = actions; refreshViewContext(); },
     openSchedules() { type.select.value = 'schedules'; phase.select.value = 'all'; trigger.click(); },
     showSchedule(rule) {
       const local = projects.find(project => project.root === projectRoot()) || currentProject();
-      show(taskRows({...local, rules: [rule]})[0]);
+      const row = taskRows({...local, jobs:[], rules:[rule]})[0];
+      if (!filtered(row)) { type.select.value = 'schedules'; phase.select.value = 'all'; }
+      show(row);
     },
   };
 }
@@ -237,7 +303,8 @@ function installTaskNotifications() {
         notification.onclick=()=>{window.focus();taskCenter.openSchedules();taskCenter.showSchedule(rule);notification.close();};
       }
       let needsAttention=log.deliveries.some(d=>['failed','interrupted'].includes(d.phase));
-      for(const rule of rules.rules)if(rule.blocked||rule.phase==='exhausted'||rule.phase==='draft'){
+      const {latest} = taskDeliveryFacts(log.deliveries);
+      for(const rule of rules.rules)if(scheduleNeedsAttention(rule,latest.get(rule.id))){
         needsAttention=true;const key=workspacePrefix+':rule:'+rule.id+':'+rule.revision+':'+rule.phase+':'+String(rule.blocked);
         if(seen.has(key))continue;seen.add(key);if(seen.size>1024)seen.delete(seen.values().next().value);
         if(!initialized||rule.spec.notification==='off'||!pageNotificationsEnabled||typeof Notification==='undefined'||Notification.permission!=='granted'||document.hasFocus())continue;
@@ -251,26 +318,114 @@ function installTaskNotifications() {
   window.addEventListener('clat:activated',()=>void refresh());window.addEventListener('clat:workbench-updated',()=>void refresh());void refresh();
 }
 
-function renderScheduleTask(detail,rule,{actionsPort,deliveries,current}){
-      const actions = el('div', 'page-toolbar');
-      actions.append(pageAction('edit', () => actionsPort.edit(rule)));
-      if(rule.phase==='enabled'){
-        if(rule.spec.trigger.kind==='time'){const run=pageAction('run_now',()=>void actionsPort.run(rule),true);run.disabled=Boolean(rule.blocked);actions.append(run);}
-        actions.append(pageAction('pause',()=>void actionsPort.change(rule,'pause')));
-      }else if(rule.phase==='draft'||rule.phase==='paused')actions.append(pageAction('review',()=>void actionsPort.review(rule),true));
-      const menu=el('details','task-actions-menu');menu.append(el('summary','',()=>pageText('actions')));
-      const commands=el('div','task-menu-items');commands.append(pageAction('duplicate',()=>{menu.open=false;actionsPort.duplicate(rule);}));
-      if(rule.phase==='paused')commands.append(pageAction('resume',()=>void actionsPort.change(rule,'resume')));
-      commands.append(pageAction('delete',async()=>{if(await CLATDialog.confirm(CLATI18n.msg('schedule.delete_confirm')))void actionsPort.change(rule,'delete');}));menu.append(commands);actions.append(menu);
-      if(rule.spec.trigger.kind==='job'&&!builtinEnabled(state.workbench,'builtin.jobs')){
-        for(const button of actions.querySelectorAll('button'))if(['edit','duplicate','review','resume'].some(key=>button.dataset.action===key))disableBuiltin(button,state.workbench,'builtin.jobs');
-        detail.append(el('p','settings-note',()=>CLATI18n.msg('extension.job_source_paused')));
+function taskMenuButton(action) {
+  const button = navigationIcon(() => pageText('actions'), 'more', action);
+  button.classList.add('session-more', 'task-more');
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'false');
+  return button;
+}
+function createTaskMenu() {
+  let menu = null, trigger = null;
+  function close(focus = false) {
+    if (!menu) return;
+    menu.remove(); menu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (focus) trigger.focus();
+    trigger = null;
+  }
+  document.addEventListener('pointerdown', event => {
+    if (menu && !menu.contains(event.target) && !trigger.contains(event.target)) close();
+  });
+  window.addEventListener('resize', () => close(true));
+  return {close, open(source, entries) {
+    if (trigger === source) { close(true); return; }
+    close();
+    trigger = source; trigger.setAttribute('aria-expanded', 'true');
+    menu = el('div', 'session-context-menu task-action-menu'); menu.setAttribute('role', 'menu');
+    CLATI18n.attribute(menu, 'aria-label', () => pageText('actions'));
+    for (const {key, icon, run, disabled} of entries) {
+      const button = shellButton('', icon, () => pageText(key), () => { close(true); void run(); }, false);
+      button.dataset.action = key; button.setAttribute('role', 'menuitem'); button.disabled = Boolean(disabled);
+      menu.append(button);
+    }
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
+        close(true); return;
       }
-      detail.append(el('h3', '', rule.spec.title || rule.spec.instruction.split('\n')[0]),el('p','page-scope',()=>pageText('task_scope',{session:state.sessions.find(s=>s.id===rule.scope.session)?.title||rule.scope.session,runs:String(rule.used.runs),limit:String(rule.spec.budget.max_runs)})), actions);
-      if(rule.blocked)detail.append(el('p','error',()=>CLATI18n.msg(rule.blocked.includes('.')?rule.blocked:'schedule.'+rule.blocked)));
-      const history = el('details'); history.append(el('summary', '', () => pageText('deliveries')));
-      for (const record of deliveries.filter(d => d.rule_id === rule.id).reverse()) history.append(el('p', 'task-delivery', () => new Date(record.started_at).toLocaleString(CLATI18n.locale) + ' · ' + pageText(record.phase)));
-      detail.append(history);
-      const conversation = el('section', 'task-conversation'); detail.append(conversation);
-      if(borrowConversationPane(conversation,rule.scope.session)){detail.classList.add('has-live-conversation');return null;}return createConversationReader(conversation, {project:rule.scope.project, session:rule.scope.session, seq:null}, {editable:true,current});
+      if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
+      const index = buttons.indexOf(document.activeElement), shift = event.key === 'ArrowDown' ? 1 : -1;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + shift + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    });
+    document.body.append(menu); positionSessionMenu(menu, 0, 0, source);
+    menu.querySelector('button:not(:disabled)')?.focus();
+  }};
+}
+function scheduleMenuActions(rule, actions) {
+  const isTime = rule.spec.trigger.kind === 'time';
+  const noJob = !isTime && !builtinEnabled(state.workbench, 'builtin.jobs');
+  const entries = [{key:'edit', icon:'edit', run:() => actions.edit(rule), disabled:noJob}];
+  if (rule.phase === 'enabled') {
+    if (isTime) entries.push({key:'run_now', icon:'refresh', run:() => actions.run(rule), disabled:Boolean(rule.blocked)});
+    entries.push({key:'pause', icon:'pause', run:() => actions.change(rule, 'pause')});
+  }
+  if (rule.phase === 'draft' || rule.phase === 'paused') {
+    entries.push({key:'review', icon:'permission-write', run:() => actions.review(rule), disabled:noJob});
+  }
+  if (rule.phase === 'paused' && rule.authorization) {
+    entries.push({key:'resume', icon:'schedule', run:() => actions.change(rule, 'resume'), disabled:noJob});
+  }
+  entries.push({key:'duplicate', icon:'copy', run:() => actions.duplicate(rule), disabled:noJob},
+    {key:'delete', icon:'trash', run:async () => {
+      if (await CLATDialog.confirm(CLATI18n.msg('schedule.delete_confirm'))) await actions.change(rule, 'delete');
+    }});
+  return entries;
+}
+function taskScheduleSummary(rule, deliveries) {
+  const summary = el('section', 'task-schedule-summary');
+  const icon = el('span', 'task-schedule-icon'); icon.append(svgIcon('schedule'));
+  const facts = el('div', 'task-schedule-copy');
+  facts.append(el('strong', '', () => scheduleTriggerText(rule.spec.trigger)));
+  const next = rule.phase === 'enabled' && !rule.blocked ? rule.next_at : null;
+  const records = deliveries.filter(record => record.rule_id === rule.id).reverse();
+  const subtitle = () => next == null
+    ? taskPhaseText(rule, records[0])
+    : pageText('task_next_run', {time:new Intl.DateTimeFormat(CLATI18n.locale, {dateStyle:'medium', timeStyle:'short'}).format(next)});
+  facts.append(el('span', '', subtitle)); summary.append(icon, facts);
+  if (records.length) {
+    const history = el('details', 'task-run-history'); history.append(el('summary', '', () => pageText('deliveries')));
+    const entries = el('ul');
+    for (const record of records) entries.append(el('li', 'task-delivery', () =>
+      new Date(record.started_at).toLocaleString(CLATI18n.locale) + ' · ' + pageText(record.phase)));
+    history.append(entries); summary.append(history);
+  }
+  return summary;
+}
+function renderScheduleTask(detail, rule, {actionsPort, deliveries, current, menus}) {
+  const actions = el('div', 'page-toolbar task-detail-actions');
+  const entries = scheduleMenuActions(rule, actionsPort);
+  const primary = entries.find(item => ['run_now', 'review'].includes(item.key));
+  if (primary) {
+    const button = pageAction(primary.key, primary.run, true); button.disabled = Boolean(primary.disabled);
+    actions.append(button);
+  }
+  const edit = entries[0], editButton = pageAction(edit.key, edit.run);
+  editButton.disabled = Boolean(edit.disabled);
+  actions.append(editButton, taskMenuButton(event => menus.open(event.currentTarget, entries)));
+  detail.append(actions, taskScheduleSummary(rule, deliveries));
+  if (rule.spec.trigger.kind === 'job' && !builtinEnabled(state.workbench, 'builtin.jobs')) {
+    detail.append(el('p', 'settings-note', () => CLATI18n.msg('extension.job_source_paused')));
+  }
+  if (rule.blocked) detail.append(el('p', 'error', () => rule.blocked === 'budget_exhausted'
+    ? pageText('task_limit_reached') : CLATI18n.msg(rule.blocked.includes('.') ? rule.blocked : 'schedule.' + rule.blocked)));
+  const conversation = el('section', 'task-conversation'); detail.append(conversation);
+  if (borrowConversationPane(conversation, rule.scope.session)) {
+    detail.classList.add('has-live-conversation');
+    return null;
+  }
+  return createConversationReader(conversation, {project:rule.scope.project, session:rule.scope.session, seq:null}, {editable:true, current});
 }

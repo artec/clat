@@ -2,6 +2,68 @@ const {test,expect}=require('@playwright/test');
 const fs=require('node:fs'),path=require('node:path');
 const {hostInfo,openWorkbench,LIVE,createWorkbenchConversation,addWorkbenchProject}=require('../helpers/workbench');
 
+test('task overview clears the selected route and preserves filters and the conversation draft',async({page})=>{
+ await openWorkbench(page,hostInfo('workbench'));
+ const session=await createWorkbenchConversation(page,'Task overview target');
+ const rule=await page.evaluate(async session=>(await rpc('schedule.create',{session,title:'Overview task fixture',instruction:'Summarize the project.',trigger:{kind:'time',rule:{kind:'at',at_ms:Date.now()+3600000}},budget:{max_runs:1,max_tokens:100000,max_seconds:300,run_tokens:100000,run_seconds:300,max_paid_web_calls:0,run_paid_web_calls:0},model_profile:null})).rule,session);
+ await page.fill('#prompt','Draft retained after closing task details');
+ await page.click('#nav-tasks');
+ const tasks=page.locator('#jobs-dialog'),row=tasks.locator('[data-task-id="'+rule.id+'"]');
+ await tasks.locator('#task-type').selectOption('schedules');
+ await row.click();
+ await expect(page.locator('#prompt')).toBeVisible(LIVE);
+ await page.locator('.application-location button.breadcrumb-name').first().click();
+ await expect(tasks.locator('.navigation-overview')).toBeVisible({timeout:3000});
+ await expect(row).toHaveAttribute('aria-current','false');
+ await expect(tasks.locator('#task-type')).toHaveValue('schedules');
+ expect(new URLSearchParams(new URL(page.url()).hash.split('?')[1]).has('task')).toBe(false);
+ await page.click('#application-back');
+ await expect(row).toHaveAttribute('aria-current','true',LIVE);
+ await expect(page.locator('#prompt')).toHaveValue('Draft retained after closing task details');
+ await tasks.locator('[data-action=back-overview]').click();
+ await page.click('#nav-history');
+ await page.click('#nav-tasks');
+ await expect(tasks.locator('.navigation-overview')).toBeVisible(LIVE);
+});
+
+test('history overview retains the search results and releases the selected trajectory',async({page})=>{
+ await openWorkbench(page,hostInfo('workbench'));
+ await createWorkbenchConversation(page,'History overview target');
+ await page.click('#nav-history');
+ const history=page.locator('#history-dialog'),search=history.getByRole('searchbox');
+ await expect(history.locator('button[data-reference]').first()).toBeVisible(LIVE);
+ await search.fill('History overview target'); await search.press('Enter');
+ const result=history.locator('button[data-reference]').filter({hasText:'History overview target'}).first();
+ await result.click();
+ await expect(result).toHaveAttribute('aria-current','true');
+ await page.locator('.application-location button.breadcrumb-name').first().click();
+ await expect(history.locator('.navigation-overview')).toBeVisible({timeout:3000});
+ await expect(search).toHaveValue('History overview target');
+ await expect(result).toHaveAttribute('aria-current','false');
+ await result.click();
+ await history.locator('[data-action=back-overview]').click();
+ await expect(history.locator('.navigation-overview .navigation-option').first()).toBeVisible();
+});
+
+test('extensions overview clears the detail while retaining the current category and search',async({page})=>{
+ await page.route('https://pi.at.cn/catalog.json',route=>route.fulfill({json:{schemaVersion:1,packages:[]}}));
+ await openWorkbench(page,hostInfo('workbench'));
+ await page.click('#nav-extensions');
+ const extensions=page.locator('#market-dialog'),search=extensions.getByRole('searchbox');
+ const first=extensions.locator('.navigation-row[data-plugin-id]').first();
+ const id=await first.getAttribute('data-plugin-id');
+ await search.fill(id);
+ await first.click();
+ await expect(first).toHaveAttribute('aria-current','true',LIVE);
+ await page.locator('.application-location button.breadcrumb-name').first().click();
+ await expect(extensions.locator('.navigation-overview')).toBeVisible({timeout:3000});
+ await expect(search).toHaveValue(id);
+ await expect(first).toHaveAttribute('aria-current','false');
+ await first.click();
+ await extensions.locator('[data-action=back-overview]').click();
+ await expect(extensions.locator('.navigation-overview')).toBeVisible();
+});
+
 test('a first-message file snapshot is linked to its committed message and bookmarks survive reopening',async({page})=>{
  await openWorkbench(page,hostInfo('workbench'));await page.evaluate(()=>CLATI18n.setLanguage('en'));
  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');await expect.poll(()=>page.evaluate(()=>state.sessionId),LIVE).toBeNull();await expect(page.locator('#send')).toBeEnabled(LIVE);

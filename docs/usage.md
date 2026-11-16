@@ -3268,6 +3268,9 @@ See [Web](web.md), [History timeline](history.md), [Background jobs](jobs.md), a
 Feature pages have explicit enter/leave lifecycles, rather than dialog close
 semantics. Use navigation or Back/Forward to change pages; Escape dismisses only
 menus and temporary editors. The global extension remains independently available.
+In the desktop layout of Tasks, History and Extensions, choose **Back to
+overview** in the detail header or click the first breadcrumb. The current
+filters, search and category stay available when the details close.
 Unsaved ordinary settings and task edits remain in the current client session;
 password inputs, pairing codes and binding previews are cleared when leaving.
 A save acknowledgment does not clear later edits. Reload discards these local
@@ -3295,8 +3298,10 @@ opens its project and task details. Selecting a scheduled task retains its list 
 selecting a process task shows actual process state and output. Reading does not
 select an execution target. Continuing explicitly selects the conversation and shares
 its existing text draft. A busy project cannot silently redirect the send to another
-running conversation. Temporary task configuration separates basic fields from
-budgets, model and notification policy. Examples fill an editor without scheduling.
+running conversation. Use **New task** in the sidebar or choose a template to
+fill in a task. The editor asks for the instruction, schedule and linked
+conversation. Review the draft before enabling it. Task rows offer contextual
+actions, and the detail pane shows the next run and execution history.
 
 Task names and notification policy are persisted with the approved specification.
 Editing revokes authorization and requires review again. Copy as new task allows a

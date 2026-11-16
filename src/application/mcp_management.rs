@@ -98,7 +98,7 @@ impl HostApplication {
                         "MCP connection test failed; inspect configuration and server logs",
                     )
                 },
-                ApplicationError::presented,
+                |presentation| ApplicationError::presented(*presentation),
             )
         })?;
         let tools = server

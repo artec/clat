@@ -792,10 +792,6 @@ button:disabled { cursor: default; opacity: .45; }
 .history-events { display: grid; gap: 6px; margin: 12px 0; }
 .history-event { text-align: start; overflow-wrap: anywhere; white-space: pre-wrap; }
 .history-json { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.schedule-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
-.schedule-form label { display:flex; flex-direction:column; gap:4px; min-width:0; }
-.schedule-form textarea { min-height:100px; }
-.schedule-form [hidden] { display:none; }
 #schedules-open { position: relative; }
 #schedules-open[data-pending="true"]::after { content:'•'; position: absolute; top: 3px; right: 5px; color:var(--accent); }
 

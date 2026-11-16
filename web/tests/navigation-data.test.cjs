@@ -67,9 +67,39 @@ test('reopening a draft previews against the incoming selection generation',asyn
  assert.equal(calls[0].expected_selection_generation,2);
  assert.equal(vm.runInContext("sessionSharesFor('project:two')[0].version",scope),'new');
 });
-test('editing a continuation preserves its job trigger and a time edit preserves the interval anchor',()=>{
- const scope={CLATI18n:{msg:k=>k,error:m=>Error(m)}};vm.createContext(scope);vm.runInContext(source('scheduled-work.js'),scope);
- const fields=Object.fromEntries(Object.entries({trigger:'interval',interval:'60',title:'Renamed',notification:'attention',session:'session',instruction:'Keep instructions',model_profile:'',max_runs:'2',max_tokens:'100',max_seconds:'60',run_tokens:'50',run_seconds:'30',max_paid_web_calls:'0',run_paid_web_calls:'0'}).map(([key,value])=>[key,{value}]));scope.fields=fields;scope.rule={scope:{session:'session'},spec:{trigger:{kind:'job',job_id:'job-1'}}};
- const job=vm.runInContext("scheduleDraftFrom(fields,rule,{id:rule.spec.trigger.job_id})",scope);assert.equal(job.trigger.kind,'job');assert.equal(job.trigger.job_id,'job-1');
- scope.rule.spec.trigger={kind:'time',rule:{kind:'interval',anchor_ms:12345,every_ms:3600000}};const time=vm.runInContext('scheduleDraftFrom(fields,rule,null)',scope);assert.equal(time.trigger.rule.anchor_ms,12345);
+test('existing schedules keep their execution settings when edited in the simplified editor',()=>{
+ const scope=vm.createContext({});
+ vm.runInContext(source('scheduled-work.js'),scope);
+ scope.fields=Object.fromEntries(Object.entries({
+   trigger:'interval',interval:'60',title:'Renamed',session:'another-session',instruction:'Keep instructions',
+ }).map(([key,value])=>[key,{value}]));
+ const budget={max_runs:2,max_tokens:100,max_seconds:60,run_tokens:50,run_seconds:30,max_paid_web_calls:4,run_paid_web_calls:2};
+ scope.rule={scope:{session:'session'},spec:{trigger:{kind:'job',job_id:'job-1'},notification:'completion',budget,model:{profile:'existing-model'}}};
+ const job=vm.runInContext("scheduleDraftFrom(fields,rule,{id:rule.spec.trigger.job_id})",scope);
+ assert.equal(job.trigger.kind,'job');assert.equal(job.trigger.job_id,'job-1');
+ assert.equal(job.session,'session');assert.deepEqual(job.budget,budget);
+ assert.equal(job.model_profile,'existing-model');assert.equal(job.notification,'completion');
+ scope.rule.spec.trigger={kind:'time',rule:{kind:'interval',anchor_ms:12345,every_ms:3600000}};
+ const time=vm.runInContext('scheduleDraftFrom(fields,rule,null)',scope);
+ assert.equal(time.trigger.rule.anchor_ms,12345);
+});
+test('new tasks receive bounded defaults and recurring tasks can execute more than once',()=>{
+ const scope=vm.createContext({});
+ vm.runInContext(source('scheduled-work.js'),scope);
+ scope.fields=Object.fromEntries(Object.entries({
+   trigger:'weekly',weekday:'5',clock:'09:30',timezone:'Asia/Shanghai',delay:'0',
+   title:'Review status',session:'original',instruction:'Summarize updates',
+ }).map(([key,value])=>[key,{value}]));
+ const weekly=vm.runInContext('scheduleDraftFrom(fields,null,null)',scope);
+ assert.equal(weekly.trigger.rule.weekday,5);assert.equal(weekly.trigger.rule.timezone,'Asia/Shanghai');
+ assert.equal(weekly.session,'original');assert.equal(weekly.model_profile,null);
+ assert.ok(weekly.budget.max_runs>1 && weekly.budget.max_runs<=10000);
+ assert.equal(weekly.budget.max_tokens,weekly.budget.run_tokens*weekly.budget.max_runs);
+ assert.equal(weekly.budget.max_seconds,weekly.budget.run_seconds*weekly.budget.max_runs);
+ assert.equal(weekly.budget.run_paid_web_calls,0);assert.equal(weekly.budget.max_paid_web_calls,0);
+ scope.fields.trigger.value='delay';
+ const once=vm.runInContext('scheduleDraftFrom(fields,null,null)',scope);
+ assert.equal(once.trigger.rule.kind,'at');assert.equal(once.budget.max_runs,1);
+ const followup=vm.runInContext("scheduleDraftFrom(fields,null,{id:'job-1',session:'job-session'})",scope);
+ assert.equal(followup.session,'job-session');assert.equal(followup.budget.max_runs,1);
 });

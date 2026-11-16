@@ -4,12 +4,22 @@ CLAT's Host can execute explicitly authorized instructions in their original
 conversation. Desktop and PWA provide **Scheduled work**; TUI uses `/schedule`,
 and the CLI uses `clat schedule`. The same core service owns all rules.
 
-Create a draft, then review its instruction, original project/session, trigger,
-model route and budgets. **Authorize this exact task and budget** enables it.
+In Desktop and PWA, choose **New task**, enter what should happen, and choose
+when and in which conversation to run it. **Save** creates a draft.
+Review the instruction, schedule and linked conversation, then choose
+**Confirm and enable**.
 Creating a draft or allowing a normal tool call does not authorize automatic
 model execution. Changing the instruction, model or budget revokes the grant.
 Pausing stops future admission; an admitted execution can still finish. Delete
 the rule to remove future work. Explicitly cancel a running Agent separately.
+
+New tasks created in the workbench use the project's current model route and
+attention-only notifications. One-time tasks and Job follow-ups allow one
+execution. Repeating tasks allow up to 30. CLAT sets a per-run limit of 100,000
+tokens and 300 seconds, with zero paid native Web calls. Editing an existing
+task preserves its model-profile selection, limits and notification policy.
+If a repeating task reaches its limit, use **Copy as new task** to review and
+authorize a fresh schedule.
 
 Supported time rules are a delay, a specific time, a fixed interval, daily and
 weekly. Daily/weekly rules retain an explicit IANA time zone. A daylight-saving

@@ -35,11 +35,10 @@ test('client validation and missing RPC reasons stay localizable without extra r
   await createWorkbenchConversation(page,'Validation target');
   await page.click('#nav-tasks');await page.locator('#jobs-dialog [data-action=create_task]').first().click();
   const dialog=page.locator('#schedule-editor');
-  await dialog.locator('.settings-advanced summary').click();
-  await dialog.locator('[name=max_runs]').fill('-1');
+  await dialog.locator('[name=instruction]').fill('   ');
   await dialog.locator('[data-action=save]').click();
   for(const locale of ['en','zh-Hans','zh-Hant']){
-    const expected=await page.evaluate(async locale=>{await CLATI18n.setLanguage(locale);return [CLATI18n.t('schedule.invalid_budget'),CLATI18n.t('web.request_failed')];},locale);
+    const expected=await page.evaluate(async locale=>{await CLATI18n.setLanguage(locale);return [CLATI18n.t('pages.task_instruction_required'),CLATI18n.t('web.request_failed')];},locale);
     await expect(dialog.locator('[role=status]')).toContainText(expected[0]);
     await expect(page.locator('.i18n-error-fixture')).toContainText(expected[1]);
   }

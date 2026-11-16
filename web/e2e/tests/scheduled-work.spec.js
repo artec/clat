@@ -27,3 +27,35 @@ test('task editing requires authorization and runs in its fixed conversation whi
  await page.reload();await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
  expect(await page.evaluate(async id=>(await rpc('schedule.deliveries',{})).deliveries.filter(d=>d.rule_id===id).length,draft.id)).toBe(1);
 });
+
+test('a weekly task can be created from a template and paused from its list row',async({page})=>{
+ await openWorkbench(page,hostInfo('workbench'));
+ const session=await createWorkbenchConversation(page,'Weekly task target');
+ await page.click('#nav-tasks');
+ const tasks=page.locator('#jobs-dialog');
+ await tasks.locator('.task-overview .navigation-option').first().click();
+ const editor=page.locator('#schedule-editor');
+ expect(await editor.locator('[name=instruction]').inputValue()).not.toBe('');
+ await editor.locator('[name=title]').fill('Weekly task fixture');
+ await editor.locator('[name=trigger]').selectOption('weekly');
+ await editor.locator('[name=weekday]').selectOption('5');
+ await editor.locator('[name=clock]').fill('23:00');
+ await editor.locator('[name=timezone]').fill('Asia/Shanghai');
+ await editor.locator('[data-action=save]').click();
+ const review=page.locator('.schedule-review');
+ await expect(review).toBeVisible(LIVE);
+ await review.locator('[data-action=confirm]').click();
+ const loadRule=()=>page.evaluate(async()=>(await rpc('schedule.list',{})).rules.find(r=>r.spec.title==='Weekly task fixture'));
+ await expect.poll(async()=>(await loadRule())?.phase,LIVE).toBe('enabled');
+ const rule=await loadRule();
+ expect(rule.scope.session).toBe(session);
+ expect(rule.spec.trigger).toEqual({kind:'time',rule:{kind:'weekly',weekday:5,hour:23,minute:0,timezone:'Asia/Shanghai'}});
+ expect(rule.spec.budget.max_runs).toBeGreaterThan(1);
+ expect(rule.spec.budget.max_paid_web_calls).toBe(0);
+ const row=tasks.locator('[data-task-id="'+rule.id+'"]');
+ const item=row.locator('..');
+ await item.hover(); await item.locator('button[aria-haspopup=menu]').click();
+ await page.locator('[role=menu] [data-action=pause]').click();
+ await expect.poll(async()=>(await loadRule())?.phase,LIVE).toBe('paused');
+ await expect(row).toBeVisible();
+});

@@ -2,7 +2,7 @@
 function createExtensionNavigation(page,{cancel,refresh}){
   const panel=page.querySelector('.market-panel'),query=dom['market-search'];
   const footer=panel.querySelector('footer');
-  const view=createNavigationPage(page,{title:()=>shellText('extensions'),query,searchLabel:()=>CLATI18n.msg('web.search_plugins')});
+  const view=createNavigationPage(page,{title:()=>shellText('extensions'),query,searchLabel:()=>CLATI18n.msg('web.search_plugins'),onOverview:openOverview});
   const builtinConfig=el('section','builtin-config-editor');
   const review=el('div'),content=el('section'),frame=el('section','navigation-content'),status=el('p','navigation-status'),catalogStatus=dom['market-status'];catalogStatus.className='navigation-status';catalogStatus.hidden=true;view.sidebar.insertBefore(catalogStatus,view.list);status.setAttribute('role','status');frame.append(builtinConfig,content,review);view.body.append(frame);view.sidebar.insertBefore(status,view.list);
   const seats=Object.fromEntries(['installed','builtins','discover'].map(key=>[key,{rows:[],cards:new Map(),selected:null,query:'',scroll:0,read:0,configuring:false}])),{installed,discover}=seats;let current='builtins',pending=false,epoch=0,beforeLeaveBuiltins=()=>true;
@@ -15,7 +15,8 @@ function createExtensionNavigation(page,{cancel,refresh}){
   },false);website.hidden=()=>current!=='discover';
   const configure=viewAction('builtin-config','settings',()=>CLATI18n.msg('extension.config_title'),()=>openBuiltinConfiguration(),true,()=>!pending);
   view.actions([viewAction('refresh','refresh',()=>pageText('refresh'),()=>refresh(),true,()=>!pending),website,configure]);
-  view.context({crumbs:()=>{const seat=seats[current];return [{label:()=>shellText('extensions'),run:()=>{delete page.dataset.detail;}},{label:()=>tabTitle(current),run:()=>void chooseTab(current)},...(seat.selected?[{label:()=>extensionLabel(seat.rows.find(row=>row.id===seat.selected),'name')||seat.selected}]:[])];}});
+  function openOverview(){void returnToOverview();}
+  view.context({crumbs:()=>{const seat=seats[current];return [{label:()=>shellText('extensions'),run:openOverview},{label:()=>tabTitle(current),run:openOverview},...(seat.selected?[{label:()=>extensionLabel(seat.rows.find(row=>row.id===seat.selected),'name')||seat.selected}]:[])];}});
   if(footer){footer.className='settings-note navigation-note';frame.append(footer);}
   panel.remove();showContent();
   function render(){const seat=seats[current],query=view.query.value.trim().toLocaleLowerCase();const top=view.list.scrollTop;view.list.replaceChildren();
@@ -25,6 +26,7 @@ function createExtensionNavigation(page,{cancel,refresh}){
   }
   function showContent(open=false){builtinConfig.hidden=current!=='builtins'||!seats[current].configuring;refreshViewContext();
     const seat=seats[current],card=seat.cards.get(seat.selected);
+    view.setOverviewReturn(!builtinConfig.hidden||Boolean(card));
     if(current==='builtins'&&seat.configuring){CLATI18n.bind(view.name,'textContent',()=>CLATI18n.msg('extension.config_title'));if(open)page.dataset.detail='true';content.replaceChildren();return;}
     if(card){card.querySelector(':scope > h3')?.remove();const title=seat.rows.find(row=>row.id===seat.selected)?extensionLabel(seat.rows.find(row=>row.id===seat.selected),'name'):seat.selected;CLATI18n.bind(view.name,'textContent',()=>title);if(open)page.dataset.detail='true';content.replaceChildren(card);return;}
     CLATI18n.bind(view.name,'textContent',()=>tabTitle(current));delete page.dataset.detail;
@@ -33,6 +35,14 @@ function createExtensionNavigation(page,{cancel,refresh}){
     if(!items.length)items.push({title:()=>pageText('discover'),description:()=>pageText('extension_intro_description'),icon:'extensions',action:()=>void chooseTab('discover')});
     content.replaceChildren(navigationOverview({title:()=>pageText('extension_intro_title'),description:()=>pageText('extension_intro_description'),icon:'extensions',items}));
     if(discover.rows.length)content.append(el('p','settings-note',()=>CLATI18n.msg(state.marketFallback?'web.built_in_preview_pi_at_cn_unavailable':'web.public_catalog')));
+  }
+  async function returnToOverview(approved=false){
+    const seat=seats[current];
+    if(pending||(!seat.selected&&!seat.configuring))return;
+    if(!approved&&current==='builtins'&&seat.configuring&&!beforeLeaveBuiltins(()=>void returnToOverview(true)))return;
+    const request=++epoch;await cancel();if(request!==epoch)return;
+    seat.selected=null;seat.configuring=false;seat.read=0;
+    showContent();view.body.scrollTop=0;render();
   }
   async function openBuiltinConfiguration(){
     if(pending)return;
@@ -63,5 +73,5 @@ function createExtensionNavigation(page,{cancel,refresh}){
   }
   function tabTitle(key){return key==='builtins'?CLATI18n.msg('extension.builtins'):pageText(key);}
   CLATI18n.onChange(render);
-  return {guardBuiltins(run){beforeLeaveBuiltins=run;},builtinConfig,review,status,update,render,setPending(value){pending=value;refreshViewContext();for(const button of view.head.querySelectorAll('button'))button.disabled=value;for(const button of tabs.element.querySelectorAll('button'))button.disabled=value;render();},leave(){epoch++;},get current(){return current;}};
+  return {guardBuiltins(run){beforeLeaveBuiltins=run;},builtinConfig,review,status,update,render,setPending(value){pending=value;view.overviewBack.disabled=value;refreshViewContext();for(const button of view.head.querySelectorAll('button'))button.disabled=value;for(const button of tabs.element.querySelectorAll('button'))button.disabled=value;render();},leave(){epoch++;},get current(){return current;}};
 }

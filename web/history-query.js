@@ -9,12 +9,13 @@ function installHistoryQuery() {
   const {element: scope, input: all, text: trustedProjects} = navigationTrustedProjects('history-all-projects');
   const upload = el('input'); upload.type = 'file'; upload.accept = '.zip,application/zip'; upload.hidden = true;
   const status = el('p', 'settings-note'); status.setAttribute('role', 'status');
-  const results = el('div', 'history-results'); const detail = el('section', 'history-detail');
+  const results = el('div', 'history-results');
   const more = el('button', '', () => msg('more')); more.type = 'button'; more.hidden = true;
-  const view=createNavigationPage(dialog,{title:()=>shellText('history'),query,searchLabel:()=>msg(source==='imported'?'archive_query':'query')});
-  view.filters.append(scope);view.list.append(results,more);view.body.replaceWith(detail);detail.classList.add('navigation-body');view.body=detail;status.className='navigation-status';view.sidebar.insertBefore(status,view.list);document.body.append(dialog);
+  const view=createNavigationPage(dialog,{title:()=>shellText('history'),query,searchLabel:()=>msg(source==='imported'?'archive_query':'query'),onOverview:clearReader});
+  const detail=view.body;detail.classList.add('history-detail');
+  view.filters.append(scope);view.list.append(results,more);status.className='navigation-status';view.sidebar.insertBefore(status,view.list);document.body.append(dialog);
   let generation=0,detailGeneration=0,cursor=null,activeQuery={trusted_projects:false},reader=null,selected=null,searching=false;
-  let transferring=false;
+  let transferring=false, overviewHits=[];
   const tabs = navigationTabs([
     ['local', () => msg('archive_local')],
     ['imported', () => msg('archive_imported')],
@@ -30,23 +31,23 @@ function installHistoryQuery() {
     viewAction('archive-export','download',()=>msg('archive_export'),()=>download(),true,()=>Boolean(selected)&&!transferring),
   ]);
   view.context({crumbs:()=>[
-    {label:()=>shellText('history'),run:()=>{delete dialog.dataset.detail;}},
+    {label:()=>shellText('history'),run:clearReader},
     {label:()=>activeQuery.trusted_projects?trustedProjects():projectDisplayName(selected?.project||state.workbench?.project?.root,state.workbench?.project?.name)},
     ...(selected&&activeQuery.trusted_projects?[{label:()=>projectDisplayName(selected.project)}]:[]),
     ...(selected?[{label:()=>historyTitle||selected.session}]:[]),
   ]});let historyTitle='';
-  function overview(hits=[]){
+  function overview(){
     if(selected)return;CLATI18n.bind(view.name,'textContent',()=>shellText('history'));
     const imported=source==='imported';
     detail.replaceChildren(navigationOverview({
       title:()=>imported?msg('archive_imported'):pageText('history_intro_title'),
       description:()=>imported?msg('archive_intro'):pageText('history_intro_description'),
       icon:'history',
-      items:hits.slice(0,6).map(hit=>({title:hit.title||hit.source||hit.reference.session,description:hit.excerpt||hit.reference.project,icon:'history',action:()=>void inspect(hit.reference,hit.title||hit.source,hit.source)})),
+      items:overviewHits.map(hit=>({title:hit.title||hit.source||hit.reference.session,description:hit.excerpt||hit.reference.project,icon:'history',action:()=>void inspect(hit.reference,hit.title||hit.source,hit.source)})),
     }));
   }
   overview();
-  dialog.addEventListener('clat:tool-reset',()=>{generation++;detailGeneration++;reader?.dispose();reader=null;selected=null;selectSource('local');results.replaceChildren();cursor=null;more.hidden=true;overview();});
+  dialog.addEventListener('clat:tool-reset',()=>{generation++;selectSource('local');results.replaceChildren();cursor=null;more.hidden=true;overviewHits=[];clearReader();});
   dialog.addEventListener('clat:page-leave',()=>{generation++;searching=false;reader?.suspend();});
   dialog.addEventListener('clat:page-enter',()=>reader?.resume());
   trigger.onclick = () => {
@@ -81,7 +82,7 @@ function installHistoryQuery() {
   }
 
   async function search(append) {
-    if (!append) { clearReader();activeQuery = { query: query.value, trusted_projects: all.checked }; }
+    if (!append) { activeQuery = { query: query.value, trusted_projects: all.checked }; overviewHits=[];clearReader(); }
     await attempt(async (ticket) => {
       const page = source === 'imported'
         ? {hits: await rpc('history.archive.list', activeQuery)}
@@ -89,11 +90,15 @@ function installHistoryQuery() {
       if (ticket !== generation) return;
       if (!append) { results.replaceChildren(); }
       results.append(...page.hits.map(hitNode)); cursor = page.next_cursor ?? null; more.hidden = !cursor;
-      if(!append)overview(page.hits);
+      if(!append){overviewHits=page.hits.slice(0,6);overview();}
       CLATI18n.bind(status, 'textContent', () => page.truncated ? msg('bounded') : (!results.children.length ? msg(source==='imported'?'archive_empty':'empty') : ''));
     });
   }
-  function clearReader(){detailGeneration++;reader?.dispose();reader=null;selected=null;historyTitle='';overview();}
+  function clearReader(){
+    detailGeneration++;reader?.dispose();reader=null;selected=null;historyTitle='';
+    for(const row of results.children)row.setAttribute('aria-current','false');
+    view.reset();overview();detail.scrollTop=0;
+  }
   function selectSource(id) {
     source = id; tabs.select(id);
     for (const attribute of ['placeholder', 'aria-label']) {

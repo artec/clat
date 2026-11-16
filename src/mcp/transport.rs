@@ -50,7 +50,9 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub struct McpError {
     message: String,
     pub(crate) kind: &'static str,
-    pub(crate) presentation: Option<crate::i18n::UiMessage>,
+    // UiMessage 随批次长胖把 McpError 顶过 result_large_err 的 128B 阈值，
+    // 扇出 39 处 -D warnings（CI 43877631070）——装箱收口。
+    pub(crate) presentation: Option<Box<crate::i18n::UiMessage>>,
 }
 
 impl McpError {
@@ -74,7 +76,7 @@ impl McpError {
             } else {
                 "missing_dependency"
             },
-            presentation: Some(presentation),
+            presentation: Some(Box::new(presentation)),
         }
     }
 
