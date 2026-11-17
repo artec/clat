@@ -51,24 +51,28 @@ impl TrustedProjectApplication {
                 .injection()
                 .map_err(ApplicationError::new)?,
         );
-        let final_system = crate::plugins::services::compose_instructions(
-            &run_context.instructions.with_goal,
-            instruction_snapshot.as_ref(),
-        );
+        let system = &run_context.instructions.with_goal;
+        let runtime = run_context
+            .runtime_context
+            .snapshot(instruction_snapshot.clone());
         let history = self.current_model_history()?;
-        let mut result = estimate_snapshot(
+        let options = context_model_options(&config, runtime.request_tail(None));
+        let measured = self.sessions.measure_request(
             &config,
-            &run_context,
-            &final_system,
+            Some(system),
             &history,
-            &skills,
+            &run_context.tool_definitions,
+            options.request_tail_tokens(),
+        );
+        let mut result = estimate_snapshot(
+            &run_context,
+            &options,
+            &history,
             invoked_diagnostic,
-            self.sessions.measure_request(
-                &config,
-                Some(&final_system),
-                &history,
-                &run_context.tool_definitions,
-            ),
+            measured,
+            instruction_snapshot.as_ref().map_or(0, |snapshot| {
+                crate::model::estimate_request_tokens(Some(&snapshot.text), &[], &[])
+            }),
         );
         result.image_offloaded_count = self.sessions.offloaded_images();
         result.image_original_count = result
@@ -79,13 +83,12 @@ impl TrustedProjectApplication {
 }
 
 fn estimate_snapshot(
-    config: &crate::model::ModelConfig,
     run_context: &super::run_context::RunContextSnapshot,
-    final_system: &str,
+    model_options: &crate::model::ModelOptions,
     history: &[ModelItem],
-    skills: &crate::skills::SkillCatalogSnapshot,
     invoked_diagnostic: Option<super::ContextSkillDiagnostic>,
     measured: crate::model::RequestMeasurement,
+    project_instructions_estimate: u64,
 ) -> super::ContextEstimateSnapshot {
     let tools = &run_context.tool_definitions;
 
@@ -97,13 +100,12 @@ fn estimate_snapshot(
     let skills_total = estimate_instructions(&run_context.instructions.with_skills);
     let invoked_total = estimate_instructions(&run_context.instructions.with_invoked);
     let goal_total = estimate_instructions(&run_context.instructions.with_goal);
-    let system_total = estimate_instructions(final_system);
-    let model_options = context_model_options(config);
+    let final_system = run_context.instructions.with_goal.as_str();
     let (_, image_projection) = crate::model::preview_items_for_image_budget(
         history,
         (!final_system.is_empty()).then_some(final_system),
         tools,
-        &model_options,
+        model_options,
     );
     let input_total = measured.input;
     let output_reserve = measured.output;
@@ -115,7 +117,10 @@ fn estimate_snapshot(
         ),
         unit: "tokens".into(),
         base_prompt_estimate: base_total,
-        project_instructions_estimate: system_total.saturating_sub(goal_total),
+        project_instructions_estimate,
+        runtime_context_estimate: model_options
+            .request_tail_tokens()
+            .saturating_sub(project_instructions_estimate),
         plan_policy_estimate: plan_total.saturating_sub(base_total),
         skill_catalog_estimate: skills_total.saturating_sub(plan_total),
         invoked_skill_estimate: invoked_total.saturating_sub(skills_total),
@@ -124,7 +129,8 @@ fn estimate_snapshot(
         memory_budget_bytes: crate::memory::MAX_INJECTION_BYTES as u64,
         tool_schemas_estimate: crate::model::estimate_request_tokens(None, &[], tools),
         history_estimate: input_total
-            .saturating_sub(system_total)
+            .saturating_sub(goal_total)
+            .saturating_sub(model_options.request_tail_tokens())
             .saturating_sub(crate::model::estimate_request_tokens(None, &[], tools)),
         image_count: image_projection.retained_images,
         image_original_count: image_projection.original_images,
@@ -136,13 +142,14 @@ fn estimate_snapshot(
         input_estimate: input_total,
         total_estimate: measured.total(),
         tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
-        skill_names: skills
+        skill_names: run_context
+            .skills
             .entries
             .iter()
             .map(|entry| entry.name.clone())
             .collect(),
         skill_diagnostics: {
-            let mut diagnostics = skill_diagnostics_dto(skills);
+            let mut diagnostics = skill_diagnostics_dto(&run_context.skills);
             if let Some(diagnostic) = invoked_diagnostic {
                 diagnostics.push(diagnostic);
             }
@@ -151,8 +158,12 @@ fn estimate_snapshot(
     }
 }
 
-fn context_model_options(config: &crate::model::ModelConfig) -> crate::model::ModelOptions {
+fn context_model_options(
+    config: &crate::model::ModelConfig,
+    request_tail: Option<String>,
+) -> crate::model::ModelOptions {
     crate::model::ModelOptions {
+        request_tail,
         output_limit: config.output_limit,
         temperature: config.temperature,
         parallel_tool_calls: config.request_parallel_tool_calls(),

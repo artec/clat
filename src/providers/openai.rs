@@ -918,7 +918,7 @@ mod tests {
         }];
         let options = ModelOptions {
             parallel_tool_calls: Some(true),
-            request_tail: Some("Host run context: scratch-b".into()),
+            request_tail: Some(crate::providers::runtime_tail_fixture(false)),
             ..ModelOptions::default()
         };
 
@@ -942,8 +942,33 @@ mod tests {
         assert_eq!(body["input"][0]["content"], "echo hello");
         assert_eq!(
             body["input"][1],
-            json!({"role":"user","content":"Host run context: scratch-b"})
+            json!({"role":"user","content":crate::providers::runtime_tail_fixture(false)})
         );
+        let updated = model
+            .request_body(ModelRequest {
+                instructions: Some("Use tools when useful"),
+                items: &items,
+                tools: &tools,
+                options: &ModelOptions {
+                    request_tail: Some(crate::providers::runtime_tail_fixture(true)),
+                    ..options
+                },
+                cancel: &CancelToken::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            body["instructions"].to_string(),
+            updated["instructions"].to_string()
+        );
+        assert_eq!(body["tools"].to_string(), updated["tools"].to_string());
+        let input = updated["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(body["input"][0].to_string(), input[0].to_string());
+        assert_eq!(
+            input[1],
+            json!({"role":"user","content":crate::providers::runtime_tail_fixture(true)})
+        );
+        assert!(!updated.to_string().contains("FIRST_"));
     }
 
     /// M3：图片消息的 Responses 序列化——`input_image` data URL；纯

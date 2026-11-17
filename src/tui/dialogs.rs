@@ -546,12 +546,16 @@ pub(super) fn render_trust_dialog(
 fn context_rows(
     view: &ContextEstimateSnapshot,
     locale: LocaleContext,
-) -> [(&'static str, u64); 16] {
+) -> [(&'static str, u64); 17] {
     [
         (locale.text("web.base_prompt"), view.base_prompt_estimate),
         (
             locale.text("web.project_instructions"),
             view.project_instructions_estimate,
+        ),
+        (
+            locale.text("context.runtime_context"),
+            view.runtime_context_estimate,
         ),
         (locale.text("web.plan_policy"), view.plan_policy_estimate),
         (

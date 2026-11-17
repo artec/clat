@@ -8,10 +8,10 @@ impl TestModelScript for Capture {
         request: crate::ModelRequest<'_>,
         _events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
-        self.0
-            .lock()
-            .unwrap()
-            .push(format!("{:?} {:?}", request.instructions, request.items));
+        self.0.lock().unwrap().push(format!(
+            "{:?} {:?} {:?}",
+            request.instructions, request.items, request.options.request_tail
+        ));
         // goal 续轮必须提交完成，否则上限移除后（maxRounds=0）无限续轮
         // 挂死普通 run 的首投递（GOAL-REG-1）；goal_round_completion 自带
         // stale 重试与"已成功即收尾"（None→落到下方 done 文本）。

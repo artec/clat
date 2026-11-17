@@ -43,7 +43,7 @@ pub(crate) use monitor::MonitorPlugin;
 pub(crate) use permission::DefaultPermissionPlugin;
 pub(crate) use plan_mode::PlanModePlugin;
 pub(crate) use process::{ExecToolsPlugin, ProcessServicePlugin, SandboxPlugin};
-pub(crate) use prompt::{DefaultPromptPlugin, PromptRegistryPlugin};
+pub(crate) use prompt::{DefaultPromptPlugin, PromptRegistryPlugin, ReplyLinksPlugin};
 pub(crate) use providers::{OpenAiCompatiblePlugin, OpenAiResponsesPlugin, ProviderRegistryPlugin};
 pub(crate) use pruner::ResultPruner;
 pub(crate) use pruner::{THRESHOLD_CHARS, ToolResultPrunerPlugin};

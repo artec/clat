@@ -398,6 +398,12 @@ pub struct McpPromptInfo {
     pub description: String,
 }
 
+#[derive(Default)]
+pub(crate) struct McpPromptContent {
+    pub(crate) system: String,
+    pub(crate) context: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McpToolAnnotations {
     pub read_only: Option<bool>,
@@ -772,24 +778,44 @@ impl McpServer {
 
     /// 解析桥标记 prompt 的系统文本。优先读取 CLAT 扩展元数据；标准
     /// text message 是通用 MCP 客户端的回退表示。
-    pub fn get_system_prompt(
+    pub(crate) fn get_system_prompt(
         &self,
         prompt: &McpPromptInfo,
         arguments: &std::collections::BTreeMap<String, String>,
-    ) -> Result<String, McpError> {
+    ) -> Result<McpPromptContent, McpError> {
         let result = self.call(
             "prompts/get",
             json!({"name": prompt.name, "arguments": arguments}),
             LIST_TIMEOUT,
             None,
         )?;
-        let mut text = result
+        let context = match result
             .get("_meta")
-            .and_then(|meta| meta.get("io.artec.clat/systemPrompt"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_default();
-        if text.is_empty()
+            .and_then(|meta| meta.get("io.artec.clat/runtimeContext"))
+        {
+            Some(Value::String(context)) if context.len() <= MAX_PROMPT_BYTES => context.clone(),
+            None => String::new(),
+            _ => {
+                return Err(McpError::new(format!(
+                    "MCP prompt `{}` has invalid runtime context",
+                    prompt.name
+                )));
+            }
+        };
+        let system = result
+            .get("_meta")
+            .and_then(|meta| meta.get("io.artec.clat/systemPrompt"));
+        let mut text = match system {
+            Some(Value::String(text)) => text.clone(),
+            None => String::new(),
+            _ => {
+                return Err(McpError::new(format!(
+                    "MCP prompt `{}` has invalid system text",
+                    prompt.name
+                )));
+            }
+        };
+        if system.is_none()
             && let Some(messages) = result.get("messages").and_then(Value::as_array)
         {
             for message in messages {
@@ -813,7 +839,10 @@ impl McpServer {
                 prompt.name
             )));
         }
-        Ok(text)
+        Ok(McpPromptContent {
+            system: text,
+            context,
+        })
     }
 
     /// [`Self::list_tools`] 的可注入预算变体（测试用小帽验证）。

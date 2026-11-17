@@ -18,8 +18,10 @@ impl RequestMeter {
         instructions: Option<&str>,
         items: &[ModelItem],
         tools: &[ToolDefinition],
+        tail_tokens: u64,
     ) -> RequestMeasurement {
         let mut measured = RequestMeasurement::new(config, instructions, items, tools);
+        measured.input = measured.input.saturating_add(tail_tokens);
         if let Some(anchor) = &self.anchor
             && anchor.key == key(session, config, instructions, tools)
         {
@@ -95,14 +97,27 @@ mod tests {
         );
         assert_eq!(
             meter
-                .measure("a", &config, Some("current"), &items, &[])
+                .measure("a", &config, Some("current"), &items, &[], 0)
                 .input,
             baseline + 1000
+        );
+        assert_eq!(
+            meter
+                .measure(
+                    "a",
+                    &config,
+                    Some("current"),
+                    &items,
+                    &[],
+                    estimated_tail + 10
+                )
+                .input,
+            baseline + estimated_tail + 1010
         );
         for (session, header) in [("b", "current"), ("a", "changed")] {
             assert_eq!(
                 meter
-                    .measure(session, &config, Some(header), &items, &[])
+                    .measure(session, &config, Some(header), &items, &[], 0)
                     .input,
                 RequestMeasurement::new(&config, Some(header), &items, &[]).input
             );
@@ -110,7 +125,7 @@ mod tests {
         config.endpoint = "https://different.invalid".into();
         assert_eq!(
             meter
-                .measure("a", &config, Some("current"), &items, &[])
+                .measure("a", &config, Some("current"), &items, &[], 0)
                 .input,
             baseline
         );

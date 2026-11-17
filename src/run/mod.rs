@@ -30,6 +30,7 @@ pub(crate) struct Run<'a> {
     permissions: &'a dyn PermissionPolicy,
     project: &'a Project,
     instructions: Option<String>,
+    runtime_context: crate::plugins::services::RuntimeContext,
     dynamic_instructions: Option<std::sync::Arc<dyn crate::plugins::services::DynamicInstructions>>,
     context_manager: Option<Box<dyn RequestContextManager>>,
     model_options: ModelOptions,
@@ -61,6 +62,7 @@ impl<'a> Run<'a> {
             permissions,
             project,
             instructions: None,
+            runtime_context: Default::default(),
             dynamic_instructions: None,
             context_manager: None,
             model_options: ModelOptions::default(),
@@ -76,6 +78,14 @@ impl<'a> Run<'a> {
 
     pub(crate) fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.instructions = Some(instructions.into());
+        self
+    }
+
+    pub(crate) fn with_runtime_context(
+        mut self,
+        context: crate::plugins::services::RuntimeContext,
+    ) -> Self {
+        self.runtime_context = context;
         self
     }
 

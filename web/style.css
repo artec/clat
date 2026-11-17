@@ -63,6 +63,7 @@ html[data-theme="light"] {
   --ink-1: #fff;
   --ink-2: #fafafa;
   --ink-3: #ebebeb;
+  --current-session-bg: #e2e2e2;
   --line: #dedede;
   --line-strong: #b5b5b5;
   --text: #242424;
@@ -91,6 +92,7 @@ html[data-theme="light"] {
     --ink-1: #fff;
     --ink-2: #fafafa;
     --ink-3: #ebebeb;
+    --current-session-bg: #e2e2e2;
     --line: #dedede;
     --line-strong: #b5b5b5;
     --text: #242424;
@@ -191,6 +193,7 @@ button:disabled { cursor: default; opacity: .45; }
 .session-item { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 8px; width: 100%; min-height: 48px; padding: 9px 42px 9px 8px; border: 1px solid transparent; border-radius: var(--radius-sm); text-align: left; }
 .session-list li:hover .session-item, .session-list li:focus-within .session-item { background: var(--surface-raised); }
 .session-list li.active .session-item { color: var(--text); background: var(--ink-3); }
+#session-list > li.active > .session-item { background: var(--current-session-bg, var(--ink-3)); }
 .session-glyph { display: grid; place-items: center; width: 25px; height: 25px; color: var(--text-muted); font: 600 11px var(--font-mono); }
 .session-copy { min-width: 0; }
 .session-copy strong { display: block; overflow: hidden; color: inherit; font-size: var(--text-size-ui); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
@@ -285,6 +288,8 @@ button:disabled { cursor: default; opacity: .45; }
 .msg.assistant:has(.body:empty):has(.reasoning.hidden) { display: none; }
 .rich-text { font-size: var(--text-size-reading); font-weight: 300; line-height: var(--text-leading); }
 :is(.markdown-file-link, .markdown-web-link) { color:var(--signal); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:.18em; font:inherit; padding:0; border:0; background:transparent; cursor:pointer; max-width:100%; text-align:start; overflow-wrap:anywhere; }
+:is(.markdown-file-link, .markdown-web-link) > svg { width:1em; height:1em; margin-inline-end:.3em; vertical-align:-.13em; }
+:is(.markdown-file-link, .markdown-web-link):hover { text-decoration-thickness:2px; }
 .rich-text :is(.markdown-file-link, .markdown-web-link, a) > code { color:inherit; white-space:normal; }
 .msg.user .rich-text { font-weight: 400; }
 .rich-text strong, .rich-text b { font-weight: var(--text-weight-emphasis); }

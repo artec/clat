@@ -220,7 +220,6 @@ struct RunWorkerDeps {
     sampling_usage: Arc<Mutex<Usage>>,
     cancel: CancelToken,
     approver: Arc<dyn PermissionApprover>,
-    permission_mode_snapshot: Option<crate::permission::PermissionMode>,
     config: ModelConfig,
     credentials: ProviderCredentials,
     completion: mpsc::Sender<ApplicationRunResult>,
@@ -591,10 +590,6 @@ impl RunWorkerDeps {
         self.task_service = super::execution_features::TaskRunPort(target.task.clone());
         self.todo_service = Some(target.todo.clone());
         self.goal_service = super::execution_features::GoalRunPort(target.goal.clone());
-        self.permission_mode_snapshot = target
-            .mode
-            .as_ref()
-            .map(|m| *m.read().expect("target permission"));
         // Automatic execution must not spend an unapproved auxiliary title call.
         self.title_sender = None;
         self.subscribers = Arc::new(Mutex::new(Vec::new()));
@@ -642,7 +637,6 @@ impl RunWorkerDeps {
             sampling_usage: resources.sampling_usage,
             cancel: resources.cancel,
             approver: spec.approver,
-            permission_mode_snapshot: app.permission_modes_enabled.then(|| app.permission_mode()),
             config: spec.config,
             credentials: spec.credentials,
             completion: spec.completion,

@@ -4,11 +4,11 @@
 
 use super::services::{
     MCP_STATUS_SERVICE, MCP_STATUS_SERVICE_ID, McpServerStatus, McpStatus, PROMPT_SERVICE,
-    PROMPT_SERVICE_ID, PromptRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
+    PROMPT_SERVICE_ID, PromptOrder, PromptRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
 use crate::mcp::client::{
-    McpServer, McpServerConfig, McpServerRequestHandler, McpTool, load_mcp_config,
-    merge_vendor_pack,
+    McpPromptContent, McpServer, McpServerConfig, McpServerRequestHandler, McpTool,
+    load_mcp_config, merge_vendor_pack,
 };
 use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, PluginOwner, ScopeKind,
@@ -387,8 +387,8 @@ struct McpStartupInputs {
 struct ConnectedContributions {
     server: crate::mcp::client::McpServer,
     tools: Vec<crate::mcp::client::McpToolInfo>,
-    prompts: Vec<(crate::mcp::client::McpPromptInfo, String)>,
-    prompt_failure: Option<String>,
+    prompts: Vec<(crate::mcp::client::McpPromptInfo, McpPromptContent)>,
+    prompt_failures: Vec<String>,
 }
 
 fn valid_capability_source(
@@ -468,10 +468,10 @@ fn register_prompts(
     status: &McpStatus,
     owner: PluginOwner,
     name: &str,
-    prompts: impl Iterator<Item = (String, String)>,
+    prompts: impl Iterator<Item = (PromptOrder, String, McpPromptContent)>,
 ) {
-    for (prompt, text) in prompts {
-        if text.trim().is_empty() {
+    for (order, prompt, text) in prompts {
+        if text.system.trim().is_empty() && text.context.trim().is_empty() {
             continue;
         }
         let Some(registry) = registry else {
@@ -482,7 +482,7 @@ fn register_prompts(
         };
         match state.publish(|| {
             let lease = registry
-                .contribute(owner, text)
+                .contribute_with_context(owner, order, name, &prompt, text.system, text.context)
                 .map_err(|e| e.to_string())?;
             Ok(Box::new(move || {
                 let _ = lease.revoke();
@@ -517,26 +517,49 @@ fn connect_contributions(
         }
     };
     let arguments = BTreeMap::from([("cwd".to_owned(), project.to_string_lossy().into_owned())]);
-    let prompts = server.list_system_prompts().and_then(|items| {
-        items
-            .into_iter()
-            .map(|prompt| {
-                server
-                    .get_system_prompt(&prompt, &arguments)
-                    .map(|text| (prompt, text))
-            })
-            .collect::<Result<Vec<_>, _>>()
-    });
-    let (prompts, prompt_failure) = match prompts {
-        Ok(prompts) => (prompts, None),
-        Err(error) => (Vec::new(), Some(format!("mcp `{name}` prompts: {error}"))),
-    };
+    let mut prompts = Vec::new();
+    let mut prompt_failures = Vec::new();
+    match server.list_system_prompts() {
+        Ok(items) => {
+            for prompt in items {
+                match server.get_system_prompt(&prompt, &arguments) {
+                    Ok(content) => prompts.push((prompt, content)),
+                    Err(error) => prompt_failures
+                        .push(format!("mcp `{name}` prompt `{}`: {error}", prompt.name)),
+                }
+            }
+        }
+        Err(error) => prompt_failures.push(format!("mcp `{name}` prompts: {error}")),
+    }
     Ok(ConnectedContributions {
         server,
         tools,
         prompts,
-        prompt_failure,
+        prompt_failures,
     })
+}
+
+fn mounted_prompts(
+    manifest: Vec<crate::plugin::ManifestPrompt>,
+    detected: Vec<(crate::mcp::client::McpPromptInfo, McpPromptContent)>,
+) -> impl Iterator<Item = (PromptOrder, String, McpPromptContent)> {
+    manifest
+        .into_iter()
+        .map(|prompt| {
+            (
+                PromptOrder::McpManifest,
+                prompt.name,
+                McpPromptContent {
+                    system: prompt.system,
+                    context: String::new(),
+                },
+            )
+        })
+        .chain(
+            detected
+                .into_iter()
+                .map(|(prompt, text)| (PromptOrder::Mcp, prompt.name, text)),
+        )
 }
 
 fn run_startup(inputs: McpStartupInputs) {
@@ -647,7 +670,7 @@ fn run_startup(inputs: McpStartupInputs) {
             server,
             tools: infos,
             prompts: prompt_infos,
-            prompt_failure,
+            prompt_failures,
         } = match result {
             Ok(connected) => connected,
             Err((message, kind)) => {
@@ -656,7 +679,7 @@ fn run_startup(inputs: McpStartupInputs) {
                 continue;
             }
         };
-        if let Some(failure) = prompt_failure {
+        for failure in prompt_failures {
             status.record_failure(failure);
         }
         let server = Arc::new(server);
@@ -675,21 +698,16 @@ fn run_startup(inputs: McpStartupInputs) {
             state.push_cleanup(Box::new(move || lease.revoke()));
         }
         let tools = register_capability_tools(&registry, &status, &state, owner, &server, infos);
-        let static_prompts = manifest_prompts.remove(&name).unwrap_or_default();
         register_prompts(
             prompt_registry.as_ref(),
             &state,
             &status,
             owner,
             &name,
-            static_prompts
-                .iter()
-                .map(|prompt| (prompt.name.clone(), prompt.system.clone()))
-                .chain(
-                    prompt_infos
-                        .into_iter()
-                        .map(|(prompt, text)| (prompt.name, text)),
-                ),
+            mounted_prompts(
+                manifest_prompts.remove(&name).unwrap_or_default(),
+                prompt_infos,
+            ),
         );
         let shutdown_server = Arc::clone(&server);
         state.push_cleanup(Box::new(move || {
@@ -1179,7 +1197,8 @@ for line in sys.stdin:
     elif method == "prompts/get":
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {
             "resultType": "complete", "messages": [],
-            "_meta": {"io.artec.clat/systemPrompt": "fixture guidance"}}})
+            "_meta": {"io.artec.clat/systemPrompt": "fixture guidance",
+                      "io.artec.clat/runtimeContext": "fixture current context"}}})
     else:
         send({"jsonrpc": "2.0", "id": msg["id"],
               "error": {"code": -32601, "message": "unsupported"}})
@@ -1239,7 +1258,17 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
             ["mcp_fixture_echo"]
         );
         let prompts = manager.require(PROMPT_SERVICE).expect("prompt registry");
-        assert_eq!(prompts.instructions(), "fixture guidance");
+        let frozen = prompts.snapshot();
+        assert_eq!(frozen.system, "fixture guidance");
+        let runtime = crate::plugins::services::RuntimeContext {
+            plugins: frozen.context,
+            enabled: true,
+            ..Default::default()
+        };
+        let tail = runtime.snapshot(None).request_tail(None).unwrap();
+        assert!(tail.contains("fixture current context"));
+        assert!(tail.contains("dsh-system-prompt"));
+        assert!(!tail.contains("fixture guidance"));
 
         manager.close().expect("close project scope");
         assert!(registry.is_empty(), "MCP tool lease was not revoked");

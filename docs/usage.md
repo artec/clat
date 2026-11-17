@@ -118,8 +118,10 @@ CLAT loads the root `AGENTS.md`, falling back to `CLAUDE.md`. When an approved
 successful file tool reaches a nested path, the next model request also sees
 the first instruction file found in each directory from the root to that
 path. More-specific scopes appear later and apply only below their directory.
-The resolved source paths and digests are durable request-header facts, so a
-resume can rebuild the same scope set and detect changed or removed files.
+CLAT reads those files before each model request. An empty `AGENTS.md` stops
+fallback in its directory, and a read error stops the request. The journal
+records the selected paths and digests so a resumed session can rebuild the
+scope set from current files.
 
 The native `search` tool defaults to case-insensitive literal matching and can
 also use bounded regex, globs, extension filters, gitignore/hidden policy and
@@ -660,7 +662,7 @@ Cargo discovery uses the Host's PATH first, followed by the configured
 `CARGO_HOME/bin` and the user's `.cargo/bin` when available.
 
 `/context` takes one read-only snapshot of the next model-facing context and
-reports conservative estimates for base prompt, project instructions, plan
+reports conservative estimates for base prompt, project instructions, other runtime context, plan
 policy, skill catalog, an armed `/skill` invocation (zero when none is armed),
 tool schemas, history/compaction view, output reserve,
 and total, plus skill discovery diagnostics. For multimodal history it also
@@ -1936,15 +1938,20 @@ printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
 
-In Web, PWA, and Desktop, assistant replies turn HTTP(S) addresses and verified
-project file paths into links. A bare filename in prose or inline code stays as
-written. Use a project-relative path such as `./README.md` or `web/app.js`, or an
-explicit Markdown link to the file. Wrap a path containing spaces in backticks
-or use a Markdown link. A primary click opens the actions menu for file links
-and web addresses. Use the menu to open the file or web address, or copy its
-path or URL. A loopback address such as `localhost:3000` points to the device
-running the browser. When the Host runs on another device, use an address the
-browser can reach.
+In Web, PWA, and Desktop, assistant replies can use a short label for a
+project file or HTTP(S) address. For example, `[Architecture notes](./docs/architecture.md:42)`
+opens the verified file at line 42, and `[Local preview](http://localhost:3000/)`
+opens the browser. Hover to see the destination. Right-click, or press
+Shift+F10 on a focused link, for open and copy actions. Explicit paths outside
+the current project offer a copy action. Project navigation uses the same
+file access checks as the editor.
+
+A bare filename stays as written. Recognized raw addresses and verified
+paths still open their actions menu on a primary click. Use a Markdown link
+with an angle-bracketed destination for a path with spaces, such as
+`[Report](<./reports/weekly report.md>)`. A loopback address such as
+`localhost:3000` points to the device running the browser. If the Host runs
+elsewhere, use an address reachable from your device.
 
 In Web, PWA, or Desktop, open the composer's **+** menu and choose **Share
 conversation content** under **Add content**. Choose another active or archived

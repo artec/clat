@@ -39,13 +39,20 @@ function createDevelopmentEditor(){
     updateStatus();view.view.scrollDOM.scrollTop=doc.top||0;view.view.scrollDOM.scrollLeft=doc.left||0;
     if(doc.conflict)showConflict(doc);
   }
-  async function openFile(path,{fixed=false}={}){
+  function revealLine(line){
+    if(!view||!Number.isSafeInteger(line)||line<1)return;
+    const doc=view.view.state.doc;
+    const row=doc.line(Math.min(line,doc.lines));
+    view.view.dispatch({selection:{anchor:row.from},scrollIntoView:true});
+    view.focus();
+  }
+  async function openFile(path,{fixed=false,line}={}){
     if(!devAvailable()){devUnavailable(status);return;}
     const request=++openEpoch;
-    if(docs.has(path)){const doc=docs.get(path);doc.pinned||=fixed;activate(doc);return;}
+    if(docs.has(path)){const doc=docs.get(path);doc.pinned||=fixed;activate(doc);revealLine(line);return;}
     try{const result=await rpc('editor.open',{path});if(request!==openEpoch)return;
       for(const [key,doc]of docs){if(!doc.pinned&&!doc.dirty){if(doc===selected)stash();docs.delete(key);}}
-      const doc={...result,text:result.text,baseText:result.text,dirty:false,pinned:fixed,readonly:!result.editable};docs.set(path,doc);activate(doc);
+      const doc={...result,text:result.text,baseText:result.text,dirty:false,pinned:fixed,readonly:!result.editable};docs.set(path,doc);activate(doc);revealLine(line);
     }catch(error){devReport(status,error);}
   }
   async function refresh(){if(!devAvailable()){devUnavailable(status);return;}return tree.refresh();}

@@ -33,8 +33,9 @@ impl RoundExecution {
         worker: &mut RunWorker,
         context: super::super::run_context::RoundContext,
     ) -> SettledRound {
+        let system = context.header.base_system.clone();
         let execution = Self::begin(worker, context.header, context.reason);
-        let outcome = execution.invoke(worker, context.workflow, context.error);
+        let outcome = execution.invoke(worker, system, context.error);
         if let Some(target) = &worker.deps.target {
             target.meter.store(
                 execution.spend_ledger.used(),
@@ -97,10 +98,10 @@ impl RoundExecution {
     fn invoke(
         &self,
         worker: &RunWorker,
-        workflow: Option<String>,
+        system: String,
         goal_error: Option<String>,
     ) -> ExecutionOutcome {
-        let execution = self.execute_agent(worker, workflow, goal_error);
+        let execution = self.execute_agent(worker, system, goal_error);
         let process_bind_error = self.process_generation.as_ref().err().cloned();
         let process_cleanup_error = self
             .process_generation
@@ -148,7 +149,7 @@ impl RoundExecution {
     fn execute_agent(
         &self,
         worker: &RunWorker,
-        workflow: Option<String>,
+        system: String,
         goal_error: Option<String>,
     ) -> std::thread::Result<Result<crate::RunOutput, AgentFailure>> {
         let recorder_sink = Box::new(RecorderHandle {
@@ -180,9 +181,9 @@ impl RoundExecution {
                 events: recorder_sink,
                 tool_access: worker.context.tool_access.clone(),
                 tool_definitions: Arc::clone(&worker.context.tool_definitions),
-                workflow_instructions: workflow,
+                system_instructions: Some(system),
+                runtime_context: worker.context.runtime_context.clone(),
                 request_tail: worker.deps.process_service.scratch_guidance(),
-                permission_mode: worker.deps.permission_mode_snapshot,
             })
         }))
     }

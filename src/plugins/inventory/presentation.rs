@@ -52,6 +52,11 @@ const DISPLAY: &[(&str, &str, &str)] = &[
         "extension.builtin.default_prompt.summary",
     ),
     (
+        "builtin.reply_links",
+        "extension.builtin.reply_links.name",
+        "extension.builtin.reply_links.summary",
+    ),
+    (
         "builtin.exec_tools",
         "extension.builtin.exec_tools.name",
         "extension.builtin.exec_tools.summary",

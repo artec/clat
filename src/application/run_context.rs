@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::model::ModelConfig;
+use crate::plugins::services::{FrozenPrompts, RuntimeContext};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -16,7 +17,6 @@ mod start;
 /// model steps, while these request-bound workflow facts stay frozen.
 #[derive(Clone)]
 pub(super) struct InstructionLayers {
-    registry_base: String,
     pub(super) base: String,
     pub(super) with_plan: String,
     pub(super) with_skills: String,
@@ -34,8 +34,9 @@ pub(super) struct RunContextSnapshot {
     pub(super) capabilities: Arc<crate::tool::capabilities::CapabilityView>,
     subagents_enabled: bool,
     pub(super) instructions: InstructionLayers,
-    workflow_base: String,
-    pub(super) workflow_instructions: Option<String>,
+    before_goal: String,
+    pub(super) runtime_context: RuntimeContext,
+    prompt_contributors: Vec<crate::plugins::services::PromptWitness>,
     plan_header: Option<Value>,
     memory_header: Value,
     pub(super) memory_bytes: usize,
@@ -59,13 +60,11 @@ impl TrustedProjectApplication {
         let subagents_enabled = self.subagents_enabled();
         let (plan_instructions, plan_header) = self.plan_context();
 
-        let base = crate::plugins::services::base_model_instructions(
-            &self.prompts,
-            self.permission_modes_enabled
-                .then(|| self.permission_mode()),
-        );
         ContextSources {
-            base,
+            prompts: self.prompts.snapshot(),
+            permission: self
+                .permission_modes_enabled
+                .then(|| Arc::clone(&self.permission_mode)),
             plan_instructions,
             plan_header,
             skills,
@@ -128,7 +127,7 @@ impl TrustedProjectApplication {
         &self,
         config: &ModelConfig,
         context: &RunContextSnapshot,
-        instruction_snapshot: Option<&crate::plugins::services::InstructionSnapshot>,
+        previous_header: Option<&Value>,
     ) -> crate::session::recorder::RequestHeaderData {
         let mut header = route_header(config);
         if let Some(plan) = &context.plan_header {
@@ -175,12 +174,15 @@ impl TrustedProjectApplication {
         if !tools.is_empty() {
             header.insert("tools".into(), Value::Array(tools));
         }
+        if !context.prompt_contributors.is_empty() {
+            header.insert(
+                "clatPromptContributors".into(),
+                json!(context.prompt_contributors),
+            );
+        }
         let mut header = Value::Object(header);
-        crate::plugins::services::apply_instructions_to_header(
-            &mut header,
-            &context.instructions.with_goal,
-            instruction_snapshot,
-        );
+        set_system(&mut header, &context.instructions.with_goal);
+        crate::plugins::services::RuntimeSnapshot::inherit_witness(&mut header, previous_header);
         crate::session::recorder::RequestHeaderData {
             header,
             base_system: context.instructions.with_goal.clone(),
@@ -228,9 +230,10 @@ fn route_header(config: &ModelConfig) -> serde_json::Map<String, Value> {
     header
 }
 
-/// The two instruction views advance together through the same ordered layers.
+/// Named layers of a single assembled system prompt.
 struct ContextSources {
-    base: String,
+    prompts: FrozenPrompts,
+    permission: Option<Arc<std::sync::RwLock<crate::permission::PermissionMode>>>,
     plan_instructions: Option<String>,
     plan_header: Option<Value>,
     skills: Arc<crate::skills::SkillCatalogSnapshot>,
@@ -245,7 +248,8 @@ struct ContextSources {
 impl ContextSources {
     fn freeze(self) -> RunContextSnapshot {
         let Self {
-            base,
+            prompts,
+            permission,
             plan_instructions,
             plan_header,
             skills,
@@ -264,14 +268,13 @@ impl ContextSources {
         let tool_definitions: Arc<[crate::tool::ToolDefinition]> =
             capabilities.definitions().into();
         let guidance = super::workflow::guidance::instructions(&capabilities);
-        let (instructions, workflow_base, workflow_instructions) = InstructionLayers::assemble(
-            base,
+        let (instructions, before_goal) = InstructionLayers::assemble(
+            prompts.system,
             &guidance,
             [
                 plan_instructions.as_deref(),
                 skills.instructions(),
                 invoked_instructions.as_deref(),
-                Some(&memory.instructions),
                 task.as_deref(),
                 Some(&goal.instructions),
             ],
@@ -283,8 +286,14 @@ impl ContextSources {
             capabilities,
             subagents_enabled,
             instructions,
-            workflow_base,
-            workflow_instructions,
+            before_goal,
+            runtime_context: RuntimeContext {
+                permission,
+                memory: memory.instructions,
+                plugins: prompts.context,
+                enabled: true,
+            },
+            prompt_contributors: prompts.contributors,
             plan_header,
             memory_header: memory.header,
             memory_bytes: memory.bytes,
@@ -294,61 +303,45 @@ impl ContextSources {
         }
     }
 }
-struct LayerAssembly {
-    system: String,
-    workflow: String,
-}
-impl LayerAssembly {
-    fn append(&mut self, layer: Option<&str>) -> String {
-        self.system = crate::plan_mode::compose_workflow_instructions(
-            std::mem::take(&mut self.system),
-            layer,
-        );
-        self.workflow = crate::plan_mode::compose_workflow_instructions(
-            std::mem::take(&mut self.workflow),
-            layer,
-        );
-        self.system.clone()
-    }
-}
 impl InstructionLayers {
     fn assemble(
         registry_base: String,
         guidance: &str,
-        [plan, skills, invoked, memory, task, goal]: [Option<&str>; 6],
-    ) -> (Self, String, Option<String>) {
-        let base =
-            crate::plan_mode::compose_workflow_instructions(registry_base.clone(), Some(guidance));
-        let with_plan = crate::plan_mode::compose_workflow_instructions(base.clone(), plan);
-        let mut layers = LayerAssembly {
-            system: with_plan.clone(),
-            workflow: crate::plan_mode::compose_workflow_instructions(guidance.to_owned(), plan),
-        };
-        let with_skills = layers.append(skills);
-        let with_invoked = layers.append(invoked);
-        layers.append(memory.filter(|s| !s.is_empty()));
-        layers.append(task);
-        let workflow_base = layers.workflow.clone();
-        let with_goal = layers.append(goal.filter(|s| !s.is_empty()));
-        let workflow = (!layers.workflow.is_empty()).then_some(layers.workflow);
+        [plan, skills, invoked, task, goal]: [Option<&str>; 5],
+    ) -> (Self, String) {
+        use crate::plan_mode::compose_workflow_instructions as append;
+        let base = append(registry_base, Some(guidance));
+        let with_plan = append(base.clone(), plan);
+        let with_skills = append(with_plan.clone(), skills);
+        let with_invoked = append(with_skills.clone(), invoked);
+        let before_goal = append(with_invoked.clone(), task);
+        let with_goal = append(before_goal.clone(), goal);
         (
             Self {
-                registry_base,
                 base,
                 with_plan,
                 with_skills,
                 with_invoked,
                 with_goal,
             },
-            workflow_base,
-            workflow,
+            before_goal,
         )
+    }
+}
+
+fn set_system(header: &mut Value, system: &str) {
+    if system.is_empty() {
+        header
+            .as_object_mut()
+            .expect("request header object")
+            .remove("system");
+    } else {
+        header["system"] = json!(system);
     }
 }
 
 pub(super) struct RoundContext {
     pub(super) header: crate::session::recorder::RequestHeaderData,
-    pub(super) workflow: Option<String>,
     pub(super) reason: Option<&'static str>,
     pub(super) error: Option<String>,
 }
@@ -362,13 +355,15 @@ impl RunContextSnapshot {
     ) -> RoundContext {
         let mut round = RoundContext {
             header: durable.clone(),
-            workflow: self.workflow_instructions.clone(),
             reason: first.then_some(reason).flatten(),
             error: None,
         };
         if let Some(goal) = goal {
             round.error = match goal {
-                Ok(goal) => self.refresh_goal(&mut round, goal, first, durable).err(),
+                Ok(goal) => {
+                    self.refresh_goal(&mut round, goal, first, durable);
+                    None
+                }
                 Err(error) => Some(format!(
                     "goal round could not refresh durable goal context: {error}"
                 )),
@@ -383,12 +378,7 @@ impl RunContextSnapshot {
         goal: crate::goal::GoalInjection,
         first: bool,
         durable: &crate::session::recorder::RequestHeaderData,
-    ) -> Result<(), String> {
-        let workflow = crate::plan_mode::compose_workflow_instructions(
-            self.workflow_base.clone(),
-            (!goal.instructions.is_empty()).then_some(goal.instructions.as_str()),
-        );
-        round.workflow = (!workflow.is_empty()).then_some(workflow);
+    ) {
         if let Some(header) = round.header.header.as_object_mut() {
             if goal.header.is_null() {
                 header.remove("goal");
@@ -397,27 +387,16 @@ impl RunContextSnapshot {
             }
         }
         round.header.base_system = crate::plan_mode::compose_workflow_instructions(
-            self.instructions.registry_base.clone(),
-            round.workflow.as_deref(),
+            self.before_goal.clone(),
+            Some(&goal.instructions),
         );
-        let snapshot = round
-            .header
-            .dynamic_instructions
-            .as_ref()
-            .map(|source| source.snapshot())
-            .transpose()
-            .map_err(|error| {
-                format!("goal round could not refresh project instructions: {error}")
-            })?;
-        crate::plugins::services::apply_instructions_to_header(
-            &mut round.header.header,
-            &round.header.base_system,
-            snapshot.flatten().as_ref(),
-        );
-        if !first && round.header.header != durable.header {
+        set_system(&mut round.header.header, &round.header.base_system);
+        if !first
+            && crate::session::recorder::persisted_request_header(&round.header.header)
+                != crate::session::recorder::persisted_request_header(&durable.header)
+        {
             round.reason = Some("change");
         }
-        Ok(())
     }
 }
 
@@ -475,12 +454,9 @@ impl TrustedProjectApplication {
             target.view_image.enabled() && config.capabilities.accepts_image_tool_results(),
         );
         let (plan_instructions, plan_header) = plan_layers(state, self.plan_mode.is_some());
-        let mode = target
-            .mode
-            .as_ref()
-            .map(|cell| *cell.read().expect("target permission"));
         Ok(ContextSources {
-            base: crate::plugins::services::base_model_instructions(&self.prompts, mode),
+            prompts: self.prompts.snapshot(),
+            permission: target.mode.clone(),
             plan_instructions,
             plan_header,
             skills,

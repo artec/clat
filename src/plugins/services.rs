@@ -131,70 +131,10 @@ pub(crate) trait DynamicInstructions: Send + Sync {
     fn restore_from_header(&self, header: Option<&serde_json::Value>) -> Result<(), String>;
 }
 
-pub(crate) fn compose_instructions(base: &str, snapshot: Option<&InstructionSnapshot>) -> String {
-    let dynamic = snapshot
-        .map(|snapshot| snapshot.text.trim())
-        .unwrap_or_default();
-    match (base.trim(), dynamic) {
-        ("", "") => String::new(),
-        (base, "") => base.to_owned(),
-        ("", dynamic) => dynamic.to_owned(),
-        (base, dynamic) => format!("{base}\n\n{dynamic}"),
-    }
-}
-
-pub(crate) fn base_model_instructions(
-    prompts: &PromptRegistry,
-    mode: Option<crate::permission::PermissionMode>,
-) -> String {
-    let mut instructions = prompts.instructions();
-    if let Some(mode) = mode {
-        instructions.push_str("\n\nPermission mode: ");
-        instructions.push_str(&mode.to_string());
-        instructions.push_str(". ");
-        instructions.push_str(crate::permission::mode_guidance(mode));
-        instructions.push('\n');
-    }
-    instructions
-}
-
-/// Make `request/header.system` and its machine-readable provenance exactly
-/// match the dynamic snapshot used by Run. Returns whether the header changed.
-pub(crate) fn apply_instructions_to_header(
-    header: &mut serde_json::Value,
-    base: &str,
-    snapshot: Option<&InstructionSnapshot>,
-) -> bool {
-    let before = header.clone();
-    let Some(object) = header.as_object_mut() else {
-        return false;
-    };
-    let system = compose_instructions(base, snapshot);
-    if system.is_empty() {
-        object.remove("system");
-    } else {
-        object.insert("system".into(), serde_json::json!(system));
-    }
-    match snapshot {
-        Some(snapshot) => {
-            object.insert(
-                "clatInstructionContext".into(),
-                serde_json::json!({
-                    "digest": snapshot.digest,
-                    "sources": snapshot.sources.iter().map(|source| serde_json::json!({
-                        "path": source.path,
-                        "scope": source.scope,
-                        "digest": source.digest,
-                    })).collect::<Vec<_>>()
-                }),
-            );
-        }
-        None => {
-            object.remove("clatInstructionContext");
-        }
-    }
-    *header != before
-}
+mod runtime_context;
+pub(crate) use runtime_context::{
+    PromptWitness, RuntimeContext, RuntimeSnapshot, validate_runtime_header,
+};
 pub(crate) const TODO_SERVICE_ID: ServiceId = ServiceId::new("core.todo");
 pub(crate) const TODO_SERVICE: ServiceKey<TodoService> = ServiceKey::new(TODO_SERVICE_ID);
 
@@ -430,14 +370,44 @@ pub(crate) trait PermissionPolicyFactory: Send + Sync {
     ) -> Box<dyn PermissionPolicy>;
 }
 
+/// Stable seats for mounted prompt contributions. Request-specific facts use
+/// RuntimeContext, outside this system prefix.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum PromptOrder {
+    Identity,
+    Presentation,
+    Wasm,
+    McpManifest,
+    Mcp,
+}
+
+struct PromptContribution {
+    lease: u64,
+    order: PromptOrder,
+    owner: crate::plugin::PluginId,
+    source: String,
+    name: String,
+    system: String,
+    context: String,
+    context_bytes: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct FrozenPrompts {
+    pub(crate) system: String,
+    pub(crate) context: Vec<runtime_context::PluginContextSection>,
+    pub(crate) contributors: Vec<runtime_context::PromptWitness>,
+}
+
 pub(crate) struct PromptRegistry {
-    contributors: std::sync::RwLock<Vec<(u64, crate::plugin::PluginId, String)>>,
+    contributors: std::sync::RwLock<Vec<PromptContribution>>,
     next_contribution: std::sync::atomic::AtomicU64,
     frozen: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PromptRegistryError {
+    Limit,
     Frozen,
     Poisoned,
 }
@@ -447,6 +417,7 @@ impl fmt::Display for PromptRegistryError {
         match self {
             Self::Frozen => formatter.write_str("prompt registry is frozen"),
             Self::Poisoned => formatter.write_str("prompt registry lock poisoned"),
+            Self::Limit => formatter.write_str("prompt registry contribution limit exceeded"),
         }
     }
 }
@@ -462,35 +433,107 @@ impl PromptRegistry {
         }
     }
 
-    pub(crate) fn instructions(&self) -> String {
-        self.contributors
-            .read()
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|(_, _, text)| text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n")
+    pub(crate) fn snapshot(&self) -> FrozenPrompts {
+        let items = self.contributors.read().expect("prompt registry");
+        let mut ordered = items.iter().collect::<Vec<_>>();
+        let order = |item: &PromptContribution| (item.order, item.owner);
+        ordered.sort_unstable_by(|left, right| {
+            order(left).cmp(&order(right)).then_with(|| {
+                (&left.source, &left.name, &left.system, &left.context).cmp(&(
+                    &right.source,
+                    &right.name,
+                    &right.system,
+                    &right.context,
+                ))
             })
-            .unwrap_or_default()
+        });
+        let mut frozen = FrozenPrompts::default();
+        for item in ordered {
+            let witness = |text| {
+                runtime_context::PromptWitness::new(
+                    item.owner.as_str(),
+                    &item.source,
+                    &item.name,
+                    text,
+                )
+            };
+            if !item.system.is_empty() {
+                if !frozen.system.is_empty() {
+                    frozen.system.push_str("\n\n");
+                }
+                frozen.system.push_str(&item.system);
+                frozen.contributors.push(witness(&item.system));
+            }
+            if !item.context.is_empty() {
+                frozen.context.push(runtime_context::PluginContextSection {
+                    witness: witness(&item.context),
+                    text: item.context.clone(),
+                });
+            }
+        }
+        frozen
     }
 
     pub(crate) fn contribute(
         self: &Arc<Self>,
         owner: crate::plugin::PluginOwner,
-        instructions: impl Into<String>,
+        order: PromptOrder,
+        source: &str,
+        name: &str,
+        system: impl Into<String>,
     ) -> Result<PromptLease, PromptRegistryError> {
+        self.contribute_with_context(owner, order, source, name, system.into(), String::new())
+    }
+
+    pub(crate) fn contribute_with_context(
+        self: &Arc<Self>,
+        owner: crate::plugin::PluginOwner,
+        order: PromptOrder,
+        source: &str,
+        name: &str,
+        system: String,
+        context: String,
+    ) -> Result<PromptLease, PromptRegistryError> {
+        let mut items = self
+            .contributors
+            .write()
+            .map_err(|_| PromptRegistryError::Poisoned)?;
         if self.frozen.load(std::sync::atomic::Ordering::Acquire) {
             return Err(PromptRegistryError::Frozen);
         }
-        let owner = owner.id();
+        let context = context.trim();
+        let context_bytes = if context.is_empty() {
+            0
+        } else {
+            runtime_context::PluginContextSection::encoded_size(
+                owner.id().as_str(),
+                source,
+                name,
+                context,
+            )
+        };
+        let bytes = items.iter().map(|item| item.context_bytes).sum::<usize>();
+        if items.len() >= runtime_context::MAX_PROMPT_CONTRIBUTORS
+            || bytes.saturating_add(context_bytes) > runtime_context::MAX_PLUGIN_CONTEXT_BYTES
+            || [owner.id().as_str(), source, name]
+                .into_iter()
+                .any(|part| part.is_empty() || part.len() > 1024)
+        {
+            return Err(PromptRegistryError::Limit);
+        }
         let contribution = self
             .next_contribution
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.contributors
-            .write()
-            .map_err(|_| PromptRegistryError::Poisoned)?
-            .push((contribution, owner, instructions.into()));
+        items.push(PromptContribution {
+            lease: contribution,
+            order,
+            owner: owner.id(),
+            source: source.to_owned(),
+            name: name.to_owned(),
+            system: system.trim().to_owned(),
+            context: context.to_owned(),
+            context_bytes,
+        });
         Ok(PromptLease {
             registry: Arc::downgrade(self),
             contribution,
@@ -503,6 +546,7 @@ impl PromptRegistry {
     }
 
     pub(crate) fn freeze(&self) {
+        let _guard = self.contributors.write().expect("prompt registry");
         self.frozen
             .store(true, std::sync::atomic::Ordering::Release);
     }
@@ -522,7 +566,7 @@ impl PromptLease {
             .contributors
             .write()
             .map_err(|_| PromptRegistryError::Poisoned)?
-            .retain(|(contribution, _, _)| *contribution != self.contribution);
+            .retain(|item| item.lease != self.contribution);
         Ok(())
     }
 }
@@ -558,11 +602,9 @@ pub(crate) struct AgentRequest {
     /// remains available to the runtime for invocation, but request
     /// projection never reconstructs visibility from mutable sources.
     pub tool_definitions: Arc<[crate::tool::ToolDefinition]>,
-    pub workflow_instructions: Option<String>,
+    pub system_instructions: Option<String>,
+    pub runtime_context: RuntimeContext,
     pub request_tail: Option<String>,
-    /// run 起点的权限档位快照——仅供系统指令注入说明；权限决策读共
-    /// 享 cell，不受此快照限制。None = Classic（exec）——不注入。
-    pub permission_mode: Option<crate::permission::PermissionMode>,
 }
 
 pub(crate) struct AgentFailure {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::CommandOutcome;
+use crate::model::ModelItem;
 use crate::session::key::{ProjectKey, SessionKey};
 use crate::session::persistence::{JsonlBackend, JsonlCompression};
 use crate::test_support::{
@@ -216,6 +217,8 @@ fn assert_estimate_identity(snapshot: &ContextEstimateSnapshot) {
     let parts = snapshot
         .base_prompt_estimate
         .saturating_add(snapshot.project_instructions_estimate)
+        .saturating_add(snapshot.runtime_context_estimate)
+        .saturating_add(snapshot.invoked_skill_estimate)
         .saturating_add(snapshot.plan_policy_estimate)
         .saturating_add(snapshot.skill_catalog_estimate)
         .saturating_add(snapshot.goal_policy_estimate)
@@ -435,8 +438,7 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
         .unwrap();
     let mut frozen_probe = context.clone();
     frozen_probe.tool_definitions = Vec::new().into();
-    let frozen_header =
-        application.request_header_data(&config, &frozen_probe, instruction_snapshot.as_ref());
+    let frozen_header = application.request_header_data(&config, &frozen_probe, None);
     assert_eq!(frozen_header.header["subagents"]["enabled"], true);
     assert!(frozen_header.header.get("tools").is_none());
     application
@@ -444,15 +446,29 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
         .unwrap()
         .set_enabled(None, true)
         .unwrap();
-    let header = application.request_header_data(&config, &context, instruction_snapshot.as_ref());
+    let mut header = application.request_header_data(&config, &context, None);
+    context
+        .runtime_context
+        .snapshot(instruction_snapshot.clone())
+        .apply(&mut header.header);
 
     assert_eq!(header.base_system, context.instructions.with_goal);
-    let final_system = crate::plugins::services::compose_instructions(
-        &context.instructions.with_goal,
-        instruction_snapshot.as_ref(),
+    assert_eq!(
+        header.header["system"],
+        serde_json::json!(context.instructions.with_goal)
     );
-    assert_eq!(header.header["system"], serde_json::json!(final_system));
-
+    assert!(
+        header.header["clatRuntimeContext"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Shared project instruction.")
+    );
+    assert!(
+        !header.header["system"]
+            .as_str()
+            .unwrap()
+            .contains("Shared project instruction.")
+    );
     let snapshot = application.context_snapshot().unwrap();
     let estimate = |text: &str| {
         crate::model::estimate_request_tokens((!text.is_empty()).then_some(text), &[], &[])
@@ -461,15 +477,12 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
     let with_plan = estimate(&context.instructions.with_plan);
     let with_skills = estimate(&context.instructions.with_skills);
     let with_goal = estimate(&context.instructions.with_goal);
-    let with_project = estimate(&final_system);
+    let project_tokens = estimate(&instruction_snapshot.as_ref().unwrap().text);
     assert_eq!(snapshot.base_prompt_estimate, base);
     assert_eq!(snapshot.plan_policy_estimate, with_plan - base);
     assert_eq!(snapshot.skill_catalog_estimate, with_skills - with_plan);
     assert_eq!(snapshot.goal_policy_estimate, with_goal - with_skills);
-    assert_eq!(
-        snapshot.project_instructions_estimate,
-        with_project - with_goal
-    );
+    assert_eq!(snapshot.project_instructions_estimate, project_tokens);
     let header_tools = header.header["tools"]
         .as_array()
         .unwrap()
@@ -486,6 +499,190 @@ fn run_header_and_context_inspector_share_authoritative_instruction_layers() {
 
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+#[test]
+fn runtime_snapshot_matches_sent_requests_and_reuses_unchanged_headers() {
+    let (storage, root) = roots("runtime-request-witness");
+    std::fs::create_dir_all(&root).unwrap();
+    let rules = root.join("AGENTS.md");
+    std::fs::write(&rules, "FIRST_PROJECT_RULE").unwrap();
+    let probe = Arc::new(RuntimeRequestProbe {
+        rules: rules.clone(),
+        replacement: b"SECOND_PROJECT_RULE",
+        requests: Mutex::new(Vec::new()),
+    });
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(probe.clone()),
+    );
+    configure_test_model(&app);
+    app.set_permission_mode(crate::PermissionMode::FullAccess)
+        .unwrap();
+    run_request(&mut app, "first task").unwrap();
+    run_request(&mut app, "same runtime state").unwrap();
+    app.set_permission_mode(crate::PermissionMode::ReadOnly)
+        .unwrap();
+    run_request(&mut app, "changed permission").unwrap();
+    let requests = probe.requests.lock().unwrap();
+    let [first, refreshed, identical, changed] = requests.as_slice() else {
+        panic!("expected four model requests, got {}", requests.len());
+    };
+    assert!(first.tail.contains("FIRST_PROJECT_RULE"));
+    assert!(first.snapshot().contains("danger-full-access"));
+    assert!(refreshed.tail.contains("SECOND_PROJECT_RULE"));
+    assert!(!refreshed.tail.contains("FIRST_PROJECT_RULE"));
+    assert_eq!(refreshed.snapshot(), identical.snapshot());
+    assert!(changed.snapshot().contains("read-only"));
+    assert!(!changed.snapshot().contains("danger-full-access"));
+    assert_ne!(changed.snapshot(), identical.snapshot());
+    for next in &requests[1..] {
+        assert_eq!(first.system, next.system);
+        assert_eq!(first.tools, next.tools);
+    }
+    assert!(changed.items.starts_with(&identical.items));
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.system.contains("_PROJECT_RULE"))
+    );
+    let expected = [first, refreshed, changed].map(|request| request.snapshot().to_owned());
+    drop(requests);
+    app.close().unwrap();
+    let backend = JsonlBackend::new(storage.join("sessions"), JsonlCompression::Zstd, false);
+    let header = backend.list_headers().unwrap().pop().unwrap();
+    let key = SessionKey {
+        project: ProjectKey::from_cwd(&header.cwd.unwrap()),
+        id: header.id,
+    };
+    let events = backend.load(&key, false).unwrap().events;
+    let actual = events
+        .iter()
+        .filter(|event| event.event_type == "request/header")
+        .map(|event| {
+            event.data["header"]["clatRuntimeContext"]["text"]
+                .as_str()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.data.to_string().contains("Host run context"))
+    );
+    let mut cold = crate::test_support::reopen_after_close(|| {
+        mount_result(
+            &Project::new(&root),
+            &storage,
+            TestBehavior::Scripted(probe.clone()),
+        )
+    });
+    run_request(&mut cold, "continue after cold recovery").unwrap();
+    let requests = probe.requests.lock().unwrap();
+    assert_eq!(requests.last().unwrap().snapshot(), expected[2]);
+    drop(requests);
+    cold.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn invalid_project_rules_after_first_dispatch_stop_the_next_request() {
+    let (storage, root) = roots("runtime-project-rule-read-failure");
+    std::fs::create_dir_all(&root).unwrap();
+    let rules = root.join("AGENTS.md");
+    std::fs::write(&rules, "VALID_FIRST_RULE").unwrap();
+    let probe = Arc::new(RuntimeRequestProbe {
+        rules,
+        replacement: b"\xffinvalid",
+        requests: Mutex::new(Vec::new()),
+    });
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(probe.clone()),
+    );
+    configure_test_model(&app);
+    let failure = run_request(&mut app, "verify project instruction read errors").unwrap_err();
+    assert!(failure.error.contains("AGENTS.md") && failure.error.contains("not valid UTF-8"));
+    assert_eq!(probe.requests.lock().unwrap().len(), 1);
+    assert!(
+        app.sessions.last_request_header().unwrap()["clatRuntimeContext"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("VALID_FIRST_RULE")
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+struct CapturedRuntimeRequest {
+    system: String,
+    tools: Vec<String>,
+    tail: String,
+    items: Vec<ModelItem>,
+}
+
+impl CapturedRuntimeRequest {
+    fn snapshot(&self) -> &str {
+        self.tail.split("\n\nHost run context").next().unwrap()
+    }
+}
+
+struct RuntimeRequestProbe {
+    rules: std::path::PathBuf,
+    replacement: &'static [u8],
+    requests: Mutex<Vec<CapturedRuntimeRequest>>,
+}
+
+impl TestModelScript for RuntimeRequestProbe {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let mut requests = self.requests.lock().unwrap();
+        requests.push(CapturedRuntimeRequest {
+            system: request.instructions.unwrap_or_default().into(),
+            tools: request
+                .tools
+                .iter()
+                .map(|tool| format!("{tool:?}"))
+                .collect(),
+            tail: request
+                .options
+                .request_tail
+                .clone()
+                .expect("one runtime tail"),
+            items: request.items.to_vec(),
+        });
+        let tool_calls = if requests.len() == 1 {
+            std::fs::write(&self.rules, self.replacement).unwrap();
+            vec![crate::ToolCall {
+                id: "runtime-witness-read".into(),
+                // Keep this independent of project file-tool observation.
+                name: "memory_search".into(),
+                arguments: serde_json::json!({"query": "unrelated scope", "top_k": 1}),
+            }]
+        } else {
+            Vec::new()
+        };
+        let finish_reason = if tool_calls.is_empty() {
+            crate::FinishReason::Completed
+        } else {
+            crate::FinishReason::ToolCalls
+        };
+        Ok(crate::ModelResponse {
+            text: "done".into(),
+            tool_calls,
+            finish_reason,
+            usage: None,
+            provider_response_id: None,
+            provider_state: Vec::new(),
+            reasoning: None,
+        })
+    }
 }
 
 #[derive(Default)]

@@ -163,6 +163,29 @@ fn decode_tool_arguments(name: &str, raw: &str) -> Result<Value, serde_json::Err
     serde_json::from_str(raw)
 }
 
+#[cfg(test)]
+fn runtime_tail_fixture(second: bool) -> String {
+    use crate::plugins::services::{InstructionSnapshot, RuntimeContext};
+    let revision = if second { "SECOND" } else { "FIRST" };
+    RuntimeContext {
+        permission: Some(std::sync::Arc::new(std::sync::RwLock::new(if second {
+            crate::PermissionMode::ReadOnly
+        } else {
+            crate::PermissionMode::FullAccess
+        }))),
+        memory: format!("{revision}_MEMORY"),
+        enabled: true,
+        ..Default::default()
+    }
+    .snapshot(Some(InstructionSnapshot {
+        text: format!("{revision}_PROJECT"),
+        digest: String::new(),
+        sources: Vec::new(),
+    }))
+    .request_tail(Some(&format!("{revision}_SCRATCH")))
+    .unwrap()
+}
+
 fn append_request_tail(items: &mut Vec<serde_json::Value>, options: &crate::model::ModelOptions) {
     if let Some(context) = &options.request_tail {
         items.push(serde_json::json!({"role":"user","content":context}));

@@ -343,24 +343,21 @@ impl TrustedProjectApplication {
     /// Pure on purpose — the bookkeeping happens only after the run
     /// actually prepared (a spawn/prepare failure must not mark a header
     /// emitted that never reached the log; third-pass finding S1).
-    pub(super) fn request_header_reason(&self, header: &Value) -> Option<&'static str> {
+    pub(super) fn request_header_reason(
+        &self,
+        header: &Value,
+        previous: Option<&Value>,
+    ) -> Option<&'static str> {
+        let Some(previous) = previous else {
+            return Some("initial");
+        };
         if self.fresh_session_open {
-            return Some(if self.emitted_request_header.is_some() {
-                "resume"
-            } else {
-                "initial"
-            });
+            return Some("resume");
         }
-        match &self.emitted_request_header {
-            // SV 最小适配行（S6 例外）：比较发生在持久形两侧（V3 剥
-            // system，唯一规则在 session::recorder）。
-            Some(previous)
-                if previous != &crate::session::recorder::persisted_request_header(header) =>
-            {
-                Some("change")
-            }
-            _ => None,
-        }
+        // Compare the durable shape. The protected system prompt has its own
+        // surface event, and the recorder compares the prepared snapshot.
+        (previous != &crate::session::recorder::persisted_request_header(header))
+            .then_some("change")
     }
 
     pub(super) fn project_key(&self) -> ProjectKey {

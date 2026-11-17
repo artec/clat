@@ -13,6 +13,7 @@ pub(in crate::application) struct IdleCompaction<'a> {
     pub cancel: &'a CancelToken,
     pub turn: u64,
     pub instructions: String,
+    pub tail_tokens: u64,
     pub definitions: Vec<ToolDefinition>,
     pub force: bool,
     pub automatic_summary_failed: Option<&'a AtomicBool>,
@@ -53,6 +54,7 @@ impl IdleCompaction<'_> {
                             .map(|node| node.item.clone())
                             .collect::<Vec<_>>(),
                         &self.definitions,
+                        self.tail_tokens,
                     )
                     .input,
             ),
@@ -147,7 +149,7 @@ impl TrustedProjectApplication {
     pub(super) fn compaction_inputs(
         &self,
         config: &ModelConfig,
-    ) -> Result<(String, Vec<ToolDefinition>), ApplicationError> {
+    ) -> Result<(String, Vec<ToolDefinition>, u64), ApplicationError> {
         let snapshot = self
             .dynamic_instructions
             .snapshot()
@@ -164,12 +166,17 @@ impl TrustedProjectApplication {
                 .injection()
                 .map_err(ApplicationError::new)?,
         );
+        let options = crate::ModelOptions {
+            request_tail: context
+                .runtime_context
+                .snapshot(snapshot)
+                .request_tail(None),
+            ..Default::default()
+        };
         Ok((
-            crate::plugins::services::compose_instructions(
-                &context.instructions.with_goal,
-                snapshot.as_ref(),
-            ),
+            context.instructions.with_goal,
             context.tool_definitions.to_vec(),
+            options.request_tail_tokens(),
         ))
     }
 }

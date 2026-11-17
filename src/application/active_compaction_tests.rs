@@ -55,6 +55,7 @@ impl TestModelScript for LongTask {
             ));
         }
         if request.items.last().is_some_and(|item|matches!(item, ModelItem::User {content} if matches!(content.first(),Some(crate::model::ContentPart::Text(text)) if text.contains("context compaction")))) {
+            assert_eq!(request.options.request_tail, None, "summarization only consumes carried history");
             self.summaries.fetch_add(1, Ordering::SeqCst);
             if matches!(self.mode, SummaryMode::ImageTurn | SummaryMode::FailureThenCapacity) {
                 assert_eq!(request.items.iter().flat_map(crate::model::model_item_image_parts).count(), 0, "the just-admitted images belong to the main request, not the summary");
@@ -114,6 +115,16 @@ impl TestModelScript for LongTask {
                 finish,
             ));
         }
+        let tail = request
+            .options
+            .request_tail
+            .as_deref()
+            .expect("current runtime snapshot");
+        assert_eq!(
+            tail.matches("Current runtime context supplied by CLAT")
+                .count(),
+            1
+        );
         let n = self.main.fetch_add(1, Ordering::SeqCst);
         self.snapshots.lock().unwrap().push(request.items.to_vec());
         if matches!(self.mode, SummaryMode::FailureThenCapacity)

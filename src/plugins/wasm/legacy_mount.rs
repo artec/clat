@@ -93,7 +93,13 @@ impl LegacyMount {
     ) {
         if let Some(registry) = self.prompts.clone() {
             for prompt in prompts.iter().filter(|p| !p.system.trim().is_empty()) {
-                match registry.contribute(owner, prompt.system.clone()) {
+                match registry.contribute(
+                    owner,
+                    crate::plugins::services::PromptOrder::Wasm,
+                    name,
+                    &prompt.name,
+                    prompt.system.clone(),
+                ) {
                     Ok(lease) => self.prompt_leases.push(lease),
                     Err(error) => {
                         self.diagnostic(format!("wasm `{name}` prompt `{}`: {error}", prompt.name))

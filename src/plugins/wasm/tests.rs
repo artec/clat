@@ -179,7 +179,7 @@ fn manifest_package_contributes_static_system_prompt() {
     let prompts = manager
         .require(crate::plugins::services::PROMPT_SERVICE)
         .expect("prompt registry");
-    assert_eq!(prompts.instructions(), "Prefer concise digests.");
+    assert_eq!(prompts.snapshot().system, "Prefer concise digests.");
     let status = manager.require(MCP_STATUS_SERVICE).expect("status");
     assert!(
         status

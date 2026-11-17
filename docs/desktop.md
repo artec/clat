@@ -84,8 +84,10 @@ A new conversation appears with a running indicator when its first turn starts.
 It shows an untitled label until the automatic title arrives during the run.
 Automatic titles omit Markdown heading markers, so they read as plain text.
 Double-clicking a project row opens the project files work area — the same
-entry as the work area's Project files. Hovering a pinned project swaps its
-folder icon for an unpin control; unpinned projects advertise nothing.
+entry as the work area's Project files. Hovering or focusing a project row
+highlights the full row and reveals its actions on the right. On touch-only
+devices, these actions stay visible. For pinned projects, hovering also swaps
+the folder icon for an unpin control.
 Hover or focus a conversation row to reveal its pin control on the left, aligned
 with the project chevron. The running indicator occupies that slot while the
 conversation is running.

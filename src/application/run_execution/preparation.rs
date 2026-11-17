@@ -9,10 +9,20 @@ impl worker::RunWorker {
             .map(|source| source.snapshot())
             .transpose()?
             .flatten();
-        let instructions = crate::plugins::services::compose_instructions(
-            &self.durable_request_header.base_system,
-            snapshot.as_ref(),
-        );
+        let instructions = self.durable_request_header.base_system.clone();
+        let options = crate::ModelOptions {
+            output_limit: self.deps.config.output_limit,
+            image_projection: Some(crate::model::ImageProjectionBudget::for_config(
+                &self.deps.config,
+            )),
+            request_tail: self
+                .context
+                .runtime_context
+                .snapshot(snapshot)
+                .request_tail(None),
+            ..Default::default()
+        };
+        let tail_tokens = options.request_tail_tokens();
         let switched = self
             .deps
             .sessions
@@ -22,17 +32,9 @@ impl worker::RunWorker {
                     || header["config"]["provider"] != self.deps.config.protocol.to_string()
             });
         let target = crate::model::ContextBudget::resolve(&self.deps.config)?;
-        self.maintain_before_round(&instructions)?;
+        self.maintain_before_round(&instructions, &options)?;
         let over = target.is_some_and(|budget| {
-            self.deps
-                .sessions
-                .measure_request(
-                    &self.deps.config,
-                    Some(&instructions),
-                    &self.input.history,
-                    &self.context.tool_definitions,
-                )
-                .input
+            self.measured_input(&instructions, tail_tokens)
                 > if switched {
                     budget.capacity
                 } else {
@@ -46,27 +48,35 @@ impl worker::RunWorker {
             && let Some(compactor) = &self.deps.compactor
             && self.deps.task_service.cap().is_none()
         {
-            self.summarize_before_request(compactor.as_ref(), &instructions, switched)?;
+            self.summarize_before_request(
+                compactor.as_ref(),
+                &instructions,
+                tail_tokens,
+                switched,
+            )?;
             self.reload_maintained_history()?;
         }
         if switched
             && let Some(budget) = target
-            && self
-                .deps
-                .sessions
-                .measure_request(
-                    &self.deps.config,
-                    Some(&instructions),
-                    &self.input.history,
-                    &self.context.tool_definitions,
-                )
-                .input
-                > budget.capacity
+            && self.measured_input(&instructions, tail_tokens) > budget.capacity
         {
             return Err("conversation cannot fit the target model capacity; target request was not dispatched".into());
         }
         Ok(())
     }
+    fn measured_input(&self, instructions: &str, tail_tokens: u64) -> u64 {
+        self.deps
+            .sessions
+            .measure_request(
+                &self.deps.config,
+                Some(instructions),
+                &self.input.history,
+                &self.context.tool_definitions,
+                tail_tokens,
+            )
+            .input
+    }
+
     fn reload_maintained_history(&mut self) -> Result<(), String> {
         self.input.history = self
             .deps
@@ -78,7 +88,11 @@ impl worker::RunWorker {
             .collect();
         Ok(())
     }
-    fn maintain_before_round(&mut self, instructions: &str) -> Result<(), String> {
+    fn maintain_before_round(
+        &mut self,
+        instructions: &str,
+        options: &crate::ModelOptions,
+    ) -> Result<(), String> {
         self.input.journal.flush()?;
         self.deps
             .sessions
@@ -93,25 +107,9 @@ impl worker::RunWorker {
             image_offload: self.deps.image_offload.as_deref(),
             protected_floor: self.input.replay_before_seq,
         };
-        let options = crate::ModelOptions {
-            output_limit: self.deps.config.output_limit,
-            image_projection: Some(crate::model::ImageProjectionBudget::for_config(
-                &self.deps.config,
-            )),
-            ..Default::default()
-        };
         let pressure =
             crate::model::ContextBudget::resolve(&self.deps.config)?.is_some_and(|budget| {
-                self.deps
-                    .sessions
-                    .measure_request(
-                        &self.deps.config,
-                        Some(instructions),
-                        &self.input.history,
-                        &self.context.tool_definitions,
-                    )
-                    .input
-                    > budget.threshold
+                self.measured_input(instructions, options.request_tail_tokens()) > budget.threshold
             });
         let pruned = if pressure {
             maintenance.prune_results(&mut self.input.history)?
@@ -122,7 +120,7 @@ impl worker::RunWorker {
             &mut self.input.history,
             Some(instructions),
             &self.context.tool_definitions,
-            &options,
+            options,
             false,
         )?;
         if pruned + images > 0 {
@@ -143,6 +141,7 @@ impl worker::RunWorker {
         &self,
         compactor: &dyn crate::plugins::services::HistoryCompactor,
         instructions: &str,
+        tail_tokens: u64,
         switched: bool,
     ) -> Result<(), String> {
         let previous = if switched {
@@ -170,6 +169,7 @@ impl worker::RunWorker {
             cancel: &self.deps.cancel,
             turn: self.input.turn,
             instructions: instructions.to_owned(),
+            tail_tokens,
             definitions: self.context.tool_definitions.to_vec(),
             force: switched,
             automatic_summary_failed: Some(&self.automatic_summary_failed),

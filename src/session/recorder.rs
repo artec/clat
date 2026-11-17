@@ -284,8 +284,7 @@ pub(crate) struct SessionRecorder {
     header_reason: Option<&'static str>,
     /// Canonical request/header body from the real model-request inputs.
     request_header: Value,
-    base_system: String,
-    dynamic_instructions: Option<Arc<dyn crate::plugins::services::DynamicInstructions>>,
+    request_witness_pending: bool,
     tool_registry: Option<Arc<crate::tool::ToolRegistry>>,
     /// V3 protected-head bookkeeping: the journaled system head's journal
     /// seq (`None` until the first step) and the prompt text it carries
@@ -353,8 +352,7 @@ impl SessionRecorder {
             model: model.into(),
             header_reason,
             request_header: request_header.header,
-            base_system: request_header.base_system,
-            dynamic_instructions: request_header.dynamic_instructions,
+            request_witness_pending: false,
             tool_registry: request_header.tool_registry,
             system_head_seq: request_header.system_head.as_ref().map(|(seq, _)| *seq),
             journaled_system_prompt: request_header
@@ -596,6 +594,7 @@ impl SessionRecorder {
             self.journal_system_head(turn, step);
         }
         if let Some(reason) = self.header_reason.take() {
+            self.request_witness_pending = true;
             // V3: the system prompt travels as the protected surface head,
             // never as `header.system` (native admission refuses it). The
             // working copy keeps `system` so the change detector can compare
@@ -658,30 +657,27 @@ impl SessionRecorder {
             .replace(head, head, vec![head]),
         };
         if let Some(seq) = self.append_quietly(event) {
+            self.request_witness_pending = true;
             self.system_head_seq = Some(seq);
             self.journaled_system_prompt = prompt;
         }
     }
 
-    fn refresh_dynamic_instructions(&mut self) {
-        let Some(source) = &self.dynamic_instructions else {
-            return;
-        };
-        let snapshot = match source.snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                self.journal_error
-                    .get_or_insert(format!("project instructions failed: {error}"));
-                return;
-            }
-        };
-        if crate::plugins::services::apply_instructions_to_header(
-            &mut self.request_header,
-            &self.base_system,
-            snapshot.as_ref(),
-        ) {
-            self.header_reason = Some("change");
+    pub(crate) fn stage_model_request(
+        &mut self,
+        snapshot: &crate::plugins::services::RuntimeSnapshot,
+    ) {
+        if snapshot.apply(&mut self.request_header) {
+            self.header_reason.get_or_insert("change");
         }
+    }
+
+    pub(crate) fn flush_model_request(&mut self) -> Result<(), String> {
+        if self.request_witness_pending {
+            self.flush_quietly();
+            self.request_witness_pending = false;
+        }
+        self.journal_error.clone().map_or(Ok(()), Err)
     }
 
     /// Whether deltas accumulated for the open step have content worth a

@@ -122,11 +122,12 @@ impl TrustedProjectApplication {
             self.skills_snapshot()?,
             self.memory_for_message(&request.message)?,
         )?;
-        let instructions = target
+        target
             .instructions
             .snapshot()
             .map_err(ApplicationError::new)?;
-        let mut header = self.request_header_data(&request.config, &context, instructions.as_ref());
+        let previous = target.sessions.last_request_header();
+        let mut header = self.request_header_data(&request.config, &context, previous.as_ref());
         header.dynamic_instructions = target.instructions.0.clone();
         header.tool_registry = Some(target.runtime.tools.clone());
         header.system_head = target.sessions.last_system_head();

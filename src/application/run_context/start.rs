@@ -2,11 +2,9 @@
 use super::*;
 use crate::application::run_admission::PreparedRun;
 use crate::application::run_execution::RunExecutionStart;
-use crate::plugins::services::InstructionSnapshot;
 
 pub(in crate::application) struct PendingRunContext {
     config: ModelConfig,
-    instructions: Option<InstructionSnapshot>,
     skills: Arc<crate::skills::SkillCatalogSnapshot>,
     invoked_skill: Option<crate::skills::InvokedSkill>,
     memory: crate::memory::MemoryInjection,
@@ -18,8 +16,7 @@ impl TrustedProjectApplication {
         config: ModelConfig,
         message: &crate::message::PendingMessage,
     ) -> Result<PendingRunContext, ApplicationError> {
-        let instructions = self
-            .dynamic_instructions
+        self.dynamic_instructions
             .snapshot()
             .map_err(ApplicationError::new)?;
         let skills = self.skills_snapshot()?;
@@ -27,7 +24,6 @@ impl TrustedProjectApplication {
         let memory = self.memory_for_message(message)?;
         Ok(PendingRunContext {
             config,
-            instructions,
             skills,
             invoked_skill,
             memory,
@@ -55,9 +51,9 @@ impl PendingRunContext {
             goal,
             task,
         );
-        let request_header =
-            app.request_header_data(&self.config, &context, self.instructions.as_ref());
-        let header_reason = app.request_header_reason(&request_header.header);
+        let previous = app.sessions.last_request_header();
+        let request_header = app.request_header_data(&self.config, &context, previous.as_ref());
+        let header_reason = app.request_header_reason(&request_header.header, previous.as_ref());
         Ok(RunExecutionStart {
             prepared,
             request_header,

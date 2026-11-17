@@ -8,6 +8,9 @@ function element(tag, _className, text) {
     tag, children: text === undefined ? [] : [typeof text === 'function' ? text() : text],
     classList: { add() {}, toggle() {} },
     setAttribute() {},
+    closest() { return null; },
+    replaceWith(next) { this.replacement = next; },
+    isConnected: true,
     append(...children) { this.children.push(...children); },
     replaceChildren(fragment) { this.children = fragment.children; },
   };
@@ -27,6 +30,7 @@ const scope = vm.createContext({
   URL,
   state: { workbench: { project: { root: '/repo' } } },
   CLATI18n: { msg: key => key, attribute() {} },
+  svgIcon: () => element('svg'),
 });
 const app = fs.readFileSync('web/app.js', 'utf8');
 vm.runInContext(app.slice(app.indexOf('const INLINE_MARKDOWN'), app.indexOf('const ICON_PATHS')), scope);
@@ -66,4 +70,60 @@ test('assistant references preserve delimiters and only turn safe destinations i
   assert.match(visibleText(body), /\[bad\]\(%6Aavascript:alert\)/);
   assert.equal(scope.localMarkdownPath('c:/repo/report.md', 'C:\\Repo').absolute, 'C:\\Repo\\report.md');
   assert.equal(scope.localMarkdownPath('/repo/../private.md', '/repo'), null);
+});
+
+test('named reply links display their label, open directly, and put copy actions on the context menu', async () => {
+  const opens = [], menus = [], copied = [];
+  scope.CLATDesktop = { openInBrowser: url => opens.push(url) };
+  scope.editorMenu = (items, source, x, y) => menus.push({items, source, x, y});
+  scope.editorPopup = (items, source) => menus.push({items, source});
+  scope.navigator = {clipboard:{writeText:text=>copied.push(text)}};
+  scope.devAvailable = () => true;
+  scope.document.getElementById = id => ({click:()=>opens.push(id)});
+  scope.developmentEditor = {openFile:(path, options) => opens.push([path, options.line])};
+  scope.rpc = async (method, params) => {
+    assert.equal(method, 'files.resolve');
+    assert.ok(params.paths.includes('docs/my report.md'));
+    assert.ok(!params.paths.includes('/outside/report.md'));
+    return {paths:['docs/my report.md']};
+  };
+  const body = element('div');
+  scope.renderMarkdown(body, '[项目报告](<./docs/my report.md:32>) · [本地预览](http://localhost:3000/view_(v2)) · [项目外](/outside/report.md)', {replyLinks:true, projectRoot:'/repo'});
+  await scope.verifyMarkdownFiles();
+  const [file, url, external] = body.children[0].children.map(node => node?.replacement ?? node)
+    .filter(node => node.tag === 'button');
+  assert.equal(visibleText(file), '项目报告');
+  assert.equal(file.title, '/repo/docs/my report.md:32');
+  assert.equal(visibleText(url), '本地预览');
+  assert.equal(url.title, 'http://localhost:3000/view_(v2)');
+
+  await file.onclick();
+  await url.onclick();
+  assert.deepEqual(opens, ['files-open', ['docs/my report.md', 32], 'http://localhost:3000/view_(v2)']);
+  assert.equal(menus.length, 0);
+  let prevented = 0;
+  const rightClick = {button:2,clientX:20,clientY:30,preventDefault:()=>prevented++};
+  url.oncontextmenu(rightClick);
+  assert.equal(prevented, 1);
+  assert.equal(menus[0].x, 20);
+  await menus[0].items.find(item=>item.key === 'copy_url').run();
+  file.onkeydown({key:'F10',shiftKey:true,preventDefault:()=>prevented++});
+  assert.equal(prevented, 2);
+  await menus[1].items.find(item=>item.key === 'copy_absolute_path').run();
+  await menus[1].items.find(item=>item.key === 'copy_path').run();
+  assert.deepEqual(copied, ['http://localhost:3000/view_(v2)', '/repo/docs/my report.md', 'docs/my report.md']);
+  external.oncontextmenu(rightClick);
+  assert.equal(menus[2].items.find(item=>item.key === 'open_file').disabled, true);
+  assert.equal(opens.length, 3);
+});
+
+test('bare reply URLs retain their click actions menu', async () => {
+  const menus = [];
+  scope.editorPopup = items => menus.push(items);
+  const body = element('div');
+  scope.renderMarkdown(body, 'http://localhost:3000/', {replyLinks:true, projectRoot:null});
+  const link = body.children[0].children.find(node=>node.tag === 'button');
+  link.onclick();
+  assert.ok(menus[0].some(item=>item.key === 'open_in_browser'));
+  assert.equal(link.oncontextmenu, undefined);
 });

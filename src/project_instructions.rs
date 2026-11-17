@@ -1,4 +1,4 @@
-//! Cached, scope-aware project instruction discovery.
+//! Scope-aware project instruction discovery. Request boundaries read current files.
 
 use crate::Project;
 use crate::plugins::services::{DynamicInstructions, InstructionSnapshot, InstructionSourceInfo};
@@ -17,7 +17,6 @@ const MAX_DISCOVERED_DIRECTORIES: usize = 4096;
 
 struct InstructionState {
     target_scopes: BTreeSet<PathBuf>,
-    snapshot: Option<InstructionSnapshot>,
     error: Option<String>,
 }
 
@@ -42,11 +41,10 @@ impl ProjectInstructionService {
             project,
             state: Mutex::new(InstructionState {
                 target_scopes: BTreeSet::from([PathBuf::new()]),
-                snapshot: None,
                 error: None,
             }),
         };
-        service.recompute()?;
+        service.snapshot()?;
         Ok(service)
     }
 
@@ -117,43 +115,33 @@ impl ProjectInstructionService {
                 scopes.push(relative);
             }
         }
-        {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut next = state.target_scopes.clone();
-            next.extend(scopes);
-            if next.len() > MAX_TRACKED_SCOPES {
-                return Err(format!(
-                    "project instructions: tracked scopes exceed {MAX_TRACKED_SCOPES}"
-                ));
-            }
-            state.target_scopes = next;
-        }
-        // Re-read even when no new scope was added: an approved edit of an
-        // already-known AGENTS.md must replace the cached snapshot.
-        self.recompute()
-    }
-
-    fn recompute(&self) -> Result<(), String> {
-        let target_scopes = self
+        let mut state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .target_scopes
-            .clone();
-        let directories = ancestor_directories(&target_scopes)?;
-        let mut sources = Vec::new();
-        for directory in directories {
-            if let Some(source) = self.read_scope(&directory)? {
-                sources.push(source);
-            }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = state.target_scopes.clone();
+        next.extend(scopes);
+        if next.len() > MAX_TRACKED_SCOPES {
+            return Err(format!(
+                "project instructions: tracked scopes exceed {MAX_TRACKED_SCOPES}"
+            ));
         }
+        state.target_scopes = next;
+        Ok(())
+    }
+
+    fn read_snapshot(
+        &self,
+        target_scopes: &BTreeSet<PathBuf>,
+    ) -> Result<Option<InstructionSnapshot>, String> {
+        let directories = ancestor_directories(target_scopes)?;
         // Budget from the most-specific end, then restore root→child order.
         let mut selected = Vec::new();
         let mut used = 0usize;
-        for source in sources.into_iter().rev() {
+        for directory in directories.iter().rev() {
+            let Some(source) = self.read_scope(directory)? else {
+                continue;
+            };
             let cost = source
                 .text
                 .len()
@@ -167,14 +155,7 @@ impl ProjectInstructionService {
             selected.push(source);
         }
         selected.reverse();
-        let snapshot = render_snapshot(&selected);
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.snapshot = snapshot;
-        state.error = None;
-        Ok(())
+        Ok(render_snapshot(&selected))
     }
 
     fn read_scope(&self, directory: &Path) -> Result<Option<SourceDocument>, String> {
@@ -216,14 +197,17 @@ impl ProjectInstructionService {
 
 impl DynamicInstructions for ProjectInstructionService {
     fn snapshot(&self) -> Result<Option<InstructionSnapshot>, String> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &state.error {
-            Some(error) => Err(error.clone()),
-            None => Ok(state.snapshot.clone()),
-        }
+        let scopes = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(error) = &state.error {
+                return Err(error.clone());
+            }
+            state.target_scopes.clone()
+        };
+        self.read_snapshot(&scopes)
     }
 
     fn restore_from_header(&self, header: Option<&Value>) -> Result<(), String> {
@@ -267,16 +251,9 @@ impl DynamicInstructions for ProjectInstructionService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.target_scopes = restored;
+            state.error = None;
         }
-        if let Err(error) = self.recompute() {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.error = Some(error.clone());
-            return Err(error);
-        }
-        Ok(())
+        self.snapshot().map(|_| ())
     }
 }
 
@@ -425,7 +402,9 @@ mod tests {
         assert!(nested.text.find("root rules") < nested.text.find("src rules"));
 
         let mut header = serde_json::json!({});
-        crate::plugins::services::apply_instructions_to_header(&mut header, "base", Some(&nested));
+        crate::plugins::services::RuntimeContext::default()
+            .snapshot(Some(nested.clone()))
+            .apply(&mut header);
         let restored = ProjectInstructionService::open(Project::new(&root)).unwrap();
         restored.restore_from_header(Some(&header)).unwrap();
         assert_eq!(restored.snapshot().unwrap(), Some(nested));

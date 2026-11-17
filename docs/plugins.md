@@ -322,6 +322,13 @@ Re-enabling grants fresh scopes and upload IDs, never resurrecting old ones.
 Host-client clipboard stores initialize only after the current Host/project has
 confirmed availability and actual image staging is needed.
 
+**Reply links** (`builtin.reply_links`) is enabled by default. It adds a
+short system prompt section that requires descriptive Markdown links to known
+project files, line numbers, and HTTP(S) addresses in final replies. A request
+for the literal path or URL takes precedence.
+Clients render the Markdown of existing and new replies even when the
+guidance plugin is disabled.
+
 Project instructions, companion utility and native image inspection are independently
 optional as well:
 

@@ -15,8 +15,8 @@
 // 第二阶段（DSH 读腿）：CLAT 自产的 interrupted 会话日志
 //（`CLAT_CLAT_LOG` 指向，由 clat 的门控测试
 // `interrupted_session_log_is_written_for_dsh_cross_reading` 写出）经
-// DSH 真实读取器（JsonlSessionPersistence.load）接受并语义一致——
-// 互证方向与 2026-08-18 原语级互证相同，这次走完整 load 路径。
+// DSH V4 JSONL 读取器验证其 CLAT 轨迹导出视图——
+// 用 CLAT_CLAT_LOG 指向 clat-interrupted-portable.jsonl.zstd。
 
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
@@ -201,47 +201,54 @@ async function crossReadClatLog(): Promise<void> {
   }
   const info = await stat(clatLog).then(() => true, () => false)
   if (!info) {
-    console.log(`[dsh-read-leg] ${clatLog} 不存在——跳过`)
-    return
+    throw new Error(`[dsh-read-leg] ${clatLog} 不存在`)
   }
-  // CLAT 门载测试写日志时用的 id/cwd（见该测试注释）。
-  const CLAT_ID = '018f2a64-9d3f-7cde-8123-9a4f2b6c0c01'
-  const { root, value } = await withPersistence(async (ctx: any, root: string) => {
-    const target = logPath(root, cwd, SessionId(CLAT_ID), 'zstd')
-    await mkdir(dirname(target), { recursive: true })
-    await copyFile(clatLog, target)
-    const loaded = await ctx.sessionPersistence.load(SessionId(CLAT_ID))
-    return loaded as { events: Array<{ type: string; data: any }> }
+  const { readDecodedJsonlSource } = await importHarness(
+    'packages/session/session-persistence-jsonl/src/generation.ts',
+  )
+  const { sessionFormatCatalog } = await importHarness('packages/session/session-format-catalog/src/index.ts')
+  const { artifact: value } = await readDecodedJsonlSource(clatLog, 4, 'zstd', {
+    createRestore: (header: unknown) => sessionFormatCatalog.createRestore(header, {
+      recovery: 'strict', validation: 'current',
+    }),
   })
-  await rm(root, { recursive: true, force: true })
-  const interrupted = value.events.find(
+  const events = value.events as Array<{ type: string; data: any }>
+  const interrupted = events.find(
     (event) => event.type === 'assistant/message' && event.data?.interrupted === true,
   )
   if (!interrupted) {
     throw new Error('[dsh-read-leg] FAIL：DSH 读取器未在 CLAT 日志中找到 interrupted 前缀定稿')
   }
+  const snapshot = events.find(event => event.type === 'request/header')
+    ?.data?.header?.clatRuntimeContext?.text
+  if (typeof snapshot !== 'string' || !snapshot.includes('"mode":"read-only"')) {
+    throw new Error('[dsh-read-leg] DSH reader did not preserve the runtime-context witness')
+  }
   const text = interrupted.data.message?.content?.[0]?.text
-  console.log(`[dsh-read-leg] PASS：CLAT 自产 interrupted 日志经 DSH JsonlSessionPersistence.load 接受；`)
+  console.log(`[dsh-read-leg] PASS：CLAT 自产 interrupted 日志经 DSH V4 JSONL 读取器接受；`)
   console.log(`[dsh-read-leg]        assistant/message.interrupted=true 存在，前缀文本 ${JSON.stringify(text)}`)
   console.log(`[dsh-read-leg]        事件总数 ${value.events.length}（含 header 种子与 seed 标记）`)
 }
 
 // ---- main ----
 
-const interrupted = await withPersistence(generateInterrupted)
-const team = await withPersistence(generateTeamEvents)
-const plan = await withPersistence(generatePlanModeApproved)
-await copyFile(interrupted.value, join(outDir, 'interrupted-session.jsonl.zstd'))
-await copyFile(team.value, join(outDir, 'team-events-session.jsonl.zstd'))
-await copyFile(plan.value, join(outDir, 'plan-mode-approved-session.jsonl.zstd'))
-await rm(interrupted.root, { recursive: true, force: true })
-await rm(team.root, { recursive: true, force: true })
-await rm(plan.root, { recursive: true, force: true })
-console.log(
-  'fixtures written:',
-  join(outDir, 'interrupted-session.jsonl.zstd'),
-  join(outDir, 'team-events-session.jsonl.zstd'),
-  join(outDir, 'plan-mode-approved-session.jsonl.zstd'),
-)
+if (process.env.CLAT_CLAT_LOG) {
+  await crossReadClatLog()
+} else {
+  const interrupted = await withPersistence(generateInterrupted)
+  const team = await withPersistence(generateTeamEvents)
+  const plan = await withPersistence(generatePlanModeApproved)
+  await copyFile(interrupted.value, join(outDir, 'interrupted-session.jsonl.zstd'))
+  await copyFile(team.value, join(outDir, 'team-events-session.jsonl.zstd'))
+  await copyFile(plan.value, join(outDir, 'plan-mode-approved-session.jsonl.zstd'))
+  await rm(interrupted.root, { recursive: true, force: true })
+  await rm(team.root, { recursive: true, force: true })
+  await rm(plan.root, { recursive: true, force: true })
+  console.log(
+    'fixtures written:',
+    join(outDir, 'interrupted-session.jsonl.zstd'),
+    join(outDir, 'team-events-session.jsonl.zstd'),
+    join(outDir, 'plan-mode-approved-session.jsonl.zstd'),
+  )
 
-await crossReadClatLog()
+}

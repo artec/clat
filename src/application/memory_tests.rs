@@ -24,8 +24,14 @@ impl TestModelScript for MemoryScript {
         match self.step.fetch_add(1, Ordering::SeqCst) {
             0 => {
                 let instructions = request.instructions.unwrap_or_default();
-                assert!(instructions.contains("Explicit local memories"));
-                assert!(instructions.contains("architecture oracle token"));
+                assert!(!instructions.contains("architecture oracle token"));
+                let tail = request
+                    .options
+                    .request_tail
+                    .as_deref()
+                    .expect("runtime context");
+                assert!(tail.contains("Explicit local memories"));
+                assert!(tail.contains("architecture oracle token"));
                 assert!(
                     request
                         .tools

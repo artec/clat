@@ -171,37 +171,47 @@ fn cache_replay_does_not_fabricate_missing_reasoning_or_match_lookalike_hosts() 
 }
 
 #[test]
-fn request_tail_preserves_carried_messages_when_scratch_changes() {
+fn runtime_snapshot_preserves_chat_completion_history_and_tools() {
     let config = ModelConfig::default();
     let model = OpenAiCompatibleModel::from_runtime_fields(vec![], &config).unwrap();
     let mut items = vec![ModelItem::user_text("first")];
-    let request = |items: &[ModelItem], path: &str| {
+    let tools = [crate::tool::ToolDefinition {
+        name: "echo".into(),
+        description: "Echo input".into(),
+        input_schema: json!({"type":"object"}),
+        effect: crate::tool::ToolEffect::Pure,
+        strict: true,
+    }];
+    let request = |items: &[ModelItem], tail| {
         model
             .request_body(ModelRequest {
                 instructions: Some("stable system"),
                 items,
-                tools: &[],
+                tools: &tools,
                 options: &ModelOptions {
-                    request_tail: Some(path.into()),
+                    request_tail: Some(tail),
                     ..Default::default()
                 },
                 cancel: &CancelToken::new(),
             })
             .unwrap()
     };
-    let first = request(&items, "Host run context: scratch-a");
+    let first_tail = super::super::runtime_tail_fixture(false);
+    let first = request(&items, first_tail.clone());
     items.extend([
         ModelItem::assistant_text("answer"),
         ModelItem::user_text("next"),
     ]);
-    let next = request(&items, "Host run context: scratch-b");
+    let next_tail = super::super::runtime_tail_fixture(true);
+    let next = request(&items, next_tail.clone());
+    assert_eq!(first["tools"].to_string(), next["tools"].to_string());
     let first = first["messages"].as_array().unwrap();
     let next = next["messages"].as_array().unwrap();
-    assert_eq!(&first[..2], &next[..2]);
-    assert_eq!(first[2]["content"], "Host run context: scratch-a");
-    assert_eq!(next[4]["content"], "Host run context: scratch-b");
-    assert!(
-        next.iter()
-            .all(|item| item["content"] != "Host run context: scratch-a")
+    assert_eq!(
+        serde_json::to_vec(&first[..2]).unwrap(),
+        serde_json::to_vec(&next[..2]).unwrap()
     );
+    assert_eq!(first[2], json!({"role":"user","content":first_tail}));
+    assert_eq!(next[4], json!({"role":"user","content":next_tail}));
+    assert!(next.iter().all(|item| !item.to_string().contains("FIRST_")));
 }

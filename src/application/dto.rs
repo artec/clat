@@ -12,6 +12,7 @@ pub struct ContextEstimateSnapshot {
     pub unit: String,
     pub base_prompt_estimate: u64,
     pub project_instructions_estimate: u64,
+    pub runtime_context_estimate: u64,
     pub plan_policy_estimate: u64,
     pub skill_catalog_estimate: u64,
     /// Bytes of the explicitly invoked skill layer (`/skill <name>`), zero

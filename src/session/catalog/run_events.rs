@@ -53,7 +53,6 @@ ModelRequested {
             model,
         } { .. } => "model_requested";
 record {
-                $this.refresh_dynamic_instructions();
                 $this.close_open_step();
                 $this.open_step();
             }

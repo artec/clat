@@ -586,6 +586,7 @@ fn project_runtime_catalog(
         )),
         Arc::new(crate::plugins::PromptRegistryPlugin),
         Arc::new(crate::plugins::DefaultPromptPlugin),
+        Arc::new(crate::plugins::ReplyLinksPlugin),
         Arc::new(crate::plugins::CommandsPlugin),
         Arc::new(
             crate::plugins::GoalPlugin::new(input.project.root().to_owned())

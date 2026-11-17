@@ -231,7 +231,8 @@ fn plugin_review_is_required_single_use_and_config_never_appears_in_views() {
         app.lock()
             .unwrap()
             .prompts
-            .instructions()
+            .snapshot()
+            .system
             .contains("PLG-2 offline")
     );
     drop(app);
@@ -256,7 +257,7 @@ fn plugin_reload_reopens_frozen_contributions_in_every_project_and_uninstalls_of
     host.plugin_commit(&review, true, BTreeMap::new()).unwrap();
     for app in [&first, &second] {
         let app = app.lock().unwrap();
-        assert!(app.prompts.instructions().contains("PLG-2 offline"));
+        assert!(app.prompts.snapshot().system.contains("PLG-2 offline"));
         let tool = app
             .tools
             .definitions()
@@ -291,7 +292,7 @@ fn plugin_reload_reopens_frozen_contributions_in_every_project_and_uninstalls_of
     );
     for app in [&first, &second] {
         let app = app.lock().unwrap();
-        assert!(!app.prompts.instructions().contains("PLG-2 offline"));
+        assert!(!app.prompts.snapshot().system.contains("PLG-2 offline"));
         assert!(
             app.tools
                 .definitions()
@@ -412,7 +413,8 @@ fn plugin_mutation_refuses_a_run_in_any_project_without_changing_registry_or_too
             .lock()
             .unwrap()
             .prompts
-            .instructions()
+            .snapshot()
+            .system
             .contains("PLG-2 offline")
     );
     handle.cancel();

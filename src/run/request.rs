@@ -2,9 +2,22 @@
 use super::*;
 pub(super) struct RequestInputs {
     pub instructions: Option<String>,
+    pub snapshot: crate::plugins::services::RuntimeSnapshot,
+    pub options: ModelOptions,
     pub definitions: Vec<crate::tool::ToolDefinition>,
     pub items: Vec<ModelItem>,
 }
+impl RequestInputs {
+    pub(super) fn estimated_input(&self) -> u64 {
+        crate::model::estimate_request_tokens(
+            self.instructions.as_deref(),
+            &self.items,
+            &self.definitions,
+        )
+        .saturating_add(self.options.request_tail_tokens())
+    }
+}
+
 impl Run<'_> {
     pub(super) fn claim_steering(
         &self,
@@ -63,11 +76,14 @@ impl Run<'_> {
             .transpose()
             .map_err(|error| format!("project instructions failed: {error}"))?
             .flatten();
-        let instructions = crate::plugins::services::compose_instructions(
-            self.instructions.as_deref().unwrap_or_default(),
-            snapshot.as_ref(),
-        );
-        let instructions = (!instructions.is_empty()).then_some(instructions);
+        let snapshot = self.runtime_context.snapshot(snapshot);
+        let mut options = self.model_options.clone();
+        options.request_tail = snapshot.request_tail(options.request_tail.as_deref());
+        let instructions = self
+            .instructions
+            .as_ref()
+            .filter(|text| !text.is_empty())
+            .cloned();
         let definitions = self.tool_definitions.as_deref().map_or_else(
             || self.tools.definitions_for(&self.tool_access),
             |defs| defs.to_vec(),
@@ -78,7 +94,7 @@ impl Run<'_> {
                 &mut state.usage,
                 instructions.as_deref(),
                 &definitions,
-                &self.model_options,
+                &options,
             )?;
         }
         // Maintenance can be cancelled while the old context is still oversized.
@@ -87,6 +103,8 @@ impl Run<'_> {
         if self.cancel.is_cancelled() {
             return Ok(RequestInputs {
                 instructions,
+                snapshot,
+                options,
                 definitions,
                 items: Vec::new(),
             });
@@ -95,18 +113,19 @@ impl Run<'_> {
             &state.items,
             instructions.as_deref(),
             &definitions,
-            &self.model_options,
+            &options,
         )?;
         // Reject projected modality mismatches before reserving spend or contacting a provider.
         crate::model::modality_preflight(&items, &self.capabilities, self.model.model_id())?;
-        let request = RequestInputs {
+        Ok(RequestInputs {
             instructions,
+            snapshot,
+            options,
             definitions,
             items,
-        };
-        self.reserve_request(&request)?;
-        Ok(request)
+        })
     }
+
     pub(super) fn reserve_request(&self, request: &RequestInputs) -> Result<(), String> {
         if let Some(ledger) = &self.spend_ledger {
             if ledger.exceeds_cap() {
@@ -117,15 +136,7 @@ impl Run<'_> {
                 ));
             }
             let output_limit = u64::from(self.model_options.output_limit.unwrap_or(4096));
-            ledger.reserve(
-                crate::model::estimate_request_tokens(
-                    request.instructions.as_deref(),
-                    &request.items,
-                    &request.definitions,
-                )
-                .saturating_add(self.model_options.request_tail_tokens())
-                .saturating_add(output_limit),
-            );
+            ledger.reserve(request.estimated_input().saturating_add(output_limit));
         }
         Ok(())
     }

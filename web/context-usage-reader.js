@@ -10,6 +10,7 @@ function contextUsageReport(snapshot, format) {
     input: [
       metric('base_prompt'),
       metric('project_instructions'),
+      ...(Number.isFinite(snapshot.runtime_context) ? [metric('runtime_context')] : []),
       metric('plan_policy', () => `${estimate('plan_policy')} · ${injected('plan_policy')}`),
       metric('skill_catalog'),
       metric('goal_policy', () => `${estimate('goal_policy')} · ${injected('goal_policy')}`),

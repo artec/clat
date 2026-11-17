@@ -1953,6 +1953,7 @@ fn context_reply(snapshot: crate::ContextEstimateSnapshot) -> Result<Value, RpcE
             "unit": snapshot.unit,
             "base_prompt": snapshot.base_prompt_estimate,
             "project_instructions": snapshot.project_instructions_estimate,
+            "runtime_context": snapshot.runtime_context_estimate,
             "plan_policy": snapshot.plan_policy_estimate,
             "skill_catalog": snapshot.skill_catalog_estimate,
             "invoked_skill": snapshot.invoked_skill_estimate,

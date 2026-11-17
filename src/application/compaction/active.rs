@@ -27,6 +27,20 @@ pub(in crate::application) struct ActiveContext {
 }
 
 impl RequestContextManager for ActiveContext {
+    fn stage_request(&mut self, snapshot: &crate::plugins::services::RuntimeSnapshot) {
+        self.recorder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stage_model_request(snapshot);
+    }
+
+    fn flush_request(&mut self) -> Result<(), String> {
+        self.recorder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .flush_model_request()
+    }
+
     fn observe(
         &mut self,
         instructions: Option<&str>,
@@ -76,9 +90,14 @@ impl RequestContextManager for ActiveContext {
         let config = self.config.clone();
         let cost = |items: &[ModelItem]| {
             sessions
-                .measure_request(&config, instructions, items, definitions)
+                .measure_request(
+                    &config,
+                    instructions,
+                    items,
+                    definitions,
+                    options.request_tail_tokens(),
+                )
                 .input
-                .saturating_add(options.request_tail_tokens())
         };
         if self.cancel.is_cancelled() {
             return Ok(());
@@ -99,7 +118,21 @@ impl RequestContextManager for ActiveContext {
             ApplicationEvent::CompactionUpdated(CompactionStatus::Started),
         );
         let result = self.reduce(items, usage, instructions, definitions, &cost, target);
-        let (note, succeeded): (PresentedText, bool) = match &result {
+        self.report_summary(&result);
+        result?;
+        if !self.cancel.is_cancelled() {
+            crate::model::project_items_for_image_budget(items, instructions, definitions, options)
+                .map_err(|error| {
+                    format!("context could not be reduced to the request budget: {error}")
+                })?;
+        }
+        Ok(())
+    }
+}
+
+impl ActiveContext {
+    fn report_summary(&self, result: &Result<(usize, Option<PresentedText>), String>) {
+        let (note, succeeded): (PresentedText, bool) = match result {
             Ok((count, _)) if *count > 0 => (
                 UiMessage::new("command.compacted_active")
                     .arg("count", *count)
@@ -129,18 +162,8 @@ impl RequestContextManager for ActiveContext {
             &self.subscribers,
             ApplicationEvent::CompactionUpdated(CompactionStatus::Finished { note, succeeded }),
         );
-        result?;
-        if !self.cancel.is_cancelled() {
-            crate::model::project_items_for_image_budget(items, instructions, definitions, options)
-                .map_err(|error| {
-                    format!("context could not be reduced to the request budget: {error}")
-                })?;
-        }
-        Ok(())
     }
-}
 
-impl ActiveContext {
     pub(super) fn can_summarize(&self) -> bool {
         self.compactor.is_some() && !self.automatic_summary_failed.load(Ordering::Relaxed)
     }

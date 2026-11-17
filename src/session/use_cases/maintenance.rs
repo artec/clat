@@ -7,6 +7,7 @@ impl SessionService {
         instructions: Option<&str>,
         items: &[ModelItem],
         tools: &[crate::ToolDefinition],
+        tail_tokens: u64,
     ) -> crate::model::RequestMeasurement {
         let session = self
             .active_id()
@@ -18,6 +19,7 @@ impl SessionService {
             instructions,
             items,
             tools,
+            tail_tokens,
         )
     }
     pub(crate) fn observe_request(
@@ -63,7 +65,9 @@ impl SessionService {
             if matches!(
                 event.event_type.as_str(),
                 "system/message" | "developer/message"
-            ) {
+            ) || (event.event_type == "user/message"
+                && crate::session::adapter::is_foreign_context(&event.data))
+            {
                 boundaries.push(offset);
             }
             offset += counts.get(&event.seq).copied().unwrap_or(0);

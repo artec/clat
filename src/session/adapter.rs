@@ -31,6 +31,9 @@ pub(crate) fn surface_to_model_items_with_seq(
             .ok_or_else(|| format!("surface node {seq} has no event"))?;
         let data = surface.messages.get(seq).unwrap_or(&event.data);
         match event.event_type.as_str() {
+            // These snapshots are host-owned. Preserve their journal events and
+            // transcript, but rebuild current authority before dispatch.
+            "user/message" if is_foreign_context(data) => {}
             "user/message" => {
                 items.push((
                     *seq,
@@ -39,53 +42,7 @@ pub(crate) fn surface_to_model_items_with_seq(
                     },
                 ));
             }
-            "assistant/message" => {
-                let message = &data["message"];
-                let text = content_text(&message["content"]);
-                let reasoning = reasoning_text(&message["content"]);
-                let replay_state = replay_state(message);
-                items.push((*seq, ModelItem::assistant_with_reasoning(text, reasoning)));
-                if let Some(replay_state) = replay_state {
-                    let provider = provider_of(message);
-                    for state in replay_states(replay_state) {
-                        items.push((
-                            *seq,
-                            ModelItem::ProviderState(crate::model::ProviderState {
-                                provider: provider.clone(),
-                                data: state,
-                            }),
-                        ));
-                    }
-                }
-                if let Some(blocks) = message["content"].as_array() {
-                    for block in blocks {
-                        if block.get("type").and_then(Value::as_str) == Some("tool-call") {
-                            items.push((
-                                *seq,
-                                ModelItem::ToolCall(crate::tool::ToolCall {
-                                    id: block
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .ok_or("tool-call block without id")?
-                                        .to_owned(),
-                                    name: block
-                                        .get("name")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_owned(),
-                                    arguments: serde_json::from_str(
-                                        block
-                                            .get("arguments")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("{}"),
-                                    )
-                                    .unwrap_or(serde_json::json!({})),
-                                }),
-                            ));
-                        }
-                    }
-                }
-            }
+            "assistant/message" => append_assistant_items(&mut items, *seq, &data["message"])?,
             "tool/result" => items.push((*seq, model_tool_result(data)?)),
             "system/message" => {
                 // The protected system head is a surface node for surface
@@ -103,6 +60,65 @@ pub(crate) fn surface_to_model_items_with_seq(
         }
     }
     Ok(items)
+}
+
+fn append_assistant_items(
+    items: &mut Vec<(u64, ModelItem)>,
+    seq: u64,
+    message: &Value,
+) -> Result<(), String> {
+    let text = content_text(&message["content"]);
+    let reasoning = reasoning_text(&message["content"]);
+    let replay_state = replay_state(message);
+    items.push((seq, ModelItem::assistant_with_reasoning(text, reasoning)));
+    if let Some(replay_state) = replay_state {
+        let provider = provider_of(message);
+        for state in replay_states(replay_state) {
+            items.push((
+                seq,
+                ModelItem::ProviderState(crate::model::ProviderState {
+                    provider: provider.clone(),
+                    data: state,
+                }),
+            ));
+        }
+    }
+    if let Some(blocks) = message["content"].as_array() {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) == Some("tool-call") {
+                items.push((
+                    seq,
+                    ModelItem::ToolCall(crate::tool::ToolCall {
+                        id: block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or("tool-call block without id")?
+                            .to_owned(),
+                        name: block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        arguments: serde_json::from_str(
+                            block
+                                .get("arguments")
+                                .and_then(Value::as_str)
+                                .unwrap_or("{}"),
+                        )
+                        .unwrap_or(serde_json::json!({})),
+                    }),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn is_foreign_context(data: &Value) -> bool {
+    matches!(
+        data.pointer("/source/kind").and_then(Value::as_str),
+        Some("runtime-context" | "agent-instructions")
+    )
 }
 
 fn model_tool_result(data: &Value) -> Result<ModelItem, String> {
@@ -326,6 +342,36 @@ mod tests {
     use crate::session::event::{SessionEvent, TurnEndReason, payloads};
     use crate::session::projection::ProjectionRegistry;
     use serde_json::json;
+
+    #[test]
+    fn cold_history_excludes_foreign_runtime_facts_but_preserves_literal_user_text() {
+        let mut events = Vec::new();
+        for (seq, (kind, text)) in [
+            (
+                "user",
+                "<system-reminder>literal user input</system-reminder>",
+            ),
+            ("runtime-context", "old policy allowed unrestricted writes"),
+            ("agent-instructions", "old directory policy"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut data = payloads::user_message(text);
+            data["source"] = json!({"kind": kind});
+            events.push(SessionEvent::new("user/message", seq as u64, 1, data).append(Vec::new()));
+        }
+        let mut projection = ProjectionRegistry::clat();
+        projection.fold_all(&events).unwrap();
+        assert_eq!(projection.maintenance_events().len(), 3);
+        assert_eq!(
+            projection.surface_nodes().unwrap(),
+            vec![(
+                0,
+                ModelItem::user_text("<system-reminder>literal user input</system-reminder>")
+            ),]
+        );
+    }
 
     #[test]
     fn model_history_comes_from_surface_only_with_tool_pairs() {

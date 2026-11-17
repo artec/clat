@@ -68,9 +68,10 @@ impl ManualCompactionWork {
             .compactor
             .clone()
             .ok_or_else(|| ApplicationError::new("compaction service is not available"))?;
-        let (instructions, definitions) = app.compaction_inputs(&config)?;
+        let (instructions, definitions, tail_tokens) = app.compaction_inputs(&config)?;
         Ok(Self {
             instructions,
+            tail_tokens,
             definitions,
             sessions: Arc::clone(&app.sessions),
             journal: app.sessions.journal().map_err(session_error)?,
@@ -132,6 +133,7 @@ impl ManualCompactionWork {
 
 struct ManualCompactionWork {
     instructions: String,
+    tail_tokens: u64,
     definitions: Vec<crate::tool::ToolDefinition>,
     sessions: Arc<SessionService>,
     journal: Arc<dyn RunJournal>,
@@ -156,6 +158,7 @@ impl ManualCompactionWork {
             cancel: &self.cancel,
             turn: self.turn,
             instructions: self.instructions,
+            tail_tokens: self.tail_tokens,
             definitions: self.definitions,
             force: true,
             automatic_summary_failed: None,

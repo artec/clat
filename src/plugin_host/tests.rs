@@ -1516,7 +1516,7 @@ fn dsh_adapter_demo_end_to_end_over_mcp() {
     let prompt = server
         .get_system_prompt(&prompts[0], &prompt_arguments)
         .expect("resolve DSH system prompt");
-    assert_eq!(prompt, "Demo plugin is active in /tmp/project.");
+    assert_eq!(prompt.system, "Demo plugin is active in /tmp/project.");
 
     let cancel = CancelToken::new();
     let echo = server

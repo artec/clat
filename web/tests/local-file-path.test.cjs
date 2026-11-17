@@ -9,7 +9,7 @@ const source=fs.readFileSync('web/app.js','utf8').replace(/\r\n/g,'\n');
 const start=source.indexOf('function localMarkdownTarget('), end=source.indexOf('\nfunction localMarkdownLink(',start);
 assert.ok(start>=0 && end>start);
 const scope={URL};vm.createContext(scope);vm.runInContext(source.slice(start,end),scope);
-const resolve=(value,root)=>{const target=scope.localMarkdownTarget(value,true);return target?scope.localMarkdownPath(target,root):null;};
+const resolve=(value,root)=>{const target=scope.localMarkdownTarget(value,true);return target?scope.localMarkdownPath(target.path,root):null;};
 
 test('local links resolve within the current project and reject traversal or remote URLs',()=>{
   for (const [value,root,expected] of [
@@ -24,4 +24,18 @@ test('local links resolve within the current project and reject traversal or rem
   ]) assert.equal(resolve(value,root)?.relative??null,expected,value);
   assert.equal(resolve('/repo-other/a','/repo').absolute,'/repo-other/a');
   assert.equal(resolve('file:///outside/file.md','/repo').relative,null);
+});
+
+test('line hints stay separate from the fenced file path',()=>{
+  for (const [value, expected, line] of [
+    ['./docs/a.md:12', './docs/a.md', 12],
+    ['file:///repo/a.md#L2', '/repo/a.md', 2],
+    ['C:\\repo\\a.md:8:3', 'C:/repo/a.md', 8],
+    ['./a%23b.md#L17-L20', './a#b.md', 17],
+    ['./README.md', './README.md', null],
+  ]) {
+    const target = scope.localMarkdownTarget(value, true);
+    assert.equal(target.path, expected);
+    assert.equal(target.line, line);
+  }
 });

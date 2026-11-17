@@ -476,16 +476,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// B8-3（dev 侧，配对 gen-dsh-fixtures.mts 的 DSH 读腿）：用真实
-    /// JsonlBackend + SessionRecorder 写一个流中取消的 CLAT 会话
-    ///（ModelRequested → TextDelta×2 → 无 ModelResponded →
-    /// finish(Aborted)——B2 的 interrupted 前缀定稿路径），产物拷到
-    /// /tmp/clat-interop/clat-interrupted.jsonl.zstd。随后：
-    ///   CLAT_CLAT_LOG=/tmp/clat-interop/clat-interrupted.jsonl.zstd \
-    ///   (cd ../deepseek-harness && ./node_modules/.bin/tsx \
-    ///     ../clat/tests/fixtures/dsh-session/gen-dsh-fixtures.mts)
-    /// DSH 的 JsonlSessionPersistence.load 接受该日志并找到 interrupted。
-    /// id/cwd 与脚本内 CLAT_ID 约定一致。
+    /// Write a representative V4 CLAT run and its detached portable view
+    /// for the DSH reader cross-check in gen-dsh-fixtures.mts.
     #[test]
     #[ignore = "writes the cross-reader artifact; pair with gen-dsh-fixtures.mts"]
     fn interrupted_session_log_is_written_for_dsh_cross_reading() {
@@ -527,6 +519,16 @@ mod tests {
             SessionCoordinator::start(std::sync::Arc::clone(&backend), key, header.clone())
                 .expect("start coordinator");
         let journal = coordinator.journal();
+        use crate::session::event::payloads;
+        use crate::session::run_journal::NewSessionEvent;
+        journal
+            .append_atomic_durable(&[
+                NewSessionEvent::new("turn/start", payloads::turn_start(1)),
+                NewSessionEvent::new("user/message", payloads::user_message("stream some text"))
+                    .append(Vec::new()),
+            ])
+            .expect("admit user message");
+
         struct AllowAll;
         impl PermissionApprover for AllowAll {
             fn decide(
@@ -556,6 +558,14 @@ mod tests {
             1,
             Some("initial"),
         );
+        let context = crate::plugins::services::RuntimeContext {
+            permission: Some(std::sync::Arc::new(std::sync::RwLock::new(
+                crate::PermissionMode::ReadOnly,
+            ))),
+            enabled: true,
+            ..Default::default()
+        };
+        recorder.stage_model_request(&context.snapshot(None));
         crate::session::recorder::SessionRecorder::emit(
             &mut recorder,
             RunEvent::ModelRequested {
@@ -584,7 +594,7 @@ mod tests {
         drop(coordinator);
 
         // 自证：CLAT 自己的 load 也能在产物里读到 interrupted 前缀。
-        let events = backend
+        let mut events = backend
             .load(&key_for(CLAT_ID), true)
             .expect("self-load")
             .events;
@@ -605,6 +615,17 @@ mod tests {
             JsonlCompression::Zstd,
         );
         std::fs::copy(&log, out_dir.join("clat-interrupted.jsonl.zstd")).expect("copy artifact");
+        crate::session::portable::normalize(&mut events).expect("detach and normalize V4");
+        let bytes = crate::session::jsonl::materialized_bytes(
+            &header,
+            &events,
+            JsonlCompression::Zstd,
+            false,
+        )
+        .expect("encode portable V4 view");
+        std::fs::write(out_dir.join("clat-interrupted-portable.jsonl.zstd"), bytes)
+            .expect("portable artifact");
+
         let _ = std::fs::remove_dir_all(root);
     }
 

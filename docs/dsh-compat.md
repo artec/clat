@@ -58,7 +58,7 @@ are useful diagnostics, but they are not compatibility evidence.
 | One-shot subagent descriptor | DSH subagent v2 descriptor | `src/subagent.rs`, `src/plugins/subagent.rs` | — | **partial** | CLAT emits the DSH v2 descriptor shape, but records it in the parent log because v1 has no resumable child session; source mapping and local admission tests are not a runtime oracle. |
 | CLAT subagent lifecycle/provenance | DSH subagent lifecycle concepts | `clat/subagent` event and projection | — | **intentional-difference** | CLAT adds an ignorable strict start/end fact with hashes, limits, usage, and three-tool project-confined provenance. Children are fixed-role, depth 1, and cannot resume or recurse. Users may opt out per session or disable the built-in plugin at startup. |
 | Permission vocabulary and approval journaling | DSH permission/approval packages | `src/permission.rs`, `src/session/recorder.rs` | — | **partial** | Mappings are source-reviewed and tested locally; no pinned runtime oracle yet covers the end-to-end policy decision. |
-| MCP prompt metadata/import | DSH MCP/system-prompt integration | `src/plugins/mcp.rs`, adapter server | — | **partial** | Only explicitly marked DSH system prompts auto-import; runtime context remains metadata rather than a separate role snapshot. |
+| MCP prompt metadata/import | DSH MCP/system-prompt integration | `src/plugins/mcp.rs`, adapter server | — | **partial** | Only explicitly marked prompts auto-import. CLAT consumes both the system and runtime-context metadata at connection. System text joins the frozen system prefix. Runtime context joins CLAT’s current request-tail snapshot. |
 | Web search/fetch seam | `packages/web/*` | `sdk/dsh-adapter/src/web.ts` | — | **partial** | Provider selection is covered locally; full DSH HTML conversion is deliberately absent. |
 | Elicitation degradation | DSH user-questions service | adapter + MCP elicitation bridge | — | **intentional-difference** | Multi-select degrades to text; `ask({agent})` is unsupported. |
 | Host service negotiation | DSH plugin injection surfaces | adapter `host-services.ts`, Rust PluginHostBridge | — | **partial** | fs/shell/session/agent mirrors are individually bounded and permission-gated, not the DSH host spine. |
@@ -66,6 +66,26 @@ are useful diagnostics, but they are not compatibility evidence.
 | `ctx.shell` host mirror | DSH shell service | adapter host services + ProcessService | — | **intentional-difference** | Foreground `resolve`/`run` only; fixed cwd; no arbitrary env/stdin/background start. DSH 0.2.0 `execute(spec)` is not bridged; `ctx.shell.execute()` fails at runtime with `TypeError`. |
 | `ctx.sessions` / `ctx.agents` | DSH session/agent services | bounded read-only run mirror | — | **intentional-difference** | No creation, mutation, resume, live stream, or child orchestration through the adapter. |
 | Market package/signature contract | DSH plugin packages and CLAT market format | `src/plugin/market.rs`, schemas, release tooling | — | **unresearched** | CLAT owns a different signed package contract; package quantity is not evidence. |
+
+## Runtime context and request audit
+
+DSH builds its runtime-context message through its own plugin and session
+projection. CLAT takes the same snapshot-and-replace approach with a
+request-only trailing `user` message. It records the durable text and source
+witnesses in optional V4 request-header fields. It keeps the DSH protected
+system head, the original events and the existing format version. DSH can
+ignore the optional audit fields on execution and assemble its own snapshot.
+CLAT retains foreign runtime-context and agent-instruction events for reading,
+and rebuilds model-facing runtime facts from its own current settings and
+trusted project files. Journal audit text cannot confer permissions.
+
+The V4 JSONL reader check uses the local DSH revision
+`e8f7b93a344964de3dca1ace9e72b6e4d6de87cb`. Point `CLAT_CLAT_LOG` at
+`clat-interrupted-portable.jsonl.zstd` from the ignored CLAT cross-reader test
+and run `tests/fixtures/dsh-session/gen-dsh-fixtures.mts` using DSH's
+`tsconfig.base.json` as `TSX_TSCONFIG_PATH`. The strict reader accepts the
+portable view and preserves the witness. Direct restore of the raw journal
+still encounters the protected-head ordering boundary listed above.
 
 ## Remote mux session subscriptions
 

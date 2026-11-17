@@ -211,6 +211,7 @@ impl crate::ContextEstimateSnapshot {
             .arg("unit", self.unit.clone())
             .arg("base", self.base_prompt_estimate)
             .arg("project", self.project_instructions_estimate)
+            .arg("runtime_context", self.runtime_context_estimate)
             .arg("plan", self.plan_policy_estimate)
             .arg("catalog", self.skill_catalog_estimate)
             .arg("goal", self.goal_policy_estimate)

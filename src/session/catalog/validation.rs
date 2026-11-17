@@ -459,6 +459,9 @@ pub(super) fn approval(event: &SessionEvent, _version: u32) -> Result<(), String
 
 pub(super) fn header(event: &SessionEvent, version: u32) -> Result<(), String> {
     let data = require_object(&event.data, "header")?;
+    if version >= 4 {
+        crate::plugins::services::validate_runtime_header(data)?;
+    }
     if !matches!(
         event.data.get("reason").and_then(|value| value.as_str()),
         Some("initial" | "resume" | "change" | "series")

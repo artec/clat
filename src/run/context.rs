@@ -3,6 +3,11 @@ use crate::model::{ModelItem, ModelOptions, Usage};
 use crate::tool::ToolDefinition;
 
 pub(crate) trait RequestContextManager: Send {
+    fn stage_request(&mut self, _snapshot: &crate::plugins::services::RuntimeSnapshot) {}
+    fn flush_request(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn observe(
         &mut self,
         _instructions: Option<&str>,

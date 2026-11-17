@@ -86,9 +86,9 @@ pub fn run_demo(
             events,
             tool_access,
             tool_definitions,
-            workflow_instructions: None,
+            system_instructions: None,
+            runtime_context: Default::default(),
             request_tail: None,
-            permission_mode: None,
         })
         .map_err(|failure| failure.error);
     let close = manager.close();

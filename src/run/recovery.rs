@@ -25,7 +25,7 @@ impl Run<'_> {
                         &input.items,
                         &input.definitions,
                         usage,
-                        self.model_options.request_tail_tokens(),
+                        input.options.request_tail_tokens(),
                     );
                 }
                 return Ok(response);
@@ -72,11 +72,25 @@ impl Run<'_> {
         bool,
         Option<Usage>,
     ) {
+        if let Err(error) = self.reserve_request(input) {
+            return (Err(ModelError::request(error)), String::new(), false, None);
+        }
+        if let Some(manager) = &mut self.context_manager {
+            manager.stage_request(&input.snapshot);
+        }
         events.emit(RunEvent::ModelRequested {
             turn,
             provider: self.model.provider().to_owned(),
             model: self.model.model_id().to_owned(),
         });
+        if let Some(manager) = &mut self.context_manager
+            && let Err(error) = manager.flush_request()
+        {
+            if let Some(ledger) = &self.spend_ledger {
+                ledger.reconcile(0);
+            }
+            return (Err(ModelError::request(error)), String::new(), false, None);
+        }
         let mut partial = String::new();
         let mut sink = RunModelEventForwarder {
             turn,
@@ -91,7 +105,7 @@ impl Run<'_> {
                 instructions: input.instructions.as_deref(),
                 items: &input.items,
                 tools: &input.definitions,
-                options: &self.model_options,
+                options: &input.options,
                 cancel: &self.cancel,
             },
             &mut sink,
@@ -120,43 +134,31 @@ impl Run<'_> {
         if let Some(ledger) = &self.spend_ledger {
             ledger.commit_pending();
         }
-        let before = crate::model::estimate_request_tokens(
-            input.instructions.as_deref(),
-            &input.items,
-            &input.definitions,
-        );
-        let images = input
-            .items
-            .iter()
-            .flat_map(crate::model::model_item_image_parts)
-            .count();
         let progress = manager.recover(
             error.kind(),
             &mut state.items,
             &mut state.usage,
             input.instructions.as_deref(),
             &input.definitions,
-            &self.model_options,
+            &input.options,
         )?;
-        let after = crate::model::estimate_request_tokens(
-            input.instructions.as_deref(),
-            &state.items,
-            &input.definitions,
-        );
-        let remaining = state
-            .items
-            .iter()
-            .flat_map(crate::model::model_item_image_parts)
-            .count();
-        if !progress
-            || self.cancel.is_cancelled()
-            || match error.kind() {
-                ModelErrorKind::ImageCapacity => remaining >= images,
-                _ => after >= before,
-            }
-        {
+        if !progress || self.cancel.is_cancelled() {
             return Ok(None);
         }
-        self.prepare_request(state).map(Some)
+        let next = self.prepare_request(state)?;
+        let smaller = match error.kind() {
+            ModelErrorKind::ImageCapacity => {
+                let images = |input: &RequestInputs| {
+                    input
+                        .items
+                        .iter()
+                        .flat_map(crate::model::model_item_image_parts)
+                        .count()
+                };
+                images(&next) < images(input)
+            }
+            _ => next.estimated_input() < input.estimated_input(),
+        };
+        Ok((smaller && !self.cancel.is_cancelled()).then_some(next))
     }
 }

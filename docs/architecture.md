@@ -639,6 +639,35 @@ derive two intentionally different views:
 - the bounded **message outline** supplies `{seq, turn, role, preview}` rows
   for navigation without forcing a browser to hold the full transcript.
 
+### Default prompt and request context
+
+At run admission the Application freezes the mounted system sections and the
+tool definitions together. The system order is the CLAT base, optional reply
+formatting guidance, Wasm sections, MCP manifest sections, and explicitly
+marked adapter system sections. Each
+seat sorts by owner, source and section name, independent of connection order.
+Workflow guidance, Plan, skills, task and Goal follow. Goal continuation
+refreshes the Goal section at its existing round boundary.
+
+Before each model request the Application assembles one trailing `user` message
+from current permission guidance, the run's selected local memories, DSH
+`PromptContext` evaluated at connection, and current scoped project files.
+Its attribution states that it supersedes earlier runtime facts, including
+ones quoted by a summary. Permission checks still use the live policy. Scratch
+guidance is appended only to that request. The provider request, request
+measurement and audit use this same prepared snapshot.
+
+The protected V4 `system/message` carries system text. Optional
+`request/header.header.clatRuntimeContext` and `clatInstructionContext`
+witness the durable request tail and project sources. `clatPromptContributors`
+witnesses the mounted system sections. The recorder reuses the current header
+across unchanged requests and flushes a changed witness before dispatch.
+The snapshot is not part of model history. Compaction counts its request
+overhead once, omits it from the summarizer, and rebuilds it for later requests.
+DSH runtime-context and agent-instruction events remain in the stored journal
+and are skipped when CLAT reconstructs model input. See the DSH compatibility
+matrix for the session boundaries.
+
 Tool-result pruning produces durable model-context replacements after the original result has been persisted. Compaction appends a
 summary marker and shadows older surface ranges without deleting original
 events. Preset context windows seed automatic compaction; manual configuration

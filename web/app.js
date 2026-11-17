@@ -30,7 +30,7 @@ function el(tag, cls, text) {
 
 // A deliberately small Markdown surface: no raw HTML, remote images, or
 // arbitrary URL schemes. The DOM is assembled from text nodes only.
-const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\((?:<[^<>\n]+>|[^\s)\n]+)\))/g;
+const INLINE_MARKDOWN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\((?:<[^<>\n]+>|(?:[^\s()\n]|\([^\s()\n]*\))+)\))/g;
 const URL_TEXT = /[^\s<>"`“”‘’，。；、！？（）【】]/.source;
 const REPLY_REFERENCES = [
   `https?://${URL_TEXT}+`,
@@ -44,20 +44,27 @@ const REPLY_INLINE_MARKDOWN = new RegExp(
 // File operations always go through the project editor's path fence.
 function localMarkdownTarget(destination, decode) {
   if (!destination || /^[\\/]{2}/.test(destination)) return null;
-  let value;
+  let value, fragment;
   try {
     if (/^file:\/\//i.test(destination)) {
-      const url = new URL(destination); if (url.host && url.host !== 'localhost') return null;
+      const url = new URL(destination);
+      if (url.host && url.host !== 'localhost') return null;
       value = decodeURIComponent(url.pathname).replace(/^\/(?=[a-z]:\/)/i, '');
+      fragment = url.hash;
     } else {
-      const path = decode ? destination.split('#')[0] : destination.replace(/#L\d+(?:-L\d+)?$/i, '');
-      value = decode ? decodeURIComponent(path) : path;
+      const hash = decode ? destination.indexOf('#') : destination.search(/#L\d+(?:-L\d+)?$/i);
+      value = hash < 0 ? destination : destination.slice(0, hash);
+      fragment = hash < 0 ? '' : destination.slice(hash);
+      if (decode) value = decodeURIComponent(value);
     }
   } catch (_) { return null; }
   if (!value || /[\u0000-\u001f\u007f]/.test(value) || /^[\\/]{2}/.test(value)) return null;
-  value = value.replace(/:\d+(?::\d+)?$/, '').replace(/\\/g, '/');
+  const suffix = /:(\d+)(?::\d+)?$/.exec(value);
+  if (suffix) value = value.slice(0, suffix.index);
+  value = value.replace(/\\/g, '/');
   if (!value || (!/^[a-z]:\//i.test(value) && /^[a-z][a-z0-9+.-]*:/i.test(value))) return null;
-  return value;
+  const line = Number(/^#L(\d+)(?:-L\d+)?$/i.exec(fragment)?.[1] ?? suffix?.[1]);
+  return {path:value, line:Number.isSafeInteger(line) && line > 0 ? line : null};
 }
 
 function localMarkdownPath(value, projectRoot) {
@@ -93,10 +100,10 @@ function scheduleMarkdownFileCheck() {
   });
 }
 
-function localMarkdownReference(label, target, projectRoot, {implicit, code}) {
+function localMarkdownReference(label, target, projectRoot, {implicit, code, direct}) {
   const placeholder = el(code ? 'code' : 'span', '', label);
   if (pendingMarkdownFiles.size >= 512) return placeholder;
-  pendingMarkdownFiles.set(placeholder, {label, target, projectRoot, implicit, code});
+  pendingMarkdownFiles.set(placeholder, {label, target, projectRoot, implicit, code, direct});
   scheduleMarkdownFileCheck();
   return placeholder;
 }
@@ -109,11 +116,11 @@ async function verifyMarkdownFiles() {
   try {
     for (const [placeholder, reference] of pendingMarkdownFiles) {
       if (!placeholder.isConnected || (reference.projectRoot && reference.projectRoot !== root)) continue;
-      const path = localMarkdownPath(reference.target, root);
+      const path = localMarkdownPath(reference.target.path, root);
       if (!path) continue;
       const replace = () => {
         if (placeholder.isConnected && root === state.workbench?.project?.root) {
-          placeholder.replaceWith(localMarkdownLink(reference.label, path, root, reference.code));
+          placeholder.replaceWith(localMarkdownLink(reference, path, root));
         }
       };
       if (!path.relative) {
@@ -140,34 +147,55 @@ async function verifyMarkdownFiles() {
   }
 }
 
-function localMarkdownLink(label, path, root, code) {
-  const node = el('button', 'markdown-file-link', code ? undefined : label); node.type = 'button';
-  if (code) node.append(el('code', '', label));
+function localMarkdownLink({label, target, code, direct}, path, root) {
+  const node = markdownActionLink(label, 'markdown-file-link', code, direct && 'file');
   const canOpen = () => path.relative && root === state.workbench?.project?.root && devAvailable();
-  const items = () => {
-    if (root !== state.workbench?.project?.root) return [];
-    return [
-      {key:'open_file',icon:'open',disabled:!canOpen(),run:()=>{
-        if (!canOpen()) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
-        node.closest('.user-message-reader[open]')?.close();
-        document.getElementById('files-open').click();
-        return developmentEditor?.openFile(path.relative,{fixed:true});
-      }},
-      {key:'copy_absolute_path',icon:'copy',run:()=>copyMarkdownReference(path.absolute)},
-      {key:'copy_path',icon:'copy',disabled:!path.relative,run:()=>copyMarkdownReference(path.relative)},
-    ];
+  const openFile = () => {
+    if (!canOpen()) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
+    node.closest('.user-message-reader[open]')?.close();
+    document.getElementById('files-open').click();
+    return developmentEditor?.openFile(path.relative, {fixed:true, line:target.line});
   };
-  setMarkdownLinkMenu(node, items);
-  CLATI18n.attribute(node,'title',()=>CLATI18n.msg('web.local_file_actions'));
+  const items = () => root === state.workbench?.project?.root ? [
+    {key:'open_file',icon:'open',disabled:!canOpen(),run:openFile},
+    {key:'copy_absolute_path',icon:'copy',run:()=>copyMarkdownReference(path.absolute)},
+    {key:'copy_path',icon:'copy',disabled:!path.relative,run:()=>copyMarkdownReference(path.relative)},
+  ] : [];
+  node.title = target.line ? path.absolute + ':' + target.line : path.absolute;
+  setMarkdownLinkActions(node, items, direct ? openFile : null);
   return node;
 }
 
-function setMarkdownLinkMenu(node, getItems) {
+function markdownActionLink(label, className, code, icon) {
+  const node = el('button', className);
+  node.type = 'button';
+  if (icon) node.append(svgIcon(icon));
+  node.append(el(code ? 'code' : 'span', '', label));
+  return node;
+}
+
+function setMarkdownLinkActions(node, getItems, primary) {
   node.setAttribute('aria-haspopup', 'menu');
-  node.onclick = () => {
+  const menu = event => {
     const items = getItems();
     if (!items.length) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
-    editorPopup(items, node);
+    if (event?.button === 2) editorMenu(items, node, event.clientX, event.clientY);
+    else editorPopup(items, node);
+  };
+  if (!primary) {
+    node.onclick = () => menu();
+    return;
+  }
+  node.onclick = async () => {
+    try { await primary(); }
+    catch (error) { updateRunState(error.message); }
+  };
+  node.oncontextmenu = event => { event.preventDefault(); menu(event); };
+  node.onkeydown = event => {
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+      event.preventDefault();
+      menu();
+    }
   };
 }
 
@@ -185,20 +213,21 @@ function markdownWebAddress(value) {
   } catch (_) { return null; }
 }
 
-function markdownWebLink(label, destination, replyLinks, code = false) {
-  const node = el(replyLinks ? 'button' : 'a', replyLinks ? 'markdown-web-link' : '', code ? undefined : label);
-  if (code) node.append(el('code', '', label));
+function markdownWebLink(label, destination, replyLinks, code, implicit) {
   if (replyLinks) {
-    node.type = 'button';
-    setMarkdownLinkMenu(node, () => [
-      {key:'open_in_browser',icon:'open',run:()=>openMarkdownUrl(destination)},
+    const node = markdownActionLink(label, 'markdown-web-link', code, !implicit && 'open');
+    const open = () => openMarkdownUrl(destination);
+    node.title = destination;
+    setMarkdownLinkActions(node, () => [
+      {key:'open_in_browser',icon:'open',run:open},
       {key:'copy_url',icon:'copy',run:()=>copyMarkdownReference(destination)},
-    ]);
-  } else {
-    node.href = destination;
-    node.target = '_blank';
-    node.rel = 'noopener noreferrer';
+    ], implicit ? null : open);
+    return node;
   }
+  const node = el('a', '', label);
+  node.href = destination;
+  node.target = '_blank';
+  node.rel = 'noopener noreferrer';
   return node;
 }
 
@@ -213,19 +242,19 @@ async function openMarkdownUrl(destination) {
 
 function markdownReference(label, destination, options, {implicit = false, code = false} = {}) {
   const address = markdownWebAddress(destination);
-  if (address) return markdownWebLink(label, address, options.replyLinks, code);
+  if (address) return markdownWebLink(label, address, options.replyLinks, code, implicit);
   if (options.projectRoot === null) return null;
   const target = localMarkdownTarget(destination, !implicit);
   if (!target) return null;
   if (implicit && !/^file:\/\//i.test(destination)) {
-    const path = target.split('/');
+    const path = target.path.split('/');
     const name = path.at(-1);
-    if (/[?*"<>|=:]/.test(target.replace(/^[a-z]:\//i, ''))
+    if (/[?*"<>|=:]/.test(target.path.replace(/^[a-z]:\//i, ''))
       || !/^[\p{L}\p{N}_.%+~ -]+$/u.test(name)
       || path.length === 1 || /\s/.test(path[0])) return null;
   }
   const root = options.projectRoot === undefined ? state.workbench?.project?.root : options.projectRoot;
-  return localMarkdownReference(label, target, root, {implicit, code});
+  return localMarkdownReference(label, target, root, {implicit, code, direct:options.replyLinks && !implicit});
 }
 
 function trimReplyReference(value) {
@@ -262,7 +291,7 @@ function appendInlineMarkdown(parent, text, options) {
     else if (token.startsWith('~~')) node = appendStyledMarkdown('del', token.slice(2, -2), options);
     else if (token.startsWith('*') || token.startsWith('_')) node = appendStyledMarkdown('em', token.slice(1, -1), options);
     else {
-      const parts = /^\[([^\]]+)\]\((?:<(.+)>|([^\s)]+))\)$/.exec(token);
+      const parts = /^\[([^\]]+)\]\((?:<(.+)>|([^\s]+))\)$/.exec(token);
       node = parts && markdownReference(parts[1], parts[2] ?? parts[3], options);
       node ||= document.createTextNode(token);
     }
