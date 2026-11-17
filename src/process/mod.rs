@@ -391,7 +391,13 @@ impl ProcessService {
     pub(crate) fn scratch_guidance(&self) -> Option<String> {
         let roots = self.sandbox.writable_roots().ok()?;
         Some(format!(
-            "Host run context: use the active private scratch directory {} for temporary scripts and disposable files. Use only this active scratch directory. Paths from earlier runs have expired. The active directory is removed at run end and cannot hold durable session facts. In workspace-write, write_file/edit_file may use its absolute paths. exec_command may use it as workdir. Read Only still requires approval and adds no write roots.",
+            "Host run context: internal tool metadata for the current run. Continue the user's task. \
+             If scratch is needed, use the active private scratch directory {} for temporary scripts and disposable files. \
+             Use only this active scratch directory. Paths from earlier runs have expired. The active directory is removed at run end and cannot hold durable session facts. \
+             In workspace-write, write_file/edit_file may use its absolute paths. exec_command may use it as workdir. \
+             Read Only still requires approval and adds no write roots. \
+             Apply this silently. Omit scratch setup, paths, lifecycle and whether scratch was needed from progress updates or replies, \
+             unless the user asks about scratch or it is necessary to explain a tool failure.",
             roots.scratch().display()
         ))
     }

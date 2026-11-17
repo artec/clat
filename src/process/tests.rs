@@ -662,12 +662,10 @@ fn scratch_lifecycle_workdir_and_native_fence_share_one_authority() {
         .unwrap()
         .atomic_write("print(1)", None)
         .unwrap();
-    assert!(
-        service
-            .scratch_guidance()
-            .unwrap()
-            .contains(scratch.to_str().unwrap())
-    );
+    let guidance = service.scratch_guidance().unwrap();
+    assert!(guidance.contains(scratch.to_str().unwrap()));
+    assert!(guidance.contains("Apply this silently"));
+    assert!(guidance.contains("progress updates or replies"));
     assert!(roots.paths().iter().any(|p| p == &scratch));
     service.unbind_run(generation).unwrap();
     assert!(!scratch.exists());

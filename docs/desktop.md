@@ -70,6 +70,11 @@ preferences. The Host-attached TUI can manage the same sources with
 In an Agent reply, click a web address and select **Open in browser** to open it
 in the system browser. This also works for the default local CLAT Host address.
 
+In the right sidebar, open **Session details** and select **Inspect context
+usage** to see the estimate for the next request. The dialog shows the input
+breakdown, image usage and output reserve. **Copy full text** includes the
+technical details even when they are collapsed. The transcript stays in place.
+
 The conversation sidebar groups projects under a Projects heading. Its add
 button opens the desktop project picker (or project settings in the browser),
 and its archive toggle shows archived conversations across the project list.
@@ -119,6 +124,11 @@ Git change-group headings keep a stable height when hover actions appear. File c
 History controls use compact circular icons: the top upward-to-line button loads earlier messages, with a spinner during loading. The bottom button jumps to the latest messages; during an active run it stays visible and shows three dots moving in a wave. Hover or keyboard focus reveals the downward arrow. After the run it shows an arrow only when away from the bottom. Both controls retain localized tooltips and accessible names; reduced-motion mode disables animation.
 
 Loading earlier messages preserves the current reading position without a scroll animation. Prepending, process folding, preview sizing and removal of the exhausted loader share one synchronous position-restoration step with native scroll anchoring temporarily disabled. The reading anchor is captured when the page arrives, so scrolling while waiting for history does not return the reader to an older position. Long-message previews settle to their collapsed height before the reading position is restored, avoiding delayed height changes after each prepend. Hidden process rows are excluded from reading anchors. Explicit navigation retains its smooth scrolling.
+
+While following the latest message, the transcript stays at the bottom as the
+composer shrinks after sending, the run status updates, and the first reply
+appears. This also applies when earlier turns already fill the viewport.
+Scrolling up pauses following until you return to the bottom.
 
 **History timeline** opens the shared Desktop and Web/PWA execution workbench. Recent sessions and cross-session results stay on the left. The timeline and collapsible turns show execution order, and the right pane loads details for the selected record. On narrow windows, details open in a drawer. Use **Refresh snapshot** to read newly committed records. See [history timeline](history.md) for search scope, precise navigation and the available record details.
 

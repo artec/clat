@@ -62,13 +62,18 @@ function createUserMessageReader() {
   function refresh() { for (const content of entries.keys()) measure(content); }
   function close() { if (dialog?.open) dialog.close(); }
   function open(entry, match) {
-    dialog ||= createUserReaderDialog(() => active, () => {
-      if (active?.body.isConnected && context.isActive()) active.body.focus({preventScroll:true});
-      active = null;
+    dialog ||= createReaderDialog({
+      id: 'user-message-reader',
+      title: () => text('title'),
+      copySource: () => active?.source || '',
+      onClose: () => {
+        if (active?.body.isConnected && context.isActive()) active.body.focus({preventScroll:true});
+        active = null;
+      },
     });
     active = entry;
     const content = dialog.querySelector('.user-reader-content');
-    dialog.querySelector('[role=status]').textContent = '';
+    CLATI18n.bind(dialog.querySelector('[role=status]'), 'textContent', () => '');
     if (match) {
       // Search offsets refer to the original Markdown, including its syntax.
       content.classList.remove('rich-text', 'is-rendered', 'acp-handoff-message');
@@ -114,28 +119,36 @@ function createUserMessageReader() {
   function reset() { close(); observer.disconnect(); entries.clear(); }
   return { attach, update, reveal, reset, close, refresh };
 }
-function createUserReaderDialog(getActive, onClose) {
-    const text = key => CLATI18n.msg('user_reader.' + key);
-    const dialog = el('dialog', 'workbench-dialog user-message-reader');
-    const title = el('h2', '', () => text('title'));
-    title.id = 'user-message-reader-title'; dialog.setAttribute('aria-labelledby', title.id);
-    const dismiss = el('button', 'icon-button workbench-dialog-close'); dismiss.type = 'button'; dismiss.autofocus = true;
-    dismiss.append(svgIcon('close')); CLATI18n.attribute(dismiss, 'aria-label', () => CLATI18n.msg('common.close'));
-    dismiss.onclick = () => dialog.close();
-    const header = el('header', 'user-reader-header'); header.append(title, dismiss);
-    const content = el('div', 'user-reader-content'); content.tabIndex = 0;
-    CLATI18n.attribute(content, 'aria-label', () => text('title'));
-    const copy = el('button', 'secondary', () => text('copy')); copy.type = 'button';
-    const status = el('span'); status.setAttribute('role', 'status');
-    copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(getActive()?.source || ''); status.textContent = CLATI18n.t('web.copied'); }
-      catch (_) { status.textContent = CLATI18n.t('web.copy_failed'); }
-    };
-    const footer = el('footer', 'user-reader-footer'); footer.append(copy, status);
-    dialog.append(header, content, footer); context.root.append(dialog);
-    dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
-    dialog.addEventListener('close', onClose);
-    return dialog;
+function createReaderDialog({ id, title, copySource, onClose }) {
+  const dialog = el('dialog', `workbench-dialog workbench-reader ${id}`);
+  dialog.id = id;
+  const heading = el('h2', '', title);
+  heading.id = `${id}-title`;
+  dialog.setAttribute('aria-labelledby', heading.id);
+  const dismiss = el('button', 'icon-button workbench-dialog-close');
+  dismiss.type = 'button'; dismiss.autofocus = true;
+  dismiss.append(svgIcon('close'));
+  CLATI18n.attribute(dismiss, 'aria-label', () => CLATI18n.msg('common.close'));
+  dismiss.onclick = () => dialog.close();
+  const header = el('header', 'user-reader-header'); header.append(heading, dismiss);
+  const content = el('div', 'user-reader-content'); content.tabIndex = 0;
+  CLATI18n.attribute(content, 'aria-label', title);
+  const copy = el('button', 'secondary', () => CLATI18n.msg('user_reader.copy')); copy.type = 'button';
+  const status = el('span'); status.setAttribute('role', 'status');
+  copy.onclick = async () => {
+    let key = 'web.copied';
+    try { await navigator.clipboard.writeText(copySource()); }
+    catch (_) { key = 'web.copy_failed'; }
+    if (dialog.open) CLATI18n.bind(status, 'textContent', () => CLATI18n.msg(key));
+  };
+  const footer = el('footer', 'user-reader-footer'); footer.append(copy, status);
+  dialog.append(header, content, footer); context.root.append(dialog);
+  dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => {
+    CLATI18n.bind(status, 'textContent', () => '');
+    onClose();
+  });
+  return dialog;
 }
 
 const userMessageReader = createUserMessageReader();

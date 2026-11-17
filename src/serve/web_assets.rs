@@ -260,6 +260,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/context-usage-reader.js",
+        include_bytes!("../../web/context-usage-reader.js"),
+        "application/javascript",
+    ),
+    (
         "/conversation-experience.js",
         include_bytes!("../../web/conversation-experience.js"),
         "application/javascript",
@@ -564,6 +569,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/rail-allowance.js",
     "/conversation-experience.js",
     "/user-message-reader.js",
+    "/context-usage-reader.js",
     "/conversation-rounds.js",
     "/navigation-pages.js",
     "/settings-pages.js",

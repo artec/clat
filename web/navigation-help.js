@@ -64,6 +64,7 @@ function installPageNotifications() {
 function createTranscriptFollow(viewport, onChange) {
   let pinned = true;
   let lastTop, lastBottom;
+  let layoutFrames = 0;
   let frame = null;
   viewport.dataset.followingLatest = 'true';
   rememberPosition();
@@ -80,8 +81,8 @@ function createTranscriptFollow(viewport, onChange) {
     lastTop = viewport.scrollTop;
   }
   function scrollToEnd() {
-    const bottom = bottomEdge();
-    if (viewport.scrollTop !== bottom) viewport.scrollTop = bottom;
+    // Let the browser clamp to its precise bottom. The extent metrics are rounded.
+    viewport.scrollTop = viewport.scrollHeight;
     rememberPosition();
   }
   function observeScroll() {
@@ -89,13 +90,13 @@ function createTranscriptFollow(viewport, onChange) {
     const bottom = bottomEdge();
     const top = viewport.scrollTop;
     const previous = lastTop;
-    const resized = bottom !== lastBottom;
+    const resized = layoutFrames > 0 || bottom !== lastBottom;
     lastTop = top;
     lastBottom = bottom;
     if (top === previous) return;
     const atBottom = top >= bottom - 1; // scrollTop can be fractional.
-    // A render can clamp the viewport, then grow it again before the scroll event.
-    // Use movement at a stable layout to infer scrolling from the scrollbar or keyboard.
+    // Composer shrink and reply growth can cancel out before the scroll event,
+    // even though the browser already clamped scrollTop during the shrink.
     if (resized) return;
     if (top < previous && !atBottom) setPinned(false);
     else if (top > previous && atBottom) setPinned(true);
@@ -103,12 +104,14 @@ function createTranscriptFollow(viewport, onChange) {
   function pause() {
     if (frame !== null) cancelAnimationFrame(frame);
     frame = null;
+    layoutFrames = 0;
     rememberPosition();
     setPinned(false);
   }
   function resume() {
     if (frame !== null) cancelAnimationFrame(frame);
     frame = null;
+    layoutFrames = 0;
     scrollToEnd();
     setPinned(true);
   }
@@ -119,7 +122,16 @@ function createTranscriptFollow(viewport, onChange) {
       // A scrollbar drag or keyboard scroll can move before its scroll event is delivered.
       observeScroll();
       if (pinned && viewport.clientHeight) scrollToEnd();
+      if (layoutFrames > 0 && --layoutFrames > 0) schedule();
     });
+  }
+  function syncLayout() {
+    if (!pinned || !viewport.clientHeight) return;
+    // ResizeObserver runs after animation callbacks. Follow before this frame paints.
+    // WebKit can apply a correction from that layout one frame after the scroll write.
+    layoutFrames = 2;
+    scrollToEnd();
+    schedule();
   }
   function beforeUpwardScroll(target) {
     if (!pinned || viewport.scrollTop <= 0) return;
@@ -132,7 +144,7 @@ function createTranscriptFollow(viewport, onChange) {
 
   trackUpwardGestures(viewport, beforeUpwardScroll);
   viewport.addEventListener('scroll', observeScroll, { passive: true });
-  return { isPinned: () => pinned, pause, resume, schedule, rememberPosition };
+  return { isPinned: () => pinned, pause, resume, schedule, syncLayout, rememberPosition };
 }
 
 function trackUpwardGestures(viewport, beforeUpwardScroll) {
@@ -170,7 +182,7 @@ function createHistoryNavigation(){
   latest.onclick=()=>{snapToLatest();sync();};
   viewport.addEventListener('scroll',sync,{passive:true});
   if(typeof ResizeObserver==='function'){
-    const observer=new ResizeObserver(()=>{scrollIfFollowing();sync();});
+    const observer=new ResizeObserver(()=>{scrollIfFollowing(true);sync();});
     observer.observe(dom.transcript);observer.observe(viewport);
   }
   window.addEventListener('clat:workbench-updated',sync);

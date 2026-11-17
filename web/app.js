@@ -162,24 +162,13 @@ function localMarkdownLink(label, path, root, code) {
   return node;
 }
 
-function setMarkdownLinkMenu(node, items) {
+function setMarkdownLinkMenu(node, getItems) {
   node.setAttribute('aria-haspopup', 'menu');
-  node.onclick = () => openMarkdownMenu(node, items());
-  node.oncontextmenu = event => {
-    event.preventDefault();
-    openMarkdownMenu(node, items(), event);
+  node.onclick = () => {
+    const items = getItems();
+    if (!items.length) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
+    editorPopup(items, node);
   };
-  node.onkeydown = event => {
-    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
-    event.preventDefault();
-    openMarkdownMenu(node, items());
-  };
-}
-
-function openMarkdownMenu(node, items, event) {
-  if (!items.length) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
-  if (event && (event.clientX || event.clientY)) editorMenu(items, node, event.clientX, event.clientY);
-  else editorPopup(items, node);
 }
 
 async function copyMarkdownReference(text) {
@@ -1345,6 +1334,7 @@ function onSubscribed(ctl) {
   if (ctl && Object.prototype.hasOwnProperty.call(ctl, 'session_id')) {
     state.sessionId = ctl.session_id || null;
   }
+  syncContextUsageReader();
   conversationRounds.scope(state.sessionId);
   state.history.outline = Array.isArray(ctl && ctl.message_outline) ? ctl.message_outline : [];
   renderMessageMap(); syncMessageTimes(); void refreshUsage();
@@ -2427,62 +2417,6 @@ function addNoticeLine(text, eventId, ordinary = ['model_requested', 'model_resp
   return line;
 }
 
-function contextAmount(value) {
-  return Number.isFinite(Number(value)) ? String(value) : '—';
-}
-
-function injectionState(value) {
-  return Number(value) > 0 ? CLATI18n.msg("web.injected",{},"injected") : CLATI18n.msg("web.not_injected", {}, "not injected");
-}
-
-function formatContextSnapshot(snapshot) {
-  const context = snapshot && typeof snapshot === 'object' ? snapshot : {};
-  const unit = typeof context.unit === 'string' && context.unit ? context.unit : 'units';
-  const estimate = (label, key) => `${label}: ${contextAmount(context[key])} ${unit}`;
-  const tools = Array.isArray(context.tools) && context.tools.length > 0
-    ? context.tools.join(', ') : 'none';
-  const skills = Array.isArray(context.skills) && context.skills.length > 0
-    ? context.skills.join(', ') : 'none';
-  const diagnostics = Array.isArray(context.skill_diagnostics)
-    ? context.skill_diagnostics : [];
-  const lines = [
-    CLATI18n.msg("web.dynamic_context_estimate_value", {value1:(unit)}, "Context estimate · {value1}"),
-    estimate(CLATI18n.msg("web.base_prompt", {}, "Base prompt"), 'base_prompt'),
-    estimate(CLATI18n.msg("web.project_instructions", {}, "Project instructions"), 'project_instructions'),
-    `${estimate(CLATI18n.msg("web.plan_policy", {}, "Plan policy"), 'plan_policy')} · ${injectionState(context.plan_policy)}`,
-    estimate(CLATI18n.msg("web.skill_catalog", {}, "Skill catalog"), 'skill_catalog'),
-    `${estimate(CLATI18n.msg("web.goal_policy", {}, "Goal policy"), 'goal_policy')} · ${injectionState(context.goal_policy)}`,
-    CLATI18n.msg("web.dynamic_memory_injection_value_value_bytes_value", {value1:(contextAmount(context.memory)),value2:(contextAmount(context.memory_budget_bytes)),value3:(injectionState(context.memory))}, "Memory injection: {value1} / {value2} bytes · {value3}"),
-    estimate(CLATI18n.msg("web.tool_schemas", {}, "Tool schemas"), 'tool_schemas'),
-    estimate(CLATI18n.msg("web.history_compaction_view", {}, "History / compaction view"), 'history'),
-    CLATI18n.msg("web.dynamic_images_value", {value1:(contextAmount(context.image_count))}, "Images: {value1}"),
-    CLATI18n.msg("web.dynamic_images_before_projection_value", {value1:(contextAmount(context.image_original_count))}, "Images before projection: {value1}"),
-    CLATI18n.msg("web.dynamic_older_images_omitted_value", {value1:(contextAmount(context.image_offloaded_count))}, "Older images omitted: {value1}"),
-    CLATI18n.msg("web.dynamic_image_bytes_value_bytes", {value1:(contextAmount(context.image_bytes))}, "Image bytes: {value1} bytes"),
-    estimate(CLATI18n.msg("web.visual_token_estimate", {}, "Visual token estimate"), 'image_tokens'),
-    CLATI18n.msg("web.dynamic_visual_safety_factor_value_0x", {value1:(contextAmount(context.image_safety_factor))}, "Visual safety factor: {value1}.0x"),
-    estimate(CLATI18n.msg("web.output_reserve", {}, "Output reserve"), 'output_reserve'),
-    estimate(CLATI18n.msg("web.input_estimate", {}, "Input estimate"), 'input'),
-    estimate(CLATI18n.msg("web.total_estimate", {}, "Total estimate"), 'total'),
-    CLATI18n.msg("web.dynamic_tools_value", {value1:(tools)}, "Tools: {value1}"),
-    CLATI18n.msg("web.dynamic_skills_value", {value1:(skills)}, "Skills: {value1}"),
-  ];
-  if (diagnostics.length === 0) {
-    lines.push(CLATI18n.msg("web.skill_diagnostics_none", {}, "Skill diagnostics: none"));
-  } else {
-    lines.push(CLATI18n.msg("web.skill_diagnostics", {}, "Skill diagnostics:"));
-    for (const diagnostic of diagnostics) {
-      const source = diagnostic && diagnostic.source ? diagnostic.source : '-';
-      const name = diagnostic && diagnostic.name ? diagnostic.name : '-';
-      const kind = diagnostic && diagnostic.kind ? diagnostic.kind : '-';
-      const message = diagnostic && diagnostic.message ? diagnostic.message : '-';
-      lines.push(`! ${source} / ${name} / ${kind}: ${message}`);
-    }
-  }
-  if (context.estimator) lines.push(CLATI18n.msg("web.dynamic_estimator_value", {value1:(context.estimator)}, "Estimator: {value1}"));
-  return lines.join('\n');
-}
-
 function addContextSnapshot(snapshot) {
   const line = addNoticeLine(()=>formatContextSnapshot(snapshot));
   line.classList.add('context-notice');
@@ -2518,9 +2452,10 @@ function followAcceptedPrompt(owner) {
   };
 }
 
-function scrollIfFollowing() {
+function scrollIfFollowing(layoutChanged = false) {
   if (findActive && !document.getElementById('find-bar').classList.contains('hidden')) return;
-  transcriptFollow.schedule();
+  if (layoutChanged) transcriptFollow.syncLayout();
+  else transcriptFollow.schedule();
 }
 
 function syncHistoryStatus() {
@@ -2835,6 +2770,7 @@ async function refreshWorkbench() {
     const permission = info.permission || {};
     observeComposerSession(session.id || null, state.selectionGeneration);
     state.sessionId = session.id || null;
+    syncContextUsageReader();
     // HIST-PWA-1/W1：当前 Session 的已提交输入（journal transcript 权威，
     // 含其它客户端提交）——过期响应已在上方 request/switching/selection
     // 三重门拦截，此处落地即为当前会话列表。
@@ -3849,16 +3785,19 @@ document.getElementById('inspector-context').addEventListener('click', async (ev
   const button = event.currentTarget;
   const session = state.sessionId;
   const selection = state.selectionGeneration;
-  const isCurrent = () => session === state.sessionId && selection === state.selectionGeneration;
+  const navigation = context.navigationToken();
+  const isCurrent = () => context.isActive() && navigation === context.navigationToken()
+    && !dom.inspector.inert && !state.switching
+    && session === state.sessionId && selection === state.selectionGeneration;
   button.disabled = true;
   const feedback = document.getElementById('inspector-feedback');
   CLATI18n.bind(feedback, "textContent", () => CLATI18n.msg("web.reading_context", {}, "Reading context…"));
   try {
     const value = await rpc('command.run', { command: '/context' });
     if (!isCurrent()) return;
-    if (value.kind !== 'context') throw CLATI18n.error(CLATI18n.msg("web.context_is_unavailable", {}, "Context is unavailable"));
-    addContextSnapshot(value.context);
-    CLATI18n.bind(feedback, "textContent", () => CLATI18n.msg("web.context_breakdown_added_to_conversation", {}, "Context breakdown added to conversation"));
+    if (value.kind !== 'context' || !value.context) throw CLATI18n.error(CLATI18n.msg('web.context_is_unavailable'));
+    showContextUsageReader(value.context, button, isCurrent);
+    CLATI18n.bind(feedback, 'textContent', () => '');
   } catch (error) { if (isCurrent()) CLATI18n.bind(feedback, "textContent", () => error.message); }
   finally {
     if (!isCurrent()) CLATI18n.bind(feedback, "textContent", () => '');
@@ -4685,8 +4624,10 @@ const composerSeat = document.querySelector('.conversation');
 const composer = document.querySelector('.composer');
 if (composerSeat && composer && typeof ResizeObserver === 'function') {
   const composerObserver = new ResizeObserver(([entry]) => {
-    const height = Math.ceil(entry.borderBoxSize?.[0]?.blockSize || entry.contentRect.height);
-    composerSeat.style.setProperty('--composer-height', `${height}px`);
+    const height = Math.ceil(entry.borderBoxSize?.[0]?.blockSize || entry.contentRect.height) + 'px';
+    if (composerSeat.style.getPropertyValue('--composer-height') === height) return;
+    composerSeat.style.setProperty('--composer-height', height);
+    scrollIfFollowing(true);
   });
   composerObserver.observe(composer);
   const mapObserver = new ResizeObserver(renderMapWindow);

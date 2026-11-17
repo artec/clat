@@ -1939,12 +1939,12 @@ printed URL. Use `--no-open` for supervised services.
 In Web, PWA, and Desktop, assistant replies turn HTTP(S) addresses and verified
 project file paths into links. A bare filename in prose or inline code stays as
 written. Use a project-relative path such as `./README.md` or `web/app.js`, or an
-explicit Markdown link to the file. Click the link to open or copy its path.
-Wrap a path containing spaces in backticks or use a Markdown link.
-Click a web address to open its actions menu, then open it in the browser or copy
-the URL. A loopback address such as `localhost:3000` points to the device running
-the browser. When the Host runs on another device, use an address the browser
-can reach.
+explicit Markdown link to the file. Wrap a path containing spaces in backticks
+or use a Markdown link. A primary click opens the actions menu for file links
+and web addresses. Use the menu to open the file or web address, or copy its
+path or URL. A loopback address such as `localhost:3000` points to the device
+running the browser. When the Host runs on another device, use an address the
+browser can reach.
 
 In Web, PWA, or Desktop, open the composer's **+** menu and choose **Share
 conversation content** under **Add content**. Choose another active or archived

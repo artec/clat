@@ -17,12 +17,21 @@ function createModelRequestPresentation(){
     if(!run?.model||!run.prompt_rpc_id||info.session?.id!==state.sessionId)return;
     if(runId&&runId!==run.prompt_rpc_id)return;
     runId=run.prompt_rpc_id;route=run.model;
-    for(const notice of notices)notice.paint(modelRequestDetail(notice.event,route));
+    let changed=false;
+    for(const notice of notices)if(paintNotice(notice))changed=true;
+    return changed;
+  }
+  function paintNotice(notice){
+    const label=modelRequestDetail(notice.event,route);
+    if(notice.label===label)return false;
+    notice.label=label;
+    notice.paint(label);
+    return true;
   }
   function add(event,paint){
     // Keep each event's original protocol/model; only its presentation changes.
     const notice={event:{provider:event.provider,model:event.model},paint};
-    notices.push(notice);paint(modelRequestDetail(notice.event,route));
+    notices.push(notice);paintNotice(notice);
   }
   return {begin,observe,add};
 }
@@ -90,9 +99,13 @@ function createConversationRounds(){
   }
   function clock(value){
     if(!value?.header)return;
-    const duration=roundDuration((value.ended?value.end:Date.now())-value.start);
-    const known=value.start!==null&&(!value.ended||value.end!==null);
-    CLATI18n.bind(value.header.querySelector('.round-clock'),'textContent',()=>known?roundText(value.ended?(value.approximate?'elapsed_estimated':'elapsed'):'processing',{duration}):roundText('unknown'));
+    const end=value.ended?value.end:Date.now();
+    const seconds=value.start===null||end===null?null:Math.floor((end-value.start)/1000);
+    const key=seconds===null?'unknown':value.ended?(value.approximate?'elapsed_estimated':'elapsed'):'processing';
+    if(value.clock?.key===key&&value.clock.seconds===seconds)return false;
+    value.clock={key,seconds};
+    CLATI18n.bind(value.header.querySelector('.round-clock'),'textContent',()=>roundText(key,{duration:roundDuration(seconds*1000)}));
+    return true;
   }
 
   function add(value,node){
@@ -112,11 +125,19 @@ function createConversationRounds(){
     if(event.type==='turn_ended'){value.ended=true;value.end=event.time_ms>0?event.time_ms:null;}
   }
   function refresh(){for(const value of seats.values())paint(value);if(!live)live=[...seats.values()].findLast(value=>!value.ended);}
-  function tick(){stop();if(live&&!live.ended&&state.connected&&context.isActive())timer=setInterval(()=>clock(live),1000);}
+  function tick(){
+    stop();
+    if(live&&!live.ended&&state.connected&&context.isActive())timer=setInterval(()=>{
+      if(clock(live))scrollIfFollowing(true);
+    },1000);
+  }
   function active(info){
     if(info&&(!live||live.ended))live=[...seats.values()].findLast(value=>!value.ended);
-    if(info?.started&&live&&!live.ended){live.start=info.started;live.approximate=false;paint(live);}
-    if(!info)stop();else tick();
+    if(!info){stop();return false;}
+    if(timer===null)tick();
+    if(!info.started||!live||live.ended||(!live.approximate&&live.start===info.started))return false;
+    live.start=info.started;live.approximate=false;
+    return clock(live);
   }
   function reveal(node){const value=owners.get(node);if(value&&node.classList.contains('round-process-hidden')){value.manual=true;choices.set(key(value),true);paint(value);}}
   function preference(){for(const value of seats.values())value.manual=null;choices.clear();refresh();}
@@ -125,8 +146,10 @@ function createConversationRounds(){
 }
 const conversationRounds=createConversationRounds();
 function syncRunPresentation(info){
-  modelRequestPresentation.observe(info);
-  conversationRounds.active(info.active_run);
+  const modelChanged=modelRequestPresentation.observe(info);
+  const clockChanged=conversationRounds.active(info.active_run);
+  // WKWebView can adjust the scroll position even if new text has the same height.
+  if(modelChanged||clockChanged)scrollIfFollowing(true);
 }
 
 function conversationMapTurns(outline){

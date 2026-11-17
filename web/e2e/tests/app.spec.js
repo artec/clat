@@ -17,7 +17,7 @@ async function chooseModel(page, label) {
 
 async function openDetails(page) {
   if (await page.locator('#inspector-toggle').getAttribute('aria-expanded') !== 'true') {
-    await page.click('#inspector-toggle');
+    await page.click('.application-toolbar [data-action="inspector"]');
   }
   const technical = page.locator('.session-technical');
   if (await technical.getAttribute('open') === null) await technical.locator('summary').first().click();
@@ -466,8 +466,10 @@ test('model intensity uses host choices and preserves the composer', async ({ pa
 
 });
 
-test('unsupported thinking stays legible and details actions preserve drafts', async ({ page }) => {
-  await openWorkbench(page, hostInfo('success'));
+test('session details show a copyable context report without changing the conversation or draft', async ({ page }) => {
+  const entry = hostInfo('success');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: entry.origin });
+  await openWorkbench(page, entry);
   await page.fill('#prompt', 'Do not submit this draft');
   await page.click('#model-picker-trigger');
   await expect(page.locator('#model-thinking')).toBeDisabled();
@@ -475,8 +477,22 @@ test('unsupported thinking stays legible and details actions preserve drafts', a
   await openDetails(page);
   await page.click('#inspector-refresh');
   await expect(page.locator('#inspector-refresh')).toBeEnabled(LIVE);
+  const response = page.waitForResponse('**/api/command.run');
   await page.click('#inspector-context');
-  await expect(page.locator('.context-notice')).toHaveCount(1, LIVE);
+  const { value: { context: snapshot } } = await (await response).json();
+  const report = page.locator('#context-usage-reader');
+  await expect(report).toBeVisible(LIVE);
+  await expect(report.locator('[data-context-metric="total"]')).toContainText(snapshot.total.toLocaleString('en'));
+  await expect(page.locator('.context-notice')).toHaveCount(0);
+  await report.locator('footer button').click();
+  await expect(report.getByRole('status')).not.toBeEmpty();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  const totalLabel = await page.evaluate(() => CLATI18n.t('context.total'));
+  expect(copied).toContain(`${totalLabel}: ${snapshot.total} ${snapshot.unit}`);
+  expect(copied).toContain(snapshot.estimator);
+  await page.keyboard.press('Escape');
+  await expect(report).toBeHidden();
+  await expect(page.locator('#inspector-context')).toBeFocused();
   await expect(page.locator('#prompt')).toHaveValue('Do not submit this draft');
   await page.click('#inspector-models');
   await expect(page.locator('[data-settings-panel="models"]')).toBeVisible();
@@ -501,6 +517,7 @@ test('details context response cannot land in a newly selected session', async (
   await expect(page.locator('.project-group:has(#session-list) [data-action=new-project-session]')).toBeEnabled(LIVE);
   release();
   await expect(page.locator('#inspector-context')).toBeEnabled(LIVE);
+  await expect(page.locator('#context-usage-reader')).toBeHidden();
   await expect(page.locator('.context-notice')).toHaveCount(0);
   await expect(page.locator('#inspector-feedback')).toBeEmpty();
 });
@@ -1189,6 +1206,83 @@ test('settings expose the default-deny WeChat binding surface', async ({ page })
   expect(calls).not.toContain('wechat.pairing.create');
 });
 
+test('a new prompt in an overflowing conversation stays at the bottom through the first reply', async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 480 });
+  await openWorkbench(page, hostInfo('reasoning'));
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  const viewport = page.locator('#transcript-scroll');
+  const replies = page.locator('#transcript > .msg.assistant .body');
+  const completed = page.locator('#transcript > .verdict.completed');
+  const longQuestion = title => [title, ...Array.from({ length: 9 }, (_, i) => `Line ${i + 1}`)].join('\n');
+  for (const turn of [1, 2]) {
+    await page.fill('#prompt', longQuestion(`Earlier question ${turn}`));
+    await page.click('#send');
+    await expect(completed).toHaveCount(turn, LIVE);
+  }
+
+  await viewport.evaluate(node => {
+    const transcript = node.querySelector('#transcript');
+    globalThis.bottomFollowFrames = [];
+    const observer = new ResizeObserver(() => {
+      if (transcript.querySelectorAll(':scope > .msg.user').length !== 3) return;
+      globalThis.bottomFollowFrames.push({
+        gap: node.scrollHeight - node.clientHeight - node.scrollTop,
+        following: node.dataset.followingLatest === 'true',
+      });
+    });
+    observer.observe(transcript);
+    observer.observe(node);
+  });
+  await page.fill('#prompt', longQuestion('Next question in an existing conversation'));
+  if (await viewport.getAttribute('data-following-latest') === 'false') await page.click('#back-to-latest');
+  await expect.poll(() => viewport.evaluate(node => ({
+    overflowing: node.scrollHeight > node.clientHeight * 2,
+    atBottom: Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 1,
+  }))).toEqual({ overflowing: true, atBottom: true });
+  await page.click('#send');
+  await expect(completed).toHaveCount(3, LIVE);
+  await expect(replies.last()).not.toBeEmpty();
+  const frames = await page.evaluate(() => globalThis.bottomFollowFrames);
+  expect(frames.length).toBeGreaterThan(1);
+  expect(frames.filter(({ gap, following }) => gap > 1 || !following)).toEqual([]);
+  await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(1);
+
+  await viewport.hover();
+  await page.mouse.wheel(0, -160);
+  await expect(viewport).toHaveAttribute('data-following-latest', 'false');
+  await page.click('#back-to-latest');
+  await expect(viewport).toHaveAttribute('data-following-latest', 'true');
+  await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(1);
+});
+
+test('refreshing unchanged run status leaves the visible round text in place', async ({ page }) => {
+  await openWorkbench(page, hostInfo('run-command'));
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.fill('#prompt', 'Keep the round running while an approval is pending');
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
+  await page.click('#send');
+  const approval = page.locator('.approval-card').last();
+  await expect(approval).toBeVisible(LIVE);
+
+  const retained = await page.evaluate(async () => {
+    const now = Date.now;
+    const fixed = now();
+    Date.now = () => fixed;
+    try {
+      await refreshWorkbench();
+      const clock = document.querySelector('.round-process-heading[data-running=true] .round-clock');
+      const request = document.querySelector('#transcript [data-event=model_requested] small');
+      const clockText = clock.firstChild, requestText = request.firstChild;
+      await refreshWorkbench();
+      return { clock: clockText === clock.firstChild, request: requestText === request.firstChild };
+    } finally { Date.now = now; }
+  });
+  await approval.locator('button.ghost').click();
+  await expect(page.locator('.verdict.completed').last()).toBeVisible(LIVE);
+  expect(retained).toEqual({ clock: true, request: true });
+});
+
 // —— 验收③：run 进行中 F5 → 视图完整恢复、流式继续（INV-W3）——
 test('refresh mid-run rebuilds the view and streaming continues', async ({ page }) => {
   const entry = hostInfo('long-stream');
@@ -1607,9 +1701,9 @@ test('context is readable and the plan-mode marker appears and clears', async ({
 
   await page.fill('#prompt', '/plan');
   await page.click('#send');
-  const badge = page.locator('#plan-mode-badge');
+  const badge = page.locator('#composer-plan-toggle[data-mode="plan"]');
   await expect(badge).toBeVisible(LIVE);
-  await expect(badge).toHaveText('Plan');
+  await expect(badge).toHaveAttribute('aria-pressed', 'true');
 
   // 另一条命令完成后仍常显，不是转录区里一闪而过的 status notice。
   await page.fill('#prompt', '/context');

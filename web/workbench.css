@@ -812,8 +812,8 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .msg.user .body.user-message-collapsed { cursor:pointer; }
 .user-message-collapsed .user-message-preview { max-height:calc(6 * var(--text-size-reading) * var(--text-leading));overflow:hidden;mask-image:linear-gradient(#000 55%,transparent 100%);-webkit-mask-image:linear-gradient(#000 55%,transparent 100%); }
 .msg.user .body.user-message-collapsed:focus-visible { outline:2px solid var(--accent);outline-offset:3px; }
-.user-message-reader { --dialog-width:800px;max-width:none;max-height:calc(100dvh - 32px);padding:0;overflow:hidden; }
-.user-message-reader[open] { display:flex;flex-direction:column; }
+.workbench-reader { --dialog-width:800px;max-width:none;max-height:calc(100dvh - 32px);padding:0;overflow:hidden; }
+.workbench-reader[open] { display:flex;flex-direction:column; }
 .user-reader-header,.user-reader-footer { display:flex;align-items:center;gap:14px;flex:none;padding:16px 20px; }
 .user-reader-header { border-bottom:1px solid var(--line); }
 .user-reader-header h2 { margin:0;flex:1;font-size:var(--text-size-ui);font-weight:600; }
@@ -821,6 +821,30 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .user-reader-content:not(.is-rendered),.user-reader-content pre { white-space:pre-wrap; }
 .user-reader-footer { border-top:1px solid var(--line);color:var(--text-muted);font-size:var(--text-size-secondary); }
 .user-reader-footer button { padding:8px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface-input); }
+.context-usage-reader { --dialog-width:760px; }
+.context-usage-reader .user-reader-content { padding:clamp(14px,3vw,22px);white-space:normal;font-size:var(--text-size-ui); }
+.context-usage-hint { margin:0 0 14px;color:var(--text-muted);font-size:var(--text-size-secondary); }
+.context-usage-totals { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:0; }
+.context-usage-totals .context-metric { display:grid;gap:4px;align-content:start;padding:12px clamp(8px,2vw,16px);background:var(--surface-input);border:1px solid var(--line); }
+.context-usage-totals .context-metric + .context-metric { border-inline-start:0; }
+.context-usage-totals .context-metric:first-child { border-radius:10px 0 0 10px; }
+.context-usage-totals .context-metric:last-child { border-radius:0 10px 10px 0;background:color-mix(in srgb,var(--accent) 8%,var(--surface-input)); }
+.context-usage-totals dt,.context-metric-unit { color:var(--text-muted);font-size:var(--text-size-secondary); }
+.context-usage-totals .context-metric-value { font-size:clamp(16px,2.6vw,24px);font-weight:650;line-height:1.2; }
+.context-usage-totals [data-context-metric=total] .context-metric-value { color:var(--accent); }
+.context-metric dd { margin:0;font-variant-numeric:tabular-nums; }
+.context-metric-unit { display:inline-block;margin-inline-start:.35em; }
+.context-usage-groups { display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:clamp(16px,4vw,32px);margin:22px 0 18px; }
+.context-usage-groups h3 { margin:0 0 8px;font-size:var(--text-size-ui);font-weight:600; }
+.context-usage-metrics { margin:0; }
+.context-usage-metrics .context-metric { display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:var(--text-size-secondary); }
+.context-usage-metrics dt { color:var(--text-muted); }
+.context-usage-metrics dd { text-align:end; }
+.context-usage-technical { padding-top:12px;border-top:1px solid var(--line); }
+.context-usage-technical summary { width:fit-content;cursor:pointer;color:var(--text-muted);font-size:var(--text-size-secondary); }
+.context-usage-technical summary:is(:hover,:focus-visible) { color:var(--text); }
+.context-usage-technical pre { margin:10px 0 0;padding:10px 12px;border-radius:8px;background:var(--surface-input);font:var(--text-size-secondary)/1.6 var(--font-mono); }
+@media (max-width:600px) { .context-usage-groups { grid-template-columns:1fr; } }
 @media(forced-colors:active) { .user-message-collapsed .user-message-preview { mask-image:none;-webkit-mask-image:none; }.user-message-collapsed { outline:1px solid ButtonText; } }
 
 .run-activity .run-loading{animation:run-loading-turn 2s linear infinite}

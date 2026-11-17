@@ -17,9 +17,12 @@ function fixture() {
     dataset = {};
     clientHeight = 400;
     scrollHeight = 1200;
+    fractionalExtent = 0;
     #top = 800;
     get scrollTop() { return this.#top; }
-    set scrollTop(top) { this.#top = Math.max(0, Math.min(top, this.scrollHeight - this.clientHeight)); }
+    set scrollTop(top) {
+      this.#top = Math.max(0, Math.min(top, this.scrollHeight - this.clientHeight + this.fractionalExtent));
+    }
   }
   const viewport = new Viewport();
   const frames = new Map();
@@ -34,7 +37,7 @@ function fixture() {
   const follow = scope.createTranscriptFollow(viewport, () => {});
   return {
     viewport, follow, scope,
-    frame() { for (const [id, callback] of frames) { frames.delete(id); callback(); } },
+    frame() { for (const [id, callback] of [...frames]) { frames.delete(id); callback(); } },
     scroll(top) { viewport.scrollTop = top; viewport.dispatchEvent(new Event('scroll')); },
     wheel(deltaY, target = viewport) {
       const event = Object.assign(new Event('wheel'), { deltaY, deltaX: 0 });
@@ -66,6 +69,15 @@ test('a small upward wheel gesture releases follow before queued output can scro
   assert.equal(viewport.scrollTop, 822);
 });
 
+test('following reaches the actual end when the exposed scroll range is rounded down', () => {
+  const { viewport, follow, frame } = fixture();
+  viewport.scrollHeight += 20;
+  viewport.fractionalExtent = 0.5;
+  follow.schedule();
+  frame();
+  assert.equal(viewport.scrollTop, 820.5);
+});
+
 test('a position change before the scroll event releases follow, while layout clamping preserves it', () => {
   const { viewport, follow, frame, scroll } = fixture();
   viewport.scrollTop = 798;
@@ -93,6 +105,65 @@ test('rendering that momentarily clamps the viewport does not stop following liv
   follow.schedule();
   frame();
   assert.equal(viewport.scrollTop, 820);
+});
+
+test('layout is corrected before paint and late browser adjustments keep following', () => {
+  const { viewport, follow, frame, scroll, wheel } = fixture();
+  viewport.scrollHeight += 40;
+  follow.syncLayout();
+  assert.equal(viewport.scrollTop, 840);
+
+  frame();
+  // The previous layout's scroll position can arrive after the next animation callback.
+  scroll(833);
+  assert.equal(follow.isPinned(), true);
+  frame();
+  assert.equal(viewport.scrollTop, 840);
+
+  scroll(820);
+  assert.equal(follow.isPinned(), false);
+  follow.resume();
+  follow.syncLayout();
+  wheel(-4);
+  scroll(836);
+  frame();
+  assert.equal(viewport.scrollTop, 836);
+  assert.equal(follow.isPinned(), false);
+});
+
+test('a shrinking composer and first reply can preserve the full scroll range without releasing follow', async () => {
+  const { viewport, scope, follow, frame, scroll, send } = composerFixture(true);
+  scope.findActive = false;
+  await send();
+  const frames = new Map();
+  const composer = {};
+  const seat = { style: {
+    getPropertyValue() { return '150px'; },
+    setProperty(_name, value) {
+      viewport.scrollHeight += Number.parseInt(value, 10) - 150;
+      viewport.scrollTop = viewport.scrollTop; // Clamp to the temporarily shorter transcript.
+    },
+  } };
+  scope.dom['message-map-track'] = {};
+  scope.document.querySelector = selector => selector === '.conversation' ? seat : composer;
+  scope.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe(target) { frames.set(target, this.callback); }
+  };
+  scope.renderMapWindow = () => {};
+  loadAppFunctions(scope, 'const composerSeat =', 'function openImagePicker()');
+  frames.get(composer)([{ contentRect: { height: 145 } }]);
+  assert.equal(viewport.scrollTop, 795);
+  viewport.scrollHeight += 5; // The first assistant update replaces the lost height.
+  scroll(viewport.scrollTop);
+  scope.scrollIfFollowing();
+  frame();
+  assert.equal(viewport.scrollTop, 800);
+  assert.equal(follow.isPinned(), true);
+  viewport.scrollHeight += 36;
+  scope.scrollIfFollowing();
+  frame();
+  assert.equal(viewport.scrollTop, 836);
 });
 
 test('a layout change that puts the reader at the bottom does not resume paused follow', () => {

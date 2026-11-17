@@ -382,7 +382,9 @@ Stable instructions and tool definitions precede growing conversation history.
 The core orders ordinary tools first and optional run tools last, by name
 within each group. Both HTTP adapters append transient host context, such as
 the active scratch directory, after projecting history. That context is counted
-against the input budget and regenerated for the next run.
+against the input budget and regenerated for the next run. Scratch guidance
+asks the model to apply it silently and keep routine setup out of replies and
+progress updates.
 Instructions, model/permission/skill changes and context compaction can change
 the reusable prefix. A new conversation or an expired server cache can have a
 low hit rate; enabling caching does not promise a particular hit percentage.

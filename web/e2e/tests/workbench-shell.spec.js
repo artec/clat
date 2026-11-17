@@ -129,8 +129,17 @@ test('completed replies open project files and let users copy paths and preview 
       await expect(reply.getByText(reference, {exact:true})).toBeVisible();
       await expect(reply.getByRole('button', {name:reference, exact:true})).toHaveCount(0);
     }
+    for (const link of [fileLink, urlLink]) {
+      await link.click({ button: 'right' });
+      await expect(menu).toBeHidden();
+      // Chromium may select a word for its own context menu.
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      await expect(page.locator('.selection-quote')).toBeHidden();
+      await link.press('Shift+F10');
+      await expect(menu).toBeHidden();
+    }
 
-    await urlLink.click();
+    await urlLink.press('Enter');
     await action('copy_url').click();
     await expect.poll(clipboard).toBe(preview);
     await page.context().route(preview, route => route.fulfill({body:'Preview service'}));
