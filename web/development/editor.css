@@ -34,7 +34,7 @@
 .dev-editor-path>svg{width:13px;height:13px;flex:none}.dev-editor-path button{padding:2px 0;min-height:0;color:var(--text-muted);font:inherit;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 .dev-editor-path button:hover{color:var(--text)}.editor-path-file{min-width:0;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:65%}
 .editor-statusbar{display:flex;justify-content:flex-end;align-items:center;gap:14px;flex:none;min-height:26px;padding:3px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:auto}
-.editor-statusbar:empty{display:none}.editor-statusbar select{font:inherit;color:inherit;max-width:220px;border:0;background:var(--surface);padding:0}
+.editor-statusbar:empty{display:none}.editor-statusbar select{--select-max-width:220px}
 .editor-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);text-align:center;gap:12px}.editor-empty>svg{width:40px;height:40px;opacity:.65}.editor-empty p{margin:0;max-width:400px;font-size:var(--text-size-ui)}.editor-empty small{font-size:var(--text-size-secondary)}
 .editor-list-back{display:none!important}
 .file-kind-icon[data-kind=rust],.file-kind-icon[data-kind=php],.file-kind-icon[data-kind=cpp],.file-kind-icon[data-kind=c]{color:var(--dev-token-function)}

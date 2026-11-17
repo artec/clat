@@ -90,6 +90,10 @@ struct StepExpectation {
     forbidden_tool_result_contains: Vec<ToolResultContentExpectation>,
     instructions_include: Vec<String>,
     instructions_exclude: Vec<String>,
+    /// 6aea39f8 起项目指令走 attributed runtime-context 尾巴（最后一条
+    /// user 消息），不再进系统 instructions——按请求条目全文检查。
+    request_include: Vec<String>,
+    request_exclude: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -449,6 +453,32 @@ impl TestModelScript for ScenarioScript {
                     &mut state,
                     format!(
                         "request {} instructions unexpectedly contain `{forbidden}`",
+                        index + 1
+                    ),
+                ));
+            }
+        }
+        // 尾巴在 provider 序列化层才成为消息；模型面看到的是
+        // options.request_tail（含项目指令与 scratch 段），items 覆盖
+        // todo 等注入消息——两处合检。
+        let mut request_text = serde_json::to_string(&request.items).unwrap_or_default();
+        if let Some(tail) = request.options.request_tail.as_deref() {
+            request_text.push_str(tail);
+        }
+        for required in &step.expect.request_include {
+            if !request_text.contains(required) {
+                return Err(Self::reject(
+                    &mut state,
+                    format!("request {} items are missing `{required}`", index + 1),
+                ));
+            }
+        }
+        for forbidden in &step.expect.request_exclude {
+            if request_text.contains(forbidden) {
+                return Err(Self::reject(
+                    &mut state,
+                    format!(
+                        "request {} items unexpectedly contain `{forbidden}`",
                         index + 1
                     ),
                 ));

@@ -8,7 +8,7 @@ const HELP_TOPICS = [
   {"id":"files","group":"tools","icon":"folder","target":"file-browser","related":["git","resources","terminal"]},
   {"id":"git","group":"tools","icon":"branch","target":"workspace-review","related":["git_settings","files","operations"]},
   {"id":"operations","group":"tools","icon":"activity-log","target":"turn-review","related":["git","processes"]},
-  {"id":"processes","group":"tools","icon":"task-list","target":"task-review","related":["tasks","operations","terminal"]},
+  {"id":"processes","group":"tools","icon":"process-logs","target":"task-review","related":["tasks","operations","terminal"]},
   {"id":"workflow","group":"tools","icon":"plan","target":"workflow-details","related":["queue","permissions","tasks"]},
   {"id":"terminal","group":"pages","icon":"terminal","target":"terminal-page","related":["terminal_font","processes","projects"]},
   {"id":"resources","group":"pages","icon":"folder","target":"resources-dialog","related":["files","history"]},

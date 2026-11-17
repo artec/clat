@@ -1,5 +1,8 @@
 use crate::app::Desktop;
-use clat_core::client_ports::host::{BackendConnection, HostClient, HostNotification};
+use clat_core::client_ports::host::{
+    BackendConnection, HostClient, HostNotification, NotificationOutcome,
+};
+use clat_core::client_ports::presentation::{LocaleContext, UiMessage};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
@@ -142,12 +145,9 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
         return;
     }
     static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
-    let title = match notice.kind.as_str() {
-        "completed" => crate::localization::text(app, "desktop.notification_completed"),
-        "job_finished" => crate::localization::text(app, "job.notification"),
-        "approval" => crate::localization::text(app, "desktop.notification_approval"),
-        "question" => crate::localization::text(app, "desktop.notification_question"),
-        _ => return,
+    let Some((title, body)) = notification_content(crate::localization::context(app), &notice)
+    else {
+        return;
     };
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let state = app.state::<Desktop>();
@@ -162,6 +162,123 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
         .builder()
         .id(id)
         .title(title)
-        .body(crate::localization::text(app, "desktop.notification_body"))
+        .body(body)
         .show();
+}
+
+fn notification_content(
+    locale: LocaleContext,
+    notice: &HostNotification,
+) -> Option<(&'static str, String)> {
+    let outcome = notice.completion.as_ref().map(|result| result.outcome);
+    let title = match (notice.kind.as_str(), outcome) {
+        ("completed", Some(NotificationOutcome::Succeeded)) => "desktop.notification_run_succeeded",
+        ("completed", Some(NotificationOutcome::Failed)) => "desktop.notification_run_failed",
+        ("completed", _) => "desktop.notification_completed",
+        ("job_finished", Some(NotificationOutcome::Succeeded)) => {
+            "desktop.notification_job_succeeded"
+        }
+        ("job_finished", Some(NotificationOutcome::Failed)) => "desktop.notification_job_failed",
+        ("job_finished", Some(NotificationOutcome::Stopped)) => "desktop.notification_job_stopped",
+        ("job_finished", Some(NotificationOutcome::Interrupted)) => {
+            "desktop.notification_job_interrupted"
+        }
+        ("job_finished", _) => "job.notification",
+        ("approval", _) => "desktop.notification_approval",
+        ("question", _) => "desktop.notification_question",
+        _ => return None,
+    };
+    let body = if matches!(notice.kind.as_str(), "completed" | "job_finished") {
+        completion_body(locale, notice)
+    } else {
+        locale.text("desktop.notification_body").into()
+    };
+    Some((locale.text(title), body))
+}
+
+fn completion_body(locale: LocaleContext, notice: &HostNotification) -> String {
+    // The breadcrumb here must not expose parent paths or prompt-derived titles.
+    let project = notice.project_root.file_name().map(|name| {
+        let name = name.to_string_lossy();
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        clat_core::client_ports::redact_secrets(&name)
+    });
+    let duration = notice
+        .completion
+        .as_ref()
+        .and_then(|result| result.elapsed_ms)
+        .map(|ms| completion_duration(locale, ms));
+    match (project.filter(|name| !name.is_empty()), duration) {
+        (Some(project), Some(duration)) => locale.render(
+            &UiMessage::new("desktop.notification_project_elapsed")
+                .arg("project", project)
+                .arg("duration", duration),
+        ),
+        (None, Some(duration)) => {
+            locale.render(&UiMessage::new("desktop.notification_elapsed").arg("duration", duration))
+        }
+        (Some(project), None) => project,
+        (None, None) => locale.text("desktop.notification_body").into(),
+    }
+}
+
+fn completion_duration(locale: LocaleContext, elapsed_ms: u64) -> String {
+    let seconds = elapsed_ms / 1000;
+    match seconds {
+        0 => locale.text("desktop.notification_under_second").into(),
+        1..=59 => locale.render(
+            &UiMessage::new("desktop.notification_seconds").arg("seconds", seconds.to_string()),
+        ),
+        _ => locale.render(
+            &UiMessage::new("round.duration")
+                .arg("minutes", (seconds / 60).to_string())
+                .arg("seconds", (seconds % 60).to_string()),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clat_core::client_ports::presentation::Locale;
+    use serde_json::json;
+
+    #[test]
+    fn completion_banner_keeps_outcome_and_hides_parent_path() {
+        let notice = serde_json::from_value(json!({
+            "id": "fixture", "kind": "job_finished", "workspace_id": "workspace",
+            "project_root": "private-parent/fixture-project", "session_id": "session",
+            "completion": {"outcome": "stopped", "elapsed_ms": 75000},
+        }))
+        .unwrap();
+        for language in [Locale::English, Locale::Simplified, Locale::Traditional] {
+            let locale = LocaleContext::new(language);
+            let (title, body) = notification_content(locale, &notice).unwrap();
+            assert_eq!(title, locale.text("desktop.notification_job_stopped"));
+            assert!(body.contains("fixture-project"));
+            assert!(!body.contains("private-parent"));
+            assert!(body.contains(&completion_duration(locale, 75000)));
+        }
+    }
+
+    #[test]
+    fn completion_banner_accepts_old_and_future_hosts() {
+        let locale = LocaleContext::new(Locale::English);
+        let legacy = json!({
+            "id": "fixture", "kind": "completed", "workspace_id": "workspace",
+            "project_root": "private-parent/fixture-project", "session_id": "session",
+        });
+        let mut future = legacy.clone();
+        future["completion"] = json!({"outcome": "future_outcome"});
+        for event in [legacy, future] {
+            let notice = serde_json::from_value(event).unwrap();
+            assert_eq!(
+                notification_content(locale, &notice),
+                Some((
+                    locale.text("desktop.notification_completed"),
+                    "fixture-project".into(),
+                ))
+            );
+        }
+    }
 }

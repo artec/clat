@@ -425,39 +425,58 @@ fn host_notification_observer_does_not_pin_idle_project_domains() {
 
 #[test]
 fn completion_notification_carries_the_admitted_session_without_transcript() {
-    let (host, storage, project) = fixture("desktop-notification-scope");
-    let (_, queue, initial) = host.notifications.subscribe();
-    drop(initial);
-    let route = host.route("default").unwrap();
-    super::super::protocol::dispatch(
-        "prompt.send",
-        &json!({"text":"private fixture prompt"}),
-        &route,
-    )
-    .unwrap();
-    let notice = queue
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("completion notice");
-    assert_eq!(notice.kind, "completed");
-    assert_eq!(notice.workspace_id, "default");
-    assert_eq!(notice.project_root, project);
-    assert_eq!(
-        notice.session_id,
-        route
-            .app
-            .lock()
-            .unwrap()
-            .current_session_id()
-            .map(|id| id.as_str().to_owned())
-    );
-    let payload = serde_json::to_string(&notice).unwrap();
-    assert!(!payload.contains("private fixture prompt"));
-    assert!(!payload.contains("output"));
-    drop(route);
-    host.close().unwrap();
-    drop(host);
-    crate::test_support::cleanup_tree(&storage);
-    crate::test_support::cleanup_tree(&project);
+    use crate::host_client::NotificationOutcome;
+    for (name, behavior, outcome) in [
+        (
+            "success",
+            TestBehavior::Success,
+            NotificationOutcome::Succeeded,
+        ),
+        (
+            "failure",
+            TestBehavior::Failure,
+            NotificationOutcome::Failed,
+        ),
+    ] {
+        let (host, storage, project) = fixture_with_behavior(name, behavior);
+        let (_, queue, initial) = host.notifications.subscribe();
+        drop(initial);
+        let route = host.route("default").unwrap();
+        super::super::protocol::dispatch(
+            "prompt.send",
+            &json!({"text":"private fixture prompt"}),
+            &route,
+        )
+        .unwrap();
+        let notice = queue
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("completion notice");
+        assert_eq!(notice.kind, "completed");
+        assert_eq!(notice.workspace_id, "default");
+        assert_eq!(notice.project_root, project);
+        assert!(notice.session_id.is_some());
+        assert_eq!(
+            notice.session_id,
+            route
+                .app
+                .lock()
+                .unwrap()
+                .current_session_id()
+                .map(|id| id.as_str().to_owned())
+        );
+        let result = notice.completion.as_ref().expect("completion metadata");
+        assert_eq!(result.outcome, outcome);
+        assert!(result.elapsed_ms.is_some());
+        let payload = serde_json::to_string(&notice).unwrap();
+        for private in ["private fixture prompt", "output", "intentional failure"] {
+            assert!(!payload.contains(private));
+        }
+        drop(route);
+        host.close().unwrap();
+        drop(host);
+        crate::test_support::cleanup_tree(&storage);
+        crate::test_support::cleanup_tree(&project);
+    }
 }
 
 #[test]

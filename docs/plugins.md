@@ -792,6 +792,17 @@ to work with undeclared input/output/health information. No WIT or external ABI
 change is required. Native text-file tools describe raw text/JSON storage rather
 than inventing parsers or aggregate computation.
 
+CLAT gives the model decision rules for using its registered tools. The rules
+connect the user's intent and current state to a first action, such as reading
+source files, checking prior session events, discovering plugins, or resuming a
+tracked task from its checkpoint. They also explain when to run a command in the
+current turn, start or inspect a Host background job, or draft a schedule when
+the user asks for future or recurring work. The model checks actual results
+before reporting completion and confirms activation before promising follow-up.
+Guidance comes from the same frozen, policy-filtered tool view as the model
+request and checks native ownership of each named tool. A visible tool may
+still require approval or report an unavailable dependency when called.
+
 MCP and both WASM component paths expose existing definitions and owner/adapter
 identity. Output schema, business labels and login checks that were not declared
 remain unknown. Component instantiation, configuration presence and connection

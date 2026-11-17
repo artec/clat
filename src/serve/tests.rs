@@ -3133,6 +3133,7 @@ fn web_assets_are_public_but_contain_no_credentials() {
         ("/project-context.js", "application/javascript"),
         ("/project-host.js", "application/javascript"),
         ("/style.css", "text/css"),
+        ("/select.css", "text/css"),
     ] {
         let content_type = get_response_content_type(handle.addr, path);
         assert_eq!(get(handle.addr, path, &[]).0, 200, "{path} must be served");
@@ -3312,6 +3313,8 @@ const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
     "http://[::1]:3000/a_b_c",
     "https://someone@localhost:3000",
     "http://localhost:3000?mode=clean",
+    "http://localhost:3000/view_",
+    "http://localhost:3000/",
 ];
 
 #[test]

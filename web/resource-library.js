@@ -249,15 +249,14 @@ function createResourceLibrary(shell) {
   const view=createNavigationPage(page,{title:()=>shellText('resources'),searchLabel:()=>pageText('search_resources')});
   const seats=new Map();let tab='files';
   const editorHost=el('div','resource-editor-host');editorHost.hidden=true;page.append(editorHost);
-  const sectionControl=el('div','resource-section-select'),sectionSelect=el('select');
+  const sectionSelect=el('select','resource-section-select');
   sectionSelect.id='resource-section';
   CLATI18n.attribute(sectionSelect,'aria-label',()=>shellText('resources'));
   for(const key of ['files','materials','bookmarks']){
     const option=el('option','',()=>pageText(key));option.value=key;sectionSelect.append(option);
   }
-  sectionControl.append(sectionSelect,svgIcon('chevron-down'));
   sectionSelect.onchange=()=>select(sectionSelect.value);
-  view.head.append(sectionControl);
+  view.head.append(sectionSelect);
   const introduction=key=>navigationOverview({title:()=>pageText(key),description:()=>pageText('resource_'+key+'_intro'),icon:key==='bookmarks'?'bookmark':'file'});
   const status=el('div','navigation-status');view.sidebar.insertBefore(status,view.list);
   const refresh=()=>{const seat=seats.get(tab);seat?.dispose?.();seats.delete(tab);select(tab);};

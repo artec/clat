@@ -596,25 +596,32 @@ fn assert_request_history(requests: &[Value]) {
             users.iter().filter(|text| **text == "continue").count(),
             usize::from(continuing)
         );
+        // 6aea39f8 起 scratch 指令并入 attributed 尾巴：尾巴是最后一条
+        // user 消息，以 runtime_context::INTRO（"Current runtime context
+        // supplied by CLAT."）开头并内含 "Host run context:" scratch 段；
+        // 无运行时快照时也可独立以 "Host run context:" 开头。
         let tails: Vec<_> = users
             .iter()
-            .filter(|text| text.starts_with("Host run context:"))
+            .filter(|text| {
+                text.starts_with("Host run context:")
+                    || text.starts_with("Current runtime context supplied by CLAT.")
+            })
             .collect();
-        assert_eq!(
-            tails.len(),
-            1,
-            "one current scratch instruction per request"
+        assert_eq!(tails.len(), 1, "one attributed tail per request: {users:?}");
+        assert!(
+            tails[0].contains("Host run context:"),
+            "the tail carries the current scratch instruction"
         );
         assert_eq!(messages.last().unwrap()["content"], *tails[0]);
         scratch_by_run[usize::from(continuing)].insert((*tails[0]).to_owned());
-        let runtime = users
+        let todos = users
             .iter()
             .filter(|text| text.starts_with("CLAT runtime context (not a new user command):"))
             .count();
-        assert!(runtime <= 1);
+        assert!(todos <= 1);
         assert_eq!(
             users.len(),
-            2 + usize::from(continuing) + runtime,
+            2 + usize::from(continuing) + todos,
             "unexpected user-role content: {users:?}"
         );
     }

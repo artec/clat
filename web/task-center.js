@@ -57,9 +57,7 @@ function taskFilterControl(id, label, options, allKey) {
     const option = el('option', '', () => pageText(key === 'all' ? allKey : key));
     option.value = key; select.append(option);
   }
-  const field = el('span', 'task-filter-select');
-  field.append(select, svgIcon('chevron-down'));
-  return { select, field };
+  return select;
 }
 
 function taskDetailChanged(previous, next) {
@@ -115,7 +113,7 @@ function renderTaskList(list, items, context) {
 function taskOverview(actions) {
   const overview = navigationOverview({
     title:() => pageText('task_overview_title'), description:() => pageText('task_intro'), icon:'schedule',
-    items:[['example_review', 'branch'], ['example_summary', 'task-list']].map(([key, icon]) => ({
+    items:[['example_review', 'branch'], ['example_summary', 'document']].map(([key, icon]) => ({
       title:() => pageText(key), description:() => pageText(key + '_description'), icon,
       action:() => actions.create(key),
     })),
@@ -132,7 +130,7 @@ function createTaskCenter() {
   const type = taskFilterControl('task-type', 'task_type', TASK_TYPES, 'all_types');
   const phase = taskFilterControl('task-status', 'task_status', TASK_STATUSES, 'all_statuses');
   const {element: scope, input: all, text: trustedProjects} = navigationTrustedProjects('task-all-projects');
-  const fields = el('div', 'task-filter-row'); fields.append(type.field, phase.field);
+  const fields = el('div', 'task-filter-row'); fields.append(type, phase);
   const status = el('p', 'navigation-status'); status.setAttribute('role', 'status');
   const view = createNavigationPage(page, {title: () => shellText('tasks'), searchLabel: () => pageText('search_tasks'), onOverview:returnToOverview});
   const {list, body: detail, query} = view;
@@ -156,12 +154,12 @@ function createTaskCenter() {
   });
   const same = (first, second) => first?.id === second.id && first?.type === second.type
     && first?.project.root === second.project.root;
-  const filtered = row => (type.select.value === 'all' || row.type === type.select.value)
-    && (phase.select.value === 'all' || row[phase.select.value]);
+  const filtered = row => (type.value === 'all' || row.type === type.value)
+    && (phase.value === 'all' || row[phase.value]);
   function route(id = null) {
     const params = new URLSearchParams();
-    if (type.select.value !== 'all') params.set('type', type.select.value);
-    if (phase.select.value !== 'all') params.set('status', phase.select.value);
+    if (type.value !== 'all') params.set('type', type.value);
+    if (phase.value !== 'all') params.set('status', phase.value);
     if (all.checked) params.set('scope', 'trusted');
     if (id) params.set('task', id);
     const search = params.toString();
@@ -252,7 +250,7 @@ function createTaskCenter() {
     CLATI18n.bind(status, 'textContent', () => pageText('loading'));
     navigate(); overview(); void refresh();
   }
-  type.select.onchange = phase.select.onchange = filtersChanged;
+  type.onchange = phase.onchange = filtersChanged;
   all.onchange = updateScope; query.oninput = rows;
   page.addEventListener('clat:page-capture', () => { reading = detail.scrollTop; });
   page.addEventListener('clat:page-enter', () => { if (selected) show(selected, true); refreshViewContext(); });
@@ -269,8 +267,8 @@ function createTaskCenter() {
     page, interactionHost: view.detail, refresh, fail,
     restore(params) {
       const nextType = params.get('type'), nextStatus = params.get('status') || nextType;
-      type.select.value = TASK_TYPES.includes(nextType) ? nextType : 'all';
-      phase.select.value = TASK_STATUSES.includes(nextStatus) ? nextStatus : 'all';
+      type.value = TASK_TYPES.includes(nextType) ? nextType : 'all';
+      phase.value = TASK_STATUSES.includes(nextStatus) ? nextStatus : 'all';
       const scopeChanged = all.checked !== (params.get('scope') === 'trusted');
       all.checked = params.get('scope') === 'trusted'; restoreId = params.get('task');
       if (scopeChanged) { projects = []; items = []; list.replaceChildren(); }
@@ -278,11 +276,11 @@ function createTaskCenter() {
       if (!restoreId) overview();
     },
     register(actions) { scheduleActions = actions; refreshViewContext(); },
-    openSchedules() { type.select.value = 'schedules'; phase.select.value = 'all'; trigger.click(); },
+    openSchedules() { type.value = 'schedules'; phase.value = 'all'; trigger.click(); },
     showSchedule(rule) {
       const local = projects.find(project => project.root === projectRoot()) || currentProject();
       const row = taskRows({...local, jobs:[], rules:[rule]})[0];
-      if (!filtered(row)) { type.select.value = 'schedules'; phase.select.value = 'all'; }
+      if (!filtered(row)) { type.value = 'schedules'; phase.value = 'all'; }
       show(row);
     },
   };

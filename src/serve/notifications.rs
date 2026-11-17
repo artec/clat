@@ -1,7 +1,7 @@
 //! A host-wide SSE projection avoids pinning every mounted project with a live
 //! per-project connection. Reclamation and the existing writer lease stay intact.
 use super::state::ServeShared;
-use crate::host_client::HostNotification;
+use crate::host_client::{HostNotification, NotificationCompletion, NotificationOutcome};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::TcpStream;
@@ -94,6 +94,7 @@ impl ServeShared {
             workspace_id: scope,
             project_root: self.notification_root.clone(),
             session_id,
+            completion: None,
         }
     }
 
@@ -101,24 +102,64 @@ impl ServeShared {
         let Some(id) = job.notification_id.as_deref() else {
             return;
         };
-        let notice = self.notification("job_finished", id, Some(job.session.clone()));
-        if let Some(host) = self.host.lock().expect("host link").upgrade() {
-            host.notifications.publish(notice);
-        }
+        let mut notice = self.notification("job_finished", id, Some(job.session.clone()));
+        let outcome = match job.state.as_str() {
+            "completed" => NotificationOutcome::Succeeded,
+            "failed" => NotificationOutcome::Failed,
+            "killed" => NotificationOutcome::Stopped,
+            "interrupted" => NotificationOutcome::Interrupted,
+            _ => NotificationOutcome::Unknown,
+        };
+        notice.completion = Some(NotificationCompletion {
+            outcome,
+            elapsed_ms: job
+                .finished_at
+                .and_then(|end| end.checked_sub(job.started_at))
+                .and_then(|elapsed| elapsed.try_into().ok()),
+        });
+        self.emit_notification(notice);
     }
+
+    pub(super) fn publish_run_completion(&self, event: &crate::RunEvent) {
+        let outcome = match event {
+            crate::RunEvent::RunCompleted { .. } => NotificationOutcome::Succeeded,
+            crate::RunEvent::RunFailed { .. } => NotificationOutcome::Failed,
+            _ => return,
+        };
+        self.publish_run_notification("completed", None, Some(outcome));
+    }
+
     pub(super) fn publish_notification(&self, kind: &str, key: Option<&str>) {
+        self.publish_run_notification(kind, key, None);
+    }
+
+    fn publish_run_notification(
+        &self,
+        kind: &str,
+        key: Option<&str>,
+        outcome: Option<NotificationOutcome>,
+    ) {
         let notice = {
             let mut inner = self.inner.lock().expect("serve inner lock");
             let Some(run) = inner.active_run.as_mut() else {
                 return;
             };
-            let key = key.unwrap_or(&run.rpc_id).to_owned();
-            if run.session_id.is_none() {
-                run.notifications.push((kind.to_owned(), key));
+            let key = key.unwrap_or(&run.rpc_id);
+            let mut notice = self.notification(kind, key, run.session_id.clone());
+            notice.completion = outcome.map(|outcome| NotificationCompletion {
+                outcome,
+                elapsed_ms: run.started_at.elapsed().as_millis().try_into().ok(),
+            });
+            if notice.session_id.is_none() {
+                run.notifications.push(notice);
                 return;
             }
-            self.notification(kind, &key, run.session_id.clone())
+            notice
         };
+        self.emit_notification(notice);
+    }
+
+    pub(super) fn emit_notification(&self, notice: HostNotification) {
         if let Some(host) = self.host.lock().expect("host link").upgrade() {
             host.notifications.publish(notice);
         }

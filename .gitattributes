@@ -98,6 +98,7 @@ tests/fixtures/native-job-state.json text eol=lf
 web/e2e/project-test-ports.js text eol=lf
 web/icons/clat.svg text eol=lf
 desktop/ui/window-bar.js text eol=lf
+desktop/ui/select.css text eol=lf
 
 # Navigation source embedded byte-for-byte.
 web/navigation-pages.js text eol=lf

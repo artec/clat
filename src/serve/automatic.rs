@@ -245,12 +245,7 @@ impl crate::EventSink for ScopedSink {
         self.shared.broadcast(SseFrame { event: "notice", data: super::shapes::ctl_data(&serde_json::json!({
             "kind":"background_run", "payload":{"phase":"event","session_id":self.session,"event":wire["event"]}
         })) });
-        if matches!(
-            event,
-            crate::RunEvent::RunCompleted { .. } | crate::RunEvent::RunFailed { .. }
-        ) {
-            self.shared.publish_notification("completed", None);
-        }
+        self.shared.publish_run_completion(&event);
     }
 }
 

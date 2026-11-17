@@ -8,10 +8,10 @@
         "available_tools_include": [
           "read_file"
         ],
-        "instructions_include": [
+        "request_include": [
           "root-rule-token"
         ],
-        "instructions_exclude": [
+        "request_exclude": [
           "nested-rule-token"
         ]
       },
@@ -33,7 +33,7 @@
         "required_tool_results": [
           "read_file"
         ],
-        "instructions_include": [
+        "request_include": [
           "root-rule-token",
           "nested-rule-token"
         ]
@@ -70,7 +70,6 @@
       "tool/result",
       "step/end",
       "step/start",
-      "system/message",
       "request/header",
       "assistant/message",
       "step/end",

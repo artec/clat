@@ -358,7 +358,7 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .task-timing legend { padding:0 6px; color:var(--text-soft); font-size:var(--text-size-secondary); }
 .task-editor .task-setting-row:not([hidden]) { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,58%); align-items:center; gap:10px; min-height:45px; padding:4px 2px; }
 .task-timing .task-setting-row + .task-setting-row, .task-timing .task-job-trigger + .task-setting-row { border-top:1px solid var(--line); }
-.task-timing :is(input,select) { padding:6px 8px; }
+.task-timing input { padding:6px 8px; }
 .task-job-trigger { margin:6px 2px 10px; color:var(--text); font-size:var(--text-size-ui); }
 .task-editor-status { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0; }
 .task-editor-status:empty { display:none; }
@@ -410,7 +410,6 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .history-advanced { margin-top: 24px; color: var(--text-muted); }
 .settings-draft-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding: 12px 14px; border-radius: 9px; background: var(--surface-input); color: var(--text-muted); font-size: var(--text-size-secondary); }
 .task-filter-row { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 8px; }
-.shell-pages .task-filter-select > select { min-height: 34px; padding: 5px 24px 5px 9px; text-overflow: ellipsis; cursor: pointer; }
 .image-preview { max-width: min(1000px,90vw); max-height: 90dvh; border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--surface); color: var(--text); }
 .image-preview img { display: block; max-width: 80vw; max-height: 75dvh; object-fit: contain; }
 .message-bookmark { grid-column: 2; justify-self: start; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; padding: 4px 8px; font-size: 11px; }

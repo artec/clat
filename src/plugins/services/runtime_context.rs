@@ -152,7 +152,7 @@ pub(crate) fn validate_runtime_header(
                 && object
                     .get("text")
                     .and_then(Value::as_str)
-                    .is_some_and(|text| valid_runtime_text(text))
+                    .is_some_and(valid_runtime_text)
         })
     {
         return Err("request/header has invalid CLAT runtime context".into());

@@ -5,7 +5,7 @@
 .setup-logo{display:grid;place-items:center;width:28px;height:28px;flex:none;background:var(--brand);border-radius:7px}
 .setup-logo::before{content:'';width:24px;height:24px;background:#fff;mask:url('/icons/clat.svg') center / contain no-repeat;-webkit-mask:url('/icons/clat.svg') center / contain no-repeat}
 .setup-language{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-muted)}
-.model-setup-card .setup-language select{width:auto;max-width:150px;padding:4px 6px;font-size:12px}
+.model-setup-card .setup-language select{width:auto;max-width:150px}
 .setup-steps{font-size:12px;color:var(--text-muted);margin:20px 0 6px}
 .model-setup-card .workbench-dialog-header{margin-bottom:8px}
 .setup-project{color:var(--text-muted);font-size:13px;margin:0 0 16px;overflow-wrap:anywhere}

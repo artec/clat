@@ -134,6 +134,8 @@ Scrolling up pauses following until you return to the bottom.
 
 **History timeline** opens the shared Desktop and Web/PWA execution workbench. Recent sessions and cross-session results stay on the left. The timeline and collapsible turns show execution order, and the right pane loads details for the selected record. On narrow windows, details open in a drawer. Use **Refresh snapshot** to read newly committed records. See [history timeline](history.md) for search scope, precise navigation and the available record details.
 
+Single-choice dropdowns in sidebars, pages, and dialogs use the task filters’ rounded field and chevron. The option menu uses the platform’s native picker. Settings uses its own field style.
+
 Long user messages show a six-line preview with a fading lower edge. The entire collapsed text bubble is clickable (also Enter/Space), opening a centered Markdown reader with a blurred backdrop. The reader fits its content up to the window height limit, then scrolls the message while keeping the header and Copy full text button visible. Copy full text copies the original message, including Markdown syntax. Escape, Close or clicking the backdrop dismisses the reader without expanding the conversation or changing its scroll position. Attachments remain separate. Search hits in hidden text open the original text and highlight the exact match. Precise message navigation opens the Markdown reader. Web and Desktop share this behavior.
 
 User messages preserve entered line breaks in the conversation and full-message reader.
@@ -321,8 +323,11 @@ Host checks; no general-purpose native window API is exposed.
 
 The toolbar and right work area remain available across content pages. Desktop
 update/about actions live under Settings → Updates and about in the redesigned
-workbench. macOS retains standard system editing/window menus. Completion and pending approval/question notifications contain no
-conversation text; clicking one opens its project and admitted session.
+workbench. macOS retains standard system editing/window menus. Native completion
+notifications show the run or background job outcome, the project folder name
+and elapsed time when available. Completion and pending approval/question
+notifications keep conversation text and raw diagnostics in the app. Clicking a
+notification opens its project and admitted session.
 
 Desktop controls use the page's external stylesheets on both the welcome page
 and Host workbench. The bundled terminal and editor also generate runtime style

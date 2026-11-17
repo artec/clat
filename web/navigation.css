@@ -105,25 +105,4 @@
 .resources-page > [hidden] { display: none; }
 .resource-editor-host { grid-area: 1 / 1 / -1 / -1; min-width: 0; min-height: 0; overflow: hidden; }
 .resources-page .navigation-head:has(> .resource-section-select) > strong { display: none; }
-.resource-section-select, .task-filter-select { position: relative; min-width: 0; max-width: 100%; }
-.shell-pages .resource-section-select > select {
-  padding: 4px 28px 4px 9px;
-  max-width: 100%;
-  min-height: 32px;
-  border-radius: 7px;
-  border-color: var(--line);
-  background: var(--surface-raised);
-  font-weight: 600;
-  cursor: pointer;
-}
-.shell-pages .resource-section-select > select:hover { background: var(--surface-input); }
-.resource-section-select > svg, .task-filter-select > svg {
-  position: absolute;
-  inset-inline-end: 8px;
-  inset-block-start: 50%;
-  width: 13px;
-  height: 13px;
-  transform: translateY(-50%);
-  color: var(--text-muted);
-  pointer-events: none;
-}
+.resource-section-select { min-width: 0; }

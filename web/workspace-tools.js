@@ -3,7 +3,7 @@ const WORKSPACE_TOOLS = [
   {id:'file-browser',trigger:'files-open',entry:'context-files-open',key:'files',icon:'folder'},
   {id:'workspace-review',trigger:'review-open',entry:'context-changes-open',key:'changes',icon:'branch'},
   {id:'turn-review',trigger:'turn-review-open',entry:'context-turn-open',key:'turn',icon:'activity-log'},
-  {id:'task-review',trigger:'tasks-open',entry:'context-tasks-open',key:'tasks',icon:'task-list'},
+  {id:'task-review',trigger:'tasks-open',entry:'context-tasks-open',key:'tasks',icon:'process-logs'},
   {id:'workflow-details',trigger:'workflow-open',entry:'context-workflow-open',key:'workflow',icon:'plan'},
 ];
 function toolViewIsOpen(node) { return Boolean(workbenchShell?.tools?.isActive(node.id)); }

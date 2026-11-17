@@ -18,7 +18,7 @@ button{font:inherit;cursor:pointer}
 footer{border-top:1px solid var(--line);margin-top:18px;padding-top:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;color:var(--muted);font-size:12px}
 footer button{border:0;background:transparent;color:inherit;padding:6px 0}
 .retry-project{border:1px solid var(--line);background:var(--surface-input);color:var(--text)}.retry-project[hidden]{display:none}
-footer [data-language-control]{display:flex;align-items:center;gap:8px;flex:none}footer [data-language-control] label{white-space:nowrap}footer select{font:inherit;color:var(--ink);background:var(--surface-input);border:1px solid var(--line);border-radius:6px;padding:4px;max-width:140px}
+footer [data-language-control]{display:flex;align-items:center;gap:8px;flex:none}footer [data-language-control] label{white-space:nowrap}footer select{--select-max-width:140px}
 @media(prefers-color-scheme:dark){:root{--bg:#171717;--ink:#ededed;--muted:#a0a0a0;--line:#343434;--accent:#8bb8f7;--surface:#171717;--surface-input:#272727;--surface-raised:#232323;--danger:#ff7b70}}
 
 body[data-startup="loading"]{overflow:hidden}

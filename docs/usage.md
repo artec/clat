@@ -3642,8 +3642,10 @@ browsing, repository selection and page navigation perform no remote mutations.
 
 The workspace Changes entry opens the Git tool from either the tools menu or the
 right-side workspace shortcuts. Both entry points and the contextual tool menu use the
-same semantic icons: a branch for Git, a history arrow for operation records,
-and a checklist for current tasks.
+same icons: a branch for Git, a history arrow for operation records, and a log
+page with a command prompt for current tasks. Current tasks opens the processes
+and output retained for the current run. The Current work checklist shows
+to-do progress.
 
 Git file-row actions take no space until the row is hovered or keyboard-focused;
 touch devices keep the actions visible. Filenames use the available width before

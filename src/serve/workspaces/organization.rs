@@ -60,6 +60,7 @@ impl WorkspaceHost {
                     .expect("updated project is registered"),
                 project_root: row.root.clone().into(),
                 session_id: None,
+                completion: None,
             });
         Ok(json!({"project":row}))
     }

@@ -30,7 +30,7 @@ mod notification;
 mod workspace;
 pub use error::HostCallError;
 pub use models::HostModelChoices;
-pub use notification::HostNotification;
+pub use notification::{HostNotification, NotificationCompletion, NotificationOutcome};
 mod events;
 mod images;
 mod transport;

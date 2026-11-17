@@ -714,6 +714,60 @@ impl TestModelScript for ContextProbe {
 }
 
 #[test]
+fn model_requests_explain_available_built_in_capabilities() {
+    let (storage, root) = roots("context-builtin-capabilities");
+    std::fs::create_dir_all(&root).unwrap();
+    let probe = Arc::new(ContextProbe::default());
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(probe.clone()),
+    );
+    configure_test_model(&app);
+    run_request(&mut app, "Resume work based on the previous discussion").unwrap();
+    app.set_plan_mode(true).unwrap();
+    run_request(&mut app, "Inspect the proposed workflow").unwrap();
+
+    let requests = probe.0.lock().unwrap();
+    let [standard, plan] = requests.as_slice() else {
+        panic!("expected two model requests, got {}", requests.len());
+    };
+    for name in ["query_capabilities", "read_file", "session_search"] {
+        assert!(
+            standard.contains(name),
+            "normal prompt should explain {name}"
+        );
+        assert!(plan.contains(name), "plan prompt should explain {name}");
+    }
+    for name in ["exec_command", "job_start", "schedule_create", "todo_write"] {
+        assert!(
+            standard.contains(name),
+            "normal prompt should explain {name}"
+        );
+        assert!(!plan.contains(name), "plan prompt must omit {name}");
+    }
+    for (scenario, tool) in [
+        (
+            "At a future time or on a recurring schedule",
+            "schedule_create",
+        ),
+        ("To continue running after this turn", "job_start"),
+        ("Within this turn", "exec_command"),
+        ("An existing background job", "job_output"),
+    ] {
+        assert!(
+            standard
+                .lines()
+                .any(|line| line.starts_with(scenario) && line.contains(tool)),
+            "the model must be guided to choose {tool} for {scenario}"
+        );
+    }
+    drop(requests);
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
 fn context_command_is_read_only_zero_durable_and_starts_no_model() {
     let (storage_root, project_root) = roots("context-zero-durable");
     std::fs::create_dir_all(&project_root).unwrap();

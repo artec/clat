@@ -40,6 +40,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "text/css",
     ),
     (
+        "/select.css",
+        include_bytes!("../../desktop/ui/select.css"),
+        "text/css",
+    ),
+    (
         "/settings-models.js",
         include_bytes!("../../web/settings-models.js"),
         "application/javascript",

@@ -32,8 +32,8 @@ pub use crate::session::use_cases::SessionSummary;
 pub use crate::redact::redact_secrets;
 pub mod host {
     pub use crate::application::{WorkspaceDirectoryEntry, WorkspaceUpdate};
-    pub use crate::host_client::HostNotification;
     pub use crate::host_client::PackagedBackend;
+    pub use crate::host_client::{HostNotification, NotificationCompletion, NotificationOutcome};
     pub use crate::host_client::{HostSessionSharePreview, HostSharedInput, PreparedSharedMessage};
     pub fn journal_format_version() -> u32 {
         crate::session::compat::SESSION_FORMAT_VERSION

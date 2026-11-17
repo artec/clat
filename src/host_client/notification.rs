@@ -9,6 +9,26 @@ pub struct HostNotification {
     pub workspace_id: String,
     pub project_root: std::path::PathBuf,
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<NotificationCompletion>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotificationCompletion {
+    pub outcome: NotificationOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationOutcome {
+    Succeeded,
+    Failed,
+    Stopped,
+    Interrupted,
+    #[serde(other)]
+    Unknown,
 }
 
 impl HostClient {

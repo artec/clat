@@ -10,6 +10,7 @@
 
 use crate::application::join_with_grace;
 use crate::event::RunEvent;
+use crate::host_client::HostNotification;
 use crate::permission::PermissionDecision;
 use crate::{
     ApplicationEvent, ApplicationRunDone, ApplicationRunFailure, TrustedProjectApplication,
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 每 SSE 连接的有界帧队列（INV-S7：满即断连，慢消费者走「重连=重建」）。
 pub(crate) const SUBSCRIBER_QUEUE_FRAMES: usize = 1024;
@@ -53,11 +54,12 @@ pub(crate) struct ActiveRun {
     pub(super) automatic: bool,
     pub rpc_id: String,
     pub started_ms: i64,
+    pub(super) started_at: Instant,
     round: u64,
     buffer: Vec<SseFrame>,
     replay_before_seq: Option<u64>,
     pub(super) session_id: Option<String>,
-    pub(super) notifications: Vec<(String, String)>,
+    pub(super) notifications: Vec<HostNotification>,
 }
 
 impl ActiveRun {
@@ -418,7 +420,7 @@ impl ServeShared {
     /// Called before releasing Application after successful admission, before
     /// a settler can release this claim. All prompt entry points share it.
     pub(crate) fn publish_run_boundary(&self, handle: &crate::RunHandle) {
-        let pending = {
+        let (session_id, pending) = {
             let mut inner = self.inner.lock().expect("serve inner lock");
             let Some(run) = inner.active_run.as_mut() else {
                 return;
@@ -426,10 +428,14 @@ impl ServeShared {
             run.replay_before_seq = handle.replay_before_seq();
             run.model = Some(handle.model_snapshot().clone());
             run.session_id = handle.session_id().map(|id| id.as_str().to_owned());
-            std::mem::take(&mut run.notifications)
+            let Some(session_id) = run.session_id.clone() else {
+                return;
+            };
+            (session_id, std::mem::take(&mut run.notifications))
         };
-        for (kind, key) in pending {
-            self.publish_notification(&kind, Some(&key));
+        for mut notice in pending {
+            notice.session_id = Some(session_id.clone());
+            self.emit_notification(notice);
         }
     }
 
@@ -484,12 +490,7 @@ impl ServeShared {
     /// 实时族（INV-S2 零转译）：`envelope_line` 去掉行尾换行的原文，
     /// 同一锁内追加 run 缓冲 + 广播。
     pub(crate) fn fanout_run_event(&self, event: &RunEvent) {
-        if matches!(
-            event,
-            RunEvent::RunCompleted { .. } | RunEvent::RunFailed { .. }
-        ) {
-            self.publish_notification("completed", None);
-        }
+        self.publish_run_completion(event);
         if let RunEvent::SteeringApplied {
             client_message_id: Some(client_message_id),
             ..
@@ -554,6 +555,7 @@ impl ServeShared {
             automatic: false,
             rpc_id: rpc_id.to_owned(),
             started_ms,
+            started_at: Instant::now(),
             round: 0,
             buffer: Vec::new(),
             replay_before_seq: None,
