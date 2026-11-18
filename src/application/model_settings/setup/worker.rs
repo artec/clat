@@ -65,6 +65,8 @@ pub(super) fn check(
                 tools: &[],
                 options: &options,
                 cancel,
+
+                session_id: None,
             },
             &mut IgnoreEvents,
         )

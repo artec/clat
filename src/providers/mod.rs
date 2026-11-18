@@ -798,6 +798,8 @@ impl Model for RetryModel {
             tools: request.tools,
             options: request.options,
             cancel: effective_cancel,
+
+            session_id: None,
         };
         let request = inner_request;
         loop {
@@ -1477,6 +1479,8 @@ mod tests {
                 tools: &self.tools,
                 options: &self.options,
                 cancel: &self.cancel,
+
+                session_id: None,
             }
         }
     }
@@ -1729,6 +1733,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &CancelToken::new(),
+
+                    session_id: None,
                 },
                 &mut sink,
             )
@@ -1793,6 +1799,8 @@ mod tests {
                 tools: &tools,
                 options: &options,
                 cancel: &CancelToken::new(),
+
+                session_id: None,
             },
             &mut sink,
         );
@@ -1863,6 +1871,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &parent,
+
+                    session_id: None,
                 },
                 &mut sink,
             )
@@ -2226,6 +2236,8 @@ mod tests {
                 tools: &[],
                 options: &options,
                 cancel: &driver_token,
+
+                session_id: None,
             };
             let mut sink = NoopSink;
             let _ = tx.send(model.stream(request, &mut sink));
@@ -2276,6 +2288,8 @@ mod tests {
                 tools: &[],
                 options: &options,
                 cancel: &driver_token,
+
+                session_id: None,
             };
             let mut sink = NoopSink;
             let _ = tx.send(model.stream(request, &mut sink));
@@ -2319,6 +2333,8 @@ mod tests {
             tools: &[],
             options: &options,
             cancel: &token,
+
+            session_id: None,
         };
         let mut sink = NoopSink;
         let started = Instant::now();
@@ -2362,6 +2378,8 @@ mod tests {
                 tools: &[],
                 options: &options,
                 cancel: &driver_token,
+
+                session_id: None,
             };
             let mut sink = NoopSink;
             let _ = tx.send(model.stream(request, &mut sink));
@@ -2504,6 +2522,8 @@ mod tests {
                 tools: &[],
                 options: &options,
                 cancel: &driver_token,
+
+                session_id: None,
             };
             let mut sink = NoopSink;
             let _ = tx.send(model.stream(request, &mut sink));
@@ -2553,6 +2573,8 @@ mod tests {
                 tools: &[],
                 options: &options,
                 cancel: &driver_token,
+
+                session_id: None,
             };
             let mut sink = NoopSink;
             let _ = tx.send(model.stream(request, &mut sink));

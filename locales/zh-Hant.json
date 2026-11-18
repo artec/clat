@@ -1506,7 +1506,7 @@
   "tui.preset_description_kimi-for-coding": "適合日常程式設計工作的高效 Kimi Code 輔助模型",
   "tui.preset_description_k3.1-pro": "透過 Kimi Coding 會員使用 Moonshot 旗艦模型（自動上下文快取）",
   "tui.preset_description_qwen3.8-flash": "透過 Qwen Token Plan 使用阿里快速模型（可讀取圖片）",
-  "tui.preset_description_qwen3.8-max": "透過 Qwen Token Plan 使用阿里旗艦模型（隱式上下文快取，可讀取圖片）",
+  "tui.preset_description_qwen4-max": "透過 Qwen Token Plan 使用阿里旗艦模型（隱式上下文快取，可讀取圖片）",
   "tui.preset_key_hint": "{name} · 金鑰僅可寫入 · 儲存後啟用預設 · 留空只清除目前金鑰",
   "tui.preset_next": "預設已啟用，下次執行生效",
   "tui.preview_command": "在專案根目錄 · 逾時 {timeout} 秒 · 沙箱 {sandbox} · 網路 {network}",

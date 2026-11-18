@@ -179,6 +179,7 @@ fn request(
                 tools: &tools,
                 options: &options,
                 cancel: &request_cancel,
+                session_id: None,
             },
             &mut Vec::new(),
         )
@@ -287,7 +288,7 @@ mod tests {
         for (main, expected) in [
             ("deepseek-v4-pro", "deepseek-flash"),
             ("glm-5.3", "glm-5.3-flash"),
-            ("qwen3.8-max", "qwen3.8-flash"),
+            ("qwen4-max", "qwen3.8-flash"),
             ("k3.1-pro", "kimi-for-coding"),
             ("hy4", "hy3"),
         ] {

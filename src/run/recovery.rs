@@ -107,6 +107,8 @@ impl Run<'_> {
                 tools: &input.definitions,
                 options: &input.options,
                 cancel: &self.cancel,
+
+                session_id: None,
             },
             &mut sink,
         );

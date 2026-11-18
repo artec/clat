@@ -1012,6 +1012,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &CancelToken::new(),
+
+                    session_id: None,
                 },
                 &mut events,
             )?;
@@ -1044,6 +1046,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &CancelToken::new(),
+
+                    session_id: None,
                 },
                 &mut follow_up_events,
             )?;
@@ -1272,6 +1276,8 @@ mod tests {
                     tools: &[],
                     options: &options,
                     cancel: &CancelToken::new(),
+
+                    session_id: None,
                 };
                 let body = model.request_body(request).expect("project provider body");
                 let encoded = crate::providers::serialize_request_body(
@@ -1871,6 +1877,7 @@ mod tests {
                 tools: &tools,
                 options: &options,
                 cancel: &CancelToken::new(),
+                session_id: None,
             })
             .unwrap();
         assert_eq!(body["model"], "custom");
@@ -2018,6 +2025,7 @@ mod tests {
                 tools: &[],
                 options: &ModelOptions::default(),
                 cancel: &CancelToken::new(),
+                session_id: None,
             })
             .unwrap();
         assert!(
@@ -2477,6 +2485,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &CancelToken::new(),
+
+                    session_id: None,
                 },
                 &mut events,
             )

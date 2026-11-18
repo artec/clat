@@ -1032,7 +1032,7 @@ stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
 hardcoded per preset, never probed at runtime: six presets across four
 vendors open image input — officially-declared for `deepseek-flash`,
-`qwen3.8-max`, `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, probe-verified for
+`qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, probe-verified for
 `glm-5.3-flash` — and, for custom configurations, it is unlocked only by a
 passing `/vision-probe`.
 When switching to a text-only route, the enabled offload policy can durably omit

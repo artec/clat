@@ -37,6 +37,8 @@ impl GitModel {
                     tools: &tools,
                     options: &options,
                     cancel,
+
+                    session_id: None,
                 },
                 &mut Vec::new(),
             )

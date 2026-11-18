@@ -285,6 +285,8 @@ fn invoke(model: &mut dyn Model, cancel: &CancelToken) -> Result<ModelResponse, 
                 ..Default::default()
             },
             cancel,
+
+            session_id: None,
         },
         &mut Vec::new(),
     )

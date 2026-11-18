@@ -376,6 +376,8 @@ impl SummaryRun<'_> {
                         ..Default::default()
                     },
                     cancel: self.cancel,
+
+                    session_id: None,
                 },
                 &mut Vec::new(),
             )

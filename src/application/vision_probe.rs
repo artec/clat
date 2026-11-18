@@ -331,6 +331,8 @@ fn run_probe_request(
         tools: &tools,
         options: &options,
         cancel: &crate::CancelToken::new(),
+
+        session_id: None,
     };
     let mut sink = Vec::new();
     let response = model.stream(request, &mut sink)?;

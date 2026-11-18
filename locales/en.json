@@ -1506,7 +1506,7 @@
   "tui.preset_description_kimi-for-coding": "Efficient Kimi Code companion for routine coding work",
   "tui.preset_description_k3.1-pro": "Moonshot flagship via Kimi Coding membership (auto context cache)",
   "tui.preset_description_qwen3.8-flash": "Alibaba fast tier via Qwen Token Plan (reads images)",
-  "tui.preset_description_qwen3.8-max": "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
+  "tui.preset_description_qwen4-max": "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
   "tui.preset_key_hint": "{name} · key write-only · save activates preset · blank clears current key only",
   "tui.preset_next": "preset activated; applies to the next run",
   "tui.preview_command": "in project root · timeout {timeout}s · sandbox {sandbox} · network {network}",

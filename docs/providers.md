@@ -42,7 +42,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | 1M | 384K | `high` |
 | GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
-| Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
+| Qwen4 Max Token Plan | `qwen4-max` | 1M | 128K | `medium` |
 | Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
 | Kimi K3.1 Pro Coding Plan | `k3.1-pro` | 1M | 128K | `high` |
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
@@ -50,7 +50,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Hy 3 · Hy Token Plan | `hy3` | 256K | 128K | — (always on) |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
-six image-input routes are `deepseek-flash`, `qwen3.8-max`,
+six image-input routes are `deepseek-flash`, `qwen4-max`,
 `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, plus `glm-5.3-flash`
 (also verified for image tool results) — the first five declared by
 official vendor documentation, the GLM
@@ -154,11 +154,17 @@ also prepares the GLM Coding Plan server pack. See
 The presets use the Singapore Token Plan endpoint and their subscription key.
 They send top-level `reasoning_effort` without a `thinking` object. CLAT maps
 its Low / High / Max UI to Qwen's `low` / `medium` / `xhigh` ladder. Both
-`qwen3.8-max` and the incremental `qwen3.8-flash` preset carry image input per
-the official model pages (`qwen3.8-max` runs the 0902 snapshot whose native
+`qwen4-max` and the incremental `qwen3.8-flash` preset carry image input per
+the official model pages (Qwen4 Max is the flagship multimodal follow-up; the
 vision understanding is officially confirmed; flash documents Image+Text
 input, video stays outside CLAT's scope). Their context/output budgets match
 the documented 1,000,000 / 131,072 values.
+
+Qwen note (2026-11-18): the flagship was upgraded in place from `qwen3.8-max`
+to `qwen4-max` (Qwen4 Max). The preview-window id `qwen4-max-preview` and the
+nonexistent `qwen4-flash` are deliberately not presetted; `qwen3.8-flash`
+remains the utility companion. Saved configurations referencing
+`qwen3.8-max` simply stop resolving to a preset.
 
 Context caching is implicit. Usage parsing accepts both
 `prompt_tokens_details.cached_tokens` and the transitional top-level cached

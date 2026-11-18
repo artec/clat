@@ -162,6 +162,11 @@ pub struct ModelRequest<'a> {
     /// Cooperative cancellation signal for this request. Providers should
     /// poll it while streaming and stop promptly when it is set.
     pub cancel: &'a CancelToken,
+    /// Stable per-conversation identity for providers that attribute
+    /// traffic by session (OpenCode Go requires the `x-opencode-session`
+    /// header; a missing header is a hard 400). `None` when the caller
+    /// has no conversation context (utility titles, plugin probes).
+    pub session_id: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

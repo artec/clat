@@ -89,6 +89,8 @@ fn evaluate(out: &Path, case: &Case) -> Value {
             tools: &[],
             options: &options,
             cancel: &cancel,
+
+            session_id: None,
         },
         &mut Vec::new(),
     );

@@ -175,13 +175,18 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 /// 确认 Coding Plan 端点仅服务 DeepSeek V4.0 正式版与 GLM 5.3；
 /// `glm-5.3` 打真实端点的请求实测成功。
 ///
-/// Official Qwen3.8-Max (Token Plan) parameters as documented at
-/// <https://help.aliyun.com/zh/model-studio/qwen3-8-max> and
-/// <https://www.alibabacloud.com/help/zh/model-studio/more-tools>
-/// (Token Plan 团队版, 2026-08 抓取):
+/// Official Qwen parameters. 旗舰档 2026-11-18 由 Qwen3.8-Max 原地
+/// 升级为 **Qwen4-Max**(负责人令;qwen4 正式版发布、首发上线 Token
+/// Plan,官方清单 2026-11-16 更新在列)。出处
+/// <https://help.aliyun.com/zh/model-studio/qwen4-max> 与
+/// <https://www.alibabacloud.com/help/zh/model-studio/token-plan-personal-overview>:
 ///
-/// - model id `qwen3.8-max`（2.4T MoE 旗舰；1M context、131,072 最大
-///   输出、262,144 最大思维链）
+/// - model id `qwen4-max`(新一代旗舰多模态;1M context、131,072 最大
+///   输出、思考模式思维链 262,144——与 3.8-max 钉值完全同形,参数
+///   全部沿用)。**`qwen4-flash` 不存在**(Token Plan flash 线最新仍
+///   是 qwen3.8-flash,utility 伴生不动);`qwen4-max-preview`
+///   (别名 qwen4.0-max-preview)是 11/11-11/25 预览窗的临时 id,按
+///   零回退纪律不接、不镜像
 /// - Token Plan 专用 OpenAI 兼容端点
 ///   `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`
 ///   （新加坡 MaaS 域名，与按量计费的 dashscope 域名分离；密钥是
@@ -190,7 +195,7 @@ const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
 ///   表 high/max→xhigh、minimal→low；CLAT 三档经厂商感知映射
 ///   Low→low、High→medium、Max→xhigh（见 `ThinkingLevel::wire_effort`），
 ///   预设按"pin 中档"政策 pin `medium`；无 `thinking` 对象（该参数
-///   列表适用于 Qwen3.7 及更早，qwen3.8-max 不在其中）
+///   列表适用于 Qwen3.7 及更早，qwen3.8-max 起不适用，qwen4 沿用）
 /// - 上下文缓存：隐式缓存自动开启、不可关闭（agent 上下文远超
 ///   ~2000 token 最小前缀），命中价 20%；显式 `cache_control` 在
 ///   新加坡 Token Plan 地域的支持面官方未明确列出（文档只确认北京
@@ -343,20 +348,20 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: false,
         user_agent: None,
     },
-    // Qwen3.8 Max（VP-2，2026-09-03）：官方模型页
-    // help.aliyun.com/zh/model-studio/qwen3-8-max 确认"原生视觉理解
-    // 能力"（9/2 升级为快照版 Qwen3.8-Max-0902，编码/协作智能体增强）
-    // → 能力位 officially-declared 翻转 + 开图；上下文 1,000,000 /
-    // 最大输出 131,072 与官方页一致，参数零变化、model id 不变。
+    // Qwen4 Max（2026-11-18 负责人令原地升级，前身 VP-2 的 3.8-max）:
+    // qwen4 正式版发布并首发上线 Token Plan;官方页确认新一代旗舰
+    // 多模态(文本+图+视频输入;视频维持 MM 范围外)→ 视觉位沿用
+    // officially-declared;1M/131,072(+思考 262,144)与 3.8-max 同形,
+    // 参数零变化。旧 id 不留别名(零回退纪律)。
     ModelPreset {
-        id: "qwen3.8-max",
+        id: "qwen4-max",
         utility_model: Some("qwen3.8-flash"),
         capabilities: OFFICIAL_VISION_CAPS,
-        name: "Qwen3.8 Max",
+        name: "Qwen4 Max",
         description: "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
         vendor: "Qwen Token Plan",
         protocol: ModelProtocol::OpenAiCompatible,
-        model: "qwen3.8-max",
+        model: "qwen4-max",
         endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
         request_path: "/chat/completions",
         output_limit: 131_072,
@@ -367,17 +372,18 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         include_usage: true,
         user_agent: None,
     },
-    // Qwen3.8 Flash（VP-2B 增量预设，2026-09-03）：官方模型页
+    // Qwen3.8 Flash（VP-2B 增量预设，2026-09-03；2026-11-18 qwen4 升级
+    // 时确认 qwen4-flash 不存在,flash 线保留 3.8）：官方模型页
     // help.aliyun.com/zh/model-studio/qwen3-8-flash；Token Plan 模型
     // 列表含 flash。全部钉值以官方页为准：
-    // - vendor `Qwen Token Plan`（同 key 槽，端点同 qwen3.8-max）；
+    // - vendor `Qwen Token Plan`（同 key 槽，端点同旗舰）；
     // - context 1,000,000 / output 131,072（两模式同值；官方分解：
     //   最大输入 991,808 = 1M−8K、思考输入 983,616 = 1M−16K、思维链
     //   262,144 = 4×64K——全是干净 2 的幂/整十进制常数，参数钉值
     //   纪律检验通过）；
     // - 开图（官方输入模态 Image+Text+Video；视频维持 MM 范围外，
     //   不进能力矩阵）→ OFFICIAL_VISION_CAPS；
-    // - thinking 沿用 qwen3.8-max 同族配置（顶层 reasoning_effort、
+    // - thinking 沿用 Qwen 旗舰同族配置（顶层 reasoning_effort、
     //   无 thinking 对象；官方页未详述 flash 差异，异常再调）。
     ModelPreset {
         id: "qwen3.8-flash",
@@ -660,11 +666,11 @@ mod tests {
     fn applies_official_qwen_token_plan_parameters() {
         let mut config = ModelConfig::default();
 
-        preset_by_id("qwen3.8-max")
+        preset_by_id("qwen4-max")
             .expect("preset")
             .apply(&mut config);
 
-        assert_eq!(config.model, "qwen3.8-max");
+        assert_eq!(config.model, "qwen4-max");
         // Token Plan 专用新加坡 MaaS 端点，不是按量 dashscope 域名。
         assert_eq!(
             config.endpoint,
@@ -675,7 +681,7 @@ mod tests {
         // 官方档位 low/medium/xhigh（默认 xhigh）；预设按 pin-中档政策
         // pin medium＝CLAT 的 High 档。
         assert_eq!(config.extra_body["reasoning_effort"], "medium");
-        // qwen3.8-max 无 thinking 对象（该参数属于 Qwen3.7 及更早）。
+        // qwen4-max 无 thinking 对象（该参数属于 Qwen3.7 及更早）。
         assert!(config.extra_body.get("thinking").is_none());
         // 隐式缓存自动生效；include_usage 拿回 cached_tokens 供状态栏。
         assert_eq!(config.extra_body["stream_options"]["include_usage"], true);
@@ -883,8 +889,9 @@ mod tests {
     /// - glm-5.3：1M context / 128K output
     ///   （docs.z.ai/guides/llm/glm-5.3，08-17/18/19 三次核验一致；
     ///   另有项目所有者第一方确认与真实端点实测，见模块文档证据链）
-    /// - qwen3.8-max：1M context / 131,072 output
-    ///   （help.aliyun.com/zh/model-studio/qwen3-8-max，2026-08 核验）
+    /// - qwen4-max：1M context / 131,072 output
+    ///   （help.aliyun.com/zh/model-studio/qwen4-max，2026-11-18 核验；
+    ///   思考模式思维链 262,144 同 3.8-max 口径）
     /// - k3.1-pro / kimi-for-coding：1M context / 131,072 output
     ///   （Coding 端点模型清单 + K3.1 Pro quickstart，2026-11-03 核验；
     ///   K3 时代钉值 2026-08 沿用未变）
@@ -907,7 +914,7 @@ mod tests {
         assert_eq!(glm.context_window, 1_000_000);
         assert_eq!(glm.output_limit, 128 * 1024);
 
-        let qwen = preset_by_id("qwen3.8-max").expect("qwen");
+        let qwen = preset_by_id("qwen4-max").expect("qwen");
         assert_eq!(qwen.context_window, 1_000_000);
         assert_eq!(qwen.output_limit, 131_072);
 
@@ -949,7 +956,10 @@ mod tests {
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 2);
         // VP-2B：Qwen Token Plan 两模型（max + flash，同 key 槽）。
         assert_eq!(presets_by_vendor("Qwen Token Plan").len(), 2);
-        assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen3.8-max");
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen4-max");
+        // 2026-11-18 Qwen4 Max 原地升级：旧旗舰 id 不复现（零回退；
+        // 官方清单 qwen3.8-max 虽仍在列，预设目录只挂最新旗舰）。
+        assert!(preset_by_id("qwen3.8-max").is_none());
         assert_eq!(presets_by_vendor("Qwen Token Plan")[1].id, "qwen3.8-flash");
         assert_eq!(presets_by_vendor("Kimi Coding Plan").len(), 2);
         assert_eq!(presets_by_vendor("Kimi Coding Plan")[0].id, "k3.1-pro");
@@ -975,7 +985,7 @@ mod tests {
             ("deepseek-flash", None),
             ("glm-5.3", Some("glm-5.3-flash")),
             ("glm-5.3-flash", None),
-            ("qwen3.8-max", Some("qwen3.8-flash")),
+            ("qwen4-max", Some("qwen3.8-flash")),
             ("qwen3.8-flash", None),
             ("k3.1-pro", Some("kimi-for-coding")),
             ("kimi-for-coding", None),
@@ -995,7 +1005,7 @@ mod tests {
     /// 刷新 2026-09-10；K3.1 Pro 升级同步 2026-11-03）：全预设
     /// capability matrix 完备且 sourced——**恰六个** verified 开图
     ///（officially-declared 五条：deepseek-flash
-    /// （SF-1 继承 vision-exp 视觉位）/ qwen3.8-max / qwen3.8-flash /
+    /// （SF-1 继承 vision-exp 视觉位）/ qwen4-max / qwen3.8-flash /
     /// k3.1-pro / kimi-for-coding，加 glm-5.3-flash 为 MM-0 探针实证），无中间态
     ///（unverified 档已退役）；其余全部纯文本。漏配新预设时哨兵断言红。
     #[test]
@@ -1019,7 +1029,7 @@ mod tests {
                 preset.id,
                 "deepseek-flash"
                     | "glm-5.3-flash"
-                    | "qwen3.8-max"
+                    | "qwen4-max"
                     | "qwen3.8-flash"
                     | "k3.1-pro"
                     | "kimi-for-coding"
@@ -1036,7 +1046,7 @@ mod tests {
         // tool_result 携图无官方证据 → 仍 [Text]。
         for id in [
             "deepseek-flash",
-            "qwen3.8-max",
+            "qwen4-max",
             "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
@@ -1073,7 +1083,7 @@ mod tests {
     fn officially_declared_vision_presets_carry_the_declared_matrix() {
         for id in [
             "deepseek-flash",
-            "qwen3.8-max",
+            "qwen4-max",
             "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
@@ -1109,8 +1119,8 @@ mod tests {
         let preset = preset_by_id("qwen3.8-flash").expect("preset exists");
         assert_eq!(preset.model, "qwen3.8-flash");
         assert_eq!(preset.vendor, "Qwen Token Plan");
-        // 同 key 槽、端点同 qwen3.8-max。
-        let max = preset_by_id("qwen3.8-max").unwrap();
+        // 同 key 槽、端点同旗舰。
+        let max = preset_by_id("qwen4-max").unwrap();
         assert_eq!(preset.endpoint, max.endpoint);
         assert_eq!(preset.request_path, "/chat/completions");
         // 官方：两模式同值——context 1,000,000 / output 131,072。

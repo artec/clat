@@ -444,7 +444,7 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3-flash"));
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-max"));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen4-max"));
     editor.handle_key(key(KeyCode::Right));
     // VP-2B：Qwen Token Plan 两模型（max + flash）连续排布。
     assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-flash"));
@@ -702,7 +702,7 @@ fn picker_digits_quick_select_models_and_custom() {
     else {
         panic!("expected SelectPreset");
     };
-    assert_eq!(preset.id, "qwen3.8-max");
+    assert_eq!(preset.id, "qwen4-max");
 
     // B9：零档案时数字 6（Custom）直进新建页（TC-1 后一级为
     // 五厂商 + Custom）。

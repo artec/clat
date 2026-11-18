@@ -209,6 +209,8 @@ fn run_frozen(
             tools: &frozen.definitions,
             options: &options,
             cancel: &cancel,
+
+            session_id: None,
         },
         &mut events,
     );

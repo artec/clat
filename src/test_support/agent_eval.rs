@@ -1220,6 +1220,8 @@ mod tests {
             tools: &tools,
             options: &options,
             cancel: &cancel,
+
+            session_id: None,
         };
         let mut events = Vec::new();
         let first = script

@@ -929,6 +929,7 @@ mod tests {
                 tools: &tools,
                 options: &options,
                 cancel: &CancelToken::new(),
+                session_id: None,
             })
             .expect("request body");
 
@@ -954,6 +955,7 @@ mod tests {
                     ..options
                 },
                 cancel: &CancelToken::new(),
+                session_id: None,
             })
             .unwrap();
         assert_eq!(
@@ -1292,6 +1294,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &CancelToken::new(),
+
+                    session_id: None,
                 },
                 &mut events,
             )
@@ -1345,6 +1349,8 @@ mod tests {
                     tools: &tools,
                     options: &options,
                     cancel: &worker_token,
+
+                    session_id: None,
                 },
                 &mut events,
             );

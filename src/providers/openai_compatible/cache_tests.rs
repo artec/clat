@@ -32,6 +32,7 @@ fn body(
                 ..Default::default()
             },
             cancel: &CancelToken::new(),
+            session_id: None,
         })
         .unwrap()
 }
@@ -193,6 +194,7 @@ fn runtime_snapshot_preserves_chat_completion_history_and_tools() {
                     ..Default::default()
                 },
                 cancel: &CancelToken::new(),
+                session_id: None,
             })
             .unwrap()
     };

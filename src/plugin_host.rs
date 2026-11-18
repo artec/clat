@@ -960,6 +960,8 @@ impl PluginHostBridge {
             tools: &tools,
             options: &options,
             cancel: &request_cancel,
+
+            session_id: None,
         };
         let mut sink = Vec::new();
         let response = model
