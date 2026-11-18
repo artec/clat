@@ -446,9 +446,19 @@ own permission checks.
   TUI with a verified terminal ancestor. A shared Host permits actions
   on recognized native system apps such as Finder and TextEdit.
 - An action rechecks the running process, window or menu, element, label
-  and supported action after approval. Each run can dispatch up to 20
-  actions. Three consecutive actions on the same element with unchanged
-  observable state stop further repetitions.
+  and supported action after approval. `activate` brings that window's
+  application to the front. `activate_app: true` does this inside the same
+  call, then rechecks the target before dispatching the original action.
+  If activation fails, the original action is not dispatched. `raise` only
+  raises a window inside its application and does not activate it. A
+  dispatch while the application is not in front carries a warning: an
+  action that depends on keyboard focus or a text selection may have no
+  effect. Each call, including one with `activate_app`, counts as one of
+  the 20 actions allowed in a run. Three consecutive actions on the same
+  element with unchanged observable state stop further repetitions. The
+  stop means the action was dispatched and the observed state did not
+  change, which can happen when the application is not in front or the
+  control does not respond.
 - Use `/ui-consents` to list decisions for the current session and across
   sessions. Use `/ui-consents revoke session APP_ID` or
   `/ui-consents revoke always APP_ID` to remove the selected decision.
@@ -467,7 +477,10 @@ cannot confirm. The Windows backend supports reading, waiting and a limited
 set of UI Automation actions on an observed window.
 
 Windows uses the same application consent, Plan Mode, per-action approval,
-revocation and action limits described above. A shared Host permits actions
+revocation and action limits described above, including `activate` and
+`activate_app`. Bringing a window to the front uses `SetForegroundWindow`.
+If Windows refuses, CLAT reports the failure and does not dispatch the
+action. A shared Host permits actions
 on recognized native Windows apps such as File Explorer and Notepad.
 Browser and unclassified targets require a standalone TUI with a verified
 local console. CLAT, the approval console and protected system applications

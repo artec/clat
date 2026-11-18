@@ -5227,6 +5227,8 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
     .collect();
     // b0c3ef57 默认开启只读委派。长尾工具不进初始 schema。
     expected_catalog.insert("delegate_readonly");
+    #[cfg(any(target_os = "macos", windows))]
+    expected_catalog.extend(["ui_apps", "ui_tree", "ui_wait", "ui_act"]);
     assert_eq!(
         tool_names, expected_catalog,
         "request/header freezes the resident model-visible catalog"

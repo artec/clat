@@ -51,6 +51,7 @@ impl Run<'_> {
             && !is_error
             && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
         let boundary = !is_error && tool.ends_run(&output);
+        let repeated = state.repeated_result(&call.name, &call.arguments, &output);
         let result = ToolResult {
             blocks: if is_error {
                 Vec::new()
@@ -67,6 +68,13 @@ impl Run<'_> {
         if approved || boundary {
             return Ok(Some(
                 self.finish_tool_boundary(state, events, text, remaining, approved),
+            ));
+        }
+        if repeated {
+            return Err(state.fail(
+                events,
+                &self.steering,
+                crate::i18n::UiMessage::new("run.error_repeated_result").english(),
             ));
         }
         Ok(None)
@@ -182,7 +190,7 @@ impl Run<'_> {
         state: &mut StepState,
         events: &mut dyn EventSink,
     ) -> bool {
-        let denied =         if !self.tool_access.allows(definition) {
+        let denied = if !self.tool_access.allows(definition) {
             let reason = self.tool_access.denial_reason(definition).to_owned();
             Some((reason.clone(), reason))
         } else if self.schema_closed(definition) {

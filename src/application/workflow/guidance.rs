@@ -47,9 +47,11 @@ fn deferred_index(tools: &CapabilityView) -> Vec<String> {
         return Vec::new();
     }
     let mut index = vec!["Deferred tools are registered but omitted from this request. Call describe_capability with the name before using one.".to_owned()];
-    index.extend(lines.into_iter().map(|(name, description)| {
-        format!("{name}: {}", blurb(&description))
-    }));
+    index.extend(
+        lines
+            .into_iter()
+            .map(|(name, description)| format!("{name}: {}", blurb(&description))),
+    );
     index
 }
 
@@ -142,17 +144,28 @@ mod tests {
         let registry = ToolRegistry::new();
         let owner = || PluginOwner::for_test(PluginId::new("builtin.native_read"));
         let _leases = [
-            registry.register(owner(), Arc::new(Named("list_files", ToolEffect::Read))).unwrap(),
-            registry.register(owner(), Arc::new(Named("read_file", ToolEffect::Read))).unwrap(),
-            registry.register(owner(), Arc::new(Named("search", ToolEffect::Read))).unwrap(),
-            registry.register(owner(), Arc::new(Named("job_start", ToolEffect::Execute))).unwrap(),
+            registry
+                .register(owner(), Arc::new(Named("list_files", ToolEffect::Read)))
+                .unwrap(),
+            registry
+                .register(owner(), Arc::new(Named("read_file", ToolEffect::Read)))
+                .unwrap(),
+            registry
+                .register(owner(), Arc::new(Named("search", ToolEffect::Read)))
+                .unwrap(),
+            registry
+                .register(owner(), Arc::new(Named("job_start", ToolEffect::Execute)))
+                .unwrap(),
         ];
         let view = registry.capability_view(Some(&crate::tool::ToolAccessPolicy::readonly_child()));
         let text = instructions(&view);
         assert!(!text.contains("job_start"));
         assert!(!text.contains("Deferred tools"));
         assert_eq!(
-            view.definitions().into_iter().map(|tool| tool.name).collect::<Vec<_>>(),
+            view.definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>(),
             ["list_files", "read_file", "search"]
         );
     }

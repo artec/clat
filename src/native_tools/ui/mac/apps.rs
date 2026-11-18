@@ -2,7 +2,7 @@
 use super::*;
 use crate::control_storage::ui_consents::app_identity;
 use crate::native_tools::ui_apps::{Pool, application_at_pid, boolean, string};
-use std::ffi::{CStr, OsStr};
+use std::ffi::{CStr, OsStr, c_char, c_void};
 use std::mem::{MaybeUninit, size_of};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -207,4 +207,84 @@ pub(super) fn fence(standalone: bool) -> TargetFence {
         protected_apps: Vec::new(),
         independent_local_tui: standalone && attached_tty && verified_terminal,
     }
+}
+
+pub(super) fn frontmost_pid() -> Option<i32> {
+    let _pool = crate::native_tools::ui_apps::Pool::new();
+    let app = unsafe { front_app() };
+    if app.is_null() {
+        return None;
+    }
+    let pid = unsafe { objc_isize(app, c"processIdentifier") };
+    (pid > 0 && pid <= i32::MAX as isize).then_some(pid as i32)
+}
+
+pub(super) fn activate(app: &App, call: &CancelToken) -> Result<()> {
+    active(call)?;
+    let fresh = read_app(app.pid)?;
+    if fresh.process_identity != app.process_identity {
+        return Err(error("STALE_APP"));
+    }
+    let _pool = crate::native_tools::ui_apps::Pool::new();
+    let running = unsafe { running_app(app.pid) };
+    if running.is_null() {
+        return Err(error("STALE_APP"));
+    }
+    unsafe { objc_void(running, c"unhide") };
+    if !unsafe { objc_bool_usize(running, c"activateWithOptions:", 0) } {
+        return Err(error("ACTIVATE_FAILED"));
+    }
+    Ok(())
+}
+
+type Obj = *mut c_void;
+
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn objc_getClass(name: *const c_char) -> Obj;
+    fn sel_registerName(name: *const c_char) -> Obj;
+    fn objc_msgSend();
+}
+
+unsafe fn front_app() -> Obj {
+    unsafe {
+        let workspace = objc_obj(objc_getClass(c"NSWorkspace".as_ptr()), c"sharedWorkspace");
+        objc_obj(workspace, c"frontmostApplication")
+    }
+}
+
+unsafe fn running_app(pid: i32) -> Obj {
+    let send: unsafe extern "C" fn(Obj, Obj, i32) -> Obj =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        send(
+            objc_getClass(c"NSRunningApplication".as_ptr()),
+            sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr()),
+            pid,
+        )
+    }
+}
+
+unsafe fn objc_obj(receiver: Obj, selector: &CStr) -> Obj {
+    let send: unsafe extern "C" fn(Obj, Obj) -> Obj =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { send(receiver, sel_registerName(selector.as_ptr())) }
+}
+
+unsafe fn objc_void(receiver: Obj, selector: &CStr) {
+    let send: unsafe extern "C" fn(Obj, Obj) =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { send(receiver, sel_registerName(selector.as_ptr())) }
+}
+
+unsafe fn objc_isize(receiver: Obj, selector: &CStr) -> isize {
+    let send: unsafe extern "C" fn(Obj, Obj) -> isize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { send(receiver, sel_registerName(selector.as_ptr())) }
+}
+
+unsafe fn objc_bool_usize(receiver: Obj, selector: &CStr, options: usize) -> bool {
+    let send: unsafe extern "C" fn(Obj, Obj, usize) -> bool =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { send(receiver, sel_registerName(selector.as_ptr()), options) }
 }

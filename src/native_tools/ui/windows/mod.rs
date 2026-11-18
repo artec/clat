@@ -167,6 +167,18 @@ impl Backend for Windows {
         })
     }
 
+    fn app_active(&self, app: &App) -> Result<bool> {
+        Ok(desktop::foreground_pid() == Some(app.pid))
+    }
+
+    fn activate(&self, app: &App, window: &Handle, call: &CancelToken) -> Result<()> {
+        let retained = Reference::retained(window)?;
+        if retained.key.window.pid != app.pid || retained.key.process != app.process_identity {
+            return Err(error("STALE_APP"));
+        }
+        desktop::activate_foreground(retained.key.window, call)
+    }
+
     fn dispatch(&self, node: &Node, action: &str, call: &CancelToken) -> Result<()> {
         let expected = node.clone();
         let element = Reference::retained(&node.handle)?;

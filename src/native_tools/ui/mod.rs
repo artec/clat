@@ -86,6 +86,8 @@ trait Backend: Send + Sync {
         call: &CancelToken,
     ) -> Result<Option<String>>;
     fn window(&self, node: &Node, app: &App, call: &CancelToken) -> Result<Option<Handle>>;
+    fn app_active(&self, app: &App) -> Result<bool>;
+    fn activate(&self, app: &App, window: &Handle, call: &CancelToken) -> Result<()>;
     fn dispatch(&self, node: &Node, action: &str, call: &CancelToken) -> Result<()>;
     fn target_fence(&self, standalone_terminal: bool) -> TargetFence;
 }
@@ -287,6 +289,7 @@ pub(super) fn active(cancel: &CancelToken) -> Result<()> {
 
 pub(super) fn error(code: &'static str) -> ToolError {
     let key = match code {
+        "ACTIVATE_FAILED" => "cua.error_activate_failed",
         "APP_ACCESS_REVOKED" => "cua.error_revoked",
         "APP_APPROVAL_UNAVAILABLE" => "cua.error_no_approver",
         "APP_APPROVAL_PENDING" => "cua.error_approval_pending",

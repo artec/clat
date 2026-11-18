@@ -155,24 +155,30 @@ pub struct RunModelSnapshot {
     pub vendor: Option<String>,
 }
 
+pub(super) fn matching_preset(
+    config: &ModelConfig,
+) -> Option<&'static crate::presets::ModelPreset> {
+    config
+        .preset
+        .as_deref()
+        .and_then(crate::presets::preset_by_id)
+        .filter(|preset| {
+            preset.model == config.model
+                && preset.protocol == config.protocol
+                && preset.endpoint == config.endpoint
+                && preset.request_path == config.request_path
+        })
+}
+
 impl RunModelSnapshot {
     pub(super) fn from_config(config: &ModelConfig) -> Self {
-        let vendor = config
-            .preset
-            .as_deref()
-            .and_then(crate::presets::preset_by_id)
-            .filter(|preset| {
-                preset.model == config.model
-                    && preset.protocol == config.protocol
-                    && preset.endpoint == config.endpoint
-                    && preset.request_path == config.request_path
-            })
-            .and_then(
-                |preset| match crate::model::endpoint_vendor(preset.endpoint) {
+        let vendor =
+            matching_preset(config).and_then(|preset| {
+                match crate::model::endpoint_vendor(preset.endpoint) {
                     crate::model::ModelVendor::Glm => Some("GLM"),
                     vendor => vendor.storage_key(),
-                },
-            );
+                }
+            });
         Self {
             protocol: config.protocol.to_string(),
             model: config.model.clone(),

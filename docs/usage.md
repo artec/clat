@@ -703,7 +703,13 @@ and label.
 `ui_wait` can wait for an element to appear, disappear, gain focus or match a
 value for up to 10 seconds after consent. `ui_act` uses a snapshot and node
 index to dispatch an advertised action such as press, confirm, cancel, pick,
-show menu or raise. If macOS cannot provide the control's value for repeat
+show menu, raise or activate. `activate` brings the window's application to
+the front. Set `activate_app` to true to activate that application in the
+same call before another action. `raise` does not activate the application.
+A background dispatch can succeed without taking effect; the result then
+includes a warning. `ui_apps`, `ui_tree`, `ui_wait` and `ui_act` are included
+in every model request. A run also stops when any tool returns the same result
+three times in a row for the same arguments. If macOS cannot provide the control's value for repeat
 detection, CLAT compares its other observable state. CLAT reads the
 interface again to verify the result.
 Screenshots, coordinate input, typing and clipboard operations are outside
@@ -727,8 +733,10 @@ the app and its windows. Pass a window's `snapshot_id` and `element_index`
 to `ui_tree` or `ui_wait` to target it. If the window closes or changes
 identity, obtain a fresh snapshot before continuing. An absence check on
 a truncated tree returns an error. Windows supports the advertised
-`press`, `pick` and `show_menu` actions for controls that expose the
-corresponding UI Automation patterns. In **Settings → Computer Use**,
+`press`, `pick`, `show_menu` and `activate` actions. `press`, `pick` and
+`show_menu` require the corresponding UI Automation patterns. `activate`
+asks Windows to bring that window to the front and reports a refusal
+instead of claiming success. In **Settings → Computer Use**,
 **Refresh status** checks the Windows Host desktop directly.
 
 See [desktop application interface permissions](permissions.md#macos-application-interface-permissions)
@@ -1116,7 +1124,11 @@ CLAT falls back to the terminal bell.
 
 ### Model and usage status
 
-The header shows the active model and reasoning level. `Shift+Tab` changes the
+The header shows the active model and reasoning level. Each model request also
+includes that route: a built-in preset contributes its vendor and display name,
+and any other route contributes its model identifier without a vendor. The
+model can answer from those facts and is told not to guess a provider.
+`Shift+Tab` changes the
 level for the next run and persists the effective model configuration:
 
 - DeepSeek, GLM, and Kimi use CLAT's Low / High / Max ladder.
@@ -2289,6 +2301,8 @@ built-in presets and saved profiles share that next-run menu, while write-only
 preset keys may be supplied there. Workbench settings retain profile creation,
 editing, and deletion, but no longer hide the everyday model switch among
 configuration controls. Running requests keep the route they started with.
+That route's vendor and model name are included in what the model reads, using
+the same preset and custom-route rules as the terminal.
 
 The workbench supports streaming responses, tool cards, approvals, new/switch/
 rename session actions, permission-mode changes, cancellation, in-run steering,
@@ -3436,6 +3450,9 @@ cumulative input/output/cache usage. Context estimates are not cumulative spend.
 Provider allowances retain units/currencies and update times. Unsupported,
 loading, failed and zero balances are distinct. The popover reads the existing
 monitor cache; hovering never causes an additional provider balance query.
+The navigation rail shows that same cached balance as a short amount when the
+provider reports money rather than a percentage; the exact value stays in the
+rail card.
 
 ## Project editor, Git and terminals
 

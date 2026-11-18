@@ -44,7 +44,8 @@ impl Tool for ListFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".into(),
-            description: "List files and directories. Paths may be project-relative or absolute.".into(),
+            description: "List files and directories. Paths may be project-relative or absolute."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

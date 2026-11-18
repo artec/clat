@@ -529,6 +529,8 @@ remains in Application.
 
 The agent loop delegates request preparation, model response handling and one
 serial tool call to `run/request.rs`, `run/response.rs` and `run/tools.rs`.
+When the same tool, arguments and result occur three times in a row, the run
+stops instead of requesting the model again.
 `run/state.rs` keeps history, turn count and usage together when constructing a
 terminal result. These are internal boundaries: tool order, steering seals,
 permission checks, result transforms and event publication retain their order.
@@ -643,7 +645,8 @@ derive two intentionally different views:
 
 At run admission the Application freezes the mounted system sections and the
 resident tool schemas together. The model receives full schemas only for the
-resident file, search, edit, command, question and capability tools, plus
+resident file, search, edit, command, question, capability and application-interface
+tools (`ui_apps`, `ui_tree`, `ui_wait`, `ui_act`), plus
 conditional tools the frozen policy already enables (`view_image`, task
 progress, `delegate_readonly`, `exit_plan_mode` while Plan Mode is active, and
 `update_goal` while the run already carries a goal).
@@ -651,7 +654,35 @@ Every other allowed tool is a one-line entry in the workflow guidance.
 `describe_capability` appends that tool's existing definition after the
 resident prefix for later requests in the same run. The prefix is not rewritten,
 and promotion is not a journal event: a new run or a restored run starts from
-the resident set again. A call made before promotion is refused. The system order is the CLAT base, optional reply
+the resident set again. A call made before promotion is refused.
+
+#### Adding a tool
+
+A newly registered tool is deferred. Do not add it to the resident table.
+Write its `description` so the first sentence states the purpose in ordinary
+language: workflow guidance copies that sentence, cut at 72 characters, into
+the one-line index. The full description and input schema stay on the tool and
+are sent only after `describe_capability`. No locale key, journal event, or
+request-header change is required. MCP, WASM, and plugin tools follow this
+same path.
+
+Add a name to `RESIDENT` in `src/tool/resident.rs` only when an ordinary turn
+must call the tool without a discovery round-trip. The application-interface
+tools are resident for that reason. Keep that list in its
+stable order. Shorten the definition to one sentence and a parameter schema of
+types, required fields, and bounds. Add a `RESIDENT_HINTS` line only when the
+model needs a when-to-use sentence that the schema does not carry. Conditional
+schemas stay in `is_published`: `view_image`, task progress, and
+`delegate_readonly` follow their existing policy flags; `exit_plan_mode` is
+published only in Plan Mode; `update_goal` is published only while the run
+already carries a goal. Do not invent another always-on list.
+
+The initial request header and `/context` tool list must stay limited to the
+published set. Extend the frozen-prefix check named in
+[testing.md](testing.md) in the same change, and run the narrow `scripts/gates.sh`
+filters for tool access, context snapshot, and capability guidance.
+
+The system order is the CLAT base, optional reply
 formatting guidance, Wasm sections, MCP manifest sections, and explicitly
 marked adapter system sections. Each
 seat sorts by owner, source and section name, independent of connection order.
@@ -659,8 +690,13 @@ Workflow guidance, Plan, skills, task and Goal follow. Goal continuation
 refreshes the Goal section at its existing round boundary.
 
 Before each model request the Application assembles one trailing `user` message
-from current permission guidance, the run's selected local memories, DSH
-`PromptContext` evaluated at connection, and current scoped project files.
+from current permission guidance, the model serving this run, the run's selected
+local memories, DSH `PromptContext` evaluated at connection, and current scoped
+project files. A route that still matches a built-in preset contributes that
+preset's vendor and display name plus its request identifier. Any other route
+contributes the configured model identifier and a null vendor; the model is
+told not to infer a provider. The endpoint and credentials stay out of this
+snapshot.
 Its attribution states that it supersedes earlier runtime facts, including
 ones quoted by a summary. Permission checks still use the live policy. Scratch
 guidance is appended only to that request. The provider request, request

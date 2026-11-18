@@ -252,6 +252,14 @@ impl Automation {
         } else {
             None
         };
+        let mut actions = patterns
+            .as_ref()
+            .filter(|_| enabled == Some(true))
+            .map(Patterns::actions)
+            .unwrap_or_default();
+        if role_name(role) == "Window" {
+            actions.push("activate".into());
+        }
         Ok(Node {
             handle,
             role: role_name(role),
@@ -259,11 +267,7 @@ impl Automation {
             title: title.unwrap_or_default(),
             description,
             label_complete: complete,
-            actions: patterns
-                .as_ref()
-                .filter(|_| enabled == Some(true))
-                .map(Patterns::actions)
-                .unwrap_or_default(),
+            actions,
             enabled,
             focused: unsafe { element.CurrentHasKeyboardFocus() }
                 .ok()

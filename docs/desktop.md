@@ -437,8 +437,13 @@ models or accounts. The ring represents the lowest remaining percentage among
 that Plan's windows; hover or keyboard focus opens a card with window percentages,
 provider-reported reset times and time remaining, and the last query time. Unknown
 reset metadata is omitted, and reaching a reset time does not fabricate a new
-quota. Switching conversations/models clears the previous reading while fetching
-the new one; unsupported providers and failed readings hide the ring. Monitoring
+quota. A wallet balance, such as a DeepSeek account, uses the same control
+without a progress ring. The button shows a short amount of at most five
+columns; the card lists each exact amount, its currency and the last query
+time. A zero balance is marked, and percentage thresholds are not applied.
+When a percentage is also present, the ring remains. Switching
+conversations or models clears the previous reading while fetching the new
+one; unsupported providers and failed readings hide the control. Monitoring
 continues through the existing Host monitor, without extra provider requests on hover.
 Desktop updates take priority in the same rail position. The update card uses the
 same hover behavior and shows current/latest versions, package size when known,

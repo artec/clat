@@ -105,6 +105,101 @@ fn oversized_tool_results_remain_raw_without_pressure_maintenance() {
     assert_eq!(finished.output["log"].as_str().unwrap().len(), 20_000);
 }
 
+#[test]
+fn identical_tool_result_stops_the_run_on_the_third_repeat() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = RepeatingEcho {
+        calls: 0,
+        same: true,
+    };
+    let error = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("repeat", &mut Vec::new())
+        .expect_err("three identical results stop the run");
+    assert!(
+        error.to_string().contains("three times in a row"),
+        "{error}"
+    );
+    assert_eq!(model.calls, 3);
+    assert_eq!(
+        error
+            .items()
+            .iter()
+            .filter(|item| matches!(item, ModelItem::ToolResult(_)))
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn a_changed_tool_result_resets_the_repeat_stop() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = RepeatingEcho {
+        calls: 0,
+        same: false,
+    };
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("vary", &mut Vec::new())
+        .expect("a changed result may continue");
+    assert_eq!(output.text, "done");
+    assert_eq!(model.calls, 4);
+}
+
+struct RepeatingEcho {
+    calls: usize,
+    same: bool,
+}
+
+impl Model for RepeatingEcho {
+    fn provider(&self) -> &str {
+        "test"
+    }
+    fn model_id(&self) -> &str {
+        "repeating-echo"
+    }
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if self.calls == 4 {
+            return Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        let text = if self.same || self.calls < 3 {
+            "same"
+        } else {
+            "other"
+        };
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: format!("call-{}", self.calls),
+                name: "echo".into(),
+                arguments: json!({"text": text}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
 struct PruningCheckModel {
     calls: usize,
 }

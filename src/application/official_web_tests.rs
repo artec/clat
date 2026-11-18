@@ -41,7 +41,16 @@ impl TestModelScript for SearchScript {
         }
         let first = self.step.fetch_add(1, Ordering::SeqCst) == 0;
         if first {
-            assert!(request.tools.iter().any(|tool| tool.name == "mcp_official_web_web_fetch") || request.instructions.unwrap_or_default().contains("mcp_official_web_web_fetch:"));
+            assert!(
+                request
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "mcp_official_web_web_fetch")
+                    || request
+                        .instructions
+                        .unwrap_or_default()
+                        .contains("mcp_official_web_web_fetch:")
+            );
         } else {
             assert!(
                 request.items.iter().any(|item| {

@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::model::ModelConfig;
-use crate::plugins::services::{FrozenPrompts, RuntimeContext};
+use crate::plugins::services::{FrozenPrompts, RuntimeContext, ServingModel};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -75,6 +75,7 @@ impl TrustedProjectApplication {
             task,
             tools: self.tools.clone(),
             subagents_enabled,
+            serving_model: serving_model(config),
         }
         .freeze()
     }
@@ -244,6 +245,7 @@ struct ContextSources {
     tool_access: crate::tool::ToolAccessPolicy,
     tools: Arc<crate::tool::ToolRegistry>,
     subagents_enabled: bool,
+    serving_model: ServingModel,
 }
 impl ContextSources {
     fn freeze(self) -> RunContextSnapshot {
@@ -260,6 +262,7 @@ impl ContextSources {
             tool_access,
             tools,
             subagents_enabled,
+            serving_model,
         } = self;
         let tool_access = if goal.instructions.is_empty() {
             tool_access
@@ -296,6 +299,7 @@ impl ContextSources {
                 permission,
                 memory: memory.instructions,
                 plugins: prompts.context,
+                model: Some(serving_model),
                 enabled: true,
             },
             prompt_contributors: prompts.contributors,
@@ -332,6 +336,21 @@ impl InstructionLayers {
             before_goal,
         )
     }
+}
+
+fn serving_model(config: &ModelConfig) -> ServingModel {
+    super::dto::matching_preset(config).map_or_else(
+        || ServingModel {
+            name: config.model.clone(),
+            id: config.model.clone(),
+            vendor: None,
+        },
+        |preset| ServingModel {
+            vendor: Some(preset.vendor.to_owned()),
+            name: preset.name.to_owned(),
+            id: preset.model.to_owned(),
+        },
+    )
 }
 
 fn set_system(header: &mut Value, system: &str) {
@@ -474,6 +493,7 @@ impl TrustedProjectApplication {
             tool_access: access,
             tools: target.runtime.tools.clone(),
             subagents_enabled: false,
+            serving_model: serving_model(config),
         }
         .freeze())
     }

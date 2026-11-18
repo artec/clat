@@ -1018,7 +1018,7 @@ pub fn load_replay(storage_root: &std::path::Path) -> Vec<crate::session::replay
 // 用户明确续办）。供 serve Playwright 宿主与 TUI App 级测试共用。
 //
 // Run 1（用户要求两个具体产物 a.md / b.md）：
-//   请求1 → todo_write 登记 4 项（write a、write b、verify、report） +
+//   请求1 → describe_capability(todo_write)，随后 todo_write 登记 4 项 +
 //           write_file(a.md)；
 //   请求2（见 a.md 结果，延迟 250ms 的延迟结果腿）→ write_file(b.md) +
 //           edit_file(b.md, 不存在 old_str)（可控制失败，is_error=true
@@ -1026,7 +1026,7 @@ pub fn load_replay(storage_root: &std::path::Path) -> Vec<crate::session::replay
 //   请求3（见失败结果）→ 正常 Completed，verify/report 两项保持 open——
 //           「Run 完成 ≠ 任务已核验完成」的可观察未尽工作。
 // Run 2（用户明确说 continue）：
-//   请求4 → todo_write 把 4 项全部置 completed（仅剩余动作）；
+//   请求4 → describe 后 todo_write 把 4 项全部置 completed；
 //   请求5 → Completed "all artifacts verified and reported"。
 // ---------------------------------------------------------------------------
 
@@ -1114,6 +1114,18 @@ impl TestModelScript for Ag5JointScript {
                 _ => None,
             })
             .unwrap_or_default();
+        if !request.tools.iter().any(|tool| tool.name == "todo_write") {
+            let id = if latest_user.contains("continue") {
+                "call-ag5-describe-todo-cont"
+            } else {
+                "call-ag5-describe-todo"
+            };
+            return Self::tool_response(vec![Self::tool_call(
+                id,
+                "describe_capability",
+                serde_json::json!({"name": "todo_write"}),
+            )]);
+        }
 
         let todo_results = request
             .items
@@ -1124,12 +1136,11 @@ impl TestModelScript for Ag5JointScript {
             .count();
 
         // —— Run 2：用户明确续办，仅执行剩余动作（todo 收口）——
-        // 注意：跨 run 的工具结果会从模型表面修剪（transient context），
-        // 续办首请求看到的 todo_results 从 0 重新计数；因此按当前计数
-        // 生成唯一 call id（真实模型每次发射唯一 id），直到累计第 3 次
-        // todo_write 结果到达才完成。
+        // 跨 run 的工具结果会从模型表面修剪，续办首请求的计数从 0 开始。
+        // 一次成功的 todo_write 就把剩余项收口；不要用同一参数反复调用，
+        // 运行会在第三次相同结果时停止。
         if latest_user.contains("continue") {
-            if todo_results >= 3 {
+            if todo_results >= 1 {
                 let text = "all artifacts verified and reported";
                 events.emit(ModelEvent::TextDelta {
                     delta: text.to_owned(),

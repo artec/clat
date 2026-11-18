@@ -13,6 +13,10 @@ pub(crate) const RESIDENT: &[&str] = &[
     "ask_user",
     "query_capabilities",
     "describe_capability",
+    "ui_apps",
+    "ui_tree",
+    "ui_wait",
+    "ui_act",
 ];
 
 pub(crate) fn is_resident(name: &str) -> bool {

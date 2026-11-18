@@ -19,6 +19,7 @@ struct Fake {
     facts: Mutex<Facts>,
     values: AtomicUsize,
     dispatches: AtomicUsize,
+    activations: AtomicUsize,
     on_value_read: Mutex<Option<ValueReadHook>>,
 }
 
@@ -37,6 +38,8 @@ struct Facts {
     role: String,
     resolved_node: usize,
     unknown_dispatch: bool,
+    front: bool,
+    activate_fails: bool,
     cancel_on_root: Option<CancelToken>,
 }
 
@@ -57,6 +60,8 @@ impl Default for Facts {
             role: "AXButton".into(),
             resolved_node: 2,
             unknown_dispatch: false,
+            front: true,
+            activate_fails: false,
             cancel_on_root: None,
         }
     }
@@ -148,10 +153,10 @@ impl Backend for Fake {
             title,
             subrole,
             description: None,
-            actions: if index == 2 && facts.supported {
-                vec!["press".into()]
-            } else {
-                Vec::new()
+            actions: match index {
+                1 => vec!["activate".into(), "raise".into()],
+                2 if facts.supported => vec!["press".into()],
+                _ => Vec::new(),
             },
             label_complete: index != 2 || facts.label_complete,
             enabled: Some(true),
@@ -187,6 +192,19 @@ impl Backend for Fake {
     fn window(&self, node: &Node, _: &App, _: &CancelToken) -> Result<Option<Handle>> {
         Ok((index(&node.handle) != 0)
             .then(|| Arc::new(self.facts.lock().unwrap().current_window) as Handle))
+    }
+    fn app_active(&self, _: &App) -> Result<bool> {
+        Ok(self.facts.lock().unwrap().front)
+    }
+    fn activate(&self, _: &App, _: &Handle, cancel: &CancelToken) -> Result<()> {
+        active(cancel)?;
+        self.activations.fetch_add(1, Ordering::Relaxed);
+        let mut facts = self.facts.lock().unwrap();
+        if facts.activate_fails {
+            return Err(error("ACTIVATE_FAILED"));
+        }
+        facts.front = true;
+        Ok(())
     }
     fn dispatch(&self, _: &Node, _: &str, cancel: &CancelToken) -> Result<()> {
         active(cancel)?;
@@ -337,6 +355,10 @@ impl Fixture {
 
     fn dispatches(&self) -> usize {
         self.fake.dispatches.load(Ordering::Relaxed)
+    }
+
+    fn activations(&self) -> usize {
+        self.fake.activations.load(Ordering::Relaxed)
     }
 }
 
@@ -1025,4 +1047,145 @@ fn cua_uncertain_dispatch_is_one_shot_and_reports_an_unknown_outcome() {
     assert_eq!(err.recovery().unwrap()["retry_safe"], false);
     assert_eq!(err.recovery().unwrap()["dispatched"], Value::Null);
     assert_eq!(f.dispatches(), 1);
+}
+
+#[test]
+fn cua_activate_is_explicit_and_shares_one_action_slot() {
+    let f = Fixture::new(false);
+    let tree = f.read(Operation::Tree, json!({"pid":42})).unwrap();
+    let window = tree["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["role"] == "AXWindow")
+        .unwrap();
+    assert!(
+        window["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action == "activate")
+    );
+    f.fake.facts.lock().unwrap().front = false;
+    let mut press = f.target();
+    press["activate_app"] = json!(true);
+    let result = f.action(press, PermissionMode::FullAccess, allow).unwrap();
+    assert!(result.get("warning").is_none());
+    assert_eq!(f.activations(), 1);
+    assert_eq!(f.dispatches(), 1);
+
+    f.fake.facts.lock().unwrap().front = false;
+    f.fake.facts.lock().unwrap().activate_fails = true;
+    let mut failed = f.target();
+    failed["activate_app"] = json!(true);
+    code(
+        f.action(failed, PermissionMode::FullAccess, allow),
+        "ACTIVATE_FAILED",
+    );
+    assert_eq!(f.dispatches(), 1);
+
+    f.fake.facts.lock().unwrap().activate_fails = false;
+    f.fake.facts.lock().unwrap().front = false;
+    let inactive = f
+        .action(f.target(), PermissionMode::FullAccess, allow)
+        .unwrap();
+    assert_eq!(inactive["warning"]["key"], "cua.dispatch_while_inactive");
+    assert_eq!(f.activations(), 2);
+    assert_eq!(f.dispatches(), 2);
+
+    let raised =
+        json!({"snapshot_id":tree["snapshot_id"],"element_index":window["index"],"action":"raise"});
+    f.action(raised, PermissionMode::FullAccess, allow).unwrap();
+    assert_eq!(f.activations(), 2);
+    assert_eq!(f.dispatches(), 3);
+
+    let budget = Fixture::new(false);
+    let mut call = budget.target();
+    call["activate_app"] = json!(true);
+    for index in 0..20 {
+        budget.fake.facts.lock().unwrap().value = index.to_string();
+        budget
+            .action(call.clone(), PermissionMode::FullAccess, allow)
+            .unwrap();
+    }
+    code(
+        budget.action(call, PermissionMode::FullAccess, allow),
+        "LIMIT",
+    );
+    assert_eq!(budget.dispatches(), 20);
+    assert_eq!(budget.activations(), 20);
+}
+
+#[test]
+fn cua_activate_keeps_existing_fences() {
+    let f = Fixture::new(false);
+    for (interactive, access, arguments, expected) in [
+        (
+            true,
+            ToolAccessPolicy::plan_mode(),
+            json!({"action":"activate"}),
+            "PLAN_MODE",
+        ),
+        (
+            false,
+            ToolAccessPolicy::all(),
+            json!({"action":"activate"}),
+            "APP_APPROVAL_UNAVAILABLE",
+        ),
+        (
+            true,
+            ToolAccessPolicy::plan_mode(),
+            json!({"activate_app":true}),
+            "PLAN_MODE",
+        ),
+        (
+            false,
+            ToolAccessPolicy::all(),
+            json!({"activate_app":true}),
+            "APP_APPROVAL_UNAVAILABLE",
+        ),
+    ] {
+        f.begin("first", interactive, access);
+        let mut target = if arguments.get("action").is_some() {
+            let tree = f.read(Operation::Tree, json!({"pid":42})).unwrap();
+            let window = tree["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["role"] == "AXWindow")
+                .unwrap();
+            json!({"snapshot_id":tree["snapshot_id"],"element_index":window["index"],"action":"activate"})
+        } else {
+            f.target()
+        };
+        if arguments.get("activate_app") == Some(&json!(true)) {
+            target["activate_app"] = json!(true);
+        }
+        code(
+            f.action(target, PermissionMode::FullAccess, allow),
+            expected,
+        );
+    }
+    assert_eq!(f.dispatches(), 0);
+    assert_eq!(f.activations(), 0);
+    for kind in [
+        ApplicationKind::Protected,
+        ApplicationKind::BrowserOrUnknown,
+    ] {
+        let f = Fixture::new(false);
+        f.fake.facts.lock().unwrap().kind = kind;
+        let tree = f.read(Operation::Tree, json!({"pid":42})).unwrap();
+        let window = tree["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["role"] == "AXWindow")
+            .unwrap();
+        let target = json!({"snapshot_id":tree["snapshot_id"],"element_index":window["index"],"action":"activate"});
+        code(
+            f.action(target, PermissionMode::FullAccess, allow),
+            "PROTECTED_TARGET",
+        );
+        assert_eq!(f.activations(), 0);
+    }
 }

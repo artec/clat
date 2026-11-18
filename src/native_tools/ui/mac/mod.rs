@@ -93,6 +93,7 @@ impl Backend for Mac {
         } else {
             Vec::new()
         };
+        let window = role == "AXWindow";
         Ok(Node {
             handle: node.clone(),
             role,
@@ -100,15 +101,21 @@ impl Backend for Mac {
             subrole,
             description,
             label_complete,
-            actions: ACTIONS
-                .iter()
-                .filter(|(_, native)| {
-                    available
-                        .iter()
-                        .any(|item| item.as_bytes() == native.to_bytes())
-                })
-                .map(|(name, _)| (*name).to_owned())
-                .collect(),
+            actions: {
+                let mut actions = ACTIONS
+                    .iter()
+                    .filter(|(_, native)| {
+                        available
+                            .iter()
+                            .any(|item| item.as_bytes() == native.to_bytes())
+                    })
+                    .map(|(name, _)| (*name).to_owned())
+                    .collect::<Vec<_>>();
+                if window {
+                    actions.push("activate".into());
+                }
+                actions
+            },
             enabled: boolean(&attrs[0]),
             focused: boolean(&attrs[1]),
             selected: boolean(&attrs[2]),
@@ -137,6 +144,15 @@ impl Backend for Mac {
         };
         verify_window(app, &window, self, call)?;
         Ok(Some(window))
+    }
+
+    fn app_active(&self, app: &App) -> Result<bool> {
+        Ok(apps::frontmost_pid() == Some(app.pid))
+    }
+
+    fn activate(&self, app: &App, window: &Handle, call: &CancelToken) -> Result<()> {
+        apps::activate(app, call)?;
+        ax(window).perform(c"AXRaise", call)
     }
 
     fn dispatch(&self, node: &Node, action: &str, call: &CancelToken) -> Result<()> {

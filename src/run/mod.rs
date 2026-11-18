@@ -240,6 +240,7 @@ impl<'a> Run<'a> {
             items,
             usage: Usage::default(),
             turn: 0,
+            repeat: None,
         };
         loop {
             state.turn += 1;

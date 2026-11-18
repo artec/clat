@@ -48,9 +48,10 @@ impl Operation {
                 json!(["condition"]),
             ),
             Self::Act => (
-                "Dispatch one advertised accessibility action using the element_index and snapshot_id from ui_tree. Use raise on macOS only when necessary. Observe fresh state to verify every dispatch. A stale or uncertain result requires a new observation before any further action. Stop on denial or revocation; never switch tools to bypass it.",
+                "Dispatch one advertised action from a ui_tree snapshot. activate brings that window's app to the front. Set activate_app true to do that in the same call before the action. raise does not activate the app. A background dispatch can report success without taking effect.",
                 json!({"snapshot_id":{"type":"string"},"element_index":{"type":"integer","minimum":0},
-                    "action":{"enum":["press","confirm","cancel","pick","show_menu","raise"]}}),
+                    "action":{"enum":["press","confirm","cancel","pick","show_menu","raise","activate"]},
+                    "activate_app":{"type":"boolean","default":false}}),
                 json!(["snapshot_id", "element_index", "action"]),
             ),
         };
@@ -125,6 +126,7 @@ impl Tool for UiTool {
             "element_index",
             "cursor",
             "action",
+            "activate_app",
             "condition",
             "timeout_ms",
             "include_values",

@@ -14,6 +14,8 @@ pub(super) struct ActionRequest {
     snapshot_id: String,
     element_index: usize,
     action: String,
+    #[serde(default)]
+    activate_app: bool,
 }
 
 struct PreparedAction {
@@ -65,6 +67,7 @@ impl UiTool {
         } else {
             &node.title
         });
+        let app_active = self.service.backend.app_active(&prepared.app)?;
         let reason = UiMessage::new(if high_risk {
             "cua.action_high_risk_reason"
         } else {
@@ -74,9 +77,10 @@ impl UiTool {
         let approval = PreparedApproval {
             arguments: json!({
                 "snapshot_id": prepared.request.snapshot_id, "element_index": prepared.request.element_index,
-                "action": prepared.request.action,
+                "action": prepared.request.action, "activate_app": prepared.request.activate_app,
                 "target":{"app":prepared.app.label,"pid":prepared.app.pid,"bundle_id":prepared.app.bundle,
-                    "role":node.role,"title":title,"description":node.description.as_deref().map(display_text),"high_risk":high_risk}
+                    "role":node.role,"title":title,"description":node.description.as_deref().map(display_text),
+                    "high_risk":high_risk,"app_active":app_active}
             }),
             reason,
             required: high_risk,
@@ -164,30 +168,63 @@ impl PreparedAction {
         };
         let (node, window) = self.revalidate()?;
         let current = node.element(&self.app, service.backend.as_ref(), &window, value);
+        let app_active = service.backend.app_active(&self.app)?;
+        self.issue(&call, &node, &window, &current)?;
+        let reported = if self.request.action == "activate" || self.request.activate_app {
+            service.backend.app_active(&self.app)?
+        } else {
+            app_active
+        };
+        let mut result = json!({"dispatched":true,"verified":false,"app_active":reported,
+            "target":{"pid":self.app.pid,"app_id":self.app.identity}});
+        let activated = self.request.action == "activate" || self.request.activate_app;
+        if !app_active && !activated {
+            let warning = UiMessage::new("cua.dispatch_while_inactive");
+            result["warning"] = json!({"code":"DISPATCH_WHILE_INACTIVE","key":"cua.dispatch_while_inactive","presentation":warning.english()});
+        }
+        Ok(result)
+    }
+
+    fn issue(
+        &self,
+        call: &CancelToken,
+        node: &Node,
+        window: &Handle,
+        current: &crate::native_tools::ui_state::Element,
+    ) -> Result<()> {
+        let service = &self.source.service;
         let mut state = self.run.data.try_lock().map_err(|_| error("NATIVE_BUSY"))?;
         let snapshot = state.get(&self.request.snapshot_id).map_err(safety_error)?;
         if !Arc::ptr_eq(&snapshot.lease, &self.lease) {
             return Err(error("STALE_SNAPSHOT"));
         }
+        let wants = self.request.action == "activate" || self.request.activate_app;
         service
             .control
             .ui_authority
             .authorized(&service.control, &self.lease, || {
-                active(&call)?;
+                active(call)?;
                 service.recheck_app(&self.app)?;
-                state.record_dispatch(&current).map_err(safety_error)?;
+                state.record_dispatch(current).map_err(safety_error)?;
                 let _activity = service.observe(
                     &self.run,
                     &self.lease.cancel,
                     ComputerUseKind::Act,
                     Some(&self.app),
                 )?;
-                active(&call)?;
-                service.backend.dispatch(&node, &self.request.action, &call)
-            })?;
-        Ok(
-            json!({"dispatched":true,"verified":false,"target":{"pid":self.app.pid,"app_id":self.app.identity}}),
-        )
+                active(call)?;
+                let mut live = node.clone();
+                if wants {
+                    service.backend.activate(&self.app, window, call)?;
+                    live = self.revalidate()?.0;
+                }
+                if self.request.action != "activate" {
+                    service
+                        .backend
+                        .dispatch(&live, &self.request.action, call)?;
+                }
+                Ok(())
+            })
     }
 }
 

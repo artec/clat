@@ -759,10 +759,7 @@ fn model_requests_explain_available_built_in_capabilities() {
             standard.contains(&format!("{tool}:")),
             "deferred {tool} is advertised by name"
         );
-        assert!(
-            !plan.contains(tool),
-            "plan mode must not advertise {tool}"
-        );
+        assert!(!plan.contains(tool), "plan mode must not advertise {tool}");
     }
     drop(requests);
     app.close().unwrap();
@@ -864,7 +861,9 @@ impl TestModelScript for PromotionScript {
 fn deferred_tool_call_is_refused_until_describe_capability() {
     let (storage, root) = roots("context-deferred-refusal");
     std::fs::create_dir_all(&root).unwrap();
-    let probe = Arc::new(DeferredRefusal { step: AtomicUsize::new(0) });
+    let probe = Arc::new(DeferredRefusal {
+        step: AtomicUsize::new(0),
+    });
     let mut app = mount(
         &Project::new(&root),
         &storage,
@@ -957,6 +956,55 @@ fn context_command_is_read_only_zero_durable_and_starts_no_model() {
     assert!(snapshot.history_estimate > 0);
     assert_eq!(script.0.lock().unwrap().len(), before_calls);
     assert_eq!(durable_event_count(&storage_root, &id), before_events);
+
+    application.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+#[test]
+fn runtime_context_names_the_serving_model_and_does_not_guess_a_vendor() {
+    let (storage_root, project_root) = roots("runtime-model-name");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let application = mount(
+        &Project::new(&project_root),
+        &storage_root,
+        TestBehavior::Panic,
+    );
+    let skills = application.skills_service().unwrap().snapshot().unwrap();
+    let tail = |config: &crate::model::ModelConfig| {
+        application
+            .run_context_snapshot(
+                config,
+                skills.clone(),
+                None,
+                crate::memory::MemoryInjection::default(),
+                crate::goal::GoalInjection::default(),
+                None,
+            )
+            .runtime_context
+            .snapshot(None)
+            .request_tail(None)
+            .unwrap()
+    };
+
+    let mut config = crate::model::ModelConfig::default();
+    crate::presets::preset_by_id("deepseek-v4-pro")
+        .unwrap()
+        .apply(&mut config);
+    let preset = tail(&config);
+    assert!(preset.contains("do not infer a provider"));
+    assert!(preset.contains("\"vendor\":\"DeepSeek\""));
+    assert!(preset.contains("\"name\":\"DeepSeek V4.0 Pro\""));
+    assert!(preset.contains("\"id\":\"deepseek-v4-pro\""));
+    assert!(!preset.contains("api.deepseek.com"));
+
+    config.model = "renamed".into();
+    let renamed = tail(&config);
+    assert!(renamed.contains("\"vendor\":null"));
+    assert!(renamed.contains("\"name\":\"renamed\""));
+    assert!(renamed.contains("\"id\":\"renamed\""));
+    assert!(!renamed.contains("DeepSeek"));
+    assert!(!renamed.contains("api.deepseek.com"));
 
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());

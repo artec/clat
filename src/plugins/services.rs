@@ -133,7 +133,7 @@ pub(crate) trait DynamicInstructions: Send + Sync {
 
 mod runtime_context;
 pub(crate) use runtime_context::{
-    PromptWitness, RuntimeContext, RuntimeSnapshot, validate_runtime_header,
+    PromptWitness, RuntimeContext, RuntimeSnapshot, ServingModel, validate_runtime_header,
 };
 pub(crate) const TODO_SERVICE_ID: ServiceId = ServiceId::new("core.todo");
 pub(crate) const TODO_SERVICE: ServiceKey<TodoService> = ServiceKey::new(TODO_SERVICE_ID);

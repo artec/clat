@@ -187,6 +187,20 @@ pub(super) fn foreground_pid() -> Option<i32> {
     Window::from_hwnd(unsafe { GetForegroundWindow() }).map(|window| window.pid)
 }
 
+pub(super) fn activate_foreground(window: Window, call: &CancelToken) -> Result<()> {
+    active(call)?;
+    interactive()?;
+    window.check()?;
+    let hwnd = window.hwnd();
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        let _ = unsafe { ShowWindowAsync(hwnd, SW_RESTORE) };
+    }
+    if unsafe { GetForegroundWindow() } == hwnd {
+        return Ok(());
+    }
+    unsafe { SetForegroundWindow(hwnd) }.map_err(|_| error("ACTIVATE_FAILED"))
+}
+
 fn open_process(pid: i32) -> Result<OwnedHandle> {
     if pid <= 0 || session(pid as u32).is_none_or(|id| Some(id) != session(std::process::id())) {
         return Err(error("WINDOWS_TARGET_UNAVAILABLE"));

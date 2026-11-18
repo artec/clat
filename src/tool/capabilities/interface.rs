@@ -7,12 +7,20 @@ pub(crate) fn is_discovery(name: &str) -> bool {
 }
 
 fn described_name(registry: &ToolRegistry, args: &Value) -> Result<String, ToolError> {
-    let view = registry
-        .installed_view()
-        .ok_or_else(|| ToolError::new("no active capability snapshot; requery in the current Run"))?;
-    let definition = if let Some(name) = args.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) {
+    let view = registry.installed_view().ok_or_else(|| {
+        ToolError::new("no active capability snapshot; requery in the current Run")
+    })?;
+    let definition = if let Some(name) = args
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+    {
         view.definition_named(name)
-    } else if let Some(id) = args.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+    } else if let Some(id) = args
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
         view.definition_for_id(id)
     } else {
         return Err(ToolError::new("describe_capability requires name or id"));
@@ -62,9 +70,18 @@ impl Tool for DiscoveryTool {
         } else {
             "List visible tools in this run. Use name for an exact tool. Filters compare declared input, output and scope only."
         };
-        ToolDefinition { name: if self.detail {"describe_capability"}else{"query_capabilities"}.into(),
+        ToolDefinition {
+            name: if self.detail {
+                "describe_capability"
+            } else {
+                "query_capabilities"
+            }
+            .into(),
             description: description.into(),
-            input_schema: schema, effect: ToolEffect::Pure, strict: false }
+            input_schema: schema,
+            effect: ToolEffect::Pure,
+            strict: false,
+        }
     }
     fn invoke(&self, args: &Value, _: &Project, cancel: &CancelToken) -> Result<Value, ToolError> {
         let registry = self

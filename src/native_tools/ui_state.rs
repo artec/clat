@@ -115,7 +115,16 @@ pub(super) fn check_element(old: &Element, current: &Element, action: &str) -> R
     {
         return Err(Failure::StaleSnapshot);
     }
-    if !["press", "confirm", "cancel", "pick", "show_menu", "raise"].contains(&action)
+    if ![
+        "press",
+        "confirm",
+        "cancel",
+        "pick",
+        "show_menu",
+        "raise",
+        "activate",
+    ]
+    .contains(&action)
         || !old.actions.iter().any(|a| a == action)
         || !current.actions.iter().any(|a| a == action)
     {

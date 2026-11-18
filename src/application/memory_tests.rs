@@ -21,7 +21,11 @@ impl TestModelScript for MemoryScript {
         request: crate::ModelRequest<'_>,
         events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
-        if !request.tools.iter().any(|tool| tool.name == "memory_search") {
+        if !request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "memory_search")
+        {
             return Ok(crate::ModelResponse {
                 text: String::new(),
                 tool_calls: vec![crate::ToolCall {
