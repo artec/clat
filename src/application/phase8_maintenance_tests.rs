@@ -212,7 +212,7 @@ fn exercise_pruner(overflow: bool) {
             .iter()
             .filter(|e| matches!(e, crate::session::replay::ReplayEvent::ToolFinished { .. }))
             .count(),
-        2
+        1
     );
     let mut app = super::tests::mount(&Project::new(&root), &storage, TestBehavior::Panic);
     let id = app.sessions.list_sessions(&app.project_key()).unwrap()[0]

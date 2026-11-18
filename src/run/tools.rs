@@ -195,12 +195,6 @@ impl Run<'_> {
         let denied = if !self.tool_access.allows(definition) {
             let reason = self.tool_access.denial_reason(definition).to_owned();
             Some((reason.clone(), reason))
-        } else if self.schema_closed(definition) {
-            let message = format!(
-                "call describe_capability before using `{}`",
-                definition.name
-            );
-            Some((message.clone(), message))
         } else {
             self.tool_access
                 .validate_call(definition, &call.arguments)
@@ -272,39 +266,28 @@ impl Run<'_> {
         state.items.push(ModelItem::ToolResult(result.clone()));
         events.emit(RunEvent::ToolFinished { result });
     }
-    fn schema_closed(&self, definition: &ToolDefinition) -> bool {
-        if self.tool_definitions.is_none()
-            || crate::tool::resident::is_published(
-                &definition.name,
-                self.tool_access.planning(),
-                self.tool_access.goal_tools(),
-            )
-        {
-            return false;
-        }
-        self.promotions
-            .lock()
-            .map(|promoted| promoted.iter().all(|item| item.name != definition.name))
-            .unwrap_or(true)
-    }
-    fn settle_promotion(&self, output: serde_json::Value) -> serde_json::Value {
+    fn settle_promotion(&self, mut output: serde_json::Value) -> serde_json::Value {
         if output.get("promote").and_then(|value| value.as_bool()) != Some(true) {
             return output;
         }
         let name = output
             .get("name")
             .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let promoted = self.note_promotion(name);
-        serde_json::json!({
-            "name": name,
-            "promoted": promoted,
-            "message": if promoted {
-                "Included in the next model request of this run. Call it then; this result does not repeat the schema."
-            } else {
-                "Already available in this request."
-            }
-        })
+            .unwrap_or("")
+            .to_owned();
+        let promoted = self.note_promotion(&name);
+        if let Some(object) = output.as_object_mut() {
+            object.insert("promoted".into(), serde_json::json!(promoted));
+            object.insert(
+                "message".into(),
+                serde_json::json!(if promoted {
+                    "Included in the next model request of this run."
+                } else {
+                    "Already available in this request."
+                }),
+            );
+        }
+        output
     }
     fn note_promotion(&self, name: &str) -> bool {
         if crate::tool::resident::is_published(

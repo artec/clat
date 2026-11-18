@@ -905,6 +905,7 @@ impl ToolRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
         let Ok(state) = self.inner.read() else {
             return Vec::new();
@@ -918,18 +919,24 @@ impl ToolRegistry {
     }
 
     pub(crate) fn definitions_for(&self, access: &ToolAccessPolicy) -> Vec<ToolDefinition> {
-        let mut definitions = self
-            .definitions()
-            .into_iter()
-            .filter(|definition| {
-                access.allows(definition)
-                    && resident::is_published(
-                        &definition.name,
-                        access.planning(),
-                        access.goal_tools(),
-                    )
+        let Ok(state) = self.inner.read() else {
+            return Vec::new();
+        };
+        let mut definitions = state
+            .order
+            .iter()
+            .filter_map(|name| {
+                let entry = state.by_name.get(name)?;
+                let builtin = entry.owner.as_str().starts_with("builtin.");
+                let visible = access.allows(&entry.definition)
+                    && (!builtin
+                        || resident::is_published(
+                            &entry.definition.name,
+                            access.planning(),
+                            access.goal_tools(),
+                        ));
+                visible.then(|| access.model_definition(entry.definition.clone()))
             })
-            .map(|definition| access.model_definition(definition))
             .collect::<Vec<_>>();
         resident::sort_published(&mut definitions);
         definitions

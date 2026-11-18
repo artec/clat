@@ -125,17 +125,8 @@ impl Model for ProbeModel {
                 "",
                 vec![ToolCall {
                     id: "paired".into(),
-                    name: if r.tools.iter().any(|d| d.name == "test_discrimination") {
-                        "test_discrimination"
-                    } else {
-                        "run_command"
-                    }
-                    .into(),
-                    arguments: if r.tools.iter().any(|d| d.name == "test_discrimination") {
-                        self.args.clone()
-                    } else {
-                        json!({"command":"cd candidate && cargo test --offline --locked --lib contract -- --exact"})
-                    },
+                    name: "test_discrimination".into(),
+                    arguments: self.args.clone(),
                 }],
             ),
             2 => {

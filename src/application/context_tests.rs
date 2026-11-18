@@ -297,8 +297,8 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
     assert!(baseline.project_instructions_estimate > 0);
     assert!(application.tools.get("lsp").is_some());
     assert!(
-        !baseline.tool_names.iter().any(|name| name == "lsp"),
-        "lsp stays registered and is omitted from the resident schema"
+        baseline.tool_names.iter().any(|name| name == "lsp"),
+        "a registered lsp tool is part of the resident schema"
     );
     assert_eq!(baseline.plan_policy_estimate, 0);
     assert_eq!(baseline.goal_policy_estimate, 0);
@@ -743,7 +743,7 @@ fn model_requests_explain_available_built_in_capabilities() {
         );
         assert!(plan.contains(name), "plan prompt should explain {name}");
     }
-    for name in ["exec_command", "job_start", "schedule_create", "todo_write"] {
+    for name in ["exec_command", "job_start", "schedule_create"] {
         assert!(
             standard.contains(name),
             "normal prompt should explain {name}"
@@ -909,13 +909,15 @@ impl TestModelScript for DeferredRefusal {
             }
             1 => {
                 assert!(!names.contains(&"schedule_create"));
-                let refused = request.items.iter().any(|item| {
+                let blocked = request.items.iter().any(|item| {
                     matches!(item, crate::ModelItem::ToolResult(result)
-                        if result.is_error
-                            && result.tool_name == "schedule_create"
+                        if result.tool_name == "schedule_create"
                             && result.output.to_string().contains("describe_capability"))
                 });
-                assert!(refused, "a deferred call must fail closed before promotion");
+                assert!(
+                    !blocked,
+                    "a registered tool is not refused only because its schema is deferred"
+                );
                 Ok(crate::ModelResponse {
                     text: "stopped".into(),
                     tool_calls: Vec::new(),

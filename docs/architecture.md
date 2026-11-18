@@ -655,7 +655,8 @@ Every other allowed tool is a one-line entry in the workflow guidance.
 `describe_capability` appends that tool's existing definition after the
 resident prefix for later requests in the same run. The prefix is not rewritten,
 and promotion is not a journal event: a new run or a restored run starts from
-the resident set again. A call made before promotion is refused.
+the resident set again. A registered tool can still be called by name before
+its schema is promoted; promotion only adds that schema to later requests.
 
 #### Adding a tool
 

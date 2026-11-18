@@ -59,8 +59,25 @@ impl TestModelScript for DiscoveryPrelude {
         if r.tools.is_empty() || crate::test_support::is_summary_request(&r) {
             return self.inner.stream(r, events);
         }
+        let Some(actual) = r.tools.iter().find(|t| t.name == self.target).cloned() else {
+            let described = r.items.iter().any(|item| {
+                matches!(item, crate::ModelItem::ToolResult(result)
+                    if result.tool_name == "describe_capability" && !result.is_error)
+            });
+            if described {
+                return Err(crate::ModelError::request(format!(
+                    "{} was not added to the next request",
+                    self.target
+                )));
+            }
+            return Ok(Self::call(
+                "describe_capability",
+                format!("ga3-promote-{}", self.target),
+                json!({"name": self.target}),
+                events,
+            ));
+        };
         let mut state = self.state.lock().unwrap();
-        let actual = r.tools.iter().find(|t| t.name == self.target).unwrap();
         assert!(!actual.description.contains("opaquecredential123"));
         assert!(
             !actual

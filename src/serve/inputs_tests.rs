@@ -1,6 +1,30 @@
 use super::*;
 use serde_json::{Value, json};
 
+fn conversation_when_stable(addr: SocketAddr, reference: Value) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..40 {
+        let (_, reply) = post_rpc_json(
+            addr,
+            TEST_TOKEN,
+            "history.conversation",
+            &json!({"reference": reference}).to_string(),
+        );
+        if reply["ok"] == true {
+            return reply["value"].clone();
+        }
+        last = reply;
+        let changing = last["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("changed while streaming"));
+        if !changing {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("history.conversation: {last}");
+}
+
 fn input_rpc(addr: SocketAddr, method: &str, value: Value) -> Value {
     let (_, reply) = post_rpc_json(addr, TEST_TOKEN, method, &value.to_string());
     assert_eq!(reply["ok"], true, "{method}: {reply}");
@@ -51,12 +75,9 @@ fn session_share_legacy_prompt_freezes_the_selected_source() {
     input_rpc(handle.addr, "prompt.send", submission.clone());
     assert_eq!(settled_outcome_type(&events.wait_settled()), "completed");
     let destination = input_rpc(handle.addr, "session.info", json!({}))["session_id"].clone();
-    let history = input_rpc(
+    let history = conversation_when_stable(
         handle.addr,
-        "history.conversation",
-        json!({
-            "reference":{"project":info["project"]["root"],"session":destination,"seq":null}
-        }),
+        json!({"project":info["project"]["root"],"session":destination,"seq":null}),
     );
     assert!(
         history["messages"]

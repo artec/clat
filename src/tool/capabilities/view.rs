@@ -54,6 +54,7 @@ impl CapabilityView {
             .iter()
             .filter(|entry| {
                 !self.model
+                    || !entry.owner.as_str().starts_with("builtin.")
                     || super::super::resident::is_published(
                         &entry.definition.name,
                         self.plan_mode,
@@ -85,11 +86,13 @@ impl CapabilityView {
             .entries
             .iter()
             .filter(|entry| {
-                !super::super::resident::is_published(
-                    &entry.definition.name,
-                    self.plan_mode,
-                    self.goal_tools,
-                )
+                let builtin = entry.owner.as_str().starts_with("builtin.");
+                !builtin
+                    || !super::super::resident::is_published(
+                        &entry.definition.name,
+                        self.plan_mode,
+                        self.goal_tools,
+                    )
             })
             .map(|entry| {
                 (

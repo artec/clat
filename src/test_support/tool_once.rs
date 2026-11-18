@@ -21,23 +21,12 @@ impl TestModelScript for ToolOnceScript {
             );
         }
         let offered = request.tools.iter().any(|tool| tool.name == self.call.name);
-        let described = request.items.iter().any(|item| {
-            matches!(item, ModelItem::ToolResult(result)
-                if result.tool_name == "describe_capability" && !result.is_error)
-        });
         let calls = if request.items.iter().any(|item| {
             matches!(item, ModelItem::ToolResult(result) if result.tool_name == self.call.name)
         }) {
             vec![]
-        } else if offered {
+        } else if offered || !request.tools.is_empty() {
             vec![self.call.clone()]
-        } else if !described && request.tools.iter().any(|tool| tool.name == "describe_capability")
-        {
-            vec![ToolCall {
-                id: format!("{}-describe", self.call.id),
-                name: "describe_capability".into(),
-                arguments: json!({"name": self.call.name}),
-            }]
         } else {
             vec![]
         };

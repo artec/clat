@@ -10,7 +10,6 @@ struct EvidenceModel {
 
 impl EvidenceModel {
     fn next(&mut self, request: ModelRequest<'_>) -> (&'static str, Option<(&'static str, Value)>) {
-        assert!(request.tools.iter().any(|t| t.name == "session_info"));
         if self.stage == 0 {
             self.stage = 1;
             return ("", Some(("session_info", json!({}))));

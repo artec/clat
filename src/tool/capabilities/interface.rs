@@ -92,7 +92,12 @@ impl Tool for DiscoveryTool {
             return registry.query_capabilities(args, cancel);
         }
         let name = described_name(&registry, args)?;
-        Ok(json!({"name": name, "promote": true}))
+        let mut detail = registry.query_capabilities(args, cancel)?;
+        if let Some(object) = detail.as_object_mut() {
+            object.insert("name".into(), json!(name));
+            object.insert("promote".into(), json!(true));
+        }
+        Ok(detail)
     }
 }
 struct CapabilityCommand;

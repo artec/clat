@@ -119,7 +119,7 @@ fn ag6_application_conflict_guidance_reaches_model_and_drives_literal_verificati
         .iter()
         .filter(|e| e.event_type == "tool/result")
         .collect();
-    assert_eq!(results.len(), 3);
+    assert_eq!(results.len(), 2);
     let journal = results
         .iter()
         .map(|e| e.data.to_string())
