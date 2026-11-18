@@ -795,13 +795,9 @@ fn random_port_serve_survives_an_unreachable_model_route() {
     // 再期待无人占用：并行测试可能绑上同一端口并返回 200。
     let dead = TcpListener::bind(("127.0.0.1", 0)).expect("reserve dead port");
     let dead_port = dead.local_addr().expect("dead port").port();
-    // Keep the port. Dropping it lets a parallel synthetic provider bind the
-    // same port and answer with HTTP 200, which this test would treat as success.
     std::thread::spawn(move || {
-        for stream in dead.incoming() {
-            if let Ok(stream) = stream {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
+        for stream in dead.incoming().flatten() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
         }
     });
     let app = configure_synthetic_route(
