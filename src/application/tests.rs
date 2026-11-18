@@ -2523,12 +2523,12 @@ fn image_attachments_are_gated_by_verified_model_capability() {
         "the rejected round materializes no session at all"
     );
 
-    // —— 2. 纯文本预设（hy3 伴生预设：TEXT_CAPS；原夹具 hy4 已于
-    // 2026-11-07 负责人裁定为多模态，翻正后不再适用本场景）同样拒绝。——
+    // —— 2. 纯文本预设同样拒绝（原夹具 hy3 已于 2026-11-18 退役为
+    // hy4-flash 且后者为多模态；换 OC-Go 目录的 TEXT_CAPS 钉值预设）。——
     save_config(
         &mut application,
         crate::model::ModelConfig {
-            preset: Some("hy3".into()),
+            preset: Some("opencode-glm-5.3".into()),
             ..crate::model::ModelConfig::default()
         },
     );
