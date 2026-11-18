@@ -584,7 +584,7 @@ fn host_description_golden_is_additive_and_http_clients_need_no_build_identity()
         "build_fingerprint": crate::host_client::build_identity::current().unwrap(),
         "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
         "native_client_compatibility": 1,
-        "capabilities": ["desktop-workbench-v1", "host.runtime_status"],
+        "capabilities": ["desktop-workbench-v1", "host.runtime_status", "computer-use-activity-v1"],
         "builtin_availability": availability,
     });
     assert_eq!(

@@ -709,7 +709,7 @@ same call before another action. `raise` does not activate the application.
 A background dispatch can succeed without taking effect; the result then
 includes a warning. `ui_apps`, `ui_tree`, `ui_wait` and `ui_act` are included
 in every model request. A run also stops when any tool returns the same result
-three times in a row for the same arguments. If macOS cannot provide the control's value for repeat
+41 times in a row for the same arguments. If macOS cannot provide the control's value for repeat
 detection, CLAT compares its other observable state. CLAT reads the
 interface again to verify the result.
 Screenshots, coordinate input, typing and clipboard operations are outside

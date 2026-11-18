@@ -3322,6 +3322,7 @@ const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
     // web/tests markdown 自动链接夹具；loopback 字面量仅存在于测试
     // 源码（含"带凭据形态必须被脱敏"的反例），非运行时目的地。
     "http://[::1]:3000/a_b_c",
+    "http://localhost:3000/a_b_c。",
     "https://someone@localhost:3000",
     "http://localhost:3000?mode=clean",
     "http://localhost:3000/view_",

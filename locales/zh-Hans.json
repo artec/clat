@@ -3546,7 +3546,7 @@
   "cua.error_timeout": "界面观察未能在时限内完成。",
   "cua.error_tree_limit": "辅助功能树超过观察范围。请读取较小的窗口或子树。",
   "cua.error_unchanged": "同一元素连续三次操作后界面状态未变化。动作已派发，但应用可能未在前台，或控件没有响应。请检查界面再继续。",
-  "run.error_repeated_result": "同一个工具以相同参数连续三次返回了相同结果。这次运行已停止，不再重复这次调用。",
+  "run.error_repeated_result": "同一个工具以相同参数连续 {count} 次返回了相同结果。这次运行已停止，不再重复这次调用。",
   "cua.error_unsupported_action": "所选元素在当前窗口或菜单中不支持该动作。",
   "cua.no_session": "请打开一个会话，再撤销该会话的同意决定。",
   "cua.revoked": "已撤销应用 {id} 在指定范围内的同意决定。",

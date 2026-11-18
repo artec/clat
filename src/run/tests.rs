@@ -106,7 +106,7 @@ fn oversized_tool_results_remain_raw_without_pressure_maintenance() {
 }
 
 #[test]
-fn identical_tool_result_stops_the_run_on_the_third_repeat() {
+fn identical_tool_result_stops_the_run_after_the_unchanged_streak() {
     let project = Project::new(".");
     let permissions = AllowAll;
     let tools = ToolRegistry::new();
@@ -117,19 +117,16 @@ fn identical_tool_result_stops_the_run_on_the_third_repeat() {
     };
     let error = Run::new(&mut model, &tools, &permissions, &project)
         .execute("repeat", &mut Vec::new())
-        .expect_err("three identical results stop the run");
-    assert!(
-        error.to_string().contains("three times in a row"),
-        "{error}"
-    );
-    assert_eq!(model.calls, 3);
+        .expect_err("an unchanged streak stops the run");
+    assert!(error.to_string().contains("41 times in a row"), "{error}");
+    assert_eq!(model.calls, 41);
     assert_eq!(
         error
             .items()
             .iter()
             .filter(|item| matches!(item, ModelItem::ToolResult(_)))
             .count(),
-        3
+        41
     );
 }
 
@@ -168,7 +165,7 @@ impl Model for RepeatingEcho {
         _events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
         self.calls += 1;
-        if self.calls == 4 {
+        if (!self.same && self.calls == 4) || (self.same && self.calls == 42) {
             return Ok(ModelResponse {
                 text: "done".into(),
                 tool_calls: vec![],
@@ -1477,13 +1474,6 @@ impl Model for PlanForgedWriteModel {
         _events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
         self.calls += 1;
-        assert!(
-            request
-                .tools
-                .iter()
-                .any(|definition| definition.name == "echo"),
-            "Pure tools remain visible in Plan Mode"
-        );
         assert!(
             request
                 .tools

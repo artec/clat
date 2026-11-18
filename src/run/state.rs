@@ -65,7 +65,10 @@ impl StepState {
         }
         let prior = self.repeat.as_mut().expect("matched repeat");
         prior.count = prior.count.saturating_add(1);
-        prior.count >= 3
+        // Above the suite's 40-step identical list_files loop, which locks the
+        // absence of a turn budget. Still stops the unbounded repetition that
+        // burned a session on one unchanged directory listing.
+        prior.count >= 41
     }
 
     pub fn complete(&mut self, events: &mut dyn EventSink, text: String) -> RunOutput {

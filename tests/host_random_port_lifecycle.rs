@@ -791,11 +791,19 @@ fn random_port_serve_synthetic_roundtrip_and_cold_restart() {
 fn random_port_serve_survives_an_unreachable_model_route() {
     let root = temp_root("dead-route");
     grant_trust(&root);
-    // 保留后释放一个端口制造"确定不可达"的路由；若被第三方抢占，测试
-    // 会因收到意外 200 而变红（不会静默错绿）。
+    // 占住一个端口并立刻断开连入的连接，使模型路由确定失败。不能先释放
+    // 再期待无人占用：并行测试可能绑上同一端口并返回 200。
     let dead = TcpListener::bind(("127.0.0.1", 0)).expect("reserve dead port");
     let dead_port = dead.local_addr().expect("dead port").port();
-    drop(dead);
+    // Keep the port. Dropping it lets a parallel synthetic provider bind the
+    // same port and answer with HTTP 200, which this test would treat as success.
+    std::thread::spawn(move || {
+        for stream in dead.incoming() {
+            if let Ok(stream) = stream {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    });
     let app = configure_synthetic_route(
         &root,
         SocketAddr::new(IpAddr::from([127, 0, 0, 1]), dead_port),

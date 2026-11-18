@@ -5222,6 +5222,10 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         "exec_command",
         "ask_user",
         "view_image",
+        "write_stdin",
+        "run_command",
+        "todo_write",
+        "skill",
     ]
     .into_iter()
     .collect();

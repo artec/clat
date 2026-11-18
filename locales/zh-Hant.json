@@ -3546,7 +3546,7 @@
   "cua.error_timeout": "介面觀察未能在時限內完成。",
   "cua.error_tree_limit": "輔助使用樹超出觀察範圍。請讀取較小的視窗或子樹。",
   "cua.error_unchanged": "同一元素連續三次操作後介面狀態未變更。動作已派發，但應用程式可能未在前景，或控制項沒有回應。請檢查介面再繼續。",
-  "run.error_repeated_result": "同一個工具以相同參數連續三次傳回了相同結果。這次執行已停止，不再重複這次呼叫。",
+  "run.error_repeated_result": "同一個工具以相同參數連續 {count} 次傳回了相同結果。這次執行已停止，不再重複這次呼叫。",
   "cua.error_unsupported_action": "所選元素在目前視窗或選單中不支援該動作。",
   "cua.no_session": "請先開啟一個工作階段，再撤銷該工作階段的同意決定。",
   "cua.revoked": "已撤銷應用程式 {id} 在指定範圍內的同意決定。",

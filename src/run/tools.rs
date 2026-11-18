@@ -74,7 +74,9 @@ impl Run<'_> {
             return Err(state.fail(
                 events,
                 &self.steering,
-                crate::i18n::UiMessage::new("run.error_repeated_result").english(),
+                crate::i18n::UiMessage::new("run.error_repeated_result")
+                    .arg("count", 41)
+                    .english(),
             ));
         }
         Ok(None)

@@ -17,6 +17,11 @@ pub(crate) const RESIDENT: &[&str] = &[
     "ui_tree",
     "ui_wait",
     "ui_act",
+    "write_stdin",
+    "run_command",
+    "todo_write",
+    "skill",
+    "lsp",
 ];
 
 pub(crate) fn is_resident(name: &str) -> bool {

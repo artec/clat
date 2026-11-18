@@ -529,8 +529,9 @@ remains in Application.
 
 The agent loop delegates request preparation, model response handling and one
 serial tool call to `run/request.rs`, `run/response.rs` and `run/tools.rs`.
-When the same tool, arguments and result occur three times in a row, the run
-stops instead of requesting the model again.
+When the same tool, arguments and result occur 41 times in a row, the run
+stops instead of requesting the model again. Shorter identical streaks,
+including the 40-step loop that locks the absence of a turn budget, continue.
 `run/state.rs` keeps history, turn count and usage together when constructing a
 terminal result. These are internal boundaries: tool order, steering seals,
 permission checks, result transforms and event publication retain their order.
