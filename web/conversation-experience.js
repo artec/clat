@@ -175,6 +175,9 @@ async function requestUsageCompaction() {
 function renderUsage(popup,ring) {
   popup.replaceChildren(); const value=usageValue;
   const row=(label,text) => { const node=el('div','usage-row');node.append(el('span','',()=>experienceText(label)),el('span','',text));popup.append(node); };
+  // 已渲染好的标签文本（额度窗口行复用 rail-allowance 的 railWindowLabel
+  // 分类：5 小时额度/每周额度/每月额度），不经 experienceText。
+  const rowText=(label,text) => { const node=el('div','usage-row');node.append(el('span','',label),el('span','',text));popup.append(node); };
   const used=value?.context?.used, capacity=value?.context?.capacity;
   const percent=Number.isFinite(used)&&capacity>0 ? used/capacity*100 : null;
   if (value !== null || !ring.hasAttribute('data-percent')) paintUsageRing(ring,percent);
@@ -198,7 +201,11 @@ function renderUsage(popup,ring) {
   const quota=value?.allowance;
   popup.append(el('h3','',()=>experienceText('allowance')));
   if(quota?.status==='available') {
-    for(const item of quota.items)row(item.kind==='money'?'wallet':'tokens',`${item.value} ${item.unit || experienceText('unit_unknown')}`.trim());
+    for(const item of quota.items){
+      if(item.kind==='money'){row('wallet',`${item.value} ${item.unit || experienceText('unit_unknown')}`.trim());continue;}
+      const window=railWindowLabel(Number(item.window_hours),(key,args)=>CLATI18n.t('rail.'+key,args));
+      rowText(window,`${item.value} ${item.unit || experienceText('unit_unknown')}`.trim());
+    }
   } else row('status',experienceText(quota?.status || 'unavailable'));
   if(quota?.updated_at)row('updated',new Date(quota.updated_at).toLocaleString(CLATI18n.locale));
 }
