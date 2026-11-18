@@ -198,7 +198,10 @@ pub(super) fn activate_foreground(window: Window, call: &CancelToken) -> Result<
     if unsafe { GetForegroundWindow() } == hwnd {
         return Ok(());
     }
-    unsafe { SetForegroundWindow(hwnd) }.map_err(|_| error("ACTIVATE_FAILED"))
+    if !unsafe { SetForegroundWindow(hwnd) }.as_bool() {
+        return Err(error("ACTIVATE_FAILED"));
+    }
+    Ok(())
 }
 
 fn open_process(pid: i32) -> Result<OwnedHandle> {

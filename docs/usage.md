@@ -3450,9 +3450,10 @@ cumulative input/output/cache usage. Context estimates are not cumulative spend.
 Provider allowances retain units/currencies and update times. Unsupported,
 loading, failed and zero balances are distinct. The popover reads the existing
 monitor cache; hovering never causes an additional provider balance query.
-The navigation rail shows that same cached balance as a short amount when the
-provider reports money rather than a percentage; the exact value stays in the
-rail card.
+The navigation rail shows that same cached balance as at most three
+characters inside a same-size wallet outline open on the left and right, without a currency sign, when the
+provider reports money rather than a percentage; the exact value and currency
+stay in the rail card.
 
 ## Project editor, Git and terminals
 

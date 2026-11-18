@@ -438,9 +438,9 @@ that Plan's windows; hover or keyboard focus opens a card with window percentage
 provider-reported reset times and time remaining, and the last query time. Unknown
 reset metadata is omitted, and reaching a reset time does not fabricate a new
 quota. A wallet balance, such as a DeepSeek account, uses the same control
-without a progress ring. The button shows a short amount of at most five
-columns; the card lists each exact amount, its currency and the last query
-time. A zero balance is marked, and percentage thresholds are not applied.
+without a progress ring. The button shows at most three characters inside
+a same-size wallet outline open on the left and right, with no currency sign; the card lists each exact
+amount, its currency and the last query time. A zero balance is marked, and percentage thresholds are not applied.
 When a percentage is also present, the ring remains. Switching
 conversations or models clears the previous reading while fetching the new
 one; unsupported providers and failed readings hide the control. Monitoring

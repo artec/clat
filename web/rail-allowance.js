@@ -1,13 +1,9 @@
-/* Percentages keep the ring. A wallet balance is a short label of at most five columns. */
+/* Percentages keep the ring. A wallet balance is at most three characters, with no currency sign. */
+const RAIL_MONEY_BUDGET=3;
 function railColumns(text){
   let count=0;
   for(const char of String(text))count+='万萬亿億'.includes(char)?2:1;
   return count;
-}
-function moneySymbol(unit){
-  if(unit==='CNY')return '\u00A5';
-  if(unit==='USD')return '$';
-  return '';
 }
 function roundTo(value,decimals){
   const factor=10**decimals;
@@ -19,20 +15,18 @@ function decimalText(value,decimals){
   const text=decimals===0?String(Math.round(rounded)):rounded.toFixed(decimals).replace(/0+$/,'').replace(/\.$/,'');
   return /e/i.test(text)?null:text;
 }
-function magnitudeUnits(locale){
-  if(locale==='zh-Hant')return [{suffix:'萬',div:1e4},{suffix:'億',div:1e8}];
-  if(locale==='zh-Hans')return [{suffix:'万',div:1e4},{suffix:'亿',div:1e8}];
-  return [{suffix:'k',div:1e3},{suffix:'M',div:1e6}];
+function magnitudeUnits(){
+  return [{suffix:'k',div:1e3},{suffix:'M',div:1e6},{suffix:'B',div:1e9}];
 }
-function formatSmall(value,symbol){
+function formatSmall(value){
   const decimal=decimalText(value,1);
-  if(decimal&&Number(decimal)<10000&&railColumns(symbol+decimal)<=5)return symbol+decimal;
+  if(decimal&&Number(decimal)<1000&&railColumns(decimal)<=RAIL_MONEY_BUDGET)return decimal;
   const integer=decimalText(value,0);
-  if(integer&&Number(integer)<10000&&railColumns(symbol+integer)<=5)return symbol+integer;
+  if(integer&&Number(integer)<1000&&railColumns(integer)<=RAIL_MONEY_BUDGET)return integer;
   return null;
 }
 function formatLarge(scaled,suffix){
-  const room=5-railColumns(suffix);
+  const room=RAIL_MONEY_BUDGET-railColumns(suffix);
   if(String(Math.trunc(Math.abs(roundTo(scaled,0)))).length===1){
     const decimal=decimalText(scaled,1);
     if(decimal&&Number(decimal)<10&&railColumns(decimal)<=room)return decimal+suffix;
@@ -42,29 +36,42 @@ function formatLarge(scaled,suffix){
   return null;
 }
 function capUnit(unit){
-  return '9'.repeat(5-railColumns(unit.suffix))+unit.suffix;
+  return '9'.repeat(RAIL_MONEY_BUDGET-railColumns(unit.suffix))+unit.suffix;
 }
-function compactMagnitude(value,locale){
-  const units=magnitudeUnits(locale);
+function compactMagnitude(value){
+  const units=magnitudeUnits();
+  let fallback=units[0];
   for(let index=0;index<units.length;index++){
-    const unit=units[index],text=formatLarge(value/unit.div,unit.suffix);
+    const unit=units[index];
+    if(value>=unit.div)fallback=unit;
+    const text=formatLarge(value/unit.div,unit.suffix);
     if(!text)continue;
     const numeric=Number(text.slice(0,text.length-unit.suffix.length));
     const next=units[index+1];
     if(!(numeric>0)||(next&&numeric*unit.div>=next.div))continue;
     return text;
   }
-  return capUnit(units[units.length-1]);
+  return capUnit(fallback);
+}
+function railWalletIcon(){
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 24 24');
+  svg.setAttribute('aria-hidden','true');
+  const path=document.createElementNS(svg.namespaceURI,'path');
+  // Top and bottom stay closed. The left and right sides open around the amount.
+  path.setAttribute('d','M6 4H18C20.2 4 21.2 5.2 21.2 6.8M21.2 17.2C21.2 18.8 20.2 20 18 20H6C3.8 20 2.8 18.8 2.8 17.2M2.8 6.8C2.8 5.2 3.8 4 6 4');
+  svg.append(path);
+  return svg;
 }
 function compactRailMoney(value,unit,locale){
   const text=String(value??'').trim();
   const amount=Number(text);
   if(text===''||!Number.isFinite(amount)||amount<0)return null;
-  if(amount<10000){
-    const small=formatSmall(amount,moneySymbol(unit));
+  if(amount<1000){
+    const small=formatSmall(amount);
     if(small)return small;
   }
-  return compactMagnitude(amount,locale);
+  return compactMagnitude(amount);
 }
 function moneyExact(item){
   return `${item.value}${item.unit?' '+item.unit:''}`;
@@ -77,9 +84,9 @@ function projectRailAllowance(allowance){
   if(!money.length)return null;
   return {kind:'money',items:money,updated:allowance.updated_at};
 }
-function paintRailAllowance(button,ring,balance,allowance){
+function paintRailAllowance(button,ring,mark,balance,allowance){
   const wallet=allowance.kind==='money';
-  ring.element.hidden=wallet;balance.hidden=!wallet;
+  ring.element.hidden=wallet;mark.hidden=!wallet;
   delete button.dataset.low;delete button.dataset.critical;delete button.dataset.empty;
   if(wallet){
     const first=allowance.items[0];
@@ -95,8 +102,9 @@ function paintRailAllowance(button,ring,balance,allowance){
 function createRailAllowance(){
   const button=el('button','shell-button');button.id='nav-allowance';button.type='button';button.hidden=true;
   const ring=CLATRailPopover.progressRing();
-  const balance=el('span','rail-balance');balance.hidden=true;balance.setAttribute('aria-hidden','true');
-  button.append(ring.element,balance);
+  const balance=el('span','rail-balance');balance.setAttribute('aria-hidden','true');
+  const mark=el('span','rail-wallet');mark.hidden=true;mark.append(railWalletIcon(),balance);
+  button.append(ring.element,mark);
   document.getElementById('nav-settings').before(button);
   const popup=el('section');popup.id='rail-allowance-popup';let allowance=null,clock=null;
   const text=(key,args)=>CLATI18n.t('rail.'+key,args);
@@ -124,9 +132,9 @@ function createRailAllowance(){
     // A failed refresh cannot keep an old reading looking current.
     allowance=next;button.hidden=!next;
     if(!next){card.hide();return;}
-    paintRailAllowance(button,ring,balance,next);
+    paintRailAllowance(button,ring,mark,balance,next);
     if(!popup.hidden){render();card.position();}
   }
-  CLATI18n.onChange(()=>{if(!allowance)return;paintRailAllowance(button,ring,balance,allowance);if(!popup.hidden){render();card.position();}});
+  CLATI18n.onChange(()=>{if(!allowance)return;paintRailAllowance(button,ring,mark,balance,allowance);if(!popup.hidden){render();card.position();}});
   return {update};
 }

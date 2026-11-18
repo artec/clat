@@ -89,6 +89,27 @@ fn next_step(body: &Value) -> (Vec<Value>, Option<String>) {
     };
     // OpenAI 序列化把同 run 的 tool_calls 合并进一条 assistant 消息，
     // 因此按「todo_write 调用个数」计数（其结果均已先于下一请求落盘）。
+    let todo_available = body["tools"].as_array().is_none_or(|tools| {
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "todo_write")
+    });
+    if !todo_available {
+        let id = if latest_user.contains("continue") {
+            "call-ag5-describe-todo-cont"
+        } else {
+            "call-ag5-describe-todo"
+        };
+        return (
+            vec![tool_call_json(
+                0,
+                id,
+                "describe_capability",
+                &serde_json::json!({"name": "todo_write"}),
+            )],
+            None,
+        );
+    }
     let todo_results = messages
         .iter()
         .filter(|message| message["role"] == "assistant")
@@ -626,8 +647,8 @@ fn assert_request_history(requests: &[Value]) {
         );
     }
     assert_eq!(
-        continuation_requests, 2,
-        "continuation tool call and final answer both captured"
+        continuation_requests, 3,
+        "continuation discovers todo_write, closes it, then answers"
     );
     assert_eq!(scratch_by_run[0].len(), 1);
     assert_eq!(scratch_by_run[1].len(), 1);
@@ -709,6 +730,7 @@ fn joint_real_host_pairing_terminals_and_cold_recovery() {
     );
     // O1：每个 call_id 恰一次 tool_requested，且与 tool_finished 配对同序。
     let expected = [
+        "call-ag5-describe-todo",
         "call-ag5-todos",
         "call-ag5-write-a",
         "call-ag5-write-b",
@@ -744,9 +766,9 @@ fn joint_real_host_pairing_terminals_and_cold_recovery() {
     let run2 = drive_run(&mut events, port, "continue", selection);
     assert_eq!(run2.settled["outcome"]["type"], "completed");
     assert!(
-        run2.requested_ids
-            .iter()
-            .all(|id| id.starts_with("call-ag5-cont-todos")),
+        run2.requested_ids.iter().all(|id| {
+            id.starts_with("call-ag5-cont-todos") || id == "call-ag5-describe-todo-cont"
+        }),
         "continuation must only close todos, got {:?}",
         run2.requested_ids
     );
@@ -830,9 +852,9 @@ fn joint_real_host_pairing_terminals_and_cold_recovery() {
     );
     // O1/O3：冷回放重建等价逻辑序——请求/完成按 call_id 成对且各一次。
     assert_eq!(replay_requested, replay_finished, "replay pairs by call id");
-    // run 1 五个调用 + 续办一个 todo 收口（HTTP 面保留跨 run 工具结果，
-    // 与内存 TestProvider 面的修剪行为不同——两侧各自真实）。
-    assert_eq!(replay_requested.len(), 6, "five run-1 calls + one close");
+    // run 1 先发现 todo_write 再执行五个调用；续办再发现一次并收口。
+    // HTTP 面保留跨 run 工具结果，与内存 TestProvider 面的修剪行为不同。
+    assert_eq!(replay_requested.len(), 8, "run 1 calls plus continuation");
     for id in &expected {
         assert_eq!(
             replay_requested.iter().filter(|item| item == id).count(),

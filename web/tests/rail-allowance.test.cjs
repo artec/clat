@@ -26,31 +26,34 @@ test('a wallet balance is listed without becoming a percentage ring',()=>{
  assert.equal(mixed.kind,'quota');assert.equal(mixed.remaining,40);assert.equal(mixed.items.length,1);
  assert.equal(project({status:'available',items:[{kind:'money',unit:'CNY',value:'0.00'}]}).items[0].value,'0.00');
 });
-test('compact balances stay within five columns',()=>{
+test('compact balances stay within three characters and omit the currency sign',()=>{
  const cases=[
-  ['0.00','CNY','zh-Hans','\u00A50'],
-  ['12.50','CNY','zh-Hans','\u00A512.5'],
-  ['110.00','CNY','en','\u00A5110'],
-  ['1234','CNY','zh-Hans','\u00A51234'],
+  ['0.00','CNY','zh-Hans','0'],
+  ['12.50','CNY','zh-Hans','13'],
+  ['19','CNY','zh-Hans','19'],
+  ['110.00','CNY','en','110'],
+  ['1234','CNY','zh-Hans','1k'],
   ['50','EUR','en','50'],
-  ['0','USD','en','$0'],
-  ['10000','CNY','zh-Hans','1万'],
-  ['12345','CNY','zh-Hans','1.2万'],
-  ['12345','CNY','zh-Hant','1.2萬'],
+  ['0','USD','en','0'],
+  ['9.5','CNY','en','9.5'],
+  ['10000','CNY','zh-Hans','10k'],
+  ['12345','CNY','zh-Hans','12k'],
+  ['12345','CNY','zh-Hant','12k'],
   ['12345','USD','en','12k'],
   ['1000000','USD','en','1M'],
-  ['1e20','CNY','zh-Hans','999亿'],
-  ['1e20','CNY','zh-Hant','999億'],
-  ['1e20','USD','en','9999M'],
+  ['1e20','CNY','zh-Hans','99B'],
+  ['1e20','USD','en','99B'],
  ];
  for(const [value,unit,locale,expected] of cases){
   const text=compact(value,unit,locale);
-  assert.equal(text,expected);assert.ok(columns(text)<=5,text);
+  assert.equal(text,expected);
+  assert.ok(columns(text)<=3,text);
+  assert.equal(/[¥$￥]/.test(text),false);
  }
  for(const locale of ['en','zh-Hans','zh-Hant']){
-  for(const value of ['0','0.04','12.5','110','9999','10000','12345','99999','1000000','9999999','1e8','1e11','1e20']){
+  for(const value of ['0','0.04','12.5','19','110','999','1000','12345','99999','1000000','9999999','1e8','1e11','1e20']){
    const text=compact(value,'CNY',locale);
-   assert.ok(text&&columns(text)<=5,`${locale} ${value} -> ${text}`);
+   assert.ok(text&&columns(text)<=3&&!/[¥$￥]/.test(text),`${locale} ${value} -> ${text}`);
   }
  }
 });
