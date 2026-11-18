@@ -8,7 +8,7 @@ use crate::{ImageRequestPolicy, Modality, ModelCapabilities, ModelConfig, ModelP
 use serde_json::{Value, json};
 
 mod companions;
-use companions::{HY3, HY4, KIMI_FOR_CODING};
+use companions::{HY4, HY4_FLASH, KIMI_FOR_CODING};
 mod opencode;
 use opencode::{
     OC_DEEPSEEK_V4_PRO, OC_DEEPSEEK_V41_FLASH, OC_GLM_53, OC_GLM_53_FLASH, OC_KIMI_K3,
@@ -445,7 +445,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     },
     KIMI_FOR_CODING,
     HY4,
-    HY3,
+    HY4_FLASH,
     // OC-Go（2026-11-18）：OpenCode Go 合规网关八预设（开源系模型池）。
     // 钉值与接入纪律见 presets/opencode.rs 模块文档。
     OC_DEEPSEEK_V4_PRO,
@@ -953,9 +953,9 @@ mod tests {
         assert_eq!(hy.context_window, 1_000_000);
         assert_eq!(hy.output_limit, 65_536);
 
-        let hy_utility = preset_by_id("hy3").expect("hy utility");
-        assert_eq!(hy_utility.context_window, 256 * 1024);
-        assert_eq!(hy_utility.output_limit, 128 * 1024);
+        let hy_utility = preset_by_id("hy4-flash").expect("hy utility");
+        assert_eq!(hy_utility.context_window, 1_000_000);
+        assert_eq!(hy_utility.output_limit, 65_536);
 
         // OC-Go：八模型全部 1M context；output 钉值来自网关 /v1/models
         // 实测快照（2026-11-18，与直连端点口径不交叉引用——kimi-k3 在
@@ -1027,7 +1027,8 @@ mod tests {
         // 2026-11-07 GA 原地升级：旧 hy4-preview id 不复现（SF-1 同款
         // 零回退；官方清单虽保留旧 id，预设目录只挂 canonical 正式版）。
         assert!(preset_by_id("hy4-preview").is_none());
-        assert_eq!(presets_by_vendor("Hy Token Plan")[1].id, "hy3");
+        assert_eq!(presets_by_vendor("Hy Token Plan")[1].id, "hy4-flash");
+        assert!(preset_by_id("hy3").is_none());
     }
 
     #[test]
@@ -1041,8 +1042,8 @@ mod tests {
             ("qwen3.8-flash", None),
             ("k3.1-pro", Some("kimi-for-coding")),
             ("kimi-for-coding", None),
-            ("hy4", Some("hy3")),
-            ("hy3", None),
+            ("hy4", Some("hy4-flash")),
+            ("hy4-flash", None),
             // OC-Go：同端点 flash 轻档；网关内无 Kimi/Qwen/MiniMax 轻档，
             // 旗舰伴生取同端点的 DeepSeek Flash（同 vendor 同凭据槽）。
             (
@@ -1102,6 +1103,7 @@ mod tests {
                     | "k3.1-pro"
                     | "kimi-for-coding"
                     | "hy4"
+                    | "hy4-flash"
                     | "opencode-deepseek-v4.1-flash"
                     | "opencode-kimi-k3.1-pro"
                     | "opencode-kimi-k3"
@@ -1124,6 +1126,7 @@ mod tests {
             "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
+            "hy4-flash",
         ] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(
@@ -1146,7 +1149,6 @@ mod tests {
         for id in [
             "deepseek-v4-pro",
             "glm-5.3",
-            "hy3",
             "opencode-deepseek-v4-pro",
             "opencode-glm-5.3",
         ] {

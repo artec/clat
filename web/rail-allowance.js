@@ -77,12 +77,18 @@ function compactRailMoney(value,unit,locale){
 function moneyExact(item){
   return `${item.value}${item.unit?' '+item.unit:''}`;
 }
-// 额度窗口名（owner 2026-11-18）：720 小时呈现为"1 月额度"（OC-Go 月窗，
-// 与"1 周额度"同形、始终带数）；周/小时沿用既有形状，0 落回"剩余额度"。
+// 额度窗口名（owner 2026-11-19）：单周/单月用"每周额度/每月额度"（中文
+// 习惯，不带数）；多周/多月带数；小时窗沿用既有形状，0 落回"剩余额度"。
 function railWindowLabel(hours,t){
   if(!(hours>0))return t('remaining');
-  if(hours%720===0)return t('window_months',{count:hours/720});
-  if(hours%168===0)return t('window_weeks',{count:hours/168});
+  if(hours%720===0){
+    const months=hours/720;
+    return months===1?t('window_month'):t('window_months',{count:months});
+  }
+  if(hours%168===0){
+    const weeks=hours/168;
+    return weeks===1?t('window_week'):t('window_weeks',{count:weeks});
+  }
   return t('window_hours',{count:hours});
 }
 // 重置倒数（owner 2026-11-18）：不要"全是分钟"——天/小时/分钟逐级组合，

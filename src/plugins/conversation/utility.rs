@@ -290,7 +290,7 @@ mod tests {
             ("glm-5.3", "glm-5.3-flash"),
             ("qwen4-max", "qwen3.8-flash"),
             ("k3.1-pro", "kimi-for-coding"),
-            ("hy4", "hy3"),
+            ("hy4", "hy4-flash"),
             // OC-Go：同族 flash 伴生 + 跨族轻档（同端点同凭据槽）。
             ("opencode-glm-5.3", "opencode-glm-5.3-flash"),
             ("opencode-kimi-k3.1-pro", "opencode-deepseek-v4.1-flash"),

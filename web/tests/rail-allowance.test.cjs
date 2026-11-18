@@ -60,10 +60,10 @@ test('compact balances stay within three characters and omit the currency sign',
 test('quota windows present 720 hours as a monthly window and keep weeks and hours',()=>{
  const t=(key,args)=>key+(args&&args.count!==undefined?`(${args.count})`:'');
  const label=hours=>scope.railWindowLabel(hours,t);
- assert.equal(label(720),'window_months(1)');
+ assert.equal(label(720),'window_month');
  assert.equal(label(1440),'window_months(2)');
  assert.equal(label(3600),'window_months(5)');
- assert.equal(label(168),'window_weeks(1)');
+ assert.equal(label(168),'window_week');
  assert.equal(label(336),'window_weeks(2)');
  assert.equal(label(5),'window_hours(5)');
  assert.equal(label(100),'window_hours(100)');

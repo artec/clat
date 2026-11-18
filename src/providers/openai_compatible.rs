@@ -518,17 +518,18 @@ pub(crate) fn join_endpoint(endpoint: &str, request_path: &str) -> String {
     }
 }
 
-/// OC-2：OpenCode 合规端点（`opencode.ai` 域）要求每个会话携带稳定的
+/// OC-2：OpenCode 合规端点（`opencode.ai` 域）要求**每个请求**携带稳定的
 /// `x-opencode-session` 头（缺失 400；第三方政策要求自有 UA + 会话头，
-/// ZCode 在其已验证客户端清单）。判据：端点含 `opencode.ai` **且** run
-/// 携带会话 id；其余端点或无会话上下文（utility 一次调用、demo、测试）
-/// 一律不注入——不向无关网关泄露会话标识。
+/// ZCode 在其已验证客户端清单）。判据：端点含 `opencode.ai` 即注入；
+/// run 携带会话 id 用会话 id，无会话上下文（utility 标题/建议/git 提交
+/// 信息、采样、demo）回落到稳定辅助路由键——网关按此做亲和路由，对
+/// 一次性请求无语义，但缺头即拒。其余端点一律不注入——不向无关网关
+/// 泄露会话标识。
 fn opencode_session_value<'a>(endpoint: &str, session_id: Option<&'a str>) -> Option<&'a str> {
-    let session = session_id?;
     endpoint
         .to_ascii_lowercase()
         .contains("opencode.ai")
-        .then_some(session)
+        .then(|| session_id.unwrap_or("clat-auxiliary"))
 }
 
 fn merge_extra_body(body: &mut Map<String, Value>, extra: &Value) -> Result<(), ModelError> {
@@ -2545,8 +2546,8 @@ mod tests {
         );
         assert_eq!(
             opencode_session_value("https://opencode.ai/inference/go/v1", None),
-            None,
-            "no session context means no header even on OpenCode"
+            Some("clat-auxiliary"),
+            "sessionless auxiliary requests (title/suggestion/git) still need the header on OpenCode"
         );
 
         let opencode =
@@ -2561,6 +2562,13 @@ mod tests {
         assert!(
             !plain.to_ascii_lowercase().contains("x-opencode-session"),
             "ordinary endpoints must not observe the session header: {plain}"
+        );
+        let auxiliary = exchange_capturing_request("/opencode.ai/inference/go/v1", None);
+        assert!(
+            auxiliary
+                .to_ascii_lowercase()
+                .contains("x-opencode-session: clat-auxiliary"),
+            "sessionless utility requests carry the auxiliary routing key: {auxiliary}"
         );
     }
 

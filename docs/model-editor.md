@@ -34,7 +34,7 @@ The shipped catalog is the source used by both the picker and runtime:
 | Kimi K3.1 Pro | `k3.1-pro` | `https://api.kimi.com/coding/v1` | 1M | 128K |
 | Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 1M | 128K |
 | Hy 4 | `hy4` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
-| Hy 3 | `hy3` | `https://tokenhub.tencentmaas.com/plan/v3` | 256K | 128K |
+| Hy 4 Flash | `hy4-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
 | DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
 | Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | `https://opencode.ai/inference/go/v1` | 1M | 1M |
@@ -74,7 +74,7 @@ Most presets also declare a companion utility model used only for automatic
 session naming, manual prompt suggestions and automatic Web/Desktop next steps: `deepseek-v4-pro` uses
 `deepseek-flash`, `glm-5.3` uses `glm-5.3-flash`, `qwen4-max` uses
 `qwen3.8-flash`, `k3.1-pro` uses `kimi-for-coding`, and `hy4` uses
-`hy3`. The OpenCode Go flagships use the gateway's flash tiers —
+`hy4-flash`. The OpenCode Go flagships use the gateway's flash tiers —
 `opencode-glm-5.3` uses `opencode-glm-5.3-flash`, and presets without an
 in-family flash tier (`opencode-deepseek-v4-pro`, `opencode-kimi-k3.1-pro`,
 `opencode-kimi-k3`, `opencode-qwen4-max`, `opencode-minimax-m3`) use

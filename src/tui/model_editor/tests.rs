@@ -467,7 +467,7 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     assert_eq!(config.endpoint, "https://tokenhub.tencentmaas.com/plan/v3");
     assert_eq!(config.extra_body, serde_json::json!({}));
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("hy3"));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4-flash"));
     // OC-Go（2026-11-18）：腾讯预设之后接连排布 OpenCode Go 网关八
     // 预设（presets/opencode.rs 钉值），然后才回落 Custom（None）。
     for expected in [

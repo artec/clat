@@ -3,7 +3,7 @@
 //! Keeping the larger provider notes here prevents the root preset module from
 //! regaining the shape budget that the preset-table refactor paid down.
 
-use super::{KIMI_WHITELIST_UA, ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS, TEXT_CAPS};
+use super::{KIMI_WHITELIST_UA, ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS};
 
 /// Kimi Code `kimi-for-coding`（K2.8 Preview，2026-09-11 已全量上线）：
 /// 官方模型表确认同一 Coding 端点、1M 上下文与 low/high/max 档位；
@@ -72,10 +72,10 @@ pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
 ///   系误判——11-04 Token Plan 清单的"暂不支持多模态"与 image-silent-drop
 ///   探针结论一并被推翻）。能力位走 OFFICIAL_VISION_CAPS（VP-2
 ///   officially-declared 通道：input [Text, Image] + verified、图片策略
-///   保守档 png+jpeg/≤8 张/≤4MiB）；hy3 伴生预设维持 TEXT_CAPS。
+///   保守档 png+jpeg/≤8 张/≤4MiB）；hy4-flash 伴生同为多模态(负责人确认,2026-11-18)。
 pub(super) const HY4: ModelPreset = ModelPreset {
     id: "hy4",
-    utility_model: Some("hy3"),
+    utility_model: Some("hy4-flash"),
     capabilities: OFFICIAL_VISION_CAPS,
     name: "Hy 4",
     description: "Tencent Hunyuan flagship model (always-on thinking)",
@@ -93,25 +93,26 @@ pub(super) const HY4: ModelPreset = ModelPreset {
     user_agent: None,
 };
 
-/// Tencent Hy3（TokenHub 官方模型列表/Hy Token Plan，2026-09；
-/// 2026-11-07 端点随 hy4 同步新域名）：`hy3` 与 `hy3-preview`/
-/// `hy3-202608` 同端点（hy3-preview 调用自动路由至 Hy3），官方模型
-/// 资料钉定 256K context（960k/192k/… 分解见 GA 调用指南：256k 总窗 /
-/// 192k 最大输入）/ 128K max output；选稳定的 canonical id `hy3`，
-/// 不把 preview 别名写进伴生映射。
-pub(super) const HY3: ModelPreset = ModelPreset {
-    id: "hy3",
+/// Tencent Hy4 Flash（Hy Token Plan，2026-11-18 负责人令：退役 hy3、
+/// hy4-flash 接任 utility 伴生）：官方 Token Plan 模型清单（2026-11-16
+/// 更新）已收录 `hy4-flash`——与 hy4 完全同形（1024k 总窗 / 960k 最大
+/// 输入 / 64k 最大输出），定位"轻量高效日常主力"，积分单价更低，
+/// 标题/建议等 utility 任务足够。Token Plan 页仍注"暂不支持多模态"
+/// → 多模态(负责人确认 2026-11-18)。thinking 默认开（effort 默认 high），但 TC-0
+/// 探针实证 plan/v3 上无可复现效果 → 不发。
+pub(super) const HY4_FLASH: ModelPreset = ModelPreset {
+    id: "hy4-flash",
     utility_model: None,
-    capabilities: TEXT_CAPS,
-    name: "Hy 3",
-    description: "Tencent Hy3 companion model via Hy Token Plan",
+    capabilities: OFFICIAL_VISION_CAPS,
+    name: "Hy 4 Flash",
+    description: "Tencent Hy4 Flash companion model via Hy Token Plan",
     vendor: "Hy Token Plan",
     protocol: ModelProtocol::OpenAiCompatible,
-    model: "hy3",
+    model: "hy4-flash",
     endpoint: "https://tokenhub.tencentmaas.com/plan/v3",
     request_path: "/chat/completions",
-    output_limit: 128 * 1024,
-    context_window: 256 * 1024,
+    output_limit: 65_536,
+    context_window: 1_000_000,
     reasoning_effort: None,
     preserve_thinking: false,
     thinking_object: false,

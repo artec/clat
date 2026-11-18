@@ -47,7 +47,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Kimi K3.1 Pro Coding Plan | `k3.1-pro` | 1M | 128K | `high` |
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
 | Hy 4 · Hy Token Plan | `hy4` | 1M | 64K | — (always on) |
-| Hy 3 · Hy Token Plan | `hy3` | 256K | 128K | — (always on) |
+| Hy 4 Flash · Hy Token Plan | `hy4-flash` | 1M | 64K | — (always on) |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | 1M | 384K | `medium` |
 | DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | 1M | 384K | `medium` |
 | Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | 1M | 1M | `medium` |
