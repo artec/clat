@@ -1505,6 +1505,14 @@
   "tui.preset_description_hy4": "騰訊混元旗艦模型（持續啟用思考）",
   "tui.preset_description_kimi-for-coding": "適合日常程式設計工作的高效 Kimi Code 輔助模型",
   "tui.preset_description_k3.1-pro": "透過 Kimi Coding 會員使用 Moonshot 旗艦模型（自動上下文快取）",
+  "tui.preset_description_opencode-deepseek-v4-pro": "透過 OpenCode Go 閘道使用 DeepSeek V4 Pro",
+  "tui.preset_description_opencode-deepseek-v4.1-flash": "透過 OpenCode Go 閘道使用快速多模態 DeepSeek（可讀取圖片）",
+  "tui.preset_description_opencode-glm-5.3": "透過 OpenCode Go 閘道使用智譜 GLM 5.3",
+  "tui.preset_description_opencode-glm-5.3-flash": "透過 OpenCode Go 閘道使用智譜多模態視覺模型（可讀取圖片）",
+  "tui.preset_description_opencode-kimi-k3": "透過 OpenCode Go 閘道使用 Kimi K3，支援滿長輸出（可讀取圖片）",
+  "tui.preset_description_opencode-kimi-k3.1-pro": "透過 OpenCode Go 閘道使用 Kimi K3.1 Pro 旗艦（可讀取圖片）",
+  "tui.preset_description_opencode-minimax-m3": "透過 OpenCode Go 閘道使用 MiniMax M3（可讀取圖片）",
+  "tui.preset_description_opencode-qwen4-max": "透過 OpenCode Go 閘道使用阿里 Qwen4 Max（可讀取圖片）",
   "tui.preset_description_qwen3.8-flash": "透過 Qwen Token Plan 使用阿里快速模型（可讀取圖片）",
   "tui.preset_description_qwen4-max": "透過 Qwen Token Plan 使用阿里旗艦模型（隱式上下文快取，可讀取圖片）",
   "tui.preset_key_hint": "{name} · 金鑰僅可寫入 · 儲存後啟用預設 · 留空只清除目前金鑰",
@@ -3267,10 +3275,22 @@
   "tui.permission_denied_generic": "{tool} · 權限遭拒絕",
   "tui.permission_asked": "{tool} · 需要審批：{reason}",
   "tui.retry_notice": "重試 {retry}/{max} · {reason}",
-  "tui.time_days_ago": {"one": "{count} 天前", "other": "{count} 天前"},
-  "tui.time_weeks_ago": {"one": "{count} 週前", "other": "{count} 週前"},
-  "tui.time_months_ago": {"one": "{count} 個月前", "other": "{count} 個月前"},
-  "tui.time_years_ago": {"one": "{count} 年前", "other": "{count} 年前"},
+  "tui.time_days_ago": {
+    "one": "{count} 天前",
+    "other": "{count} 天前"
+  },
+  "tui.time_weeks_ago": {
+    "one": "{count} 週前",
+    "other": "{count} 週前"
+  },
+  "tui.time_months_ago": {
+    "one": "{count} 個月前",
+    "other": "{count} 個月前"
+  },
+  "tui.time_years_ago": {
+    "one": "{count} 年前",
+    "other": "{count} 年前"
+  },
   "tui.rewind_title": "編輯上一則提問",
   "tui.rewind_unavailable": "只有已中止且未執行工具的最後一輪可以取代。",
   "tui.rewind_confirm": "再次按 Enter 確認取代並重發 · Esc 返回",
@@ -3368,6 +3388,9 @@
   "rail.remaining_percent": "方案剩餘額度：{percent}%",
   "rail.window_weeks": "{count} 週額度",
   "rail.window_hours": "{count} 小時額度",
+  "rail.window_months": "{count} 月額度",
+  "rail.days": "{count} 天",
+  "rail.hours": "{count} 小時",
   "rail.reset": "下次重設",
   "rail.reset_in": "距離重設",
   "rail.minutes": "{count} 分鐘",

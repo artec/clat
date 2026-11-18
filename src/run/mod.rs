@@ -50,6 +50,11 @@ pub(crate) struct Run<'a> {
     /// fail-closed 纯文本（与 INV-MM2 口径一致）——未接线的调用方
     /// 带图请求得到明确预检错误，而非厂商 400 透传。
     capabilities: ModelCapabilities,
+    /// OC-1：本 run 所属会话的稳定标识（OpenCode 网关的
+    /// `x-opencode-session` 要求"每会话稳定"，不要求每请求唯一）。
+    /// `None` = 无会话上下文（demo/测试/无该要求的端点），适配器
+    /// 不注入头。子代理 run 传父会话 id——子运行属于同一会话。
+    session_id: Option<String>,
 }
 
 impl<'a> Run<'a> {
@@ -77,6 +82,7 @@ impl<'a> Run<'a> {
             promotions: std::sync::Mutex::new(Vec::new()),
             spend_ledger: None,
             capabilities: ModelCapabilities::default(),
+            session_id: None,
         }
     }
 
@@ -142,6 +148,13 @@ impl<'a> Run<'a> {
     /// 传入）。不调用则按纯文本 fail-closed 处理。
     pub(crate) fn with_capabilities(mut self, capabilities: ModelCapabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// OC-1：接线会话标识，随每个 `ModelRequest` 下发（适配器按端点
+    /// 决定是否注入 `x-opencode-session`）。
+    pub(crate) fn with_session_id(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
         self
     }
 

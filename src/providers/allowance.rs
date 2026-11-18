@@ -63,6 +63,21 @@ pub(crate) fn fetch_provider_allowance(config: &ModelConfig, key: &str) -> Provi
             format!("{}/usages", endpoint.trim_end_matches('/')),
             true,
         )
+    } else if lower.contains("opencode.ai") {
+        // OC-Go：合规网关的额度查询（负责人令 2026-11-18 接入）。预设
+        // 端点是 .../v1（request_path 另行拼 chat/completions）；自定义
+        // 配置可能把整段 chat/completions 粘进 endpoint——两种形状都
+        // 归一到网关 base 再接 /usage（GET /v1/usage，Bearer）。
+        (
+            "opencode",
+            format!(
+                "{}/usage",
+                endpoint
+                    .trim_end_matches('/')
+                    .trim_end_matches("/chat/completions")
+            ),
+            true,
+        )
     } else {
         return ProviderAllowance::state("unsupported");
     };
@@ -136,6 +151,47 @@ fn glm_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
         .collect::<Vec<_>>();
     (!items.is_empty()).then_some(items)
 }
+/// OC-Go：OpenCode 网关 `GET /v1/usage` 的三窗额度。响应形如
+/// `{"code":200,"usage":{"rolling":{…},"weekly":{…},"monthly":{…}}}`；
+/// 每窗 `percent` 是**已用**百分比（剩余 = 100 − percent），
+/// `resetsAt` 可能是 ISO 字符串或 epoch 毫秒（两端都试），缺失时省略
+/// （不发明）。窗口 → window_hours：rolling(5h)→5、weekly→168、
+/// monthly→720（官方文档口径）。
+fn opencode_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
+    let usage = body.get("usage")?;
+    let items = [("rolling", 5u64), ("weekly", 168), ("monthly", 720)]
+        .into_iter()
+        .filter_map(|(window, hours)| {
+            let row = usage.get(window)?;
+            let remaining = (100.0 - numeric(&row["percent"])?).clamp(0.0, 100.0);
+            Some(AllowanceItem {
+                kind: "quota".into(),
+                value: remaining.to_string(),
+                unit: Some("%".into()),
+                reset_at: opencode_reset_millis(row.get("resetsAt")),
+                window_hours: Some(hours),
+            })
+        })
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then_some(items)
+}
+
+/// `resetsAt` 的两种钉值形状：数字（epoch 毫秒）或字符串（ISO 时间
+/// 或 epoch 毫秒文本）。与 glm/kimi 相同的合理上界过滤。
+fn opencode_reset_millis(value: Option<&Value>) -> Option<u64> {
+    let valid = |millis: u64| (millis > 0 && millis <= 8_640_000_000_000_000).then_some(millis);
+    match value? {
+        Value::Number(number) => number.as_u64().and_then(valid),
+        Value::String(text) => text.parse::<u64>().ok().and_then(valid).or_else(|| {
+            text.parse::<jiff::Timestamp>()
+                .ok()
+                .and_then(|time| u64::try_from(time.as_millisecond()).ok())
+                .and_then(valid)
+        }),
+        _ => None,
+    }
+}
+
 fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
     let mut items = Vec::new();
     match kind {
@@ -152,6 +208,7 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
             }
         }
         "glm" => items.extend(glm_allowance_items(body)?),
+        "opencode" => items.extend(opencode_allowance_items(body)?),
         "kimi" => {
             let detail = body["limits"]
                 .as_array()?
@@ -188,6 +245,65 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OC-Go：三窗完整（ISO 与 epoch 毫秒两种 resetsAt 形状）、剩余
+    /// 百分比换算（percent 是已用）、window_hours 口径。
+    #[test]
+    fn opencode_allowance_maps_three_windows_with_remaining_percent() {
+        let body = serde_json::json!({"code":200,"usage":{
+            "rolling":{"status":"ok","percent":35.2,"resetsAt":"2026-11-18T12:00:00Z"},
+            "weekly":{"status":"ok","percent":50,"resetsAt":1793600000000u64},
+            "monthly":{"status":"ok","percent":99.9,"resetsAt":"1793600100000"}
+        }});
+        let value = parse_allowance("opencode", &body).unwrap();
+        assert_eq!(value.status, "available");
+        assert_eq!(value.items.len(), 3);
+        assert_eq!(value.items[0].kind, "quota");
+        // percent 是已用：35.2 已用 → 64.8 剩余。
+        assert_eq!(value.items[0].value, "64.8");
+        assert_eq!(value.items[0].unit.as_deref(), Some("%"));
+        assert_eq!(value.items[0].window_hours, Some(5));
+        assert_eq!(value.items[0].reset_at, Some(1_795_003_200_000));
+        assert_eq!(value.items[1].value, "50");
+        assert_eq!(value.items[1].window_hours, Some(168));
+        assert_eq!(value.items[1].reset_at, Some(1_793_600_000_000));
+        assert_eq!(value.items[2].window_hours, Some(720));
+        // epoch 毫秒的字符串形状同样解析。
+        assert_eq!(value.items[2].reset_at, Some(1_793_600_100_000));
+    }
+
+    /// OC-Go：resetsAt 缺失 → 省略（不发明）；缺整个 usage → fail
+    /// closed；percent 100（耗尽）→ 剩余 0。
+    #[test]
+    fn opencode_allowance_omits_missing_resets_and_reports_exhaustion() {
+        let body = serde_json::json!({"usage":{
+            "rolling":{"status":"ok","percent":100.0},
+            "weekly":{"status":"ok","percent":100}
+        }});
+        let value = parse_allowance("opencode", &body).unwrap();
+        assert_eq!(value.items.len(), 2);
+        assert_eq!(value.items[0].value, "0");
+        assert!(
+            value.items[0].reset_at.is_none(),
+            "missing resetsAt stays absent"
+        );
+        assert_eq!(value.items[0].window_hours, Some(5));
+        let wire = serde_json::to_value(&value).unwrap();
+        assert!(wire["items"][0].get("reset_at").is_none());
+        // 单独一个窗口也成立；完全没有窗口 → None（failed）。
+        assert!(
+            parse_allowance(
+                "opencode",
+                &serde_json::json!({"usage":{"monthly":{"percent":10}}})
+            )
+            .unwrap()
+            .items
+            .len()
+                == 1
+        );
+        assert!(parse_allowance("opencode", &serde_json::json!({"code":200})).is_none());
+    }
+
     #[test]
     fn allowance_preserves_matching_window_resets_without_inventing_missing_metadata() {
         let body = serde_json::json!({"data":{"limits":[

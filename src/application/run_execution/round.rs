@@ -184,6 +184,7 @@ impl RoundExecution {
                 system_instructions: Some(system),
                 runtime_context: worker.context.runtime_context.clone(),
                 request_tail: worker.deps.process_service.scratch_guidance(),
+                session_id: Some(worker.input.session_id.to_string()),
             })
         }))
     }

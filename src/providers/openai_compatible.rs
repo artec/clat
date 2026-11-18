@@ -148,6 +148,7 @@ impl OpenAiCompatibleModel {
         &mut self,
         body: &Value,
         cancel: &CancelToken,
+        session_id: Option<&str>,
     ) -> Result<Option<Response<Body>>, ModelError> {
         self.ensure_transport_constrained();
         let url = join_endpoint(&self.config.endpoint, &self.config.request_path);
@@ -169,6 +170,12 @@ impl OpenAiCompatibleModel {
             }
         } else if !self.config.extra_headers.is_null() {
             return Err(ModelError::request("extra headers must be a JSON object"));
+        }
+
+        // OC-2：OpenCode 合规端点的会话标识头（放在 extra_headers 之后
+        // ——缺失该头网关 400，不能被用户头部配置意外挤掉）。
+        if let Some(session) = opencode_session_value(&self.config.endpoint, session_id) {
+            request = request.header("x-opencode-session", session);
         }
 
         if let Some(value) = &self.runtime_value {
@@ -256,10 +263,11 @@ impl Model for OpenAiCompatibleModel {
         events: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
         let cancel = request.cancel;
+        let session_id = request.session_id;
         let body = self.request_body(request)?;
         #[cfg(test)]
         observation_tests::request(&body);
-        let Some(response) = self.send(&body, cancel)? else {
+        let Some(response) = self.send(&body, cancel, session_id)? else {
             return Ok(super::cancelled_response());
         };
         let (_, body) = response.into_parts();
@@ -508,6 +516,19 @@ pub(crate) fn join_endpoint(endpoint: &str, request_path: &str) -> String {
     } else {
         format!("{endpoint}/{path}")
     }
+}
+
+/// OC-2：OpenCode 合规端点（`opencode.ai` 域）要求每个会话携带稳定的
+/// `x-opencode-session` 头（缺失 400；第三方政策要求自有 UA + 会话头，
+/// ZCode 在其已验证客户端清单）。判据：端点含 `opencode.ai` **且** run
+/// 携带会话 id；其余端点或无会话上下文（utility 一次调用、demo、测试）
+/// 一律不注入——不向无关网关泄露会话标识。
+fn opencode_session_value<'a>(endpoint: &str, session_id: Option<&'a str>) -> Option<&'a str> {
+    let session = session_id?;
+    endpoint
+        .to_ascii_lowercase()
+        .contains("opencode.ai")
+        .then_some(session)
 }
 
 fn merge_extra_body(body: &mut Map<String, Value>, extra: &Value) -> Result<(), ModelError> {
@@ -2502,6 +2523,103 @@ mod tests {
         assert!(request.contains("\"model\":\"third-party\""));
         assert_eq!(response.text, "compatible ok");
         assert_eq!(response.finish_reason, FinishReason::Completed);
+    }
+
+    /// OC-2 判别：OpenCode 端点 + 会话 id → `x-opencode-session` 头随请求
+    /// 发出；非 OpenCode 端点（同会话 id）→ 头不存在。判据单测覆盖大小
+    /// 写与 None 腿。
+    #[test]
+    fn opencode_session_header_is_endpoint_gated() {
+        assert_eq!(
+            opencode_session_value("https://opencode.ai/inference/go/v1", Some("s1")),
+            Some("s1")
+        );
+        assert_eq!(
+            opencode_session_value("https://OPencode.AI/inference/go/v1", Some("s1")),
+            Some("s1")
+        );
+        assert_eq!(
+            opencode_session_value("https://api.deepseek.com", Some("s1")),
+            None,
+            "non-OpenCode endpoints never receive the session header"
+        );
+        assert_eq!(
+            opencode_session_value("https://opencode.ai/inference/go/v1", None),
+            None,
+            "no session context means no header even on OpenCode"
+        );
+
+        let opencode =
+            exchange_capturing_request("/opencode.ai/inference/go/v1", Some("sess-oc-1"));
+        assert!(
+            opencode
+                .to_ascii_lowercase()
+                .contains("x-opencode-session: sess-oc-1"),
+            "the OpenCode gateway must see the per-session header: {opencode}"
+        );
+        let plain = exchange_capturing_request("/v1", Some("sess-oc-1"));
+        assert!(
+            !plain.to_ascii_lowercase().contains("x-opencode-session"),
+            "ordinary endpoints must not observe the session header: {plain}"
+        );
+    }
+
+    /// 单次真实 HTTP 交换：返回服务端捕获的原始请求文本（头 + 体）。
+    fn exchange_capturing_request(path: &str, session_id: Option<&str>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let request = read_http_request(&mut stream);
+            request_tx
+                .send(String::from_utf8_lossy(&request).into_owned())
+                .expect("capture request");
+            let body = concat!(
+                "data: {\"id\":\"chat-oc\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        let config = ModelConfig {
+            protocol: crate::ModelProtocol::OpenAiCompatible,
+            model: "gateway-model".into(),
+            endpoint: format!("http://{address}{path}"),
+            request_path: "/chat/completions".into(),
+            ..ModelConfig::default()
+        };
+        let mut model =
+            OpenAiCompatibleModel::from_runtime_fields(Vec::new(), &config).expect("model");
+        let items = vec![ModelItem::user_text("hello")];
+        let options = ModelOptions::default();
+        let mut events = Vec::new();
+        let response = model
+            .stream(
+                ModelRequest {
+                    instructions: None,
+                    items: &items,
+                    tools: &[],
+                    options: &options,
+                    cancel: &CancelToken::new(),
+
+                    session_id,
+                },
+                &mut events,
+            )
+            .expect("stream completes");
+        assert_eq!(response.text, "ok");
+        server.join().expect("server");
+        // 有界等待（hang-bound 纪律：新测试不进 legacy 白名单）。
+        request_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("request")
     }
 
     fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {

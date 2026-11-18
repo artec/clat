@@ -57,3 +57,32 @@ test('compact balances stay within three characters and omit the currency sign',
   }
  }
 });
+test('quota windows present 720 hours as a monthly window and keep weeks and hours',()=>{
+ const t=(key,args)=>key+(args&&args.count!==undefined?`(${args.count})`:'');
+ const label=hours=>scope.railWindowLabel(hours,t);
+ assert.equal(label(720),'window_months(1)');
+ assert.equal(label(1440),'window_months(2)');
+ assert.equal(label(3600),'window_months(5)');
+ assert.equal(label(168),'window_weeks(1)');
+ assert.equal(label(336),'window_weeks(2)');
+ assert.equal(label(5),'window_hours(5)');
+ assert.equal(label(100),'window_hours(100)');
+ assert.equal(label(0),label(undefined),label(NaN)?undefined:'remaining');
+ assert.equal(label(0),'remaining');
+});
+test('reset countdowns compose days, hours and minutes instead of raw minutes',()=>{
+ const t=(key,args)=>args&&args.count!==undefined?`${args.count} ${key}`:key;
+ const countdown=minutes=>scope.railResetCountdown(minutes,t);
+ // 6371 分钟（OC-Go 周窗实测值）→ 4 天 10 小时 11 分钟。
+ assert.equal(countdown(6371),'4 days 10 hours 11 minutes');
+ // 42965 分钟（月窗实测值）→ 29 天 20 小时 5 分钟。
+ assert.equal(countdown(42965),'29 days 20 hours 5 minutes');
+ // 零单位跳过：整天/整小时/整组合。
+ assert.equal(countdown(1440),'1 days');
+ assert.equal(countdown(180),'3 hours');
+ assert.equal(countdown(70),'1 hours 10 minutes');
+ // 不足一小时保留纯分钟；到期转 reset_due。
+ assert.equal(countdown(42),'42 minutes');
+ assert.equal(countdown(0),'reset_due');
+ assert.equal(countdown(-5),'reset_due');
+});

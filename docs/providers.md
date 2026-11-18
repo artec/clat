@@ -48,13 +48,25 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
 | Hy 4 · Hy Token Plan | `hy4` | 1M | 64K | — (always on) |
 | Hy 3 · Hy Token Plan | `hy3` | 256K | 128K | — (always on) |
+| DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | 1M | 384K | `medium` |
+| DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | 1M | 384K | `medium` |
+| Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | 1M | 1M | `medium` |
+| Kimi K3 · OpenCode Go | `opencode-kimi-k3` | 1M | 1M | `medium` |
+| GLM 5.3 · OpenCode Go | `opencode-glm-5.3` | 1M | 128K | `medium` |
+| GLM 5.3 Flash · OpenCode Go | `opencode-glm-5.3-flash` | 1M | 128K | `medium` |
+| Qwen4 Max · OpenCode Go | `opencode-qwen4-max` | 1M | 262K | `medium` |
+| MiniMax M3 · OpenCode Go | `opencode-minimax-m3` | 1M | 128K | `medium` |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
-six image-input routes are `deepseek-flash`, `qwen4-max`,
-`qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, plus `glm-5.3-flash`
-(also verified for image tool results) — the first five declared by
-official vendor documentation, the GLM
-route proven by CLAT's own live probe. The five vendor-declared visual presets
+image-input routes are `deepseek-flash`, `qwen4-max`,
+`qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, and `hy4`, plus
+`glm-5.3-flash` (also verified for image tool results) — the vendor-declared
+routes follow official vendor documentation (Hy 4 per the 2026-11-07 owner
+ruling), the GLM route is proven by CLAT's own live probe, and the six
+OpenCode Go vision routes (`opencode-deepseek-v4.1-flash`,
+`opencode-kimi-k3.1-pro`, `opencode-kimi-k3`, `opencode-glm-5.3-flash`,
+`opencode-qwen4-max`, `opencode-minimax-m3`) follow the gateway's own
+`/v1/models` metadata snapshot. The vendor-declared visual presets
 use a conservative per-request policy of eight images, at most 4 MiB per image;
 custom profiles default to the same limits once image input has been enabled
 by a successful `/vision-probe`. All other presets are text-only.
@@ -265,15 +277,58 @@ context facts. Check remaining points in the
 [TokenHub console](https://console.cloud.tencent.com/tokenhub/tokenplan).
 Concurrency limits scale with the plan tier and may tighten at peak hours.
 
+### OpenCode Go
+
+Eight open-source-model presets (DeepSeek V4 line, Kimi K3 line, GLM-5.3
+line, Qwen4, MiniMax M3) ride the compliant OpenCode gateway
+`https://opencode.ai/inference/go/v1` — the owner-mandated address
+(2026-11-18). The gateway is OpenAI-compatible; preset ids carry an
+`opencode-` prefix because four gateway model ids collide with the direct
+Connection-plan presets (`glm-5.3`, `glm-5.3-flash`, `qwen4-max`,
+`deepseek-v4-pro`) — the `model` field still uses the raw gateway id.
+Context and output values are pinned from the gateway's public `/v1/models`
+snapshot and deliberately not cross-referenced with each vendor's own
+endpoint documentation (Kimi K3/K3.1 Pro serve 1M output here versus 128K
+on the Kimi Coding endpoint; MiniMax M3 above 512K context is priced ×2).
+
+The gateway's third-party policy explicitly allows coding agents and lists
+CLAT-class clients among verified clients, with two wire obligations the
+presets satisfy:
+
+- **Own User-Agent** — every OpenCode preset injects
+  `User-Agent: clat/<version>` (overridable in Extra Headers, cleaned again
+  when switching presets if the value is still a preset-seeded `clat/*`).
+- **Stable per-conversation `x-opencode-session` header** — missing the
+  header is rejected with 400. The run carries its session id into every
+  model request; the OpenAI-compatible adapter injects the header only when
+  the endpoint domain is `opencode.ai`, so ordinary endpoints never observe
+  it. Read-only subagent children belong to the same conversation and carry
+  the parent session id; one-shot utility calls (titles, suggestions) run
+  outside a session and omit the header.
+
+Reasoning effort uses the gateway's unified `low` / `medium` / `high` /
+`max` ladder (`off` is rejected); CLAT's Low / High / Max map directly to
+`low` / `high` / `max`, and presets pin the middle tier `medium`. The
+gateway has no DeepSeek/GLM-style `thinking` object, and
+`stream_options.include_usage` behavior is unverified there, so the preset
+extra body carries `reasoning_effort` only.
+
+**Quota windows**: `GET /v1/usage` (Bearer) reports three windows — rolling
+(5 hours, capped at 20% of the monthly allowance), weekly (50%), and
+monthly. The status monitor maps each window to a remaining-percentage
+quota item with its reset time when the gateway reports one
+(`resetsAt` as ISO text or epoch milliseconds); missing reset times stay
+absent rather than invented.
+
 ## Reasoning control
 
 `ThinkingLevel` is provider-aware:
 
-| CLAT level | DeepSeek / GLM / Kimi | Qwen | Tencent Hy |
-|---|---|---|---|
-| Low | `low` | `low` | — |
-| High | `high` | `medium` | — |
-| Max | `max` | `xhigh` | — |
+| CLAT level | DeepSeek / GLM / Kimi | Qwen | Tencent Hy | OpenCode Go |
+|---|---|---|---|---|
+| Low | `low` | `low` | — | `low` |
+| High | `high` | `medium` | — | `high` |
+| Max | `max` | `xhigh` | — | `max` |
 
 Tencent Hy exposes no effective reasoning control (see above); the ladder is
 empty, `Shift+Tab` has no effect on that vendor, and the title bar shows

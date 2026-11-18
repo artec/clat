@@ -468,6 +468,21 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     assert_eq!(config.extra_body, serde_json::json!({}));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("hy3"));
+    // OC-Go（2026-11-18）：腾讯预设之后接连排布 OpenCode Go 网关八
+    // 预设（presets/opencode.rs 钉值），然后才回落 Custom（None）。
+    for expected in [
+        "opencode-deepseek-v4-pro",
+        "opencode-deepseek-v4.1-flash",
+        "opencode-kimi-k3.1-pro",
+        "opencode-kimi-k3",
+        "opencode-glm-5.3",
+        "opencode-glm-5.3-flash",
+        "opencode-qwen4-max",
+        "opencode-minimax-m3",
+    ] {
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some(expected));
+    }
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset, None);
 }
@@ -533,8 +548,8 @@ fn picker_key(code: KeyCode) -> KeyEvent {
 #[test]
 fn picker_lists_vendors_then_models_in_two_levels() {
     let mut picker = new_picker();
-    // 一级：五个厂商 + Custom。
-    assert_eq!(picker.row_count(), 6);
+    // 一级：六个厂商 + Custom（OC-Go 2026-11-18 增设 OpenCode Go 网关）。
+    assert_eq!(picker.row_count(), 7);
 
     // Enter 进入 DeepSeek 二级（V4.1 Flash / Pro；SF-1 后两模型）。
     assert!(matches!(
@@ -564,7 +579,7 @@ fn picker_esc_backtracks_one_level_then_cancels() {
         picker.handle_key(picker_key(KeyCode::Esc)),
         PickerAction::Continue
     ));
-    assert_eq!(picker.row_count(), 6);
+    assert_eq!(picker.row_count(), 7);
     // 一级 Esc 关闭。
     assert!(matches!(
         picker.handle_key(picker_key(KeyCode::Esc)),
@@ -588,7 +603,7 @@ fn vendor_escape_restores_the_entered_row() {
         picker.handle_key(picker_key(KeyCode::Esc)),
         PickerAction::Continue
     ));
-    assert_eq!(picker.row_count(), 6, "Esc backtracks to level 1");
+    assert_eq!(picker.row_count(), 7, "Esc backtracks to level 1");
     assert_eq!(
         picker.selected_index(),
         2,
@@ -602,7 +617,7 @@ fn vendor_escape_restores_the_entered_row() {
 fn custom_list_escape_restores_the_custom_row() {
     let profiles = vec![profile_summary("work"), profile_summary("personal")];
     let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter)); // Custom 行 → 档案列表
@@ -611,8 +626,8 @@ fn custom_list_escape_restores_the_custom_row() {
         picker.handle_key(picker_key(KeyCode::Esc)),
         PickerAction::Continue
     ));
-    assert_eq!(picker.row_count(), 6, "Esc backtracks to level 1");
-    assert_eq!(picker.selected_index(), 5, "Esc restores the Custom row");
+    assert_eq!(picker.row_count(), 7, "Esc backtracks to level 1");
+    assert_eq!(picker.selected_index(), 6, "Esc restores the Custom row");
 }
 
 /// U1（INV-U1 原位返回）：快照往返——从 Custom 档案列表进入编辑器
@@ -622,7 +637,7 @@ fn custom_list_escape_restores_the_custom_row() {
 fn snapshot_restore_roundtrips_level_and_cursor() {
     let profiles = vec![profile_summary("work"), profile_summary("personal")];
     let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter)); // Custom → 档案列表
@@ -704,11 +719,11 @@ fn picker_digits_quick_select_models_and_custom() {
     };
     assert_eq!(preset.id, "qwen4-max");
 
-    // B9：零档案时数字 6（Custom）直进新建页（TC-1 后一级为
-    // 五厂商 + Custom）。
+    // B9：零档案时数字 7（Custom）直进新建页（OC-Go 后一级为
+    // 六厂商 + Custom）。
     let mut picker = new_picker();
     assert!(matches!(
-        picker.handle_key(picker_key(KeyCode::Char('6'))),
+        picker.handle_key(picker_key(KeyCode::Char('7'))),
         PickerAction::OpenProfileEditor { edit: None }
     ));
 }
@@ -879,7 +894,7 @@ fn profile_extra_body_edit_clears_thinking_but_endpoint_edit_keeps_it() {
 fn custom_entry_three_states() {
     // 零档案：Enter 直进新建页。
     let mut picker = ModelPicker::new(&ModelConfig::default(), Vec::new());
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     assert!(matches!(
@@ -890,7 +905,7 @@ fn custom_entry_three_states() {
     // 一个档案：Custom 行 Enter → 列表（1 档案行 + New… = 2 行）。
     let profiles = vec![profile_summary("work")];
     let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     assert!(matches!(
@@ -905,7 +920,7 @@ fn custom_entry_three_states() {
         PickerAction::SwitchProfile(name) if name == "work"
     ));
     let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter));
@@ -917,7 +932,7 @@ fn custom_entry_three_states() {
 
     // `e` = 编辑既有档案。
     let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter));
@@ -933,7 +948,7 @@ fn custom_entry_three_states() {
 fn profile_delete_requires_double_confirmation() {
     let profiles = vec![profile_summary("work"), profile_summary("personal")];
     let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter));
@@ -957,7 +972,7 @@ fn profile_delete_requires_double_confirmation() {
 
     // New… 行按 d 无操作。
     let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
-    for _ in 0..5 {
+    for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter));

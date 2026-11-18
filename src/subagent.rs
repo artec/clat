@@ -410,7 +410,10 @@ impl SubagentService {
             .with_cancel_token(cancel.clone())
             .with_tool_access(access)
             .with_instructions(task.role.instructions())
-            .with_capabilities(config.capabilities.clone());
+            .with_capabilities(config.capabilities.clone())
+            // OC-1：子运行携带父会话 id——OpenCode 网关按会话归并，
+            // 子代理请求属于同一会话（缺失该头会被该网关 400 拒绝）。
+            .with_session_id(Some(binding.session.to_string()));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut run = run;
             run.execute_with_items(

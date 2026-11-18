@@ -9,6 +9,11 @@ use serde_json::{Value, json};
 
 mod companions;
 use companions::{HY3, HY4, KIMI_FOR_CODING};
+mod opencode;
+use opencode::{
+    OC_DEEPSEEK_V4_PRO, OC_DEEPSEEK_V41_FLASH, OC_GLM_53, OC_GLM_53_FLASH, OC_KIMI_K3,
+    OC_KIMI_K31_PRO, OC_MINIMAX_M3, OC_QWEN4_MAX,
+};
 
 /// INV-MM2-1 预设侧能力矩阵（const 友好的静态切片；`apply` 时转入
 /// owned `ModelCapabilities` 持久化）。`image_input_verified` 依据
@@ -120,6 +125,11 @@ pub struct ModelPreset {
 /// 注入值，也是 `apply` 清理残留 UA 时的"已知预设值"判据——用户
 /// 自定义 UA（任何其它值）永不被预设触碰。
 const KIMI_WHITELIST_UA: &str = "claude-cli/2.1.161";
+
+/// OpenCode Go 网关要求的自有 UA（第三方政策：不用通用 SDK 名）。
+/// 与 KIMI_WHITELIST_UA 同为预设注入值；清理判据见 `apply`——该值随
+/// 版本演进（clat/&lt;version&gt;），按 `clat/` 前缀识别预设种值。
+pub(crate) const OPENCODE_UA: &str = concat!("clat/", env!("CARGO_PKG_VERSION"));
 
 /// Official DeepSeek parameters as documented at
 /// <https://api-docs.deepseek.com> (Models & Pricing, 2026-08;
@@ -436,6 +446,16 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     KIMI_FOR_CODING,
     HY4,
     HY3,
+    // OC-Go（2026-11-18）：OpenCode Go 合规网关八预设（开源系模型池）。
+    // 钉值与接入纪律见 presets/opencode.rs 模块文档。
+    OC_DEEPSEEK_V4_PRO,
+    OC_DEEPSEEK_V41_FLASH,
+    OC_KIMI_K31_PRO,
+    OC_KIMI_K3,
+    OC_GLM_53,
+    OC_GLM_53_FLASH,
+    OC_QWEN4_MAX,
+    OC_MINIMAX_M3,
 ];
 
 pub fn preset_by_id(id: &str) -> Option<&'static ModelPreset> {
@@ -592,9 +612,12 @@ impl ModelPreset {
                 }
             }
             None => {
-                if current_ua == Some(KIMI_WHITELIST_UA)
-                    && let Some(map) = config.extra_headers.as_object_mut()
-                {
+                // 只清理等于已知预设常量的残留值（Kimi 白名单 UA 精确
+                // 匹配；OpenCode 的 "clat/<version>" 随版本演进，按
+                // `clat/` 前缀识别预设种值）——自定义值永不触碰。
+                let seeded =
+                    current_ua.is_some_and(|ua| ua == KIMI_WHITELIST_UA || ua.starts_with("clat/"));
+                if seeded && let Some(map) = config.extra_headers.as_object_mut() {
                     map.remove("User-Agent");
                 }
             }
@@ -933,6 +956,24 @@ mod tests {
         let hy_utility = preset_by_id("hy3").expect("hy utility");
         assert_eq!(hy_utility.context_window, 256 * 1024);
         assert_eq!(hy_utility.output_limit, 128 * 1024);
+
+        // OC-Go：八模型全部 1M context；output 钉值来自网关 /v1/models
+        // 实测快照（2026-11-18，与直连端点口径不交叉引用——kimi-k3 在
+        // 本网关 1M 输出，与 Kimi Coding 端点的 128K 不同）。
+        for (id, output) in [
+            ("opencode-deepseek-v4-pro", 384 * 1024),
+            ("opencode-deepseek-v4.1-flash", 384 * 1024),
+            ("opencode-kimi-k3.1-pro", 1_000_000),
+            ("opencode-kimi-k3", 1_000_000),
+            ("opencode-glm-5.3", 128 * 1024),
+            ("opencode-glm-5.3-flash", 128 * 1024),
+            ("opencode-qwen4-max", 262_144),
+            ("opencode-minimax-m3", 128 * 1024),
+        ] {
+            let preset = preset_by_id(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(preset.context_window, 1_000_000, "{id}");
+            assert_eq!(preset.output_limit, output, "{id}");
+        }
     }
 
     #[test]
@@ -946,6 +987,7 @@ mod tests {
                 "Qwen Token Plan",
                 "Kimi Coding Plan",
                 "Hy Token Plan",
+                "OpenCode Go",
             ]
         );
         assert_eq!(presets_by_vendor("DeepSeek").len(), 2);
@@ -971,6 +1013,16 @@ mod tests {
             "kimi-for-coding"
         );
         assert_eq!(presets_by_vendor("Hy Token Plan").len(), 2);
+        // OC-Go：OpenCode Go 网关八预设（2026-11-18 接入），旗舰在前。
+        assert_eq!(presets_by_vendor("OpenCode Go").len(), 8);
+        assert_eq!(
+            presets_by_vendor("OpenCode Go")[0].id,
+            "opencode-deepseek-v4-pro"
+        );
+        assert_eq!(
+            presets_by_vendor("OpenCode Go")[7].id,
+            "opencode-minimax-m3"
+        );
         assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4");
         // 2026-11-07 GA 原地升级：旧 hy4-preview id 不复现（SF-1 同款
         // 零回退；官方清单虽保留旧 id，预设目录只挂 canonical 正式版）。
@@ -991,6 +1043,22 @@ mod tests {
             ("kimi-for-coding", None),
             ("hy4", Some("hy3")),
             ("hy3", None),
+            // OC-Go：同端点 flash 轻档；网关内无 Kimi/Qwen/MiniMax 轻档，
+            // 旗舰伴生取同端点的 DeepSeek Flash（同 vendor 同凭据槽）。
+            (
+                "opencode-deepseek-v4-pro",
+                Some("opencode-deepseek-v4.1-flash"),
+            ),
+            ("opencode-deepseek-v4.1-flash", None),
+            (
+                "opencode-kimi-k3.1-pro",
+                Some("opencode-deepseek-v4.1-flash"),
+            ),
+            ("opencode-kimi-k3", Some("opencode-deepseek-v4.1-flash")),
+            ("opencode-glm-5.3", Some("opencode-glm-5.3-flash")),
+            ("opencode-glm-5.3-flash", None),
+            ("opencode-qwen4-max", Some("opencode-deepseek-v4.1-flash")),
+            ("opencode-minimax-m3", Some("opencode-deepseek-v4.1-flash")),
         ];
         for (id, utility_model) in expected {
             assert_eq!(
@@ -1034,6 +1102,12 @@ mod tests {
                     | "k3.1-pro"
                     | "kimi-for-coding"
                     | "hy4"
+                    | "opencode-deepseek-v4.1-flash"
+                    | "opencode-kimi-k3.1-pro"
+                    | "opencode-kimi-k3"
+                    | "opencode-glm-5.3-flash"
+                    | "opencode-qwen4-max"
+                    | "opencode-minimax-m3"
             );
             assert_eq!(
                 caps.accepts_image_input(),
@@ -1067,8 +1141,15 @@ mod tests {
             vec![Modality::Text, Modality::Image]
         );
         // 纯文本预设不含 Image 模态（hy4 已于 2026-11-07 裁定为多模态，
-        // 移入下方 officially-declared 金测）。
-        for id in ["deepseek-v4-pro", "glm-5.3", "hy3"] {
+        // 移入上方 officially-declared 金测；OC-Go 网关侧 deepseek-v4-pro
+        // 与 glm-5.3 视觉位为 ❌）。
+        for id in [
+            "deepseek-v4-pro",
+            "glm-5.3",
+            "hy3",
+            "opencode-deepseek-v4-pro",
+            "opencode-glm-5.3",
+        ] {
             let caps = preset_by_id(id).unwrap().owned_capabilities();
             assert_eq!(caps.input_modalities, vec![Modality::Text], "{id}");
         }
@@ -1090,6 +1171,13 @@ mod tests {
             // 2026-11-07 负责人裁定：hy4 支持多模态（此前 text-only 判定
             // 为误判），随 GA 升级入 officially-declared 矩阵。
             "hy4",
+            // OC-Go：网关 /v1/models 实测视觉位（2026-11-18 快照）。
+            "opencode-deepseek-v4.1-flash",
+            "opencode-kimi-k3.1-pro",
+            "opencode-kimi-k3",
+            "opencode-glm-5.3-flash",
+            "opencode-qwen4-max",
+            "opencode-minimax-m3",
         ] {
             let preset = preset_by_id(id).unwrap();
             let caps = preset.owned_capabilities();
@@ -1296,6 +1384,73 @@ mod tests {
             config.extra_body["thinking"]["type"],
             json!("enabled"),
             "thinking object rides along unchanged from the V4.0 Flash pinning"
+        );
+    }
+
+    /// OC-Go 金测：OpenCode Go 网关预设的钉值锁定。判别：误改端点 /
+    /// UA / effort / extra_body 形状（多出 thinking 或 stream_options）、
+    /// 或删掉 `opencode-` id 前缀（与直连预设撞名会让
+    /// `preset_by_id` 取错条目），此测试红。
+    #[test]
+    fn applies_official_opencode_go_parameters() {
+        let preset = preset_by_id("opencode-glm-5.3").expect("preset exists");
+        // id 带前缀、model 用网关原始 id——两者必须可区分。
+        assert_eq!(preset.id, "opencode-glm-5.3");
+        assert_eq!(preset.model, "glm-5.3");
+        assert_eq!(preset.vendor, "OpenCode Go");
+        // 撞名守护：无前缀 id 仍解析为直连 GLM Coding Plan 预设。
+        let direct = preset_by_id("glm-5.3").expect("direct preset stays reachable");
+        assert_eq!(direct.vendor, "GLM Coding Plan");
+        assert_ne!(direct.endpoint, preset.endpoint);
+        // 合规地址（负责人裁定必须走 opencode.ai/inference/go）。
+        assert_eq!(preset.endpoint, "https://opencode.ai/inference/go/v1");
+        assert_eq!(preset.request_path, "/chat/completions");
+        // 同网关八预设端点/凭据槽一致。
+        for other in presets_by_vendor("OpenCode Go") {
+            assert_eq!(other.endpoint, preset.endpoint, "{}", other.id);
+        }
+
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        // extra_body 只带 reasoning_effort（网关档位 low/medium/high/max
+        // 的中档；include_usage 行为未知先不发 stream_options，纪律裁定）。
+        assert_eq!(
+            config.extra_body,
+            json!({"reasoning_effort": "medium"}),
+            "OpenCode presets must not send unverified gateway parameters"
+        );
+        // 自有 UA（第三方政策要求，随版本演进）。
+        assert_eq!(
+            config.extra_headers["User-Agent"].as_str(),
+            Some(concat!("clat/", env!("CARGO_PKG_VERSION")))
+        );
+        // 端点识别 → OpenCode 厂商（key 记忆槽 + 思考档位 + 额度查询）。
+        assert_eq!(config.vendor(), crate::model::ModelVendor::OpenCode);
+        assert_eq!(
+            crate::model::endpoint_vendor(&config.endpoint).storage_key(),
+            Some("OpenCode")
+        );
+        assert!(!crate::model::thinking_levels(config.vendor()).is_empty());
+        assert_eq!(config.max_context_tokens, Some(1_000_000));
+
+        // UA 清理腿：换到无 UA 要求的预设，"clat/<version>" 种值被清掉
+        // （按 clat/ 前缀识别），自定义 UA 不受影响。
+        config.extra_headers["User-Agent"] = json!("my-agent/1.0");
+        preset_by_id("deepseek-v4-pro")
+            .expect("deepseek")
+            .apply(&mut config);
+        assert_eq!(
+            config.extra_headers["User-Agent"].as_str(),
+            Some("my-agent/1.0"),
+            "a custom UA is never removed when switching away from OpenCode"
+        );
+        config.extra_headers["User-Agent"] = json!(concat!("clat/", env!("CARGO_PKG_VERSION")));
+        preset_by_id("deepseek-v4-pro")
+            .expect("deepseek")
+            .apply(&mut config);
+        assert!(
+            config.extra_headers.get("User-Agent").is_none(),
+            "the seeded clat/<version> UA is cleaned when switching away from OpenCode"
         );
     }
 }

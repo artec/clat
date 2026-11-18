@@ -798,8 +798,10 @@ impl Model for RetryModel {
             tools: request.tools,
             options: request.options,
             cancel: effective_cancel,
-
-            session_id: None,
+            // OC-1：会话 id 必须穿透重试包装——此前硬编码 None，把
+            // x-opencode-session 头在主路径上整个剥掉（OC-Go 400 案，
+            // 2026-11-18 wire 探针实证）。
+            session_id: request.session_id,
         };
         let request = inner_request;
         loop {
@@ -1452,6 +1454,59 @@ mod tests {
                 .copied()
                 .fold(Duration::ZERO, |sum, chunk| sum + chunk)
         }
+    }
+
+    /// OC-1 判别（2026-11-18 OC-Go 400 案）：RetryModel 重建 ModelRequest
+    /// 时曾硬编码 `session_id: None`，把 x-opencode-session 头在主路径
+    /// 整个剥掉（主路径模型都经重试包装）。删透传即红。
+    #[test]
+    fn retry_wrapper_passes_the_session_id_through_to_the_provider() {
+        struct CaptureModel(Arc<std::sync::Mutex<Vec<Option<String>>>>);
+        impl Model for CaptureModel {
+            fn provider(&self) -> &str {
+                "capture"
+            }
+            fn model_id(&self) -> &str {
+                "capture-1"
+            }
+            fn stream(
+                &mut self,
+                request: ModelRequest<'_>,
+                _events: &mut dyn ModelEventSink,
+            ) -> Result<ModelResponse, ModelError> {
+                self.0
+                    .lock()
+                    .expect("captured sessions")
+                    .push(request.session_id.map(str::to_owned));
+                Ok(ModelResponse {
+                    text: "ok".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: FinishReason::Completed,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
+        }
+        let seen: Arc<std::sync::Mutex<Vec<Option<String>>>> = Arc::default();
+        let capture = Arc::clone(&seen);
+        let build: ModelBuildFn = {
+            Box::new(move || {
+                let capture = Arc::clone(&capture);
+                Ok(Box::new(CaptureModel(capture)) as Box<dyn Model>)
+            })
+        };
+        let mut model = retry_model_with("capture", "capture-1", build, RetryPolicy::default());
+        let scope = RequestScope::new(CancelToken::new());
+        let mut request = scope.request();
+        request.session_id = Some("sess-oc-9");
+        model.stream(request, &mut Vec::new()).expect("stream");
+        assert_eq!(
+            *seen.lock().expect("captured sessions"),
+            vec![Some("sess-oc-9".to_owned())],
+            "the retry wrapper must forward the run's session id"
+        );
     }
 
     /// 持有 ModelRequest 引用的栈上数据，测试期间保持存活。

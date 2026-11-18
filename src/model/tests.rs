@@ -379,8 +379,9 @@ fn overrides_merge_tri_state_with_vendor_mapping_inside() {
         "Clear omits parallel_tool_calls from provider options"
     );
 
-    // thinking_level Set：厂商映射在 merge 内完成（Qwen 端点）。
-    let qwen = crate::presets::preset_by_id("qwen3.8-max").unwrap();
+    // thinking_level Set：厂商映射在 merge 内完成（Qwen 端点；旗舰已
+    // 更名 qwen4-max，511524fc）。
+    let qwen = crate::presets::preset_by_id("qwen4-max").unwrap();
     let mut config = ModelConfig::default();
     qwen.apply(&mut config);
     assert_eq!(
@@ -536,6 +537,43 @@ fn endpoint_vendor_recognizes_kimi_and_qwen() {
     // Kimi/Qwen 也提供思考档位（Shift+Tab 可用）。
     assert!(!thinking_levels(ModelVendor::Kimi).is_empty());
     assert!(!thinking_levels(ModelVendor::Qwen).is_empty());
+}
+
+/// OC-Go（2026-11-18）：OpenCode 合规网关（opencode.ai/inference/go）
+/// 的端点识别、key 记忆槽、三档线上映射（网关统一档位
+/// low/medium/high/max——Low→low、High→high、Max→max 三档直取）与
+/// 逆映射（medium 解析回 High，与 Qwen 的 medium≡High 显示约定同款）。
+#[test]
+fn opencode_vendor_maps_three_levels_directly() {
+    assert_eq!(
+        endpoint_vendor("https://opencode.ai/inference/go/v1"),
+        ModelVendor::OpenCode
+    );
+    assert_eq!(
+        endpoint_vendor("https://OPencode.AI/inference/go/v1"),
+        ModelVendor::OpenCode,
+        "endpoint matching is case-insensitive like every other vendor arm"
+    );
+    assert_eq!(ModelVendor::OpenCode.storage_key(), Some("OpenCode"));
+    assert_eq!(
+        thinking_levels(ModelVendor::OpenCode),
+        &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max]
+    );
+    assert_eq!(ThinkingLevel::Low.wire_effort(ModelVendor::OpenCode), "low");
+    assert_eq!(
+        ThinkingLevel::High.wire_effort(ModelVendor::OpenCode),
+        "high"
+    );
+    assert_eq!(ThinkingLevel::Max.wire_effort(ModelVendor::OpenCode), "max");
+    assert_eq!(
+        ThinkingLevel::from_wire_effort(ModelVendor::OpenCode, "medium"),
+        ThinkingLevel::High
+    );
+    // 网关无 thinking 对象：apply 不注入（未定义参数不发给严格网关）。
+    let mut body = serde_json::json!({});
+    apply_thinking_level(&mut body, ModelVendor::OpenCode, ThinkingLevel::High);
+    assert_eq!(body["reasoning_effort"], "high");
+    assert!(body.get("thinking").is_none());
 }
 
 /// INV-D：循环只在厂商支持的档位集合内 wrap；Other 厂商无档位。

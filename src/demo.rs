@@ -89,6 +89,7 @@ pub fn run_demo(
             system_instructions: None,
             runtime_context: Default::default(),
             request_tail: None,
+            session_id: None,
         })
         .map_err(|failure| failure.error);
     let close = manager.close();

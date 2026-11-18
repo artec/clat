@@ -188,6 +188,7 @@ impl AgentRuntime for DefaultAgentRuntime {
         // MS-1：能力快照随 config 进 run——历史图像 × 纯文本模型
         // 在发前预检明确失败，不透传厂商 400。
         .with_capabilities(request.config.capabilities.clone())
+        .with_session_id(request.session_id)
         .with_instructions(instructions)
         .with_runtime_context(request.runtime_context);
         let mut run = match &runtime.instructions {

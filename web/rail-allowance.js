@@ -58,8 +58,9 @@ function railWalletIcon(){
   svg.setAttribute('viewBox','0 0 24 24');
   svg.setAttribute('aria-hidden','true');
   const path=document.createElementNS(svg.namespaceURI,'path');
-  // Top and bottom stay closed. The left and right sides open around the amount.
-  path.setAttribute('d','M6 4H18C20.2 4 21.2 5.2 21.2 6.8M21.2 17.2C21.2 18.8 20.2 20 18 20H6C3.8 20 2.8 18.8 2.8 17.2M2.8 6.8C2.8 5.2 3.8 4 6 4');
+  // The diagonal folded back edge gives the outline a wallet silhouette.
+  // Open sides leave the full center clear even for a three-character balance.
+  path.setAttribute('d','M5.3 6.3L7.2 3.5H17.2C18.6 3.5 19.4 4.4 19.4 5.7M2.8 9.1V8.7C2.8 7.2 4.1 6.3 5.8 6.3H18.2C20.1 6.3 21.2 7.4 21.2 8.9M2.8 15.1V16.8C2.8 18.6 4.1 19.6 6.1 19.6H17.8C19.8 19.6 21.2 18.5 21.2 16.8V15.1');
   svg.append(path);
   return svg;
 }
@@ -75,6 +76,26 @@ function compactRailMoney(value,unit,locale){
 }
 function moneyExact(item){
   return `${item.value}${item.unit?' '+item.unit:''}`;
+}
+// 额度窗口名（owner 2026-11-18）：720 小时呈现为"1 月额度"（OC-Go 月窗，
+// 与"1 周额度"同形、始终带数）；周/小时沿用既有形状，0 落回"剩余额度"。
+function railWindowLabel(hours,t){
+  if(!(hours>0))return t('remaining');
+  if(hours%720===0)return t('window_months',{count:hours/720});
+  if(hours%168===0)return t('window_weeks',{count:hours/168});
+  return t('window_hours',{count:hours});
+}
+// 重置倒数（owner 2026-11-18）：不要"全是分钟"——天/小时/分钟逐级组合，
+// 零单位跳过；不足一小时保留纯分钟。
+function railResetCountdown(minutes,t){
+  if(minutes<=0)return t('reset_due');
+  const days=Math.floor(minutes/1440),hours=Math.floor((minutes%1440)/60),mins=minutes%60;
+  if(!days&&!hours)return t('minutes',{count:minutes});
+  const parts=[];
+  if(days)parts.push(t('days',{count:days}));
+  if(hours)parts.push(t('hours',{count:hours}));
+  if(mins)parts.push(t('minutes',{count:mins}));
+  return parts.join(' ');
 }
 function projectRailAllowance(allowance){
   if(allowance?.status!=='available')return null;
@@ -115,12 +136,11 @@ function createRailAllowance(){
     if(!allowance)return;
     if(wallet)for(const item of allowance.items)CLATRailPopover.fact(popup,text('wallet'),moneyExact(item));
     else for(const item of allowance.items){
-      const hours=Number(item.window_hours),window=hours>0?(hours%168===0?text('window_weeks',{count:hours/168}):text('window_hours',{count:hours})):text('remaining');
+      const window=railWindowLabel(Number(item.window_hours),text);
       CLATRailPopover.fact(popup,window,Number(item.value).toLocaleString(CLATI18n.locale,{maximumFractionDigits:1})+'%');
       const reset=Number(item.reset_at);if(Number.isFinite(reset)&&reset>0&&reset<=8640000000000000){
         CLATRailPopover.fact(popup,text('reset'),new Date(reset).toLocaleString(CLATI18n.locale));
-        const minutes=Math.ceil((reset-Date.now())/60000);
-        CLATRailPopover.fact(popup,text('reset_in'),minutes>0?text('minutes',{count:minutes}):text('reset_due'));
+        CLATRailPopover.fact(popup,text('reset_in'),railResetCountdown(Math.ceil((reset-Date.now())/60000),text));
       }
     }
     if(allowance.updated)CLATRailPopover.fact(popup,text('updated'),new Date(allowance.updated).toLocaleString(CLATI18n.locale));

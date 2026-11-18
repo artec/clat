@@ -65,7 +65,9 @@ impl ThinkingLevel {
 /// 值也不报错，网关接受但忽略；2026-11-07 GA 后官方调用指南在
 /// TokenHub 平台 `/v1` 端点文档化了该参数，但 plan/v3 订阅端点未经
 /// 重新探针，结论维持），思考档位留空、不发送无效果参数，其它端点
-/// 一律 `Other`（不提供该功能，显示层隐藏相关内容）。
+/// 一律 `Other`（不提供该功能，显示层隐藏相关内容）。OpenCode
+/// （OC-Go，2026-11-18 接入）：opencode.ai 合规网关提供思考档位
+/// （网关统一 low/medium/high/max）与额度查询（`/usage` 三窗）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelVendor {
     DeepSeek,
@@ -73,6 +75,7 @@ pub enum ModelVendor {
     Kimi,
     Qwen,
     Tencent,
+    OpenCode,
     Other,
 }
 
@@ -87,6 +90,7 @@ impl ModelVendor {
             Self::Kimi => Some("Kimi"),
             Self::Qwen => Some("Qwen"),
             Self::Tencent => Some("Tencent"),
+            Self::OpenCode => Some("OpenCode"),
             Self::Other => None,
         }
     }
@@ -113,6 +117,11 @@ pub fn endpoint_vendor(endpoint: &str) -> ModelVendor {
         // 预设 2026-11-07 随新；旧 lkeap 域名并存，为存量自定义配置
         // 保留推导（key 记忆槽与思考显示不因域名拼写漂移）。
         ModelVendor::Tencent
+    } else if endpoint.contains("opencode.ai") {
+        // OC-Go（2026-11-18）：OpenCode Go/Go Plus 合规推理网关
+        // （opencode.ai/inference/go）。端点判据与适配器侧
+        // `x-opencode-session` 头的门控（openai_compatible.rs）一致。
+        ModelVendor::OpenCode
     } else {
         ModelVendor::Other
     }
@@ -139,6 +148,11 @@ pub fn thinking_levels(vendor: ModelVendor) -> &'static [ThinkingLevel] {
         // 文档化了 effort（默认 high），plan/v3 订阅端点待重新探针
         // 后再评估开档。
         ModelVendor::Tencent => &[],
+        // OC-Go：OpenCode 网关统一档位 low/medium/high/max（拒 off）。
+        // CLAT 三档映射 Low→low、High→high、Max→max（wire_effort 默认
+        // 臂），medium 是预设 pin 的网关中档（解析回 High，与 Qwen 的
+        // medium≡High 同款显示约定）。
+        ModelVendor::OpenCode => &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
         ModelVendor::Other => &[],
     }
 }

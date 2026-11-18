@@ -1184,6 +1184,7 @@ impl App {
             Some("Kimi") => crate::ModelVendor::Kimi,
             Some("Qwen") => crate::ModelVendor::Qwen,
             Some("Tencent") => crate::ModelVendor::Tencent,
+            Some("OpenCode") => crate::ModelVendor::OpenCode,
             _ => crate::ModelVendor::Other,
         };
         native.context_window = value["model"]["max_context_tokens"].as_u64().or_else(|| {

@@ -108,7 +108,7 @@ impl Run<'_> {
                 options: &input.options,
                 cancel: &self.cancel,
 
-                session_id: None,
+                session_id: self.session_id.as_deref(),
             },
             &mut sink,
         );

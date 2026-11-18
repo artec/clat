@@ -2927,7 +2927,7 @@ fn model_editor_escape_returns_to_the_picker_in_place() {
     let mut harness = Harness::trusted("snap-model-editor-back", 80, 24);
     harness.type_text("/model ");
     harness.key(KeyCode::Enter);
-    for _ in 0..5 {
+    for _ in 0..6 {
         harness.key(KeyCode::Down);
     }
     harness.key(KeyCode::Enter); // Custom（零档案）→ 新建页
@@ -2946,7 +2946,7 @@ fn model_editor_escape_returns_to_the_picker_in_place() {
         .expect("picker restored in place after editor cancel");
     assert_eq!(
         picker.selected_index(),
-        5,
+        6,
         "cursor returns to the Custom row we entered from"
     );
 }

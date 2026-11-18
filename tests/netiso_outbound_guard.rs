@@ -260,6 +260,7 @@ fn stream_once(config: &ModelConfig, cancel: &CancelToken) -> Result<ModelRespon
         tools: &[],
         options: &ModelOptions::default(),
         cancel,
+        session_id: None,
     };
     let mut sink = RecordingSink::default();
     model.stream(request, &mut sink)
@@ -663,6 +664,7 @@ fn offline_scripted_model_is_unaffected_by_the_armed_guard() {
         tools: &[],
         options: &ModelOptions::default(),
         cancel: &cancel,
+        session_id: None,
     };
     let response = model
         .stream(request, &mut RecordingSink::default())
@@ -788,6 +790,7 @@ fn existing_adapter_hardens_redirects_when_armed_before_send() {
         tools: &[],
         options: &ModelOptions::default(),
         cancel: &cancel,
+        session_id: None,
     };
     let error = pre_created
         .stream(request, &mut RecordingSink::default())
@@ -837,6 +840,7 @@ fn existing_adapter_clears_inherited_proxy_when_armed_before_send() {
         tools: &[],
         options: &ModelOptions::default(),
         cancel: &cancel,
+        session_id: None,
     };
     let response = pre_created
         .stream(request, &mut RecordingSink::default())
@@ -999,6 +1003,8 @@ fn adapter_restores_normal_transport_when_all_scopes_release() {
             tools: &[],
             options: &ModelOptions::default(),
             cancel,
+
+            session_id: None,
         };
         model.stream(request, &mut RecordingSink::default())
     };

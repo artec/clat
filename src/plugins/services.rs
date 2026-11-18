@@ -605,6 +605,9 @@ pub(crate) struct AgentRequest {
     pub system_instructions: Option<String>,
     pub runtime_context: RuntimeContext,
     pub request_tail: Option<String>,
+    /// OC-1：本 run 所属会话 id（`x-opencode-session` 的值源）。
+    /// `None` = 无会话上下文（demo/测试）。
+    pub session_id: Option<String>,
 }
 
 pub(crate) struct AgentFailure {

@@ -1505,6 +1505,14 @@
   "tui.preset_description_hy4": "Tencent Hunyuan flagship model (always-on thinking)",
   "tui.preset_description_kimi-for-coding": "Efficient Kimi Code companion for routine coding work",
   "tui.preset_description_k3.1-pro": "Moonshot flagship via Kimi Coding membership (auto context cache)",
+  "tui.preset_description_opencode-deepseek-v4-pro": "DeepSeek V4 Pro via the OpenCode Go gateway",
+  "tui.preset_description_opencode-deepseek-v4.1-flash": "Fast multimodal DeepSeek via the OpenCode Go gateway (reads images)",
+  "tui.preset_description_opencode-glm-5.3": "Zhipu GLM 5.3 via the OpenCode Go gateway",
+  "tui.preset_description_opencode-glm-5.3-flash": "Zhipu multimodal vision model via the OpenCode Go gateway (reads images)",
+  "tui.preset_description_opencode-kimi-k3": "Kimi K3 with full-length output via the OpenCode Go gateway (reads images)",
+  "tui.preset_description_opencode-kimi-k3.1-pro": "Kimi K3.1 Pro flagship via the OpenCode Go gateway (reads images)",
+  "tui.preset_description_opencode-minimax-m3": "MiniMax M3 via the OpenCode Go gateway (reads images)",
+  "tui.preset_description_opencode-qwen4-max": "Alibaba Qwen4 Max via the OpenCode Go gateway (reads images)",
   "tui.preset_description_qwen3.8-flash": "Alibaba fast tier via Qwen Token Plan (reads images)",
   "tui.preset_description_qwen4-max": "Alibaba flagship via Qwen Token Plan (implicit context cache, reads images)",
   "tui.preset_key_hint": "{name} · key write-only · save activates preset · blank clears current key only",
@@ -3267,10 +3275,22 @@
   "tui.permission_denied_generic": "{tool} · permission denied",
   "tui.permission_asked": "{tool} · approval requested: {reason}",
   "tui.retry_notice": "Retry {retry}/{max} · {reason}",
-  "tui.time_days_ago": {"one": "{count} day ago", "other": "{count} days ago"},
-  "tui.time_weeks_ago": {"one": "{count} week ago", "other": "{count} weeks ago"},
-  "tui.time_months_ago": {"one": "{count} month ago", "other": "{count} months ago"},
-  "tui.time_years_ago": {"one": "{count} year ago", "other": "{count} years ago"},
+  "tui.time_days_ago": {
+    "one": "{count} day ago",
+    "other": "{count} days ago"
+  },
+  "tui.time_weeks_ago": {
+    "one": "{count} week ago",
+    "other": "{count} weeks ago"
+  },
+  "tui.time_months_ago": {
+    "one": "{count} month ago",
+    "other": "{count} months ago"
+  },
+  "tui.time_years_ago": {
+    "one": "{count} year ago",
+    "other": "{count} years ago"
+  },
   "tui.rewind_title": "Edit last prompt",
   "tui.rewind_unavailable": "Only a stopped, tool-free final turn can be replaced.",
   "tui.rewind_confirm": "Enter again to replace and resend · Esc back",
@@ -3368,6 +3388,9 @@
   "rail.remaining_percent": "Remaining plan allowance: {percent}%",
   "rail.window_weeks": "{count}-week window",
   "rail.window_hours": "{count}-hour window",
+  "rail.window_months": "{count}-month window",
+  "rail.days": "{count}d",
+  "rail.hours": "{count}h",
   "rail.reset": "Next reset",
   "rail.reset_in": "Resets in",
   "rail.minutes": "{count} minutes",
