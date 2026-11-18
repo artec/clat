@@ -82,6 +82,26 @@ impl TestModelScript for GoalScript {
             .items
             .iter()
             .any(|item| matches!(item, crate::ModelItem::ToolResult(result) if result.tool_name == "update_goal"));
+        if !request.tools.iter().any(|tool| tool.name == "update_goal")
+            && request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "describe_capability")
+        {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-goal".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "update_goal"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: Some(crate::Usage::default()),
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
         match self.step.fetch_add(1, Ordering::SeqCst) {
             0 => {
                 let instructions = request.instructions.unwrap_or_default();

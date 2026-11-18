@@ -25,6 +25,7 @@ pub(crate) mod plugin;
 mod tests;
 mod tree;
 mod wait;
+use super::ui_activity::{ComputerUseKind, ComputerUseTarget, Use};
 #[cfg(windows)]
 mod windows;
 
@@ -142,11 +143,12 @@ pub(crate) struct Service {
     backend: Arc<dyn Backend>,
     control: Arc<ControlStorage>,
     asker: Arc<AskUserSlot>,
+    project_root: String,
     slot: Mutex<Option<Arc<Run>>>,
 }
 
 struct Run {
-    session: String,
+    target: ComputerUseTarget,
     source: CancelToken,
     lifetime: CancelToken,
     access: ToolAccessPolicy,
@@ -180,11 +182,13 @@ impl Service {
         control: Arc<ControlStorage>,
         asker: Arc<AskUserSlot>,
         backend: Arc<dyn Backend>,
+        project_root: &std::path::Path,
     ) -> Self {
         Self {
             control,
             asker,
             backend,
+            project_root: project_root.to_string_lossy().into_owned(),
             slot: Mutex::new(None),
         }
     }
@@ -198,7 +202,11 @@ impl Service {
     ) {
         self.end();
         *self.slot.lock().expect("UI run slot") = Some(Arc::new(Run {
-            session,
+            target: ComputerUseTarget {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                project_root: self.project_root.clone(),
+                session_id: session,
+            },
             source: cancel.clone(),
             lifetime: cancel.child(),
             access,
@@ -212,7 +220,7 @@ impl Service {
 
     pub(crate) fn end(&self) {
         if let Some(run) = self.slot.lock().expect("UI run slot").take() {
-            run.lifetime.cancel();
+            self.control.ui_activity.end(&run.target, &run.lifetime);
         }
     }
 
@@ -237,6 +245,26 @@ impl Service {
             return Err(error("STALE_APP"));
         }
         Ok(current)
+    }
+
+    fn observe(
+        &self,
+        run: &Run,
+        lease: &CancelToken,
+        kind: ComputerUseKind,
+        app: Option<&App>,
+    ) -> Result<Use<'_>> {
+        let label = app.map(|app| display_text(&app.label));
+        self.control
+            .ui_activity
+            .start(&run.target, &run.lifetime, lease, kind, label.as_deref())
+            .ok_or_else(|| error("RUN_UNAVAILABLE"))
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.end();
     }
 }
 

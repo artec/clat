@@ -19,6 +19,20 @@ async function openWorkbench(page, entry) {
     new URL(request.url()).pathname + ': ' + request.failure()?.errorText);
   page.on('pageerror', onError);
   page.on('requestfailed', onFailure);
+  // Behavior tests click + / ⋯ without hovering. Production collapses those
+  // controls until hover; keep them actionable here without asserting layout.
+  await page.addInitScript(() => {
+    if (document.querySelector('style[data-e2e="project-row-actions"]')) return;
+    const style = document.createElement('style');
+    style.dataset.e2e = 'project-row-actions';
+    style.textContent = [
+      '#project-directory .project-group-head > .project-more { display: inline-flex !important; }',
+      '#project-directory .project-group-head > .project-new-session:not([hidden]) { display: grid !important; }',
+    ].join('');
+    const mount = () => document.documentElement.appendChild(style);
+    if (document.documentElement) mount();
+    else document.addEventListener('DOMContentLoaded', mount, { once: true });
+  });
   try {
     await page.goto(`${entry.origin}/`);
     await expect(page).toHaveURL(`${entry.origin}/`);

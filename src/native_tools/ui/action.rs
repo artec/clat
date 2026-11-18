@@ -176,6 +176,13 @@ impl PreparedAction {
                 active(&call)?;
                 service.recheck_app(&self.app)?;
                 state.record_dispatch(&current).map_err(safety_error)?;
+                let _activity = service.observe(
+                    &self.run,
+                    &self.lease.cancel,
+                    ComputerUseKind::Act,
+                    Some(&self.app),
+                )?;
+                active(&call)?;
                 service.backend.dispatch(&node, &self.request.action, &call)
             })?;
         Ok(

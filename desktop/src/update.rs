@@ -46,7 +46,7 @@ async fn cancellable<T>(
 ) -> Result<T, UiMessage> {
     tokio::select! { biased; _ = cancel.changed() => Err(UiMessage::new(key)), result = operation => result }
 }
-fn target() -> String {
+pub(super) fn target() -> String {
     format!(
         "{}-{}",
         if cfg!(target_os = "macos") {

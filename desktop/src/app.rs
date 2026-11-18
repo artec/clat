@@ -130,15 +130,28 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
     create_window(app)?;
-    create_tray(app)?;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = crate::quit_ipc::start(app.handle()) {
+        eprintln!("[CLAT] local desktop quit channel: {error}");
+    }
+    #[cfg(windows)]
+    if let Err(error) = create_tray(app) {
+        eprintln!("[CLAT] Windows tray: {error}");
+    }
     #[cfg(target_os = "macos")]
     crate::localization::menu(app.handle())?;
     #[cfg(windows)]
     app.remove_menu()?;
     if !smoke {
+        #[cfg(target_os = "macos")]
+        crate::host_menu::start();
+        #[cfg(windows)]
+        crate::computer_use::start_windows(app);
         crate::notifications::start(app.handle().clone());
         crate::update::start_automatic_checks(app.handle().clone());
     }
+    #[cfg(target_os = "macos")]
+    crate::tray::activate_launch(app.handle(), std::env::args());
     Ok(())
 }
 
@@ -230,6 +243,7 @@ fn fit_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     let menu = crate::tray::menu(app.handle())?;
@@ -264,7 +278,11 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     crate::update::initialize_tls();
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _| {
+            show(app);
+            #[cfg(target_os = "macos")]
+            crate::tray::activate_launch(app, _args);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -320,9 +338,13 @@ pub fn run() {
         })
         .setup(setup);
     builder
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("CLAT startup")
         .run(run_event);
+}
+
+pub(super) fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }
 
 fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
@@ -333,6 +355,12 @@ fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         tauri::RunEvent::Exit => {
             let state = app.state::<Desktop>();
             state.quitting.store(true, Ordering::Release);
+            #[cfg(target_os = "macos")]
+            crate::quit_ipc::close(app);
+            #[cfg(windows)]
+            if let Some(observer) = app.try_state::<Arc<crate::computer_use::Observer>>() {
+                observer.stop();
+            }
             for (_, stream) in std::mem::take(&mut *state.streams.lock().expect("streams")) {
                 stream.interrupt();
             }

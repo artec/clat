@@ -378,7 +378,9 @@ existing plugin controls. At most two source observations are previewed; use an
 exact source filter when `has_more` is true.
 
 Models discover only their frozen Run-visible registrations using
-`query_capabilities` / `describe_capability`. The MCP adapter maps the actual
+`query_capabilities` / `describe_capability`. An MCP tool is a one-line index
+entry until `describe_capability` appends its schema for later requests in that
+run. The MCP adapter maps the actual
 qualified name, registry owner and input schema. The current tool contract does
 not declare output schema or business/login metadata, so these remain unknown.
 Annotations/descriptions are provider declarations, not host-certified readiness,

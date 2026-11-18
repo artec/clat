@@ -212,19 +212,19 @@ impl Tool for ExecCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "exec_command".into(),
-            description: "Start a run-owned command session in the project. Specify exactly one of cmd (shell) or argv (direct executable and literal arguments). For test verification prefer argv with verification; its cumulative receipt survives polling and diagnostic clipping. Receipt test counts are unauthenticated output observations, not coverage. For Playwright prefer playwright-json with its JSON reporter to separate expected failures and ordinary passes. Returns immediately when it finishes within yield_time, otherwise returns a session_id for write_stdin polling/input/termination. Non-PTY stdin defaults to closed (EOF); set stdin=pipe explicitly for interactive input. tty=true keeps terminal input and creates a real PTY where supported; use terminal_snapshot for current text cells, never treat stripped incremental output as a screen. Project Write calls with a prepared OS sandbox run without approval; network=true still requires approval.".into(),
+            description: "Start one project command. Pass cmd or argv, not both. Returns session_id when the command outlives yield_time_ms. network=true still requires approval.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "cmd": {"type": "string", "maxLength": MAX_COMMAND_BYTES},
-                    "argv": {"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"},"description":"Direct executable and literal arguments; at most 65536 UTF-8 bytes total, no NUL. Mutually exclusive with cmd."},
+                    "argv": {"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
                     "verification": {"type":"object","properties":{
                         "format":{"type":"string","enum":["rust-test-summary","playwright-summary","playwright-json"]},
                         "minimum_executed":{"type":"integer","minimum":1,"maximum":1000000}
-                    },"required":["format","minimum_executed"],"additionalProperties":false,"description":"Optional bounded cumulative receipt; requires argv and tty=false. Only the directly launched process exit is known."},
-                    "workdir": {"type": "string", "description": "Project-relative directory or absolute directory inside the active scratch root"},
+                    },"required":["format","minimum_executed"],"additionalProperties":false},
+                    "workdir": {"type": "string"},
                     "tty": {"type": "boolean", "default": false},
-                    "stdin": {"type":"string","enum":["closed","pipe"],"description":"Non-PTY commands default to closed stdin (EOF). Use pipe explicitly for write_stdin input. PTYs keep terminal input and cannot use closed."},
+                    "stdin": {"type":"string","enum":["closed","pipe"]},
                     "yield_time_ms": {"type": "integer", "minimum": 250, "maximum": 30000, "default": 10000},
                     "max_output_tokens": {"type": "integer", "minimum": 256, "maximum": 16000, "default": 10000},
                     "network": {"type": "boolean", "default": false},

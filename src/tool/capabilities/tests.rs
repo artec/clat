@@ -275,15 +275,18 @@ fn model_tool_prefix_survives_registration_order_and_optional_tools() {
         registry.capability_view(Some(&policy)).definitions()
     }
 
-    let base = definitions(&["zebra", "aardvark"], ToolAccessPolicy::all());
+    let base = definitions(&["read_file", "list_files"], ToolAccessPolicy::all());
     let extended = definitions(
-        &["view_image", "aardvark", "delegate_readonly", "zebra"],
-        ToolAccessPolicy::all()
-            .with_subagents(true)
-            .with_view_image(true),
+        &["view_image", "list_files", "read_file"],
+        ToolAccessPolicy::all().with_view_image(true),
     );
-    assert_eq!(extended.len(), base.len() + 2);
+    assert_eq!(
+        base.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+        ["list_files", "read_file"]
+    );
+    assert_eq!(extended.len(), base.len() + 1);
     assert_eq!(&extended[..base.len()], base);
+    assert_eq!(extended.last().map(|tool| tool.name.as_str()), Some("view_image"));
 }
 
 #[test]

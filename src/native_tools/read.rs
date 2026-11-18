@@ -810,43 +810,17 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read UTF-8 text from a file with line numbers. Paths are project-relative; absolute paths (anywhere on disk) are also accepted — reads are never confined to the project root. Returns one bounded segment per call with `has_more` and `next_cursor`: pass `next_cursor` back for the next contiguous segment until `has_more` is false. `max_bytes` is an upper bound; `content_budget_chars` reports the applied context-safe cap. Lines longer than a segment are split at character boundaries and marked `partial_line` — continue with `next_cursor`. Pass `expected_file_version` from the previous segment to fail explicitly when the file changed.".into(),
+            description: "Read one bounded UTF-8 segment. Paths may be project-relative or absolute. Continue with next_cursor until has_more is false. Pass expected_file_version to fail when the file changed.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative or absolute file path"
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "First line to return. Defaults to 1. With `cursor`/`start_byte` it is only the line-number hint"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Last line to return, inclusive"
-                    },
-                    "start_byte": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Zero-based absolute UTF-8 byte offset to start from (use offsets returned by previous segments)"
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_READ_BYTES,
-                        "description": "Upper bound on returned content in UTF-8 bytes, including line-number prefixes. Defaults to 65536; a context-safe serialized-segment cap also applies (`content_budget_chars`)"
-                    },
-                    "cursor": {
-                        "type": "string",
-                        "description": "Opaque continuation cursor from a previous segment's `next_cursor`; returns the contiguous next segment"
-                    },
-                    "expected_file_version": {
-                        "type": "string",
-                        "description": "Value of `file_version` from the previous segment; the call fails with a change notice when the file changed"
-                    }
+                    "path": { "type": "string", "description": "Project-relative or absolute path" },
+                    "start_line": { "type": "integer", "minimum": 1 },
+                    "end_line": { "type": "integer", "minimum": 1 },
+                    "start_byte": { "type": "integer", "minimum": 0 },
+                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES },
+                    "cursor": { "type": "string" },
+                    "expected_file_version": { "type": "string" }
                 },
                 "required": ["path"],
                 "additionalProperties": false

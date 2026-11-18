@@ -84,10 +84,11 @@ impl Run<'_> {
             .as_ref()
             .filter(|text| !text.is_empty())
             .cloned();
-        let definitions = self.tool_definitions.as_deref().map_or_else(
+        let mut definitions = self.tool_definitions.as_deref().map_or_else(
             || self.tools.definitions_for(&self.tool_access),
             |defs| defs.to_vec(),
         );
+        self.append_promotions(&mut definitions);
         if let Some(manager) = &mut self.context_manager {
             manager.maintain(
                 &mut state.items,
@@ -124,6 +125,21 @@ impl Run<'_> {
             definitions,
             items,
         })
+    }
+
+    fn append_promotions(&self, definitions: &mut Vec<crate::tool::ToolDefinition>) {
+        let Ok(promoted) = self.promotions.lock() else {
+            return;
+        };
+        for definition in promoted.iter() {
+            if definitions
+                .iter()
+                .any(|present| present.name == definition.name)
+            {
+                continue;
+            }
+            definitions.push(definition.clone());
+        }
     }
 
     pub(super) fn reserve_request(&self, request: &RequestInputs) -> Result<(), String> {

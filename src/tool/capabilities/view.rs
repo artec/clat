@@ -14,6 +14,8 @@ pub(crate) struct CapabilityView {
     id: String,
     entries: Vec<Entry>,
     model: bool,
+    plan_mode: bool,
+    goal_tools: bool,
 }
 impl CapabilityView {
     pub(super) fn capture(state: &ToolRegistryState, access: Option<&ToolAccessPolicy>) -> Self {
@@ -42,18 +44,62 @@ impl CapabilityView {
             id: uuid::Uuid::new_v4().to_string(),
             entries,
             model: access.is_some(),
+            plan_mode: access.is_some_and(|policy| policy.planning()),
+            goal_tools: access.is_some_and(|policy| policy.goal_tools()),
         }
     }
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = self
             .entries
             .iter()
-            .map(|e| e.definition.clone())
+            .filter(|entry| {
+                !self.model
+                    || super::super::resident::is_published(
+                        &entry.definition.name,
+                        self.plan_mode,
+                        self.goal_tools,
+                    )
+            })
+            .map(|entry| entry.definition.clone())
             .collect::<Vec<_>>();
         if self.model {
             super::super::access::sort_model_definitions(&mut definitions);
         }
         definitions
+    }
+    pub(crate) fn definition_named(&self, name: &str) -> Option<ToolDefinition> {
+        self.entries
+            .iter()
+            .find(|entry| entry.definition.name == name)
+            .map(|entry| entry.definition.clone())
+    }
+    pub(crate) fn definition_for_id(&self, id: &str) -> Option<ToolDefinition> {
+        let epoch = self.epoch();
+        self.entries
+            .iter()
+            .find(|entry| id == format!("{}.{}.{}", self.id, entry.registration, epoch))
+            .map(|entry| entry.definition.clone())
+    }
+    pub(crate) fn deferred_blurbs(&self) -> Vec<(String, String)> {
+        let mut lines = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                !super::super::resident::is_published(
+                    &entry.definition.name,
+                    self.plan_mode,
+                    self.goal_tools,
+                )
+            })
+            .map(|entry| {
+                (
+                    entry.definition.name.clone(),
+                    entry.definition.description.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.sort();
+        lines
     }
     pub(crate) fn contains_owned(&self, owner: PluginId, name: &str) -> bool {
         self.entries

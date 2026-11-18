@@ -42,6 +42,11 @@ impl Run<'_> {
             Ok(output) => (output, false),
             Err(error) => (tool.error_output(&error), true),
         };
+        let output = if !is_error && call.name == "describe_capability" {
+            self.settle_promotion(output)
+        } else {
+            output
+        };
         let approved = call.name == "exit_plan_mode"
             && !is_error
             && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
@@ -177,9 +182,15 @@ impl Run<'_> {
         state: &mut StepState,
         events: &mut dyn EventSink,
     ) -> bool {
-        let denied = if !self.tool_access.allows(definition) {
+        let denied =         if !self.tool_access.allows(definition) {
             let reason = self.tool_access.denial_reason(definition).to_owned();
             Some((reason.clone(), reason))
+        } else if self.schema_closed(definition) {
+            let message = format!(
+                "call describe_capability before using `{}`",
+                definition.name
+            );
+            Some((message.clone(), message))
         } else {
             self.tool_access
                 .validate_call(definition, &call.arguments)
@@ -250,5 +261,66 @@ impl Run<'_> {
         }
         state.items.push(ModelItem::ToolResult(result.clone()));
         events.emit(RunEvent::ToolFinished { result });
+    }
+    fn schema_closed(&self, definition: &ToolDefinition) -> bool {
+        if self.tool_definitions.is_none()
+            || crate::tool::resident::is_published(
+                &definition.name,
+                self.tool_access.planning(),
+                self.tool_access.goal_tools(),
+            )
+        {
+            return false;
+        }
+        self.promotions
+            .lock()
+            .map(|promoted| promoted.iter().all(|item| item.name != definition.name))
+            .unwrap_or(true)
+    }
+    fn settle_promotion(&self, output: serde_json::Value) -> serde_json::Value {
+        if output.get("promote").and_then(|value| value.as_bool()) != Some(true) {
+            return output;
+        }
+        let name = output
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let promoted = self.note_promotion(name);
+        serde_json::json!({
+            "name": name,
+            "promoted": promoted,
+            "message": if promoted {
+                "Included in the next model request of this run. Call it then; this result does not repeat the schema."
+            } else {
+                "Already available in this request."
+            }
+        })
+    }
+    fn note_promotion(&self, name: &str) -> bool {
+        if crate::tool::resident::is_published(
+            name,
+            self.tool_access.planning(),
+            self.tool_access.goal_tools(),
+        ) {
+            return false;
+        }
+        let Some(definition) = self
+            .tools
+            .installed_view()
+            .and_then(|view| view.definition_named(name))
+        else {
+            return false;
+        };
+        if !self.tool_access.allows(&definition) {
+            return false;
+        }
+        let Ok(mut promoted) = self.promotions.lock() else {
+            return false;
+        };
+        if promoted.iter().any(|item| item.name == definition.name) {
+            return true;
+        }
+        promoted.push(definition);
+        true
     }
 }

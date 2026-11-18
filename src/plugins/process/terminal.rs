@@ -7,7 +7,7 @@ impl Tool for TerminalSnapshotTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name:"terminal_snapshot".into(),
-            description:"Read the current VT text-cell projection of a current-run exec_command PTY (tty=true). Unlike raw incremental output, this folds cursor movement, erasure and alternate-screen updates from capture start. Read rows with start_row/row_count and next_row; no output cursors are consumed and no input or terminal replies are sent. Check projection_complete before using text. This is a bounded terminal emulation, not application/persistence truth, a GUI screenshot or IME/font/image emulation. It cannot inspect a nested PTY hidden inside a non-PTY script. Raw screen text is transient and omitted from the journal.".into(),
+            description:"Read the current VT text-cell projection of a command PTY (tty=true). Unlike raw incremental output, this folds cursor movement, erasure and alternate-screen updates from capture start. Read rows with start_row/row_count and next_row; no output cursors are consumed and no input or terminal replies are sent. Check projection_complete before using text. This is a bounded terminal emulation, not application/persistence truth, a GUI screenshot or IME/font/image emulation. It cannot inspect a nested PTY hidden inside a non-PTY script. Raw screen text is transient and omitted from the journal.".into(),
             input_schema:json!({"type":"object","properties":{
                 "session_id":{"type":"integer","minimum":1},
                 "start_row":{"type":"integer","minimum":0,"maximum":99,"default":0},

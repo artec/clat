@@ -63,9 +63,16 @@ test('matrix CLI selects one platform and rejects unsupported CI targets', () =>
 test('formal local macOS build omits disposable DMG creation', async () => {
   await fixture(async release => {
     spyOn(release, 'stageBackend').mockImplementation(() => {});
+    spyOn(release, 'targetDirectory').mockReturnValue(release.root);
+    const app = join(release.root, 'aarch64-apple-darwin/release/bundle/macos/CLAT.app');
+    mkdirSync(join(app, 'Contents/MacOS'), { recursive: true });
+    writeFileSync(join(app, 'Contents/MacOS/clat-desktop'), 'fixture');
     const dmg = spyOn(release, 'makeDmg');
     await release.build('aarch64-apple-darwin', { release: true, official: true, appOnly: true });
     expect(dmg).not.toHaveBeenCalled();
+    const helper = join(app, 'Contents/Helpers/CLAT Host Menu.app/Contents');
+    expect(readFileSync(join(helper, 'MacOS/clat-host-menu'), 'utf8')).toBe('fixture');
+    expect(readFileSync(join(helper, 'Info.plist'), 'utf8')).toContain('com.artec.clat.host-menu');
   }, () => '');
 });
 test('local formal build rejects dirty source and mismatched tags before compiling', async () => {

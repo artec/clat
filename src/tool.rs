@@ -62,6 +62,7 @@ pub(crate) struct ToolAccessPolicy {
     view_image_enabled: bool,
     task_progress_enabled: bool,
     workflow_requests: bool,
+    goal_tools: bool,
 }
 
 impl ToolAccessPolicy {
@@ -73,6 +74,7 @@ impl ToolAccessPolicy {
             view_image_enabled: false,
             task_progress_enabled: false,
             workflow_requests: true,
+            goal_tools: false,
         }
     }
 
@@ -84,6 +86,7 @@ impl ToolAccessPolicy {
             view_image_enabled: false,
             task_progress_enabled: false,
             workflow_requests: false,
+            goal_tools: false,
         }
     }
 
@@ -123,6 +126,7 @@ impl ToolAccessPolicy {
             view_image_enabled: false,
             task_progress_enabled: false,
             workflow_requests: false,
+            goal_tools: false,
         }
     }
 
@@ -181,6 +185,19 @@ impl ToolAccessPolicy {
     #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn is_plan_mode(&self) -> bool {
         self.plan_mode
+    }
+
+    pub(crate) fn planning(&self) -> bool {
+        self.plan_mode
+    }
+
+    pub(crate) fn goal_tools(&self) -> bool {
+        self.goal_tools
+    }
+
+    pub(crate) fn with_goal_tools(mut self, enabled: bool) -> Self {
+        self.goal_tools = enabled;
+        self
     }
 
     /// Argument-level half of the child capability fence. The three allowed
@@ -248,6 +265,7 @@ impl Default for ToolAccessPolicy {
 pub(crate) mod capabilities;
 pub use capabilities::ToolCapability;
 mod access;
+pub(crate) mod resident;
 pub(crate) use access::ToolAccessSlot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -903,10 +921,17 @@ impl ToolRegistry {
         let mut definitions = self
             .definitions()
             .into_iter()
-            .filter(|definition| access.allows(definition))
+            .filter(|definition| {
+                access.allows(definition)
+                    && resident::is_published(
+                        &definition.name,
+                        access.planning(),
+                        access.goal_tools(),
+                    )
+            })
             .map(|definition| access.model_definition(definition))
             .collect::<Vec<_>>();
-        access::sort_model_definitions(&mut definitions);
+        resident::sort_published(&mut definitions);
         definitions
     }
 

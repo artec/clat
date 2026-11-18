@@ -97,7 +97,7 @@ fn same_origin(request: &http::HttpRequestHead) -> bool {
     origin_matches && fetch_matches
 }
 
-fn reject(stream: &mut TcpStream, status: u16, disposition: &str) {
+pub(super) fn reject(stream: &mut TcpStream, status: u16, disposition: &str) {
     let code = match status {
         400 => "bad-request",
         403 => "forbidden",

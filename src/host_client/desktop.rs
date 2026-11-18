@@ -7,6 +7,27 @@ impl HostClient {
         Self::observe_local(|client| client.runtime_status())
     }
 
+    /// Poll without acquiring the storage writer lease. Keep the authenticated
+    /// instance so menu actions cannot target a replacement Host.
+    pub fn local_runtime_observation() -> Result<Option<(Self, Value)>, String> {
+        Self::local_host()?
+            .map(|client| {
+                let status = client.runtime_status()?;
+                Ok((client, status))
+            })
+            .transpose()
+    }
+
+    /// Discover the current Host without mounting any workspace.
+    pub fn local_host() -> Result<Option<Self>, String> {
+        let root = crate::control_storage::sentinel::default_storage_root()?;
+        match Self::discover_checked(&root, super::BuildMatchPolicy::Ignore) {
+            Ok(client) => Ok(Some(client)),
+            Err(super::discovery::DiscoveryFailure::Unavailable(_)) => Ok(None),
+            Err(error) => Err(error.message()),
+        }
+    }
+
     /// Installing the desktop package only waits for executing turns or compaction.
     /// Host takeover retains its separate, stricter state-preservation checks.
     pub fn local_install_status() -> Result<Option<Value>, String> {
@@ -65,6 +86,23 @@ impl HostClient {
 
     pub fn stop_host(&self) -> Result<(), String> {
         self.call("host.stop", &json!({})).map(|_| ())
+    }
+
+    /// Refuse to stop if work arrived after an idle observation. The caller
+    /// may report that refusal or request a fresh, explicitly confirmed stop.
+    pub fn stop_host_if_idle(&self) -> Result<bool, String> {
+        let reply = match self.call_with_receipt(
+            "host.restart_idle",
+            &json!({"expected_instance_id": self.instance_id(), "for_exit": true}),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if error.code.as_deref() == Some("busy") => return Ok(false),
+            Err(error) => return Err(error.message),
+        };
+        if reply["stopping"] != true {
+            return Err("Host shutdown was not acknowledged".into());
+        }
+        Ok(true)
     }
 }
 

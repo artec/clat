@@ -306,6 +306,56 @@ impl TestModelScript for PlanApprovalHandoffScript {
                     reasoning: None,
                 })
             }
+            _ if request.items.iter().any(|item| {
+                matches!(item, crate::ModelItem::ToolResult(result) if result.tool_name == "update_goal")
+            }) => Ok(crate::test_support::response(
+                "implementation unlocked",
+                crate::FinishReason::Completed,
+            )),
+            _ if request.items.iter().any(|item| {
+                matches!(item, crate::ModelItem::ToolResult(result)
+                    if result.tool_name == "describe_capability" && !result.is_error)
+            }) => Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "goal-complete".into(),
+                    name: "update_goal".into(),
+                    arguments: json!({
+                        "operation": "complete",
+                        "expected_revision": 1,
+                        "summary": "acceptance file is present"
+                    }),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            }),
+            _ if request
+                .instructions
+                .unwrap_or_default()
+                .contains("phase=active armed=true")
+                && request.tools.iter().any(|tool| tool.name == "update_goal") =>
+            {
+                Ok(crate::ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![crate::ToolCall {
+                        id: "goal-complete".into(),
+                        name: "update_goal".into(),
+                        arguments: json!({
+                            "operation": "complete",
+                            "expected_revision": 1,
+                            "summary": "acceptance file is present"
+                        }),
+                    }],
+                    finish_reason: crate::FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
             1 => {
                 let instructions = request.instructions.unwrap_or_default();
                 assert!(instructions.contains("Approved implementation plan"));
@@ -318,9 +368,6 @@ impl TestModelScript for PlanApprovalHandoffScript {
                     .collect::<Vec<_>>();
                 assert!(names.contains(&"write_file"));
                 assert!(names.contains(&"edit_file"));
-                if instructions.contains("phase=active armed=true") {
-                    return crate::test_support::GoalCandidateScript.stream(request, events);
-                }
                 events.emit(crate::ModelEvent::TextDelta {
                     delta: "implementation unlocked".into(),
                 });
@@ -334,12 +381,6 @@ impl TestModelScript for PlanApprovalHandoffScript {
                     reasoning: None,
                 })
             }
-            2 if request.items.iter().any(|item| {
-                matches!(item, crate::ModelItem::ToolResult(result) if result.tool_name == "update_goal")
-            }) => Ok(crate::test_support::response(
-                "implementation unlocked",
-                crate::FinishReason::Completed,
-            )),
             _ => Err(crate::ModelError::request(
                 "unexpected request in Plan Mode handoff script",
             )),

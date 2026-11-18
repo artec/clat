@@ -26,6 +26,7 @@ pub use backend::PackagedBackend;
 mod desktop;
 mod reconcile;
 pub use reconcile::BackendConnection;
+mod computer_use;
 mod notification;
 mod workspace;
 pub use error::HostCallError;

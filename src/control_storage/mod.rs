@@ -32,7 +32,7 @@ use crate::model::{ModelConfig, ModelProtocol, ProviderCredentials};
 use crate::session::use_cases::SessionSummary;
 use cap_std::fs::Dir;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// 厂商 key 记忆库的保留行前缀（INV-VK3）：记忆库已物理独立
 ///（credentials.json），档案名仍拒绝该前缀——纵深防御。
@@ -88,6 +88,7 @@ pub(crate) struct ControlStorage {
     web_updates: Mutex<()>,
     #[cfg(any(target_os = "macos", windows, test))]
     pub(crate) ui_authority: crate::native_tools::ui::Authority,
+    pub(crate) ui_activity: Arc<crate::native_tools::ui_activity::Activity>,
     builtin_plugins: crate::plugin::selection::Configuration,
     #[cfg(test)]
     builtin_write_fault: std::sync::atomic::AtomicU8,
@@ -146,6 +147,7 @@ impl ControlStorage {
             web_updates: Mutex::new(()),
             #[cfg(any(target_os = "macos", windows, test))]
             ui_authority: Default::default(),
+            ui_activity: Default::default(),
             builtin_plugins,
             #[cfg(test)]
             builtin_write_fault: std::sync::atomic::AtomicU8::new(0),

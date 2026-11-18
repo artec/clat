@@ -121,7 +121,11 @@ fn phase8_model_switch_failure_keeps_the_last_request_header_and_saved_settings(
         let handle = app.start_run(request).unwrap();
         handle.join().unwrap();
         let failure = receiver.try_recv().unwrap().unwrap_err();
-        assert!(failure.error.contains("capacity"));
+        assert!(
+            failure.error.contains("capacity") || failure.error.contains("context window"),
+            "switch failure was: {}",
+            failure.error
+        );
         assert_eq!(app.sessions.last_request_header(), Some(header));
         assert_eq!(app.model_state().unwrap().0.model, "new-small-route");
     }

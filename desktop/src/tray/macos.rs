@@ -4,10 +4,11 @@ use objc2::{AnyThread, runtime::NSObjectProtocol, sel};
 use objc2_app_kit::{NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSMenu};
 use objc2_foundation::{NSMutableAttributedString, NSRange, NSString};
 
-pub(super) fn style(
+pub(crate) fn style(
     app: &tauri::AppHandle,
     menu: &Menu<tauri::Wry>,
     rows: Vec<Recent>,
+    first_recent: usize,
 ) -> tauri::Result<()> {
     let menu = menu.clone();
     app.run_on_main_thread(move || {
@@ -18,7 +19,7 @@ pub(super) fn style(
         }
         let native = native(&menu);
         for (index, row) in rows.iter().enumerate() {
-            let Some(item) = native.itemAtIndex(index as isize + 1) else {
+            let Some(item) = native.itemAtIndex((index + first_recent) as isize) else {
                 continue;
             };
             let project = NSString::from_str(&project_name(row));

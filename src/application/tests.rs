@@ -5212,54 +5212,24 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
     let mut expected_catalog: std::collections::BTreeSet<&str> = [
-        "schedule_create",
-        "schedule_list",
-        "schedule_update",
-        "schedule_delete",
         "query_capabilities",
         "describe_capability",
         "list_files",
         "read_file",
-        "session_search",
-        "session_event_search",
-        "session_event_read",
         "search",
-        "web_search",
-        "web_fetch",
         "write_file",
         "edit_file",
-        "export_patch",
-        "run_command",
         "exec_command",
-        "write_stdin",
-        "test_discrimination",
-        "verify_observation",
-        "terminal_snapshot",
-        "session_info",
-        "job_start",
-        "job_output",
-        "job_list",
-        "job_kill",
         "ask_user",
-        "request_plan_mode",
-        "exit_plan_mode",
-        "skill",
-        "memory_search",
-        "propose_goal",
-        "update_goal",
         "view_image",
-        "todo_write",
     ]
     .into_iter()
     .collect();
-    // b0c3ef57 默认开启只读委派；ui_* 在装有原生 UI 后端的平台注册
-    //（CUA1 起 macOS，81bfaf1a 起 Windows）。
+    // b0c3ef57 默认开启只读委派。长尾工具不进初始 schema。
     expected_catalog.insert("delegate_readonly");
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    expected_catalog.extend(["ui_apps", "ui_tree", "ui_act", "ui_wait"]);
     assert_eq!(
         tool_names, expected_catalog,
-        "request/header freezes the complete model-visible native catalog"
+        "request/header freezes the resident model-visible catalog"
     );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();

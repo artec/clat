@@ -102,10 +102,12 @@ html[data-native-frame="windows"] .application-toolbar { padding-right: 150px; }
 #project-directory .project-group-head { border-radius: 8px; }
 #project-directory .project-group-head:is(:hover, :focus-within) { background: var(--surface-raised); }
 #project-directory .project-group-head > .project-directory-row:hover { background: transparent; }
-#project-directory .project-group-head > .project-more { display: inline-flex; }
 #project-directory .project-group-head > .project-new-session[hidden] { display: none; }
+/* Hover-capable pointers: collapse + / ⋯ so the title keeps the row width until
+   the head is hovered or focused. Touch (hover:none) keeps the always-on
+   project-organizable / base display rules. */
 @media (hover: hover) {
-  #project-directory .project-group-head:not(:hover, :focus-within) > :is(.project-more, .project-new-session) { opacity: 0; }
+  #project-directory .project-group-head:not(:hover, :focus-within) > :is(.project-more, .project-new-session) { display: none; }
 }
 .project-group-toggle, .project-new-session { display: grid; place-items: center; padding: 4px; width: var(--project-icon-slot); height: 30px; flex: none; color: var(--text-muted); border-radius: 6px; }
 .project-group-toggle:hover, .project-new-session:hover { color: var(--text); background: var(--surface-input); }

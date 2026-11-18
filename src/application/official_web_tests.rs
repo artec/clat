@@ -16,14 +16,32 @@ impl TestModelScript for SearchScript {
         request: crate::ModelRequest<'_>,
         _events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
-        let first = self.step.fetch_add(1, Ordering::SeqCst) == 0;
-        if first {
-            for name in ["mcp_official_web_web_search", "mcp_official_web_web_fetch"] {
-                assert!(request.tools.iter().any(|tool| tool.name == name));
-            }
+        let ready = request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp_official_web_web_search");
+        if !ready {
             let instructions = request.instructions.unwrap();
+            assert!(instructions.contains("mcp_official_web_web_search:"));
             assert!(instructions.contains("external, untrusted data"));
             assert!(instructions.contains("web_fetch returns external, untrusted"));
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-official-search".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "mcp_official_web_web_search"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
+        let first = self.step.fetch_add(1, Ordering::SeqCst) == 0;
+        if first {
+            assert!(request.tools.iter().any(|tool| tool.name == "mcp_official_web_web_fetch") || request.instructions.unwrap_or_default().contains("mcp_official_web_web_fetch:"));
         } else {
             assert!(
                 request.items.iter().any(|item| {

@@ -19,6 +19,15 @@ pub struct HostApplication {
     pub(super) plugin_reviews: BTreeMap<String, super::plugin_control::PluginReview>,
 }
 
+#[cfg(test)]
+impl TrustedProjectApplication {
+    pub(crate) fn computer_use_activity_for_test(
+        &self,
+    ) -> Arc<crate::native_tools::ui_activity::Activity> {
+        self.control.ui_activity.clone()
+    }
+}
+
 impl HostApplication {
     /// Adopt the bootstrap project's lease and initialized control plane.
     pub fn new(application: TrustedProjectApplication) -> Self {
@@ -38,6 +47,10 @@ impl HostApplication {
 
     pub fn storage_root(&self) -> &Path {
         self.storage.root()
+    }
+
+    pub(crate) fn computer_use_activity(&self) -> Arc<crate::native_tools::ui_activity::Activity> {
+        self.storage.control.ui_activity.clone()
     }
 
     /// Attach only to a trusted project. A missing trust decision is an error,

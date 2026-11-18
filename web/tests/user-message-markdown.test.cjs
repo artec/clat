@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { execFileSync } = require('node:child_process');
 
 function element(tag, _className, text) {
   return {
@@ -32,8 +33,9 @@ const scope = vm.createContext({
   CLATI18n: { msg: key => key, attribute() {} },
   svgIcon: () => element('svg'),
 });
-const app = fs.readFileSync('web/app.js', 'utf8');
-vm.runInContext(app.slice(app.indexOf('const INLINE_MARKDOWN'), app.indexOf('const ICON_PATHS')), scope);
+const app = fs.readFileSync('web/app.js', 'utf8').replace(/\r\n/g, '\n');
+const markdownSource = app.slice(app.indexOf('const INLINE_MARKDOWN'), app.indexOf('const ICON_PATHS'));
+vm.runInContext(markdownSource, scope);
 vm.runInContext(fs.readFileSync('web/user-message-reader.js', 'utf8'), scope);
 
 test('user Markdown preserves entered line breaks and inline formatting', () => {
@@ -126,4 +128,30 @@ test('bare reply URLs retain their click actions menu', async () => {
   link.onclick();
   assert.ok(menus[0].some(item=>item.key === 'open_in_browser'));
   assert.equal(link.oncontextmenu, undefined);
+});
+
+test('macOS system engine preserves titled links alongside implicit references', {
+  skip: process.platform !== 'darwin',
+}, () => {
+  // WKWebView uses the OS engine; Playwright WebKit can be newer and miss its bugs.
+  const paths = ['src/native_tools/ui/mod.rs:305', 'src/native_tools/ui/plugin.rs:118', 'docs/permissions.md:420'];
+  const labels = paths.map(path => path.replace(/:\d+$/, ''));
+  const source = '**核实结果**：' + paths.map((path, index) => `[${labels[index]}](${path})`).join('，')
+    + '；`ui_apps`；http://localhost:3000/a_b_c。';
+  const script = `${element.toString()}\n${visibleText.toString()}
+    const el = element;
+    const document = {createDocumentFragment:()=>element('fragment'), createTextNode:text=>text};
+    const state = {workbench:{project:{root:'/repo'}}};
+    const CLATI18n = {msg:key=>key, attribute(){}};
+    const queueMicrotask = () => {};
+    const svgIcon = () => element('svg');
+    ${markdownSource}
+    const body = element('div');
+    renderMarkdown(body, ${JSON.stringify(source)}, {replyLinks:true, projectRoot:'/repo'});
+    JSON.stringify({text:visibleText(body), files:[...pendingMarkdownFiles.values()].map(item=>item.label)});`;
+  const result = JSON.parse(execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-'], {
+    input: script, encoding: 'utf8', timeout: 10000,
+  }));
+  assert.equal(result.text, '核实结果：' + labels.join('，') + '；ui_apps；http://localhost:3000/a_b_c。');
+  assert.deepEqual(result.files, labels);
 });

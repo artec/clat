@@ -26,6 +26,13 @@ use std::time::{Duration, Instant};
 /// 每 SSE 连接的有界帧队列（INV-S7：满即断连，慢消费者走「重连=重建」）。
 pub(crate) const SUBSCRIBER_QUEUE_FRAMES: usize = 1024;
 
+fn services_running(app: &TrustedProjectApplication) -> bool {
+    app.has_development_work()
+        || app.has_background_jobs()
+        || app.has_automatic_work()
+        || app.has_active_acp()
+}
+
 /// SSE 空闲心跳间隔（§5.1）。
 pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const MAX_CONCURRENT_UPLOADS: usize = 4;
@@ -234,10 +241,21 @@ impl ServeShared {
         let app = self.app.lock().expect("application lock");
         app.next_turn_queue().is_empty()
             && app.pending_inputs().items.is_empty()
-            && !app.has_development_work()
-            && !app.has_background_jobs()
-            && !app.has_automatic_work()
-            && !app.has_active_acp()
+            && !services_running(&app)
+    }
+
+    pub(crate) fn has_running_work(&self) -> bool {
+        let running = self
+            .inner
+            .lock()
+            .expect("serve inner lock")
+            .active_run
+            .is_some();
+        running
+            || !self.active_compaction_info().is_null()
+            || self.active_uploads.load(Ordering::Acquire) != 0
+            || self.active_attachment_downloads.load(Ordering::Acquire) != 0
+            || services_running(&self.app.lock().expect("application lock"))
     }
     pub(crate) fn is_idle_for_reclaim(&self) -> bool {
         let inner = self.inner.lock().expect("serve inner lock");

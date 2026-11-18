@@ -158,14 +158,22 @@ impl TestModelScript for LongTask {
             );
         }
         if n > 0 {
+            let newest = request
+                .items
+                .iter()
+                .rev()
+                .find(|item| matches!(item, ModelItem::ToolResult(_)));
             assert!(
-                matches!(request.items.iter().rev().find(|item| matches!(item, ModelItem::ToolResult(_))), Some(ModelItem::ToolResult(result)) if result.output.is_object()),
+                matches!(newest, Some(ModelItem::ToolResult(result)) if result.output.is_object()),
                 "keep rich live results rather than replay strings"
             );
-            assert!(
-                matches!(request.items.iter().rev().find(|item| matches!(item, ModelItem::ToolResult(_))), Some(ModelItem::ToolResult(result)) if result.call_id == format!("read-{}-1", n - 1)),
-                "retain the newest complete exchange"
-            );
+            if matches!(newest, Some(ModelItem::ToolResult(result)) if result.tool_name == "read_file")
+            {
+                assert!(
+                    matches!(newest, Some(ModelItem::ToolResult(result)) if result.call_id == format!("read-{}-1", n - 1)),
+                    "retain the newest complete exchange"
+                );
+            }
         }
         let mut reply = crate::test_support::response("done", FinishReason::Completed);
         if n < 7 {
@@ -181,6 +189,14 @@ impl TestModelScript for LongTask {
             for call in &reply.tool_calls {
                 events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
             }
+        } else if goal && !request.tools.iter().any(|tool| tool.name == "update_goal") {
+            reply.text.clear();
+            reply.finish_reason = FinishReason::ToolCalls;
+            reply.tool_calls.push(crate::ToolCall {
+                id: "describe-goal".into(),
+                name: "describe_capability".into(),
+                arguments: json!({"name": "update_goal"}),
+            });
         } else if goal {
             reply.text.clear();
             reply.finish_reason = FinishReason::ToolCalls;

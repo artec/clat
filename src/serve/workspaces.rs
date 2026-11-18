@@ -56,6 +56,7 @@ pub(crate) struct WorkspaceHost {
     shutdown: Arc<AtomicBool>,
     _runtime_lease: Mutex<Option<std::fs::File>>,
     pub(super) notifications: super::notifications::Notifications,
+    pub(super) computer_use: Arc<crate::native_tools::ui_activity::Activity>,
 }
 
 impl Drop for WorkspaceHost {
@@ -120,7 +121,7 @@ impl WorkspaceHost {
             "build_fingerprint": build_fingerprint,
             "build_kind": if crate::host_client::build_identity::official_release() {"official"} else {"development"},
             "native_client_compatibility": 1,
-            "capabilities": ["desktop-workbench-v1", "host.runtime_status"],
+            "capabilities": ["desktop-workbench-v1", "host.runtime_status", "computer-use-activity-v1"],
             "builtin_availability": availability});
         let app = application
             .attach(project)
@@ -128,6 +129,7 @@ impl WorkspaceHost {
         let mut shared = ServeShared::new(app, token, port);
         shared.queue_frames = queue_frames;
         let shared = Arc::new(shared);
+        let computer_use = application.computer_use_activity();
         let host = Arc::new(Self {
             projects: Mutex::new(Projects {
                 application,
@@ -137,6 +139,7 @@ impl WorkspaceHost {
             description,
             _runtime_lease: Mutex::new(None),
             notifications: Default::default(),
+            computer_use,
             shutdown,
         });
         *shared.host.lock().expect("host link") = Arc::downgrade(&host);
@@ -231,7 +234,12 @@ impl WorkspaceHost {
         }
         if method == "host.restart_idle" {
             self.check_shutdown_instance(params)?;
-            return self.stop_when_idle();
+            let busy = if params.get("for_exit").and_then(Value::as_bool) == Some(true) {
+                ServeShared::has_running_work
+            } else {
+                |shared: &ServeShared| !shared.is_idle_for_takeover()
+            };
+            return self.stop_when_idle(busy);
         }
         if method == "host.describe" {
             return self.startup_description();
@@ -254,9 +262,16 @@ impl WorkspaceHost {
                     .filter(|(_, shared)| !shared.is_idle_for_takeover())
                     .map(|(id, _)| id)
                     .collect::<Vec<_>>();
+                let running = projects
+                    .routes
+                    .iter()
+                    .filter(|(_, shared)| shared.has_running_work())
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>();
                 Ok(json!({"instance_id": self.instance,
                     "product_version": crate::host_client::build_identity::product_version(),
-                    "ready": busy.is_empty(), "busy_workspaces": busy}))
+                    "ready": busy.is_empty(), "busy_workspaces": busy,
+                    "running_workspaces": running}))
             }
             "workspace.list" => Ok(
                 json!({"workspaces": projects.routes.iter().map(|(id, shared)| {
@@ -303,10 +318,10 @@ impl WorkspaceHost {
             ));
         }
 
-        self.stop_when_idle()
+        self.stop_when_idle(|shared| !shared.is_idle_for_takeover())
     }
 
-    fn stop_when_idle(&self) -> Result<Value, RpcError> {
+    fn stop_when_idle(&self, busy: fn(&ServeShared) -> bool) -> Result<Value, RpcError> {
         let projects = self.projects.lock().expect("host projects");
         if self.shutdown.load(Ordering::SeqCst) {
             return Ok(json!({"stopping": true}));
@@ -316,7 +331,7 @@ impl WorkspaceHost {
             .iter()
             .map(|shared| shared.rpc_mutations.lock().expect("project RPC mutation"))
             .collect::<Vec<_>>();
-        if routes.iter().any(|shared| !shared.is_idle_for_takeover()) {
+        if routes.iter().any(|shared| busy(shared)) {
             return Err(RpcError::busy(
                 "host has active work; finish or cancel it before restarting",
             ));

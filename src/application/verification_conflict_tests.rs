@@ -18,6 +18,30 @@ impl TestModelScript for ConflictScript {
         request: ModelRequest<'_>,
         _: &mut dyn ModelEventSink,
     ) -> Result<ModelResponse, ModelError> {
+        if !request.tools.iter().any(|tool| tool.name == "run_command")
+            && request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "describe_capability")
+            && !request.items.iter().any(|item| {
+                matches!(item, ModelItem::ToolResult(result)
+                    if result.tool_name == "describe_capability" && !result.is_error)
+            })
+        {
+            return Ok(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-run".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "run_command"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
         let step = self.step.fetch_add(1, Ordering::SeqCst);
         let out = request.items.iter().rev().find_map(|i| match i {
             ModelItem::ToolResult(r) => Some(r),
@@ -95,7 +119,7 @@ fn ag6_application_conflict_guidance_reaches_model_and_drives_literal_verificati
         .iter()
         .filter(|e| e.event_type == "tool/result")
         .collect();
-    assert_eq!(results.len(), 2);
+    assert_eq!(results.len(), 3);
     let journal = results
         .iter()
         .map(|e| e.data.to_string())

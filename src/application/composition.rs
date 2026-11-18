@@ -374,6 +374,7 @@ fn native_ui_plugin(input: &CompositionInput) -> Arc<dyn Plugin> {
     Arc::new(crate::native_tools::ui::plugin::NativeUiPlugin {
         control: input.control.clone(),
         asker: input.asker_slot.clone(),
+        project_root: super::development::canonical_root(&input.project),
     })
 }
 

@@ -642,7 +642,16 @@ derive two intentionally different views:
 ### Default prompt and request context
 
 At run admission the Application freezes the mounted system sections and the
-tool definitions together. The system order is the CLAT base, optional reply
+resident tool schemas together. The model receives full schemas only for the
+resident file, search, edit, command, question and capability tools, plus
+conditional tools the frozen policy already enables (`view_image`, task
+progress, `delegate_readonly`, `exit_plan_mode` while Plan Mode is active, and
+`update_goal` while the run already carries a goal).
+Every other allowed tool is a one-line entry in the workflow guidance.
+`describe_capability` appends that tool's existing definition after the
+resident prefix for later requests in the same run. The prefix is not rewritten,
+and promotion is not a journal event: a new run or a restored run starts from
+the resident set again. A call made before promotion is refused. The system order is the CLAT base, optional reply
 formatting guidance, Wasm sections, MCP manifest sections, and explicitly
 marked adapter system sections. Each
 seat sorts by owner, source and section name, independent of connection order.
@@ -1905,8 +1914,11 @@ exclude new workflow requests. The Run closes skipped batch calls with explicit
 not-executed error results before its terminal event; it neither invokes those
 tools nor invents their effects. Existing journal events carry these results.
 Capability guidance is an additive workflow layer derived from the actual frozen
-tool definitions and their registration owners; an external namesake does not
-acquire native semantics. It reaches both request headers and model instructions.
+tool view and registration owners. Resident tools keep short hints. Deferred
+tools contribute one line each, using their own description. An external
+namesake does not acquire native semantics. Guidance reaches both request
+headers and model instructions. The request header records the resident schemas
+from admission, not schemas promoted later in the run.
 Its token cost belongs to the common base prompt, not an active Plan/Goal policy;
 Goal refresh preserves a separate registry base so it does not append the guide
 twice.

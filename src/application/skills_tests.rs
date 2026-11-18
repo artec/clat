@@ -98,12 +98,27 @@ impl TestModelScript for LayeredSkillScript {
         request: crate::ModelRequest<'_>,
         events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
-        let step = self.step.fetch_add(1, Ordering::SeqCst);
         let names = request
             .tools
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>();
+        if !names.contains(&"skill") {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-skill".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "skill"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
+        let step = self.step.fetch_add(1, Ordering::SeqCst);
         assert!(names.contains(&"skill"));
         match step {
             0 => {
@@ -328,6 +343,25 @@ impl TestModelScript for ExecutableSkillScript {
         request: crate::ModelRequest<'_>,
         events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
+        if !request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "skill")
+        {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-exec-skill".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "skill"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
         match self.step.fetch_add(1, Ordering::SeqCst) {
             0 => {
                 let instructions = request.instructions.unwrap_or_default();
@@ -465,7 +499,10 @@ fn executable_skill_runs_only_through_ordinary_required_sandbox_exec() {
         .filter(|event| event.event_type == "tool/call")
         .filter_map(|event| event.data["name"].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(tool_names, vec!["skill", "exec_command"]);
+    assert_eq!(
+        tool_names,
+        vec!["describe_capability", "skill", "exec_command"]
+    );
     assert_eq!(
         events
             .iter()

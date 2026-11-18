@@ -256,7 +256,7 @@ impl Fixture {
         let slot = AskUserSlot::shared();
         slot.install(Some(asker.clone()));
         let fake = Arc::new(Fake::default());
-        let service = Arc::new(Service::new(storage, slot, fake.clone()));
+        let service = Arc::new(Service::new(storage, slot, fake.clone(), &root));
         let fixture = Self {
             root,
             fake,
@@ -284,6 +284,7 @@ impl Fixture {
             f.service.control.clone(),
             f.service.asker.clone(),
             Arc::new(mac::Mac),
+            &f.root,
         ));
         f.begin("live-read", false, ToolAccessPolicy::all());
         f
@@ -353,6 +354,29 @@ fn code(result: Result<Value>, expected: &str) {
 
 fn allow(_: PermissionRequest, _: &CancelToken) -> PermissionDecision {
     PermissionDecision::Allow
+}
+
+#[test]
+#[cfg(any(target_os = "macos", windows))]
+fn ui_apps_is_registered_as_structure_read() {
+    let fixture = Fixture::new(false);
+    assert_eq!(
+        super::api::UiApps(fixture.service.clone())
+            .definition()
+            .effect,
+        crate::tool::ToolEffect::UIStructureRead
+    );
+}
+
+#[test]
+#[cfg(any(target_os = "macos", windows))]
+fn ui_apps_honours_cancellation_before_inventory() {
+    let fixture = Fixture::new(false);
+    fixture.cancel.cancel();
+    let error = super::api::UiApps(fixture.service.clone())
+        .invoke(&json!({}), &Project::new("."), &fixture.cancel)
+        .unwrap_err();
+    assert!(error.to_string().contains("cancelled"));
 }
 
 #[test]
@@ -878,6 +902,63 @@ fn cua_wait_supports_conditions_timeout_and_run_cancellation() {
         ),
         "CANCELLED",
     );
+}
+
+#[test]
+fn computer_use_activity_follows_permissions_and_stop_keeps_the_turn_alive() {
+    let f = Fixture::new(false);
+    let registry = &f.service.control.ui_activity;
+    let rows = || registry.next(None, Duration::ZERO).unwrap().activities;
+    assert!(rows().is_empty());
+    let request = f.target();
+    let first = rows().pop().unwrap();
+    assert_eq!(first.kind, ComputerUseKind::Read);
+    f.service
+        .control
+        .ui_authority
+        .revoke(&f.service.control, APP, None)
+        .unwrap();
+    assert!(rows().is_empty());
+    code(
+        f.action(request, PermissionMode::ReadOnly, allow),
+        "STALE_SNAPSHOT",
+    );
+    assert!(rows().is_empty());
+    let request = f.target();
+    let observation = rows().pop().unwrap();
+    assert_eq!(observation.app.as_deref(), Some("Example"));
+    code(
+        f.action(request.clone(), PermissionMode::ReadOnly, |_, _| {
+            PermissionDecision::Deny {
+                reason: "denied by user".into(),
+            }
+        }),
+        "ACTION_NOT_APPROVED",
+    );
+    assert_eq!(rows().pop().unwrap().kind, ComputerUseKind::Read);
+    assert_eq!(f.dispatches(), 0);
+    assert_eq!(
+        f.action(request.clone(), PermissionMode::ReadOnly, allow)
+            .unwrap()["dispatched"],
+        true
+    );
+    assert_eq!(rows().pop().unwrap().kind, ComputerUseKind::Act);
+    assert!(registry.stop(&observation.target));
+    assert!(!f.cancel.is_cancelled());
+    assert!(rows().is_empty());
+    code(
+        f.read(Operation::Tree, json!({"pid":42})),
+        "RUN_UNAVAILABLE",
+    );
+    code(
+        f.action(request, PermissionMode::ReadOnly, allow),
+        "RUN_UNAVAILABLE",
+    );
+    assert_eq!(f.dispatches(), 1);
+    f.begin("next", true, ToolAccessPolicy::all());
+    f.target();
+    assert!(!registry.stop(&observation.target));
+    assert_eq!(rows().pop().unwrap().target.session_id, "next");
 }
 
 #[test]

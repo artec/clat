@@ -34,6 +34,21 @@ impl TestModelScript for Script {
             !crate::test_support::is_summary_request(&r),
             "pruning alone must relieve this fixture's pressure"
         );
+        if !r.tools.iter().any(|tool| tool.name == "phase8_evidence") {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-evidence".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "phase8_evidence"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
         let step = self.calls.fetch_add(1, Ordering::SeqCst);
         if step == 0 {
             let mut response = crate::test_support::response("", crate::FinishReason::ToolCalls);
@@ -177,8 +192,13 @@ fn exercise_pruner(overflow: bool) {
     let results = events
         .iter()
         .filter(|e| e.event_type == "tool/result")
+        .filter(|e| {
+            e.data["message"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.chars().count() == 20000)
+        })
         .collect::<Vec<_>>();
-    assert_eq!(results.len(), 2);
+    assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].data["message"]["content"][0]["text"]
             .as_str()
@@ -192,7 +212,7 @@ fn exercise_pruner(overflow: bool) {
             .iter()
             .filter(|e| matches!(e, crate::session::replay::ReplayEvent::ToolFinished { .. }))
             .count(),
-        1
+        2
     );
     let mut app = super::tests::mount(&Project::new(&root), &storage, TestBehavior::Panic);
     let id = app.sessions.list_sessions(&app.project_key()).unwrap()[0]
@@ -352,6 +372,25 @@ impl TestModelScript for HistoricalPressure {
                 "Observed evidence; continue pending work.",
                 crate::FinishReason::Completed,
             ));
+        }
+        if !request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "phase8_evidence")
+        {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-historical".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "phase8_evidence"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
         }
         let step = self.calls.fetch_add(1, Ordering::SeqCst);
         let mut response = crate::test_support::response("done", crate::FinishReason::Completed);

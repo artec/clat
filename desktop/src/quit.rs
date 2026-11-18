@@ -88,16 +88,27 @@ async fn confirm(app: &tauri::AppHandle, key: &str) -> bool {
 }
 
 fn finish(app: &tauri::AppHandle, confirmed: bool) {
-    let state = app.state::<Desktop>();
-    if confirmed
-        && let Ok(updates) = state.updates.lock()
-        && updates.allow_exit(false)
-    {
-        state.quitting.store(true, Ordering::Release);
-        drop(updates);
+    if confirmed && prepare_exit(app).is_ok() {
         app.exit(0);
     }
-    state.quit_pending.store(false, Ordering::Release);
+    app.state::<Desktop>()
+        .quit_pending
+        .store(false, Ordering::Release);
+}
+
+/// Commit desktop exit without repeating the Host check after a menu quit.
+/// Native exit still runs the same installer guard and cleanup path.
+pub(super) fn prepare_exit(app: &tauri::AppHandle) -> Result<(), UiMessage> {
+    let state = app.state::<Desktop>();
+    let updates = state
+        .updates
+        .lock()
+        .map_err(|_| UiMessage::new("desktop.update_state_unavailable"))?;
+    if !updates.allow_exit(false) {
+        return Err(UiMessage::new("update.cannot_cancel"));
+    }
+    state.quitting.store(true, Ordering::Release);
+    Ok(())
 }
 
 pub fn on_exit_requested(app: &tauri::AppHandle, code: Option<i32>, api: ExitRequestApi) {

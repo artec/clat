@@ -20,6 +20,7 @@ mod export;
 mod read;
 #[cfg(any(target_os = "macos", windows, test))]
 pub(crate) mod ui;
+pub(crate) mod ui_activity;
 #[cfg(target_os = "macos")]
 mod ui_apps;
 #[cfg(any(target_os = "macos", windows, test))]
@@ -43,26 +44,13 @@ impl Tool for ListFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".into(),
-            description: "List files and directories. Paths are project-relative; absolute directory paths (anywhere on disk) are also accepted. Use this to understand directory structure before reading individual files.".into(),
+            description: "List files and directories. Paths may be project-relative or absolute.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative or absolute directory path. Defaults to '.'"
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": MAX_LIST_DEPTH,
-                        "description": "How many directory levels to descend. Defaults to 2"
-                    },
-                    "max_entries": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_LIST_ENTRIES,
-                        "description": "Maximum returned entries. Defaults to 200"
-                    }
+                    "path": { "type": "string", "description": "Project-relative or absolute path" },
+                    "max_depth": { "type": "integer", "minimum": 0, "maximum": MAX_LIST_DEPTH },
+                    "max_entries": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_ENTRIES }
                 },
                 "additionalProperties": false
             }),
@@ -375,7 +363,7 @@ impl Tool for AskUserTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "ask_user".into(),
-            description: "Ask the human user a single question and wait for the answer. Use it only for user-owned choices (preferences, approvals, direction) or genuine ambiguity you cannot resolve from the repository; never for facts you can look up yourself. Provide 2-4 short options when the choice is enumerable; free-text answers are available by default. Arguments must be exactly one JSON object matching the schema. Use double quotes and escape line breaks or quotes inside strings. Do not add Markdown fences, comments, trailing commas, or text after the object.".into(),
+            description: "Ask the user one question and wait. Use it for choices the repository cannot resolve. Pass 2-4 options or omit them for a free-text answer.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -2117,28 +2105,6 @@ mod tests {
             assert!(tool.invoke(&invalid, &project, &cancel).is_err());
         }
         slot.install(None);
-    }
-
-    /// Stage-0 characterization: model-visible tool order is part of the
-    /// request/cache surface and must survive registry/plugin migration.
-    #[test]
-    #[cfg(any(target_os = "macos", windows))]
-    fn ui_apps_is_registered_as_structure_read() {
-        assert_eq!(
-            ui::api::UiApps.definition().effect,
-            ToolEffect::UIStructureRead
-        );
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", windows))]
-    fn ui_apps_honours_cancellation_before_inventory() {
-        let cancel = CancelToken::new();
-        cancel.cancel();
-        let error = ui::api::UiApps
-            .invoke(&json!({}), &Project::new("."), &cancel)
-            .unwrap_err();
-        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]

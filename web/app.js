@@ -37,9 +37,32 @@ const REPLY_REFERENCES = [
   String.raw`(?:localhost|127\.0\.0\.1|\[::1\]):\d{1,5}(?![\p{L}\p{N}])(?:[/#?]${URL_TEXT}*)?`,
   /(?:file:\/\/|[a-z]:[\\/]|\.{1,2}[\\/]|\/|[\p{L}\p{N}_.-]+[\\/])[\p{L}\p{N}\p{M}._%+~@\\/:#-]+/u.source,
 ];
-const REPLY_INLINE_MARKDOWN = new RegExp(
-  INLINE_MARKDOWN.source + String.raw`|(^|[^\p{L}\p{N}_@/\\:])(${REPLY_REFERENCES.join('|')})`, 'giu',
+const REPLY_REFERENCE_MARKDOWN = new RegExp(
+  String.raw`(^|[^\p{L}\p{N}_@/\\:])(${REPLY_REFERENCES.join('|')})`, 'giu',
 );
+
+// Keep Markdown syntax out of the Unicode reference regexp: system macOS
+// JavaScriptCore can misparse the combined alternatives even when newer WebKit
+// passes. Merge independent scans, preferring complete syntax at equal starts.
+function* inlineMarkdownTokens(text, replyLinks) {
+  const syntax = text.matchAll(INLINE_MARKDOWN);
+  const references = replyLinks ? text.matchAll(REPLY_REFERENCE_MARKDOWN) : null;
+  let nextSyntax = syntax.next(), nextReference = references?.next() ?? {done:true};
+  let covered = 0;
+  while (!nextSyntax.done || !nextReference.done) {
+    const referenceStart = nextReference.done ? Infinity
+      : nextReference.value.index + nextReference.value[1].length;
+    const implicit = nextSyntax.done || referenceStart < nextSyntax.value.index;
+    const match = implicit ? nextReference.value : nextSyntax.value;
+    const index = implicit ? referenceStart : match.index;
+    const token = implicit ? trimReplyReference(match[2]) : match[0];
+    if (implicit) nextReference = references.next();
+    else nextSyntax = syntax.next();
+    if (index < covered) continue;
+    covered = index + token.length;
+    yield {index, token, implicit};
+  }
+}
 
 // File operations always go through the project editor's path fence.
 function localMarkdownTarget(destination, decode) {
@@ -275,13 +298,12 @@ function appendStyledMarkdown(tag, value, options) {
 
 function appendInlineMarkdown(parent, text, options) {
   let offset = 0;
-  for (const match of text.matchAll(options.replyLinks ? REPLY_INLINE_MARKDOWN : INLINE_MARKDOWN)) {
-    const start = match.index + (match[2]?.length || 0);
+  for (const match of inlineMarkdownTokens(text, options.replyLinks)) {
+    const start = match.index;
     parent.append(document.createTextNode(text.slice(offset, start)));
-    let token = match[3] ?? match[0];
+    const token = match.token;
     let node;
-    if (match[3]) {
-      token = trimReplyReference(token);
+    if (match.implicit) {
       node = markdownReference(token, token, options, {implicit:true}) || document.createTextNode(token);
     } else if (token.startsWith('`')) {
       const code = token.slice(1, -1);

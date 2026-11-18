@@ -5,6 +5,22 @@ use serde_json::json;
 pub(crate) fn is_discovery(name: &str) -> bool {
     matches!(name, "query_capabilities" | "describe_capability")
 }
+
+fn described_name(registry: &ToolRegistry, args: &Value) -> Result<String, ToolError> {
+    let view = registry
+        .installed_view()
+        .ok_or_else(|| ToolError::new("no active capability snapshot; requery in the current Run"))?;
+    let definition = if let Some(name) = args.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) {
+        view.definition_named(name)
+    } else if let Some(id) = args.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        view.definition_for_id(id)
+    } else {
+        return Err(ToolError::new("describe_capability requires name or id"));
+    };
+    definition
+        .map(|definition| definition.name)
+        .ok_or_else(|| ToolError::new("tool is not visible in this run"))
+}
 pub(crate) struct DiscoveryTool {
     pub registry: Weak<ToolRegistry>,
     pub detail: bool,
@@ -37,25 +53,29 @@ impl Tool for DiscoveryTool {
             json!({"type":"integer","minimum":1,"maximum":4}),
         );
         let schema = if self.detail {
-            json!({"type":"object","properties":{"id":{"type":"string","maxLength":128},"schema_offset":{"type":"integer","minimum":0,"maximum":65536}},"required":["id"],"additionalProperties":false})
+            json!({"type":"object","properties":{"name":{"type":"string","maxLength":128},"id":{"type":"string","maxLength":128},"schema_offset":{"type":"integer","minimum":0,"maximum":65536}},"additionalProperties":false})
         } else {
             json!({"type":"object","properties":properties,"additionalProperties":false})
         };
+        let description = if self.detail {
+            "Load one deferred tool into the next request of this run. Pass its name from the deferred index. Already-resident tools need no call."
+        } else {
+            "List visible tools in this run. Use name for an exact tool. Filters compare declared input, output and scope only."
+        };
         ToolDefinition { name: if self.detail {"describe_capability"}else{"query_capabilities"}.into(),
-            description: "Read only the current Run's visible registered tools. ASCII case-insensitive whitespace AND terms; Chinese literal substrings. Input/output/scope filters compare explicit declarations; unknown means needs confirmation. No probes, approval or execution. Detail id and schema offsets refer to this snapshot; expired results require requery. Candidates are not equivalent replacements or acceptance evidence.".into(),
+            description: description.into(),
             input_schema: schema, effect: ToolEffect::Pure, strict: false }
     }
     fn invoke(&self, args: &Value, _: &Project, cancel: &CancelToken) -> Result<Value, ToolError> {
-        let q = super::query::Query::parse(args)?;
-        if self.detail == q.id.is_empty() {
-            return Err(ToolError::new(
-                "use query for listing and detail with a current id",
-            ));
-        }
-        self.registry
+        let registry = self
+            .registry
             .upgrade()
-            .ok_or_else(|| ToolError::new("project capability scope closed"))?
-            .query_capabilities(args, cancel)
+            .ok_or_else(|| ToolError::new("project capability scope closed"))?;
+        if !self.detail {
+            return registry.query_capabilities(args, cancel);
+        }
+        let name = described_name(&registry, args)?;
+        Ok(json!({"name": name, "promote": true}))
     }
 }
 struct CapabilityCommand;

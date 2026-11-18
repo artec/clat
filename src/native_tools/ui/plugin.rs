@@ -26,6 +26,7 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 pub(crate) struct NativeUiPlugin {
     pub(crate) control: Arc<ControlStorage>,
     pub(crate) asker: Arc<AskUserSlot>,
+    pub(crate) project_root: std::path::PathBuf,
 }
 
 impl Plugin for NativeUiPlugin {
@@ -42,6 +43,7 @@ impl Plugin for NativeUiPlugin {
             self.control.clone(),
             self.asker.clone(),
             Arc::new(backend),
+            &self.project_root,
         ));
         let tools = context.require(TOOL_SERVICE).map_err(plugin_error)?;
         for tool in registered_tools(service.clone()) {
@@ -81,7 +83,7 @@ impl Plugin for NativeUiPlugin {
 fn registered_tools(service: Arc<Service>) -> Vec<Arc<dyn Tool>> {
     use super::api::{Operation, UiTool};
     vec![
-        Arc::new(super::api::UiApps),
+        Arc::new(super::api::UiApps(service.clone())),
         Arc::new(UiTool {
             service: service.clone(),
             operation: Operation::Tree,
@@ -309,6 +311,7 @@ mod tests {
                 Arc::new(NativeUiPlugin {
                     control,
                     asker: AskUserSlot::shared(),
+                    project_root: root.clone(),
                 }),
             ])
             .unwrap();

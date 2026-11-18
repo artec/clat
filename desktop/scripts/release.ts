@@ -13,6 +13,8 @@ export interface AssetRecord { os: string; target: string; platform?: string; la
 export type AssetKind = 'cli' | 'desktop';
 const MATRIX = json<Record<AssetKind, AssetRecord[]>>(join(DESKTOP, 'assets.json'));
 const PRODUCT_NAME = json<{ productName: string }>(join(DESKTOP, 'tauri.conf.json')).productName;
+const HOST_MENU = 'Contents/Helpers/CLAT Host Menu.app';
+const HOST_MENU_ID = 'com.artec.clat.host-menu';
 export interface BuildOptions { release?: boolean; official?: boolean; appOnly?: boolean; backend?: string; runId?: string }
 
 export class DesktopRelease {
@@ -84,12 +86,36 @@ export class DesktopRelease {
     if (!options.release) args.push('--debug');
     args.push('--', '--locked');
     this.execute(args, { cwd: this.desktop, env: this.buildEnv(target, options.official) });
-    if (target.includes('apple-darwin') && !options.appOnly) {
+    if (target.includes('apple-darwin')) {
       const bundle = join(this.targetDirectory(), target, options.release ? 'release' : 'debug', 'bundle');
       const app = this.single(join(bundle, 'macos'), '.app');
+      this.stageMacHostMenu(app);
+      if (options.appOnly) return;
       const arch = target.startsWith('aarch64-') ? 'aarch64' : 'x64';
       await this.makeDmg(app, join(bundle, 'dmg', `${PRODUCT_NAME}_${this.version()}_${arch}.dmg`));
     }
+  }
+  stageMacHostMenu(app: string): void {
+    const helper = join(app, HOST_MENU);
+    const contents = join(helper, 'Contents');
+    mkdirSync(join(contents, 'MacOS'), { recursive: true });
+    copyFileSync(join(app, 'Contents/MacOS/clat-desktop'), join(contents, 'MacOS/clat-host-menu'));
+    writeFileSync(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>${HOST_MENU_ID}</string>
+  <key>CFBundleExecutable</key><string>clat-host-menu</string>
+  <key>CFBundleName</key><string>CLAT Host Menu</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>${this.version()}</string>
+  <key>CFBundleShortVersionString</key><string>${this.version()}</string>
+  <key>LSUIElement</key><true/>
+</dict></plist>\n`);
+    const entitlements = join(this.desktop, 'Entitlements.plist');
+    // The local install package is usable before Developer ID signing. Seal
+    // the child first so the outer bundle records the helper's own identity.
+    this.execute(['codesign', '--force', '--sign', '-', helper]);
+    this.execute(['codesign', '--force', '--entitlements', entitlements, '--sign', '-', app]);
+    this.execute(['codesign', '--verify', '--deep', '--strict', app]);
   }
   single(directory: string, suffix: string): string {
     const matches = readdirSync(directory).filter(n => suffix === '.app' ? n === `${PRODUCT_NAME}.app`
@@ -138,9 +164,14 @@ export class DesktopRelease {
       || manifest.sha256 !== digest(binary) || manifest.size !== statSync(binary).size) throw new Error('backend draft identity does not match the release');
     const info = JSON.parse(this.execute(['plutil', '-convert', 'json', '-o', '-', join(app, 'Contents/Info.plist')], { quiet: true }));
     if (info.CFBundleIdentifier !== 'com.artec.clat.desktop' || info.CFBundleShortVersionString !== this.version()) throw new Error('app draft identity does not match the release');
+    const helper = join(app, HOST_MENU, 'Contents');
+    const helperInfo = JSON.parse(this.execute(['plutil', '-convert', 'json', '-o', '-', join(helper, 'Info.plist')], { quiet: true }));
+    if (helperInfo.CFBundleIdentifier !== HOST_MENU_ID || helperInfo.CFBundleExecutable !== 'clat-host-menu'
+      || helperInfo.CFBundleShortVersionString !== this.version() || helperInfo.LSUIElement !== true) throw new Error('Host menu draft identity does not match the release');
     const arch = record.target.startsWith('aarch64-') ? 'arm64' : 'x86_64';
     this.execute(['lipo', binary, '-verify_arch', arch]);
     this.execute(['lipo', join(app, 'Contents/MacOS/clat-desktop'), '-verify_arch', arch]);
+    this.execute(['lipo', join(helper, 'MacOS/clat-host-menu'), '-verify_arch', arch]);
   }
   async signMacos(directory: string, record: AssetRecord, tag: string): Promise<void> {
     const stem = `clat-desktop-${tag}-${record.label}`;
@@ -153,6 +184,7 @@ export class DesktopRelease {
       this.verifyMacosDraft(app, record);
       this.execute(['codesign', '--force', '--options', 'runtime', '--timestamp', '--entitlements', join(this.desktop, 'BackendEntitlements.plist'), '--sign', identity, join(resources, 'clat-backend')]);
       this.backendManifest(resources, record.target, true);
+      this.execute(['codesign', '--force', '--options', 'runtime', '--timestamp', '--sign', identity, join(app, HOST_MENU)]);
       this.execute(['codesign', '--force', '--options', 'runtime', '--timestamp', '--entitlements', join(this.desktop, 'Entitlements.plist'), '--sign', identity, app]);
       this.execute(['codesign', '--verify', '--deep', '--strict', app]);
       const submission = join(folder, 'notarization.zip');

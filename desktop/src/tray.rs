@@ -1,13 +1,15 @@
 //! Native client navigation history, separate from Host execution and session facts.
 use crate::app::Desktop;
 #[cfg(target_os = "macos")]
-mod macos;
+pub(super) mod macos;
 use clat_core::client_ports::presentation::{UiMessage, load_ui_preferences, save_ui_preferences};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+#[cfg(windows)]
+use tauri::menu::PredefinedMenuItem;
 use tauri::{
     Emitter, Manager,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -22,6 +24,8 @@ pub struct Recent {
 pub struct State {
     pub rows: Mutex<Vec<Recent>>,
     pub pending: Mutex<Option<serde_json::Value>>,
+    #[cfg(windows)]
+    pub computer_use: Mutex<Option<clat_core::client_ports::host::ComputerUseActivity>>,
 }
 fn valid(row: &Recent) -> bool {
     std::path::Path::new(&row.root).is_absolute()
@@ -72,7 +76,12 @@ fn persist_conversation(
 pub fn load(app: &tauri::AppHandle) -> Vec<Recent> {
     crate::localization::path(app)
         .ok()
-        .and_then(|p| load_ui_preferences(&p).ok())
+        .map(|p| load_at(&p))
+        .unwrap_or_default()
+}
+pub(super) fn load_at(path: &std::path::Path) -> Vec<Recent> {
+    load_ui_preferences(path)
+        .ok()
         .and_then(|v| serde_json::from_value::<Vec<Recent>>(v["recentConversations"].clone()).ok())
         .unwrap_or_default()
         .into_iter()
@@ -80,6 +89,7 @@ pub fn load(app: &tauri::AppHandle) -> Vec<Recent> {
         .take(3)
         .collect()
 }
+#[cfg(windows)]
 pub fn menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::new(app)?;
     menu.append(&MenuItem::with_id(
@@ -90,8 +100,9 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?)?;
     let rows = app.state::<State>().rows.lock().expect("recents").clone();
+    let locale = crate::localization::context(app);
     for row in &rows {
-        append_recent(app, &menu, row)?;
+        append_recent(app, &menu, &locale, row)?;
     }
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(
@@ -109,14 +120,15 @@ pub fn menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?)?;
-    #[cfg(target_os = "macos")]
-    macos::style(app, &menu, rows)?;
     Ok(menu)
 }
-fn recent_title(app: &tauri::AppHandle, row: &Recent) -> String {
+fn recent_title(
+    locale: &clat_core::client_ports::presentation::LocaleContext,
+    row: &Recent,
+) -> String {
     let title = row.title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
-        crate::localization::text(app, "web.untitled_session").into()
+        locale.text("web.untitled_session").into()
     } else {
         title.chars().take(64).collect()
     }
@@ -131,15 +143,16 @@ fn project_name(row: &Recent) -> String {
         .to_string_lossy()
         .into_owned()
 }
-fn append_recent(
+pub(super) fn append_recent(
     app: &tauri::AppHandle,
     menu: &Menu<tauri::Wry>,
+    locale: &clat_core::client_ports::presentation::LocaleContext,
     row: &Recent,
 ) -> tauri::Result<()> {
     menu.append(&MenuItem::with_id(
         app,
         item_id(row),
-        recent_title(app, row),
+        recent_title(locale, row),
         true,
         None::<&str>,
     )?)?;
@@ -154,7 +167,7 @@ fn append_recent(
     )?)?;
     Ok(())
 }
-fn item_id(row: &Recent) -> String {
+pub(super) fn item_id(row: &Recent) -> String {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     row.root.hash(&mut hash);
@@ -162,9 +175,13 @@ fn item_id(row: &Recent) -> String {
     format!("tray-recent-{:x}", hash.finish())
 }
 pub fn refresh(app: &tauri::AppHandle) -> tauri::Result<()> {
+    #[cfg(windows)]
     if let Some(tray) = app.tray_by_id("clat") {
         tray.set_menu(Some(menu(app)?))?;
+        crate::computer_use::refresh_windows(app);
     }
+    #[cfg(target_os = "macos")]
+    let _ = app;
     Ok(())
 }
 #[tauri::command]
@@ -197,13 +214,94 @@ pub fn desktop_take_tray_intent(
     app: tauri::AppHandle,
 ) -> Result<Option<serde_json::Value>, UiMessage> {
     crate::commands::guard(&window)?;
-    Ok(app
-        .state::<State>()
+    let state = app.state::<State>();
+    let mut pending = state
         .pending
         .lock()
-        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?
-        .take())
+        .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+    let workbench = window
+        .url()
+        .is_ok_and(|url| url.host_str() == Some("127.0.0.1"));
+    Ok(take_for_view(&mut pending, workbench))
 }
+
+fn take_for_view(
+    pending: &mut Option<serde_json::Value>,
+    workbench: bool,
+) -> Option<serde_json::Value> {
+    if !workbench
+        && pending
+            .as_ref()
+            .is_some_and(|intent| intent["tasks"] == true || intent["computerUse"] == true)
+    {
+        // A cold launch opens the local welcome document before attaching to Host.
+        return None;
+    }
+    pending.take()
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn activate_launch(app: &tauri::AppHandle, args: impl IntoIterator<Item = String>) {
+    for arg in args {
+        let Some(action) = arg.strip_prefix("--host-menu-action=") else {
+            continue;
+        };
+        if let Some(value) = action.strip_prefix("cua-view:") {
+            open_computer_use(app, value);
+            return;
+        }
+        if matches!(
+            action,
+            "tray-tasks" | "tray-settings" | "desktop-check-update"
+        ) || action.strip_prefix("tray-recent-").is_some_and(|suffix| {
+            (1..=16).contains(&suffix.len()) && suffix.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            activate(app, action);
+            return;
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_computer_use(app: &tauri::AppHandle, value: &str) {
+    use clat_core::client_ports::host::HostClient;
+    if value.len() > 16 * 1024 {
+        return;
+    }
+    let Ok((instance, root, session)) = serde_json::from_str::<(String, String, String)>(value)
+    else {
+        return;
+    };
+    if !std::path::Path::new(&root).is_absolute() || session.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let host = HostClient::local_host()
+            .ok()
+            .flatten()
+            .filter(|host| host.instance_id() == instance)
+            .and_then(|host| {
+                host.for_mounted_project(
+                    std::path::Path::new(&root),
+                    crate::localization::context(&app),
+                )
+                .ok()
+            })
+            .filter(|host| {
+                host.sessions()
+                    .is_ok_and(|sessions| sessions.iter().any(|known| known.id.as_str() == session))
+            });
+        if let Some(host) = host {
+            open(
+                &app,
+                serde_json::json!({"conversation":{"root":root,"session":session},"computerUse":true}),
+                Some(host),
+            );
+        }
+    });
+}
+
 pub fn activate(app: &tauri::AppHandle, id: &str) {
     if matches!(id, "tray-quit" | "desktop-quit") {
         let _ = crate::quit::request(app);
@@ -213,6 +311,8 @@ pub fn activate(app: &tauri::AppHandle, id: &str) {
         serde_json::json!({"settings":true})
     } else if id == "desktop-check-update" {
         serde_json::json!({"settings":true,"checkUpdate":true})
+    } else if id == "tray-tasks" {
+        serde_json::json!({"tasks":true})
     } else {
         let state = app.state::<State>();
         let Some(row) = state
@@ -228,9 +328,13 @@ pub fn activate(app: &tauri::AppHandle, id: &str) {
         serde_json::json!({"conversation":row})
     };
     let app = app.clone();
-    std::thread::spawn(move || open(&app, intent));
+    std::thread::spawn(move || open(&app, intent, None));
 }
-fn open(app: &tauri::AppHandle, intent: serde_json::Value) {
+fn open(
+    app: &tauri::AppHandle,
+    intent: serde_json::Value,
+    activity_host: Option<clat_core::client_ports::host::HostClient>,
+) {
     let state = app.state::<Desktop>();
     // Local application settings remain available while Host startup is blocked.
     let _connection = intent["conversation"]
@@ -240,15 +344,26 @@ fn open(app: &tauri::AppHandle, intent: serde_json::Value) {
         crate::app::show(app);
         return;
     }
-    let disconnected = state.host.lock().expect("host").is_none();
-    if let Some(root) = intent["conversation"]["root"].as_str()
-        && disconnected
+    let current = state.host.lock().expect("host").clone();
+    if let (Some(current), Some(expected)) = (&current, &activity_host)
+        && (current.instance_id() != expected.instance_id()
+            || current.storage_root() != expected.storage_root())
     {
-        let result = state
-            .backend
-            .as_ref()
-            .ok_or_else(|| UiMessage::new("desktop.backend_missing").into())
-            .and_then(|b| b.resume_project_presented(std::path::Path::new(root)));
+        crate::app::show(app);
+        return;
+    }
+    if let Some(root) = intent["conversation"]["root"].as_str()
+        && current.is_none()
+    {
+        let root = std::path::Path::new(root);
+        let result = match activity_host {
+            Some(host) => Ok(host),
+            None => state
+                .backend
+                .as_ref()
+                .ok_or_else(|| UiMessage::new("desktop.backend_missing").into())
+                .and_then(|backend| backend.resume_project_presented(root)),
+        };
         match result {
             Ok(client) => {
                 *app.state::<State>().pending.lock().expect("tray intent") = Some(intent);
@@ -320,6 +435,23 @@ fn apply_project_titles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cold_host_menu_launch_keeps_workspace_intents_until_the_workbench() {
+        for intent in [
+            serde_json::json!({"tasks":true}),
+            serde_json::json!({"computerUse":true,"conversation":{"root":"/project","session":"imported-session"}}),
+        ] {
+            let mut pending = Some(intent.clone());
+            assert_eq!(take_for_view(&mut pending, false), None);
+            assert_eq!(take_for_view(&mut pending, true), Some(intent));
+            assert_eq!(take_for_view(&mut pending, true), None);
+        }
+
+        let update = serde_json::json!({"settings":true,"checkUpdate":true});
+        let mut pending = Some(update.clone());
+        assert_eq!(take_for_view(&mut pending, false), Some(update));
+    }
+
     fn row(root: &str, session: &str) -> Recent {
         Recent {
             root: root.into(),

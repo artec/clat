@@ -62,6 +62,8 @@ impl Service {
             self.consent(run, &app, &lease)?;
         }
         let call = deadline(&lease.cancel, timeout);
+        self.recheck_app(&app)?;
+        let _activity = self.observe(run, &lease.cancel, ComputerUseKind::Wait, Some(&app))?;
         loop {
             active(&call)?;
             self.recheck_app(&app)?;

@@ -34,7 +34,7 @@ impl Authority {
         leases.retain(|lease| lease.strong_count() > 0);
         let lease = Arc::new(Lease {
             app: app.identity.clone(),
-            session: run.session.clone(),
+            session: run.target.session_id.clone(),
             cancel: run.lifetime.child(),
         });
         leases.push(Arc::downgrade(&lease));
@@ -61,6 +61,7 @@ impl Authority {
             }
             true
         });
+        control.ui_activity.permissions_changed();
         Ok(())
     }
 

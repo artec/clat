@@ -736,11 +736,30 @@ impl Model for TestModel {
                 let has_command_result = current_items.iter().any(|item| {
                     matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "run_command")
                 });
+                let described = current_items.iter().any(|item| {
+                    matches!(item, crate::model::ModelItem::ToolResult(result)
+                        if result.tool_name == "describe_capability" && !result.is_error)
+                });
+                let offered = request.tools.iter().any(|tool| tool.name == "run_command");
                 if has_command_result {
                     events.emit(ModelEvent::TextDelta {
                         delta: "command attempted".into(),
                     });
                     Ok(response("command attempted", FinishReason::Completed))
+                } else if !offered && !described {
+                    Ok(ModelResponse {
+                        text: String::new(),
+                        tool_calls: vec![ToolCall {
+                            id: "call-describe-run".into(),
+                            name: "describe_capability".into(),
+                            arguments: json!({"name": "run_command"}),
+                        }],
+                        finish_reason: FinishReason::ToolCalls,
+                        usage: None,
+                        provider_response_id: None,
+                        provider_state: Vec::new(),
+                        reasoning: None,
+                    })
                 } else {
                     Ok(ModelResponse {
                         text: String::new(),

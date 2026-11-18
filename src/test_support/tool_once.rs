@@ -20,17 +20,31 @@ impl TestModelScript for ToolOnceScript {
                 result.output
             );
         }
-        let complete = matches!(request.items.last(), Some(ModelItem::ToolResult(_)))
-            || !request.tools.iter().any(|tool| tool.name == self.call.name);
-        let calls = if complete {
+        let offered = request.tools.iter().any(|tool| tool.name == self.call.name);
+        let described = request.items.iter().any(|item| {
+            matches!(item, ModelItem::ToolResult(result)
+                if result.tool_name == "describe_capability" && !result.is_error)
+        });
+        let calls = if request.items.iter().any(|item| {
+            matches!(item, ModelItem::ToolResult(result) if result.tool_name == self.call.name)
+        }) {
             vec![]
-        } else {
+        } else if offered {
             vec![self.call.clone()]
+        } else if !described && request.tools.iter().any(|tool| tool.name == "describe_capability")
+        {
+            vec![ToolCall {
+                id: format!("{}-describe", self.call.id),
+                name: "describe_capability".into(),
+                arguments: json!({"name": self.call.name}),
+            }]
+        } else {
+            vec![]
         };
         for call in &calls {
             events.emit(crate::model::ModelEvent::ToolCallCompleted { call: call.clone() });
         }
-        let reason = if complete {
+        let reason = if calls.is_empty() {
             FinishReason::Completed
         } else {
             FinishReason::ToolCalls
@@ -39,7 +53,7 @@ impl TestModelScript for ToolOnceScript {
             finish_reason: reason.clone(),
         });
         Ok(ModelResponse {
-            text: if complete {
+            text: if calls.is_empty() {
                 "done".into()
             } else {
                 String::new()

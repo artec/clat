@@ -378,9 +378,10 @@ endpoints retain the conservative tool-turn-only reasoning replay policy.
 The Responses adapter preserves native opaque reasoning state; it does not
 substitute compatible-API `reasoning_content` for that state.
 
-Stable instructions and tool definitions precede growing conversation history.
-The core orders ordinary tools first and optional run tools last, by name
-within each group. Both HTTP adapters append transient host context, such as
+Stable instructions and the resident tool schemas precede growing conversation
+history. The core orders resident tools in a fixed table, then conditional run
+tools by name. A tool promoted by `describe_capability` is appended after that
+prefix and does not reorder it. Both HTTP adapters append transient host context, such as
 the active scratch directory, after projecting history. That context is counted
 against the input budget and regenerated for the next run. Scratch guidance
 asks the model to apply it silently and keep routine setup out of replies and

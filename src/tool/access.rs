@@ -40,20 +40,7 @@ impl ToolAccessSlot {
     }
 }
 
-/// Keep the always available segment stable when optional run tools appear.
+/// Resident schemas stay in table order. Conditional tools follow, by name.
 pub(super) fn sort_model_definitions(definitions: &mut [super::ToolDefinition]) {
-    let contextual = |name: &str| {
-        super::is_task_tool(name)
-            || matches!(
-                name,
-                "view_image"
-                    | "delegate_readonly"
-                    | "request_plan_mode"
-                    | "exit_plan_mode"
-                    | "propose_goal"
-            )
-    };
-    definitions.sort_unstable_by(|a, b| {
-        (contextual(&a.name), &a.name).cmp(&(contextual(&b.name), &b.name))
-    });
+    super::resident::sort_published(definitions);
 }

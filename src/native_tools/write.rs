@@ -21,22 +21,13 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".into(),
-            description: "Create a UTF-8 file. Existing files are preserved unless overwrite is explicitly true; that replaces the entire file. To append or change part of a file, use edit_file. Paths are project-relative (parent directories are created as needed); absolute paths in the active scratch directory are writable in Project Write; other outside paths require Full Access. Prefer edit_file for small changes to existing files.".into(),
+            description: "Create a UTF-8 file, or replace it entirely when overwrite is true. Use edit_file for a partial change. Outside paths require Full Access.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative path, or absolute scratch path in Project Write (arbitrary absolute paths require Full Access)"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full file content, not a fragment to append (max 1 MiB)"
-                    },
-                    "overwrite": {
-                        "type": "boolean",
-                        "description": "Explicitly replace the entire existing file; defaults to false. Prefer edit_file to append or preserve existing sections."
-                    }
+                    "path": { "type": "string" },
+                    "content": { "type": "string" },
+                    "overwrite": { "type": "boolean" }
                 },
                 "required": ["path", "content"],
                 "additionalProperties": false

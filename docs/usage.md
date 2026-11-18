@@ -1938,10 +1938,12 @@ printed URL. Use `--no-open` for supervised services.
 
 ### Web workbench
 
-In Web, PWA, and Desktop, assistant replies can use a short label for a
-project file or HTTP(S) address. For example, `[Architecture notes](./docs/architecture.md:42)`
-opens the verified file at line 42, and `[Local preview](http://localhost:3000/)`
-opens the browser. Hover to see the destination. Right-click, or press
+In Web, PWA, and Desktop, assistant replies cite a project file or HTTP(S)
+address with a short description in the reply language. That description is
+the visible text; the path, optional line, or URL is the destination. For
+example, `[Architecture notes](./docs/architecture.md:42)` opens the verified
+file at line 42, and `[Local preview](http://localhost:3000/)` opens the
+browser. Hover to see the destination. Right-click, or press
 Shift+F10 on a focused link, for open and copy actions. Explicit paths outside
 the current project offer a copy action. Project navigation uses the same
 file access checks as the editor.
@@ -3194,9 +3196,15 @@ JSON filters use the same core query as the model:
 /capabilities {"id":"<id returned by this snapshot>","schema_offset":0}
 ```
 
-Models use `query_capabilities` and `describe_capability`. Their view contains
-only the current Run's actual tool definitions, including Plan, modality, Task
-and subagent fences. Read-only children keep their existing three-tool allowlist.
+Models use `query_capabilities` and `describe_capability`. The initial request
+carries full schemas for the resident tools only. Other tools that the current
+Run is allowed to use appear as one line in the guidance. `describe_capability`
+with that name appends the full schema to later requests in the same run;
+calling the tool before that fails. Plan, modality, Task and subagent fences
+still decide which names are visible. Read-only children keep their existing
+three-tool allowlist and have no deferred index. `/context` reports the schemas
+actually sent, so a new session's tool total is the resident set until a tool
+is promoted.
 User diagnostics use the broader **idle-user** domain and are rejected during an
 active Run. Viewing does not create a conversation, run tools, probe dependencies,
 connect/reconnect services, install software, ask for approval or change a Task.

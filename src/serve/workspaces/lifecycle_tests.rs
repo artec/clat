@@ -238,6 +238,16 @@ fn active_run_rejects_upgrade_takeover_without_stopping_the_host() {
         !host.shutdown.load(Ordering::SeqCst),
         "busy takeover rejection must leave the existing host alive"
     );
+    let status = host.dispatch("host.runtime_status", &json!({})).unwrap();
+    assert_eq!(status["running_workspaces"], json!(["default"]));
+    let error = host
+        .dispatch(
+            "host.restart_idle",
+            &json!({"expected_instance_id":host.instance,"for_exit":true}),
+        )
+        .expect_err("an active conversation must block unconfirmed menu quit");
+    assert_eq!(error.code, super::super::protocol::ErrorCode::Busy);
+    assert!(!host.shutdown.load(Ordering::SeqCst));
 
     route.cancel_active_run();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -394,6 +404,50 @@ fn runtime_status_observes_all_projects_without_stopping_or_consuming_work() {
         host.dispatch("host.runtime_status", &json!({})).unwrap()["ready"],
         true
     );
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
+fn host_menu_idle_quit_allows_a_draft_but_fences_running_work_and_the_instance() {
+    let (host, storage, project) = fixture("desktop-host-menu-quit");
+    let route = host.route("default").unwrap();
+    let store = route.drafts.require().unwrap();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let draft = store.stage_png(bytes.get_ref()).unwrap();
+    let status = host.dispatch("host.runtime_status", &json!({})).unwrap();
+    assert_eq!(status["ready"], false, "takeover still protects the draft");
+    assert_eq!(status["running_workspaces"], json!([]));
+    let guarded = json!({"expected_instance_id":host.instance,"for_exit":true});
+    assert!(
+        host.dispatch(
+            "host.restart_idle",
+            &json!({"expected_instance_id":"other","for_exit":true})
+        )
+        .is_err()
+    );
+
+    let upload = route.try_upload_permit().unwrap();
+    assert_eq!(
+        host.dispatch("host.runtime_status", &json!({})).unwrap()["running_workspaces"],
+        json!(["default"])
+    );
+    assert!(host.dispatch("host.restart_idle", &guarded).is_err());
+    assert!(!host.shutdown.load(Ordering::SeqCst));
+    drop(upload);
+
+    assert_eq!(
+        host.dispatch("host.restart_idle", &guarded).unwrap()["stopping"],
+        true
+    );
+    assert!(draft.is_file());
+    drop(store);
     drop(route);
     host.close().unwrap();
     drop(host);

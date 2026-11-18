@@ -1281,7 +1281,7 @@ Native background job checks: `scripts/gates.sh native_job target_writer`. They 
 
 When adding native tools or a projection, also run
 `scripts/gates.sh failed_run_spawn_does_not_mark rc_021:: runtime_status_observes_all_projects idle_scheduler_poll_never`.
-These pin the complete frozen tool order, foreign-owner Job isolation, checkpoint
+These pin the complete resident tool prefix plus any promoted suffix, foreign-owner Job isolation, checkpoint
 parity and actual Host readiness. Do not replace complete comparisons with subset
 checks. Sandboxed child-process fixtures must write their success markers inside
 their authorized project; a marker beside the project is an unauthorized write on

@@ -153,7 +153,7 @@ impl Tool for UiTool {
 }
 
 #[cfg(any(target_os = "macos", windows))]
-pub(in crate::native_tools) struct UiApps;
+pub(in crate::native_tools) struct UiApps(pub(super) Arc<Service>);
 
 #[cfg(any(target_os = "macos", windows))]
 impl Tool for UiApps {
@@ -169,13 +169,18 @@ impl Tool for UiApps {
 
     fn invoke(&self, arguments: &Value, _: &Project, cancel: &CancelToken) -> Result<Value> {
         active(cancel)?;
+        let run = self.0.run(cancel)?;
         if arguments
             .as_object()
             .is_none_or(|object| !object.is_empty())
         {
             return Err(error("INVALID_ARGUMENTS"));
         }
-        let call = deadline(cancel, tree::READ_TIME);
+        self.0.backend.ready()?;
+        let call = deadline(&run.lifetime, tree::READ_TIME);
+        let _activity = self
+            .0
+            .observe(&run, &run.lifetime, ComputerUseKind::Apps, None)?;
         #[cfg(target_os = "macos")]
         return super::super::ui_apps::read_inventory(&call);
         #[cfg(windows)]

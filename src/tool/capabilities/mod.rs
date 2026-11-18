@@ -32,6 +32,9 @@ impl ToolRegistry {
         let state = self.inner.read().expect("tool registry");
         Arc::new(CapabilityView::capture(&state, access))
     }
+    pub(crate) fn installed_view(&self) -> Option<Arc<CapabilityView>> {
+        self.discovery.read().ok()?.clone()
+    }
     pub(crate) fn install_capabilities(&self, view: Arc<CapabilityView>) {
         *self.discovery.write().expect("capability slot") = Some(view);
     }

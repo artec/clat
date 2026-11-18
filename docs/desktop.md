@@ -403,8 +403,8 @@ Automatic desktop connections use `127.0.0.1:2691`; use the browser for an
 explicitly configured custom-port `clat serve` instance.
 
 - Closing the window hides it; restore through the tray/Dock or launch again.
-- **退出桌面** quits the GUI. The app menu (including ⌘Q on macOS), tray and
-  settings check the shared Host for work across projects and ask for confirmation
+- **退出桌面** quits the GUI. The app menu (including ⌘Q on macOS) and settings
+  check the shared Host for work across projects and ask for confirmation
   if any work is in progress or the status is unavailable. The Host and its tasks
   continue if you confirm.
 - **停止共享后台** explicitly stops the shared Host and affects all clients.
@@ -624,7 +624,10 @@ the file. A Markdown file's action menu opens a rendered preview of the current 
 contents, including unsaved changes. Local Markdown file links in conversation replies
 offer to open a file within the current project or copy its absolute or relative path;
 outside the project only copying the absolute path is available. The editor continues
-to enforce the project boundary. Model lists mark image-capable
+to enforce the project boundary. Titled Markdown links retain a single label and
+destination in macOS system WebViews as well as browsers; automatic path and URL
+recognition does not split a complete titled link.
+Model lists mark image-capable
 routes with `⧉` after the model name, and adding or sending images with a known text-only model is
 blocked with a prompt to choose an image-capable model. Terminal appearance is configurable in Settings, with a live glyph preview and local system font selection. No font files are
 bundled. See [usage](usage.md#project-editor-git-and-terminals)
@@ -640,10 +643,37 @@ Desktop suppresses the WebView's default context menu across the welcome page an
 workbench. Application context menus continue to receive right-click events.
 Visual focus rings are hidden; DOM focus, text carets and keyboard navigation remain.
 
-### Tray navigation
+### Menu bar and tray navigation
 
-On macOS and Windows, left-clicking the CLAT tray icon shows the main window;
-right-clicking opens a native menu with Recent, Settings and Quit CLAT. Recent
+On macOS, the menu bar icon follows the local shared Host after Desktop has
+launched in the current login session. It stays visible when you quit Desktop
+and disappears after the Host stops. Left-click it to open CLAT. Right-click
+to see whether the Host is idle or has work pending, its running version,
+and shortcuts such as Tasks.
+With automatic update checks enabled, a newer desktop package for this Mac
+from the signed release index appears on the version row. Clicking it opens
+the existing update screen. Download and installation keep
+the desktop updater's normal checks and confirmations. **Quit CLAT** in this menu
+stops the displayed Host and closes the desktop window if it is open. It asks for
+confirmation when work is running. Older Hosts use their reported readiness for
+this check. Closing or quitting from the desktop app itself lets the Host keep running.
+The menu runs in a windowless helper with its own app identity, so closing or
+updating the desktop app can leave the Host and menu running. When a different
+desktop build opens, its helper takes over the menu without stopping the Host.
+
+On Windows, left-clicking the CLAT tray icon shows the main window;
+right-clicking opens the tray menu, where Quit CLAT follows the normal exit checks.
+
+When the local Host uses Computer Use, macOS shows a separate screen icon. Click
+it or open Computer Use in the CLAT menu to see whether the Agent is listing
+apps, reading an interface, waiting for a change or taking an action. From there,
+open the conversation or stop Computer Use for that turn. Other conversation
+work can continue, and saved app access applies to later turns. On Windows,
+hover over the existing CLAT tray icon to see the current activity.
+The status can remain for two seconds after an operation, and clears when the
+turn ends, Computer Use is stopped, access is revoked, or the Host disconnects.
+
+Both native menus provide Recent and Settings. Recent
 contains the last three conversations opened in this desktop client across all
 projects, labeled with conversation title and project name. Opening a conversation
 moves it to the top; a title update does not change the order. The list is retained
@@ -654,9 +684,8 @@ The native bridge records opened conversations through explicitly permitted Taur
 commands; bridge failures are reported in desktop settings instead of being ignored.
 
 Selecting a recent conversation uses the existing project/session navigation and
-trust checks. Settings opens the existing settings view. Quit follows normal
-desktop exit/update safeguards and does not implicitly stop a shared Host. Native
-menu labels follow the desktop language preference.
+trust checks. Settings opens the existing settings view. Native menu labels
+follow the desktop language preference.
 
 Terminal settings query the viewing device font library through the guarded
 `desktop_fonts` command, backed by Core Text on macOS and DirectWrite on Windows.

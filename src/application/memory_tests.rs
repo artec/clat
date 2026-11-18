@@ -21,6 +21,21 @@ impl TestModelScript for MemoryScript {
         request: crate::ModelRequest<'_>,
         events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
+        if !request.tools.iter().any(|tool| tool.name == "memory_search") {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "memory-describe".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": "memory_search"}),
+                }],
+                finish_reason: crate::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: Vec::new(),
+                reasoning: None,
+            });
+        }
         match self.step.fetch_add(1, Ordering::SeqCst) {
             0 => {
                 let instructions = request.instructions.unwrap_or_default();

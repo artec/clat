@@ -10,6 +10,102 @@ fn exchange(addr: SocketAddr, host: &str, headers: &str, path: &str) -> String {
 }
 
 #[test]
+fn computer_use_routes_require_local_owner_and_current_host() {
+    use crate::host_client::HostClient;
+    let (handle, storage, project) = spawn_serve("computer-use-owner", TestBehavior::Success);
+    let host = HostClient::connect(handle.addr.port(), TEST_TOKEN.into(), &storage).unwrap();
+    let mut stream = host.computer_use_events().unwrap();
+    assert!(stream.next_computer_use().unwrap().activities.is_empty());
+    assert!(
+        !host
+            .stop_computer_use(&crate::native_tools::ui_activity::ComputerUseTarget {
+                run_id: "stale".into(),
+                project_root: project.to_string_lossy().into_owned(),
+                session_id: "old session".into(),
+            })
+            .unwrap()
+    );
+    let authority = handle.addr.to_string();
+    let bearer = format!("Authorization: Bearer {TEST_TOKEN}\r\n");
+    let generation = format!("X-Clat-Host-Instance: {}\r\n", host.instance_id());
+    for headers in [
+        generation.clone(),
+        bearer.clone(),
+        format!("{bearer}X-Clat-Host-Instance: replaced\r\n"),
+        format!(
+            "{bearer}{generation}Origin: http://{authority}\r\nSec-Fetch-Site: same-origin\r\n"
+        ),
+    ] {
+        let response = exchange(handle.addr, &authority, &headers, "/api/computer-use/stop");
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    }
+    handle.shutdown();
+    assert!(stream.next_computer_use().is_err());
+    cleanup(handle, &storage, &project);
+}
+
+#[test]
+fn computer_use_feed_echoes_stop_for_one_turn_and_keeps_other_projects_live() {
+    use crate::host_client::HostClient;
+    use crate::native_tools::ui_activity::{ComputerUseKind, ComputerUseTarget};
+
+    let mut activity = None;
+    let (handle, storage, project) = spawn_serve_observed(
+        "computer-use-stream",
+        TestBehavior::Success,
+        super::super::state::SUBSCRIBER_QUEUE_FRAMES,
+        |app| activity = Some(app.computer_use_activity_for_test()),
+    );
+    let registry = activity.unwrap();
+    let host = HostClient::connect(handle.addr.port(), TEST_TOKEN.into(), &storage).unwrap();
+    let mut events = host.computer_use_events().unwrap();
+    assert!(events.next_computer_use().unwrap().activities.is_empty());
+    let target = |run: &str, root: &Path| ComputerUseTarget {
+        run_id: run.into(),
+        project_root: root.to_string_lossy().into_owned(),
+        session_id: "same-id-in-both-projects".into(),
+    };
+    let first = target("one", &project);
+    let second = target("two", &project.join("other-project"));
+    let turn = crate::CancelToken::new();
+    let first_ui = turn.child();
+    let second_ui = crate::CancelToken::new();
+    let _read = registry
+        .start(
+            &first,
+            &first_ui,
+            &first_ui,
+            ComputerUseKind::Read,
+            Some("Editor"),
+        )
+        .unwrap();
+    let _wait = registry
+        .start(
+            &second,
+            &second_ui,
+            &second_ui,
+            ComputerUseKind::Wait,
+            Some("Viewer"),
+        )
+        .unwrap();
+    let mut rows = events.next_computer_use().unwrap().activities;
+    if rows.len() == 1 {
+        rows = events.next_computer_use().unwrap().activities;
+    }
+    assert_eq!(rows.len(), 2);
+    assert_eq!((&rows[0].target, &rows[1].target), (&second, &first));
+
+    assert!(host.stop_computer_use(&first).unwrap());
+    assert!(!host.stop_computer_use(&first).unwrap());
+    let remaining = events.next_computer_use().unwrap().activities;
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].target, second);
+    assert!(first_ui.is_cancelled() && !turn.is_cancelled() && !second_ui.is_cancelled());
+    drop(events);
+    cleanup(handle, &storage, &project);
+}
+
+#[test]
 fn local_auth_silently_mints_and_remote_fences_issue_nothing() {
     let (handle, storage, project) = spawn_serve("ux1-local-auth", TestBehavior::Success);
     let host = handle.addr.to_string();

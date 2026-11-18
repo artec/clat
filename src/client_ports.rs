@@ -35,6 +35,9 @@ pub mod host {
     pub use crate::host_client::PackagedBackend;
     pub use crate::host_client::{HostNotification, NotificationCompletion, NotificationOutcome};
     pub use crate::host_client::{HostSessionSharePreview, HostSharedInput, PreparedSharedMessage};
+    pub use crate::native_tools::ui_activity::{
+        ComputerUseActivity, ComputerUseKind, ComputerUseSnapshot, ComputerUseTarget,
+    };
     pub fn journal_format_version() -> u32 {
         crate::session::compat::SESSION_FORMAT_VERSION
     }

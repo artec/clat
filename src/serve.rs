@@ -23,6 +23,7 @@ mod acp;
 pub(crate) mod approver;
 mod auth;
 mod automatic;
+mod computer_use;
 mod conversation;
 mod development;
 mod history_archives;
@@ -645,7 +646,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         return;
     }
 
-    let Some(shared) = authenticated_project(&mut stream, &mut request, shared) else {
+    let Some(shared) = route_project_request(&mut stream, &mut request, shared) else {
         return;
     };
     if request.method == "POST" && history_archives::handles(&request.path) {
@@ -835,11 +836,15 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
     }
 }
 
-fn authenticated_project(
+fn route_project_request(
     stream: &mut TcpStream,
     request: &mut http::HttpRequestHead,
     shared: Arc<state::ServeShared>,
 ) -> Option<Arc<state::ServeShared>> {
+    if computer_use::handles(&request.path) {
+        computer_use::handle(stream, request, &shared);
+        return None;
+    }
     if let Some(expected) = &request.expected_instance {
         let matches = shared
             .host

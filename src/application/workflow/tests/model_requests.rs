@@ -19,13 +19,28 @@ impl TestModelScript for ProposalScript {
         request: crate::ModelRequest<'_>,
         events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
+        assert!(request.instructions.unwrap_or_default().contains(self.name));
+        if !request.tools.iter().any(|tool| tool.name == self.name) {
+            return Ok(crate::ModelResponse {
+                text: String::new(),
+                tool_calls: vec![crate::ToolCall {
+                    id: "describe-proposal".into(),
+                    name: "describe_capability".into(),
+                    arguments: json!({"name": self.name}),
+                }],
+                finish_reason: crate::model::FinishReason::ToolCalls,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
         assert_eq!(
             self.calls.fetch_add(1, Ordering::SeqCst),
             0,
             "a confirmed proposal must end this run"
         );
         assert!(request.tools.iter().any(|tool| tool.name == self.name));
-        assert!(request.instructions.unwrap_or_default().contains(self.name));
         let response = crate::ModelResponse {
             text: "A workflow would help.".into(),
             tool_calls: vec![
@@ -385,11 +400,22 @@ impl TestModelScript for InspectCapabilities {
             "ask_user",
             "update_goal",
         ] {
-            assert_eq!(
-                guidance.contains(name),
-                request.tools.iter().any(|tool| tool.name == name),
-                "guidance must match effective tools for {name}"
-            );
+            let in_tools = request.tools.iter().any(|tool| tool.name == name);
+            let mentioned = guidance.contains(name);
+            if crate::tool::resident::is_resident(name) {
+                assert_eq!(
+                    mentioned, in_tools,
+                    "resident guidance must match the schema for {name}"
+                );
+            } else if mentioned {
+                assert!(
+                    guidance.contains(&format!("{name}:")),
+                    "{name} is advertised only in the deferred index"
+                );
+                assert!(!in_tools, "deferred {name} must not ship a schema");
+            } else {
+                assert!(!in_tools, "disabled {name} must not be callable");
+            }
         }
         Ok(crate::ModelResponse {
             text: "inspected".into(),

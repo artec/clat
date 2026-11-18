@@ -323,9 +323,11 @@ Host-client clipboard stores initialize only after the current Host/project has
 confirmed availability and actual image staging is needed.
 
 **Reply links** (`builtin.reply_links`) is enabled by default. It adds a
-short system prompt section that requires descriptive Markdown links to known
-project files, line numbers, and HTTP(S) addresses in final replies. A request
-for the literal path or URL takes precedence.
+short system prompt section that requires final replies to cite known project
+files, optional line numbers, and HTTP(S) addresses as Markdown links. The
+visible label is a short description in the reply language and does not repeat
+the path, filename, or URL. Symbols and error codes stay in backticks. A
+request for the literal path or URL takes precedence.
 Clients render the Markdown of existing and new replies even when the
 guidance plugin is disabled.
 

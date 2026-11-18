@@ -49,21 +49,21 @@ impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".into(),
-            description: "Search bounded UTF-8 files with literal (default) or regex matching, or list files by glob pattern alone (omit query, pass include_globs) sorted by modification time, newest first. Supports gitignore, include/exclude globs, extensions, hidden-file control, stable ordering, and invalidation-aware pagination cursors. Paths may be project-relative or explicit absolute read paths.".into(),
+            description: "Search bounded UTF-8 files. Paths may be project-relative or absolute. Continue with cursor.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Literal text or regex pattern. Omit with include_globs set to list matching files by pattern"},
-                    "path": {"type": "string", "description": "File/directory; defaults to '.'"},
-                    "mode": {"type": "string", "enum": ["literal", "regex"], "description": "Defaults to literal"},
-                    "case_sensitive": {"type": "boolean", "description": "Defaults to false"},
+                    "query": {"type": "string"},
+                    "path": {"type": "string", "description": "Project-relative or absolute path"},
+                    "mode": {"type": "string", "enum": ["literal", "regex"]},
+                    "case_sensitive": {"type": "boolean"},
                     "include_globs": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
                     "exclude_globs": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
                     "extensions": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
-                    "include_hidden": {"type": "boolean", "description": "Defaults to false"},
-                    "respect_gitignore": {"type": "boolean", "description": "Defaults to true"},
+                    "include_hidden": {"type": "boolean"},
+                    "respect_gitignore": {"type": "boolean"},
                     "max_results": {"type": "integer", "minimum": 1, "maximum": crate::search::MAX_RESULTS_PER_PAGE},
-                    "cursor": {"type": "string", "description": "Opaque next_cursor from the same query"}
+                    "cursor": {"type": "string"}
                 },
                 "required": [],
                 "additionalProperties": false

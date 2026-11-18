@@ -189,7 +189,12 @@ fn cua_live_windows_uia_retains_window_identity_and_dispatches_semantic_actions(
     std::fs::create_dir(&fixture_root).unwrap();
     crate::control_storage::sentinel::initialize(&fixture_root).unwrap();
     let storage = Arc::new(ControlStorage::open_ready(&fixture_root).unwrap());
-    let service = Service::new(storage, AskUserSlot::shared(), Arc::new(Windows));
+    let service = Service::new(
+        storage,
+        AskUserSlot::shared(),
+        Arc::new(Windows),
+        &fixture_root,
+    );
     service.begin("live-windows".into(), &call, ToolAccessPolicy::all(), None);
     let run = service.run(&call).unwrap();
     let (window, tree) = observe_fixture(&service, &run, &app, &call);

@@ -89,6 +89,15 @@ fn spawn_serve_with_queue(
     behavior: TestBehavior,
     queue_frames: usize,
 ) -> (ServeHandle, PathBuf, PathBuf) {
+    spawn_serve_observed(name, behavior, queue_frames, |_| {})
+}
+
+fn spawn_serve_observed(
+    name: &str,
+    behavior: TestBehavior,
+    queue_frames: usize,
+    observe: impl FnOnce(&crate::TrustedProjectApplication),
+) -> (ServeHandle, PathBuf, PathBuf) {
     let (storage_root, project_root, project) = setup(name);
     prepare_storage(&project, &storage_root, behavior.clone());
     let handle = crate::serve::serve_with_with_queue(
@@ -103,9 +112,11 @@ fn spawn_serve_with_queue(
             im: None,
         },
         |bootstrap| {
-            bootstrap
+            let app = bootstrap
                 .with_permission_modes()
-                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))?;
+            observe(&app);
+            Ok(app)
         },
         Arc::new(AtomicBool::new(false)),
         queue_frames,

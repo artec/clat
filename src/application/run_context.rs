@@ -261,6 +261,11 @@ impl ContextSources {
             tools,
             subagents_enabled,
         } = self;
+        let tool_access = if goal.instructions.is_empty() {
+            tool_access
+        } else {
+            tool_access.with_goal_tools(true)
+        };
         let invoked_instructions = invoked_skill
             .as_ref()
             .map(crate::skills::InvokedSkill::instructions);

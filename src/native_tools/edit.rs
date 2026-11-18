@@ -15,13 +15,13 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file".into(),
-            description: "Replace exact unique text in an existing file. Use old_str/new_str for one edit, OR edits:[{old_str,new_str},...] for up to 64 atomic edits of the SAME original file. Each old_str must match byte-for-byte exactly once; ranges must not overlap. Failure preserves the file and may return bounded read_file line hints; re-read before retrying, never guess or fuzzy-replace. Project-relative and absolute scratch paths work in Project Write; other outside paths require Full Access.".into(),
+            description: "Replace exact unique text in one existing file. One old_str/new_str pair, or up to 64 edits against the same original. Each old_str must match once. Failure preserves the file.".into(),
             input_schema: json!({
                 "type":"object", "properties":{
-                    "path":{"type":"string","description":"Existing project-relative or authorized absolute file path"},
-                    "old_str":{"type":"string","description":"Exact unique text (single edit only)"},
-                    "new_str":{"type":"string","description":"Replacement text (single edit only)"},
-                    "edits":{"type":"array","minItems":1,"maxItems":64,"description":"Atomic replacements matched against the same original snapshot, not sequential substitutions", "items":{
+                    "path":{"type":"string"},
+                    "old_str":{"type":"string"},
+                    "new_str":{"type":"string"},
+                    "edits":{"type":"array","minItems":1,"maxItems":64,"items":{
                         "type":"object","properties":{"old_str":{"type":"string"},"new_str":{"type":"string"}},
                         "required":["old_str","new_str"],"additionalProperties":false
                     }}

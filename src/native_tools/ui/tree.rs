@@ -310,6 +310,7 @@ impl Service {
         }
         let call = deadline(&lease.cancel, READ_TIME);
         self.recheck_app(&app)?;
+        let _activity = self.observe(run, &lease.cancel, ComputerUseKind::Read, Some(&app))?;
         let (root, window) = self.scope(&app, selected, &call)?;
         let id = run.snapshot_id();
         let inventory_only = self.backend.window_scoped() && window.is_none();
@@ -393,6 +394,12 @@ impl Service {
         }
         self.recheck_app(&snapshot.app)?;
         let call = deadline(&snapshot.lease.cancel, READ_TIME);
+        let _activity = self.observe(
+            run,
+            &snapshot.lease.cancel,
+            ComputerUseKind::Read,
+            Some(&snapshot.app),
+        )?;
         if self.backend.window_scoped()
             && let Some(window) = &snapshot.root_window
         {

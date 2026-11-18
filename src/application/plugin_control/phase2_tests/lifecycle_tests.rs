@@ -202,7 +202,7 @@ pub(in crate::application::plugin_control) fn automatic(
 ) {
     let (request, receiver) = request();
     let (mut config, credentials) = app.model_state().unwrap();
-    config.run_token_budget = Some(100000);
+    config.run_token_budget = Some(130000);
     let target = crate::application::target_run::TargetRunRequest {
         session: id,
         message: crate::message::PendingMessage::from_front_end(

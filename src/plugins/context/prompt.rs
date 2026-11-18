@@ -35,13 +35,18 @@ const REPLY_LINKS_DESCRIPTOR: PluginDescriptor = PluginDescriptor {
     optional: &[],
 };
 
-const REPLY_LINKS_GUIDANCE: &str = "In final replies, always write references to known project files and HTTP(S) pages or services \
-    as named Markdown links. Give each link a short, descriptive label in the reply language. \
-    Use [Architecture notes](./docs/architecture.md:42) for a project file and optional line, \
-    or [Local preview](http://localhost:3000/) for a running service. Put destinations containing \
-    spaces or parentheses inside angle brackets. Use verified project-relative or absolute file paths. \
-    Use a raw path or URL only when the user explicitly asks for the literal value. \
-    If only a filename is known, mention it as plain text.";
+const REPLY_LINKS_GUIDANCE: &str = "In final replies, write references to known project files and HTTP(S) pages or services \
+    as named Markdown links. The words in square brackets name what the sentence is discussing, in the reply \
+    language, in a few words. Those words must not be the path, the filename, or the URL. Put a verified \
+    project-relative or absolute path, with an optional line, or the HTTP(S) address only inside the parentheses. \
+    In an English reply write [macOS implementation](src/native_tools/ui/mac/mod.rs); in a Chinese reply write \
+    [macOS 实现](src/native_tools/ui/mac/mod.rs). A line looks like [fallback branch](src/native_tools/ui/mod.rs:317). \
+    For a running service write [Local preview](http://localhost:3000/). \
+    Do not write [src/native_tools/ui/mac/mod.rs](src/native_tools/ui/mac/mod.rs), and do not cite a file or address \
+    by wrapping the path or URL in backticks. Keep symbols and error codes in backticks, such as `ui_wait` or \
+    `cua.error_native`. Put a destination that contains spaces or parentheses inside angle brackets. Use a raw \
+    path or URL only when the user explicitly asks for the literal value. If only a filename is known, mention it \
+    as plain text.";
 
 pub(crate) struct PromptRegistryPlugin;
 
@@ -138,11 +143,20 @@ mod tests {
             .unwrap();
         let registry = manager.require(PROMPT_SERVICE).unwrap();
         let mounted = registry.snapshot().system;
-        assert!(mounted.contains("[Architecture notes](./docs/architecture.md:42)"));
+        assert!(mounted.contains("Those words must not be the path, the filename, or the URL."));
+        assert!(mounted.contains("[macOS implementation](src/native_tools/ui/mac/mod.rs)"));
+        assert!(mounted.contains("[macOS 实现](src/native_tools/ui/mac/mod.rs)"));
+        assert!(mounted.contains("[fallback branch](src/native_tools/ui/mod.rs:317)"));
         assert!(mounted.contains("[Local preview](http://localhost:3000/)"));
+        assert!(mounted.contains(
+            "Do not write [src/native_tools/ui/mac/mod.rs](src/native_tools/ui/mac/mod.rs)"
+        ));
+        assert!(mounted.contains("`ui_wait`"));
+        assert!(mounted.contains("`cua.error_native`"));
 
         manager.remove_plugins(&[REPLY_LINKS_ID]).unwrap();
         let without_links = registry.snapshot().system;
+        assert!(!without_links.contains("[macOS implementation]"));
         assert!(!without_links.contains("[Local preview]"));
         assert!(without_links.starts_with("You are CLAT"));
     }

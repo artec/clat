@@ -295,7 +295,11 @@ fn context_estimate_is_additive_and_plan_skills_and_tool_view_are_live() {
     let baseline = application.context_snapshot().unwrap();
     assert_estimate_identity(&baseline);
     assert!(baseline.project_instructions_estimate > 0);
-    assert!(baseline.tool_names.contains(&"lsp".to_owned()));
+    assert!(application.tools.get("lsp").is_some());
+    assert!(
+        !baseline.tool_names.iter().any(|name| name == "lsp"),
+        "lsp stays registered and is omitted from the resident schema"
+    );
     assert_eq!(baseline.plan_policy_estimate, 0);
     assert_eq!(baseline.goal_policy_estimate, 0);
 
@@ -746,25 +750,186 @@ fn model_requests_explain_available_built_in_capabilities() {
         );
         assert!(!plan.contains(name), "plan prompt must omit {name}");
     }
-    for (scenario, tool) in [
-        (
-            "At a future time or on a recurring schedule",
-            "schedule_create",
-        ),
-        ("To continue running after this turn", "job_start"),
-        ("Within this turn", "exec_command"),
-        ("An existing background job", "job_output"),
-    ] {
+    assert!(
+        standard.contains("Within this turn, use exec_command"),
+        "resident command guidance stays in the normal prompt"
+    );
+    for tool in ["schedule_create", "job_start"] {
         assert!(
-            standard
-                .lines()
-                .any(|line| line.starts_with(scenario) && line.contains(tool)),
-            "the model must be guided to choose {tool} for {scenario}"
+            standard.contains(&format!("{tool}:")),
+            "deferred {tool} is advertised by name"
+        );
+        assert!(
+            !plan.contains(tool),
+            "plan mode must not advertise {tool}"
         );
     }
     drop(requests);
     app.close().unwrap();
     crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn describe_capability_appends_a_deferred_schema_without_moving_the_prefix() {
+    let (storage, root) = roots("context-promote-tool");
+    std::fs::create_dir_all(&root).unwrap();
+    let probe = Arc::new(PromotionScript {
+        step: AtomicUsize::new(0),
+        prefix: Mutex::new(Vec::new()),
+    });
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(probe.clone()),
+    );
+    configure_test_model(&app);
+    run_request(&mut app, "Need a schedule").unwrap();
+    let prefix = probe.prefix.lock().unwrap().clone();
+    assert!(!prefix.iter().any(|name| name == "schedule_create"));
+    assert!(prefix.iter().any(|name| name == "describe_capability"));
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+struct PromotionScript {
+    step: AtomicUsize,
+    prefix: Mutex<Vec<String>>,
+}
+
+impl TestModelScript for PromotionScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let names = request
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        match self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => {
+                assert!(
+                    request
+                        .instructions
+                        .unwrap_or_default()
+                        .contains("schedule_create:")
+                );
+                assert!(!names.iter().any(|name| name == "schedule_create"));
+                *self.prefix.lock().unwrap() = names;
+                Ok(crate::ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![crate::ToolCall {
+                        id: "promote-schedule".into(),
+                        name: "describe_capability".into(),
+                        arguments: serde_json::json!({"name": "schedule_create"}),
+                    }],
+                    finish_reason: crate::FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
+            1 => {
+                let prefix = self.prefix.lock().unwrap().clone();
+                assert!(
+                    names.starts_with(prefix.as_slice()),
+                    "resident prefix moved: {names:?}"
+                );
+                assert_eq!(names.last().map(String::as_str), Some("schedule_create"));
+                let described = request.items.iter().any(|item| {
+                    matches!(item, crate::ModelItem::ToolResult(result)
+                        if result.tool_name == "describe_capability"
+                            && !result.is_error
+                            && result.output["promoted"] == true)
+                });
+                assert!(described, "promotion result must confirm without a schema");
+                Ok(crate::ModelResponse {
+                    text: "scheduled later".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: crate::FinishReason::Completed,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
+            _ => Err(crate::ModelError::request("unexpected promotion step")),
+        }
+    }
+}
+
+#[test]
+fn deferred_tool_call_is_refused_until_describe_capability() {
+    let (storage, root) = roots("context-deferred-refusal");
+    std::fs::create_dir_all(&root).unwrap();
+    let probe = Arc::new(DeferredRefusal { step: AtomicUsize::new(0) });
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(probe),
+    );
+    configure_test_model(&app);
+    run_request(&mut app, "Start a schedule immediately").unwrap();
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+struct DeferredRefusal {
+    step: AtomicUsize,
+}
+
+impl TestModelScript for DeferredRefusal {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _events: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let names = request
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        match self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => {
+                assert!(!names.contains(&"schedule_create"));
+                Ok(crate::ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![crate::ToolCall {
+                        id: "early-schedule".into(),
+                        name: "schedule_create".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    finish_reason: crate::FinishReason::ToolCalls,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
+            1 => {
+                assert!(!names.contains(&"schedule_create"));
+                let refused = request.items.iter().any(|item| {
+                    matches!(item, crate::ModelItem::ToolResult(result)
+                        if result.is_error
+                            && result.tool_name == "schedule_create"
+                            && result.output.to_string().contains("describe_capability"))
+                });
+                assert!(refused, "a deferred call must fail closed before promotion");
+                Ok(crate::ModelResponse {
+                    text: "stopped".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: crate::FinishReason::Completed,
+                    usage: None,
+                    provider_response_id: None,
+                    provider_state: Vec::new(),
+                    reasoning: None,
+                })
+            }
+            _ => Err(crate::ModelError::request("unexpected refusal step")),
+        }
+    }
 }
 
 #[test]
