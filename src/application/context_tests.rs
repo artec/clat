@@ -736,13 +736,14 @@ fn model_requests_explain_available_built_in_capabilities() {
     let [standard, plan] = requests.as_slice() else {
         panic!("expected two model requests, got {}", requests.len());
     };
-    for name in ["read_file"] {
-        assert!(
-            standard.contains(name),
-            "normal prompt should explain {name}"
-        );
-        assert!(plan.contains(name), "plan prompt should explain {name}");
-    }
+    assert!(
+        standard.contains("read_file"),
+        "normal prompt should explain read_file"
+    );
+    assert!(
+        plan.contains("read_file"),
+        "plan prompt should explain read_file"
+    );
     assert!(
         standard.contains("exec_command"),
         "normal prompt should explain exec_command"

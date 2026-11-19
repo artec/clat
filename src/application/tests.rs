@@ -5213,7 +5213,7 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .iter()
         .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
-    let mut expected_catalog: std::collections::BTreeSet<&str> = [
+    let expected_catalog: std::collections::BTreeSet<&str> = [
         "ask_user",
         "delegate_readonly",
         "describe_capability",
@@ -5253,9 +5253,15 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
     ]
     .into_iter()
     .collect();
-    // 允许的工具都进入初始 schema。只读委派默认开启。
+    // 允许的工具都进入初始 schema。只读委派默认开启。扩展只在
+    // mac/Windows 编译（UI 四件），Linux 上绑定保持不可变——否则
+    // unused_mut 在 Linux CI 以 -D warnings 拒绝（CI 44552573112）。
     #[cfg(any(target_os = "macos", windows))]
-    expected_catalog.extend(["ui_apps", "ui_tree", "ui_wait", "ui_act"]);
+    let expected_catalog = {
+        let mut extended = expected_catalog;
+        extended.extend(["ui_apps", "ui_tree", "ui_wait", "ui_act"]);
+        extended
+    };
     assert_eq!(
         tool_names, expected_catalog,
         "request/header freezes the allowed model-visible catalog"

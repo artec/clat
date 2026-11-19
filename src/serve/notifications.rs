@@ -105,56 +105,6 @@ pub(super) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
         .remove(&id);
 }
 
-#[cfg(test)]
-mod subscription_tests {
-    use super::*;
-
-    fn sample_notice() -> HostNotification {
-        HostNotification {
-            id: "default:workspace.activity:job:example:completed".into(),
-            kind: "workspace.activity".into(),
-            workspace_id: "default".into(),
-            project_root: "/tmp/example".into(),
-            session_id: Some("source-session".into()),
-            completion: None,
-        }
-    }
-
-    #[test]
-    fn completion_during_sse_handshake_cannot_be_lost() {
-        let notifications = Notifications::default();
-        let (_, queue, initial) = subscribed_stream(&notifications, || {
-            assert!(
-                notifications.has_subscribers(),
-                "receiver must exist before HTTP success"
-            );
-            notifications.publish(sample_notice());
-            Ok(())
-        })
-        .unwrap();
-        drop(initial);
-        let received = queue
-            .recv_timeout(std::time::Duration::from_millis(250))
-            .unwrap();
-        assert_eq!(received.kind, "workspace.activity");
-        assert_eq!(received.session_id.as_deref(), Some("source-session"));
-    }
-
-    #[test]
-    fn failed_sse_head_unsubscribes_without_leaking_a_receiver() {
-        let notifications = Notifications::default();
-        let failure = subscribed_stream(&notifications, || {
-            assert!(notifications.has_subscribers());
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "closed connection",
-            ))
-        });
-        assert_eq!(failure.err().unwrap().kind(), io::ErrorKind::BrokenPipe);
-        assert!(!notifications.has_subscribers());
-    }
-}
-
 impl ServeShared {
     fn notification(&self, kind: &str, key: &str, session_id: Option<String>) -> HostNotification {
         let scope = self
@@ -269,5 +219,55 @@ impl ServeShared {
                     .map(|id| self.notification("question", id, session.clone())),
             )
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+
+    fn sample_notice() -> HostNotification {
+        HostNotification {
+            id: "default:workspace.activity:job:example:completed".into(),
+            kind: "workspace.activity".into(),
+            workspace_id: "default".into(),
+            project_root: "/tmp/example".into(),
+            session_id: Some("source-session".into()),
+            completion: None,
+        }
+    }
+
+    #[test]
+    fn completion_during_sse_handshake_cannot_be_lost() {
+        let notifications = Notifications::default();
+        let (_, queue, initial) = subscribed_stream(&notifications, || {
+            assert!(
+                notifications.has_subscribers(),
+                "receiver must exist before HTTP success"
+            );
+            notifications.publish(sample_notice());
+            Ok(())
+        })
+        .unwrap();
+        drop(initial);
+        let received = queue
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .unwrap();
+        assert_eq!(received.kind, "workspace.activity");
+        assert_eq!(received.session_id.as_deref(), Some("source-session"));
+    }
+
+    #[test]
+    fn failed_sse_head_unsubscribes_without_leaking_a_receiver() {
+        let notifications = Notifications::default();
+        let failure = subscribed_stream(&notifications, || {
+            assert!(notifications.has_subscribers());
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "closed connection",
+            ))
+        });
+        assert_eq!(failure.err().unwrap().kind(), io::ErrorKind::BrokenPipe);
+        assert!(!notifications.has_subscribers());
     }
 }
