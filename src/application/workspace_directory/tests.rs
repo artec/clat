@@ -4,6 +4,58 @@ use crate::test_support::{TestBehavior, TestProviderPlugin};
 use std::sync::Arc;
 
 #[test]
+fn background_indicator_comes_only_from_running_host_owned_jobs_and_is_session_scoped() {
+    use crate::background_jobs::JobView;
+    let job = |session: &str, state: &str, finished_at: Option<i64>| JobView {
+        reference: crate::task::JobReference {
+            provider: "clat-native".into(),
+            scope: "scope".into(),
+            id: "id".into(),
+            result_ref: "result".into(),
+            last_observation: state.into(),
+        },
+        id: "id".into(),
+        project: "project".into(),
+        session: session.into(),
+        label: "command".into(),
+        state: state.into(),
+        started_at: 1,
+        finished_at,
+        observation: None,
+        persistence_error: None,
+        cleanup_error: None,
+        notification_id: None,
+        notification_error: None,
+    };
+    let visible = background_command_activity([
+        job("first", "running", None),
+        job("second", "running", None),
+        job("first", "running", None),
+        job("first", "registered", None),
+        job("first", "completed", Some(2)),
+        job("first", "failed", Some(2)),
+        job("second", "interrupted", Some(2)),
+        job("other", "running", Some(2)),
+    ]);
+    assert_eq!(
+        visible,
+        vec![
+            BackgroundActivity {
+                session_id: "first".into(),
+                kind: "terminal".into(),
+                count: 2
+            },
+            BackgroundActivity {
+                session_id: "second".into(),
+                kind: "terminal".into(),
+                count: 1
+            },
+        ]
+    );
+    assert!(background_command_activity(Vec::new()).is_empty());
+}
+
+#[test]
 fn workspace_directory_is_read_only_and_retains_unavailable_registered_projects() {
     let (root, mut host, first, _) = fixture("directory-read-only");
     let unavailable = root.join("unavailable");

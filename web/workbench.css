@@ -804,6 +804,23 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .project-unpin[hidden]{display:none}
 .project-group.pinned .project-group-head:is(:hover,:focus-within) .project-unpin:not([hidden]){display:grid}
 .project-group.pinned .project-group-head:is(:hover,:focus-within) .project-directory-row>svg{visibility:hidden}
+/* Host-owned background activity: a quiet icon beside the existing session menu.
+   The foreground Agent spinner on the opposite side remains untouched. */
+.project-group .session-list li[data-background-active="true"] .session-item { padding-inline-end: 54px; }
+.project-group .session-background-activity {
+  position:absolute; inset-inline-end:34px; top:50%; transform:translateY(-50%);
+  width:18px; height:18px; display:grid; place-items:center; color:var(--text-soft);
+  pointer-events:none;
+}
+.project-group .session-background-activity[hidden] { display:none; }
+.session-background-activity svg { width:16px; height:16px; stroke-width:1.6; }
+.session-background-cursor {
+  position:absolute; inset-inline-end:2px; bottom:0px;
+  width:6px; height:2px; background:currentColor; border-radius:1px;
+  animation:session-background-blink 1.25s step-end infinite;
+}
+@keyframes session-background-blink { 0%,49% { opacity:1; } 50%,100% { opacity:0; } }
+@media(prefers-reduced-motion:reduce) { .session-background-cursor { animation:none; } }
 @keyframes session-running-spin{to{transform:rotate(360deg)}}
 .run-activity{display:flex;align-items:center;min-height:28px;margin-block:6px 20px;margin-inline-start:36px;color:var(--text-muted);font:var(--text-size-ui)/1.6 var(--font-ui)}
 .run-activity>svg{opacity:.8}

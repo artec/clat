@@ -45,6 +45,9 @@
         if (!event.type.startsWith('clat:')) return window.dispatchEvent(event);
         const result = localEvents.dispatchEvent(event);
         if (event.type === 'clat:workbench-updated') host.changed();
+        // Job notices originate from the Host even when their parent Agent Run
+        // has already ended. Refresh the read-only global directory projection.
+        if (event.type === 'clat:job-change') void host.refresh(true).catch(() => {});
         return result;
       },
     };

@@ -36,6 +36,14 @@ fn native_job_application_run_cleanup_session_switch_archive_and_host_close() {
         .expect("job registered");
     assert!(app.has_background_jobs());
     assert_eq!(job.session, origin.as_str());
+    assert_eq!(
+        app.workspace_directory_entry().background_activities,
+        vec![super::workspace_directory::BackgroundActivity {
+            session_id: origin.to_string(),
+            kind: "terminal".into(),
+            count: 1,
+        }]
+    );
     match app.dispatch_command("/jobs").unwrap() {
         crate::CommandOutcome::ShowJobs(value) => assert_eq!(value["jobs"][0]["id"], job.id),
         other => panic!("unexpected jobs command result: {other:?}"),
@@ -54,9 +62,19 @@ fn native_job_application_run_cleanup_session_switch_archive_and_host_close() {
     app.new_session().unwrap();
     assert_ne!(app.current_session_id(), Some(origin.clone()));
     assert!(app.has_background_jobs());
+    assert_eq!(
+        app.workspace_directory_entry().background_activities[0].session_id,
+        origin.as_str(),
+        "background activity stays with the source session after switching"
+    );
     let mut host = HostApplication::new(app);
     assert!(!host.unmount_idle(Project::new(&project).root()).unwrap());
     host.close().unwrap();
+    assert!(
+        host.workspace_directory()[0]
+            .background_activities
+            .is_empty()
+    );
     let done = jobs
         .list()
         .unwrap()

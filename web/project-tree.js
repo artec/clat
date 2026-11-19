@@ -194,7 +194,8 @@
       let hasHiddenSessions = false;
       [...group.list.children].forEach((item, index) => {
         const alwaysVisible = query || index < INITIAL_SESSION_COUNT
-          || item.classList.contains('active') || item.dataset.running === 'true';
+          || item.classList.contains('active') || item.dataset.running === 'true'
+          || item.dataset.backgroundActive === 'true';
         item.hidden = false;
         if (alwaysVisible) return;
         if (remaining > 0) {
@@ -238,6 +239,34 @@
           CLATI18n.attribute(indicator,'title',()=>CLATI18n.msg('web.running_short'));item.append(indicator);
         }
         if(indicator)indicator.hidden=!running;
+
+        // An ordinary active Agent Run never creates this separate badge.
+        // Only a Host-owned background process in this exact session can do so.
+        const activity = (row.background_activities || []).find(value =>
+          value.session_id === item.dataset.sessionId && value.count > 0);
+        item.dataset.backgroundActive = String(Boolean(activity));
+        let background = item.querySelector('.session-background-activity');
+        if (activity && (!background || background.dataset.kind !== activity.kind)) {
+          background?.remove();
+          background = node('span', 'session-background-activity');
+          background.dataset.kind = activity.kind;
+          background.setAttribute('role', 'img');
+          background.append(this.host.icon(activity.kind === 'terminal' ? 'terminal' : 'jobs'));
+          if (activity.kind === 'terminal') background.append(node('i', 'session-background-cursor'));
+          item.append(background);
+        }
+        if (background) {
+          background.hidden = !activity;
+          if (activity) {
+            background.dataset.count = String(activity.count);
+            const description = () => [
+              CLATI18n.msg(activity.kind === 'terminal' ? 'web.tool_action.run_command' : 'web.running_short'),
+              CLATI18n.msg('job.running'),
+              activity.count > 1 ? '×' + activity.count : '',
+            ].filter(Boolean).join(' · ');
+            for (const attr of ['title', 'aria-label']) CLATI18n.attribute(background, attr, description);
+          }
+        }
       }
     }
     async load(row, retry = false) {

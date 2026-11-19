@@ -99,6 +99,14 @@ impl ServeShared {
     }
 
     pub(super) fn publish_job_notification(&self, job: &crate::background_jobs::JobView) {
+        // The project directory is Host-wide; a job can belong to a different
+        // project than the one whose stream the user is currently watching.
+        // This silent invalidation is not a desktop completion notification.
+        self.emit_notification(self.notification(
+            "workspace.activity",
+            &format!("job:{}:{}", job.id, job.state),
+            Some(job.session.clone()),
+        ));
         let Some(id) = job.notification_id.as_deref() else {
             return;
         };

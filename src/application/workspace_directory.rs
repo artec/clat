@@ -14,6 +14,36 @@ pub struct WorkspaceDirectoryEntry {
     pub active_session_id: Option<String>,
     pub run_active: bool,
     pub compacting: bool,
+    /// Host-owned processes only; normal Agent Runs never produce this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_activities: Vec<BackgroundActivity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BackgroundActivity {
+    pub session_id: String,
+    pub kind: String,
+    pub count: usize,
+}
+
+fn background_command_activity(
+    jobs: impl IntoIterator<Item = crate::background_jobs::JobView>,
+) -> Vec<BackgroundActivity> {
+    let mut per_session = std::collections::BTreeMap::<String, usize>::new();
+    for job in jobs {
+        // A registered job has not necessarily spawned a process yet.
+        if job.state == "running" && job.finished_at.is_none() {
+            *per_session.entry(job.session).or_default() += 1;
+        }
+    }
+    per_session
+        .into_iter()
+        .map(|(session_id, count)| BackgroundActivity {
+            session_id,
+            kind: "terminal".into(),
+            count,
+        })
+        .collect()
 }
 
 impl HostApplication {
@@ -39,6 +69,7 @@ impl HostApplication {
                 active_session_id: record.active_session_id,
                 run_active: false,
                 compacting: false,
+                background_activities: Vec::new(),
             })
             .collect();
         for application in self.projects.values() {
@@ -56,6 +87,7 @@ impl HostApplication {
                 entry.active_session_id = live.active_session_id;
                 entry.run_active = live.run_active;
                 entry.compacting = live.compacting;
+                entry.background_activities = live.background_activities;
             } else {
                 entries.push(live);
             }
@@ -161,6 +193,11 @@ impl TrustedProjectApplication {
                 .active_compaction
                 .as_ref()
                 .is_some_and(|run| !run.is_finished()),
+            background_activities: self
+                .jobs
+                .as_ref()
+                .map(|jobs| background_command_activity(jobs.list()))
+                .unwrap_or_default(),
         }
     }
 

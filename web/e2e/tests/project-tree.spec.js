@@ -49,6 +49,45 @@ test('project conversations open their own session and retain each project draft
   await expect(page.locator('#project-root')).toHaveText(root);
 });
 
+test('independent background commands show only on their owning session and settle without changing Agent loading', async ({ page }) => {
+  const fixture = hostInfo('project-tree');
+  await openWorkbench(page, fixture);
+  const source = await conversation(page, 'A background command owner');
+  const other = await conversation(page, 'Ordinary foreground conversation');
+  let running = false;
+  await page.route('**/api/workspace.directory', async route => {
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    const row = body.value.projects.find(project => project.route_id === 'default');
+    if (row) {
+      row.background_activities = running
+        ? [{session_id:source, kind:'terminal', count:2}] : [];
+    }
+    await route.fulfill({response, json:body});
+  });
+
+  // A normal session, even one with an ordinary Agent Run, is not a background job.
+  await page.reload();
+  await expect(entry(page, source)).toBeVisible(LIVE);
+  await expect(page.locator('.session-background-activity')).toHaveCount(0);
+  running = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const activity = page.locator(`[data-session-id="${source}"] .session-background-activity`);
+  await expect(activity).toBeVisible(LIVE);
+  await expect(activity).toHaveAttribute('data-count', '2');
+  await expect(page.locator(`[data-session-id="${other}"] .session-background-activity`)).toHaveCount(0);
+
+  // Reconnecting reconstructs exactly the same background job from Host state.
+  await page.reload();
+  await expect(activity).toBeVisible(LIVE);
+  running = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(activity).toBeHidden(LIVE);
+  await expect(page.locator(`[data-session-id="${source}"]`)).toHaveAttribute('data-background-active', 'false');
+  // The original foreground indicator is an independent element.
+  await expect(page.locator(`[data-session-id="${source}"] .session-running`)).toHaveCount(0);
+});
+
 test('settings projects panel lists trusted projects', async ({ page }) => {
   // 回归（a3355a6d）：renderWorkspaceDirectory 仍调用已被移除的
   // organization.pin，首行即抛 TypeError，已信任项目列表在所有前端为空。
