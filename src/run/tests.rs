@@ -131,6 +131,105 @@ fn identical_tool_result_stops_the_run_after_the_unchanged_streak() {
 }
 
 #[test]
+fn discovery_query_stops_after_three_identical_arguments() {
+    for name in ["query_capabilities", "describe_capability"] {
+        let project = Project::new(".");
+        let permissions = AllowAll;
+        let tools = ToolRegistry::new();
+        register_test_tool(
+            &tools,
+            VaryingTool {
+                name,
+                n: std::sync::atomic::AtomicUsize::new(0),
+            },
+        );
+        let mut model = RepeatNamed {
+            name,
+            calls: 0,
+            vary: false,
+        };
+        let error = Run::new(&mut model, &tools, &permissions, &project)
+            .execute("repeat", &mut Vec::new())
+            .expect_err("an unchanged discovery call stops the run");
+        assert!(
+            error.to_string().contains("3 times in a row"),
+            "{name} {error}"
+        );
+        assert_eq!(model.calls, 3, "{name}");
+        assert_eq!(
+            error
+                .items()
+                .iter()
+                .filter(|item| matches!(item, ModelItem::ToolResult(_)))
+                .count(),
+            3,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn changed_arguments_that_return_nothing_new_stop_after_twelve() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, FixedSearch { repeat: false });
+    let mut model = CountedSearch {
+        calls: 0,
+        stop_at: 20,
+    };
+    let error = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("search", &mut Vec::new())
+        .expect_err("empty searches stop the run");
+    assert!(
+        error.to_string().contains("nothing new 12 times"),
+        "{error}"
+    );
+    assert_eq!(model.calls, 12);
+}
+
+#[test]
+fn a_new_search_result_resets_the_unproductive_stop() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, FixedSearch { repeat: true });
+    let mut model = CountedSearch {
+        calls: 0,
+        stop_at: 24,
+    };
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("search", &mut Vec::new())
+        .expect("one new result lets the search continue");
+    assert_eq!(output.text, "done");
+    assert_eq!(model.calls, 24);
+}
+
+#[test]
+fn a_changed_discovery_argument_resets_the_repeat_stop() {
+    let project = Project::new(".");
+    let permissions = AllowAll;
+    let tools = ToolRegistry::new();
+    register_test_tool(
+        &tools,
+        VaryingTool {
+            name: "query_capabilities",
+            n: std::sync::atomic::AtomicUsize::new(0),
+        },
+    );
+    let mut model = RepeatNamed {
+        name: "query_capabilities",
+        calls: 0,
+        vary: true,
+    };
+    let output = Run::new(&mut model, &tools, &permissions, &project)
+        .execute("vary", &mut Vec::new())
+        .expect("a changed discovery argument may continue");
+    assert_eq!(output.text, "done");
+    assert_eq!(model.calls, 4);
+}
+
+#[test]
 fn a_changed_tool_result_resets_the_repeat_stop() {
     let project = Project::new(".");
     let permissions = AllowAll;
@@ -145,6 +244,166 @@ fn a_changed_tool_result_resets_the_repeat_stop() {
         .expect("a changed result may continue");
     assert_eq!(output.text, "done");
     assert_eq!(model.calls, 4);
+}
+
+struct FixedSearch {
+    repeat: bool,
+}
+
+impl Tool for FixedSearch {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "probe".into(),
+            description: "Return a search-shaped result".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "additionalProperties": false
+            }),
+            effect: ToolEffect::Pure,
+            strict: false,
+        }
+    }
+
+    fn invoke(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        let turn = arguments["text"].as_str().unwrap_or("0");
+        if self.repeat && turn == "12" {
+            return Ok(json!({"matches":[{"path":"web/project-tree.js","line":245}]}));
+        }
+        Ok(json!({"total_matches": 0, "matches": []}))
+    }
+}
+
+struct CountedSearch {
+    calls: usize,
+    stop_at: usize,
+}
+
+impl Model for CountedSearch {
+    fn provider(&self) -> &str {
+        "test"
+    }
+    fn model_id(&self) -> &str {
+        "counted-search"
+    }
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if self.calls == self.stop_at {
+            return Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: format!("call-{}", self.calls),
+                name: "probe".into(),
+                arguments: json!({"text": self.calls.to_string()}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+struct VaryingTool {
+    name: &'static str,
+    n: std::sync::atomic::AtomicUsize,
+}
+
+impl Tool for VaryingTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.into(),
+            description: "Return a fresh observation".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "additionalProperties": false
+            }),
+            effect: ToolEffect::Pure,
+            strict: false,
+        }
+    }
+
+    fn invoke(
+        &self,
+        arguments: &Value,
+        _project: &Project,
+        _cancel: &CancelToken,
+    ) -> Result<Value, ToolError> {
+        let n = self.n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(json!({"n": n, "text": arguments.get("text").cloned().unwrap_or(Value::Null)}))
+    }
+}
+
+struct RepeatNamed {
+    name: &'static str,
+    calls: usize,
+    vary: bool,
+}
+
+impl Model for RepeatNamed {
+    fn provider(&self) -> &str {
+        "test"
+    }
+    fn model_id(&self) -> &str {
+        "repeat-named"
+    }
+    fn stream(
+        &mut self,
+        _request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        if (self.vary && self.calls == 4) || (!self.vary && self.calls == 10) {
+            return Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        let text = if self.vary {
+            self.calls.to_string()
+        } else {
+            "same".into()
+        };
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: format!("call-{}", self.calls),
+                name: self.name.into(),
+                arguments: json!({"text": text}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
 }
 
 struct RepeatingEcho {

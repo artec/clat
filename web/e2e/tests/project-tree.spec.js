@@ -60,8 +60,9 @@ test('independent background commands show only on their owning session and sett
     const body = await response.json();
     const row = body.value.projects.find(project => project.route_id === 'default');
     if (row) {
-      row.background_activities = running
-        ? [{session_id:source, kind:'terminal', count:2}] : [];
+      // Settled rows omit the empty list entirely, matching the real wire shape.
+      if (running) row.background_activities = [{session_id:source, kind:'terminal', count:2}];
+      else delete row.background_activities;
     }
     await route.fulfill({response, json:body});
   });
@@ -73,16 +74,20 @@ test('independent background commands show only on their owning session and sett
   running = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   const activity = page.locator(`[data-session-id="${source}"] .session-background-activity`);
+  const more = page.locator(`[data-session-id="${source}"] .session-more`);
   await expect(activity).toBeVisible(LIVE);
   await expect(activity).toHaveAttribute('data-count', '2');
+  await expect(more).toBeHidden();
   await expect(page.locator(`[data-session-id="${other}"] .session-background-activity`)).toHaveCount(0);
 
   // Reconnecting reconstructs exactly the same background job from Host state.
   await page.reload();
   await expect(activity).toBeVisible(LIVE);
+  await expect(more).toBeHidden();
   running = false;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(activity).toBeHidden(LIVE);
+  await expect(more).toBeVisible();
   await expect(page.locator(`[data-session-id="${source}"]`)).toHaveAttribute('data-background-active', 'false');
   // The original foreground indicator is an independent element.
   await expect(page.locator(`[data-session-id="${source}"] .session-running`)).toHaveCount(0);

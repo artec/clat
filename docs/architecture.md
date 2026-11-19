@@ -532,6 +532,10 @@ serial tool call to `run/request.rs`, `run/response.rs` and `run/tools.rs`.
 When the same tool, arguments and result occur 41 times in a row, the run
 stops instead of requesting the model again. Shorter identical streaks,
 including the 40-step loop that locks the absence of a turn budget, continue.
+`query_capabilities` and `describe_capability` stop after the same arguments
+occur 3 times in a row. Their replies include a fresh observation time, so
+the stop counts those arguments. A changed argument that returns an error, an
+empty result, or a result that tool already returned stops after 12 in a row.
 `run/state.rs` keeps history, turn count and usage together when constructing a
 terminal result. These are internal boundaries: tool order, steering seals,
 permission checks, result transforms and event publication retain their order.
@@ -645,44 +649,31 @@ derive two intentionally different views:
 ### Default prompt and request context
 
 At run admission the Application freezes the mounted system sections and the
-resident tool schemas together. The model receives full schemas only for the
-resident file, search, edit, command, question, capability and application-interface
-tools (`ui_apps`, `ui_tree`, `ui_wait`, `ui_act`), plus
-conditional tools the frozen policy already enables (`view_image`, task
-progress, `delegate_readonly`, `exit_plan_mode` while Plan Mode is active, and
-`update_goal` while the run already carries a goal).
-Every other allowed tool is a one-line entry in the workflow guidance.
-`describe_capability` appends that tool's existing definition after the
-resident prefix for later requests in the same run. The prefix is not rewritten,
-and promotion is not a journal event: a new run or a restored run starts from
-the resident set again. A registered tool can still be called by name before
-its schema is promoted; promotion only adds that schema to later requests.
+allowed tool schemas together. The model receives the full schema of every
+tool the frozen policy allows. `exit_plan_mode` is included only while Plan
+Mode is active. `update_goal` is included only while the run already carries a
+goal. `view_image`, task progress, and `delegate_readonly` follow their
+existing policy flags. Guidance does not tell the model that other tools are
+omitted, and it does not send the model through `query_capabilities` before
+calling a tool that is already listed.
 
 #### Adding a tool
 
-A newly registered tool is deferred. Do not add it to the resident table.
-Write its `description` so the first sentence states the purpose in ordinary
-language: workflow guidance copies that sentence, cut at 72 characters, into
-the one-line index. The full description and input schema stay on the tool and
-are sent only after `describe_capability`. No locale key, journal event, or
-request-header change is required. MCP, WASM, and plugin tools follow this
-same path.
+A newly registered tool is part of the next run's schema when the frozen
+policy allows it. Write its `description` and input schema in ordinary
+language. Do not add a workflow-guidance line that names it as something to
+discover first. No locale key or journal event is required. MCP, WASM, and
+plugin tools follow this same path.
 
-Add a name to `RESIDENT` in `src/tool/resident.rs` only when an ordinary turn
-must call the tool without a discovery round-trip. The application-interface
-tools are resident for that reason. Keep that list in its
-stable order. Shorten the definition to one sentence and a parameter schema of
-types, required fields, and bounds. Add a `RESIDENT_HINTS` line only when the
-model needs a when-to-use sentence that the schema does not carry. Conditional
-schemas stay in `is_published`: `view_image`, task progress, and
-`delegate_readonly` follow their existing policy flags; `exit_plan_mode` is
-published only in Plan Mode; `update_goal` is published only while the run
-already carries a goal. Do not invent another always-on list.
+`RESIDENT` in `src/tool/resident.rs` only orders schemas that should stay at
+the front of the tool list. Keep that list in its stable order. Add a
+`RESIDENT_HINTS` line only when the model needs a when-to-use sentence that
+the schema does not carry.
 
-The initial request header and `/context` tool list must stay limited to the
-published set. Extend the frozen-prefix check named in
-[testing.md](testing.md) in the same change, and run the narrow `scripts/gates.sh`
-filters for tool access, context snapshot, and capability guidance.
+The initial request header and `/context` tool list are that allowed set.
+Extend the frozen-prefix check named in [testing.md](testing.md) in the same
+change, and run the narrow `scripts/gates.sh` filters for tool access, context
+snapshot, and capability guidance.
 
 The system order is the CLAT base, optional reply
 formatting guidance, Wasm sections, MCP manifest sections, and explicitly
@@ -1952,11 +1943,10 @@ exclude new workflow requests. The Run closes skipped batch calls with explicit
 not-executed error results before its terminal event; it neither invokes those
 tools nor invents their effects. Existing journal events carry these results.
 Capability guidance is an additive workflow layer derived from the actual frozen
-tool view and registration owners. Resident tools keep short hints. Deferred
-tools contribute one line each, using their own description. An external
-namesake does not acquire native semantics. Guidance reaches both request
-headers and model instructions. The request header records the resident schemas
-from admission, not schemas promoted later in the run.
+tool view and registration owners. A few resident tools keep short hints.
+An external namesake does not acquire native semantics. Guidance reaches both
+request headers and model instructions. The request header records the allowed
+schemas from admission.
 Its token cost belongs to the common base prompt, not an active Plan/Goal policy;
 Goal refresh preserves a separate registry base so it does not append the guide
 twice.

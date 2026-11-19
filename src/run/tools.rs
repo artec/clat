@@ -1,4 +1,5 @@
 //! A single serial tool call owns authorization, execution and result publication.
+use super::state::RepeatStop;
 use super::*;
 use crate::tool::{Tool, ToolCall, ToolDefinition};
 use std::sync::Arc;
@@ -70,16 +71,29 @@ impl Run<'_> {
                 self.finish_tool_boundary(state, events, text, remaining, approved),
             ));
         }
-        if repeated {
-            return Err(state.fail(
-                events,
-                &self.steering,
-                crate::i18n::UiMessage::new("run.error_repeated_result")
-                    .arg("count", 41)
-                    .english(),
-            ));
+        if let Some(stop) = repeated {
+            return Err(self.fail_repeated(state, events, stop));
         }
         Ok(None)
+    }
+    fn fail_repeated(
+        &self,
+        state: &mut StepState,
+        events: &mut dyn EventSink,
+        stop: RepeatStop,
+    ) -> RunError {
+        let (key, limit) = match stop {
+            RepeatStop::Discovery(limit) => ("run.error_repeated_discovery", limit),
+            RepeatStop::Identical(limit) => ("run.error_repeated_result", limit),
+            RepeatStop::Unproductive(limit) => ("run.error_repeated_unproductive", limit),
+        };
+        state.fail(
+            events,
+            &self.steering,
+            crate::i18n::UiMessage::new(key)
+                .arg("count", i64::from(limit))
+                .english(),
+        )
     }
     fn finish_tool_boundary(
         &self,

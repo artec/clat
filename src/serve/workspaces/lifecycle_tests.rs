@@ -478,6 +478,100 @@ fn host_notification_observer_does_not_pin_idle_project_domains() {
 }
 
 #[test]
+fn background_job_settlement_publishes_host_activity_invalidation_without_polling() {
+    use crate::test_support::ToolOnceScript;
+    let (storage, project) = crate::test_support::roots("job-host-notice-settlement");
+    std::fs::create_dir_all(&project).unwrap();
+    let executable = project.join(if cfg!(windows) { "no-op.exe" } else { "no-op" });
+    let source = project.join("no-op.rs");
+    std::fs::write(
+        &source,
+        "fn main() { std::thread::sleep(std::time::Duration::from_millis(450)); }",
+    )
+    .unwrap();
+    crate::process::compile_rust_test_helper(&source, &executable).unwrap();
+    let script = ToolOnceScript {
+        call: crate::ToolCall {
+            id: "notice-job".into(),
+            name: "job_start".into(),
+            arguments: json!({"label":"no-op background job","argv":[executable],"timeout_ms":5000}),
+        },
+    };
+    let app = crate::BootstrapApplication::open(Project::new(&project), storage.clone())
+        .unwrap()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Scripted(Arc::new(script)),
+        }))
+        .unwrap();
+    crate::test_support::configure_test_model(&app);
+    let host = WorkspaceHost::new(
+        app,
+        "fixture".into(),
+        0,
+        32,
+        "fixture-build-identity".into(),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (_, queue, initial) = host.notifications.subscribe();
+    drop(initial);
+    let route = host.route("default").unwrap();
+    super::super::protocol::dispatch(
+        "prompt.send",
+        &json!({"text":"start a no-op background job"}),
+        &route,
+    )
+    .unwrap();
+
+    let mut running = false;
+    let mut settled = false;
+    let mut observed = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        let Ok(notice) = queue.recv_timeout(std::time::Duration::from_millis(250)) else {
+            continue;
+        };
+        observed.push((notice.kind.clone(), notice.id.clone()));
+        if notice.kind == "approval" {
+            let rpc_id = notice.id.rsplit(':').next().unwrap();
+            super::super::protocol::dispatch(
+                "approval.respond",
+                &json!({"rpcId":rpc_id,"decision":"allow"}),
+                &route,
+            )
+            .unwrap();
+            continue;
+        }
+        if notice.kind != "workspace.activity" {
+            continue;
+        }
+        let row = host.dispatch("workspace.directory", &json!({})).unwrap();
+        let activities = row["projects"][0]["background_activities"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if notice.id.ends_with(":running") {
+            running = true;
+        }
+        if notice.id.ends_with(":completed") {
+            settled = true;
+            assert!(
+                activities.is_empty(),
+                "completion notice must see settled Host snapshot"
+            );
+            assert!(notice.session_id.is_some());
+            break;
+        }
+    }
+    assert!(running, "missing running activity notice: {observed:?}");
+    assert!(settled, "missing completion activity notice");
+    drop(route);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&project);
+}
+
+#[test]
 fn completion_notification_carries_the_admitted_session_without_transcript() {
     use crate::host_client::NotificationOutcome;
     for (name, behavior, outcome) in [

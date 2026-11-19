@@ -66,7 +66,7 @@ impl Tool for DiscoveryTool {
             json!({"type":"object","properties":properties,"additionalProperties":false})
         };
         let description = if self.detail {
-            "Load one deferred tool into the next request of this run. Pass its name from the deferred index. Already-resident tools need no call."
+            "Read one registered tool's declared schema. Pass its name. A tool already listed in this request can be called directly."
         } else {
             "List visible tools in this run. Use name for an exact tool. Filters compare declared input, output and scope only."
         };

@@ -245,26 +245,48 @@
         const activity = (row.background_activities || []).find(value =>
           value.session_id === item.dataset.sessionId && value.count > 0);
         item.dataset.backgroundActive = String(Boolean(activity));
+        const more = item.querySelector('.session-more');
         let background = item.querySelector('.session-background-activity');
-        if (activity && (!background || background.dataset.kind !== activity.kind)) {
+        if (activity) {
+          if (more) {
+            more.hidden = true;
+            more.style.display = 'none';
+          }
+          if (!background || background.dataset.kind !== activity.kind) {
+            background?.remove();
+            background = node('span', 'session-background-activity');
+            background.dataset.kind = activity.kind;
+            background.setAttribute('role', 'img');
+            // Precise miniature line art: unframed > and a lighter blinking _.
+            // Avoid font glyphs, whose weight and baseline differ across platforms.
+            if (activity.kind === 'terminal') {
+              const symbol = glyph('M3.5 5.7 10 10 3.5 14.3');
+              symbol.classList.add('session-background-symbol');
+              symbol.setAttribute('viewBox', '0 0 20 20');
+              const cursor = document.createElementNS(symbol.namespaceURI, 'path');
+              cursor.setAttribute('d', 'M11.7 14.3h5');
+              cursor.setAttribute('class', 'session-background-cursor');
+              symbol.append(cursor);
+              background.append(symbol);
+            } else {
+              background.append(node('span', 'session-background-other', '···'));
+            }
+            item.append(background);
+          }
+          background.hidden = false;
+          background.style.removeProperty('display');
+          background.dataset.count = String(activity.count);
+          const description = () => [
+            CLATI18n.msg(activity.kind === 'terminal' ? 'web.tool_action.run_command' : 'web.running_short'),
+            CLATI18n.msg('job.running'),
+            activity.count > 1 ? '×' + activity.count : '',
+          ].filter(Boolean).join(' · ');
+          for (const attr of ['title', 'aria-label']) CLATI18n.attribute(background, attr, description);
+        } else {
           background?.remove();
-          background = node('span', 'session-background-activity');
-          background.dataset.kind = activity.kind;
-          background.setAttribute('role', 'img');
-          background.append(this.host.icon(activity.kind === 'terminal' ? 'terminal' : 'jobs'));
-          if (activity.kind === 'terminal') background.append(node('i', 'session-background-cursor'));
-          item.append(background);
-        }
-        if (background) {
-          background.hidden = !activity;
-          if (activity) {
-            background.dataset.count = String(activity.count);
-            const description = () => [
-              CLATI18n.msg(activity.kind === 'terminal' ? 'web.tool_action.run_command' : 'web.running_short'),
-              CLATI18n.msg('job.running'),
-              activity.count > 1 ? '×' + activity.count : '',
-            ].filter(Boolean).join(' · ');
-            for (const attr of ['title', 'aria-label']) CLATI18n.attribute(background, attr, description);
+          if (more) {
+            more.hidden = false;
+            more.style.removeProperty('display');
           }
         }
       }

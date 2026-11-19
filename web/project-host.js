@@ -291,6 +291,7 @@ function installTransientScrollbars() {
     queueMicrotask(() => { nativeLocked = !event.defaultPrevented; });
   });
   window.addEventListener('clat-desktop-install-unlock', () => { nativeLocked = false; });
+  window.addEventListener('clat:job-change', () => void refresh(true).catch(() => {}));
   const first = create(validRoute(currentRoute()) ? currentRoute() : 'invalid');
   exposeTestPorts(first);
   CLATI18n.onChange(render);

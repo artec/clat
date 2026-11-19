@@ -736,30 +736,35 @@ fn model_requests_explain_available_built_in_capabilities() {
     let [standard, plan] = requests.as_slice() else {
         panic!("expected two model requests, got {}", requests.len());
     };
-    for name in ["query_capabilities", "read_file", "session_search"] {
+    for name in ["read_file"] {
         assert!(
             standard.contains(name),
             "normal prompt should explain {name}"
         );
         assert!(plan.contains(name), "plan prompt should explain {name}");
     }
-    for name in ["exec_command", "job_start", "schedule_create"] {
-        assert!(
-            standard.contains(name),
-            "normal prompt should explain {name}"
-        );
-        assert!(!plan.contains(name), "plan prompt must omit {name}");
-    }
+    assert!(
+        standard.contains("exec_command"),
+        "normal prompt should explain exec_command"
+    );
+    assert!(
+        !plan.contains("exec_command"),
+        "plan prompt must omit exec_command"
+    );
     assert!(
         standard.contains("Within this turn, use exec_command"),
         "resident command guidance stays in the normal prompt"
     );
-    for tool in ["schedule_create", "job_start"] {
+    assert!(
+        !standard.contains("omitted from this request"),
+        "the prompt must not send the model looking for omitted tools"
+    );
+    assert!(!plan.contains("omitted from this request"));
+    for tool in ["session_search", "schedule_create", "job_start"] {
         assert!(
-            standard.contains(&format!("{tool}:")),
-            "deferred {tool} is advertised by name"
+            !standard.contains(&format!("{tool}:")),
+            "guidance must not advertise {tool} as a deferred index line"
         );
-        assert!(!plan.contains(tool), "plan mode must not advertise {tool}");
     }
     drop(requests);
     app.close().unwrap();
@@ -782,7 +787,7 @@ fn describe_capability_appends_a_deferred_schema_without_moving_the_prefix() {
     configure_test_model(&app);
     run_request(&mut app, "Need a schedule").unwrap();
     let prefix = probe.prefix.lock().unwrap().clone();
-    assert!(!prefix.iter().any(|name| name == "schedule_create"));
+    assert!(prefix.iter().any(|name| name == "schedule_create"));
     assert!(prefix.iter().any(|name| name == "describe_capability"));
     app.close().unwrap();
     crate::test_support::cleanup_tree(storage.parent().unwrap());
@@ -806,44 +811,18 @@ impl TestModelScript for PromotionScript {
             .collect::<Vec<_>>();
         match self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
             0 => {
+                let guidance = request.instructions.unwrap_or_default();
                 assert!(
-                    request
-                        .instructions
-                        .unwrap_or_default()
-                        .contains("schedule_create:")
+                    !guidance.contains("omitted from this request"),
+                    "the prompt must not hide registered tools"
                 );
-                assert!(!names.iter().any(|name| name == "schedule_create"));
+                assert!(
+                    names.iter().any(|name| name == "schedule_create"),
+                    "a registered tool is in the initial schema"
+                );
                 *self.prefix.lock().unwrap() = names;
                 Ok(crate::ModelResponse {
-                    text: String::new(),
-                    tool_calls: vec![crate::ToolCall {
-                        id: "promote-schedule".into(),
-                        name: "describe_capability".into(),
-                        arguments: serde_json::json!({"name": "schedule_create"}),
-                    }],
-                    finish_reason: crate::FinishReason::ToolCalls,
-                    usage: None,
-                    provider_response_id: None,
-                    provider_state: Vec::new(),
-                    reasoning: None,
-                })
-            }
-            1 => {
-                let prefix = self.prefix.lock().unwrap().clone();
-                assert!(
-                    names.starts_with(prefix.as_slice()),
-                    "resident prefix moved: {names:?}"
-                );
-                assert_eq!(names.last().map(String::as_str), Some("schedule_create"));
-                let described = request.items.iter().any(|item| {
-                    matches!(item, crate::ModelItem::ToolResult(result)
-                        if result.tool_name == "describe_capability"
-                            && !result.is_error
-                            && result.output["promoted"] == true)
-                });
-                assert!(described, "promotion result must confirm without a schema");
-                Ok(crate::ModelResponse {
-                    text: "scheduled later".into(),
+                    text: "schedule is available".into(),
                     tool_calls: Vec::new(),
                     finish_reason: crate::FinishReason::Completed,
                     usage: None,
@@ -892,7 +871,7 @@ impl TestModelScript for DeferredRefusal {
             .collect::<Vec<_>>();
         match self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
             0 => {
-                assert!(!names.contains(&"schedule_create"));
+                assert!(names.contains(&"schedule_create"));
                 Ok(crate::ModelResponse {
                     text: String::new(),
                     tool_calls: vec![crate::ToolCall {
@@ -908,7 +887,7 @@ impl TestModelScript for DeferredRefusal {
                 })
             }
             1 => {
-                assert!(!names.contains(&"schedule_create"));
+                assert!(names.contains(&"schedule_create"));
                 let blocked = request.items.iter().any(|item| {
                     matches!(item, crate::ModelItem::ToolResult(result)
                         if result.tool_name == "schedule_create"

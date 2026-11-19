@@ -81,29 +81,6 @@ impl CapabilityView {
             .find(|entry| id == format!("{}.{}.{}", self.id, entry.registration, epoch))
             .map(|entry| entry.definition.clone())
     }
-    pub(crate) fn deferred_blurbs(&self) -> Vec<(String, String)> {
-        let mut lines = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                let builtin = entry.owner.as_str().starts_with("builtin.");
-                !builtin
-                    || !super::super::resident::is_published(
-                        &entry.definition.name,
-                        self.plan_mode,
-                        self.goal_tools,
-                    )
-            })
-            .map(|entry| {
-                (
-                    entry.definition.name.clone(),
-                    entry.definition.description.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        lines.sort();
-        lines
-    }
     pub(crate) fn contains_owned(&self, owner: PluginId, name: &str) -> bool {
         self.entries
             .iter()

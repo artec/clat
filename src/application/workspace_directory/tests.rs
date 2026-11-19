@@ -390,3 +390,43 @@ fn removed_project_keeps_files_and_session_identity_and_can_be_readded() {
     drop(host);
     crate::test_support::cleanup_tree(&root);
 }
+
+#[test]
+fn empty_background_activity_list_is_serialized_for_snapshot_mergers() {
+    // Directory replies are complete snapshots: the workbench merges every row
+    // into a cached record, so an omitted empty list would keep a settled
+    // job's stale activity badge alive forever.
+    let entry = WorkspaceDirectoryEntry {
+        project_id: None,
+        root: "/tmp/directory-projection".into(),
+        title: "Directory projection".into(),
+        pinned: false,
+        mounted: true,
+        active_session_id: None,
+        run_active: false,
+        compacting: false,
+        background_activities: Vec::new(),
+    };
+    let settled = serde_json::to_value(&entry).unwrap();
+    assert_eq!(
+        settled.get("background_activities"),
+        Some(&serde_json::json!([])),
+        "the empty activity list must still serialize so cached merges clear state"
+    );
+    let active = WorkspaceDirectoryEntry {
+        background_activities: vec![BackgroundActivity {
+            session_id: "session".into(),
+            kind: "terminal".into(),
+            count: 1,
+        }],
+        ..entry
+    };
+    let running = serde_json::to_value(&active).unwrap();
+    assert_eq!(
+        running
+            .get("background_activities")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
+}

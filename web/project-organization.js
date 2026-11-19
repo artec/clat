@@ -8,7 +8,11 @@
     const current=row=>records.get(row.root)||row;
     function accept(rows){
       const present=new Set(rows.map(row=>row.root));for(const root of records.keys())if(!present.has(root))records.delete(root);
-      ordered=rows.map(row=>{const value=records.get(row.root);if(value){Object.assign(value,row);return value;}records.set(row.root,row);return row;});return ordered;
+      ordered=rows.map(row=>{const value=records.get(row.root);if(value){
+        // Each directory reply is a complete snapshot; a row without the
+        // activity list means no live Host-owned activity, so the cached list
+        // must clear instead of lingering after a job settles.
+        value.background_activities=row.background_activities||[];Object.assign(value,row);return value;}records.set(row.root,row);return row;});return ordered;
     }
     async function update(row,edit){
       row=current(row);const key=row.root;if(busy.has(key))return false;busy.add(key);

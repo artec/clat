@@ -5214,30 +5214,51 @@ fn failed_run_spawn_does_not_mark_the_request_header_emitted() {
         .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
     let mut expected_catalog: std::collections::BTreeSet<&str> = [
-        "query_capabilities",
+        "ask_user",
+        "delegate_readonly",
         "describe_capability",
-        "list_files",
-        "read_file",
-        "search",
-        "write_file",
         "edit_file",
         "exec_command",
-        "ask_user",
-        "view_image",
-        "write_stdin",
+        "export_patch",
+        "job_kill",
+        "job_list",
+        "job_output",
+        "job_start",
+        "list_files",
+        "memory_search",
+        "propose_goal",
+        "query_capabilities",
+        "read_file",
+        "request_plan_mode",
         "run_command",
-        "todo_write",
+        "schedule_create",
+        "schedule_delete",
+        "schedule_list",
+        "schedule_update",
+        "search",
+        "session_event_read",
+        "session_event_search",
+        "session_info",
+        "session_search",
         "skill",
+        "terminal_snapshot",
+        "test_discrimination",
+        "todo_write",
+        "verify_observation",
+        "view_image",
+        "web_fetch",
+        "web_search",
+        "write_file",
+        "write_stdin",
     ]
     .into_iter()
     .collect();
-    // b0c3ef57 默认开启只读委派。长尾工具不进初始 schema。
-    expected_catalog.insert("delegate_readonly");
+    // 允许的工具都进入初始 schema。只读委派默认开启。
     #[cfg(any(target_os = "macos", windows))]
     expected_catalog.extend(["ui_apps", "ui_tree", "ui_wait", "ui_act"]);
     assert_eq!(
         tool_names, expected_catalog,
-        "request/header freezes the resident model-visible catalog"
+        "request/header freezes the allowed model-visible catalog"
     );
     application.close().unwrap();
     std::fs::remove_dir_all(storage_root.parent().unwrap()).ok();

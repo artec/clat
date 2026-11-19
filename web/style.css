@@ -553,6 +553,7 @@ button:disabled { cursor: default; opacity: .45; }
 
 /* Settings */
 .session-more { position: absolute; right: 6px; top: 50%; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; transform: translateY(-50%); border: 0; background: transparent; color: var(--text-muted); font-size: 20px; line-height: 1; border-radius: 6px; }
+.session-more[hidden] { display: none !important; }
 .session-more:hover, .session-more:focus-visible { color: var(--text); background: var(--ink-3); }
 .session-context-menu, .workbench-tools { display: grid; min-width: 220px; max-width: calc(100vw - 2 * var(--menu-inset)); max-height: calc(100dvh - 2 * var(--menu-inset)); overflow-y: auto; padding: var(--menu-padding-block) 6px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); }
 .session-context-menu { position: fixed; z-index: 100; }

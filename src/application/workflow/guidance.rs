@@ -14,11 +14,6 @@ const RESIDENT_HINTS: &[(&str, &str, &str)] = &[
         "If the answer depends on a known file or artifact, inspect it with read_file before making claims about its contents or deciding how to change it.",
     ),
     (
-        "builtin.capabilities",
-        "query_capabilities",
-        "If an operation is not in the tool list, use query_capabilities or describe_capability with its name from the deferred index before a generic command.",
-    ),
-    (
         "builtin.exec_tools",
         "exec_command",
         "Within this turn, use exec_command for local commands whose output or exit status is needed now.",
@@ -34,40 +29,10 @@ pub(crate) fn instructions(tools: &CapabilityView) -> String {
     if has("builtin.native_interaction", "ask_user") {
         guidance.push("Use ask_user for user-owned preferences, scope, priorities and consequential choices that repository investigation cannot resolve. Do not invent consent when interaction is declined.".to_owned());
     }
-    guidance.extend(deferred_index(tools));
     if !guidance.is_empty() {
         guidance.insert(0, "Choose your next tool from the user's outcome and the current work state. When a matching tool can advance the request under the current permissions, use it and decide what comes next from its result.".to_owned());
     }
     guidance.join("\n\n")
-}
-
-fn deferred_index(tools: &CapabilityView) -> Vec<String> {
-    let lines = tools.deferred_blurbs();
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    let mut index = vec!["Deferred tools are registered but omitted from this request. Call describe_capability with the name before using one.".to_owned()];
-    index.extend(
-        lines
-            .into_iter()
-            .map(|(name, description)| format!("{name}: {}", blurb(&description))),
-    );
-    index
-}
-
-fn blurb(description: &str) -> String {
-    let sentence = description
-        .split(['\n', '.'])
-        .next()
-        .unwrap_or(description)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut end = sentence.len().min(72);
-    while end > 0 && !sentence.is_char_boundary(end) {
-        end -= 1;
-    }
-    sentence[..end].trim().to_owned()
 }
 
 #[cfg(test)]
@@ -119,8 +84,12 @@ mod tests {
             "a foreign owner must not receive builtin workflow sentences"
         );
         assert!(
-            text.contains("request_plan_mode: external declaration"),
-            "deferred tools still advertise their own description"
+            !text.contains("request_plan_mode"),
+            "guidance must not name a tool that is absent from the resident hints"
+        );
+        assert!(
+            !text.contains("omitted from this request"),
+            "a published foreign tool is already in the schema"
         );
     }
 
@@ -160,7 +129,7 @@ mod tests {
         let view = registry.capability_view(Some(&crate::tool::ToolAccessPolicy::readonly_child()));
         let text = instructions(&view);
         assert!(!text.contains("job_start"));
-        assert!(!text.contains("Deferred tools"));
+        assert!(!text.contains("omitted from this request"));
         assert_eq!(
             view.definitions()
                 .into_iter()

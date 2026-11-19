@@ -15,7 +15,10 @@ pub struct WorkspaceDirectoryEntry {
     pub run_active: bool,
     pub compacting: bool,
     /// Host-owned processes only; normal Agent Runs never produce this field.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Always serialized: directory clients merge every reply as a complete
+    /// snapshot, so an omitted empty list would keep a settled job's stale
+    /// activity badge alive forever.
+    #[serde(default)]
     pub background_activities: Vec<BackgroundActivity>,
 }
 

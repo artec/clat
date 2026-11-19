@@ -19,7 +19,11 @@ impl TestModelScript for ProposalScript {
         request: crate::ModelRequest<'_>,
         events: &mut dyn crate::model::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
-        assert!(request.instructions.unwrap_or_default().contains(self.name));
+        assert!(
+            !request.instructions.unwrap_or_default().contains(self.name),
+            "guidance must not name {}",
+            self.name
+        );
         if !request.tools.iter().any(|tool| tool.name == self.name) {
             return Ok(crate::ModelResponse {
                 text: String::new(),
@@ -402,19 +406,16 @@ impl TestModelScript for InspectCapabilities {
         ] {
             let in_tools = request.tools.iter().any(|tool| tool.name == name);
             let mentioned = guidance.contains(name);
-            if crate::tool::resident::is_resident(name) {
+            if crate::tool::resident::RESIDENT.contains(&name) {
                 assert_eq!(
                     mentioned, in_tools,
                     "resident guidance must match the schema for {name}"
                 );
             } else if mentioned {
                 assert!(
-                    guidance.contains(&format!("{name}:")),
-                    "{name} is advertised only in the deferred index"
+                    in_tools,
+                    "{name} is named in guidance but absent from the schema"
                 );
-                assert!(!in_tools, "deferred {name} must not ship a schema");
-            } else {
-                assert!(!in_tools, "disabled {name} must not be callable");
             }
         }
         Ok(crate::ModelResponse {

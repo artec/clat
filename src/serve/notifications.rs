@@ -3,7 +3,7 @@
 use super::state::ServeShared;
 use crate::host_client::{HostNotification, NotificationCompletion, NotificationOutcome};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{self, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -47,15 +47,39 @@ impl Notifications {
     }
 }
 
+/// Subscribe before exposing a successful SSE response to the browser.
+/// Otherwise a job can settle after the HTTP headers are visible but before
+/// the receiver exists, losing the one event that clears its activity icon.
+fn subscribed_stream(
+    notifications: &Notifications,
+    write_head: impl FnOnce() -> io::Result<()>,
+) -> io::Result<(
+    u64,
+    mpsc::Receiver<HostNotification>,
+    mpsc::SyncSender<HostNotification>,
+)> {
+    let (id, queue, initial) = notifications.subscribe();
+    if let Err(error) = write_head() {
+        notifications
+            .subscribers
+            .lock()
+            .expect("notification subscribers")
+            .remove(&id);
+        return Err(error);
+    }
+    Ok((id, queue, initial))
+}
+
 pub(super) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
     let Some(host) = shared.host.lock().expect("host link").upgrade() else {
         return;
     };
-    if super::http::write_sse_head(stream).is_err() {
+    let Ok((id, queue, initial)) =
+        subscribed_stream(&host.notifications, || super::http::write_sse_head(stream))
+    else {
         return;
-    }
+    };
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
-    let (id, queue, initial) = host.notifications.subscribe();
     for notice in host.pending_notifications() {
         if initial.try_send(notice).is_err() {
             break;
@@ -79,6 +103,56 @@ pub(super) fn handle(stream: &mut TcpStream, shared: &Arc<ServeShared>) {
         .lock()
         .expect("notification subscribers")
         .remove(&id);
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+
+    fn sample_notice() -> HostNotification {
+        HostNotification {
+            id: "default:workspace.activity:job:example:completed".into(),
+            kind: "workspace.activity".into(),
+            workspace_id: "default".into(),
+            project_root: "/tmp/example".into(),
+            session_id: Some("source-session".into()),
+            completion: None,
+        }
+    }
+
+    #[test]
+    fn completion_during_sse_handshake_cannot_be_lost() {
+        let notifications = Notifications::default();
+        let (_, queue, initial) = subscribed_stream(&notifications, || {
+            assert!(
+                notifications.has_subscribers(),
+                "receiver must exist before HTTP success"
+            );
+            notifications.publish(sample_notice());
+            Ok(())
+        })
+        .unwrap();
+        drop(initial);
+        let received = queue
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .unwrap();
+        assert_eq!(received.kind, "workspace.activity");
+        assert_eq!(received.session_id.as_deref(), Some("source-session"));
+    }
+
+    #[test]
+    fn failed_sse_head_unsubscribes_without_leaking_a_receiver() {
+        let notifications = Notifications::default();
+        let failure = subscribed_stream(&notifications, || {
+            assert!(notifications.has_subscribers());
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "closed connection",
+            ))
+        });
+        assert_eq!(failure.err().unwrap().kind(), io::ErrorKind::BrokenPipe);
+        assert!(!notifications.has_subscribers());
+    }
 }
 
 impl ServeShared {

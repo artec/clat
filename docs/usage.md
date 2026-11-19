@@ -709,8 +709,11 @@ same call before another action. `raise` does not activate the application.
 A background dispatch can succeed without taking effect; the result then
 includes a warning. `ui_apps`, `ui_tree`, `ui_wait` and `ui_act` are included
 in every model request. A run also stops when any tool returns the same result
-41 times in a row for the same arguments. If macOS cannot provide the control's value for repeat
-detection, CLAT compares its other observable state. CLAT reads the
+41 times in a row for the same arguments. `query_capabilities` and
+`describe_capability` stop after the same arguments 3 times in a row. A tool
+also stops after 12 changed arguments in a row return nothing new. If macOS
+cannot provide the control's value for repeat detection, CLAT compares its
+other observable state. CLAT reads the
 interface again to verify the result.
 Screenshots, coordinate input, typing and clipboard operations are outside
 the current tool set.
@@ -3222,13 +3225,11 @@ JSON filters use the same core query as the model:
 /capabilities {"id":"<id returned by this snapshot>","schema_offset":0}
 ```
 
-Models use `query_capabilities` and `describe_capability`. The initial request
-carries full schemas for the resident tools only. Other tools that the current
-Run is allowed to use appear as one line in the guidance. `describe_capability`
-with that name appends the full schema to later requests in the same run;
-calling the tool before that fails. Plan, modality, Task and subagent fences
-still decide which names are visible. Read-only children keep their existing
-three-tool allowlist and have no deferred index. `/context` reports the schemas
+Models use `query_capabilities` and `describe_capability` to inspect a tool.
+The initial request carries the full schema of every tool the current Run is
+allowed to use. Plan, modality, Task and subagent fences still decide which
+names are visible. Read-only children keep their existing three-tool
+allowlist. `/context` reports the schemas
 actually sent, so a new session's tool total is the resident set until a tool
 is promoted.
 User diagnostics use the broader **idle-user** domain and are rejected during an

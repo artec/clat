@@ -3585,6 +3585,8 @@
   "cua.error_timeout": "The interface observation did not finish before its deadline.",
   "cua.error_tree_limit": "This accessibility tree exceeded the observation bounds. Read a smaller window or subtree.",
   "cua.error_unchanged": "The interface stayed unchanged across three actions on the same element. The action was dispatched, but the app may be in the background or the control did not respond. Check it before continuing.",
+  "run.error_repeated_discovery": "The same capability query ran {count} times in a row. This run stopped instead of repeating it.",
+  "run.error_repeated_unproductive": "The same tool returned nothing new {count} times in a row. This run stopped instead of repeating it.",
   "run.error_repeated_result": "The same tool call returned the same result {count} times in a row. This run stopped instead of repeating it.",
   "cua.error_unsupported_action": "The selected element does not support this action in its current window or menu.",
   "cua.no_session": "Open a session before revoking a session decision.",
