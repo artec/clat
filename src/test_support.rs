@@ -991,6 +991,43 @@ pub fn cleanup_tree(root: &std::path::Path) {
     }
 }
 
+/// SL-1 测试用：存储树内是否还有任何文件/目录提及 `needle`（字节级
+/// 扫描，目录名也算命中）。派生缓存目录（`history-index`，懒同步
+/// 自愈、sync 时逐出已删会话）除外。
+pub fn storage_tree_mentions(root: &std::path::Path, needle: &str) -> bool {
+    fn mentions(path: &std::path::Path, needle: &[u8]) -> bool {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.as_bytes() == needle)
+        {
+            return true;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return false;
+        };
+        let mut entries = entries;
+        entries.any(|entry| {
+            let path = entry.unwrap().path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "history-index")
+            {
+                return false;
+            }
+            if path.is_dir() {
+                mentions(&path, needle)
+            } else {
+                std::fs::read(&path)
+                    .map(|bytes| bytes.windows(needle.len().max(1)).any(|w| w == needle))
+                    .unwrap_or(false)
+            }
+        })
+    }
+    mentions(root, needle.as_bytes())
+}
+
 pub fn load_replay(storage_root: &std::path::Path) -> Vec<crate::session::replay::ReplayEvent> {
     let backend = crate::session::persistence::JsonlBackend::new(
         storage_root.join("sessions"),

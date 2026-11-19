@@ -36,6 +36,9 @@ use super::{
 
 /// 共用钉值的 const 构造器：各预设仅 id/伴生/能力/名称/窗口与输出
 /// 上限不同（context 也是参数——2026-11-19 增补模型有非 1M 原值）。
+/// 九个具名参数是 ModelPreset 逐字段钉值的 const 形态（对齐结构体字面
+/// 量的语义），不聚合成中间 struct（tui/dsh_events 等四处同款先例）。
+#[allow(clippy::too_many_arguments)]
 const fn opencode_preset(
     id: &'static str,
     utility_model: Option<&'static str>,

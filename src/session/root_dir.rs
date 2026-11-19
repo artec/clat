@@ -75,6 +75,26 @@ impl SessionRootDir {
         open_dir_nofollow(&self.dir, Path::new(bucket))
     }
 
+    /// SL-1（INV-SL4）：删除一个会话的整个存储目录（journal +
+    /// checkpoint + 投影缓存同域）。仅归档域删除链路调用；调用方
+    /// （Application）已用守卫排除活跃/被选择目标。带退避重试——
+    /// Windows 上句柄延迟释放会让立即整删失败（cleanup_tree 同款
+    /// 5 次尝试、20ms 起步退避）；目标已不存在视为已删（幂等）。
+    pub(crate) fn remove_session(&self, key: &SessionKey) -> io::Result<()> {
+        let bucket = open_dir_nofollow(&self.dir, Path::new(&key.project.bucket))?;
+        let encoded = path_layout::encode_segment(key.id.as_str());
+        let segment = Path::new(&encoded);
+        for attempt in 0..5 {
+            match bucket.remove_dir_all(segment) {
+                Ok(()) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Err(error) if attempt == 4 => return Err(error),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20u64 << attempt)),
+            }
+        }
+        sync_dir(&bucket)
+    }
+
     pub(crate) fn open_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
         open_dir_nofollow(parent, name)
     }

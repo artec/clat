@@ -85,6 +85,55 @@ impl SessionQueryService {
         Ok(share)
     }
 
+    /// INV-SL5（删除守卫）：列出把冻结 session-share 指向 `target` 的
+    /// 本项目会话（引用方 id + 标题）。检测锚点是冻结管线的固定引语
+    /// `> source session:\n> <id>`——引用关系唯一的持久记录（share 文本
+    /// 冻结进引用方消息，无独立 journal 词汇）。逐会话扫描已提交
+    /// 快照；命中后停止匹配（标题继续跟踪无意义，跳过）。
+    pub(crate) fn share_referencing_sessions(
+        &self,
+        target: &str,
+        cancel: &CancelToken,
+    ) -> Result<Vec<(String, String)>, QueryError> {
+        let marker = format!("> source session:\n> {target}\n");
+        let rows = self
+            .reader
+            .list(&self.project)
+            .map_err(|error| QueryError::new("source_unavailable").detail(error))?;
+        let mut references = Vec::new();
+        for (key, _header, _revision) in rows {
+            if key.id.as_str() == target {
+                continue;
+            }
+            let mut title = crate::session::projection::TitleTracker::default();
+            let mut first_user: Option<String> = None;
+            let mut found = false;
+            self.scan(&key, cancel, false, |event| {
+                if found {
+                    return;
+                }
+                // 标题尽力而为：显式标题 → 首条用户消息派生（与
+                // finish_share 同口径）→ id 前缀（守卫点名用）。
+                let _ = title.push(event);
+                if let Some(document) = search::document(event) {
+                    if first_user.is_none() && document.kind == "user" {
+                        first_user = Some(document.text.clone());
+                    }
+                    if document.text.contains(&marker) {
+                        found = true;
+                    }
+                }
+            })?;
+            if found {
+                let label = title.explicit_title().unwrap_or_else(|| {
+                    crate::session::projection::fallback_title(first_user.as_deref().unwrap_or(""))
+                });
+                references.push((key.id.as_str().to_owned(), label));
+            }
+        }
+        Ok(references)
+    }
+
     pub(crate) fn share(
         &self,
         reference: &HistoryReference,

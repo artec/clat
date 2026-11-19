@@ -17,6 +17,7 @@ pub(super) fn dispatch(
         "session.rename" => rename(params, shared),
         "session.rewind.check" | "session.rewind.send" => rewind(method, params, shared),
         "session.compact" => compact(params, shared),
+        "session.delete" => delete(params, shared),
         _ => return None,
     })
 }
@@ -55,6 +56,20 @@ fn select(id: Option<String>, shared: &Arc<ServeShared>) -> Result<Value, RpcErr
     });
     outcome.map_err(if switching { session_error } else { app_error })?;
     Ok(json!({}))
+}
+
+/// SL-C2：归档域两段式删除的 RPC 面。守卫（仅归档/定时规则/打开中/
+/// 共享引用）全在 Application；`confirmed` 是第二段显式确认。
+fn delete(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
+    let id = required_str(params, "id")?;
+    with_app(shared, |app| {
+        app.delete_session(
+            &id,
+            params.get("confirmed").and_then(Value::as_bool) == Some(true),
+        )
+    })
+    .map_err(session_error)?;
+    Ok(json!({ "deleted": true }))
 }
 
 fn rename(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {

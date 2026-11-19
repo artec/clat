@@ -11,6 +11,16 @@ impl TrustedProjectApplication {
     ) -> Result<PreparedRun, ApplicationError> {
         // Reject unsupported images before materializing a fresh session.
         self.validate_pending_images(message)?;
+        // INV-SL2（归档=停摆）：归档会话不接纳新 run——浏览（switch）仍可，
+        // 但 prompt/input/续跑在接纳处统一拒绝（schedules/ACP 早已按
+        // `!archived` 过滤，这里补齐最后一条路；run 前拒绝=零 journal 写入）。
+        if let Some(id) = self.selection.as_ref()
+            && self.selection_is_archived(id)?
+        {
+            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
+                "session.archived",
+            )));
+        }
         let pending_goal = self
             .goal
             .as_ref()

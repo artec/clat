@@ -133,40 +133,47 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
   expect(await page.evaluate(async () => (await rpc('files.search', { query: '.env' })).paths)).toEqual([]);
 });
 
-test('UX-4 explicit archive and shared reload/restore keep selected transcript', async ({ page }) => {
+test('UX-4 archiving the current conversation jumps to a fresh one; archived restore keeps content', async ({ page }) => {
   await open(page);
-  await materializeSession(page, 'previous unrelated chat');
-  await page.click('.project-group:has(#session-list) [data-action=new-project-session]'); await materializeSession(page, 'organization retained chat');
+  await materializeSession(page, 'organization retained chat');
+  // 会话菜单会被任何列表重渲染关闭（renderSessions→closeSessionMenu）：
+  // 开菜单前先等 run/切换/压缩完全空闲，避开物化后的收尾刷新。
+  const settle = () => expect.poll(() => page.evaluate(
+    () => !state.runActive && !state.switching && !state.compactionActive), LIVE).toBe(true);
+  await settle();
+  await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
   const id = await page.evaluate(() => state.sessionId);
   const row = page.locator('[data-session-id="' + id + '"]');
   await row.locator('.session-more').click(); await page.getByRole('menuitem', { name: 'Pin session', exact: true }).click();
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).pinned, id), LIVE).toBe(true);
   await expect(row).toHaveAttribute('data-pinned', 'true', LIVE);
+  await settle();
   await row.locator('.session-more').click();
   await page.getByRole('menuitem', { name: 'Archive session…' }).click();
   const archiveSession = page.locator('dialog.clat-dialog');
   await expect(archiveSession).toBeVisible(LIVE);
   await archiveSession.locator('[data-role="accept"]').click();
+  // INV-SL3（SL-U1）：归档当前会话 → 跳转全新会话（懒物化：sessionId
+  // 为空、转录空态），原会话从活动列表消失。
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(null);
+  await expect(page.locator('#empty-state')).toBeVisible(LIVE);
   await expect(row).toBeHidden(LIVE);
-  expect(await page.evaluate(() => state.sessionId)).toBe(id);
   await page.reload(); await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
-  await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(null);
   await page.fill('#prompt','保留未发送草稿');
   await page.click('#archived-sessions');
   await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-pressed','true');
   await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
   await expect(row).toBeVisible(LIVE);
-  await page.click('#archived-sessions');
-  await expect(row).toBeHidden(LIVE);
-  await expect(page.locator('#transcript')).toContainText('organization retained chat');
-  await page.click('#archived-sessions');
   await row.locator('.session-more').click();
   await page.getByRole('menuitem', { name: 'Restore archived session' }).click();
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).archived, id), LIVE).toBe(false);
   await expect(row).toBeHidden(LIVE);
   await page.click('#archived-sessions');
   await expect(row).toBeVisible(LIVE);
-  await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
+  // 恢复后内容完好：切回该会话，转录保留归档前的聊天。
+  await row.locator('.session-item').click();
+  await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
 });
 
 test('UX-5 structured Plan/Goal details preserve four concepts and confirm actions', async ({ page }, info) => {

@@ -14,6 +14,7 @@ impl SessionService {
             writers: self.writers.clone(),
             backend: self.backend.clone(),
             checkpoints: self.checkpoints.clone(),
+            root: self.root.clone(),
             active: Mutex::new(None),
             #[cfg(test)]
             fail_next_plan_checkpoint: false.into(),

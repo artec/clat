@@ -2273,10 +2273,21 @@ is saved by the core for the workspace and shared with TUI; it is not a browser
 hide preference. The **Active / Archived** tabs switch the recoverable session
 lists; arrow keys and Home/End move between tabs without changing the conversation
 or draft. The project header's arrow opens project selection. Archiving
-retains chat and leaves the selected conversation selected; the current row
-stays visible. Organization is unavailable while a run/compaction owns the
+retains chat; archiving the currently open conversation starts a fresh,
+lazily materialized one, while archiving another row keeps the current
+selection. Archived conversations accept no new messages — restore one before
+continuing it. Organization is unavailable while a run/compaction owns the
 session. TUI `/resume`: P toggles pin, A twice confirms archive, F2 switches the
-archived list, and A restores an archived entry. `/` filtering takes precedence.
+archived list, A restores an archived entry, and D twice deletes an archived
+entry (archived list only). `/` filtering takes precedence.
+
+Deletion exists only in the archived domain. In the web workbench an archived
+row's menu offers **Delete archived conversation…** with two confirmations —
+the second names the conversation's title; in the TUI archived list press D
+twice. A delete removes that conversation's whole stored history permanently;
+only archived conversations can be deleted, an open conversation must be
+switched away first, and a conversation quoted by another conversation's
+frozen session-share is refused with the quoting titles named.
 
 **Tasks** reads only the selected current run generation's ProcessService
 commands, running/completed status, exit code and bounded stdout/stderr/PTY

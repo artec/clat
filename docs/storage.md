@@ -453,6 +453,32 @@ Project paths are canonical real paths. On mount, reconciliation:
 Each project remembers its own active session. Switching projects therefore
 restores the conversation last selected in that project.
 
+### Session deletion (archived domain only)
+
+Deletion exists only in the archived domain: `session.delete` rejects any
+non-archived session (`session.delete_not_archived`) at the RPC layer — not by
+hiding UI entries. Archived conversations never accept new runs; prompt
+submission into one is rejected with `session.archived` (restore first).
+Archiving the currently open conversation starts a fresh, lazily materialized
+one; archiving another conversation keeps the selection.
+
+Guards, in order: the explicit `confirmed` flag; the session must exist and
+be archived; sessions with scheduled-work rules are refused (a defensive
+repeat of the archive-side guard); an open (selected) conversation must be
+switched away first (`session.delete_open`); a conversation quoted by another
+conversation's frozen session-share is refused with the quoting titles named
+(`session.delete_share_referenced`) — references are never auto-removed.
+Deleting an already-removed id is an explicit not-found error, never a
+resurrection.
+
+A successful delete removes the session's whole storage directory (journal,
+checkpoint, projection cache) and its per-turn native file-recovery ledgers
+under `file-review/<sha256(canonical-project)>/`; retained recovery material
+inside the workspace is not touched. The workspace registry then forgets the
+id — `sessionFlags` and the derived `sessionIds` array. Pure caches self-heal
+on their next use: `session_projcache.json` refreshes on the next session
+list, and the history search index evicts the removed rows on the next query.
+
 ### Native file recovery evidence
 
 `file-review/<sha256(canonical-project)>/<sha256(session)>-<turn>.json` stores

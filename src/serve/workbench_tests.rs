@@ -90,6 +90,7 @@ fn workbench_methods_advertise_actual_bounded_read_surfaces() {
         "files.preview",
         "files.reference",
         "session.organize",
+        "session.delete",
         "workflow.details",
         "tasks.list",
         "tasks.logs",
@@ -208,6 +209,10 @@ fn organization_and_restore_reject_stale_selection_before_mutation() {
             json!({"id":"unknown","pinned":true,"expected_selection_generation":stale}),
         ),
         (
+            "session.delete",
+            json!({"id":"unknown","confirmed":true,"expected_selection_generation":stale}),
+        ),
+        (
             "turn.restore",
             json!({"turn":1,"revision":"old","confirmed":true,"expected_selection_generation":stale}),
         ),
@@ -219,6 +224,34 @@ fn organization_and_restore_reject_stale_selection_before_mutation() {
             ErrorCode::Busy
         );
     }
+    drop(shared);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
+/// SL-C2 的 RPC 面：两段式确认（缺 `confirmed` 拒绝）、幂等删除
+/// （不存在的 id → 明确 not_found，不复活）、选择代际栅栏（上测）。
+/// 语义守卫（仅归档域/共享引用）在 application 层测试锁死。
+#[test]
+fn session_delete_rpc_requires_confirmation_and_is_explicit_about_missing_ids() {
+    let (shared, storage, root) = fixture("workbench-session-delete");
+    let missing = "00000000-0000-0000-0000-000000000000";
+    let unconfirmed =
+        protocol::dispatch("session.delete", &json!({"id": missing}), &shared).unwrap_err();
+    assert!(
+        unconfirmed.message.contains("confirmation required"),
+        "{unconfirmed:?}"
+    );
+    assert_eq!(
+        protocol::dispatch(
+            "session.delete",
+            &json!({"id": missing, "confirmed": true}),
+            &shared
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::NotFound
+    );
     drop(shared);
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);

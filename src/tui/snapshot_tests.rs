@@ -4241,6 +4241,83 @@ fn session_share_standalone_picker_sends_only_the_selected_conversation() {
     assert!(harness.app.session_share_submission().1.is_empty());
 }
 
+/// SL-U2（INV-SL3）：picker 归档**当前**会话（两次 A 后的 Organize 动作）
+/// → 回到无会话态（session_id 清空、转录空，与 /new 一致，picker 仍在
+/// 但不再把原会话当 current）；归档**非当前**会话选择与转录不变。
+#[test]
+fn archiving_the_current_session_from_the_picker_resets_to_no_session() {
+    let mut harness = Harness::trusted("sl1-archive-current", 90, 25);
+    let application = harness.app.application.as_ref().unwrap();
+    crate::test_support::configure_test_model(application);
+    (harness.app.config, harness.app.credentials) = application.model_state().unwrap();
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    let wait_for_run = |harness: &mut Harness| {
+        let deadline = std::time::Instant::now() + ADMISSION_WAIT;
+        while harness.app.run_start_pending || harness.app.running {
+            let event = events
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("run should settle");
+            harness.event(event);
+        }
+    };
+    harness.type_text("first conversation");
+    harness.key(KeyCode::Enter);
+    wait_for_run(&mut harness);
+    let first = harness.app.session_id.clone().unwrap();
+    harness.type_text("/new");
+    harness.key(KeyCode::Enter);
+    harness.type_text("second conversation");
+    harness.key(KeyCode::Enter);
+    wait_for_run(&mut harness);
+    let second = harness.app.session_id.clone().unwrap();
+    assert_ne!(first, second);
+
+    // 归档非当前会话（first）：选择与转录不变。
+    harness.type_text("/resume");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.session_picker.is_some());
+    harness
+        .app
+        .apply_resume_action(crate::tui::session_picker::ResumeAction::Organize {
+            id: first.clone(),
+            pinned: None,
+            archived: Some(true),
+        });
+    assert_eq!(harness.app.session_id.as_ref(), Some(&second));
+    assert!(!harness.app.conversation.is_empty());
+
+    // 归档当前会话（second）：跳转无会话态——session_id 清空、转录空，
+    // 与 /new 一致；picker 保留但不再把该会话当 current。
+    harness
+        .app
+        .apply_resume_action(crate::tui::session_picker::ResumeAction::Organize {
+            id: second.clone(),
+            pinned: None,
+            archived: Some(true),
+        });
+    assert!(harness.app.session_id.is_none());
+    assert!(harness.app.conversation.is_empty());
+    // picker 不再把原会话当 current：活跃视图（两条均已归档）为空。
+    let picker = harness.app.session_picker.as_ref().unwrap();
+    assert_eq!(picker.row_count(), 0);
+    // 核心侧确认：两条会话都已归档，first/second 仍在列表。
+    let rows = harness
+        .app
+        .application
+        .as_ref()
+        .unwrap()
+        .list_sessions()
+        .unwrap();
+    for id in [&first, &second] {
+        let row = rows
+            .iter()
+            .find(|row| &row.id == id)
+            .unwrap_or_else(|| panic!("{} must remain listed", id.as_str()));
+        assert!(row.archived, "{} must be archived", id.as_str());
+    }
+}
+
 #[test]
 fn attachment_admission_handoff_restores_app_before_first_run_event() {
     let mut harness = Harness::trusted("attach-admission-handoff", 90, 25);

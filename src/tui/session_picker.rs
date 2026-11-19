@@ -31,6 +31,10 @@ pub(crate) enum ResumeAction {
         pinned: Option<bool>,
         archived: Option<bool>,
     },
+    /// SL-U3：删除某个已归档会话（两次 D 确认后；core 侧守卫兜底）。
+    Delete {
+        id: SessionId,
+    },
     /// dsh 形态：恢复某个宿主会话（携带收养所需的 workspace_path）。
     OpenDsh(Box<DshResumeRow>),
     Cancel,
@@ -122,6 +126,8 @@ pub(crate) struct SessionPicker {
     dsh: Option<Box<DshResumeData>>,
     show_archived: bool,
     archive_confirmation: Option<SessionId>,
+    /// SL-U3：两次 D 删除的布防目标（仅归档列表）。
+    delete_confirmation: Option<SessionId>,
     share_only: bool,
 }
 
@@ -236,6 +242,7 @@ impl SessionPicker {
             dsh: None,
             show_archived: false,
             archive_confirmation: None,
+            delete_confirmation: None,
             share_only: false,
         };
         picker.apply_filter();
@@ -252,6 +259,7 @@ impl SessionPicker {
         let selected = self.sessions.get(self.selected).map(|s| s.id.clone());
         self.all_sessions = sessions;
         self.archive_confirmation = None;
+        self.delete_confirmation = None;
         self.apply_filter();
         if let Some(selected) = selected {
             self.selected = self
@@ -260,6 +268,12 @@ impl SessionPicker {
                 .position(|s| s.id == selected)
                 .unwrap_or(0);
         }
+    }
+
+    /// SL-U2（INV-SL3）：归档当前会话跳转新会话后，原会话不再是当前
+    /// 会话——清除 ✓/过滤豁免所依据的 current。
+    pub(in crate::tui) fn clear_current(&mut self) {
+        self.current = None;
     }
 
     /// dsh 形态构造：全部工作区常显（分组头 + 会话行）；光标定位到
@@ -316,6 +330,7 @@ impl SessionPicker {
             current: None,
             show_archived: false,
             archive_confirmation: None,
+            delete_confirmation: None,
             share_only: false,
             dsh: Some(Box::new(DshResumeData {
                 all_rows,
@@ -538,6 +553,8 @@ impl SessionPicker {
             lines.push(Line::from(Span::styled(
                 if self.share_only {
                     self.locale.text("input.share_picker_hint")
+                } else if self.delete_confirmation.is_some() {
+                    self.locale.text("tui.d_again_confirm_delete_esc_cancel")
                 } else if self.archive_confirmation.is_some() {
                     self.locale
                         .text("tui.a_again_confirm_archive_content_retained_esc_cancel")
@@ -620,6 +637,7 @@ impl SessionPicker {
         if key.code == KeyCode::F(2) {
             self.show_archived = !self.show_archived;
             self.archive_confirmation = None;
+            self.delete_confirmation = None;
             self.apply_filter();
             return Some(ResumeAction::Continue);
         }
@@ -629,6 +647,7 @@ impl SessionPicker {
         let session = self.sessions.get(self.selected)?;
         if key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P') {
             self.archive_confirmation = None;
+            self.delete_confirmation = None;
             return Some(ResumeAction::Organize {
                 id: session.id.clone(),
                 pinned: Some(!session.pinned),
@@ -636,6 +655,7 @@ impl SessionPicker {
             });
         }
         if key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A') {
+            self.delete_confirmation = None;
             if session.archived || self.archive_confirmation.as_ref() == Some(&session.id) {
                 return Some(ResumeAction::Organize {
                     id: session.id.clone(),
@@ -646,7 +666,25 @@ impl SessionPicker {
             self.archive_confirmation = Some(session.id.clone());
             return Some(ResumeAction::Continue);
         }
+        // SL-U3：删除只布防于归档列表（F2）——活动域零删除入口，
+        // core 侧 INV-SL1 兜底。两次 D 确认（profile_delete 先例）。
+        if key.code == KeyCode::Char('d') || key.code == KeyCode::Char('D') {
+            if self.show_archived && session.archived {
+                self.archive_confirmation = None;
+                if self.delete_confirmation.as_ref() == Some(&session.id) {
+                    return Some(ResumeAction::Delete {
+                        id: session.id.clone(),
+                    });
+                }
+                self.delete_confirmation = Some(session.id.clone());
+                return Some(ResumeAction::Continue);
+            }
+            self.archive_confirmation = None;
+            self.delete_confirmation = None;
+            return None;
+        }
         self.archive_confirmation = None;
+        self.delete_confirmation = None;
         None
     }
 }
@@ -694,6 +732,51 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// SL-U3：删除只布防于归档列表——活动列表 D 不布防（清布防后落
+    /// 普通）；归档列表两次 D 才删除；其余键/F2 取消布防。
+    #[test]
+    fn delete_arms_only_in_the_archived_list_and_requires_double_d() {
+        let row = |id: &str, archived| SessionSummary {
+            id: SessionId::new(id),
+            title: Some(id.into()),
+            created_at_ms: 0,
+            last_activity_ms: 0,
+            message_count: 2,
+            turns: 1,
+            pinned: false,
+            archived,
+        };
+        let mut picker = SessionPicker::new(vec![row("active", false), row("old", true)], None);
+        // 活动列表：D 不布防、不产生删除动作。
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('d'))),
+            ResumeAction::Continue
+        ));
+        assert!(picker.delete_confirmation.is_none());
+        // 归档列表（F2）：首 D 布防、次 D 删除。
+        picker.handle_key(KeyEvent::from(KeyCode::F(2)));
+        assert_eq!(picker.sessions[0].id.as_str(), "old");
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('d'))),
+            ResumeAction::Continue
+        ));
+        assert_eq!(
+            picker.delete_confirmation.as_ref().map(|id| id.as_str()),
+            Some("old")
+        );
+        assert!(matches!(
+            picker.handle_key(KeyEvent::from(KeyCode::Char('d'))),
+            ResumeAction::Delete { id } if id.as_str() == "old"
+        ));
+        // 其余键取消布防；F2 切换清布防。
+        picker.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        picker.handle_key(KeyEvent::from(KeyCode::Down));
+        assert!(picker.delete_confirmation.is_none());
+        picker.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        picker.handle_key(KeyEvent::from(KeyCode::F(2)));
+        assert!(picker.delete_confirmation.is_none());
+    }
+
     #[test]
     fn explicit_archive_confirmation_filter_precedence_and_restore_are_distinct() {
         let row = |id: &str, archived| SessionSummary {

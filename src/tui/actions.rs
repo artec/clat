@@ -161,6 +161,11 @@ impl App {
                     self.organize_picker_session(id, pinned, archived);
                 }
             }
+            ResumeAction::Delete { id } => {
+                if self.share_picker.is_none() {
+                    self.delete_picker_session(id);
+                }
+            }
             ResumeAction::Cancel => {
                 self.session_picker = None;
                 self.share_picker = None;
@@ -819,7 +824,7 @@ impl App {
     /// 命令 outcome 的终端呈现：各 `Start*` 开对应弹窗（数据来自
     /// outcome，不再自查门面）、`SessionReset` 清视图状态、错误已在上
     /// 游 flash。纯渲染，无命令语义。
-    fn reset_command_view(&mut self) {
+    pub(in crate::tui) fn reset_command_view(&mut self) {
         // /new 成功后的前端视图清空：用量指标归属会话（TUI-L04），
         // 新会话从零累计；路由桶同清（INV-C1 随会话归属）。
         self.session_id = None;

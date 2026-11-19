@@ -78,6 +78,10 @@ technical details even when they are collapsed. The transcript stays in place.
 The conversation sidebar groups projects under a Projects heading. Its add
 button opens the desktop project picker (or project settings in the browser),
 and its archive toggle shows archived conversations across the project list.
+Archiving the open conversation starts a fresh one. From an archived row's
+menu, **Delete archived conversation…** permanently removes that conversation
+after two confirmations (the second names its title); only archived
+conversations can be deleted.
 Select **Show more** under a project to reveal six more conversations at a time.
 The button disappears when all conversations in that list are visible.
 A new conversation appears with a running indicator when its first turn starts.

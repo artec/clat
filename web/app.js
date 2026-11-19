@@ -3056,6 +3056,8 @@ function openSessionMenu(session, x, y, source) {
     ['copy', 'web.copy_session_id', () => navigator.clipboard.writeText(session.id), false],
     [session.pinned ? 'unpin' : 'pin', session.pinned ? 'web.unpin_session' : 'web.pin_session', () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
     [session.archived ? 'restore' : 'archive', session.archived ? 'web.restore_archived_session' : 'web.archive_session', () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
+    // SL-U3：删除入口只在归档域（活跃域零删除，INV-SL1 由 core 拒绝兜底）。
+    ['trash', 'web.delete_archived_session', () => deleteArchivedSession(session), !session.archived || state.runActive || state.switching || state.compactionActive],
   ];
   for (const [icon, key, action, disabled] of actions) {
     const button = el('button');

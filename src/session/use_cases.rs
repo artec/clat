@@ -285,6 +285,8 @@ pub(crate) struct SessionService {
     writers: Arc<Mutex<std::collections::HashMap<SessionKey, std::sync::Weak<ActiveSession>>>>,
     backend: Arc<JsonlBackend>,
     checkpoints: CheckpointStore,
+    /// SL-1 删除链路的会话目录句柄（backend/checkpoints 之外的同源克隆）。
+    root: Arc<SessionRootDir>,
     active: Mutex<Option<Arc<ActiveSession>>>,
     #[cfg(test)]
     fail_next_plan_checkpoint: std::sync::atomic::AtomicBool,
@@ -313,7 +315,8 @@ impl SessionService {
                 compression,
                 true,
             )),
-            checkpoints: CheckpointStore::new(root),
+            checkpoints: CheckpointStore::new(Arc::clone(&root)),
+            root,
             active: Mutex::new(None),
             #[cfg(test)]
             fail_next_plan_checkpoint: std::sync::atomic::AtomicBool::new(false),
@@ -324,6 +327,33 @@ impl SessionService {
             #[cfg(test)]
             fail_next_quiesce: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// SL-1（INV-SL4）：物理删除一个未打开会话的整个存储目录。仅归档
+    /// 域删除链路调用（Application 守卫先行）；目标仍是活跃 writer 或
+    /// 被选择会话时拒绝——活跃域删除不存在。
+    pub(crate) fn remove_session(&self, key: &SessionKey) -> Result<(), SessionError> {
+        if self
+            .active
+            .lock()
+            .expect("active")
+            .as_ref()
+            .is_some_and(|active| &active.key == key)
+        {
+            return Err(SessionError::Conflict(
+                "cannot remove the open session".into(),
+            ));
+        }
+        if let Some(writer) = self.writers.lock().expect("session writers").get(key)
+            && writer.upgrade().is_some()
+        {
+            return Err(SessionError::Conflict(
+                "session writer is still open".into(),
+            ));
+        }
+        self.root
+            .remove_session(key)
+            .map_err(|error| SessionError::Io(format!("remove session storage: {error}")))
     }
 
     #[cfg(test)]

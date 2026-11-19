@@ -15,6 +15,17 @@ impl workspace::WorkspaceRegistry {
             record.session_flags.insert(session.into(), flags);
         });
     }
+
+    /// SL-1（INV-SL4）：会话删除后让工作区记录遗忘该会话——组织
+    /// flags（归档/置顶）与 `sessionIds` 成员索引同时清除，标记与
+    /// 引用不得比会话目录活得更久（无孤儿；保序剔除，与 reconcile
+    /// 的目录赢语义一致）。
+    pub(super) fn forget_session(&mut self, workspace: &str, session: &str) {
+        self.touch(workspace.to_owned(), |record| {
+            record.session_flags.remove(session);
+            record.session_ids.retain(|id| id != session);
+        });
+    }
 }
 
 impl ControlStorage {
@@ -31,6 +42,19 @@ impl ControlStorage {
             self.lock(),
             |state| self.save_registry(state),
             |state| state.registry.set_flags(workspace, session, flags),
+        )
+    }
+
+    /// SL-1：会话删除后让工作区记录遗忘该会话（flags + sessionIds）。
+    pub(crate) fn forget_session(
+        &self,
+        workspace: &str,
+        session: &str,
+    ) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_registry(state),
+            |state| state.registry.forget_session(workspace, session),
         )
     }
 }

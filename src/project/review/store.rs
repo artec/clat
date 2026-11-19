@@ -54,6 +54,35 @@ impl FileReview {
         }
     }
 
+    /// SL-1（INV-SL4）：删除该会话全部轮次的恢复证据账本。账本文件名
+    /// 前缀 = sha256(session)（见 `name`），无需逐个解析；会话删除后
+    /// 这些 per-turn 证据不再可达（restore 只随会话走），留下即孤儿。
+    /// 工作区侧的保留恢复物（recovery_path 指向的用户文件）不动。
+    pub fn remove_session(&self, session: &str) -> io::Result<usize> {
+        let prefix = format!("{}-", digest(session.as_bytes()));
+        let mut removed = 0;
+        let entries = self.dir.entries().map_err(io_error)?;
+        for entry in entries {
+            let file_name = entry
+                .map_err(io_error)?
+                .file_name()
+                .into_string()
+                .map_err(|_| io_error("recovery file name is not UTF-8"))?;
+            if !file_name.starts_with(&prefix) {
+                continue;
+            }
+            match self.dir.remove_file(&file_name) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if removed > 0 {
+            crate::session::root_dir::sync_dir(&self.dir)?;
+        }
+        Ok(removed)
+    }
+
     pub fn load(&self, session: &str, turn: u64) -> io::Result<Option<Ledger>> {
         let filename = name(session, turn);
         let mut options = cap_std::fs::OpenOptions::new();

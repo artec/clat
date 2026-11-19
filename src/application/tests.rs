@@ -15,6 +15,8 @@ mod history_tests;
 mod job_tests;
 #[path = "manual_compaction_tests.rs"]
 mod manual_compaction;
+#[path = "session_lifecycle_tests.rs"]
+mod session_lifecycle;
 #[path = "target_run_tests.rs"]
 mod target_run_tests;
 #[path = "verification_conflict_tests.rs"]
