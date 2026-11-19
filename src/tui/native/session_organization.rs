@@ -80,8 +80,11 @@ impl App {
     }
 
     /// SL-U3：归档域两段式删除（两次 D 已在 picker 确认；core 侧守卫
-    /// 兜底）。成功后刷新列表并闪提示。
+    /// 兜底）。成功后刷新列表并闪提示；删除的是当前浏览中的归档会话
+    /// 时，core 已把选择腾空到 Fresh——本地路径随之重置视图（native
+    /// 路径由 serve 广播的 selection notice 自动重订阅重置）。
     pub(in crate::tui) fn delete_picker_session(&mut self, id: SessionId) {
+        let was_current = Some(&id) == self.session_id.as_ref();
         if let (Some(native), Some(ui)) = (&self.native, self.event_sender.clone()) {
             let client = native.client.clone();
             let (epoch, selection) = (native.epoch, native.selection);
@@ -113,6 +116,13 @@ impl App {
             });
         match result {
             Ok(rows) => {
+                if was_current {
+                    self.reset_command_view();
+                    if let Some(picker) = self.session_picker.as_mut() {
+                        picker.clear_current();
+                    }
+                }
+                // 跳转重置的 "new conversation" 闪光之后，删除结果最后可见。
                 self.flash_message(UiMessage::new("tui.session_deleted"));
                 self.refresh_picker_sessions(rows);
             }

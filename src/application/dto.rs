@@ -170,19 +170,25 @@ pub(super) fn matching_preset(
         })
 }
 
+/// 厂商显示 key（run 快照与模型设置视图共用同一推导）：当前配置精确匹
+/// 配某预设时取该预设端点识别的厂商，GLM 统一显示 "GLM"；无匹配预设
+/// （自定义 profile 或被改写的路由）为 None，前端回退为纯模型名。工作
+/// 台模型选择器"当前"行与每轮模型请求行因此显示同一厂商名。
+pub(super) fn route_vendor_key(config: &ModelConfig) -> Option<&'static str> {
+    matching_preset(config).and_then(|preset| {
+        match crate::model::endpoint_vendor(preset.endpoint) {
+            crate::model::ModelVendor::Glm => Some("GLM"),
+            vendor => vendor.storage_key(),
+        }
+    })
+}
+
 impl RunModelSnapshot {
     pub(super) fn from_config(config: &ModelConfig) -> Self {
-        let vendor =
-            matching_preset(config).and_then(|preset| {
-                match crate::model::endpoint_vendor(preset.endpoint) {
-                    crate::model::ModelVendor::Glm => Some("GLM"),
-                    vendor => vendor.storage_key(),
-                }
-            });
         Self {
             protocol: config.protocol.to_string(),
             model: config.model.clone(),
-            vendor: vendor.map(str::to_owned),
+            vendor: route_vendor_key(config).map(str::to_owned),
         }
     }
 }

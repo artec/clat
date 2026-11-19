@@ -62,9 +62,9 @@ fn archived_sessions_reject_run_admission_without_writes_or_materialization() {
 }
 
 /// INV-SL1/4：删除只存在于归档域。未归档 → `session.delete_not_archived`；
-/// 未确认 → 显式拒绝；打开中的会话 → `session.delete_open`；不存在的 id →
-/// 明确 "does not exist"（幂等重删同款，不复活不 panic）。删除成功后
-/// 目录与列表无孤儿，历史搜索（懒同步清理后）无鬼影。
+/// 未确认 → 显式拒绝；不存在的 id → 明确 "does not exist"（幂等重删同款，
+/// 不 panic）。删除成功后目录与列表无孤儿，历史搜索（懒同步清理后）
+/// 无鬼影；浏览态（打开中）直接删除成功且选择腾空到 Fresh（见尾腿）。
 #[test]
 fn delete_lives_only_in_the_archived_domain_and_leaves_no_orphans() {
     let (storage, root) = roots("sl1-delete-domain");
@@ -135,19 +135,30 @@ fn delete_lives_only_in_the_archived_domain_and_leaves_no_orphans() {
             .to_string()
             .contains("does not exist")
     );
-    // 打开中的归档会话（浏览态）不可删：先移开选择再删（防御性覆盖）。
+    // 浏览态直接删除（2026-11-19 负责人驳回"打开中拒绝"设计）：切到
+    // 归档的 keeper 浏览，从删除入口直接删——成功且选择腾空到 Fresh
+    //（与 /new 同语义，writer 先 quiesce），目录/记录无残留，后续提交
+    // 物化全新会话。
     app.set_session_organization(keeper.as_str(), None, Some(true), true)
         .unwrap();
     app.switch_session(keeper.clone()).unwrap();
-    assert_eq!(
-        app.delete_session(keeper.as_str(), true)
-            .unwrap_err()
-            .presentation()
-            .key,
-        "session.delete_open"
+    assert!(
+        app.delete_session(keeper.as_str(), true).unwrap(),
+        "deleting the open archived conversation must succeed and report the jump"
     );
-    app.new_session().unwrap();
-    app.delete_session(keeper.as_str(), true).unwrap();
+    assert!(app.current_session_id().is_none());
+    assert!(
+        app.list_sessions()
+            .unwrap()
+            .iter()
+            .all(|s| s.id.as_str() != keeper.as_str())
+    );
+    assert!(!crate::test_support::storage_tree_mentions(
+        &storage,
+        keeper.as_str()
+    ));
+    run(&mut app, "fresh conversation after delete").unwrap();
+    assert_ne!(app.current_session_id().as_ref(), Some(&keeper));
     app.close().unwrap();
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);

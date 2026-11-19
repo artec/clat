@@ -325,8 +325,8 @@ impl ModelConfig {
     /// key/value 精确相等**的值归 Inherit；不相等归显式 Set。旧 schema
     /// 无 Clear 表达（None 即跟随预设 = Inherit），如实记档。无预设的
     /// custom 配置按 ModelConfig 缺省为 managed 基线同律比较。
-    /// OC-18：比较族包含 [`historical_preset_output`]/[`historical_preset_window`]
-    /// 的历史种值——预设表在种值之后变更时，旧种值不得被升格为用户
+    /// OC-18：比较族包含 `historical_preset_output`/`historical_preset_window`
+    /// （私有，同文件下方）的历史种值——预设表在种值之后变更时，旧种值不得被升格为用户
     /// 显式 Set（真机红：grok 的 500,000 毒化链——旧二进制种下、
     /// OC-13 改钉后迁移误判，override 把新钉值永久盖回）。
     pub fn migrate_legacy_overrides(&mut self) {

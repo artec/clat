@@ -2285,9 +2285,10 @@ Deletion exists only in the archived domain. In the web workbench an archived
 row's menu offers **Delete archived conversation…** with two confirmations —
 the second names the conversation's title; in the TUI archived list press D
 twice. A delete removes that conversation's whole stored history permanently;
-only archived conversations can be deleted, an open conversation must be
-switched away first, and a conversation quoted by another conversation's
-frozen session-share is refused with the quoting titles named.
+only archived conversations can be deleted, and a conversation quoted by
+another conversation's frozen session-share is refused with the quoting
+titles named. Deleting the archived conversation you are currently browsing
+is the normal path — it succeeds and starts a fresh conversation.
 
 **Tasks** reads only the selected current run generation's ProcessService
 commands, running/completed status, exit code and bounded stdout/stderr/PTY

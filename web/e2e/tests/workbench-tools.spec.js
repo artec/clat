@@ -19,6 +19,43 @@ async function materializeSession(page, text) {
   await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).not.toBeNull();
 }
 
+test('SL-U3 deleting a non-current archived conversation updates the list immediately', async ({ page }) => {
+  await open(page);
+  // 布局：spare（归档，非当前）+ current（活动）。2026-11-19 负责人
+  // 真机：删除非当前归档行"没反应"，须来回切换视图才消失——本测钉
+  // 死删除后列表立即更新、视图不动、当前会话不受影响。
+  await materializeSession(page, 'spare archived chat');
+  const spare = await page.evaluate(() => state.sessionId);
+  await page.evaluate(id => rpc('session.organize', { id, archived: true, confirmed: true }), spare);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await materializeSession(page, 'current active chat');
+  const current = await page.evaluate(() => state.sessionId);
+  await page.evaluate(() => refreshSessions());
+  await page.click('#archived-sessions');
+  const row = page.locator('[data-session-id="' + spare + '"]');
+  await expect(row).toBeVisible(LIVE);
+  // 双确认删除（"开菜单+点菜单项"整组重试吸收重渲染拆菜单竞态）。
+  const menuAction = async () => {
+    const item = page.getByRole('menuitem', { name: 'Delete archived conversation…' });
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await row.locator('.session-more').click();
+      try { await item.click({ timeout: 1500 }); return; } catch {}
+    }
+    throw new Error('delete menu item unreachable');
+  };
+  await menuAction();
+  const confirmDelete = page.locator('dialog.clat-dialog[open]');
+  await expect(confirmDelete).toBeVisible(LIVE);
+  await confirmDelete.locator('[data-role="accept"]').click();
+  const second = page.locator('dialog.clat-dialog[open]');
+  await expect(second).toBeVisible(LIVE);
+  await second.locator('[data-role="accept"]').click();
+  // 删除后立即消失——无需切换视图；视图保持归档；当前会话不动。
+  await expect(row).toBeHidden(LIVE);
+  await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-pressed', 'true', LIVE);
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(current);
+});
+
 test('CAP-2 native write preview, conflict refusal, confirmed recovery and retained chat', async ({ page }, info) => {
   const root = await open(page, 'native-write');
   fs.writeFileSync(path.join(root, 'generated.txt'), 'human dirty baseline\n');
@@ -136,20 +173,42 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
 test('UX-4 archiving the current conversation jumps to a fresh one; archived restore keeps content', async ({ page }) => {
   await open(page);
   await materializeSession(page, 'organization retained chat');
-  // 会话菜单会被任何列表重渲染关闭（renderSessions→closeSessionMenu）：
-  // 开菜单前先等 run/切换/压缩完全空闲，避开物化后的收尾刷新。
+  // 会话菜单会被任何列表重渲染关闭（renderSessions→closeSessionMenu）；
+  // "开菜单+点菜单项"作为整组重试，吸收后台刷新窗口期拆走菜单的竞态。
   const settle = () => expect.poll(() => page.evaluate(
     () => !state.runActive && !state.switching && !state.compactionActive), LIVE).toBe(true);
+  const menuAction = async (name, exact) => {
+    const item = page.getByRole('menuitem', { name, exact: !!exact });
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await row.locator('.session-more').click();
+      try { await item.click({ timeout: 1500 }); return; } catch {}
+    }
+    throw new Error('session menu item unreachable: ' + name);
+  };
   await settle();
   await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
   const id = await page.evaluate(() => state.sessionId);
   const row = page.locator('[data-session-id="' + id + '"]');
-  await row.locator('.session-more').click(); await page.getByRole('menuitem', { name: 'Pin session', exact: true }).click();
+  // 活动行的菜单不显示删除入口（不渲染灰置死项；强制力在 core 守卫）。
+  // 菜单可能被列表重渲染关闭——"开菜单+断言菜单仍在"整组重试，避免
+  // 菜单关闭后的 count 0 假绿。
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await row.locator('.session-more').click();
+    try {
+      await expect(page.locator('.session-context-menu')).toBeVisible({ timeout: 1500 });
+      await expect(page.getByRole('menuitem', { name: 'Delete archived conversation…' })).toHaveCount(0, { timeout: 1500 });
+      await expect(page.locator('.session-context-menu')).toBeVisible({ timeout: 1500 });
+      break;
+    } catch (error) {
+      if (attempt === 9) throw error;
+    }
+  }
+  await page.keyboard.press('Escape');
+  await menuAction('Pin session', true);
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).pinned, id), LIVE).toBe(true);
   await expect(row).toHaveAttribute('data-pinned', 'true', LIVE);
   await settle();
-  await row.locator('.session-more').click();
-  await page.getByRole('menuitem', { name: 'Archive session…' }).click();
+  await menuAction('Archive session…');
   const archiveSession = page.locator('dialog.clat-dialog');
   await expect(archiveSession).toBeVisible(LIVE);
   await archiveSession.locator('[data-role="accept"]').click();
@@ -165,8 +224,7 @@ test('UX-4 archiving the current conversation jumps to a fresh one; archived res
   await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-pressed','true');
   await expect(page.locator('#prompt')).toHaveValue('保留未发送草稿');
   await expect(row).toBeVisible(LIVE);
-  await row.locator('.session-more').click();
-  await page.getByRole('menuitem', { name: 'Restore archived session' }).click();
+  await menuAction('Restore archived session');
   await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).archived, id), LIVE).toBe(false);
   await expect(row).toBeHidden(LIVE);
   await page.click('#archived-sessions');
@@ -174,6 +232,53 @@ test('UX-4 archiving the current conversation jumps to a fresh one; archived res
   // 恢复后内容完好：切回该会话，转录保留归档前的聊天。
   await row.locator('.session-item').click();
   await expect(page.locator('#transcript')).toContainText('organization retained chat', LIVE);
+  // 负责人场景（2026-11-19）：浏览归档会话（当前选择即目标）后从行
+  // 菜单直接删除——不得报"打开中"；一次取消不删，两次确认才删，
+  // 第二确认点名标题；删除后跳转全新会话。再次归档经 rpc 完成（本腿
+  // 验证删除流本身；菜单在切换后的重渲染中会被拆走，见 settle 注）。
+  await page.evaluate(id => rpc('session.organize', { id, archived: true, confirmed: true }), id);
+  await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.find(s => s.id === id).archived, id), LIVE).toBe(true);
+  // rpc 归档不动选择：当前正是该归档会话（浏览态，即负责人的场景）。
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(id);
+  await page.evaluate(() => refreshSessions());
+  await page.click('#archived-sessions');
+  await expect(row).toBeVisible(LIVE);
+  for (const attempt of [1, 2]) {
+    await settle();
+    await menuAction('Delete archived conversation…');
+    const confirmDelete = page.locator('dialog.clat-dialog');
+    await expect(confirmDelete).toBeVisible(LIVE);
+    if (attempt === 1) {
+      await confirmDelete.locator('[data-role="cancel"]').click();
+      await expect(confirmDelete).toBeHidden(LIVE);
+      await expect(row).toBeVisible(LIVE);
+    } else {
+      await confirmDelete.locator('[data-role="accept"]').click();
+      const second = page.locator('dialog.clat-dialog');
+      await expect(second).toBeVisible(LIVE);
+      // 第二确认点名该会话的实际标题（行文本带归档后缀，取纯标题）。
+      const title = await page.evaluate(id => (state.sessions || []).find(s => s.id === id)?.title, id);
+      expect(title).toBeTruthy();
+      await expect(second.locator('.clat-dialog-message')).toContainText(title, LIVE);
+      await second.locator('[data-role="accept"]').click();
+    }
+  }
+  await expect.poll(() => page.evaluate(async (id) => (await rpc('session.list', {})).sessions.some(s => s.id === id), id), LIVE).toBe(false);
+  await expect(row).toBeHidden(LIVE);
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(null);
+  // 返工 2（2026-11-19 负责人真机）：删除跳转不得补发 session.new——
+  // 过期 selection generation 会撞 busy 并显示 "new session failed"，
+  // 且列表停留在归档视图；两者都必须复位。
+  await expect(page.locator('#archived-sessions')).toHaveAttribute('aria-pressed','false', LIVE);
+  await expect(page.locator('#run-state')).not.toContainText('new session failed', LIVE);
+  // 返工 5（2026-11-19 负责人真机"删除没反应"残留根因）：跟随服务端
+  // 跳转不得有任何静默 bail——即便客户端卡在 switching 态（宿主重启
+  // 后的残留），重同步也必须发生。
+  await page.evaluate(() => { state.switching = true; });
+  await page.evaluate(async () => { await followServerSelectionJump(); });
+  await expect(page.locator('#empty-state')).toBeVisible(LIVE);
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).toBe(null);
+  await expect.poll(() => page.evaluate(() => state.switching), LIVE).toBe(false);
 });
 
 test('UX-5 structured Plan/Goal details preserve four concepts and confirm actions', async ({ page }, info) => {

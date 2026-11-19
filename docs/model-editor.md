@@ -235,6 +235,11 @@ create, edit, activate, and delete a custom profile without closing the host.
 Model settings are shared by every mounted project. A change is broadcast to
 online clients; already-running requests retain their frozen model configuration.
 
+The composer model picker popup labels the active route at its top as
+vendor · model name, using the same vendor label each round's model-request
+trace shows; a route that does not match a built-in preset shows the model
+name alone.
+
 API keys are write-only. Read responses expose only whether a key is set, never
 its value, extra headers, extra request bodies, or authentication prefixes.
 Leaving the preset key blank uses the remembered key for that vendor. In a

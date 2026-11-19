@@ -4318,6 +4318,63 @@ fn archiving_the_current_session_from_the_picker_resets_to_no_session() {
     }
 }
 
+/// SL-U3 浏览态删除（2026-11-19 负责人驳回"打开中拒绝"设计）：
+/// 归档列表两次 D 删除**当前打开（浏览中）**的归档会话——成功、视图
+/// 回无会话态（与 /new 一致）、列表无残留，不出现"先新建会话"拒绝。
+#[test]
+fn deleting_the_open_archived_session_from_the_picker_resets_to_no_session() {
+    let mut harness = Harness::trusted("sl1-delete-current", 90, 25);
+    let application = harness.app.application.as_ref().unwrap();
+    crate::test_support::configure_test_model(application);
+    (harness.app.config, harness.app.credentials) = application.model_state().unwrap();
+    let (sender, events) = super::ui_event_channel();
+    harness.app.event_sender = Some(sender);
+    let deadline = std::time::Instant::now() + ADMISSION_WAIT;
+    harness.type_text("doomed conversation");
+    harness.key(KeyCode::Enter);
+    while harness.app.run_start_pending || harness.app.running {
+        let event = events
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("run should settle");
+        harness.event(event);
+    }
+    let doomed = harness.app.session_id.clone().unwrap();
+    // 归档但保持当前选择（浏览态，即负责人测到的场景）。
+    harness
+        .app
+        .application
+        .as_mut()
+        .unwrap()
+        .set_session_organization(doomed.as_str(), None, Some(true), true)
+        .unwrap();
+    assert_eq!(harness.app.session_id.as_ref(), Some(&doomed));
+    // /resume → F2 归档列表 → 两次 D 删除当前会话。
+    harness.type_text("/resume");
+    harness.key(KeyCode::Enter);
+    assert!(harness.app.session_picker.is_some());
+    harness.key(KeyCode::F(2));
+    harness.key(KeyCode::Char('d'));
+    assert!(harness.app.session_picker.as_ref().unwrap().row_count() >= 1);
+    harness.key(KeyCode::Char('d'));
+    assert!(
+        harness.app.session_id.is_none(),
+        "deleting the open archived conversation must jump to a fresh one, not error"
+    );
+    assert!(harness.app.conversation.is_empty());
+    assert!(
+        harness
+            .app
+            .application
+            .as_ref()
+            .unwrap()
+            .list_sessions()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != doomed),
+        "deleted conversation must be gone from the list"
+    );
+}
+
 #[test]
 fn attachment_admission_handoff_restores_app_before_first_run_event() {
     let mut harness = Harness::trusted("attach-admission-handoff", 90, 25);

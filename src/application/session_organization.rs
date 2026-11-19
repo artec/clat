@@ -20,9 +20,15 @@ impl TrustedProjectApplication {
     /// SL-C2（INV-SL1/4/5/6）：归档域两段式删除的 core 侧。活跃域零
     /// 删除路径——`session.delete` RPC 层拒绝，不靠 UI 隐藏。守卫顺序：
     /// 存在性 → 仅归档 → 定时规则（防御性重复检查，正常流到不了
-    /// 「已归档且有规则」态）→ 打开中 → 共享引用；删除范围=会话整个
-    /// 存储目录（journal + checkpoint + 投影缓存）+ 组织 flags，无孤儿。
-    pub fn delete_session(&mut self, id: &str, confirmed: bool) -> Result<(), ApplicationError> {
+    /// 「已归档且有规则」态）→ 共享引用；删除范围=会话整个存储目录
+    /// （journal + checkpoint + 投影缓存）+ 恢复账本 + 组织 flags，无孤儿。
+    ///
+    /// 目标是当前打开（浏览中）的归档会话时**不拒绝**（2026-11-19
+    /// 负责人驳回"打开中拒绝"设计——删除入口就在归档行菜单，浏览态
+    /// 删除是正常路径）：先按 /new 语义腾空选择（quiesce writer + 持久
+    /// 化 None，两阶段），再整删目录；调用方据此跳转全新会话。
+    /// 返回值 = 是否发生了该腾空跳转。
+    pub fn delete_session(&mut self, id: &str, confirmed: bool) -> Result<bool, ApplicationError> {
         self.reject_session_switch_while_busy()?;
         if !confirmed {
             return Err(ApplicationError::new(
@@ -47,14 +53,6 @@ impl TrustedProjectApplication {
         if self.has_schedule_rules(Some(id))? {
             return Err(super::schedules::schedule_message("delete_blocked"));
         }
-        if self
-            .current_session_id()
-            .is_some_and(|open| open.as_str() == id)
-        {
-            return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
-                "session.delete_open",
-            )));
-        }
         let references = self
             .history
             .as_ref()
@@ -73,6 +71,12 @@ impl TrustedProjectApplication {
                     .arg("titles", titles),
             ));
         }
+        let jumped_to_new = self
+            .current_session_id()
+            .is_some_and(|open| open.as_str() == id);
+        if jumped_to_new {
+            self.new_session()?;
+        }
         let key = self.session_key(&SessionId::new(id));
         self.sessions.remove_session(&key).map_err(session_error)?;
         // 会话每轮的原生文件恢复证据账本（file-review，项目级存储）：
@@ -87,7 +91,7 @@ impl TrustedProjectApplication {
                 .forget_session(workspace, id)
                 .map_err(|error| ApplicationError::new(error.to_string()))?;
         }
-        Ok(())
+        Ok(jumped_to_new)
     }
 
     pub fn set_session_organization(

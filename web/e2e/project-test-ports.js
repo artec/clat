@@ -115,4 +115,9 @@ projectLifecycle = () => ({ ...lifecycle(), test: {
     get settleQueuedDraft() { return settleQueuedDraft; },
     set settleQueuedDraft(value) { settleQueuedDraft = value; },
     get composer() { return composer; },
+    // SL-1（返工 5）：归档域删除/跳转跟随的内部函数——e2e 需直接驱动
+    // "卡死守卫态下跟随服务端跳转"的判别腿。
+    get deleteArchivedSession() { return deleteArchivedSession; },
+    get followServerSelectionJump() { return followServerSelectionJump; },
+    get setArchivedView() { return setArchivedView; },
 } });

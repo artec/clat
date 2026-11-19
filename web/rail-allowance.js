@@ -103,10 +103,22 @@ function railResetCountdown(minutes,t){
   if(mins)parts.push(t('minutes',{count:mins}));
   return parts.join(' ');
 }
+const railText=(key,args)=>CLATI18n.t('rail.'+key,args);
 function projectRailAllowance(allowance){
   if(allowance?.status!=='available')return null;
   const items=(allowance.items||[]).filter(item=>item.kind==='quota'&&item.unit==='%'&&String(item.value).trim()!==''&&Number.isFinite(Number(item.value))&&Number(item.value)>=0&&Number(item.value)<=100);
-  if(items.length)return {kind:'quota',items,remaining:Math.min(...items.map(item=>Number(item.value))),updated:allowance.updated_at};
+  if(items.length){
+    // 负责人裁定（2026-11-19）：图标显示**最小时间窗口**的剩余额度
+    //（如 5 小时窗口存在即显示 5 小时值）——确定性呈现，数字不随
+    // 瓶颈切换跳变；悬停弹窗仍分列全部窗口。同窗口多值取更紧的。
+    let shown=items[0];
+    for(const item of items){
+      const itemHours=Number(item.window_hours)||Infinity;
+      const shownHours=Number(shown.window_hours)||Infinity;
+      if(itemHours<shownHours||(itemHours===shownHours&&Number(item.value)<Number(shown.value)))shown=item;
+    }
+    return {kind:'quota',items,remaining:Number(shown.value),window_hours:Number(shown.window_hours)||0,updated:allowance.updated_at};
+  }
   const money=(allowance.items||[]).filter(item=>item?.kind==='money'&&compactRailMoney(item.value,item.unit,'en'));
   if(!money.length)return null;
   return {kind:'money',items:money,updated:allowance.updated_at};
@@ -124,7 +136,12 @@ function paintRailAllowance(button,ring,mark,balance,allowance){
   }
   ring.set(allowance.remaining);
   button.dataset.low=String(allowance.remaining<=20);button.dataset.critical=String(allowance.remaining<=5);
-  CLATI18n.attribute(button,'aria-label',()=>CLATI18n.t('rail.remaining_percent',{percent:allowance.remaining.toLocaleString(CLATI18n.locale,{maximumFractionDigits:1})}));
+  CLATI18n.attribute(button,'aria-label',()=>{
+    const percent=allowance.remaining.toLocaleString(CLATI18n.locale,{maximumFractionDigits:1});
+    return allowance.window_hours>0
+      ? railText('remaining_percent_window',{percent,window:railWindowLabel(allowance.window_hours,railText)})
+      : railText('remaining_percent',{percent});
+  });
 }
 function createRailAllowance(){
   const button=el('button','shell-button');button.id='nav-allowance';button.type='button';button.hidden=true;
@@ -134,7 +151,7 @@ function createRailAllowance(){
   button.append(ring.element,mark);
   document.getElementById('nav-settings').before(button);
   const popup=el('section');popup.id='rail-allowance-popup';let allowance=null,clock=null;
-  const text=(key,args)=>CLATI18n.t('rail.'+key,args);
+  const text=railText;
   function render(){
     const wallet=allowance?.kind==='money';
     popup.replaceChildren(el('strong','',()=>text(wallet?'wallet':'allowance')));

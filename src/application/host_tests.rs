@@ -69,6 +69,34 @@ fn model_settings_image_capability_matches_preset_and_saved_profile() {
 }
 
 #[test]
+fn model_settings_current_vendor_matches_the_run_route_label() {
+    let (root, mut host, first, _) = fixture("route-vendor-label");
+    let project = host.attach(first).unwrap();
+    let app = project.lock().unwrap();
+    // 不变量：模型选择器"当前"行与每轮"模型请求已开始"行共享同一个
+    // 厂商显示——core 单点推导（GLM 统一 "GLM"；无匹配预设为 None）。
+    app.select_model_preset("opencode-glm-5.3", None).unwrap();
+    assert_eq!(
+        app.model_settings_view().unwrap().current.vendor.as_deref(),
+        Some("OpenCode")
+    );
+    app.select_model_preset("glm-5.3-flash", None).unwrap();
+    assert_eq!(
+        app.model_settings_view().unwrap().current.vendor.as_deref(),
+        Some("GLM")
+    );
+    let (mut config, credentials) = app.model_state().unwrap();
+    config.preset = None;
+    config.endpoint = "https://example.invalid/v1".into();
+    config.model = "custom-route".into();
+    app.save_model_state(&config, &credentials).unwrap();
+    assert_eq!(app.model_settings_view().unwrap().current.vendor, None);
+    drop(app);
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn model_profile_auth_patch_preserves_secrets_and_rejects_invalid_writes() {
     let (root, mut host, first, _) = fixture("profile-auth");
     let project = host.attach(first).unwrap();

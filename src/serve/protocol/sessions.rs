@@ -58,18 +58,23 @@ fn select(id: Option<String>, shared: &Arc<ServeShared>) -> Result<Value, RpcErr
     Ok(json!({}))
 }
 
-/// SL-C2：归档域两段式删除的 RPC 面。守卫（仅归档/定时规则/打开中/
-/// 共享引用）全在 Application；`confirmed` 是第二段显式确认。
+/// SL-C2：归档域两段式删除的 RPC 面。守卫（仅归档/定时规则/共享
+/// 引用）全在 Application；`confirmed` 是第二段显式确认。删除的是
+/// 当前打开（浏览中）的归档会话时，core 已把选择腾空到 Fresh——这里
+/// 与 session.new 同款广播 selection notice，让其他客户端重同步。
 fn delete(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
     let id = required_str(params, "id")?;
-    with_app(shared, |app| {
+    let jumped_to_new = with_app(shared, |app| {
         app.delete_session(
             &id,
             params.get("confirmed").and_then(Value::as_bool) == Some(true),
         )
     })
     .map_err(session_error)?;
-    Ok(json!({ "deleted": true }))
+    if jumped_to_new {
+        shared.advance_selection_generation();
+    }
+    Ok(json!({ "deleted": true, "jumped_to_new": jumped_to_new }))
 }
 
 fn rename(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {

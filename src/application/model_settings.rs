@@ -61,6 +61,11 @@ pub struct ModelRouteView {
     pub thinking_level: Option<crate::ThinkingLevel>,
     pub protocol: ModelProtocol,
     pub model: String,
+    /// 与运行快照 `RunModelSnapshot::vendor` 同源的厂商显示 key：模型选
+    /// 择器"当前"行与每轮模型请求行显示同一厂商名；无匹配预设时为
+    /// None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
     pub endpoint: String,
     pub request_path: String,
     pub preset: Option<String>,
@@ -371,6 +376,7 @@ fn route_view(config: &ModelConfig, credentials: &ProviderCredentials) -> ModelR
         image_input: config.capabilities.accepts_image_input(),
         protocol: config.protocol,
         model: config.model.clone(),
+        vendor: super::dto::route_vendor_key(config).map(str::to_owned),
         endpoint: public_url(&config.endpoint),
         request_path: config
             .request_path

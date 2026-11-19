@@ -464,12 +464,15 @@ one; archiving another conversation keeps the selection.
 
 Guards, in order: the explicit `confirmed` flag; the session must exist and
 be archived; sessions with scheduled-work rules are refused (a defensive
-repeat of the archive-side guard); an open (selected) conversation must be
-switched away first (`session.delete_open`); a conversation quoted by another
+repeat of the archive-side guard); a conversation quoted by another
 conversation's frozen session-share is refused with the quoting titles named
 (`session.delete_share_referenced`) — references are never auto-removed.
 Deleting an already-removed id is an explicit not-found error, never a
-resurrection.
+resurrection. Deleting the conversation currently being browsed is the
+normal entry (the delete action lives on archived rows): the selection is
+first vacated to Fresh with `/new` semantics — the writer is quiesced and
+`activeSessionId` persisted as none — and only then is the directory
+removed; clients jump to a fresh conversation.
 
 A successful delete removes the session's whole storage directory (journal,
 checkpoint, projection cache) and its per-turn native file-recovery ledgers

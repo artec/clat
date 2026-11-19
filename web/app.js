@@ -3056,9 +3056,13 @@ function openSessionMenu(session, x, y, source) {
     ['copy', 'web.copy_session_id', () => navigator.clipboard.writeText(session.id), false],
     [session.pinned ? 'unpin' : 'pin', session.pinned ? 'web.unpin_session' : 'web.pin_session', () => organizeSession(session, { pinned: !session.pinned }), state.runActive || state.switching || state.compactionActive],
     [session.archived ? 'restore' : 'archive', session.archived ? 'web.restore_archived_session' : 'web.archive_session', () => organizeSession(session, { archived: !session.archived }), state.runActive || state.switching || state.compactionActive],
-    // SL-U3：删除入口只在归档域（活跃域零删除，INV-SL1 由 core 拒绝兜底）。
-    ['trash', 'web.delete_archived_session', () => deleteArchivedSession(session), !session.archived || state.runActive || state.switching || state.compactionActive],
   ];
+  // SL-U3：删除入口只出现在归档行——活动列表不显示灰置死项（2026-11-19
+  // 负责人裁定）。强制力不靠 UI：INV-SL1 由 core 的 session.delete 仅
+  // 归档守卫兜底，UI 只做诚实展示。
+  if (session.archived) {
+    actions.push(['trash', 'web.delete_archived_session', () => deleteArchivedSession(session), state.runActive || state.switching || state.compactionActive]);
+  }
   for (const [icon, key, action, disabled] of actions) {
     const button = el('button');
     button.append(svgIcon(icon), el('span', '', () => CLATI18n.msg(key)));
@@ -3220,6 +3224,24 @@ async function newSession() {
     setSwitching(false);
     updateRunState(CLATI18n.msg("web.line_new_session_failed_value",{value1:(error.message)},"new session failed: {value1}"));
   }
+}
+
+// 跟随服务端已发生的选区跳转（删除当前浏览中的归档会话：core 已把
+// 选择腾空到 Fresh、serve 已推进选择代际并广播 notice）。不发任何
+// mutating RPC——rpc() 注入的 expected_selection_generation 此刻必然
+// 过期，会撞 "session selection changed"（首版返工病例）；重开事件流
+// 即可：subscribed 帧带回新代际与空会话、replay 清空转录，onSubscribed
+// 顺带刷新工作台与会话列表。侧栏归档视图随跳转复位（被删行已不存在）。
+// **不得有任何静默 bail**（2026-11-19 负责人真机返工 5）：switching/
+// 压缩/桌面安装锁/在途附件回执等守卫保护的是"客户端主动新建"——这里
+// 旧会话已删除、旧状态不可回，任一守卫命中都会把客户端晾在原地
+//（"删除没反应"）；重入安全由 setSwitching 幂等 + resubscribe 中断旧
+// 流保证，在途回执属于已删会话、随重订阅交由 observeComposerSession 重置。
+async function followServerSelectionJump() {
+  setSwitching(true);
+  closeMobileSidebar();
+  setArchivedView(false);
+  resubscribe();
 }
 
 // 原生 window.prompt 在桌面 webview（wry WKWebView 未实现 JS 对话框面板）
@@ -3601,7 +3623,7 @@ async function openModelPicker({ keyboard = false } = {}) {
 
 function renderModelPicker(view) {
   renderThinkingSlider(view.current);
-  CLATI18n.bind(dom['model-picker-current'], "textContent", () => CLATI18n.msg("web.dynamic_current_value", {value1:(view.current.model || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Current · {value1}"));
+  CLATI18n.bind(dom['model-picker-current'], "textContent", () => CLATI18n.msg("web.dynamic_current_value", {value1:([view.current.vendor, view.current.model].filter(Boolean).join(' · ') || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Current · {value1}"));
   dom['model-picker-list'].replaceChildren();
   const presets = (view.presets || []).map((preset) => ({
     label: preset.name,
