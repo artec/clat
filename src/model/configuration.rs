@@ -249,7 +249,20 @@ impl ModelConfig {
     pub fn apply_overrides(&mut self) {
         match self.overrides.output_limit {
             Override::Inherit => {}
-            Override::Set(value) => self.output_limit = Some(value),
+            // OC-18 自愈：Set 值等于该预设的历史种值时不是用户选择
+            //（迁移毒化链的存量现场），回落当前预设值；真用户值照旧生效。
+            Override::Set(value) => {
+                let preset = self
+                    .preset
+                    .as_deref()
+                    .and_then(crate::presets::preset_by_id);
+                let stale_seed = preset
+                    .is_some_and(|preset| historical_preset_output(preset.id).contains(&value));
+                self.output_limit = match (stale_seed, preset) {
+                    (true, Some(preset)) => Some(preset.output_limit),
+                    _ => Some(value),
+                };
+            }
             Override::Clear => self.output_limit = None,
         }
         match self.overrides.temperature {
@@ -268,19 +281,31 @@ impl ModelConfig {
         }
         match self.overrides.max_context_tokens {
             Override::Inherit => {}
-            Override::Set(value) => self.max_context_tokens = Some(value),
+            // OC-18 自愈：同 output_limit 的历史种值回落。
+            Override::Set(value) => {
+                let preset = self
+                    .preset
+                    .as_deref()
+                    .and_then(crate::presets::preset_by_id);
+                let stale_seed = preset
+                    .is_some_and(|preset| historical_preset_window(preset.id).contains(&value));
+                self.max_context_tokens = match (stale_seed, preset) {
+                    (true, Some(preset)) => Some(preset.context_window),
+                    _ => Some(value),
+                };
+            }
             Override::Clear => self.max_context_tokens = None,
         }
         match self.overrides.thinking_level {
             Override::Inherit => {}
             Override::Set(level) => {
                 let vendor = endpoint_vendor(&self.endpoint);
-                if !thinking_levels(vendor).is_empty() {
-                    // 一次成型：apply stamp 的预设 effort 被用户档位
-                    // 覆盖；unknown/无档位 vendor 不注入（严格网关拒
-                    // 未定义参数；Tencent Hy 的 effort 无效果——TC-3
-                    // wire 零参数，与 effective_thinking_level 口径
-                    // 一致）。
+                // OC-17：按**该模型**的阶梯门控注入——OpenCode 网关
+                // effort 数组逐模型各异，跨模型携带的档位（如 grok 上
+                // 的 Max）注入即网关 400。阶梯外的 Set 保留预设 stamp
+                // 的 effort 不动（有效 pin 照发）；一等字段仍回填，
+                // effective_thinking_level 同口径回落显示。
+                if crate::model::model_thinking_levels(vendor, &self.model).contains(&level) {
                     apply_thinking_level(&mut self.extra_body, vendor, level);
                 }
                 // 一等字段回填（UI/持久层继续读它；merge 的唯一事实
@@ -300,6 +325,10 @@ impl ModelConfig {
     /// key/value 精确相等**的值归 Inherit；不相等归显式 Set。旧 schema
     /// 无 Clear 表达（None 即跟随预设 = Inherit），如实记档。无预设的
     /// custom 配置按 ModelConfig 缺省为 managed 基线同律比较。
+    /// OC-18：比较族包含 [`historical_preset_output`]/[`historical_preset_window`]
+    /// 的历史种值——预设表在种值之后变更时，旧种值不得被升格为用户
+    /// 显式 Set（真机红：grok 的 500,000 毒化链——旧二进制种下、
+    /// OC-13 改钉后迁移误判，override 把新钉值永久盖回）。
     pub fn migrate_legacy_overrides(&mut self) {
         if self.overrides_version.is_some() {
             return;
@@ -311,9 +340,16 @@ impl ModelConfig {
         let managed_output = preset.map(|preset| preset.output_limit);
         let managed_window = preset.map(|preset| preset.context_window);
         let managed_parallel = preset.is_none_or(|preset| preset.parallel_managed_default());
+        let seed_output = preset.map(|preset| historical_preset_output(preset.id));
+        let seed_window = preset.map(|preset| historical_preset_window(preset.id));
 
         self.overrides.output_limit = match self.output_limit {
-            Some(value) if Some(value) != managed_output => Override::Set(value),
+            Some(value)
+                if Some(value) != managed_output
+                    && !seed_output.is_some_and(|seeds| seeds.contains(&value)) =>
+            {
+                Override::Set(value)
+            }
             _ => Override::Inherit,
         };
         self.overrides.temperature = match self.temperature {
@@ -330,10 +366,41 @@ impl ModelConfig {
             None => Override::Inherit,
         };
         self.overrides.max_context_tokens = match self.max_context_tokens {
-            Some(value) if Some(value) != managed_window => Override::Set(value),
+            Some(value)
+                if Some(value) != managed_window
+                    && !seed_window.is_some_and(|seeds| seeds.contains(&value)) =>
+            {
+                Override::Set(value)
+            }
             _ => Override::Inherit,
         };
         self.overrides_version = Some(1);
+    }
+}
+
+/// OC-18：CLAT 自己种过、后因钉值修正而改变的**历史种值**（TC-6 的
+/// 950,000 僵尸种值同族语义，收口为 per-preset 表）。两个消费点：
+/// legacy 迁移分类（旧种值归 Inherit）与 `apply_overrides` 自愈
+///（已毒化的 `Set` 加载即回落当前预设值）。设计常数口径（TC-6 反证：
+/// 合法用户值撞上历史种值的概率可忽略）；预设钉值再次变更时把被替换
+/// 的旧值追加进对应表。
+fn historical_preset_output(preset_id: &str) -> &'static [u32] {
+    match preset_id {
+        // OC-13：窗=输出钉值改 262,144 实用档。
+        "opencode-grok-4.7" => &[500_000],
+        // OC-13：同因（原始 1M/1M）。
+        "opencode-kimi-k3" | "opencode-kimi-k3.1-pro" => &[1_000_000],
+        // OC-14：网关原值 384,000（十进制）修正。
+        "opencode-deepseek-v4-pro" | "opencode-deepseek-v4.1-flash" => &[384 * 1024],
+        _ => &[],
+    }
+}
+
+fn historical_preset_window(preset_id: &str) -> &'static [u32] {
+    match preset_id {
+        // OC-14：网关原值 1,048,576 修正（旧钉 1M 整）。
+        "opencode-kimi-k3" | "opencode-kimi-k3.1-pro" => &[1_000_000],
+        _ => &[],
     }
 }
 

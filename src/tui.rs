@@ -41,8 +41,8 @@ use crate::{
     ModelConfig, ModelEvent, ModelVendor, PermissionDecision, PermissionMode, PermissionRequest,
     Project, ProjectAuthorization, ProviderCredentials, ProviderDescriptor, RenameOutcome,
     RunEvent, RunHandle, SkillsOverviewDto, SteerOutcome, ThinkingLevel, TrustedProjectApplication,
-    Usage, apply_thinking_level, effective_thinking_level, escalation_targets, next_thinking_level,
-    thinking_display, thinking_levels,
+    Usage, apply_thinking_level, effective_thinking_level, escalation_targets,
+    next_thinking_level_for, thinking_display,
 };
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, Event, KeyCode, KeyEvent,

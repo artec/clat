@@ -148,12 +148,40 @@ pub fn thinking_levels(vendor: ModelVendor) -> &'static [ThinkingLevel] {
         // 文档化了 effort（默认 high），plan/v3 订阅端点待重新探针
         // 后再评估开档。
         ModelVendor::Tencent => &[],
-        // OC-Go：OpenCode 网关统一档位 low/medium/high/max（拒 off）。
-        // CLAT 三档映射 Low→low、High→high、Max→max（wire_effort 默认
-        // 臂），medium 是预设 pin 的网关中档（解析回 High，与 Qwen 的
-        // medium≡High 同款显示约定）。
+        // OC-Go：厂商级默认三档——但该网关的 effort 数组是**逐模型**
+        // 的（OC-17），实际可用档位以 [`model_thinking_levels`] 的
+        // 逐模型表为准；此函数保留作非网关路径的厂商默认。
         ModelVendor::OpenCode => &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
         ModelVendor::Other => &[],
+    }
+}
+
+/// OC-17：**逐模型**思考档位。OpenCode 网关的 effort 数组按模型各异
+/// （deepseek-v4-pro 无 low、kimi-k3 仅 max、qwen4-max/gemini/grok 无
+/// max、minimax 仅 toggle），厂商级阶梯会让 Shift+Tab 选到网关必拒的
+/// 档位——真机红值与钉值同源于 2026-11-19 `/v1/models` 快照。判据：
+/// CLAT 档位 L 可用 ⇔ `wire_effort(L)` ∈ 该模型网关数组。未知网关
+/// 模型 fail-closed 返回空阶梯（同 Other/Tencent：不提供无证据的
+/// 档位；预设 pin 的 effort 照常发送）。
+pub fn model_thinking_levels(vendor: ModelVendor, model: &str) -> &'static [ThinkingLevel] {
+    if vendor != ModelVendor::OpenCode {
+        return thinking_levels(vendor);
+    }
+    match model {
+        "deepseek-v4.1-flash"
+        | "kimi-k3.1-pro"
+        | "glm-5.3"
+        | "glm-5.3-flash"
+        | "claude-haiku-5-5"
+        | "gpt-6-luna" => &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
+        // 数组 high,max：无 low。
+        "deepseek-v4-pro" => &[ThinkingLevel::High, ThinkingLevel::Max],
+        // 数组仅 max。
+        "kimi-k3" => &[ThinkingLevel::Max],
+        // 数组止于 xhigh（qwen4-max）/ high（gemini-4-argon、grok-4.7）：无 max。
+        "qwen4-max" | "gemini-4-argon" | "grok-4.7" => &[ThinkingLevel::Low, ThinkingLevel::High],
+        // minimax-m3：reasoning 仅 toggle、无 effort 档位（OC-14）。
+        _ => &[],
     }
 }
 
@@ -162,6 +190,21 @@ pub fn thinking_levels(vendor: ModelVendor) -> &'static [ThinkingLevel] {
 /// Shift+Tab 永不静默失效。
 pub fn next_thinking_level(vendor: ModelVendor, current: ThinkingLevel) -> Option<ThinkingLevel> {
     let levels = thinking_levels(vendor);
+    wrap_level(levels, current)
+}
+
+/// OC-17：逐模型版循环（网关模型用 [`model_thinking_levels`] 的阶梯；
+/// 其余厂商等同 [`next_thinking_level`]）。
+pub fn next_thinking_level_for(
+    vendor: ModelVendor,
+    model: &str,
+    current: ThinkingLevel,
+) -> Option<ThinkingLevel> {
+    let levels = model_thinking_levels(vendor, model);
+    wrap_level(levels, current)
+}
+
+fn wrap_level(levels: &[ThinkingLevel], current: ThinkingLevel) -> Option<ThinkingLevel> {
     levels.first().map(
         |first| match levels.iter().position(|&level| level == current) {
             Some(index) => levels[(index + 1) % levels.len()],
@@ -199,18 +242,23 @@ pub fn apply_thinking_level(extra_body: &mut Value, vendor: ModelVendor, level: 
     );
 }
 
-/// 当前生效的思考档位：一等字段优先，其次解析 `extra_body`（预设
-/// 默认写法）。手工把 `extra_body` 编辑成 `thinking.type: "disabled"`
-/// 视为用户明确关闭思考——返回 `None`，标题栏不显示，下一次
-/// Shift+Tab 会恢复成 `enabled` + 三档之一。无档位厂商（`Other`；
-/// Tencent Hy——TC-0 探针实证 `reasoning_effort` 无可复现效果）
+/// 当前生效的思考档位：一等字段优先（OC-17：仅当它在**该模型**的
+/// 阶梯内——跨模型/跨预设携带的陈旧值不显示也不发送，回落到
+/// `extra_body` 的预设 pin 解析，显示与实际发送一致），其次解析
+/// `extra_body`（预设默认写法）。手工把 `extra_body` 编辑成
+/// `thinking.type: "disabled"` 视为用户明确关闭思考——返回 `None`，
+/// 标题栏不显示，下一次 Shift+Tab 会恢复成 `enabled` + 阶梯内档位。
+/// 无档位模型（`Other`、Tencent Hy、无 effort 数组的网关模型）
 /// 一律 `None`。
 pub fn effective_thinking_level(config: &ModelConfig) -> Option<ThinkingLevel> {
     let vendor = config.vendor();
-    if thinking_levels(vendor).is_empty() {
+    let levels = model_thinking_levels(vendor, &config.model);
+    if levels.is_empty() {
         return None;
     }
-    let level = if let Some(level) = config.thinking_level {
+    let level = if let Some(level) = config.thinking_level
+        && levels.contains(&level)
+    {
         level
     } else {
         let disabled = config

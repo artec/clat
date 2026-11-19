@@ -468,8 +468,9 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     assert_eq!(config.extra_body, serde_json::json!({}));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4-flash"));
-    // OC-Go（2026-11-18）：腾讯预设之后接连排布 OpenCode Go 网关八
-    // 预设（presets/opencode.rs 钉值），然后才回落 Custom（None）。
+    // OC-Go（2026-11-18）：腾讯预设之后接连排布 OpenCode Go 网关预设
+    // （presets/opencode.rs 钉值；2026-11-19 追加四海外闭源模型殿后），
+    // 然后才回落 Custom（None）。
     for expected in [
         "opencode-deepseek-v4-pro",
         "opencode-deepseek-v4.1-flash",
@@ -479,6 +480,10 @@ fn cycling_preset_applies_official_deepseek_parameters() {
         "opencode-glm-5.3-flash",
         "opencode-qwen4-max",
         "opencode-minimax-m3",
+        "opencode-claude-haiku-5-5",
+        "opencode-gpt-6-luna",
+        "opencode-gemini-4-argon",
+        "opencode-grok-4.7",
     ] {
         editor.handle_key(key(KeyCode::Right));
         assert_eq!(editor.preset.map(|preset| preset.id), Some(expected));

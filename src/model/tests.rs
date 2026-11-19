@@ -460,6 +460,67 @@ fn legacy_overrides_migration_is_field_wise_and_idempotent() {
     assert_eq!(config.overrides.parallel_tool_calls, Override::Set(false));
 }
 
+/// OC-18 判别（真机毒化现场复刻，2026-11-19 负责人 settings.json）：
+/// 旧二进制按旧预设表种下 grok output_limit 500,000 → 钉值修正
+/// （262,144）后 legacy 迁移把 500,000 误判为用户 Set → 每次加载
+/// `apply_overrides` 把新钉值盖回 → 容量预检永久拒绝（提问气泡都发
+/// 不出）。修复后：迁移把历史种值归 Inherit；**已毒化**的 version-1
+/// 配置（Set(500,000) 已落盘）在 apply_overrides 加载即自愈。pre-fix
+/// 两条腿全红（迁移产出 Set；自愈腿 output_limit 仍 500,000 且预算
+/// Err）。
+#[test]
+fn historical_preset_seeds_never_become_user_overrides() {
+    // 腿一：legacy 迁移认得历史种值（grok 500,000 / kimi 1M×2 /
+    // deepseek 393,216 / kimi 旧窗口 1M 整）——归 Inherit，不再升格
+    // 为 Set。
+    let mut grok = ModelConfig {
+        preset: Some("opencode-grok-4.7".into()),
+        output_limit: Some(500_000),
+        max_context_tokens: Some(500_000),
+        ..ModelConfig::default()
+    };
+    grok.migrate_legacy_overrides();
+    assert_eq!(
+        grok.overrides.output_limit,
+        Override::Inherit,
+        "a value CLAT itself stamped under the old preset table is not a user choice"
+    );
+    assert_eq!(grok.overrides.max_context_tokens, Override::Inherit);
+    let mut kimi = ModelConfig {
+        preset: Some("opencode-kimi-k3.1-pro".into()),
+        output_limit: Some(1_000_000),
+        max_context_tokens: Some(1_000_000),
+        ..ModelConfig::default()
+    };
+    kimi.migrate_legacy_overrides();
+    assert_eq!(kimi.overrides.output_limit, Override::Inherit);
+    assert_eq!(kimi.overrides.max_context_tokens, Override::Inherit);
+
+    // 腿二：已毒化的 version-1 现场（与负责人 settings.json 同形：
+    // Set(500,000)+Set(Max)）——加载路径 apply → apply_overrides 自愈：
+    // output 回落当前预设 262,144，容量预算通过；用户真值不受影响。
+    let preset = crate::presets::preset_by_id("opencode-grok-4.7").unwrap();
+    let mut poisoned = ModelConfig::default();
+    preset.apply(&mut poisoned);
+    poisoned.overrides_version = Some(1);
+    poisoned.overrides.output_limit = Override::Set(500_000);
+    poisoned.overrides.thinking_level = Override::Set(ThinkingLevel::Max);
+    poisoned.apply_overrides();
+    assert_eq!(poisoned.output_limit, Some(262_144));
+    assert!(
+        crate::model::ContextBudget::resolve(&poisoned).is_ok(),
+        "the healed config must pass the capacity budget (run preparation unblocked)"
+    );
+    // 非种值用户选择照旧生效（500,000 不是 glm 的种值）。
+    let mut glm = ModelConfig::default();
+    crate::presets::preset_by_id("glm-5.3")
+        .unwrap()
+        .apply(&mut glm);
+    glm.overrides.output_limit = Override::Set(500_000);
+    glm.apply_overrides();
+    assert_eq!(glm.output_limit, Some(500_000));
+}
+
 /// INV-B：`apply_thinking_level` 是线上思考参数的唯一写入口，
 /// 任何输入都产出 `enabled` + 三档之一，且保留 thinking 对象内
 /// 的其它键（GLM 的 `clear_thinking`）。Kimi/Qwen 不携带 thinking
@@ -574,6 +635,107 @@ fn opencode_vendor_maps_three_levels_directly() {
     apply_thinking_level(&mut body, ModelVendor::OpenCode, ThinkingLevel::High);
     assert_eq!(body["reasoning_effort"], "high");
     assert!(body.get("thinking").is_none());
+}
+
+/// OC-17 哨兵：OpenCode 网关的**逐模型**思考阶梯与 2026-11-19
+/// `/v1/models` 快照的 effort 数组逐条等价——判据：CLAT 档位 L 可用
+/// ⇔ `wire_effort(L)` ∈ 该模型数组。真机红类：厂商级三档让 grok/
+/// gemini/qwen4-max 可选 Max（数组无 max）、deepseek-v4-pro 可选 Low
+/// （数组无 low）、kimi-k3 可选 Low/High（数组仅 max）、minimax 无
+/// 档位却三档全开。网关数组漂移时本表与 OC-14 的 effort pin 表一起
+/// 人工复核。
+#[test]
+fn opencode_model_ladders_match_the_gateway_arrays() {
+    let vendor = ModelVendor::OpenCode;
+    for (model, array) in [
+        ("deepseek-v4-pro", &["high", "max"][..]),
+        ("deepseek-v4.1-flash", &["low", "high", "max"]),
+        ("kimi-k3.1-pro", &["low", "high", "max"]),
+        ("kimi-k3", &["max"]),
+        ("glm-5.3", &["low", "high", "max"]),
+        ("glm-5.3-flash", &["low", "high", "max"]),
+        ("qwen4-max", &["low", "high", "xhigh"]),
+        ("minimax-m3", &[]),
+        (
+            "claude-haiku-5-5",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-6-luna",
+            &["none", "low", "medium", "high", "xhigh", "max"],
+        ),
+        ("gemini-4-argon", &["low", "medium", "high"]),
+        ("grok-4.7", &["low", "medium", "high", "xhigh"]),
+    ] {
+        let levels = model_thinking_levels(vendor, model);
+        for level in [ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max] {
+            let selectable = levels.contains(&level);
+            let wire_valid = array.contains(&level.wire_effort(vendor));
+            assert_eq!(
+                selectable, wire_valid,
+                "{model}: {level:?} selectability must equal wire validity (array {array:?})"
+            );
+        }
+    }
+    // 未知网关模型 fail-closed：无档位（不提供无证据的循环）。
+    assert!(model_thinking_levels(vendor, "mimo-v2.6-pro").is_empty());
+    // 非网关厂商逐模型表 == 厂商表（不改变既有语义）。
+    assert_eq!(
+        model_thinking_levels(ModelVendor::DeepSeek, "deepseek-flash"),
+        thinking_levels(ModelVendor::DeepSeek)
+    );
+}
+
+/// OC-17：陈旧/跨模型携带的一等 thinking_level 不显示、不发送——
+/// effective 回落预设 pin 解析（显示 == 实际发送），override merge
+/// 不把阶梯外的档位写进 extra_body。
+#[test]
+fn out_of_ladder_thinking_level_falls_back_to_the_preset_pin() {
+    // grok（阶梯 [Low, High]）+ 持久化 Max（OC-16 真机现场）：显示回落
+    // 预设 pin medium → High；merge 不把 max 写进 extra_body。
+    let mut config = ModelConfig::default();
+    crate::preset_by_id("opencode-grok-4.7")
+        .expect("grok preset")
+        .apply(&mut config);
+    config.overrides.thinking_level = Override::Set(ThinkingLevel::Max);
+    config.thinking_level = Some(ThinkingLevel::Max);
+    config.apply_overrides();
+    assert_eq!(
+        config.extra_body.get("reasoning_effort"),
+        Some(&serde_json::json!("medium")),
+        "an out-of-ladder level must not override the preset pin"
+    );
+    assert_eq!(
+        effective_thinking_level(&config),
+        Some(ThinkingLevel::High),
+        "display falls back to the actually-sent preset pin (medium ≡ High)"
+    );
+    // 循环从回落档继续，且只在 [Low, High] 内 wrap——Max 永不可达。
+    assert_eq!(
+        next_thinking_level_for(ModelVendor::OpenCode, "grok-4.7", ThinkingLevel::High),
+        Some(ThinkingLevel::Low)
+    );
+    assert_eq!(
+        next_thinking_level_for(ModelVendor::OpenCode, "grok-4.7", ThinkingLevel::Max),
+        Some(ThinkingLevel::Low),
+        "an out-of-ladder current restarts from the first in-ladder level"
+    );
+    // 阶梯内档位照常生效（kimi-k3 仅 Max：pin max 显示 Max）。
+    let mut kimi = ModelConfig::default();
+    crate::preset_by_id("opencode-kimi-k3")
+        .expect("kimi preset")
+        .apply(&mut kimi);
+    assert_eq!(effective_thinking_level(&kimi), Some(ThinkingLevel::Max));
+    // minimax 无档位：显示 None，循环不可用。
+    let mut minimax = ModelConfig::default();
+    crate::preset_by_id("opencode-minimax-m3")
+        .expect("minimax preset")
+        .apply(&mut minimax);
+    assert_eq!(effective_thinking_level(&minimax), None);
+    assert_eq!(
+        next_thinking_level_for(ModelVendor::OpenCode, "minimax-m3", ThinkingLevel::High),
+        None
+    );
 }
 
 /// INV-D：循环只在厂商支持的档位集合内 wrap；Other 厂商无档位。

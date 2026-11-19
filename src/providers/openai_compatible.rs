@@ -91,20 +91,11 @@ impl OpenAiCompatibleModel {
         // 默认携带。由各厂商预设的 extra_body 提供，通用通道不注入。
 
         if !request.tools.is_empty() {
+            let profile = gateway_schema_profile(&self.config.endpoint, &self.config.model);
             let tools = request
                 .tools
                 .iter()
-                .map(|tool| {
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema,
-                            "strict": tool.strict,
-                        }
-                    })
-                })
+                .map(|tool| wire_tool(tool, profile))
                 .collect();
             body.insert("tools".into(), Value::Array(tools));
         }
@@ -515,6 +506,90 @@ pub(crate) fn join_endpoint(endpoint: &str, request_path: &str) -> String {
         format!("{endpoint}{path}")
     } else {
         format!("{endpoint}/{path}")
+    }
+}
+
+/// OC-12：OpenCode 网关的 OpenAI 门面把请求按模型族翻译到不同上游，
+/// 工具 schema 的容忍度逐族不同（2026-11-19 负责人真机四连红钉值：
+/// gemini 拒 `strict`；gpt 的 strict 模式要求 required 列全 properties，
+/// CLAT 工具保留可选参数，非严格模式才合法；claude 的 schema 白名单
+/// 不支持 array 边界关键字，`maxItems` 被点名单拒）。网关直连族
+/// （deepseek/kimi/glm/qwen/minimax）真机原样可用，不触碰；非
+/// opencode 端点一律走默认画像（该归一化描述的是网关翻译层，不是
+/// 各厂商原生 API 的行为）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GatewaySchemaProfile {
+    /// 不发送 `strict` 字段（缺省 = 各上游的非严格工具调用模式）。
+    omit_strict: bool,
+    /// 递归剥离 array 边界关键字（`maxItems`/`minItems`）。
+    strip_array_bounds: bool,
+}
+
+const WIRE_DEFAULT_PROFILE: GatewaySchemaProfile = GatewaySchemaProfile {
+    omit_strict: false,
+    strip_array_bounds: false,
+};
+
+fn gateway_schema_profile(endpoint: &str, model: &str) -> GatewaySchemaProfile {
+    if !endpoint.to_ascii_lowercase().contains("opencode.ai") {
+        return WIRE_DEFAULT_PROFILE;
+    }
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("gemini-") || model.starts_with("gpt-") {
+        GatewaySchemaProfile {
+            omit_strict: true,
+            strip_array_bounds: false,
+        }
+    } else if model.starts_with("claude-") {
+        GatewaySchemaProfile {
+            omit_strict: true,
+            strip_array_bounds: true,
+        }
+    } else {
+        WIRE_DEFAULT_PROFILE
+    }
+}
+
+/// 按画像投影一个工具的线上形状（`strict` 的取舍与 schema 剥离都在
+/// 此收口；request_body 不再手拼 function 对象）。
+fn wire_tool(tool: &crate::tool::ToolDefinition, profile: GatewaySchemaProfile) -> Value {
+    let mut parameters = tool.input_schema.clone();
+    if profile.strip_array_bounds {
+        strip_array_bounds(&mut parameters);
+    }
+    let mut function = Map::new();
+    function.insert("name".into(), Value::String(tool.name.clone()));
+    function.insert(
+        "description".into(),
+        Value::String(tool.description.clone()),
+    );
+    function.insert("parameters".into(), parameters);
+    if !profile.omit_strict {
+        function.insert("strict".into(), Value::Bool(tool.strict));
+    }
+    json!({"type": "function", "function": Value::Object(function)})
+}
+
+/// 递归剥离 schema 中 array 类型的边界关键字。只删不改：items、
+/// description、string 边界（minLength/maxLength）等其余约束原样保留
+/// ——anthropic 白名单点名的是 array 边界关键字这一类。
+fn strip_array_bounds(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("array") {
+                map.remove("maxItems");
+                map.remove("minItems");
+            }
+            for (_, child) in map.iter_mut() {
+                strip_array_bounds(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items.iter_mut() {
+                strip_array_bounds(child);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2570,6 +2645,90 @@ mod tests {
                 .contains("x-opencode-session: clat-auxiliary"),
             "sessionless utility requests carry the auxiliary routing key: {auxiliary}"
         );
+    }
+
+    /// OC-12 判别：OpenCode 网关按模型族归一工具 schema——gemini/gpt/
+    /// claude 不发 `strict`；claude 额外递归剥离 array 边界关键字
+    /// （嵌套同剥、其余约束保留）；网关直连族与非 opencode 端点原样。
+    /// 真机红值（2026-11-19 负责人四连测）见 gateway_schema_profile 注释。
+    #[test]
+    fn opencode_gateway_tool_schema_follows_the_model_family() {
+        let tool = ToolDefinition {
+            name: "search".into(),
+            description: "bounded literal search".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "include_globs": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+                    "nested": {"type": "object", "properties": {
+                        "edits": {"type": "array", "minItems": 1, "maxItems": 64,
+                                  "items": {"type": "string"}}
+                    }}
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+            effect: ToolEffect::Pure,
+            strict: true,
+        };
+        let body = |endpoint: &str, model: &str| {
+            let config = ModelConfig {
+                protocol: crate::ModelProtocol::OpenAiCompatible,
+                model: model.into(),
+                endpoint: endpoint.into(),
+                request_path: "/chat/completions".into(),
+                ..ModelConfig::default()
+            };
+            let adapter =
+                OpenAiCompatibleModel::from_runtime_fields(Vec::new(), &config).expect("model");
+            adapter
+                .request_body(ModelRequest {
+                    instructions: None,
+                    items: &[ModelItem::user_text("hi")],
+                    tools: std::slice::from_ref(&tool),
+                    options: &ModelOptions::default(),
+                    cancel: &CancelToken::new(),
+
+                    session_id: None,
+                })
+                .expect("body")
+        };
+
+        for model in ["gemini-4-argon", "gpt-6-luna", "claude-haiku-5-5"] {
+            let value = body("https://opencode.ai/inference/go/v1", model);
+            let function = &value["tools"][0]["function"];
+            assert!(
+                function.get("strict").is_none(),
+                "{model}: the gateway translation layer must not see strict"
+            );
+            assert_eq!(function["name"], "search", "{model}");
+        }
+        // claude：array 边界关键字递归剥离（含嵌套 edits），其余约束保留。
+        let claude = body("https://opencode.ai/inference/go/v1", "claude-haiku-5-5");
+        let claude_text = claude.to_string();
+        assert!(
+            !claude_text.contains("maxItems") && !claude_text.contains("minItems"),
+            "claude schema whitelist rejects array bound keywords: {claude_text}"
+        );
+        let params = &claude["tools"][0]["function"]["parameters"];
+        assert_eq!(
+            params["properties"]["include_globs"]["items"]["type"],
+            "string"
+        );
+        assert_eq!(params["properties"]["query"]["minLength"], 1);
+        // gemini/gpt：仅摘 strict，schema 本体（含 maxItems）不动。
+        let gemini = body("https://opencode.ai/inference/go/v1", "gemini-4-argon");
+        assert!(gemini.to_string().contains("maxItems"));
+        // 网关直连族：strict 与边界关键字全保留（真机原样可用）。
+        let direct = body("https://opencode.ai/inference/go/v1", "deepseek-v4-pro");
+        assert_eq!(direct["tools"][0]["function"]["strict"], true);
+        assert!(direct.to_string().contains("maxItems"));
+        // 非 opencode 端点：即使模型名同族也不动——该归一化只描述
+        // 网关翻译层，不是各厂商原生 API 的行为。
+        let outside = body("https://api.deepseek.com", "claude-haiku-5-5");
+        assert_eq!(outside["tools"][0]["function"]["strict"], true);
+        assert!(outside.to_string().contains("maxItems"));
     }
 
     /// 单次真实 HTTP 交换：返回服务端捕获的原始请求文本（头 + 体）。

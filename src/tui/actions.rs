@@ -250,7 +250,9 @@ impl App {
             return;
         }
         let vendor = self.config.vendor();
-        if thinking_levels(vendor).is_empty() {
+        // OC-17：按**该模型**的阶梯（OpenCode 网关 effort 数组逐模型
+        // 收窄——grok/gemini 无 max、kimi-k3 仅 max、minimax 无档位）。
+        if crate::model_thinking_levels(vendor, &self.config.model).is_empty() {
             // TC-3：Tencent Hy 思考服务端常开（标题栏 Thinking · Server）
             // ——按键如实告知不可调；其它未知端点本就无档位。
             self.flash_status(if vendor == ModelVendor::Tencent {
@@ -265,7 +267,7 @@ impl App {
         // 当前生效档位：一等字段优先，其次解析 extra_body；手工编辑成
         // disabled 视为关闭，从 High 起步一键恢复。
         let current = effective_thinking_level(&self.config).unwrap_or(ThinkingLevel::High);
-        let Some(next) = next_thinking_level(vendor, current) else {
+        let Some(next) = next_thinking_level_for(vendor, &self.config.model, current) else {
             return;
         };
         let previous = self.config.clone();

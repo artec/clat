@@ -37,20 +37,24 @@ The shipped catalog is the source used by both the picker and runtime:
 | Hy 4 Flash | `hy4-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
 | DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
-| Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | `https://opencode.ai/inference/go/v1` | 1M | 1M |
-| Kimi K3 · OpenCode Go | `opencode-kimi-k3` | `https://opencode.ai/inference/go/v1` | 1M | 1M |
+| Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | `https://opencode.ai/inference/go/v1` | 1M | 256K |
+| Kimi K3 · OpenCode Go | `opencode-kimi-k3` | `https://opencode.ai/inference/go/v1` | 1M | 256K |
 | GLM 5.3 · OpenCode Go | `opencode-glm-5.3` | `https://opencode.ai/inference/go/v1` | 1M | 128K |
 | GLM 5.3 Flash · OpenCode Go | `opencode-glm-5.3-flash` | `https://opencode.ai/inference/go/v1` | 1M | 128K |
 | Qwen4 Max · OpenCode Go | `opencode-qwen4-max` | `https://opencode.ai/inference/go/v1` | 1M | 262K |
 | MiniMax M3 · OpenCode Go | `opencode-minimax-m3` | `https://opencode.ai/inference/go/v1` | 1M | 128K |
+| Claude Haiku 5.5 · OpenCode Go | `opencode-claude-haiku-5-5` | `https://opencode.ai/inference/go/v1` | 1M | 128K |
+| GPT-6 Luna · OpenCode Go | `opencode-gpt-6-luna` | `https://opencode.ai/inference/go/v1` | 1.05M | 128K |
+| Gemini 4 Argon · OpenCode Go | `opencode-gemini-4-argon` | `https://opencode.ai/inference/go/v1` | 1M | 64K |
+| Grok 4.7 · OpenCode Go | `opencode-grok-4.7` | `https://opencode.ai/inference/go/v1` | 500K | 256K |
 
 All use the OpenAI-compatible protocol. The catalog also owns request paths,
 reasoning parameters, usage streaming, context-window seeds, and vendor-specific
 headers. For example, GLM preserves thinking, Qwen uses its
 `low`/`medium`/`xhigh` ladder, the Kimi Coding endpoints require a
 whitelisted coding-agent User-Agent, the OpenCode Go presets send the
-gateway-mandated `clat/<version>` User-Agent plus a stable per-conversation
-`x-opencode-session` header, and the Hy presets always think
+gateway-mandated `clat/<version>` User-Agent plus a stable
+`x-opencode-session` routing header, and the Hy presets always think
 server-side (no ladder). See [Providers](providers.md#built-in-presets)
 before overriding those fields.
 
@@ -59,10 +63,12 @@ image input; the officially-declared vision presets — `deepseek-flash`,
 `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, and `hy4` —
 and GLM 5.3 Flash all enable
 the image attachments described in
-[Using CLAT](usage.md#image-attachments), as do the six OpenCode Go vision
+[Using CLAT](usage.md#image-attachments), as do the ten OpenCode Go vision
 presets (`opencode-deepseek-v4.1-flash`, `opencode-kimi-k3.1-pro`,
 `opencode-kimi-k3`, `opencode-glm-5.3-flash`, `opencode-qwen4-max`,
-`opencode-minimax-m3`; gateway `/v1/models` metadata). All other presets
+`opencode-minimax-m3`, `opencode-claude-haiku-5-5`, `opencode-gpt-6-luna`,
+`opencode-gemini-4-argon`, `opencode-grok-4.7`; gateway `/v1/models`
+metadata). All other presets
 remain text-only
 in CLAT. This does not restrict images handled wholly inside configured MCP
 tools. DeepSeek note (2026-09-10): the official V4.1 Flash release retired
@@ -76,9 +82,12 @@ session naming, manual prompt suggestions and automatic Web/Desktop next steps: 
 `qwen3.8-flash`, `k3.1-pro` uses `kimi-for-coding`, and `hy4` uses
 `hy4-flash`. The OpenCode Go flagships use the gateway's flash tiers —
 `opencode-glm-5.3` uses `opencode-glm-5.3-flash`, and presets without an
-in-family flash tier (`opencode-deepseek-v4-pro`, `opencode-kimi-k3.1-pro`,
-`opencode-kimi-k3`, `opencode-qwen4-max`, `opencode-minimax-m3`) use
-`opencode-deepseek-v4.1-flash` on the same endpoint and key slot; every
+in-family light tier (`opencode-deepseek-v4-pro`, `opencode-kimi-k3.1-pro`,
+`opencode-kimi-k3`, `opencode-qwen4-max`, `opencode-minimax-m3`,
+`opencode-gemini-4-argon`, `opencode-grok-4.7`) use
+`opencode-deepseek-v4.1-flash` on the same endpoint and key slot, while
+`opencode-claude-haiku-5-5` and `opencode-gpt-6-luna` are themselves light
+tiers and use the primary model; every
 other preset uses the primary model itself. See
 [Using CLAT](usage.md#companion-utility-and-manual-suggestions) for the
 budget and preview semantics.
@@ -148,6 +157,14 @@ Preset defaults are pinned to a practical middle tier:
 named profile this deliberately does not rewrite the saved row: the `●` marker
 drops until you switch away and reactivate the profile. To persist the change
 inside that profile, edit its Thinking row.
+
+The ladder is per model where the endpoint says so: on the OpenCode Go gateway
+each model's effort array decides which levels are offered (Kimi K3 exposes
+only Max, DeepSeek V4 Pro starts at High, Grok 4.7 / Gemini 4 Argon /
+Qwen4 Max stop at High, MiniMax M3 has no levels at all), and a saved level
+that a model does not accept is neither displayed nor sent — the preset's
+pinned effort goes out instead. Direct vendors keep their vendor-wide
+ladders.
 
 DeepSeek also supports a raw non-thinking mode, but the shortcut ladder stays
 Low → High → Max. GLM 5.3 rejects disabled thinking. Hand-written Extra Body is

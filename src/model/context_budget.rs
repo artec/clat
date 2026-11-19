@@ -16,16 +16,19 @@ impl ContextBudget {
             return Ok(None);
         };
         let output = u64::from(config.output_limit.unwrap_or(4096));
-        let messages = window
-            .checked_sub(output)
-            .ok_or("invalid context capacity: output reserve exceeds window")?;
+        let messages = window.checked_sub(output).ok_or(format!(
+            "invalid context capacity: output reserve ({output}) exceeds the model window ({window})"
+        ))?;
         let headroom = (messages / 10).clamp(512, 65536);
         let threshold = (window * 4 / 5).min(messages.saturating_sub(headroom));
         let retain = messages * 16 / 100;
         if threshold == 0 || retain >= threshold {
-            return Err(
-                "invalid context capacity: reduce output reserve or increase model window".into(),
-            );
+            // 带上实际数值：陈旧持久化配置（如旧预设种下的 output_limit）
+            // 与当前预设表的分歧一眼可见（OC-16 真机诊断教训）。
+            return Err(format!(
+                "invalid context capacity (window {window}, output reserve {output}): reduce \
+                 output reserve or increase model window"
+            ));
         }
         Ok(Some(Self {
             threshold,

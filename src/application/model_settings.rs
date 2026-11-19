@@ -142,7 +142,8 @@ impl TrustedProjectApplication {
             let vendor = config.vendor();
             let current =
                 crate::effective_thinking_level(config).unwrap_or(crate::ThinkingLevel::High);
-            let next = crate::next_thinking_level(vendor, current)
+            // OC-17：按该模型的阶梯循环（网关 effort 数组逐模型收窄）。
+            let next = crate::next_thinking_level_for(vendor, &config.model, current)
                 .ok_or_else(|| ApplicationError::new("model has no adjustable thinking levels"))?;
             config.thinking_level = Some(next);
             config.overrides_version = Some(1);
@@ -353,7 +354,8 @@ impl TrustedProjectApplication {
 
 fn route_view(config: &ModelConfig, credentials: &ProviderCredentials) -> ModelRouteView {
     ModelRouteView {
-        thinking_levels: crate::thinking_levels(config.vendor()).to_vec(),
+        // OC-17：逐模型阶梯（网关 effort 数组按模型收窄）。
+        thinking_levels: crate::model_thinking_levels(config.vendor(), &config.model).to_vec(),
         thinking_level: crate::effective_thinking_level(config),
         auth_edit_supported: true,
         extra_headers_edit_supported: true,

@@ -11,8 +11,9 @@ mod companions;
 use companions::{HY4, HY4_FLASH, KIMI_FOR_CODING};
 mod opencode;
 use opencode::{
-    OC_DEEPSEEK_V4_PRO, OC_DEEPSEEK_V41_FLASH, OC_GLM_53, OC_GLM_53_FLASH, OC_KIMI_K3,
-    OC_KIMI_K31_PRO, OC_MINIMAX_M3, OC_QWEN4_MAX,
+    OC_CLAUDE_HAIKU_5_5, OC_DEEPSEEK_V4_PRO, OC_DEEPSEEK_V41_FLASH, OC_GEMINI_4_ARGON, OC_GLM_53,
+    OC_GLM_53_FLASH, OC_GPT_6_LUNA, OC_GROK_4_7, OC_KIMI_K3, OC_KIMI_K31_PRO, OC_MINIMAX_M3,
+    OC_QWEN4_MAX,
 };
 
 /// INV-MM2-1 预设侧能力矩阵（const 友好的静态切片；`apply` 时转入
@@ -446,8 +447,8 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     KIMI_FOR_CODING,
     HY4,
     HY4_FLASH,
-    // OC-Go（2026-11-18）：OpenCode Go 合规网关八预设（开源系模型池）。
-    // 钉值与接入纪律见 presets/opencode.rs 模块文档。
+    // OC-Go（2026-11-18）：OpenCode Go 合规网关八开源预设；2026-11-19
+    // 负责人令追加四海外闭源预设。钉值与接入纪律见 presets/opencode.rs。
     OC_DEEPSEEK_V4_PRO,
     OC_DEEPSEEK_V41_FLASH,
     OC_KIMI_K31_PRO,
@@ -456,6 +457,10 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     OC_GLM_53_FLASH,
     OC_QWEN4_MAX,
     OC_MINIMAX_M3,
+    OC_CLAUDE_HAIKU_5_5,
+    OC_GPT_6_LUNA,
+    OC_GEMINI_4_ARGON,
+    OC_GROK_4_7,
 ];
 
 pub fn preset_by_id(id: &str) -> Option<&'static ModelPreset> {
@@ -957,23 +962,131 @@ mod tests {
         assert_eq!(hy_utility.context_window, 1_000_000);
         assert_eq!(hy_utility.output_limit, 65_536);
 
-        // OC-Go：八模型全部 1M context；output 钉值来自网关 /v1/models
-        // 实测快照（2026-11-18，与直连端点口径不交叉引用——kimi-k3 在
-        // 本网关 1M 输出，与 Kimi Coding 端点的 128K 不同）。
-        for (id, output) in [
-            ("opencode-deepseek-v4-pro", 384 * 1024),
-            ("opencode-deepseek-v4.1-flash", 384 * 1024),
-            ("opencode-kimi-k3.1-pro", 1_000_000),
-            ("opencode-kimi-k3", 1_000_000),
-            ("opencode-glm-5.3", 128 * 1024),
-            ("opencode-glm-5.3-flash", 128 * 1024),
-            ("opencode-qwen4-max", 262_144),
-            ("opencode-minimax-m3", 128 * 1024),
+        // OC-Go 八开源模型：context/output 逐模型核对于网关 /v1/models
+        // 快照（OC-14 全量审计修正：deepseek 输出是十进制 384,000、
+        // kimi 上下文 1,048,576；kimi 输出因窗=输出钉 262,144 实用档）。
+        for (id, context, output) in [
+            ("opencode-deepseek-v4-pro", 1_000_000, 384_000),
+            ("opencode-deepseek-v4.1-flash", 1_000_000, 384_000),
+            ("opencode-kimi-k3.1-pro", 1_048_576, 262_144),
+            ("opencode-kimi-k3", 1_048_576, 262_144),
+            ("opencode-glm-5.3", 1_000_000, 128 * 1024),
+            ("opencode-glm-5.3-flash", 1_000_000, 128 * 1024),
+            ("opencode-qwen4-max", 1_000_000, 262_144),
+            ("opencode-minimax-m3", 1_000_000, 128 * 1024),
         ] {
             let preset = preset_by_id(id).unwrap_or_else(|| panic!("{id}"));
-            assert_eq!(preset.context_window, 1_000_000, "{id}");
+            assert_eq!(preset.context_window, context, "{id}");
             assert_eq!(preset.output_limit, output, "{id}");
         }
+
+        // OC-Go 增补（2026-11-19 负责人令）：四海外闭源模型，context 为
+        // 网关 /v1/models 当日快照**原值**——注意 claude/gpt 的 128,000
+        // 不是 2 的幂（≠131,072），gemini 1,048,576 / grok 500,000 同样
+        // 按端点原值钉；grok 的 output 因窗=输出改钉 262,144 实用档
+        // （OC-13，同上方 kimi 网关两条）。
+        for (id, context, output) in [
+            ("opencode-claude-haiku-5-5", 1_000_000, 128_000),
+            ("opencode-gpt-6-luna", 1_050_000, 128_000),
+            ("opencode-gemini-4-argon", 1_048_576, 65_536),
+            ("opencode-grok-4.7", 500_000, 262_144),
+        ] {
+            let preset = preset_by_id(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(preset.context_window, context, "{id}");
+            assert_eq!(preset.output_limit, output, "{id}");
+        }
+    }
+
+    /// OC-13 根因哨兵：任一内置预设 apply 后必须能通过容量预算
+    /// （`ContextBudget`：window − output 预留后仍要有正输入容量）。
+    /// 真机红类：网关"窗=理论最大输出"的模型（grok-4.7 500K/500K、
+    /// kimi 网关 1M/1M）按原始值钉会在 run 准备期报 "invalid context
+    /// capacity"，提问气泡都发不出——理论最大输出不是可钉值；新增
+    /// 预设漏检时本哨兵红。
+    #[test]
+    fn every_builtin_preset_passes_the_context_capacity_budget() {
+        for preset in MODEL_PRESETS {
+            let mut config = ModelConfig::default();
+            preset.apply(&mut config);
+            if let Err(error) = crate::model::ContextBudget::resolve(&config) {
+                panic!("{}: {}", preset.id, error);
+            }
+        }
+    }
+
+    /// OC-14 全量审计哨兵：OpenCode 预设的 effort pin 必须落在该模型
+    /// 的网关逐模型数组内（2026-11-19 快照；数组同时钉在本表，网关侧
+    /// 漂移时人工复核）。真机红类：初版按"统一档位"pin 的 medium 在
+    /// 六个开源模型上无效（数组里根本没有 medium）；minimax 只有
+    /// toggle 无档位 → pin None 且 extra_body 为空。四个海外闭源模型
+    /// 的 medium 已由负责人真机验证。
+    #[test]
+    fn opencode_effort_pins_stay_inside_the_per_model_arrays() {
+        for (id, pin, array) in [
+            (
+                "opencode-deepseek-v4-pro",
+                Some("high"),
+                &["high", "max"][..],
+            ),
+            (
+                "opencode-deepseek-v4.1-flash",
+                Some("high"),
+                &["low", "high", "max"],
+            ),
+            (
+                "opencode-kimi-k3.1-pro",
+                Some("high"),
+                &["low", "high", "max"],
+            ),
+            ("opencode-kimi-k3", Some("max"), &["max"]),
+            ("opencode-glm-5.3", Some("high"), &["low", "high", "max"]),
+            (
+                "opencode-glm-5.3-flash",
+                Some("high"),
+                &["low", "high", "max"],
+            ),
+            (
+                "opencode-qwen4-max",
+                Some("high"),
+                &["low", "high", "xhigh"],
+            ),
+            ("opencode-minimax-m3", None, &[]),
+            (
+                "opencode-claude-haiku-5-5",
+                Some("medium"),
+                &["low", "medium", "high", "xhigh", "max"],
+            ),
+            (
+                "opencode-gpt-6-luna",
+                Some("medium"),
+                &["none", "low", "medium", "high", "xhigh", "max"],
+            ),
+            (
+                "opencode-gemini-4-argon",
+                Some("medium"),
+                &["low", "medium", "high"],
+            ),
+            (
+                "opencode-grok-4.7",
+                Some("medium"),
+                &["low", "medium", "high", "xhigh"],
+            ),
+        ] {
+            let preset = preset_by_id(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(preset.reasoning_effort, pin, "{id}");
+            if let Some(effort) = pin {
+                assert!(
+                    array.contains(&effort),
+                    "{id}: pin {effort} must stay inside the gateway array {array:?}"
+                );
+            }
+        }
+        // minimax：无档位 → extra_body 不发 reasoning_effort（hy4 先例）。
+        let mut config = ModelConfig::default();
+        preset_by_id("opencode-minimax-m3")
+            .unwrap()
+            .apply(&mut config);
+        assert_eq!(config.extra_body, json!({}));
     }
 
     #[test]
@@ -1013,8 +1126,9 @@ mod tests {
             "kimi-for-coding"
         );
         assert_eq!(presets_by_vendor("Hy Token Plan").len(), 2);
-        // OC-Go：OpenCode Go 网关八预设（2026-11-18 接入），旗舰在前。
-        assert_eq!(presets_by_vendor("OpenCode Go").len(), 8);
+        // OC-Go：OpenCode Go 网关预设（2026-11-18 八开源接入；2026-11-19
+        // 追加四海外闭源），旗舰在前、追加四条殿后。
+        assert_eq!(presets_by_vendor("OpenCode Go").len(), 12);
         assert_eq!(
             presets_by_vendor("OpenCode Go")[0].id,
             "opencode-deepseek-v4-pro"
@@ -1023,6 +1137,11 @@ mod tests {
             presets_by_vendor("OpenCode Go")[7].id,
             "opencode-minimax-m3"
         );
+        assert_eq!(
+            presets_by_vendor("OpenCode Go")[8].id,
+            "opencode-claude-haiku-5-5"
+        );
+        assert_eq!(presets_by_vendor("OpenCode Go")[11].id, "opencode-grok-4.7");
         assert_eq!(presets_by_vendor("Hy Token Plan")[0].id, "hy4");
         // 2026-11-07 GA 原地升级：旧 hy4-preview id 不复现（SF-1 同款
         // 零回退；官方清单虽保留旧 id，预设目录只挂 canonical 正式版）。
@@ -1060,6 +1179,15 @@ mod tests {
             ("opencode-glm-5.3-flash", None),
             ("opencode-qwen4-max", Some("opencode-deepseek-v4.1-flash")),
             ("opencode-minimax-m3", Some("opencode-deepseek-v4.1-flash")),
+            // OC-Go 增补（2026-11-19）：Haiku / Luna 自身即轻量档（None）；
+            // Gemini Argon / Grok 4.7 为重量旗舰，伴生取既定同端点轻档。
+            ("opencode-claude-haiku-5-5", None),
+            ("opencode-gpt-6-luna", None),
+            (
+                "opencode-gemini-4-argon",
+                Some("opencode-deepseek-v4.1-flash"),
+            ),
+            ("opencode-grok-4.7", Some("opencode-deepseek-v4.1-flash")),
         ];
         for (id, utility_model) in expected {
             assert_eq!(
@@ -1110,6 +1238,10 @@ mod tests {
                     | "opencode-glm-5.3-flash"
                     | "opencode-qwen4-max"
                     | "opencode-minimax-m3"
+                    | "opencode-claude-haiku-5-5"
+                    | "opencode-gpt-6-luna"
+                    | "opencode-gemini-4-argon"
+                    | "opencode-grok-4.7"
             );
             assert_eq!(
                 caps.accepts_image_input(),
@@ -1173,13 +1305,18 @@ mod tests {
             // 2026-11-07 负责人裁定：hy4 支持多模态（此前 text-only 判定
             // 为误判），随 GA 升级入 officially-declared 矩阵。
             "hy4",
-            // OC-Go：网关 /v1/models 实测视觉位（2026-11-18 快照）。
+            // OC-Go：网关 /v1/models 实测视觉位（2026-11-18 快照；
+            // 2026-11-19 增补四海外模型，同源当日快照）。
             "opencode-deepseek-v4.1-flash",
             "opencode-kimi-k3.1-pro",
             "opencode-kimi-k3",
             "opencode-glm-5.3-flash",
             "opencode-qwen4-max",
             "opencode-minimax-m3",
+            "opencode-claude-haiku-5-5",
+            "opencode-gpt-6-luna",
+            "opencode-gemini-4-argon",
+            "opencode-grok-4.7",
         ] {
             let preset = preset_by_id(id).unwrap();
             let caps = preset.owned_capabilities();
@@ -1407,18 +1544,19 @@ mod tests {
         // 合规地址（负责人裁定必须走 opencode.ai/inference/go）。
         assert_eq!(preset.endpoint, "https://opencode.ai/inference/go/v1");
         assert_eq!(preset.request_path, "/chat/completions");
-        // 同网关八预设端点/凭据槽一致。
+        // 同网关全部预设（八开源 + 四海外）端点/凭据槽一致。
         for other in presets_by_vendor("OpenCode Go") {
             assert_eq!(other.endpoint, preset.endpoint, "{}", other.id);
         }
 
         let mut config = ModelConfig::default();
         preset.apply(&mut config);
-        // extra_body 只带 reasoning_effort（网关档位 low/medium/high/max
-        // 的中档；include_usage 行为未知先不发 stream_options，纪律裁定）。
+        // extra_body 只带该模型数组内的 effort pin（glm-5.3 数组
+        // low,high,max → 中位 high；include_usage 行为未知先不发
+        // stream_options，纪律裁定）。
         assert_eq!(
             config.extra_body,
-            json!({"reasoning_effort": "medium"}),
+            json!({"reasoning_effort": "high"}),
             "OpenCode presets must not send unverified gateway parameters"
         );
         // 自有 UA（第三方政策要求，随版本演进）。

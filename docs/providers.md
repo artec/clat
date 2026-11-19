@@ -48,25 +48,31 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
 | Hy 4 · Hy Token Plan | `hy4` | 1M | 64K | — (always on) |
 | Hy 4 Flash · Hy Token Plan | `hy4-flash` | 1M | 64K | — (always on) |
-| DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | 1M | 384K | `medium` |
-| DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | 1M | 384K | `medium` |
-| Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | 1M | 1M | `medium` |
-| Kimi K3 · OpenCode Go | `opencode-kimi-k3` | 1M | 1M | `medium` |
-| GLM 5.3 · OpenCode Go | `opencode-glm-5.3` | 1M | 128K | `medium` |
-| GLM 5.3 Flash · OpenCode Go | `opencode-glm-5.3-flash` | 1M | 128K | `medium` |
-| Qwen4 Max · OpenCode Go | `opencode-qwen4-max` | 1M | 262K | `medium` |
-| MiniMax M3 · OpenCode Go | `opencode-minimax-m3` | 1M | 128K | `medium` |
+| DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | 1M | 384K | `high` |
+| DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | 1M | 384K | `high` |
+| Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | 1M | 256K | `high` |
+| Kimi K3 · OpenCode Go | `opencode-kimi-k3` | 1M | 256K | `max` |
+| GLM 5.3 · OpenCode Go | `opencode-glm-5.3` | 1M | 128K | `high` |
+| GLM 5.3 Flash · OpenCode Go | `opencode-glm-5.3-flash` | 1M | 128K | `high` |
+| Qwen4 Max · OpenCode Go | `opencode-qwen4-max` | 1M | 262K | `high` |
+| MiniMax M3 · OpenCode Go | `opencode-minimax-m3` | 1M | 128K | — (toggle only) |
+| Claude Haiku 5.5 · OpenCode Go | `opencode-claude-haiku-5-5` | 1M | 128K | `medium` |
+| GPT-6 Luna · OpenCode Go | `opencode-gpt-6-luna` | 1.05M | 128K | `medium` |
+| Gemini 4 Argon · OpenCode Go | `opencode-gemini-4-argon` | 1M | 64K | `medium` |
+| Grok 4.7 · OpenCode Go | `opencode-grok-4.7` | 500K | 256K | `medium` |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
 image-input routes are `deepseek-flash`, `qwen4-max`,
 `qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, and `hy4`, plus
 `glm-5.3-flash` (also verified for image tool results) — the vendor-declared
 routes follow official vendor documentation (Hy 4 per the 2026-11-07 owner
-ruling), the GLM route is proven by CLAT's own live probe, and the six
+ruling), the GLM route is proven by CLAT's own live probe, and the ten
 OpenCode Go vision routes (`opencode-deepseek-v4.1-flash`,
 `opencode-kimi-k3.1-pro`, `opencode-kimi-k3`, `opencode-glm-5.3-flash`,
-`opencode-qwen4-max`, `opencode-minimax-m3`) follow the gateway's own
-`/v1/models` metadata snapshot. The vendor-declared visual presets
+`opencode-qwen4-max`, `opencode-minimax-m3`, `opencode-claude-haiku-5-5`,
+`opencode-gpt-6-luna`, `opencode-gemini-4-argon`, `opencode-grok-4.7`)
+follow the gateway's own `/v1/models` metadata snapshot. The vendor-declared
+visual presets
 use a conservative per-request policy of eight images, at most 4 MiB per image;
 custom profiles default to the same limits once image input has been enabled
 by a successful `/vision-probe`. All other presets are text-only.
@@ -279,17 +285,32 @@ Concurrency limits scale with the plan tier and may tighten at peak hours.
 
 ### OpenCode Go
 
-Eight open-source-model presets (DeepSeek V4 line, Kimi K3 line, GLM-5.3
-line, Qwen4, MiniMax M3) ride the compliant OpenCode gateway
+Twelve presets ride the compliant OpenCode gateway
 `https://opencode.ai/inference/go/v1` — the owner-mandated address
-(2026-11-18). The gateway is OpenAI-compatible; preset ids carry an
+(2026-11-18): eight open-source models (DeepSeek V4 line, Kimi K3 line,
+GLM-5.3 line, Qwen4, MiniMax M3) plus four overseas closed models added by
+the owner on 2026-11-19 (Claude Haiku 5.5, GPT-6 Luna, Gemini 4 Argon,
+Grok 4.7). The gateway is OpenAI-compatible; preset ids carry an
 `opencode-` prefix because four gateway model ids collide with the direct
 Connection-plan presets (`glm-5.3`, `glm-5.3-flash`, `qwen4-max`,
 `deepseek-v4-pro`) — the `model` field still uses the raw gateway id.
 Context and output values are pinned from the gateway's public `/v1/models`
-snapshot and deliberately not cross-referenced with each vendor's own
+snapshot (including non-power-of-two originals — GPT-6 Luna's
+1,050,000/128,000, the gateway DeepSeek lines' decimal 384,000 output, the
+gateway Kimi lines' 1,048,576 context — all corrected by the 2026-11-19
+full audit) and deliberately not
+cross-referenced with each vendor's own
 endpoint documentation (Kimi K3/K3.1 Pro serve 1M output here versus 128K
-on the Kimi Coding endpoint; MiniMax M3 above 512K context is priced ×2).
+on the Kimi Coding endpoint; MiniMax M3 above 512K context is priced ×2;
+the gateway also lists `gpt-5.6-luna`, which stays unpresetted because it
+was not named). For the three models whose advertised maximum output equals
+the whole context window (Kimi K3, Kimi K3.1 Pro at 1M/1M, Grok 4.7 at
+500K/500K), the raw maximum is not a pinnable value — CLAT's capacity
+budget requires positive input room after the output reserve — so those
+presets pin a pragmatic 262,144-token output cap instead (the same style as
+the Hy presets, which pin below the endpoint's accepted maximum); a
+sentinel test rejects any future preset whose window/output pair fails the
+budget.
 
 The gateway's third-party policy explicitly allows coding agents and lists
 CLAT-class clients among verified clients, with two wire obligations the
@@ -298,20 +319,52 @@ presets satisfy:
 - **Own User-Agent** — every OpenCode preset injects
   `User-Agent: clat/<version>` (overridable in Extra Headers, cleaned again
   when switching presets if the value is still a preset-seeded `clat/*`).
-- **Stable per-conversation `x-opencode-session` header** — missing the
-  header is rejected with 400. The run carries its session id into every
-  model request; the OpenAI-compatible adapter injects the header only when
-  the endpoint domain is `opencode.ai`, so ordinary endpoints never observe
-  it. Read-only subagent children belong to the same conversation and carry
-  the parent session id; one-shot utility calls (titles, suggestions) run
-  outside a session and omit the header.
+- **Stable `x-opencode-session` routing header on every request** — missing
+  the header is rejected with 400. The run carries its session id into every
+  model request; read-only subagent children carry the parent session id;
+  sessionless one-shot requests (titles, suggestions, Git commit messages,
+  sampling) fall back to the stable `clat-auxiliary` routing key. The
+  adapter injects the header only when the endpoint domain is
+  `opencode.ai`, so ordinary endpoints never observe it.
 
-Reasoning effort uses the gateway's unified `low` / `medium` / `high` /
-`max` ladder (`off` is rejected); CLAT's Low / High / Max map directly to
-`low` / `high` / `max`, and presets pin the middle tier `medium`. The
+Reasoning effort follows the gateway's **per-model** effort arrays (the
+original "unified ladder" research reading was overturned by the 2026-11-19
+`/v1/models` audit — the first batch's `medium` pin was invalid on six of
+the eight open models). Each preset pins a value from its own model's
+array — `high` for the DeepSeek/Kimi K3.1/GLM/Qwen4 Max routes, `max` for
+Kimi K3 (the only value its array offers), nothing for MiniMax M3 (toggle
+only, no effort levels — the same send-no-ineffective-parameter precedent
+as the Hy presets), and `medium` for the four closed models whose arrays
+include it and whose pins the owner verified live. The Shift+Tab ladder is
+also per model: a level is offered exactly when its wire value is in the
+model's array (Kimi K3 offers only Max, DeepSeek V4 Pro starts at High,
+Grok 4.7 / Gemini 4 Argon / Qwen4 Max stop at High, MiniMax M3 has none),
+and a saved level the model does not accept — for example a Max carried
+over from another model — is neither displayed nor sent; the preset's
+pinned effort goes out instead. The
 gateway has no DeepSeek/GLM-style `thinking` object, and
 `stream_options.include_usage` behavior is unverified there, so the preset
-extra body carries `reasoning_effort` only.
+extra body carries `reasoning_effort` only (nothing at all for MiniMax).
+
+The gateway's chat-completions facade also translates tool schemas per
+upstream family and rejects some standard JSON-Schema constructs that
+direct endpoints accept (owner live test, 2026-11-19): Google models
+reject `strict: true` outright; OpenAI strict mode requires `required` to
+list every property, which CLAT's optional-parameter tools cannot satisfy;
+Anthropic's schema whitelist rejects array-bound keywords such as
+`maxItems`. On `opencode.ai` endpoints the adapter therefore omits
+`strict` for `gemini-*`, `gpt-*`, and `claude-*` models and recursively
+strips `maxItems`/`minItems` from tool schemas for `claude-*`; the
+gateway-native open-model families and every other endpoint keep the wire
+shape unchanged.
+
+**Workspace regions**: each OpenCode workspace carries a privacy
+data-residency setting, and models hosted outside the selected regions are
+refused with an actionable 400 naming the console URL (owner live test,
+2026-11-19: both gateway DeepSeek lines are hosted outside Europe/US and
+require the workspace region setting `Global`; the other ten models route
+under the EU/US default). This is a console-side decision, not a CLAT
+configuration — the error text propagates as-is.
 
 **Quota windows**: `GET /v1/usage` (Bearer) reports three windows — rolling
 (5 hours, capped at 20% of the monthly allowance), weekly (50%), and
@@ -333,6 +386,12 @@ absent rather than invented.
 Tencent Hy exposes no effective reasoning control (see above); the ladder is
 empty, `Shift+Tab` has no effect on that vendor, and the title bar shows
 `Thinking · Server` so the always-on state stays visible.
+
+On OpenCode Go the mapping above is the vendor-wide default, and the actual
+ladder is narrowed per model from the gateway's effort arrays (see the
+OpenCode Go section): models without `max` never offer Max, Kimi K3 offers
+only Max, and a saved out-of-ladder level is not sent — the preset pin goes
+out instead.
 
 Known endpoint domains receive this mapping even for a custom profile. Unknown
 domains do not receive an inferred field. The raw Extra Body remains the
@@ -471,6 +530,46 @@ Malformed main token fields are treated as absent, leaving the conservative
 pre-request reservation in place. Values are clamped to a sane numeric domain
 before arithmetic, so a custom endpoint cannot wrap the ledger with an absurd
 report.
+
+## Parameter sources and cross-checks
+
+Every preset's pinned values trace to a dated primary source; diverging
+secondary sources are recorded rather than silently followed.
+
+| Preset family | Primary source (dated) |
+|---|---|
+| DeepSeek (`deepseek-flash`, `deepseek-v4-pro`) | [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing), api-docs.deepseek.com, re-checked 2026-11-03 |
+| GLM Coding Plan (`glm-5.3`, `glm-5.3-flash`) | [GLM 5.3 guide](https://docs.z.ai/guides/llm/glm-5.3) + the [Coding endpoint](https://open.bigmodel.cn/api/coding/paas/v4) docs; owner first-party confirmation 2026-08 |
+| Qwen Token Plan (`qwen4-max`, `qwen3.8-flash`) | [Qwen4 Max](https://help.aliyun.com/zh/model-studio/qwen4-max), [Qwen3.8 Flash](https://help.aliyun.com/zh/model-studio/qwen3-8-flash), [Token Plan overview](https://www.alibabacloud.com/help/zh/model-studio/token-plan-personal-overview), checked 2026-11-18 |
+| Kimi Coding Plan (`k3.1-pro`, `kimi-for-coding`) | platform.kimi.com docs — models page and the K3.1 Pro quickstart, fetched 2026-11-03 |
+| Hy Token Plan (`hy4`, `hy4-flash`) | TokenHub plan/calling guides (2026-11-04/11-07 updates) behind the [TokenHub console](https://console.cloud.tencent.com/tokenhub/tokenplan), plus the TC-0 live probe (`docs/research/tc0-probe/`) |
+| OpenCode Go (12 presets) | The gateway's own public `GET https://opencode.ai/inference/go/v1/models` — snapshots 2026-11-18 and 2026-11-19 (zero drift between them); [console docs](https://opencode.ai/docs/console/go) for policy |
+
+Two cross-check databases confirm or challenge the pins and are consulted
+when a value changes:
+
+- **models.dev** ([`api.json`](https://models.dev/api.json)) — the public
+  model database. Its independent `opencode-go` subscription entry matches
+  CLAT's post-audit gateway pins exactly (including the decimal 384,000
+  DeepSeek outputs and the 1,048,576 Kimi contexts), and its first-party
+  entries agree with the direct GLM/Qwen/Grok/GPT/Claude pins. Known
+  benign divergences (first-party capability ceilings versus
+  official-document figures CLAT follows): DeepSeek context 1,048,576
+  versus the documented 1M, and Kimi coding-plan outputs — recorded in the
+  local research reference, not acted on.
+- **cc-switch** ([github.com/farion1231/cc-switch](https://github.com/farion1231/cc-switch))
+  — the provider-switcher maintainers hand-verify per-address model
+  metadata. Two observations recorded from it: GPT-shaped models sourced
+  from chat subscriptions are effectively window-capped at 272,000 tokens
+  on many relays (the gateway's own GPT-6 Luna pricing has a 272,000
+  context breakpoint), and its official Go preset uses the
+  `opencode.ai/zen/go/v1` alias of the same gateway. Its per-address
+  caps (for example GLM at 272K on unrelated relays) describe those
+  relays, not the OpenCode gateway.
+
+The full per-preset comparison table against both databases lives in the
+local-only research note `docs/research/oc-model-parameter-reference.md`
+(plain-text pointer; local research notes are not linked from public docs).
 
 ## Adding a provider
 
