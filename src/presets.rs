@@ -467,6 +467,37 @@ pub fn preset_by_id(id: &str) -> Option<&'static ModelPreset> {
     MODEL_PRESETS.iter().find(|preset| preset.id == id)
 }
 
+/// Qwen Token Plan 双入口（VP-2C，负责人裁定 2026-11-20）：同一套预设
+/// 与 Key，单选决定端点。预设钉阿里云百炼（新加坡 MaaS）端点；单选
+/// qianwen 时配置端点切千问 AI 平台（Token Plan 专属主机，2026-11-20
+/// 负责人测试 Key 真机核实：qwen4-max/qwen3.8-flash 在列，effort
+/// low/medium/xhigh 全有效——接受八档 superset，usage/cached_tokens
+/// 形状与百炼同形）。两入口共用厂商识别 `ModelVendor::Qwen` 与
+/// "Qwen" Key 记忆槽（一套 Key 裁定：不考虑双平台并存的场景）。
+pub const QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT: &str =
+    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+pub const QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT: &str =
+    "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1";
+
+/// 端点 → 入口名（"aliyun" / "qianwen"）；仅对 Qwen Token Plan 两端点
+/// 有值，其余端点（含自定义）None。
+pub fn qwen_token_plan_entry(endpoint: &str) -> Option<&'static str> {
+    match endpoint {
+        QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT => Some("aliyun"),
+        QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT => Some("qianwen"),
+        _ => None,
+    }
+}
+
+/// 预设是否接受该配置端点：自身端点相等，或 Qwen Token Plan 预设接受
+/// 双入口的另一端点（`matching_preset` 因此不因单选切端点而失配——
+/// 厂商显示与 route vendor key 继续成立）。
+pub fn preset_accepts_endpoint(preset: &ModelPreset, endpoint: &str) -> bool {
+    preset.endpoint == endpoint
+        || (qwen_token_plan_entry(preset.endpoint).is_some()
+            && qwen_token_plan_entry(endpoint).is_some())
+}
+
 /// 一级选择列表：内置厂商（按首次出现顺序去重）+ 自定义入口。
 pub fn preset_vendors() -> Vec<&'static str> {
     let mut vendors = Vec::new();
@@ -566,7 +597,13 @@ impl ModelPreset {
         config.preset = Some(self.id.to_owned());
         config.protocol = self.protocol;
         config.model = self.model.to_owned();
-        config.endpoint = self.endpoint.to_owned();
+        // VP-2C：双入口预设的单选端点在归一化的无条件钉值下**不回弹**
+        //——配置已指向本预设的合法入口（如 Qwen Token Plan 的千问
+        // 平台）时保留现值；其余情况照常钉预设端点（防预设漂移语义
+        // 不变：随机自定义端点仍被钉回）。
+        if !preset_accepts_endpoint(self, &config.endpoint) || config.endpoint.is_empty() {
+            config.endpoint = self.endpoint.to_owned();
+        }
         config.request_path = self.request_path.to_owned();
         config.output_limit = Some(self.output_limit);
         config.temperature = None;
@@ -1592,5 +1629,50 @@ mod tests {
             config.extra_headers.get("User-Agent").is_none(),
             "the seeded clat/<version> UA is cleaned when switching away from OpenCode"
         );
+    }
+}
+
+#[cfg(test)]
+mod vp2c_tests {
+    use super::*;
+
+    /// VP-2C：双入口映射——两端点有名字、其余端点 None；预设接受双端点；
+    /// 无关预设不接受双入口端点（防串道）。
+    #[test]
+    fn qwen_token_plan_entries_map_and_presets_accept_both() {
+        assert_eq!(
+            qwen_token_plan_entry(QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT),
+            Some("aliyun")
+        );
+        assert_eq!(
+            qwen_token_plan_entry(QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT),
+            Some("qianwen")
+        );
+        assert_eq!(qwen_token_plan_entry("https://api.deepseek.com"), None);
+        let qwen = preset_by_id("qwen4-max").expect("preset");
+        assert!(preset_accepts_endpoint(
+            qwen,
+            QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT
+        ));
+        assert!(preset_accepts_endpoint(
+            qwen,
+            QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT
+        ));
+        assert!(!preset_accepts_endpoint(qwen, "https://api.deepseek.com"));
+        let glm = preset_by_id("glm-5.3").expect("preset");
+        assert!(!preset_accepts_endpoint(
+            glm,
+            QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT
+        ));
+        // apply 归一化不回弹：qwen 预设 apply 已指向千问端点的配置时保留。
+        let mut config = ModelConfig::default();
+        qwen.apply(&mut config);
+        config.endpoint = QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT.into();
+        qwen.apply(&mut config);
+        assert_eq!(config.endpoint, QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT);
+        // 自定义/漂移端点照常钉回预设端点。
+        config.endpoint = "https://custom.example/v1".into();
+        qwen.apply(&mut config);
+        assert_eq!(config.endpoint, QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT);
     }
 }

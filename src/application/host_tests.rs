@@ -75,12 +75,14 @@ fn model_settings_current_vendor_matches_the_run_route_label() {
     let app = project.lock().unwrap();
     // 不变量：模型选择器"当前"行与每轮"模型请求已开始"行共享同一个
     // 厂商显示——core 单点推导（GLM 统一 "GLM"；无匹配预设为 None）。
-    app.select_model_preset("opencode-glm-5.3", None).unwrap();
+    app.select_model_preset("opencode-glm-5.3", None, None)
+        .unwrap();
     assert_eq!(
         app.model_settings_view().unwrap().current.vendor.as_deref(),
         Some("OpenCode")
     );
-    app.select_model_preset("glm-5.3-flash", None).unwrap();
+    app.select_model_preset("glm-5.3-flash", None, None)
+        .unwrap();
     assert_eq!(
         app.model_settings_view().unwrap().current.vendor.as_deref(),
         Some("GLM")
@@ -395,7 +397,7 @@ fn thinking_cycle_uses_shared_current_model_and_keeps_frozen_snapshot() {
     {
         let a = a.lock().unwrap();
         let b = b.lock().unwrap();
-        a.select_model_preset(crate::presets::MODEL_PRESETS[0].id, None)
+        a.select_model_preset(crate::presets::MODEL_PRESETS[0].id, None, None)
             .unwrap();
         let (mut frozen, credentials) = a.model_state().unwrap();
         frozen.thinking_level = Some(crate::ThinkingLevel::High);

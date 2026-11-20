@@ -126,6 +126,13 @@
 #settings-dialog .model-vendor-heading { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
 #settings-dialog .model-vendor-heading strong { flex:1; font-size:13px; font-weight:600; }
 #settings-dialog .model-vendor-heading small { color:var(--accent); font-size:11px; }
+/* VP-2C 双入口单选（2026-11-20 布局反馈）：紧贴厂商标题同一行横排，
+   不换行不增高；"当前模型"标记仍由 margin-left:auto 靠右。 */
+#settings-dialog .model-vendor-heading.has-entry { flex-wrap:wrap; }
+#settings-dialog .model-vendor-heading.has-entry strong { flex:none; }
+#settings-dialog .model-vendor-heading.has-entry small { margin-left:auto; }
+#settings-dialog .model-vendor-entry { display:flex; align-items:center; gap:4px 14px; flex:none; font-size:11px; color:var(--text-soft); white-space:nowrap; }
+#settings-dialog .model-vendor-entry label { display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
 #settings-dialog .model-vendor-controls { display:flex; flex-wrap:wrap; gap:10px; }
 #settings-dialog .model-vendor-controls > :is(select,input) { flex:1 1 190px; width:0; }
 #settings-dialog .model-vendor-controls > button { flex:none; }

@@ -106,8 +106,12 @@ pub fn endpoint_vendor(endpoint: &str) -> ModelVendor {
         // Kimi Coding 会员端点（api.kimi.com/coding/v1）与开放平台
         // 端点（api.moonshot.cn / api.moonshot.ai）。
         ModelVendor::Kimi
-    } else if endpoint.contains("aliyuncs.com") || endpoint.contains("dashscope") {
-        // Qwen Token Plan 专用 MaaS 域名与百炼按量域名。
+    } else if endpoint.contains("aliyuncs.com")
+        || endpoint.contains("dashscope")
+        || endpoint.contains("qianwenaiapi")
+    {
+        // Qwen Token Plan 专用 MaaS 域名（百炼/千问双入口，VP-2C——
+        // 同厂商同 Key 槽同阶梯）与百炼按量域名。
         ModelVendor::Qwen
     } else if endpoint.contains("tokenhub.tencentmaas.com")
         || endpoint.contains("lkeap.cloud.tencent.com")

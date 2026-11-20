@@ -6713,3 +6713,215 @@ fn pending_input_idle_interrupt_does_not_create_a_handoff() {
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
 }
+
+// ── VP-2C：Qwen Token Plan 双入口单选（2026-11-20 负责人裁定）──
+
+/// INV：单选 qianwen 只切端点——预设钉值/厂商识别/思考阶梯全部沿用，
+/// 且**一套 Key**：百炼端保存过的 key 在千问端点被同一 "Qwen" 记忆槽
+/// 回填（双端点同槽，不考虑双平台并存）。
+#[test]
+fn qwen_token_plan_entry_selects_endpoint_and_reuses_the_key_slot() {
+    let (storage_root, project_root) = roots("qwen-token-plan-entry");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 百炼默认（无 entry）：端点 = 预设钉的 aliyun URL，key 进 "Qwen" 槽。
+    application
+        .select_model_preset("qwen4-max", Some("sp-key".into()), None)
+        .unwrap();
+    let (config, _) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    assert_eq!(config.vendor(), crate::model::ModelVendor::Qwen);
+
+    // entry=qianwen：端点切千问平台；未带 key → "Qwen" 槽回填同一把 key。
+    application
+        .select_model_preset("qwen4-max", None, Some("qianwen"))
+        .unwrap();
+    let (config, credentials) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"
+    );
+    // 同厂商同槽同阶梯（端点识别→Qwen；预设匹配接受双端点→厂商显示不丢）。
+    assert_eq!(config.vendor(), crate::model::ModelVendor::Qwen);
+    assert!(!crate::model_thinking_levels(config.vendor(), &config.model).is_empty());
+    assert_eq!(credentials.value(0), Some("sp-key"));
+    let restored = application
+        .vendor_key(config.protocol, &config.endpoint)
+        .expect("qianwen entry shares the Qwen key slot");
+    assert_eq!(restored.value(0), Some("sp-key"));
+    assert!(
+        super::dto::matching_preset(&config).is_some(),
+        "matching_preset must accept the qianwen entry endpoint"
+    );
+
+    // entry 对非 Qwen Token Plan 预设显式拒绝；非法值显式拒绝。
+    assert!(
+        application
+            .select_model_preset("glm-5.3", None, Some("qianwen"))
+            .is_err()
+    );
+    assert!(
+        application
+            .select_model_preset("qwen4-max", None, Some("bogus"))
+            .is_err()
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// INV：激活态单选即时切换（model.preset.entry）——只改端点，思考档位
+/// override 等其余配置原样保留；非 Qwen Token Plan 激活模型显式拒绝。
+#[test]
+fn qwen_token_plan_entry_switch_is_non_destructive_and_gated() {
+    let (storage_root, project_root) = roots("qwen-token-plan-switch");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    application
+        .select_model_preset("qwen4-max", Some("sp-key".into()), None)
+        .unwrap();
+    // 用户显式改思考档位（override）——切端点必须保留。
+    let (mut config, credentials) = application.model_state().unwrap();
+    config.overrides.thinking_level = crate::model::Override::Set(crate::model::ThinkingLevel::Max);
+    config.thinking_level = Some(crate::model::ThinkingLevel::Max);
+    application.save_model_state(&config, &credentials).unwrap();
+
+    application.set_model_preset_entry("qianwen", None).unwrap();
+    let (config, credentials) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"
+    );
+    assert_eq!(
+        config.thinking_level,
+        Some(crate::model::ThinkingLevel::Max)
+    );
+    assert_eq!(credentials.value(0), Some("sp-key"));
+
+    // 切回百炼同样无损。
+    application.set_model_preset_entry("aliyun", None).unwrap();
+    let (config, _) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    assert_eq!(
+        config.thinking_level,
+        Some(crate::model::ThinkingLevel::Max)
+    );
+
+    // 非 Qwen Token Plan 激活模型 / 非法 entry 显式拒绝。
+    application
+        .select_model_preset("glm-5.3", Some("glm-key".into()), None)
+        .unwrap();
+    assert!(application.set_model_preset_entry("qianwen", None).is_err());
+    assert!(application.set_model_preset_entry("bogus", None).is_err());
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// 事故回归（2026-11-20 真机 401）：单选切到千问后，一次**不带 entry**
+/// 的应用模型（粘贴新 key 时）不得把入口回弹到预设默认百炼——单选是
+/// 入口的唯一事实源，显式 entry 才覆盖。此前正是这一回弹让负责人在
+/// "已选千问"的状态下被打回百炼端点，sk-sp- key 打百炼必然 401。
+#[test]
+fn qwen_preset_apply_without_entry_keeps_the_selected_entry() {
+    let (storage_root, project_root) = roots("qwen-token-plan-apply-keep");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    application
+        .select_model_preset("qwen4-max", Some("sp-key".into()), Some("qianwen"))
+        .unwrap();
+    let (config, _) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"
+    );
+
+    // 再次应用同一预设（不带 entry，仅换 key）：入口保持千问。
+    application
+        .select_model_preset("qwen4-max", Some("sp-key-2".into()), None)
+        .unwrap();
+    let (config, credentials) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint, "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+        "apply without entry must not bounce the selected entry back to aliyun"
+    );
+    assert_eq!(credentials.value(0), Some("sp-key-2"));
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// 携带边界：换到其它厂商后再应用 Qwen 预设（当前端点不被该预设接
+/// 受）时，照旧钉回预设默认百炼——不误携带他厂端点（防漂移语义）。
+#[test]
+fn qwen_preset_apply_after_other_vendor_stamps_the_default_entry() {
+    let (storage_root, project_root) = roots("qwen-token-plan-apply-fresh");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    application
+        .select_model_preset("qwen4-max", Some("sp-key".into()), Some("qianwen"))
+        .unwrap();
+    application
+        .select_model_preset("glm-5.3", Some("glm-key".into()), None)
+        .unwrap();
+    let (config, _) = application.model_state().unwrap();
+    assert_eq!(config.vendor(), crate::model::ModelVendor::Glm);
+
+    // 从 GLM 回到 Qwen 预设（无 entry）：GLM 端点不被接受 → 预设默认。
+    application
+        .select_model_preset("qwen4-max", Some("sp-key".into()), None)
+        .unwrap();
+    let (config, _) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// 事故回归（2026-11-20 真机 401）：一套 Key 二选一——key 框新 key 随
+/// model.preset.entry 一步提交（旧平台 key 打新端点必然 401）；不带
+/// key 的切换沿用现值（既有非破坏语义不变）；非法 key 显式拒绝。
+#[test]
+fn qwen_entry_switch_accepts_a_new_key_in_one_step() {
+    let (storage_root, project_root) = roots("qwen-token-plan-entry-key");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    application
+        .select_model_preset("qwen4-max", Some("aliyun-key".into()), None)
+        .unwrap();
+    application
+        .set_model_preset_entry("qianwen", Some("sp-new-key".into()))
+        .unwrap();
+    let (config, credentials) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"
+    );
+    assert_eq!(credentials.value(0), Some("sp-new-key"));
+    let remembered = application
+        .vendor_key(config.protocol, &config.endpoint)
+        .expect("qianwen entry shares the Qwen key slot");
+    assert_eq!(remembered.value(0), Some("sp-new-key"));
+
+    // 不带 key 的切换沿用现值；控制字符 key 显式拒绝。
+    application.set_model_preset_entry("aliyun", None).unwrap();
+    let (_, credentials) = application.model_state().unwrap();
+    assert_eq!(credentials.value(0), Some("sp-new-key"));
+    assert!(
+        application
+            .set_model_preset_entry("qianwen", Some("bad\u{7}".into()))
+            .is_err()
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}

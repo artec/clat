@@ -165,7 +165,7 @@ pub(super) fn matching_preset(
         .filter(|preset| {
             preset.model == config.model
                 && preset.protocol == config.protocol
-                && preset.endpoint == config.endpoint
+                && crate::presets::preset_accepts_endpoint(preset, &config.endpoint)
                 && preset.request_path == config.request_path
         })
 }

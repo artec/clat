@@ -169,8 +169,25 @@ also prepares the GLM Coding Plan server pack. See
 
 ### Qwen Token Plan
 
-The presets use the Singapore Token Plan endpoint and their subscription key.
-They send top-level `reasoning_effort` without a `thinking` object. CLAT maps
+The presets use the Token Plan endpoint and their subscription key. Since
+2026-11-20 the settings page offers a **Token Plan entry** radio on the Qwen
+card: **Aliyun Bailian** (the Singapore MaaS endpoint, the default) or
+**Qianwen AI Platform** (`token-plan.maas.qianwenaiapi.com`, the
+`qianwenai.com` subscription entry; live-verified to serve both presets with
+the same parameter surface). One preset pair, one key slot — the radio only
+switches the endpoint. Switching while a Qwen Token Plan model is active
+takes effect immediately and keeps your tuning overrides; on an inactive card
+the choice rides the next **Apply**. Applying the preset without an explicit
+entry keeps the currently selected entry (the radio is the single source of
+truth; only an explicit entry overrides it), and switching entries accepts a
+newly typed key in the same step — the key field value is submitted with the
+radio, since one platform's key is rejected by the other (identical 401
+bodies, so an entry/key mismatch is easy to misread). The Qianwen AI Platform
+applies content inspection to the request text (`data_inspection_failed`);
+conversation content such as fetched web pages can trigger it, in which case
+a fresh session or the Aliyun entry resolves it. They send top-level
+`reasoning_effort`
+without a `thinking` object. CLAT maps
 its Low / High / Max UI to Qwen's `low` / `medium` / `xhigh` ladder. Both
 `qwen4-max` and the incremental `qwen3.8-flash` preset carry image input per
 the official model pages (Qwen4 Max is the flagship multimodal follow-up; the

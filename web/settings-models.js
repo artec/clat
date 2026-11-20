@@ -14,27 +14,78 @@ function renderSettingsPresets(view) {
     const active = !view.active_profile && presets.some(preset => preset.id === view.current.preset);
     row.active.hidden = !active;
     if (!row.edited && active) row.select.value = view.current.preset;
+    // VP-2C：Qwen Token Plan 双入口单选——当前模型是该厂商预设时按
+    // 配置端点回显选中项（qianwenaiapi 域名 → 千问，否则百炼）。
+    if (row.entry) {
+      const currentEntry = active && view.current.endpoint.includes('qianwenaiapi') ? 'qianwen' : 'aliyun';
+      if (!row.entryPending) row.entry.value = currentEntry;
+    }
   }
   for (const [vendor, row] of settingsPresetRows) if (!groups.has(vendor)) { row.element.remove(); settingsPresetRows.delete(vendor); }
 }
 function settingsPresetRow(vendor, presets) {
   const element = el('article', 'settings-card model-vendor'), heading = el('div', 'model-vendor-heading');
   const active = el('small', '', () => settingsUi('active_model'));
-  heading.append(el('strong', '', vendor), active);
+  heading.append(el('strong', '', vendor));
+  // VP-2C（2026-11-20 负责人裁定）：Qwen Token Plan 标题后加双入口
+  // 单选（阿里云百炼 / 千问 AI 平台）——同一套预设与 Key，单选只切
+  // 端点；2026-11-20 布局反馈：紧贴标题同一行横排（has-entry 类，
+  // 见 settings.css），"当前模型"标记仍靠右。当前模型是该厂商预设
+  // 时切换单选即时生效（model.preset.entry 只改端点、保留 override）；
+  // 未激活时随 Apply 携带 entry。
+  let entry = null, entryPending = null;
+  if (vendor === 'Qwen Token Plan') {
+    entry = el('div', 'model-vendor-entry');
+    entry.setAttribute('role', 'radiogroup');
+    CLATI18n.attribute(entry, 'aria-label', () => settingsUi('qwen_entry'));
+    for (const value of ['aliyun', 'qianwen']) {
+      const label = el('label'), radio = el('input');
+      radio.type = 'radio'; radio.name = 'qwen-token-plan-entry'; radio.value = value;
+      radio.checked = value === 'aliyun';
+      label.append(radio, el('span', '', () => settingsUi('qwen_entry_' + value)));
+      entry.append(label);
+    }
+    entry.addEventListener('change', event => {
+      if (event.target.type !== 'radio') return;
+      if (active.hidden) { entryPending = event.target.value; return; }
+      entryPending = null;
+      const radio = event.target;
+      radio.disabled = true;
+      void (async () => {
+        try {
+          // VP-2C 事故修复（2026-11-20 真机 401）：key 框已输入新平台
+          // key 时随单选一并提交（一套 Key 二选一，旧 key 打新端点必
+          // 401）；成功才清空，失败保留供重试。
+          const params = { entry: radio.value };
+          if (key.value) params.api_key = key.value;
+          await rpc('model.preset.entry', params);
+          key.value = '';
+          await refreshModelSettings();
+          await refreshWorkbench();
+        } catch (error) {
+          CLATI18n.bind(modelField('settings-error'), 'textContent', () => error.message);
+        } finally { radio.disabled = false; }
+      })();
+    });
+    heading.append(entry);
+    heading.classList.add('has-entry');
+  }
+  heading.append(active);
   const controls = el('div', 'model-vendor-controls'), select = el('select'), key = el('input');
   for (const preset of presets) { const option = el('option', '', modelCapabilityName(preset.name, preset.image_input)); option.value = preset.id; select.append(option); }
   CLATI18n.attribute(select, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.model_id'));
   key.type = 'password'; key.autocomplete = 'new-password'; key.maxLength = 4096;
   CLATI18n.attribute(key, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.api_key'));
   CLATI18n.attribute(key, 'placeholder', () => settingsUi('preset_key_hint'));
-  const row = { element, active, select, edited: false };
+  const row = { element, active, select, edited: false, get entry() { return entry; }, get entryPending() { return entryPending; } };
   select.onchange = () => { row.edited = true; };
   const apply = el('button', 'secondary', () => settingsUi('apply_preset')); apply.type = 'button';
   apply.onclick = () => modelAction(apply, async () => {
     const params = { id: select.value };
     if (key.value) params.api_key = key.value;
+    if (entryPending) params.entry = entryPending;
     key.value = ''; select.disabled = true;
-    try { await rpc('model.preset.select', params); row.edited = false; }
+    try { await rpc('model.preset.select', params); row.edited = false; entryPending = null; }
     finally { select.disabled = false; }
   });
   controls.append(select, key, apply); element.append(heading, controls);

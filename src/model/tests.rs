@@ -587,6 +587,12 @@ fn endpoint_vendor_recognizes_kimi_and_qwen() {
         endpoint_vendor("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"),
         ModelVendor::Qwen
     );
+    // VP-2C：千问 AI 平台 Token Plan 入口——同厂商同 Key 槽同阶梯。
+    assert_eq!(
+        endpoint_vendor("https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"),
+        ModelVendor::Qwen
+    );
+    assert_eq!(ModelVendor::Qwen.storage_key(), Some("Qwen"));
     assert_eq!(
         endpoint_vendor("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         ModelVendor::Qwen

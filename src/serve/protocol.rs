@@ -178,6 +178,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "model.profile.activate",
     "model.profile.delete",
     "model.preset.select",
+    "model.preset.entry",
     "model.thinking.cycle",
     "permission.set",
     "wechat.binding.status",

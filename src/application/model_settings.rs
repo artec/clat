@@ -280,20 +280,89 @@ impl TrustedProjectApplication {
         &self,
         id: &str,
         api_key: Option<String>,
+        entry: Option<&str>,
     ) -> Result<(), ApplicationError> {
         let preset = crate::presets::preset_by_id(id)
             .ok_or_else(|| ApplicationError::new("unknown model preset"))?;
+        validate_key(api_key.as_deref())?;
+        // VP-2C：Qwen Token Plan 双入口单选——entry 仅对该厂商预设合法，
+        // 决定预设应用后的配置端点（百炼默认 / 千问平台）。其余厂商
+        // 预设不接受该参数（显式报错，不静默忽略）。
+        let entry_endpoint = match entry {
+            None => None,
+            Some(entry @ ("aliyun" | "qianwen")) => {
+                let endpoint = crate::presets::qwen_token_plan_entry(preset.endpoint)
+                    .map(|_| qwen_entry_endpoint(entry))
+                    .ok_or_else(|| {
+                        ApplicationError::new("entry selection requires a Qwen Token Plan preset")
+                    })?;
+                Some(endpoint)
+            }
+            Some(_) => {
+                return Err(ApplicationError::new("entry must be aliyun or qianwen"));
+            }
+        };
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        // VP-2C 事故修复（2026-11-20 真机 401）：不带 entry 的应用不得
+        // 回弹已选入口。当前端点仍是该预设的合法入口（preset_accepts_
+        // endpoint：相等或同属 Qwen Token Plan 双入口）时原样携带——
+        // 单选是入口的唯一事实源；显式 entry 参数才覆盖。换到其它厂商
+        // 后再应用 Qwen 预设（当前端点不被接受）照旧钉回预设默认百炼。
+        let carried_endpoint = self
+            .model_state()
+            .ok()
+            .map(|(config, _)| config.endpoint)
+            .filter(|endpoint| crate::presets::preset_accepts_endpoint(preset, endpoint));
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        if let Some(endpoint) = entry_endpoint.or(carried_endpoint.as_deref()) {
+            config.endpoint = endpoint.into();
+        }
+        // 双入口共用 "Qwen" Key 记忆槽（一套 Key 裁定）：换端点不换槽。
+        let mut credentials = self
+            .vendor_key(config.protocol, &config.endpoint)
+            .unwrap_or_else(|| ProviderCredentials::for_protocol(config.protocol));
+        if let Some(key) = api_key {
+            credentials.set_value(0, key);
+        }
+        self.save_model_state_locked(&config, &credentials)
+    }
+
+    /// VP-2C：单选切换**当前** Qwen Token Plan 模型的入口——只改写端点，
+    /// 预设其余钉值与用户 override（思考档位等）原样保留（非破坏切换）。
+    /// 当前模型不是 Qwen Token Plan 预设路由时显式拒绝。Key 复用现有
+    /// 凭据（双入口同槽）。
+    pub fn set_model_preset_entry(
+        &self,
+        entry: &str,
+        api_key: Option<String>,
+    ) -> Result<(), ApplicationError> {
+        let endpoint = match entry {
+            "aliyun" | "qianwen" => qwen_entry_endpoint(entry),
+            _ => return Err(ApplicationError::new("entry must be aliyun or qianwen")),
+        };
         validate_key(api_key.as_deref())?;
         let _update = self
             .host_storage
             .model_updates
             .lock()
             .expect("model updates");
-        let mut config = ModelConfig::default();
-        preset.apply(&mut config);
-        let mut credentials = self
-            .vendor_key(config.protocol, &config.endpoint)
-            .unwrap_or_else(|| ProviderCredentials::for_protocol(config.protocol));
+        let (mut config, mut credentials) = self.model_state()?;
+        if !super::dto::matching_preset(&config)
+            .is_some_and(|preset| crate::presets::qwen_token_plan_entry(preset.endpoint).is_some())
+        {
+            return Err(ApplicationError::new(
+                "the active model is not a Qwen Token Plan preset",
+            ));
+        }
+        config.endpoint = endpoint.into();
+        // VP-2C 事故修复（2026-11-20 真机 401）：一套 Key 二选一——key
+        // 框已输入新平台 key 时单选一步完成"换端点+换 key"，否则旧平台
+        // key 打新端点必然 401。缺省沿用现值（既有非破坏语义不变）。
         if let Some(key) = api_key {
             credentials.set_value(0, key);
         }
@@ -413,6 +482,14 @@ fn public_url(endpoint: &str) -> String {
     url.set_query(None);
     url.set_fragment(None);
     url.to_string().trim_end_matches('/').to_owned()
+}
+
+/// VP-2C：入口名 → Qwen Token Plan 端点（调用方已验证 entry 合法）。
+fn qwen_entry_endpoint(entry: &str) -> &'static str {
+    match entry {
+        "qianwen" => crate::presets::QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT,
+        _ => crate::presets::QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT,
+    }
 }
 
 fn validate_key(key: Option<&str>) -> Result<(), ApplicationError> {

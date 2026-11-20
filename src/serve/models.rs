@@ -69,8 +69,29 @@ pub(crate) fn dispatch(
                 Some(Value::String(key)) => Some(key.clone()),
                 _ => return Err(RpcError::bad_request("API key must be a string")),
             };
-            app.select_model_preset(id, key).map_err(failure)?;
+            // VP-2C：Qwen Token Plan 双入口单选（"aliyun"|"qianwen"，
+            // 仅该厂商预设合法；其余预设携带时由 Application 显式拒绝）。
+            let entry = match params.get("entry") {
+                None => None,
+                Some(Value::String(entry)) => Some(entry.as_str()),
+                _ => return Err(RpcError::bad_request("entry must be a string")),
+            };
+            app.select_model_preset(id, key, entry).map_err(failure)?;
             Ok(json!({"selected": true}))
+        }
+        "model.preset.entry" => {
+            let entry = params
+                .get("entry")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::bad_request("entry required"))?;
+            // VP-2C 事故修复：可选 api_key——key 框新 key 随单选一步提交。
+            let key = match params.get("api_key") {
+                None => None,
+                Some(Value::String(key)) => Some(key.clone()),
+                _ => return Err(RpcError::bad_request("API key must be a string")),
+            };
+            app.set_model_preset_entry(entry, key).map_err(failure)?;
+            Ok(json!({"entry": entry}))
         }
         _ => Err(RpcError::bad_request("unknown model method")),
     }
