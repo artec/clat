@@ -10,12 +10,28 @@ required. Existing Web plugins remain independently configurable.
 
 Open **Settings → Web** in the workbench. Save a dedicated DeepSeek API key,
 or explicitly choose to use the saved DeepSeek model key for the official
-Web API. Reads return configuration status, never credential bytes. Search
-and DeepSeek Fetch may incur charges from the provider. Without a configured
-key, native search uses the project-operated shared Ceramic search service
-(`search.dengcb.net`): no user-side key or charge, subject to the service's
-shared rate limits. Queries from keyless configurations traverse that
-server; configure a DeepSeek key if that matters to you.
+Web API. Reads return configuration status, never credential bytes. DeepSeek
+Search and DeepSeek Fetch may incur charges from the provider.
+
+**Search provider** offers three states (WEB-D1):
+
+- **Smart (default)** — a configured Web key uses the billed DeepSeek Search
+  API; otherwise, when the current conversation model is a direct DeepSeek
+  model, `web_search` uses DeepSeek's **server-side native search** through
+  the Anthropic-compatible Messages endpoint — free per search, each search
+  costs one auxiliary model call (`deepseek-v4-flash`) in latency and
+  tokens, reusing the conversation key (or the dedicated Web key when the
+  model has none); every other keyless configuration falls back to the
+  project-operated shared Ceramic search service (`search.dengcb.net`).
+- **Shared Ceramic proxy** — always use the shared service, even with a key
+  configured (explicit choice).
+- **DeepSeek server-side search** — always use the Messages native search,
+  ignoring a configured Web key.
+
+The shared Ceramic service needs no user-side key or charge and is subject
+to the service's shared rate limits. Queries from keyless non-DeepSeek
+configurations traverse that server; configure a DeepSeek key or force a
+provider if that matters to you.
 
 Terminal clients share the same settings:
 
@@ -27,22 +43,33 @@ clat web fetch http
 clat web fetch deepseek
 clat web credential model
 clat web credential dedicated
+clat web search smart
+clat web search ceramic
+clat web search messages
 clat web key --clear
 ```
 
 `key --stdin` reads the dedicated key from standard input, with a 4 KiB bound;
 the key is not a command-line argument. Inside the TUI, `/web` reports status,
-`/web fetch http|deepseek` selects retrieval, and
-`/web credential model|dedicated` selects the credential source. Standalone
+`/web fetch http|deepseek` selects retrieval, `/web credential model|dedicated`
+selects the credential source, and `/web search smart|ceramic|messages`
+selects the search provider. Standalone
 TUI settings use its existing core owner. Configuration takes effect on the
 next call; a call already prepared for permission review retains its snapshot.
 
 ### Search and retrieve
 
 `web_search` sends only the search query and returns up to ten results by
-default. It uses the shared Ceramic search service without a key, or
-DeepSeek Search when a Web key is configured. Both routes query a search
-service directly without a separate model request. The shared route
+default. Routing follows the frozen prepare-time snapshot: a configured Web
+key uses DeepSeek Search; a keyless direct-DeepSeek conversation uses the
+Messages native search; otherwise the shared Ceramic service. The Search API
+and shared routes query a search service directly without a separate model
+request. The Messages route runs the search inside one auxiliary DeepSeek
+model turn on the server and reads only structured `web_search_tool_result`
+blocks — reply prose is never scraped for URLs, and a response without a
+result block fails with an explicit error (never a silent fallback to
+another route). Its search endpoint is independent of the chat endpoint
+(`https://api.deepseek.com/anthropic/v1/messages`). The shared route
 fetches a short-lived encrypted access token from the same origin and
 refreshes it automatically when the service rotates it; rate limits and
 transient failures are reported as explicit search errors and never fall

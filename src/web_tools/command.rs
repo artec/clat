@@ -26,16 +26,17 @@ impl CommandHandler for Handler {
             .web_settings()
             .map_err(|e| CommandError::presented(e.presentation()))?;
         if args.is_empty() {
-            let key = if result.credential_set {
-                "webtool.search_deepseek"
-            } else {
-                "webtool.search_shared"
+            let key = match result.search_route {
+                "api" => "webtool.search_deepseek",
+                "messages" => "webtool.search_messages_active",
+                _ => "webtool.search_shared",
             };
             return Ok(CommandOutcome::Status(UiMessage::new(key).into()));
         }
         let mut edit = WebSettingsEdit {
             fetch_provider: result.fetch_provider,
             use_model_key: result.use_model_key,
+            search_provider: result.search_provider,
             api_key: None,
             clear_key: false,
         };
@@ -44,6 +45,11 @@ impl CommandHandler for Handler {
             ["fetch", "deepseek"] => edit.fetch_provider = FetchProvider::Deepseek,
             ["credential", "model"] => edit.use_model_key = true,
             ["credential", "dedicated"] => edit.use_model_key = false,
+            // WEB-D1 三态：smart（默认智能）/ ceramic（强制共享代理）/
+            // messages（强制 DeepSeek 原生搜索）。
+            ["search", "smart"] => edit.search_provider = SearchProvider::Smart,
+            ["search", "ceramic"] => edit.search_provider = SearchProvider::Ceramic,
+            ["search", "messages"] => edit.search_provider = SearchProvider::DeepseekMessages,
             _ => {
                 return Err(CommandError::presented(UiMessage::new(
                     "webtool.command_help",

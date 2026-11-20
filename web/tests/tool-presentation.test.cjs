@@ -9,6 +9,34 @@ function presentation() {
   vm.runInContext(source.slice(source.indexOf('const TOOL_PRESENTATION_KEYS'), source.indexOf('function appendWorkRecord')), scope);
   return scope;
 }
+test('Skill, MCP and ACP tool calls have distinct presentation identities', () => {
+  const scope = presentation();
+  const rounds = fs.readFileSync('web/conversation-rounds.js', 'utf8');
+  vm.runInContext(rounds.slice(rounds.indexOf('function toolPresentationIcon('), rounds.indexOf('function createConversationRounds(')), scope);
+  const icon = name => vm.runInContext('toolPresentationIcon(' + JSON.stringify(name) + ')', scope);
+  assert.equal(icon('skill'), 'skill-call');
+  assert.equal(icon('mcp_filesystem_read_file'), 'mcp-call');
+  assert.equal(icon('mcp__server__tool'), 'mcp-call');
+  assert.equal(icon('acp.terminal'), 'acp-call');
+  assert.equal(icon('acp.write_text_file'), 'acp-call');
+  assert.equal(icon('run_command'), 'terminal');
+  assert.equal(icon('unknown_tool'), 'tool');
+  const shapes = fs.readFileSync('web/app.js', 'utf8');
+  vm.runInContext(shapes.slice(shapes.indexOf('const ICON_PATHS ='), shapes.indexOf('// Fill-based glyphs')), scope);
+  for (const name of ['skill-call', 'mcp-call', 'acp-call']) {
+    scope.iconName = name;
+    assert.ok(vm.runInContext('Array.isArray(ICON_PATHS[iconName]) && ICON_PATHS[iconName].length > 0', scope));
+  }
+  scope.skillArgs = JSON.stringify({name:'code-review'});
+  assert.ok(vm.runInContext("toolCallDisplayName('skill', skillArgs)", scope).endsWith(' · code-review'));
+  assert.equal(vm.runInContext("toolCallDisplayName('skill', '{bad')", scope),
+    vm.runInContext("toolDisplayName('skill')", scope));
+  for (const name of ['skill', 'acp.terminal', 'mcp_filesystem_read_file']) {
+    assert.notEqual(vm.runInContext('toolDisplayName(' + JSON.stringify(name) + ')', scope),
+      vm.runInContext("toolDisplayName('unknown_tool')", scope));
+  }
+});
+
 test('capability presentation preserves raw model text and distinguishes native and external actions', () => {
   const scope = presentation();
   scope.original = 'Use web_search then mcp_glm_search_web_search_prime; keep user_input unchanged.';

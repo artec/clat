@@ -6,6 +6,9 @@ function installWebSettings() {
   const panel=el('section','settings-section');panel.dataset.settingsPanel='web';panel.hidden=true;
   const provider=el('select');
   for(const [value,key]of [['http','http'],['deepseek','deepseek']]){const option=el('option','',()=>msg(key));option.value=value;provider.append(option);}
+  // WEB-D1：搜索三态（智能默认 / 强制 Ceramic / 强制 DeepSeek 服务端搜索）。
+  const searchProvider=el('select');
+  for(const [value,key]of [['smart','search_smart'],['ceramic','search_ceramic'],['deepseek_messages','search_messages']]){const option=el('option','',()=>msg(key));option.value=value;searchProvider.append(option);}
   const source=el('select');for(const key of ['independent','model']){const option=el('option','',()=>pageText('key_'+key));option.value=key;source.append(option);}
   const key=el('input');key.type='password';key.autocomplete='new-password';key.maxLength=4096;
   const clear=el('input');clear.type='checkbox';
@@ -16,20 +19,20 @@ function installWebSettings() {
   panel.append(el('h3','',()=>msg('title')),el('p','settings-note',()=>msg('description')));
   const fetch=settingsGroup(panel,()=>pageText('fetch_heading')),search=settingsGroup(panel,()=>pageText('search_heading'));
   fetch.append(row(()=>msg('fetch_provider'),provider),fetchState);
-  search.append(row(()=>pageText('key_source'),source),row(()=>msg('key'),key),row(()=>msg('clear_key'),clear),searchState);
+  search.append(row(()=>msg('search_provider'),searchProvider),row(()=>pageText('key_source'),source),row(()=>msg('key'),key),row(()=>msg('clear_key'),clear),searchState);
   const actions=el('div','settings-action-bar');actions.append(save,status);panel.append(actions);nav.append(tab);content.append(panel);
   let generation=0,dirty=false;
   const visibility=()=>{key.closest('label').hidden=source.value==='model';clear.closest('label').hidden=source.value==='model';};source.onchange=visibility;visibility();
   panel.addEventListener('input',()=>{dirty=true;generation++;});
   async function refresh(){const request=++generation;try{const view=await rpc('web.settings.get',{});if(request!==generation)return;
-    if(!dirty){provider.value=view.fetch_provider;source.value=view.use_model_key?'model':'independent';visibility();}
+    if(!dirty){provider.value=view.fetch_provider;searchProvider.value=view.search_provider||'smart';source.value=view.use_model_key?'model':'independent';visibility();}
     CLATI18n.bind(fetchState,'textContent',()=>pageText(view.fetch_available?'fetch_configured':'fetch_unconfigured'));
-    CLATI18n.bind(searchState,'textContent',()=>msg(view.credential_set?'search_deepseek':view.search_available?'search_shared':'not_configured'));
+    CLATI18n.bind(searchState,'textContent',()=>msg(view.search_route==='api'?'search_deepseek':view.search_route==='messages'?'search_messages_active':view.search_available?'search_shared':'not_configured'));
   }catch(error){if(request===generation)CLATI18n.bind(status,'textContent',()=>error.message);}}
   dom['settings-dialog'].addEventListener('clat:settings-leave',()=>{generation++;key.value='';clear.checked=false;});
   dom['settings-dialog'].addEventListener('clat:settings-saved',event=>{if(event.detail===panel)dirty=false;});
   tab.onclick=()=>{selectSettingsCategory('web');void refresh();};
-  save.onclick=async()=>{save.disabled=true;save.dataset.saving='true';const request=++generation;const payload={fetch_provider:provider.value,use_model_key:source.value==='model',api_key:source.value==='independent'?key.value||null:null,clear_key:source.value==='independent'&&clear.checked};key.value='';
+  save.onclick=async()=>{save.disabled=true;save.dataset.saving='true';const request=++generation;const payload={fetch_provider:provider.value,use_model_key:source.value==='model',search_provider:searchProvider.value,api_key:source.value==='independent'?key.value||null:null,clear_key:source.value==='independent'&&clear.checked};key.value='';
     try{await rpc('web.settings.set',payload);if(request!==generation)return;clear.checked=false;dirty=false;acknowledgeSettingsSave(panel);CLATI18n.bind(status,'textContent',()=>msg('saved'));await refresh();}
     catch(error){if(request===generation)CLATI18n.bind(status,'textContent',()=>error.message);}finally{save.disabled=false;delete save.dataset.saving;}
   };

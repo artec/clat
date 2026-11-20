@@ -36,12 +36,23 @@ impl WebService {
                 .filter(|n| (1..=50).contains(n))
                 .ok_or_else(|| WebError::new("invalid_query"))?,
         };
-        if snapshot.key.is_none() {
-            // 2026-11-08 负责人令:无 key 兜底由匿名 DuckDuckGo Lite 抓取
-            // 换为项目方共享 Ceramic 代理(public_search.rs 已删除)。
-            return self.search_shared(query.trim(), count, req_cancel, run_cancel);
+        // WEB-D1 路由（INV-WD1/WD2）：路径在 prepare 期随快照冻结——
+        // DeepSeek 模型且无 web key → Messages 原生免费搜索（Ceramic
+        // 零暴露）；配 key → 计费 Search API 不变；其余无 key → 共享
+        // Ceramic。三态设置可显式改道（见 config.rs routing）。
+        match snapshot.search_route {
+            super::config::SearchRoute::Shared => {
+                // 2026-11-08 负责人令:无 key 兜底由匿名 DuckDuckGo Lite 抓取
+                // 换为项目方共享 Ceramic 代理(public_search.rs 已删除)。
+                self.search_shared(query.trim(), count, req_cancel, run_cancel)
+            }
+            super::config::SearchRoute::Api => {
+                self.search_deepseek(query, count, snapshot, req_cancel, run_cancel, quota)
+            }
+            super::config::SearchRoute::Messages => {
+                self.search_messages(query.trim(), count, snapshot, req_cancel, run_cancel)
+            }
         }
-        self.search_deepseek(query, count, snapshot, req_cancel, run_cancel, quota)
     }
 
     fn search_deepseek(

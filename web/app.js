@@ -585,6 +585,8 @@ const ICON_PATHS = {
   'monitor-pointer': ['M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2ZM12 17v4m-4 0h8', 'm10 7 6 4-3.5.5-2.5 2.5Z'],
   extensions: ['M3 4h5v2a2 2 0 0 0 4 0V4h5v5h1a3 3 0 0 1 0 6h-1v5H3Z'],
   mcp: ['M4 12h5m6-5h5m-5 10h5', 'M9 12l6-5m-6 5 6 5'],
+  'skill-call': ['M4 19L17 6m-3-2 5 5', 'M5 2v4M3 4h4', 'M19 15v4m-2-2h4'],
+  'acp-call': ['M3 3h7v7H3z', 'M14 14h7v7h-7z', 'M10 7h5a2 2 0 0 1 2 2v5', 'm-2-2 2 2 2-2'],
   'mcp-call': [
     'M9.65 6.5a3.15 3.15 0 1 0-6.3 0 3.15 3.15 0 1 0 6.3 0Z',
     'M20.65 6.5a3.15 3.15 0 1 0-6.3 0 3.15 3.15 0 1 0 6.3 0Z',
@@ -1870,7 +1872,7 @@ const TOOL_PRESENTATION_KEYS = {
   web_search: 'search_web', web_fetch: 'read_web', web_search_prime: 'search_web',
   read_file: 'read_file', list_files: 'list_files', search: 'search_files',
   edit_file: 'edit_file', write_file: 'write_file', apply_patch: 'edit_file',
-  run_command: 'run_command', view_image: 'view_image', ask_user: 'ask_user',
+  run_command: 'run_command', skill: 'use_skill', view_image: 'view_image', ask_user: 'ask_user',
   ui_apps: 'ui_apps', ui_tree: 'ui_tree', ui_wait: 'ui_wait', ui_act: 'ui_act',
   ask_user_question: 'ask_user', update_plan: 'update_plan', exit_plan_mode: 'finish_plan',
   request_plan_mode: 'request_plan_mode', propose_goal: 'propose_goal',
@@ -1881,8 +1883,11 @@ function permissionEffectLabel(effect) {
 }
 function toolDisplayName(name) {
   const raw = String(name || '');
-  if (raw === 'acp.write_text_file') return CLATI18n.msg('web.tool_action.write_file');
-  if (raw === 'acp.terminal') return CLATI18n.msg('web.tool_action.run_command');
+  if (raw.startsWith('acp.')) {
+    const action = raw === 'acp.terminal' ? 'run_command'
+      : raw === 'acp.write_text_file' ? 'write_file' : 'other';
+    return CLATI18n.msg('web.tool_action.acp_operation', {action:CLATI18n.msg(`web.tool_action.${action}`)});
+  }
   let action = Object.hasOwn(TOOL_PRESENTATION_KEYS, raw) ? TOOL_PRESENTATION_KEYS[raw] : null;
   const hostAction = raw.match(/:host:(ui_apps|ui_tree|ui_wait|ui_act)$/)?.[1];
   const external = Boolean(hostAction) || /^(mcp_|mcp__|plugin_)/.test(raw);
@@ -1893,7 +1898,17 @@ function toolDisplayName(name) {
     action = TOOL_PRESENTATION_KEYS[suffix];
   }
   const label = CLATI18n.msg(`web.tool_action.${action || 'other'}`);
+  if (raw.startsWith('mcp_')) return CLATI18n.msg('web.tool_action.mcp_operation', {action:label});
   return external ? CLATI18n.msg('web.tool_action.external', {action: label}) : label;
+}
+function toolCallDisplayName(name, argsText) {
+  const label = toolDisplayName(name);
+  if (name !== 'skill') return label;
+  try {
+    const skill = JSON.parse(argsText)?.name;
+    if (typeof skill === 'string' && skill.length > 0 && skill.length <= 64) return label + ' · ' + skill;
+  } catch (_) { /* Keep the generic label if there is no valid skill name. */ }
+  return label;
 }
 function toolPreview(text) {
   return String(text || '').replace(/\b(?:mcp_[a-zA-Z0-9_]+|plugin_[a-zA-Z0-9_]+|[a-z]+(?:_[a-z]+)+)\b/g,
@@ -2326,7 +2341,7 @@ function openToolCard(name, argsText, rawId, key) {
   const summary = el('summary');
   summary.append(
     svgIcon(toolPresentationIcon(name)),
-    el('span', null, () => toolDisplayName(name)),
+    el('span', null, () => toolCallDisplayName(name, argsText)),
     el('span', 'tool-state', () => (CLATI18n.msg("web.running_short",{},"Running"))),
   );
   const body = el('div', 'tool-body');

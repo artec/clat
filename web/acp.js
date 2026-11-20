@@ -1012,7 +1012,7 @@ function acpDelegationRow(record, open = () => openAcpSession(record.id, {delega
   if (record.handoff !== 'none') copy.append(el('small', '', () => acpText('handoff_' + record.handoff)));
   const details = acpButton('details', open);
   details.classList.add('shell-button');
-  row.append(copy, details);
+  row.append(svgIcon('acp-call'), copy, details);
   if (record.task) row.append(el('small', 'acp-delegation-task', record.task));
   if (acpDelegationActive(record)) {
     const cancel = acpButton('cancel', async () => {

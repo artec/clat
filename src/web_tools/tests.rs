@@ -61,14 +61,35 @@ impl Fixture {
         }
     }
     fn configure(&self, provider: FetchProvider, key: Option<&str>) {
+        self.configure_search(provider, key, SearchProvider::Smart);
+    }
+    fn configure_search(&self, provider: FetchProvider, key: Option<&str>, search: SearchProvider) {
         self.service
             .save(WebSettingsEdit {
                 fetch_provider: provider,
                 use_model_key: false,
+                search_provider: search,
                 api_key: key.map(str::to_owned),
                 clear_key: false,
             })
             .unwrap();
+    }
+    /// 注入当前模型态（路由判据的数据源）：预设钉配置，key 走对话凭据槽。
+    fn set_model(&self, preset: &str, key: &str) {
+        let mut config = crate::model::ModelConfig::default();
+        crate::presets::preset_by_id(preset)
+            .unwrap_or_else(|| panic!("preset {preset}"))
+            .apply(&mut config);
+        let mut credentials = crate::model::ProviderCredentials::for_protocol(config.protocol);
+        credentials.set_value(0, key.to_owned());
+        self.service
+            .control
+            .save_model_state(&config, &credentials)
+            .unwrap();
+    }
+    /// 构造一条 Messages 搜索的 Anthropic 响应体。
+    fn messages_reply(blocks: &str) -> String {
+        format!(r#"{{"content":[{blocks}]}}"#)
     }
     fn calls(&self) -> usize {
         self.wire.requests.lock().unwrap().len()
@@ -855,4 +876,309 @@ fn native_web_non_blocked_errors_never_enter_the_consent_flow() {
         1,
         "only the failing call; consent is not consulted"
     );
+}
+
+// ── WEB-D1（2026-11-20）：DeepSeek 模型默认 Messages 原生免费搜索 ──
+
+/// INV-WD1 判别（核心交付物）：DeepSeek 模型 + 无 web key → Messages
+/// 原生搜索，Ceramic 零暴露；双头凭据、DSH 同款请求体；无按次预算
+/// 扣减（免费路径不吃 PaidCallBudget）。
+#[test]
+fn native_web_deepseek_model_without_key_uses_messages_and_never_touches_ceramic() {
+    let f = Fixture::new();
+    f.set_model("deepseek-v4-pro", "model-key");
+    assert_eq!(
+        f.tool(Operation::Search).capability_availability(),
+        Some(("available", "messages_search"))
+    );
+    f.reply(
+        200,
+        &Fixture::messages_reply(
+            r#"{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://example.com/rust","title":"Rust","snippet":"fast"}]}"#,
+        ),
+        "application/json",
+        None,
+    );
+    let result = invoke(&f.tool(Operation::Search), json!({"query":"Rust"})).unwrap();
+    assert_eq!(result["provider"], "deepseek-messages");
+    assert_eq!(result["external_untrusted"], true);
+    assert_eq!(
+        result["sources"][0]["source"]["url"],
+        "https://example.com/rust"
+    );
+    assert_eq!(result["sources"][0]["text"], "fast");
+    let requests = f.wire.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "exactly one Messages call");
+    assert_eq!(
+        requests[0].url,
+        "https://api.deepseek.com/anthropic/v1/messages"
+    );
+    assert_eq!(requests[0].method, "POST");
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.url.contains("search.dengcb.net")),
+        "INV-WD1: the shared Ceramic proxy must never be touched"
+    );
+    let header = |name: &str| {
+        requests[0]
+            .headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap()
+    };
+    assert_eq!(header("x-api-key"), "model-key");
+    assert_eq!(header("authorization"), "Bearer model-key");
+    assert_eq!(header("anthropic-version"), "2023-06-01");
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "deepseek-v4-flash");
+    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    assert_eq!(
+        body["tools"],
+        json!([{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}])
+    );
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        "Perform a web search for the query: Rust"
+    );
+}
+
+/// INV-WD2：路由判据与 Messages 凭据在 prepare 期冻结——准备后模型
+/// 换厂商/换 key，执行期仍按快照路径与快照凭据走。
+#[test]
+fn native_web_messages_route_and_credential_freeze_at_preparation() {
+    let f = Fixture::new();
+    f.set_model("deepseek-v4-pro", "model-key");
+    let prepared = f
+        .tool(Operation::Search)
+        .prepare_execution(&json!({"query":"q"}))
+        .unwrap();
+    f.set_model("glm-5.3", "glm-key");
+    f.reply(
+        200,
+        &Fixture::messages_reply(
+            r#"{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://example.com/a","title":"A","snippet":"s"}]}"#,
+        ),
+        "application/json",
+        None,
+    );
+    let result = invoke(prepared.tool.as_ref(), json!({"query":"q"})).unwrap();
+    assert_eq!(result["provider"], "deepseek-messages");
+    let requests = f.wire.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .headers
+            .iter()
+            .any(|(k, v)| k == "x-api-key" && v == "model-key"),
+        "credential is the frozen snapshot, not the new model key"
+    );
+}
+
+/// 路由矩阵（INV-WD1/WD4）：配 key → 计费 Search API 零变化；非
+/// DeepSeek 模型 + 无 key → 共享 Ceramic；三态设置显式改道。
+#[test]
+fn native_web_search_routing_matrix_key_vendor_and_three_states() {
+    // 配 key + DeepSeek 模型 → Search API（INV-WD4：配 key 行为零变化）。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "model-key");
+        f.configure(FetchProvider::Http, Some("web-key"));
+        f.reply(
+            200,
+            r#"{"results":[{"url":"https://example.com/x","title":"t","summary":"s"}]}"#,
+            "application/json",
+            None,
+        );
+        let result = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap();
+        assert_eq!(result["provider"], "deepseek");
+        let requests = f.wire.requests.lock().unwrap();
+        assert_eq!(requests[0].url, "https://api.deepseek.com/v1/tools/search");
+    }
+    // 非 DeepSeek 模型 + 无 key → 共享 Ceramic（兜底唯一合法位置）。
+    {
+        let f = Fixture::new();
+        f.set_model("glm-5.3", "glm-key");
+        f.reply(200, &ceramic::test_blob("tok"), "text/plain", None);
+        f.reply(200, r#"{"items":[]}"#, "application/json", None);
+        let result = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap();
+        assert_eq!(result["provider"], "ceramic");
+    }
+    // 强制 ceramic：DeepSeek 模型 + 无 key 也走共享（显式选择）。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "model-key");
+        f.configure_search(FetchProvider::Http, None, SearchProvider::Ceramic);
+        f.reply(200, &ceramic::test_blob("tok"), "text/plain", None);
+        f.reply(200, r#"{"items":[]}"#, "application/json", None);
+        let result = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap();
+        assert_eq!(result["provider"], "ceramic");
+    }
+    // 强制 messages：即便配置了 web key 也走 Messages（显式选择）。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "model-key");
+        f.configure_search(
+            FetchProvider::Http,
+            Some("web-key"),
+            SearchProvider::DeepseekMessages,
+        );
+        f.reply(
+            200,
+            &Fixture::messages_reply(
+                r#"{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://example.com/a","title":"A","snippet":"s"}]}"#,
+            ),
+            "application/json",
+            None,
+        );
+        let result = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap();
+        assert_eq!(result["provider"], "deepseek-messages");
+        let requests = f.wire.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|r| !r.url.ends_with("/v1/tools/search")),
+            "the billed Search API must not be called under forced messages"
+        );
+    }
+}
+
+/// WD-C1：结构化只读解析——cited_text 补缺失 snippet（首现胜出）、URL
+/// 去重保首现、超 count 截断置 truncated、page_age → published_at。
+#[test]
+fn native_web_messages_parser_structured_only_dedup_truncate_and_cited_text() {
+    let payload = json!({"content":[
+        {"type":"text","text":"prose","citations":[
+            {"url":"https://example.com/b","cited_text":"excerpt b"},
+            {"url":"https://example.com/b","cited_text":"second ignored"},
+        ]},
+        {"type":"web_search_tool_result","content":[
+            {"type":"web_search_result","url":"https://example.com/a","title":"A","page_age":"2026-01-02","snippet":"own snippet"},
+            {"type":"web_search_result","url":"https://example.com/a","title":"dup"},
+            {"type":"web_search_result","url":"https://example.com/b","title":"B"},
+            {"type":"web_search_result","url":"https://example.com/c","title":"C","snippet":"c1"},
+            {"type":"web_search_result","url":"https://example.com/d","title":"D","snippet":"d1"},
+        ]},
+    ]});
+    let result = super::messages::parse_messages_search(&payload, 3).unwrap();
+    assert_eq!(result["provider"], "deepseek-messages");
+    assert_eq!(result["external_untrusted"], true);
+    let sources = result["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 3, "dedup keeps firsts, count truncates");
+    assert_eq!(sources[0]["source"]["url"], "https://example.com/a");
+    assert_eq!(sources[0]["source"]["published_at"], "2026-01-02");
+    assert_eq!(sources[0]["text"], "own snippet");
+    assert_eq!(
+        sources[1]["text"], "excerpt b",
+        "cited_text fills the snippet of an item without one (first occurrence wins)"
+    );
+    assert_eq!(sources[2]["source"]["url"], "https://example.com/c");
+    assert_eq!(
+        result["truncated"], true,
+        "the URL beyond count was dropped"
+    );
+}
+
+/// INV-WD3/WD5：无结果块 → provider_failed 严格失败——回复正文里的
+/// URL 永不当作搜索结果（不从文本刮 URL），也绝不回落 Ceramic。
+#[test]
+fn native_web_messages_failures_are_honest_and_never_fall_back() {
+    // 无 web_search_tool_result 块：只有 text 正文（含 URL）。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "model-key");
+        f.reply(
+            200,
+            &Fixture::messages_reply(r#"{"type":"text","text":"see https://example.com/scraped"}"#),
+            "application/json",
+            None,
+        );
+        let error = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap_err();
+        let recovery = error.recovery().unwrap();
+        assert_eq!(recovery["code"], "provider_failed");
+        assert!(
+            recovery["diagnostic"]
+                .as_str()
+                .unwrap()
+                .contains("web_search_tool_result"),
+            "the failure names the missing structured block"
+        );
+        assert_eq!(f.calls(), 1, "no Ceramic retry after the failure");
+    }
+    // HTTP 401 → credential_invalid，带端点口径，零回落。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "model-key");
+        f.reply(401, r#"{"error":"bad key"}"#, "application/json", None);
+        let error = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap_err();
+        assert_eq!(error.recovery().unwrap()["code"], "credential_invalid");
+        assert_eq!(f.calls(), 1);
+    }
+    // 无任何 DeepSeek 凭据（模型 key 空 + 无 web:deepseek key）→
+    // credential_missing，且零网络请求。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "");
+        let error = invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap_err();
+        assert_eq!(error.recovery().unwrap()["code"], "credential_missing");
+        assert_eq!(f.calls(), 0);
+    }
+}
+
+/// WD-C3 凭据顺序：当前 DeepSeek 模型对话 key 优先；无对话 key 时读
+/// `web:deepseek` vendor key。
+#[test]
+fn native_web_messages_credential_prefers_the_conversation_key() {
+    // 双 key 并存：用模型对话 key。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "model-key");
+        f.configure_search(
+            FetchProvider::Http,
+            Some("web-key"),
+            SearchProvider::DeepseekMessages,
+        );
+        f.reply(
+            200,
+            &Fixture::messages_reply(r#"{"type":"web_search_tool_result","content":[]}"#),
+            "application/json",
+            None,
+        );
+        invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap();
+        let requests = f.wire.requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .headers
+                .iter()
+                .any(|(k, v)| k == "x-api-key" && v == "model-key"),
+            "the conversation key wins over the web vendor key"
+        );
+    }
+    // 无对话 key：回落 web:deepseek vendor key。
+    {
+        let f = Fixture::new();
+        f.set_model("deepseek-v4-pro", "");
+        f.configure_search(
+            FetchProvider::Http,
+            Some("web-key"),
+            SearchProvider::DeepseekMessages,
+        );
+        f.reply(
+            200,
+            &Fixture::messages_reply(r#"{"type":"web_search_tool_result","content":[]}"#),
+            "application/json",
+            None,
+        );
+        invoke(&f.tool(Operation::Search), json!({"query":"q"})).unwrap();
+        let requests = f.wire.requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .headers
+                .iter()
+                .any(|(k, v)| k == "x-api-key" && v == "web-key"),
+            "the web vendor key is the fallback credential"
+        );
+    }
 }

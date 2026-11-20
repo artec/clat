@@ -49,8 +49,11 @@ function toolPresentationIcon(name){
     edit_file:'edit',write_file:'edit',apply_patch:'edit',
     ask_user:'help',ask_user_question:'help',update_plan:'plan',exit_plan_mode:'plan',
   };
-  // The MCP namespace identifies the integration, without inferring its action.
+  // A call's authoritative name identifies its protocol. Never guess from
+  // its arguments or invent tool activity from the mere presence of a skill.
+  if (name === 'skill') return 'skill-call';
   if (typeof name === 'string' && name.startsWith('mcp_')) return 'mcp-call';
+  if (typeof name === 'string' && name.startsWith('acp.')) return 'acp-call';
   return Object.hasOwn(icons,name)?icons[name]:'tool';
 }
 function createConversationRounds(){

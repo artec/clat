@@ -260,11 +260,12 @@
             // Precise miniature line art: unframed > and a lighter blinking _.
             // Avoid font glyphs, whose weight and baseline differ across platforms.
             if (activity.kind === 'terminal') {
-              const symbol = glyph('M3.5 5.7 10 10 3.5 14.3');
+              const symbol = glyph('M5.2 5.7 8.9 10 5.2 14.3');
               symbol.classList.add('session-background-symbol');
               symbol.setAttribute('viewBox', '0 0 20 20');
               const cursor = document.createElementNS(symbol.namespaceURI, 'path');
-              cursor.setAttribute('d', 'M11.7 14.3h5');
+              // Lower the faint cursor past the > baseline for optical alignment.
+              cursor.setAttribute('d', 'M10.5 15.4h4.8');
               cursor.setAttribute('class', 'session-background-cursor');
               symbol.append(cursor);
               background.append(symbol);

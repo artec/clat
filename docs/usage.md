@@ -582,6 +582,15 @@ only where CLAT has graduated `sandbox="required"` enforcement; any script still
 runs only through the ordinary Execute tools, approvals, ProcessService, and
 sandbox policy.
 
+The Desktop/Web work log gives actual `skill` tool calls a dedicated wand
+icon and labels them with the loaded skill name when supplied. MCP tool calls
+use the connected-node icon and an MCP label, while ACP operations use a
+delegation icon and ACP label. The ACP delegation rail carries the same icon.
+These indicators reflect real calls, not merely available skills, servers,
+or agents. An explicit `/skill <name>` invocation instead injects instructions
+at the next run boundary; it is not a tool call and does not generate a
+fictional tool-card event.
+
 `/skill` (alias `/skills`) uses the same catalog.
 
 In the CLAT TUI, PWA and Desktop, typing `/skill` opens the current project's

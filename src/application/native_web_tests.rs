@@ -18,6 +18,7 @@ fn native_web_configuration_is_shared_secret_write_only_and_discoverable() {
     app.save_web_settings(crate::web_tools::WebSettingsEdit {
         fetch_provider: crate::web_tools::FetchProvider::Http,
         use_model_key: false,
+        search_provider: crate::web_tools::SearchProvider::Smart,
         api_key: Some("owned-web-key".into()),
         clear_key: false,
     })
@@ -43,6 +44,7 @@ fn native_web_configuration_is_shared_secret_write_only_and_discoverable() {
         .save_web_settings(crate::web_tools::WebSettingsEdit {
             fetch_provider: crate::web_tools::FetchProvider::Http,
             use_model_key: false,
+            search_provider: crate::web_tools::SearchProvider::Smart,
             api_key: None,
             clear_key: true,
         })

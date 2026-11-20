@@ -230,6 +230,12 @@
 .acp-delegation-row {
   padding: 3px 8px;
 }
+.acp-delegation-row>svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--text-muted);
+}
 .acp-delegation-copy {
   min-width: 0;
   overflow-wrap: anywhere;
