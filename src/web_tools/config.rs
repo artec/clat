@@ -69,6 +69,10 @@ pub(crate) struct WebService {
     /// 私有地址同意通道的问答槽(与 ask_user 同一管线;headless 为空
     /// 槽 → fail-closed,见 consent.rs)。
     pub(super) asker: Arc<crate::interaction::AskUserSlot>,
+    /// Only interactive sessions carry their live permission mode. Headless
+    /// tools have no implicit address consent, even if their policy approves
+    /// a Network effect.
+    pub(super) permission_mode: Option<Arc<std::sync::RwLock<crate::permission::PermissionMode>>>,
     /// 同意流分类解析的测试缝:生产恒 None(走系统解析器);测试注入
     /// 固定映射避免依赖真实 DNS。见 consent.rs `resolve`。
     pub(super) resolve_hook: std::sync::Mutex<Option<ResolveHook>>,
@@ -96,8 +100,16 @@ impl WebService {
             transport: Arc::new(NativeTransport),
             shared: ceramic::SharedToken::default(),
             asker,
+            permission_mode: None,
             resolve_hook: std::sync::Mutex::new(None),
         }
+    }
+    pub(crate) fn with_permission_mode(
+        mut self,
+        permission_mode: Option<Arc<std::sync::RwLock<crate::permission::PermissionMode>>>,
+    ) -> Self {
+        self.permission_mode = permission_mode;
+        self
     }
     fn settings(&self) -> Result<Settings, WebError> {
         self.control
@@ -250,6 +262,7 @@ impl WebService {
             transport,
             shared: ceramic::SharedToken::default(),
             asker: crate::interaction::AskUserSlot::shared(),
+            permission_mode: None,
             resolve_hook: std::sync::Mutex::new(None),
         }
     }

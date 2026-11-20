@@ -333,15 +333,14 @@ fn project_catalog(input: &mut CompositionInput) -> Vec<Arc<dyn Plugin>> {
         Arc::new(crate::web_tools::plugin::WebPlugin {
             control: Arc::clone(&input.control),
             asker: Arc::clone(&input.asker_slot),
+            permission_mode: input.interactive_permission_mode(),
         }),
         Arc::new(crate::plugins::NativeWriteToolsPlugin {
             scope: write_scope(),
         }),
         Arc::new(crate::plugins::SandboxPlugin {
             project: input.project.clone(),
-            permission_mode: input
-                .permission_modes
-                .then(|| Arc::clone(&input.permission_mode)),
+            permission_mode: input.interactive_permission_mode(),
         }),
         Arc::new(crate::plugins::ProcessServicePlugin {
             project: input.project.clone(),
@@ -379,6 +378,12 @@ fn native_ui_plugin(input: &CompositionInput) -> Arc<dyn Plugin> {
 }
 
 impl CompositionInput {
+    fn interactive_permission_mode(
+        &self,
+    ) -> Option<Arc<RwLock<crate::permission::PermissionMode>>> {
+        self.permission_modes
+            .then(|| Arc::clone(&self.permission_mode))
+    }
     fn permission_source(&self) -> crate::permission::ModeSource {
         if self.permission_modes {
             crate::permission::ModeSource::Shared(Arc::clone(&self.permission_mode))

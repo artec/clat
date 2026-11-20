@@ -1,8 +1,7 @@
-//! 私有/保留地址的用户同意通道(2026-11-08 负责人令):任何落在公网
-//! 地址策略之外的目标——环回、RFC1918、link-local、TUN 代理 fake-IP
-//! 段等——不再硬拒,而是弹出权限框让用户选择放行,并提供"不再询问"
-//! (按主机记忆)。不枚举豁免任何网段:虚拟网卡环境用什么段是用户
-//! 环境的自由,枚举是打地鼠(负责人原话),一律走同一同意门。
+//! 私有/保留地址同意通道:只读和项目可写档遇到非公网目标
+//! (环回、RFC1918、link-local、TUN fake-IP 等)弹出权限框；
+//! 完全访问档已由用户授权,免逐站询问,但仍通过目标 DNS 固定的
+//! 单次重试访问,绝不持久化全局网段白名单。
 //!
 //! 机制复用 `ask_user` 验证过的管线(`interaction::UserAsker`,前端
 //! Some / headless None 自动降级);记忆存控制面 `web-consents.json`
@@ -71,6 +70,15 @@ impl WebService {
         run_cancel: &CancelToken,
     ) -> Result<(), WebError> {
         let host = host.to_ascii_lowercase();
+        // Full Access is itself the interactive user's authorization for
+        // network destinations. Do not ask a second time for each TUN fake-IP
+        // (or any other non-public address). A headless run has no mode source.
+        if self.permission_mode.as_ref().is_some_and(|mode| {
+            *mode.read().expect("permission mode lock")
+                == crate::permission::PermissionMode::FullAccess
+        }) {
+            return Ok(());
+        }
         if self
             .control
             .web_consents()
@@ -177,3 +185,7 @@ fn resolve_system(host: &str) -> Option<Vec<IpAddr>> {
     addresses.dedup();
     (!addresses.is_empty()).then_some(addresses)
 }
+
+#[cfg(test)]
+#[path = "consent_mode_tests.rs"]
+mod mode_tests;

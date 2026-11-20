@@ -25,17 +25,22 @@ Interactive local clients use three session-scoped modes:
 | `UIStructureRead` | allow | allow | allow |
 | `UIAction` | ask each time after application consent | ask each time after application consent | application consent, plus individual approval for sensitive actions |
 
-Native web tools add an address-aware consent gate on top of the Network
-effect (2026-11-08): when `web_search`/`web_fetch` would reach a
-**non-public address** — loopback, RFC1918, link-local, or the fake-IP
-ranges a TUN proxy's DNS returns — CLAT raises an interactive prompt
-(Allow once / Always allow this host / Deny) instead of silently failing.
-"Always allow" is remembered per host in control storage. Public targets
-are unaffected and never prompt. Headless runs have no prompt channel and
-fail closed with an actionable error. The prompt covers literal IP and
-`localhost` URLs as well as public-looking names that resolve privately
-(DNS rebinding shape included: the pinned retry only admits the addresses
-shown in the prompt).
+Native web tools have an address-aware gate in addition to the ordinary
+Network permission effect. **Full Access** implicitly authorizes non-public
+destinations for built-in `web_search`/`web_fetch`: no separate per-host/IP
+prompt, including when a TUN DNS maps public domains into fake-IP space.
+The tool retries a blocked request once with exactly the DNS answers resolved
+for that host (no blanket 198.18.0.0/15 allowlist), and does not save a
+persistent host grant. DNS pins, URL-shape validation, cancellation, timeouts
+and response limits remain enforced.
+
+In **Read Only** and **Project Write**, non-public destinations — loopback,
+RFC1918, link-local, fake-IP ranges, literal IPs and public-looking domains
+that resolve privately — still require interactive consent (Allow once /
+Always allow this host / Deny); "Always allow" is remembered per host.
+Public targets do not prompt. **Headless** runs have no interactive session
+mode and fail closed without an existing consent. The native override does
+not apply to guest/WASM network capabilities.
 
 Project Write is the daily-driver mode: file edits and network/search tools run
 without interruption. Native commands run without prompting when that invocation
@@ -43,8 +48,9 @@ is bound to macOS Seatbelt or the Windows ACL runner. Linux commands, third-part
 Execute tools, explicit `network: true` requests and destructive operations still
 ask. Full
 Access removes mode-level tool prompts and unlocks absolute-path writes, so cold
-switches require a separate warning confirmation. Tool-specific consent and
-approval rules still apply.
+switches require a separate warning confirmation. Tool-specific safety checks
+may still apply, but native Web address consent no longer asks again in Full
+Access; UI action and external capability consent retain their own policies.
 
 Read Only does not create a hard deny. It asks before every side effect and
 still confines approved writes to the project. A deny always comes from the

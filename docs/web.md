@@ -78,11 +78,13 @@ back silently.
 `web_fetch` defaults to anonymous HTTP(S). Public targets are reached
 directly. Targets that resolve to **non-public addresses** — loopback,
 RFC1918, link-local, IP literals such as `http://192.168.1.1/`, `localhost`,
-or the fake-IP range a TUN proxy's DNS returns for every name — go through
-an interactive consent prompt (Allow once / Always allow this host / Deny,
-see [Permissions](permissions.md)); headless runs fail closed. Credentials
-in URLs, fragments and other malformed shapes are still rejected outright,
-and the consented retry is pinned to the addresses shown in the prompt.
+or the fake-IP range a TUN proxy's DNS returns for every name — require
+an interactive consent prompt in Read Only / Project Write (Allow once /
+Always allow this host / Deny). In interactive Full Access they are authorized
+without another prompt or saved host grant; headless runs still fail closed.
+Credentials in URLs, fragments and other malformed shapes are still rejected
+outright, and the single retry is pinned to the resolved addresses. See
+[Permissions](permissions.md).
 Up to five same-origin redirects are followed;
 a cross-origin destination requires another explicit tool call. Requests have
 a 30-second deadline and a 5 MiB decoded-body limit. UTF-8 HTML, plain text and
