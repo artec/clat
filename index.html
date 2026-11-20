@@ -400,7 +400,7 @@
     <header class="hero">
       <img class="big" src="logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.10 — Latest release</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.3.7 — Latest release</a></div>
       <p class="tagline">A rock-solid agent foundation · The TUI client for DSH · A single Rust file</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -419,11 +419,11 @@
       <div class="shot">
         <img src="https://raw.githubusercontent.com/artec/clat/main/screen.png" alt="CLAT desktop app screenshot" loading="lazy">
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.10 实测 15.2 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.3.7 实测 16.5 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">15.2 MB</div>
+          <div class="stat-number">16.5 MB</div>
           <div class="stat-label">Download size: one binary, no Node / Python required</div>
         </div>
         <div class="stat">
@@ -495,7 +495,7 @@
         <div class="feature-cell">
           <p class="feature-label">03 — Interaction</p>
           <h3>Questions, steering &amp; thinking</h3>
-          <p>The model stops to ask when a decision is yours; steer an active run any time, or press Ctrl+Q to queue a message for the next turn — dispatched automatically. Reasoning renders inline as a collapsible Think row (Ctrl+R), and next-step suggestions appear automatically after each turn — sent only when adopted.</p>
+          <p>The model stops to ask when a decision is yours; steer an active run, or press Ctrl+Q to queue a message for the next turn. Reasoning renders inline as a collapsible Think row (Ctrl+R), and next-step suggestions appear automatically after each turn.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">04 — Runtime</p>
@@ -523,9 +523,9 @@
           <p>Every conversation is written to an append-only log, flushed before the model is called; after a crash it recovers to the last complete batch. Logs use the DSH-compatible format readable by other tools, <code>/history</code> full-text-searches committed sessions, and input history is shared across clients.</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">09 — Skills</p>
-          <h3>Layered skills &amp; LSP navigation</h3>
-          <p>Skills layer across the project's <code>.clat/skills/</code>, the user directory, and built-ins; the model loads instructions by name (<code>/skill</code> invokes directly) — read-only, never executing code. Configure <code>~/.clat/lsp.json</code> for read-only LSP: definition, references, implementation, hover.</p>
+          <p class="feature-label">09 — Control</p>
+          <h3>Application controls</h3>
+          <p>Hand macOS and Windows applications to the model: it reads Accessibility trees, waits for interface conditions, and dispatches approved semantic actions. Consents live per app in <code>/ui-consents</code>, and sensitive controls still ask even under Full Access.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">10 — Plugins</p>
@@ -534,8 +534,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — Ecosystem</p>
-          <h3>DSH host client</h3>
-          <p>One <code>clat dsh</code> connects to a local DSH host and the CLAT interface becomes its terminal: DSH sessions, questions, and approvals all happen in the same TUI with automatic reconnection. It never writes to <code>~/.dsh</code> — everything goes through the official API, and host feedback renders natively.</p>
+          <h3>DSH client &amp; ACP agents</h3>
+          <p>One <code>clat dsh</code> takes over a local DSH host — the same TUI driving its sessions and approvals. ACP external agents (Codex, Claude Code, Gemini, and more) attach as side conversations or take delegated tasks, with results flowing back into the original conversation.</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — Frontends</p>

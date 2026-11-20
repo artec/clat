@@ -392,7 +392,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.2.10 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.3.7 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -411,11 +411,11 @@
       <div class="shot">
         <img src="https://raw.githubusercontent.com/artec/clat/main/screen.zh.png" alt="CLAT 桌面版截图" loading="lazy">
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.2.10 实测 15.2 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.3.7 实测 16.5 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">15.2 MB</div>
+          <div class="stat-number">16.5 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -515,9 +515,9 @@
           <p>完整对话写入 append-only 日志，先落盘再调用模型，崩溃后自动恢复到最近批次；DSH 兼容格式可被其他工具读取，<code>/history</code> 对已提交会话全文检索；输入历史按会话跨端共用。</p>
         </div>
         <div class="feature-cell">
-          <p class="feature-label">09 — 技能</p>
-          <h3>分层技能与 LSP 导航</h3>
-          <p>技能分项目、用户、内置三层，模型按名加载说明与参考资源（<code>/skill</code> 直接调用），只读加载、绝不执行代码；配置 <code>~/.clat/lsp.json</code> 即获得只读 LSP——定义、引用、实现、悬停精确导航。</p>
+          <p class="feature-label">09 — 操作</p>
+          <h3>应用操作</h3>
+          <p>macOS 与 Windows 应用皆可交给模型操作：读取无障碍树、等待界面条件就绪、执行经批准的语义动作。授权按应用记录在 <code>/ui-consents</code>，敏感控件即使完全访问也逐次询问。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">10 — 插件</p>
@@ -526,8 +526,8 @@
         </div>
         <div class="feature-cell">
           <p class="feature-label">11 — 生态</p>
-          <h3>DSH 宿主客户端</h3>
-          <p>一条 <code>clat dsh</code> 连上本地 DSH 宿主，CLAT 界面就成为它的终端：DSH 的会话、提问与审批都在同一套 TUI 里完成，断线自动重连；对 <code>~/.dsh</code> 只读不写，一切经官方 API 交互。</p>
+          <h3>DSH 客户端与 ACP 智能体</h3>
+          <p>一条 <code>clat dsh</code> 接管本地 DSH 宿主，同一套 TUI 操作它的会话与审批；Codex、Claude Code、Gemini 等 ACP 外部智能体可挂为副对话或受派任务，结果回流原会话。</p>
         </div>
         <div class="feature-cell">
           <p class="feature-label">12 — 前端</p>
