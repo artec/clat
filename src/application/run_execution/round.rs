@@ -207,7 +207,8 @@ impl RoundExecution {
             subscribers: Arc::clone(&worker.deps.subscribers),
             ledger: Arc::clone(&self.spend_ledger),
             checkpoints: worker.deps.sessions.compaction_checkpoints(),
-            automatic_summary_failed: Arc::clone(&worker.automatic_summary_failed),
+            automatic_summary_failures: Arc::clone(&worker.automatic_summary_failures),
+            history_changed: false,
         }))
     }
     fn finish(&self, worker: &mut RunWorker, outcome: ExecutionOutcome) -> ApplicationRunResult {

@@ -97,6 +97,12 @@ impl Run<'_> {
                 &definitions,
                 &options,
             )?;
+            if manager.take_history_change() {
+                // A compacted/pruned result is no longer available in full
+                // to the model. Re-reading it is new usable evidence even if
+                // the bytes match an observation from before compaction.
+                state.repeat.clear();
+            }
         }
         // Maintenance can be cancelled while the old context is still oversized.
         // The loop settles cancellation before dispatch; do not preflight or reserve

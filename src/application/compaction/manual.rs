@@ -161,7 +161,7 @@ impl ManualCompactionWork {
             tail_tokens: self.tail_tokens,
             definitions: self.definitions,
             force: true,
-            automatic_summary_failed: None,
+            automatic_summary_failures: None,
         }
         .execute()
     }

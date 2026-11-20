@@ -101,6 +101,25 @@ impl ProjectionFoldJournal {
     }
 }
 
+/// Selective compare: unrelated appended nodes and log-only events are
+/// intentionally ignored. The selected nodes must remain consecutive and
+/// byte-identical as model-visible items; this also detects image offload
+/// and other in-place content changes that do not replace a seq.
+fn span_matches(
+    nodes: &[(u64, crate::model::ModelItem)],
+    expected: &[(u64, crate::model::ModelItem)],
+) -> bool {
+    let Some(first) = expected.first() else {
+        return false;
+    };
+    let Some(start) = nodes.iter().position(|node| node.0 == first.0) else {
+        return false;
+    };
+    nodes
+        .get(start..start.saturating_add(expected.len()))
+        .is_some_and(|span| span == expected)
+}
+
 impl RunJournal for ProjectionFoldJournal {
     fn append_atomic(
         &self,
@@ -136,6 +155,27 @@ impl RunJournal for ProjectionFoldJournal {
     ) -> Result<crate::session::run_journal::SeqRange, String> {
         let _lane = self.lane.lock().expect("projection fold lane");
         let mut built = self.build_events(events)?;
+        if events
+            .iter()
+            .any(|event| event.event_type == "compaction/summary")
+        {
+            // CP-1 review: the caller's selected-span snapshot can go stale
+            // between validation and publication. Validate the *actual*
+            // replacement against the latest folded surface under the same
+            // journal lane that serializes all appends. Log-only and unrelated
+            // surface appends remain legal; replaced span nodes must exist.
+            self.inner.flush()?;
+            self.fold_committed_pending()?;
+            let first = self.inner.committed_seq().map_or(0, |seq| seq + 1);
+            for (offset, event) in built.iter_mut().enumerate() {
+                event.seq = first + offset as u64;
+            }
+            self.projections
+                .lock()
+                .expect("projections")
+                .validate_maintenance(&built)
+                .map_err(|error| format!("compaction selected span invalidated: {error}"))?;
+        }
         let range = self.inner.append_atomic_durable(events)?;
         for (offset, event) in built.iter_mut().enumerate() {
             event.seq = range.start + offset as u64;
@@ -171,6 +211,47 @@ impl RunJournal for ProjectionFoldJournal {
             .expect("projections")
             .validate_maintenance(&built)?;
         let range = self.inner.append_atomic_durable_at(expected, events)?;
+        for (offset, event) in built.iter_mut().enumerate() {
+            event.seq = range.start + offset as u64;
+        }
+        self.pending.lock().expect("fold journal").extend(built);
+        if let Err(error) = self.fold_committed_pending() {
+            eprintln!(
+                "clat: warning: projection refresh failed after durable context transaction: {error}"
+            );
+        }
+        Ok(range)
+    }
+
+    fn append_compaction_durable_span(
+        &self,
+        expected_span: &[(u64, crate::model::ModelItem)],
+        events: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<crate::session::run_journal::SeqRange, String> {
+        let _lane = self.lane.lock().expect("projection fold lane");
+        // Every producer using the shared per-session journal takes this
+        // lane. Validate against the final committed projection under the
+        // same lock that admits the replacement batch to the journal.
+        self.inner.flush()?;
+        self.fold_committed_pending()?;
+        let mut built = self.build_events(events)?;
+        let first = self.inner.committed_seq().map_or(0, |seq| seq + 1);
+        for (offset, event) in built.iter_mut().enumerate() {
+            event.seq = first + offset as u64;
+        }
+        {
+            let projections = self.projections.lock().expect("projections");
+            let nodes = projections.surface_nodes()?;
+            if !span_matches(&nodes, expected_span) {
+                return Err(
+                    "compaction selected span invalidated: content or position changed".into(),
+                );
+            }
+            projections
+                .validate_maintenance(&built)
+                .map_err(|error| format!("compaction selected span invalidated: {error}"))?;
+        }
+        let range = self.inner.append_atomic_durable(events)?;
         for (offset, event) in built.iter_mut().enumerate() {
             event.seq = range.start + offset as u64;
         }

@@ -6,8 +6,15 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 pub(super) const FALLBACK_INPUT_TOKENS: usize = 24_000;
-const GENERATION_LIMIT: u32 = 65_536;
-const RECOVERY_LIMIT: u32 = 65_536;
+/// INV-CP4（CP-C3）：摘要预算为**固定常量，不随窗口线性放大**——
+/// 生成额度（含低档思考）16,384；接受上限 8,192；指令正文目标 ~6,000。
+/// `窗口/4`、`输入/3` 类公式全部移除（200K 窗口曾邀请 ~4.9 万 token
+/// 的摘要，既压不缩又拖慢单次请求）；恢复路径不超生成额度。小窗口
+/// 安全夹逼（`fits` 系列检查与 `bind_prefix` 收口）保持。
+const SUMMARY_TARGET_TOKENS: usize = 6_000;
+const SUMMARY_ACCEPT_LIMIT: usize = 8_192;
+const GENERATION_LIMIT: u32 = 16_384;
+const RECOVERY_LIMIT: u32 = GENERATION_LIMIT;
 
 fn instructions_for(guidance: &str, tokens: usize) -> String {
     format!(
@@ -35,19 +42,23 @@ impl Policy {
     }
     pub(super) fn with_guidance(config: &ModelConfig, guidance: Arc<str>) -> Result<Self, String> {
         // Generation includes reasoning; the visible summary keeps its separate bound.
+        // INV-CP4：生成额度是常量（不随窗口放大）；小窗口安全夹逼保持
+        // ——额度被压到"窗口 − 指令 − 余量 − 最小输入 256"以内。
+        let directive = estimate_tokens_str(&instructions_for(&guidance, SUMMARY_TARGET_TOKENS));
+        let output_ceiling = |window: u32| {
+            (window as usize)
+                .saturating_sub(directive + MARGIN_TOKENS + 32 + 256)
+                .min(GENERATION_LIMIT as usize)
+        };
         let output = config
             .max_context_tokens
-            .map(|window| (window / 4).min(GENERATION_LIMIT))
-            .unwrap_or(8192);
+            .map(output_ceiling)
+            .filter(|limit| *limit > 0)
+            .map_or(GENERATION_LIMIT, |limit| limit as u32);
         let input_ceiling = config
             .max_context_tokens
             .map(|window| {
-                (window as usize).saturating_sub(
-                    output as usize
-                        + estimate_tokens_str(&instructions_for(&guidance, output as usize))
-                        + MARGIN_TOKENS
-                        + 32,
-                )
+                (window as usize).saturating_sub(output as usize + directive + MARGIN_TOKENS + 32)
             })
             .unwrap_or(FALLBACK_INPUT_TOKENS);
         let input = input_ceiling;
@@ -59,15 +70,28 @@ impl Policy {
         }
         Ok(Self {
             input,
-            // Two accepted summaries plus headings must fit the next reduction.
-            summary_limit: (output as usize).min(input / 3 - 64),
+            // INV-CP4：接受上限是常量；小窗口夹逼由 bind_prefix 收口。
+            summary_limit: SUMMARY_ACCEPT_LIMIT,
             output,
             window: config.max_context_tokens,
             guidance,
         })
     }
+    /// 判别测试探针（CP-C3）：生成额度 / 接受上限 / 指令文本。
+    #[cfg(test)]
+    pub(super) fn output_limit(&self) -> u32 {
+        self.output
+    }
+    #[cfg(test)]
+    pub(super) fn accept_limit(&self) -> usize {
+        self.summary_limit
+    }
+    #[cfg(test)]
+    pub(super) fn directive_text(&self) -> String {
+        self.instructions()
+    }
     fn instructions(&self) -> String {
-        instructions_for(&self.guidance, self.summary_limit.saturating_sub(8))
+        instructions_for(&self.guidance, SUMMARY_TARGET_TOKENS)
     }
     fn recovery_output(&self, text: &str) -> u32 {
         let items = [ModelItem::user_text(text)];
@@ -99,7 +123,6 @@ pub(super) struct SummaryJob {
     active: bool,
     config: ModelConfig,
     instructions: String,
-    tools: Vec<crate::tool::ToolDefinition>,
 }
 impl SummaryJob {
     pub(super) fn new(
@@ -145,17 +168,18 @@ impl SummaryJob {
             active: request.active_checkpoints.is_some(),
             config: request.config.clone(),
             instructions: request.instructions.clone(),
-            tools: request.tool_definitions.clone(),
         })
     }
     pub(super) fn execute(mut self, region: &[ModelItem]) -> SummaryResult {
         let mut run = SummaryRun::new(self.model.as_mut(), &self.cancel, self.policy);
+        // INV-CP3（CP-C3）：摘要请求**不携带任何工具 schema**——活动中
+        // 区域以工具交互为主体，携带全部工具会诱使摘要模型"接管任务"
+        // 发起工具调用（M2）；前缀缓存损失接受，换取劫持面消除。指令
+        // 首尾双重 NO-TOOLS 声明见 SUMMARY_INSTRUCTIONS。
         let summary =
             crate::model::modality_preflight(region, &self.config.capabilities, &self.config.model)
                 .map_err(Into::into)
-                .and_then(|()| {
-                    run.summarize_context(region, self.active, &self.instructions, &self.tools)
-                });
+                .and_then(|()| run.summarize_context(region, self.active, &self.instructions, &[]));
         let output_limit = run.max_output;
         let usage = self
             .usage
@@ -312,7 +336,9 @@ impl SummaryRun<'_> {
             .checked_sub(cost)
             .filter(|n| *n >= 256)
             .ok_or("summary guidance exceeds capacity")?;
-        self.policy.summary_limit = self.policy.summary_limit.min(self.policy.input / 3 - 64);
+        // INV-CP4：`输入/3` 公式已移除；仅保留小窗口安全夹逼（接受上限
+        // 不得超过请求容量）。
+        self.policy.summary_limit = self.policy.summary_limit.min(self.policy.input);
         Ok(())
     }
     pub(super) fn input_budget(&self) -> usize {

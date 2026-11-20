@@ -484,17 +484,18 @@ fn ga3_in_run_compaction_queries_current_view_again_without_reviving_history_aut
             self.inner.stream(r, events)
         }
     }
+    let (storage, root) = roots("ga3-compaction");
     let script = Arc::new(Requery {
         inner: super::super::task_recovery_tests::CompactTask {
             main: AtomicUsize::new(0),
             summaries: AtomicUsize::new(0),
             expected_items: Default::default(),
+            root: root.clone(),
         },
         observed: AtomicUsize::new(0),
         pending: Default::default(),
         queries: AtomicUsize::new(0),
     });
-    let (storage, root) = roots("ga3-compaction");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("observations.txt"), "observation\n".repeat(1300)).unwrap();
     let mut app = mount_checked(&root, &storage, TestBehavior::Scripted(script.clone()));

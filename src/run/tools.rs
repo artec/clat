@@ -1,5 +1,5 @@
 //! A single serial tool call owns authorization, execution and result publication.
-use super::state::RepeatStop;
+use super::state::EvidenceDecision;
 use super::*;
 use crate::tool::{Tool, ToolCall, ToolDefinition};
 use std::sync::Arc;
@@ -52,47 +52,74 @@ impl Run<'_> {
             && !is_error
             && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
         let boundary = !is_error && tool.ends_run(&output);
-        let repeated = state.repeated_result(&call.name, &call.arguments, &output);
-        let result = ToolResult {
-            blocks: if is_error {
-                Vec::new()
-            } else {
-                tool.result_blocks(&output)
-            },
-            image_parts: Vec::new(),
-            call_id: call.id,
-            tool_name: call.name,
-            output,
-            is_error,
-        };
+        let (result, evidence) =
+            Self::result_with_evidence(state, call, tool.as_ref(), output, is_error);
         self.publish_result(state, result, events);
         if approved || boundary {
             return Ok(Some(
                 self.finish_tool_boundary(state, events, text, remaining, approved),
             ));
         }
-        if let Some(stop) = repeated {
-            return Err(self.fail_repeated(state, events, stop));
+        if evidence == EvidenceDecision::Stalled {
+            return Err(self.fail_stalled(state, events));
         }
         Ok(None)
     }
-    fn fail_repeated(
-        &self,
+    fn result_with_evidence(
         state: &mut StepState,
-        events: &mut dyn EventSink,
-        stop: RepeatStop,
-    ) -> RunError {
-        let (key, limit) = match stop {
-            RepeatStop::Discovery(limit) => ("run.error_repeated_discovery", limit),
-            RepeatStop::Identical(limit) => ("run.error_repeated_result", limit),
-            RepeatStop::Unproductive(limit) => ("run.error_repeated_unproductive", limit),
+        call: ToolCall,
+        tool: &dyn Tool,
+        output: serde_json::Value,
+        is_error: bool,
+    ) -> (ToolResult, EvidenceDecision) {
+        let evidence = state.repeat.observe(
+            &call.name,
+            &call.arguments,
+            &output,
+            tool.definition().effect,
+        );
+        // Tool-owned multimodal projection sees the genuine result, not
+        // CLAT's model-facing correction annotation.
+        let blocks = if is_error {
+            Vec::new()
+        } else {
+            tool.result_blocks(&output)
         };
+        let output = if evidence == EvidenceDecision::Correct {
+            Self::with_correction(output)
+        } else {
+            output
+        };
+        (
+            ToolResult {
+                blocks,
+                image_parts: Vec::new(),
+                call_id: call.id,
+                tool_name: call.name,
+                output,
+                is_error,
+            },
+            evidence,
+        )
+    }
+    fn with_correction(mut output: serde_json::Value) -> serde_json::Value {
+        let correction = serde_json::json!({
+            "code": "NO_NEW_EVIDENCE",
+            "message": "This read-only observation adds no new evidence compared with this run's prior results. Do not repeat the same search or read. Use existing evidence, choose a genuinely different approach, or explain what blocks progress."
+        });
+        if let Some(object) = output.as_object_mut() {
+            object.insert("clat_runtime_feedback".into(), correction);
+            output
+        } else {
+            serde_json::json!({"result": output, "clat_runtime_feedback": correction})
+        }
+    }
+
+    fn fail_stalled(&self, state: &mut StepState, events: &mut dyn EventSink) -> RunError {
         state.fail(
             events,
             &self.steering,
-            crate::i18n::UiMessage::new(key)
-                .arg("count", i64::from(limit))
-                .english(),
+            crate::i18n::UiMessage::new("run.error_no_progress").english(),
         )
     }
     fn finish_tool_boundary(
@@ -133,13 +160,13 @@ impl Run<'_> {
             )
         })?;
         let definition = tool.definition();
-        if !self.check_access(call, &definition, state, events) {
+        if !self.check_access(call, &definition, state, events)? {
             return Ok(None);
         }
         let (tool, decision) = match self.prepare_checked_tool(tool.clone(), &definition, call) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.publish_preparation_error(call, tool.error_output(&error), events, state);
+                self.publish_preparation_error(call, tool.error_output(&error), events, state)?;
                 return Ok(None);
             }
         };
@@ -164,7 +191,7 @@ impl Run<'_> {
                     reason,
                     state,
                     events,
-                );
+                )?;
                 Ok(None)
             }
         }
@@ -175,7 +202,7 @@ impl Run<'_> {
         output: serde_json::Value,
         events: &mut dyn EventSink,
         state: &mut StepState,
-    ) {
+    ) -> Result<(), RunError> {
         events.emit(RunEvent::PermissionChecked {
             tool: call.name.clone(),
             decision: PermissionDecision::Deny {
@@ -186,6 +213,18 @@ impl Run<'_> {
             call_id: call.id.clone(),
             tool: call.name.clone(),
         });
+        // A preparation failure did not execute the requested action.
+        let evidence = state.repeat.observe(
+            &call.name,
+            &call.arguments,
+            &output,
+            crate::ToolEffect::Pure,
+        );
+        let output = if evidence == EvidenceDecision::Correct {
+            Self::with_correction(output)
+        } else {
+            output
+        };
         self.publish_result(
             state,
             ToolResult {
@@ -198,6 +237,10 @@ impl Run<'_> {
             },
             events,
         );
+        if evidence == EvidenceDecision::Stalled {
+            return Err(self.fail_stalled(state, events));
+        }
+        Ok(())
     }
     fn check_access(
         &self,
@@ -205,7 +248,7 @@ impl Run<'_> {
         definition: &ToolDefinition,
         state: &mut StepState,
         events: &mut dyn EventSink,
-    ) -> bool {
+    ) -> Result<bool, RunError> {
         let denied = if !self.tool_access.allows(definition) {
             let reason = self.tool_access.denial_reason(definition).to_owned();
             Some((reason.clone(), reason))
@@ -227,10 +270,10 @@ impl Run<'_> {
                     reason: message.clone(),
                 },
             });
-            self.publish_denied(call, message, reason, state, events);
-            return false;
+            self.publish_denied(call, message, reason, state, events)?;
+            return Ok(false);
         }
-        true
+        Ok(true)
     }
     fn publish_denied(
         &self,
@@ -239,7 +282,7 @@ impl Run<'_> {
         reason: String,
         state: &mut StepState,
         events: &mut dyn EventSink,
-    ) {
+    ) -> Result<(), RunError> {
         // CI-43145218708 修复（2026-11-12）：原形态在非 macOS 分支持有
         // 字面量 `None` 再共享 `unwrap_or_else`，`clippy::
         // unnecessary_literal_unwrap` 在 Linux/Windows 编译面报错（本地
@@ -251,6 +294,18 @@ impl Run<'_> {
                 .unwrap_or_else(|| serde_json::json!({"error": message}));
         #[cfg(not(any(target_os = "macos", windows)))]
         let output = serde_json::json!({"error": message});
+        // Denied calls never ran: a repeated denial is not useful new evidence.
+        let evidence = state.repeat.observe(
+            &call.name,
+            &call.arguments,
+            &output,
+            crate::ToolEffect::Pure,
+        );
+        let output = if evidence == EvidenceDecision::Correct {
+            Self::with_correction(output)
+        } else {
+            output
+        };
         let mut result = ToolResult {
             blocks: Vec::new(),
             image_parts: Vec::new(),
@@ -267,6 +322,10 @@ impl Run<'_> {
             tool: call.name.clone(),
             reason,
         });
+        if evidence == EvidenceDecision::Stalled {
+            return Err(self.fail_stalled(state, events));
+        }
+        Ok(())
     }
     fn publish_result(
         &self,

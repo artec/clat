@@ -17,7 +17,8 @@ pub(super) struct RunWorker {
     pub(super) subagent_bind_error: Option<String>,
     pub(super) captured_text: Arc<Mutex<String>>,
     pub(super) ui_sink: Arc<Mutex<Box<dyn EventSink + Send>>>,
-    pub(super) automatic_summary_failed: Arc<AtomicBool>,
+    /// INV-CP2：连续自动摘要失败计数（阈值见 compaction::SUMMARY_FAILURE_LIMIT）。
+    pub(super) automatic_summary_failures: Arc<std::sync::atomic::AtomicU32>,
 }
 struct RoundAccounting {
     usage: Usage,
@@ -79,7 +80,7 @@ impl RunWorker {
             subagent_bind_error,
             captured_text,
             ui_sink,
-            automatic_summary_failed: Arc::default(),
+            automatic_summary_failures: Arc::default(),
         }
     }
     fn clear_run_slots(&self) {

@@ -723,6 +723,39 @@ Original tool observations stay in the log and untouched live tool results
 remain structured JSON. The fixtures use temporary project/storage roots and
 a scripted provider; they do not call a real model or the resident Host.
 
+The CP-1 discrimination tests (2026-11-20) pin the mid-run stability
+contract set: concurrent log-only and surface appends landing inside the
+summary window must survive with the compaction committed (span-anchored
+validation, no whole-surface equality and no pre-summary committed-seq CAS
+on the active path); a concurrent rewrite of a node inside the selected span
+rejects that compaction as a degradation that never kills the turn; summary
+failure trips a counting breaker (three consecutive failures pause the
+automatic compaction; the next user round resets it) instead of a sticky
+one-shot flag; summary requests carry no tool schemas with a fixed budget
+(16,384 generation / 8,192 acceptance / ~6,000-token target) and a
+persistent tool hallucination degrades after one retry; and a model-free
+micro-compaction sweep clears old completed tool groups (keeping the five
+most recent, protecting media, errors, already-cleared and floor-protected
+results) before any paid summary. The original CP-1 contracts have
+mutation-verified reds.
+
+The CP-1 independent hardening review additionally pins the *final*
+serialized journal admission: the selected span's seq and model-visible
+content must still match under the shared journal lane at publication time.
+A replacement that changes the selected span before that commit is rejected
+without a half-written compaction family or consumed seq; unrelated surface
+appends and log-only records remain legal. This catches same-seq content
+changes (including image offload), not only missing seqs. The micro-sweep
+keeps five complete (turn,step) tool-result groups rather than five individual
+results and protects all non-text/unknown blocks and ambiguous error
+metadata. A durable history rewrite resets only the active Run's temporary
+no-progress evidence cache, so rereading old source material after compaction
+remains legal; the normal Agent's frozen callable schemas remain unchanged,
+while internal summarization receives no tools. Narrow regression filters:
+`scripts/gates.sh cp1_ active_compaction_ summary_job_`,
+`scripts/gates.sh cp1_review_stale_span cp1_review_compaction_invalidates`.
+These checks do not prove real-provider summary quality or performance.
+
 The conversation/alignment cases cover complete call/result batches, protected
 users and owned checkpoint identities, duplicate/missing anchors, unchanged
 image/provider-state tails, UTF-8 chunk reconstruction including tail evidence,
@@ -1281,12 +1314,24 @@ Native background job checks: `scripts/gates.sh native_job target_writer`. They 
 
 When adding native tools or a projection, also run
 `scripts/gates.sh failed_run_spawn_does_not_mark rc_021:: runtime_status_observes_all_projects idle_scheduler_poll_never`.
-These pin the complete resident tool prefix plus any promoted suffix, foreign-owner Job isolation, checkpoint
-parity and actual Host readiness. Do not replace complete comparisons with subset
+These pin the complete frozen allowed tool schema set and ordering,
+foreign-owner Job isolation, checkpoint parity and actual Host readiness. Do not replace complete comparisons with subset
 checks. Sandboxed child-process fixtures must write their success markers inside
 their authorized project; a marker beside the project is an unauthorized write on
 Windows even if an unenforced local platform permits it. Empty scheduler polls
 must not publish an active Run while waiting for the Application lock.
+
+Initial-context and progress regressions: use narrow filters such as
+`scripts/gates.sh evidence_tests repeated_readonly_evidence discovery_query changed_queries_without_new_evidence a_new_search_result a_changed_tool_result repeated_evidence_feedback denied_tool_loop`.
+Tests must cover alternating read tools, query-parameter churn on empty
+results, different paths as separate negative evidence, capability observation
+timestamps, model-visible correction followed by either recovery or stop,
+permission-denied loops, mutation invalidation, legitimate live polling and
+500+ productive observations. Do not replace the no-turn-budget invariant with
+40 identical list requests. Publish every policy-allowed schema on the first
+request, preserving frozen policy/header parity and stable order. Context
+savings require comparing actual provider input/cache usage and task quality,
+not just character counts or one unreplicated request.
 
 Automatic work: `scripts/gates.sh scheduler_ automatic_ target_run` covers frozen
 authorization/CAS, scoped drafts, budgets, unknown admission recovery, original

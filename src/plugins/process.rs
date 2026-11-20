@@ -380,7 +380,7 @@ impl Tool for RunCommandTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command".into(),
-            description: "One-shot command: specify command (shell) OR argv (literal executable/arguments). Prefer argv with verification for tests: child exit and cumulative receipt survive clipping; shell pipelines only report the shell exit. Optional evidence saves a unique create-only local record of retained output, declared log snapshots and before/after file digests; use it to preserve the first failure before rerunning. Files and evidence directories are project-relative. Raw output is saved only when requested, never in the journal. workdir is project-relative or active scratch. Waits to completion/timeout with stdin EOF; use exec_command for interactive jobs.".into(),
+            description: "Run one command to exit or timeout: use command for shell or argv for literal arguments (not both). Prefer argv and verification for tests; shell pipelines report only shell exit. Optional evidence creates unique output records and before/after file hashes to retain initial failures; paths must be project-relative. workdir is project-relative or active scratch. stdin closes on launch. Use exec_command for interactive work; retained output is never journaled.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

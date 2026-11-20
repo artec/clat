@@ -683,6 +683,16 @@ exact provider billing. The numbers come from the same estimator used by
 model-request budgeting and compaction; the command does not call a model,
 write a session event, or start a live monitor.
 
+CLAT publishes complete schemas for all tools currently allowed by the frozen
+Run policy. It does not require discovering or promoting a hidden tool before
+calling it. To reduce cold-start cost, CLAT keeps commonly used schemas first
+and concise project instructions in the prompt; applicable extended project
+rules remain available as normal project files. During a Run, CLAT can warn
+the model when read-only tools repeatedly return previously seen evidence;
+if its next attempt still makes no progress, CLAT stops that Run with a
+localized diagnostic instead of silently repeating calls. Legitimate ongoing
+wait/poll operations are not subject to that static-evidence rule.
+
 ### Operate a desktop application
 
 For a trusted project on macOS, you can ask CLAT to inspect an open
@@ -937,14 +947,20 @@ not silently retry or replace history with a partial result.
 
 All compaction modes use the same summary executor. It derives a low-effort
 internal text profile without changing the conversation's model settings and
-reserves generation space for reasoning as well as the summary. An empty or
-length-limited answer can be retried once. A complete answer that exceeds the
-summary size limit can be condensed once using its full text; CLAT never clips
-an answer to make it fit. Repeated invalid answers stop the request; incomplete
-text is never accepted as the replacement summary.
-If a summary response asks to run a tool, CLAT discards the response and
-retries once with the same source and no available tools. Summary requests
-only generate checkpoint text.
+reserves generation space for reasoning as well as the summary. The summary
+budget is a fixed constant, not a window fraction: 16,384 tokens of generation
+(including low-effort reasoning), an 8,192-token acceptance limit and an
+instruction target of roughly 6,000 tokens — small windows still clamp the
+budget for safety. An empty or length-limited answer can be retried once. A
+complete answer that exceeds the summary size limit can be condensed once
+using its full text; CLAT never clips an answer to make it fit. Repeated
+invalid answers stop the request; incomplete text is never accepted as the
+replacement summary.
+Summary requests carry no tool schemas: the instruction states before and
+after that the model must not call tools and must only output the checkpoint.
+If a provider still hallucinates a tool call, CLAT discards the response and
+retries the same source once; a persistent hallucination degrades this
+compaction attempt instead of failing the run.
 
 Only each model request must fit the model's input and output capacity. History
 that fits this capacity is summarized in one request; larger history is split
@@ -962,13 +978,24 @@ workbench shows a compact history marker instead of a user bubble containing the
 summary. Checkpoints do not enter human input history, message navigation, or
 public conversation search; original user and assistant messages stay available.
 
-Pressure maintenance first uses the optional tool-result pruner, then eligible
-historical image offload, and finally model summarization if still needed.
+Pressure maintenance first uses the optional tool-result pruner, then a
+model-free micro-compaction sweep, then eligible historical image offload, and
+finally model summarization if still needed. The sweep clears old completed
+tool groups — keeping the five most recent complete model-step groups
+(each group may contain several tool results) — before any paid summary:
+each cleared result becomes a one-line placeholder preserving the tool name,
+call id, original sequence number and character count, while the original
+stays in the journal. Image, audio, attachment, unknown/non-text, error,
+ambiguous-error and already-cleared results, plus anything at or after the
+protected replay floor, are never swept.
 `builtin.tool_result_pruner` trims Unicode text over 8,192 code points to a
 4,096-point head and 1,024-point tail, preserving non-text blocks and control
 metadata. The original safe-bounded tool result is journaled first. The prune
 record and content-only replacement commit together; history keeps the original
-result and does not show a second tool execution.
+result and does not show a second tool execution. Each successful durable
+history rewrite also invalidates the Run's temporary read-evidence cache:
+the agent may reread a source after compaction without being blocked as an
+unproductive repeat. Its approved tool schemas and permissions do not change.
 
 `builtin.compaction_image_offload` is independently configurable and enabled by
 default. It records exact historical input-image occurrences using `image/offload`.

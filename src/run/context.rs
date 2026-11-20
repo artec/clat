@@ -35,6 +35,12 @@ pub(crate) trait RequestContextManager: Send {
     ) -> Result<bool, String> {
         Ok(false)
     }
+    /// Whether the last maintenance call rewrote model-visible history.
+    /// Only a durable history change invalidates the Run's read-evidence cache:
+    /// reading previously seen bytes again can be essential after compaction.
+    fn take_history_change(&mut self) -> bool {
+        false
+    }
     /// Update only after durable admission. Usage also survives a failed update.
     fn maintain(
         &mut self,

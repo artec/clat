@@ -2719,6 +2719,110 @@ fn projection_registration_is_atomic_against_concurrent_flush() {
 }
 
 #[test]
+fn cp1_review_stale_span_is_rejected_before_durable_publication() {
+    use crate::session::run_journal::NewSessionEvent;
+    let (service, root) = service("cp1-atomic-stale-span");
+    service.new_session(&project()).expect("session");
+    let journal = service.journal().expect("journal");
+    journal
+        .append_atomic_durable(&[
+            NewSessionEvent::new("turn/start", payloads::turn_start(1)).log_only(),
+            NewSessionEvent::new("user/message", payloads::user_message("original"))
+                .append(Vec::new()),
+        ])
+        .expect("initial turn");
+    let old_seq = service.surface_nodes().unwrap().last().unwrap().0;
+    let replace = journal
+        .append_atomic_durable(&[NewSessionEvent::new(
+            "user/message",
+            payloads::compaction_user_message("newer authoritative context"),
+        )
+        .replace(old_seq, old_seq, vec![old_seq])])
+        .expect("concurrent replacement");
+    let live_seq = replace.start;
+    assert_ne!(live_seq, old_seq);
+
+    let compaction_id = "cp1-race";
+    let batch = [
+        NewSessionEvent::new(
+            "compaction/start",
+            payloads::compaction_start(compaction_id, 1),
+        )
+        .log_only(),
+        NewSessionEvent::new(
+            "compaction/summary",
+            payloads::compaction_summary(
+                compaction_id,
+                "stale checkpoint",
+                (old_seq, old_seq),
+                &[old_seq],
+                100,
+                "test",
+                "test",
+                1024,
+                serde_json::json!({"inputTokens":1,"outputTokens":1}),
+            ),
+        )
+        .log_only(),
+        NewSessionEvent::new(
+            "user/message",
+            payloads::compaction_user_message("stale checkpoint"),
+        )
+        .replace(old_seq, old_seq, vec![old_seq]),
+        NewSessionEvent::new(
+            "compaction/end",
+            payloads::compaction_end(compaction_id, 1, None),
+        )
+        .log_only(),
+    ];
+    let before = journal.committed_seq();
+    let failure = journal
+        .append_atomic_durable(&batch)
+        .expect_err("stale span must not land");
+    assert!(
+        failure.contains("compaction selected span invalidated"),
+        "{failure}"
+    );
+    assert_eq!(
+        journal.committed_seq(),
+        before,
+        "the rejected batch cannot consume seqs"
+    );
+    let nodes = service.surface_nodes().expect("surface after rejection");
+    assert!(nodes.iter().any(|(seq, _)| *seq == live_seq));
+    assert!(!nodes.iter().any(|(seq, _)| *seq == old_seq));
+
+    // A subtler race keeps the same seq but changes model-visible bytes
+    // (e.g. a historical image offload). Source seq validity alone would
+    // admit this stale checkpoint: the strict journal method must reject it.
+    let mut same_seq_batch = batch.to_vec();
+    same_seq_batch[1].data["shadowedRange"] =
+        serde_json::json!({"start": live_seq, "end": live_seq});
+    same_seq_batch[1].data["shadowedSeqs"] = serde_json::json!([live_seq]);
+    same_seq_batch[2].surface_op = Some(crate::session::event::SurfaceOp::Replace {
+        start: live_seq,
+        end: live_seq,
+    });
+    same_seq_batch[2].source_event_seqs = Some(vec![live_seq]);
+    let wrong_content = vec![(
+        live_seq,
+        crate::model::ModelItem::user_text("obsolete content"),
+    )];
+    let before_content_check = journal.committed_seq();
+    let mismatch = journal
+        .append_compaction_durable_span(&wrong_content, &same_seq_batch)
+        .expect_err("a same-seq content mismatch must not land");
+    assert!(
+        mismatch.contains("content or position changed"),
+        "{mismatch}"
+    );
+    assert_eq!(journal.committed_seq(), before_content_check);
+    assert_eq!(service.surface_nodes().unwrap(), nodes);
+    service.quiesce_active().unwrap();
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn torn_tail_resume_counts_the_interrupted_turn() {
     let (service, root) = service("tornresume");
     let project = project();

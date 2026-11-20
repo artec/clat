@@ -17,7 +17,7 @@ impl Tool for VerifyObservationTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name:"verify_observation".into(),
-            description:"Evaluate a declared contract against a bounded project-relative JSON observation artifact. is_true checks independent truth, equals compares an explicit expected JSON value (including a complete step sequence), and all_before requires EVERY occurrence of before to precede EVERY occurrence of after in a string trace. Both order groups must be nonempty; missing pointers/types/anchors are inconclusive, never vacuous passes. Use actual behavioral observations, a normal control and one meaningful counterexample per claim; equality between two wrong runs or a final value alone cannot prove intermediate steps. Returns bounded per-claim results and source SHA, not raw artifact data. It does not authenticate artifact provenance, choose the correct contract, certify coverage, execute code or perform retries.".into(),
+            description:"Evaluate checks against a bounded project-relative JSON observation file. is_true checks a truth value; equals compares the full expected JSON; all_before requires every before occurrence to precede every after occurrence (both nonempty). Missing pointers, type mismatches or anchors are inconclusive. Use a real behavioral observation, control and meaningful counterexample. Reports results and source hash, not proof of provenance, freshness, coverage or correctness. Does not execute code or retry.".into(),
             input_schema:json!({"type":"object","properties":{
                 "path":{"type":"string","maxLength":1024},
                 "checks":{"type":"array","minItems":1,"maxItems":16,"items":{"oneOf":[

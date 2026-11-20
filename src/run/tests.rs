@@ -15,6 +15,208 @@ fn register_test_tool<T: Tool + 'static>(registry: &ToolRegistry, tool: T) {
         .expect("test tool name is unique");
 }
 
+#[test]
+fn cp1_review_compaction_invalidates_read_evidence_without_changing_tool_schemas() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = PostCompactReadModel { calls: 0 };
+    let output = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_context_manager(Some(Box::new(MockCompactionForEvidence {
+            rewritten: false,
+            changed: false,
+        })))
+        .execute("same observation may be needed again", &mut Vec::new())
+        .expect("re-reading after compaction is not a stalled loop");
+    assert_eq!(output.text, "resume");
+    assert_eq!(model.calls, 3);
+}
+
+struct MockCompactionForEvidence {
+    rewritten: bool,
+    changed: bool,
+}
+impl RequestContextManager for MockCompactionForEvidence {
+    fn take_history_change(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+    fn maintain(
+        &mut self,
+        items: &mut Vec<ModelItem>,
+        _: &mut Usage,
+        _: Option<&str>,
+        _: &[ToolDefinition],
+        _: &ModelOptions,
+    ) -> Result<(), String> {
+        if !self.rewritten
+            && let Some(ModelItem::ToolResult(result)) = items
+                .iter_mut()
+                .find(|item| matches!(item, ModelItem::ToolResult(_)))
+        {
+            result.output = json!("pruned old result");
+            self.rewritten = true;
+            self.changed = true;
+        }
+        Ok(())
+    }
+}
+struct PostCompactReadModel {
+    calls: usize,
+}
+impl Model for PostCompactReadModel {
+    fn provider(&self) -> &str {
+        "offline"
+    }
+    fn model_id(&self) -> &str {
+        "post-compact"
+    }
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls += 1;
+        assert!(
+            request.tools.iter().any(|tool| tool.name == "echo"),
+            "main agent tools remain callable after compaction"
+        );
+        if self.calls == 3 {
+            let latest = request
+                .items
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    ModelItem::ToolResult(result) => Some(result),
+                    _ => None,
+                })
+                .expect("re-read result");
+            assert_eq!(
+                latest.output,
+                json!("same"),
+                "re-read must not be marked no-progress after a history rewrite"
+            );
+            return Ok(crate::test_support::response(
+                "resume",
+                FinishReason::Completed,
+            ));
+        }
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: format!("post-compact-{}", self.calls),
+                name: "echo".into(),
+                arguments: json!({"text":"same"}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn repeated_evidence_feedback_reaches_the_model_before_hard_stop() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, EchoTool);
+    let mut model = CorrectingModel { steps: 0 };
+    let output = Run::new(&mut model, &tools, &AllowAll, &project)
+        .execute("inspect", &mut Vec::new())
+        .expect("model can recover when shown its stale observation");
+    assert_eq!(output.text, "corrected");
+    assert_eq!(model.steps, 3);
+}
+
+struct CorrectingModel {
+    steps: usize,
+}
+
+impl Model for CorrectingModel {
+    fn provider(&self) -> &str {
+        "test"
+    }
+    fn model_id(&self) -> &str {
+        "correction-aware"
+    }
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        self.steps += 1;
+        if self.steps == 3 {
+            assert!(
+                request.items.iter().any(|item| matches!(
+                    item,
+                    ModelItem::ToolResult(result)
+                        if result.output["clat_runtime_feedback"]["code"] == "NO_NEW_EVIDENCE"
+                            && result.output["result"] == "same"
+                )),
+                "the corrective hint must reach the next model request"
+            );
+            return Ok(ModelResponse {
+                text: "corrected".into(),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Completed,
+                usage: None,
+                provider_response_id: None,
+                provider_state: vec![],
+                reasoning: None,
+            });
+        }
+        Ok(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: format!("correction-{}", self.steps),
+                name: "echo".into(),
+                arguments: json!({"text":"same"}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+            usage: None,
+            provider_response_id: None,
+            provider_state: vec![],
+            reasoning: None,
+        })
+    }
+}
+
+#[test]
+fn denied_tool_loop_is_reported_without_executing_it() {
+    let project = Project::new(".");
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, ForbiddenWrite);
+    let mut model = RepeatNamed {
+        name: "forbidden_write",
+        calls: 0,
+        vary: false,
+    };
+    let error = Run::new(&mut model, &tools, &AllowAll, &project)
+        .with_tool_access(crate::tool::ToolAccessPolicy::plan_mode())
+        .execute("write", &mut Vec::new())
+        .expect_err("denied calls should not spin");
+    assert!(error.to_string().contains("no new evidence"), "{error}");
+    assert_eq!(model.calls, 3);
+}
+
+struct ForbiddenWrite;
+
+impl Tool for ForbiddenWrite {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "forbidden_write".into(),
+            description: "Should never execute in Plan Mode".into(),
+            input_schema: json!({"type":"object"}),
+            effect: ToolEffect::Write,
+            strict: false,
+        }
+    }
+    fn invoke(&self, _: &Value, _: &Project, _: &CancelToken) -> Result<Value, ToolError> {
+        panic!("a policy denial must not execute the forbidden tool")
+    }
+}
+
 struct EchoTool;
 
 impl Tool for EchoTool {
@@ -106,7 +308,7 @@ fn oversized_tool_results_remain_raw_without_pressure_maintenance() {
 }
 
 #[test]
-fn identical_tool_result_stops_the_run_after_the_unchanged_streak() {
+fn repeated_readonly_evidence_stops_after_a_correction_attempt() {
     let project = Project::new(".");
     let permissions = AllowAll;
     let tools = ToolRegistry::new();
@@ -118,15 +320,15 @@ fn identical_tool_result_stops_the_run_after_the_unchanged_streak() {
     let error = Run::new(&mut model, &tools, &permissions, &project)
         .execute("repeat", &mut Vec::new())
         .expect_err("an unchanged streak stops the run");
-    assert!(error.to_string().contains("41 times in a row"), "{error}");
-    assert_eq!(model.calls, 41);
+    assert!(error.to_string().contains("no new evidence"), "{error}");
+    assert_eq!(model.calls, 3);
     assert_eq!(
         error
             .items()
             .iter()
             .filter(|item| matches!(item, ModelItem::ToolResult(_)))
             .count(),
-        41
+        3
     );
 }
 
@@ -152,7 +354,7 @@ fn discovery_query_stops_after_three_identical_arguments() {
             .execute("repeat", &mut Vec::new())
             .expect_err("an unchanged discovery call stops the run");
         assert!(
-            error.to_string().contains("3 times in a row"),
+            error.to_string().contains("no new evidence"),
             "{name} {error}"
         );
         assert_eq!(model.calls, 3, "{name}");
@@ -169,7 +371,7 @@ fn discovery_query_stops_after_three_identical_arguments() {
 }
 
 #[test]
-fn changed_arguments_that_return_nothing_new_stop_after_twelve() {
+fn changed_queries_without_new_evidence_receive_correction_then_stop() {
     let project = Project::new(".");
     let permissions = AllowAll;
     let tools = ToolRegistry::new();
@@ -181,11 +383,8 @@ fn changed_arguments_that_return_nothing_new_stop_after_twelve() {
     let error = Run::new(&mut model, &tools, &permissions, &project)
         .execute("search", &mut Vec::new())
         .expect_err("empty searches stop the run");
-    assert!(
-        error.to_string().contains("nothing new 12 times"),
-        "{error}"
-    );
-    assert_eq!(model.calls, 12);
+    assert!(error.to_string().contains("no new evidence"), "{error}");
+    assert_eq!(model.calls, 3);
 }
 
 #[test]
@@ -196,13 +395,13 @@ fn a_new_search_result_resets_the_unproductive_stop() {
     register_test_tool(&tools, FixedSearch { repeat: true });
     let mut model = CountedSearch {
         calls: 0,
-        stop_at: 24,
+        stop_at: 5,
     };
     let output = Run::new(&mut model, &tools, &permissions, &project)
         .execute("search", &mut Vec::new())
         .expect("one new result lets the search continue");
     assert_eq!(output.text, "done");
-    assert_eq!(model.calls, 24);
+    assert_eq!(model.calls, 5);
 }
 
 #[test]
@@ -272,7 +471,7 @@ impl Tool for FixedSearch {
         _cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
         let turn = arguments["text"].as_str().unwrap_or("0");
-        if self.repeat && turn == "12" {
+        if self.repeat && turn == "3" {
             return Ok(json!({"matches":[{"path":"web/project-tree.js","line":245}]}));
         }
         Ok(json!({"total_matches": 0, "matches": []}))
@@ -351,7 +550,11 @@ impl Tool for VaryingTool {
         _cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
         let n = self.n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(json!({"n": n, "text": arguments.get("text").cloned().unwrap_or(Value::Null)}))
+        if crate::tool::capabilities::is_discovery(self.name) {
+            Ok(json!({"snapshot": "stable", "observed_at_unix_ms": n}))
+        } else {
+            Ok(json!({"n": n, "text": arguments.get("text").cloned().unwrap_or(Value::Null)}))
+        }
     }
 }
 

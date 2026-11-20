@@ -99,8 +99,13 @@ impl CompactionCommit {
     }
 }
 
+/// INV-CP2：连续自动摘要失败熔断阈值——达到即暂停本 run 的自动压缩；
+/// 任一次成功复位（新用户轮由 per-run 计数器结构性复位）。
+pub(in crate::application) const SUMMARY_FAILURE_LIMIT: u32 = 3;
+
 /// 事件族 + replace 载体一次原子提交并 flush（plan §13.4；compaction
-/// 事件族与 user/message 的邻接是契约）。
+/// 事件族与 user/message 的邻接是契约）。闲置路径带 committed_seq CAS；
+/// 活动路径见 `write_compaction_events_span_anchored`（INV-CP1 无 CAS）。
 fn write_compaction_events(
     journal: &dyn RunJournal,
     shadowed: &[CompactionNode],
@@ -110,6 +115,54 @@ fn write_compaction_events(
     turn: u64,
     revision: Option<u64>,
 ) -> Result<CompactionCommit, String> {
+    let family = compaction_event_family(shadowed, summary, outcome, config, turn)?;
+    let disclosure = crate::session::replay::CompactionDisclosure::from_data(&family[1].data);
+    let committed = journal.append_atomic_durable_at(revision, &family)?;
+    Ok(commit(committed, shadowed, summary, disclosure))
+}
+
+/// INV-CP1（CP-C1）：活动路径提交——跨度锚定校验已在调用方完成，这里
+/// 只做**无 CAS 的原子组追加**：摘要网络阶段（分钟级窗口）内的跨度外
+/// 追加（surface 追加与 log-only 事件，含 `job/*`、回执）合法存活，
+/// 不再作为提交门。
+fn write_compaction_events_span_anchored(
+    journal: &dyn RunJournal,
+    shadowed: &[CompactionNode],
+    summary: &str,
+    outcome: &CompactionOutcome,
+    config: &ModelConfig,
+    turn: u64,
+) -> Result<CompactionCommit, String> {
+    let family = compaction_event_family(shadowed, summary, outcome, config, turn)?;
+    let disclosure = crate::session::replay::CompactionDisclosure::from_data(&family[1].data);
+    let expected = shadowed
+        .iter()
+        .map(|node| (node.seq, node.item.clone()))
+        .collect::<Vec<_>>();
+    let committed = journal.append_compaction_durable_span(&expected, &family)?;
+    Ok(commit(committed, shadowed, summary, disclosure))
+}
+
+fn commit(
+    committed: crate::session::run_journal::SeqRange,
+    _shadowed: &[CompactionNode],
+    summary: &str,
+    disclosure: crate::session::replay::CompactionDisclosure,
+) -> CompactionCommit {
+    CompactionCommit {
+        replace_seq: committed.start + 2,
+        summary: summary.to_owned(),
+        disclosure,
+    }
+}
+
+fn compaction_event_family(
+    shadowed: &[CompactionNode],
+    summary: &str,
+    outcome: &CompactionOutcome,
+    config: &ModelConfig,
+    turn: u64,
+) -> Result<Vec<NewSessionEvent>, String> {
     if shadowed.is_empty() {
         return Err("compaction shadowed an empty range".into());
     }
@@ -121,7 +174,7 @@ fn write_compaction_events(
         "inputTokens": outcome.usage.input_tokens,
         "outputTokens": outcome.usage.output_tokens,
     });
-    let family = vec![
+    Ok(vec![
         NewSessionEvent::new(
             "compaction/start",
             payloads::compaction_start(&compaction_id, turn),
@@ -149,13 +202,7 @@ fn write_compaction_events(
             payloads::compaction_end(&compaction_id, turn, None),
         )
         .log_only(),
-    ];
-    let committed = journal.append_atomic_durable_at(revision, &family)?;
-    Ok(CompactionCommit {
-        replace_seq: committed.start + 2,
-        summary: summary.to_owned(),
-        disclosure: crate::session::replay::CompactionDisclosure::from_data(&family[1].data),
-    })
+    ])
 }
 
 /// 手动压缩结果报告。

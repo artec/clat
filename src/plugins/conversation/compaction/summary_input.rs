@@ -79,7 +79,7 @@ impl SummaryRun<'_> {
         &mut self,
         mut items: Vec<ModelItem>,
         system: Option<&str>,
-        mut tools: &[crate::tool::ToolDefinition],
+        tools: &[crate::tool::ToolDefinition],
     ) -> Result<String, crate::i18n::PresentedText> {
         let mut output = self.output();
         let mut recovery_text = String::new();
@@ -98,11 +98,10 @@ impl SummaryRun<'_> {
             }
             if !response.tool_calls.is_empty() || response.finish_reason == FinishReason::ToolCalls
             {
-                if recovery == 0 && !tools.is_empty() {
-                    // The historical tools help maintain the request prefix. If
-                    // the model proposes a new call, retry from the same source
-                    // with no callable tools and discard that response.
-                    tools = &[];
+                if recovery == 0 {
+                    // INV-CP3（CP-C3）：请求本就零工具——工具调用是幻觉，
+                    // 同源重试一次；再犯降级（degraded outcome），不产生
+                    // 运行级硬错。
                     continue;
                 }
                 return Err(crate::i18n::UiMessage::new("compaction.summary_tool_call").into());

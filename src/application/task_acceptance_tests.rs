@@ -963,12 +963,13 @@ fn ga2_durable_report_and_completion_failures_never_publish_success_and_checks_r
 
 #[test]
 fn ga2_in_run_compaction_keeps_confirmed_contract_and_saved_results_outside_model_summary() {
+    let (storage, root) = roots("ga2-compaction");
     let script = Arc::new(super::task_recovery_tests::CompactTask {
         main: AtomicUsize::new(0),
         summaries: AtomicUsize::new(0),
         expected_items: Default::default(),
+        root: root.clone(),
     });
-    let (storage, root) = roots("ga2-compaction");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("input.json"), INPUT).unwrap();
     let mut app = mount_checked(&root, &storage, TestBehavior::Scripted(script.clone()));

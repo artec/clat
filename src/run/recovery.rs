@@ -147,6 +147,9 @@ impl Run<'_> {
         if !progress || self.cancel.is_cancelled() {
             return Ok(None);
         }
+        // A capacity-recovery rewrite also invalidates remembered read
+        // evidence. The model may need to revisit a pruned source.
+        state.repeat.clear();
         let next = self.prepare_request(state)?;
         let smaller = match error.kind() {
             ModelErrorKind::ImageCapacity => {

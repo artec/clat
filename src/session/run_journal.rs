@@ -89,6 +89,17 @@ pub(crate) trait RunJournal: Send + Sync {
         }
         self.append_atomic_durable(events)
     }
+    /// Publish a compaction replacement only if the selected surface nodes
+    /// still have the same seq and model-visible content at commit admission.
+    /// The default refuses: only a journal with a serialized projection
+    /// verification lane can implement this atomically.
+    fn append_compaction_durable_span(
+        &self,
+        _expected_span: &[(u64, crate::model::ModelItem)],
+        _events: &[NewSessionEvent],
+    ) -> Result<SeqRange, String> {
+        Err("compaction selected span validation is unavailable".into())
+    }
     /// The last durably committed seq, when the journal can report it.
     /// Folding consumers use it to never fold an event ahead of its
     /// commit (fold-after-Committed, plan §11.2).

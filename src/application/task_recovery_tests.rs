@@ -267,6 +267,9 @@ pub(super) struct CompactTask {
     pub(super) main: AtomicUsize,
     pub(super) summaries: AtomicUsize,
     pub(super) expected_items: std::sync::Mutex<Vec<String>>,
+    /// 项目根：每轮推进 observations.txt（EvidenceTracker 要求读工具
+    /// 产出新证据，同参同出会 stall——并行批次 2026-11-20 机制）。
+    pub(super) root: std::path::PathBuf,
 }
 impl TestModelScript for CompactTask {
     fn stream(
@@ -297,6 +300,10 @@ impl TestModelScript for CompactTask {
             );
         }
         let n = self.main.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut text) = std::fs::read_to_string(self.root.join("observations.txt")) {
+            text.push_str(&format!("round {n} progress\n"));
+            std::fs::write(self.root.join("observations.txt"), text).unwrap();
+        }
         let mut response = crate::test_support::response("done", FinishReason::Completed);
         if n < 6 {
             response.finish_reason = FinishReason::ToolCalls;
@@ -321,6 +328,7 @@ fn ga1_in_run_compaction_preserves_progress_questions_operations_and_budget() {
         main: AtomicUsize::new(0),
         summaries: AtomicUsize::new(0),
         expected_items: Default::default(),
+        root: root.clone(),
     });
     let mut app = mount(&root, &storage, TestBehavior::Scripted(script.clone()));
     crate::test_support::configure_test_model_with_budget(&app, u32::MAX);

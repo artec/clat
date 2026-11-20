@@ -20,7 +20,7 @@ mod state;
 mod steering;
 mod tools;
 pub(crate) use context::RequestContextManager;
-use state::StepState;
+use state::{EvidenceTracker, StepState};
 use steering::SteeringSealGuard;
 pub(crate) use steering::{PushOutcome, SteeringQueue};
 
@@ -253,7 +253,7 @@ impl<'a> Run<'a> {
             items,
             usage: Usage::default(),
             turn: 0,
-            repeat: None,
+            repeat: EvidenceTracker::default(),
         };
         loop {
             state.turn += 1;

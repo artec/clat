@@ -1,7 +1,7 @@
 //! The only idle compaction transaction: snapshot, summarize, validate, durable publish.
 use super::*;
 use crate::tool::ToolDefinition;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(in crate::application) struct IdleCompaction<'a> {
     pub sessions: &'a SessionService,
@@ -16,7 +16,8 @@ pub(in crate::application) struct IdleCompaction<'a> {
     pub tail_tokens: u64,
     pub definitions: Vec<ToolDefinition>,
     pub force: bool,
-    pub automatic_summary_failed: Option<&'a AtomicBool>,
+    /// INV-CP2：连续失败计数——闲置路径失败递增、成功清零。
+    pub automatic_summary_failures: Option<&'a AtomicU32>,
 }
 impl IdleCompaction<'_> {
     pub fn execute(&self) -> Result<CompactReport, PresentedText> {
@@ -29,13 +30,21 @@ impl IdleCompaction<'_> {
         let nodes = self.nodes()?;
         let outcome = self.summarize(&nodes)?;
         let result = self.publish(session, revision, &nodes, &outcome);
-        if let Err(reason) = &result {
-            if let Some(failed) = self.automatic_summary_failed
-                && (outcome.attempted || outcome.summary.is_some())
-            {
-                failed.store(true, Ordering::Relaxed);
+        match &result {
+            Ok(report) if report.shadowed_count > 0 => {
+                if let Some(failures) = self.automatic_summary_failures {
+                    failures.store(0, Ordering::Relaxed);
+                }
             }
-            super::record_failed_attempt(self.journal, self.turn, &outcome, &reason.raw)?;
+            Err(reason) => {
+                if let Some(failures) = self.automatic_summary_failures
+                    && (outcome.attempted || outcome.summary.is_some())
+                {
+                    failures.fetch_add(1, Ordering::Relaxed);
+                }
+                super::record_failed_attempt(self.journal, self.turn, &outcome, &reason.raw)?;
+            }
+            Ok(_) => {}
         }
         result
     }

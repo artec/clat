@@ -15,6 +15,15 @@ enum SummaryMode {
     Cancel,
     Persistence,
     Steering,
+    /// CP-C1 红①：摘要返回前并发追加一条 log-only 事件（模拟后台
+    /// `job/*` 在摘要网络阶段落地）——旧 CAS/全量比较下 turn 死。
+    ConcurrentAppend,
+    /// CP-C1 红②：摘要返回前并发改写**跨度内**一个旧 tool/result
+    ///（模拟并发 prune）——跨度锚定应拒绝提交且降级不抛。
+    SpanRewrite,
+    /// CP-C4 红①/红②：压力场景下摘要请求到达即 panic——清组必须先把
+    /// 压力泄到阈值之下，零付费摘要调用。
+    SweepPressure,
 }
 struct LongTask {
     seeding: std::sync::atomic::AtomicBool,
@@ -26,6 +35,10 @@ struct LongTask {
     mode: SummaryMode,
     snapshots: Mutex<Vec<Vec<ModelItem>>>,
     sessions: Mutex<Option<Arc<crate::session::use_cases::SessionService>>>,
+    /// 项目根（每轮推进 observations.txt 用）。
+    root: Mutex<Option<std::path::PathBuf>>,
+    /// SpanRewrite 只改写一次的闸。
+    span_rewritten: std::sync::atomic::AtomicBool,
 }
 impl LongTask {
     fn new(mode: SummaryMode) -> Self {
@@ -39,6 +52,8 @@ impl LongTask {
             mode,
             snapshots: Mutex::new(Vec::new()),
             sessions: Mutex::new(None),
+            root: Mutex::new(None),
+            span_rewritten: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -56,6 +71,8 @@ impl TestModelScript for LongTask {
         }
         if request.items.last().is_some_and(|item|matches!(item, ModelItem::User {content} if matches!(content.first(),Some(crate::model::ContentPart::Text(text)) if text.contains("context compaction")))) {
             assert_eq!(request.options.request_tail, None, "summarization only consumes carried history");
+            assert!(request.tools.is_empty(),
+                "the internal summary must never inherit the main agent's published tools");
             self.summaries.fetch_add(1, Ordering::SeqCst);
             if matches!(self.mode, SummaryMode::ImageTurn | SummaryMode::FailureThenCapacity) {
                 assert_eq!(request.items.iter().flat_map(crate::model::model_item_image_parts).count(), 0, "the just-admitted images belong to the main request, not the summary");
@@ -103,6 +120,81 @@ impl TestModelScript for LongTask {
                         fail_batch_write: true,
                         ..Default::default()
                     }),
+                SummaryMode::ConcurrentAppend => {
+                    // CP-C1 红①：摘要窗口内并发追加——一条 log-only 事件
+                    // （判别 committed_seq CAS 门）+ 一条跨度外的 surface
+                    // user message（判别全量 surface 相等门）。两者修前
+                    // 分别撞 CAS 与全量比较杀 turn；跨度锚定下都容忍。
+                    let sessions = self.sessions.lock().unwrap().as_ref().unwrap().clone();
+                    sessions
+                        .journal()
+                        .expect("journal")
+                        .append_atomic_durable(&[crate::session::run_journal::NewSessionEvent::new(
+                            "user/message",
+                            json!({
+                                "id": uuid::Uuid::new_v4().to_string(),
+                                "role": "user",
+                                "content": [{
+                                    "type": "text",
+                                    "text": "background note appended during the summary window",
+                                }],
+                                "source": { "kind": "user" },
+                            }),
+                        )
+                        .append(Vec::new())])
+                        .expect("surface append lands outside the selected span");
+                    sessions
+                        .journal()
+                        .expect("journal")
+                        .append_atomic_durable(&[crate::session::run_journal::NewSessionEvent::new(
+                            "job/registered",
+                            json!({
+                                "jobId":"concurrent-probe",
+                                "label":"probe",
+                                "owner":"test",
+                                "kind":"process",
+                                "command":["sleep","0"],
+                                "cwd":"/tmp",
+                                "startedAt":0,
+                            }),
+                        )
+                        .log_only()])
+                        .expect("concurrent log-only append lands inside the summary window");
+                }
+                SummaryMode::SpanRewrite if self.span_rewritten.swap(true, Ordering::SeqCst) => {}
+                SummaryMode::SpanRewrite => {
+                    // CP-C1 红②：摘要窗口内并发改写跨度内最旧的
+                    // tool/result（模拟并发 prune replace）。只改写一次——
+                    // 重复改写同内容会被跨度锚定视为未变而放行。
+                    let sessions = self.sessions.lock().unwrap().as_ref().unwrap().clone();
+                    let target = sessions
+                        .maintenance_events()
+                        .into_iter()
+                        .filter(|event| event.event_type == "tool/result")
+                        .min_by_key(|event| event.seq)
+                        .expect("a durable tool result to rewrite");
+                    // 与 prune replace 同款：克隆原事件，只改 content——
+                    // replace 校验只允许结果内容变化。
+                    let mut data = target.data;
+                    *data
+                        .pointer_mut("/message/content")
+                        .expect("result content") = json!([{
+                            "type": "text",
+                            "text": "rewritten by a concurrent prune",
+                        }]);
+                    sessions
+                        .journal()
+                        .expect("journal")
+                        .append_atomic_durable(&[crate::session::run_journal::NewSessionEvent::new(
+                            "tool/result",
+                            data,
+                        )
+                        .replace(target.seq, target.seq, vec![target.seq])])
+                        .expect("in-span rewrite lands inside the summary window");
+                }
+                SummaryMode::SweepPressure => {
+                    panic!("paid summary reached: the model-free sweep must absorb the pressure first");
+                }
                 SummaryMode::Normal | SummaryMode::ImageTurn => {}
             }
             let finish = if request.cancel.is_cancelled() {
@@ -115,6 +207,13 @@ impl TestModelScript for LongTask {
                 finish,
             ));
         }
+        assert!(
+            request
+                .tools
+                .iter()
+                .any(|definition| definition.name == "read_file"),
+            "normal agent requests keep the complete authorized file tool schema after compaction"
+        );
         let tail = request
             .options
             .request_tail
@@ -126,6 +225,14 @@ impl TestModelScript for LongTask {
             1
         );
         let n = self.main.fetch_add(1, Ordering::SeqCst);
+        // 每轮推进文件内容：并行批次的 EvidenceTracker 要求读工具产出
+        // 新证据（同参同出会 stall）；真实长任务也在持续写入再读回。
+        if let Some(root) = self.root.lock().unwrap().clone() {
+            let path = root.join("observations.txt");
+            let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+            text.push_str(&format!("round {n} progress\n"));
+            std::fs::write(&path, text).unwrap();
+        }
         self.snapshots.lock().unwrap().push(request.items.to_vec());
         if matches!(self.mode, SummaryMode::FailureThenCapacity)
             && self.summaries.load(Ordering::SeqCst) > 0
@@ -163,11 +270,18 @@ impl TestModelScript for LongTask {
                 .iter()
                 .rev()
                 .find(|item| matches!(item, ModelItem::ToolResult(_)));
-            assert!(
-                matches!(newest, Some(ModelItem::ToolResult(result)) if result.output.is_object()),
-                "keep rich live results rather than replay strings"
-            );
-            if matches!(newest, Some(ModelItem::ToolResult(result)) if result.tool_name == "read_file")
+            // 不变量（CP-C4 后口径）：最新交互组保留**真实内容**——
+            // 本轮内的富对象，或跨 run 重放的完整字符串；清组占位符与
+            // 剪枝残桩都不合格。
+            let rich = matches!(newest, Some(ModelItem::ToolResult(result))
+                if result.output.is_object()
+                    || result
+                        .output
+                        .as_str()
+                        .is_some_and(|text| text.contains("observation evidence")));
+            assert!(rich, "keep rich live results rather than replay strings");
+            if n < 8
+                && matches!(newest, Some(ModelItem::ToolResult(result)) if result.tool_name == "read_file")
             {
                 assert!(
                     matches!(newest, Some(ModelItem::ToolResult(result)) if result.call_id == format!("read-{}-1", n - 1)),
@@ -250,6 +364,7 @@ fn fixture(
     config.run_token_budget = budget;
     app.save_model_state(&config, &credentials).unwrap();
     *script.sessions.lock().unwrap() = Some(Arc::clone(&app.sessions));
+    *script.root.lock().unwrap() = Some(root.clone());
     (app, script, storage)
 }
 
@@ -370,7 +485,13 @@ fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt
         "oversized request must not reach provider after failed summary"
     );
     let seen = script.main.load(Ordering::SeqCst);
-    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
+    // CP-C2 映射：旧粘性断路器只尝试 1 次；计数熔断下容量恢复路径会
+    // 再试一次（2 < 阈值 3，熔断未开——由专门的 CP-C2 测试锁 3 次上界）。
+    assert_eq!(
+        script.summaries.load(Ordering::SeqCst),
+        2,
+        "counting breaker retries after one failure"
+    );
     app.close().unwrap();
     let events = load_events(&storage);
     assert!(
@@ -395,7 +516,15 @@ fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt
 }
 
 #[test]
-fn startup_summary_failure_cannot_restart_through_active_maintenance_or_capacity_recovery() {
+fn startup_pressure_is_relieved_model_free_and_no_summary_is_charged() {
+    // CP-C4/CP-C2 映射：原名
+    // startup_summary_failure_cannot_restart_through_active_maintenance_or_capacity_recovery。
+    // 旧契约（粘性断路器：启动摘要一次失败后本 run 不再尝试）已被
+    // INV-CP2 计数熔断取代；且 INV-CP5 清组在该场景把压力在付钱摘要
+    // 之前泄掉——启动期根本不再尝试摘要，run 零摘要开销直接完成，
+    // 清组以 compaction/prune 影子计价落 journal。失败-重启（计数
+    // 熔断的 3 次上界与复位）语义由 cp1 计数熔断专属测试与 Failure
+    // 测试（2 次重试）覆盖。
     let (mut app, script, storage) = fixture(SummaryMode::FailureThenCapacity, None);
     configure_test_model_with_budget(&app, u32::MAX);
     run(&mut app, "KEEP_USER_INTENT").expect("seed completed tool exchanges");
@@ -403,52 +532,43 @@ fn startup_summary_failure_cannot_restart_through_active_maintenance_or_capacity
     let history = app.context_snapshot().unwrap().total_estimate;
     configure_test_model_with_budget(&app, u32::try_from(history * 11 / 10).unwrap());
 
-    let failed = run(&mut app, "KEEP_USER_INTENT").expect_err("provider rejects capacity");
-    assert!(
-        failed
-            .error
-            .contains("fixture rejected the current context")
-    );
-    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
-    let main_after_failure = script.main.load(Ordering::SeqCst);
+    run(&mut app, "KEEP_USER_INTENT").expect("sweep relieved the startup pressure model-free");
     assert_eq!(
-        main_after_failure, 9,
-        "one main request after the summary failure"
+        script.summaries.load(Ordering::SeqCst),
+        0,
+        "no summary attempt: the model-free sweep absorbed the pressure"
     );
-
+    assert_eq!(script.main.load(Ordering::SeqCst), 9);
     app.close().unwrap();
     let events = load_events(&storage);
-    assert_eq!(
+    assert!(
         events
             .iter()
-            .filter(|event| event.event_type == "compaction/end" && event.data["error"].is_string())
-            .count(),
-        1
+            .any(|event| event.event_type == "compaction/prune"),
+        "durable sweep accounting"
     );
     assert!(
         !events
             .iter()
             .any(|event| event.event_type == "compaction/summary")
     );
-    assert_eq!(
-        events
+    assert!(
+        !events
             .iter()
-            .filter(|event| event.event_type == "tool/result")
-            .count(),
-        14
+            .any(|event| event.event_type == "compaction/end" && event.data["error"].is_string())
     );
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }
 
 #[test]
 fn two_images_cross_automatic_compaction_threshold_and_survive_either_outcome() {
-    for (attachments, fail) in [(false, false), (true, false), (true, true)] {
-        let mode = if fail {
-            SummaryMode::FailureThenCapacity
-        } else {
-            SummaryMode::ImageTurn
-        };
-        let (mut app, script, storage) = fixture(mode, None);
+    // CP-C4/CP-C2 映射：旧三腿循环含 (true,true) 失败变体与
+    // "summaries>0 == attachments"（附件轮跨阈值即付钱摘要）断言——
+    // INV-C5 清组把旧工具组压力在摘要之前泄掉，两轮都零摘要完成；
+    // 图片在用户消息里、不经工具组清组，原样保留。失败路径覆盖由
+    // 重塑的 startup 测试与 CP-C2 计数熔断测试承接。
+    for attachments in [false, true] {
+        let (mut app, script, storage) = fixture(SummaryMode::ImageTurn, None);
         let (mut config, credentials) = app.model_state().unwrap();
         config
             .capabilities
@@ -490,26 +610,12 @@ fn two_images_cross_automatic_compaction_threshold_and_survive_either_outcome() 
             Vec::new()
         };
         let result = run_with_attachments(&mut app, "KEEP_USER_INTENT", images);
-        let summaries = script.summaries.load(Ordering::SeqCst);
-        if fail {
-            assert!(
-                result
-                    .unwrap_err()
-                    .error
-                    .contains("fixture rejected the current context")
-            );
-            assert_eq!(
-                summaries, 1,
-                "capacity recovery cannot repeat a failed summary"
-            );
-        } else {
-            assert_eq!(result.unwrap().output, "done");
-            assert_eq!(
-                summaries > 0,
-                attachments,
-                "only the image turn crosses the threshold"
-            );
-        }
+        assert_eq!(result.unwrap().output, "done");
+        assert_eq!(
+            script.summaries.load(Ordering::SeqCst),
+            0,
+            "the model-free sweep absorbs the crossing before a paid summary"
+        );
         assert_eq!(script.main.load(Ordering::SeqCst), 9);
         let expected_images = if attachments { 2 } else { 0 };
         assert_eq!(
@@ -537,13 +643,21 @@ fn two_images_cross_automatic_compaction_threshold_and_survive_either_outcome() 
                     |event| event.event_type == "compaction/end" && event.data["error"].is_string()
                 )
                 .count(),
-            usize::from(fail)
+            0,
+            "no summary was attempted, so no compaction failure is recorded"
         );
         assert_eq!(
             events
                 .iter()
+                .any(|event| event.event_type == "compaction/prune"),
+            attachments,
+            "only the crossing (image) turn runs the model-free sweep"
+        );
+        assert!(
+            !events
+                .iter()
                 .any(|event| event.event_type == "compaction/summary"),
-            attachments && !fail
+            "no paid summary lands in either leg"
         );
         crate::test_support::cleanup_tree(storage.parent().unwrap());
     }
@@ -866,4 +980,190 @@ fn active_compaction_automatic_target_never_switches_or_writes_foreground() {
             >= 2
     );
     assert_eq!(script.main.load(Ordering::SeqCst), 8);
+}
+
+// ── CP-1 判别测试（2026-11-20 立项，docs/todo/cp1-compaction-stability）──
+
+/// INV-CP1 红①：摘要窗口内的 log-only 追加（`job/*` 类）不杀 turn——
+/// 压缩照常落地，追加事件照常存活。修前（committed_seq CAS + 全量
+/// surface 相等）此场景 Err("session changed during context maintenance")
+/// 上抛，当前 turn 死。
+#[test]
+fn cp1_concurrent_log_only_append_survives_and_compaction_lands() {
+    let (mut app, script, storage) = fixture(SummaryMode::ConcurrentAppend, None);
+    let (sender, receiver) = mpsc::channel();
+    app.subscribe(sender);
+    run(&mut app, "KEEP_USER_INTENT").expect("the turn survives the concurrent append");
+    assert!(
+        script.summaries.load(Ordering::SeqCst) >= 1,
+        "the summary ran and its commit was accepted"
+    );
+    assert!(
+        receiver
+            .try_iter()
+            .any(|event| matches!(event, ApplicationEvent::CompactionRecorded { .. })),
+        "the compaction checkpoint was published"
+    );
+    app.close().unwrap();
+    let events = load_events(&storage);
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "job/registered"
+                && event.data["jobId"] == json!("concurrent-probe")),
+        "the concurrent log-only append survives the compaction commit"
+    );
+    assert!(
+        events.iter().any(|event| event.event_type == "user/message"
+            && event.data["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("background note appended"))),
+        "the concurrent surface append survives outside the selected span"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "compaction/summary"),
+        "the compaction landed"
+    );
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// INV-CP1 红②：跨度内节点被并发改写（模拟并发 prune replace）→ 拒绝
+/// 提交且**降级不抛**——run 存活，本次压缩作废记账，无 checkpoint 落地。
+/// 修前全量相等检查同样拒绝但以 Err 上抛杀死 turn。
+#[test]
+fn cp1_in_span_rewrite_rejects_commit_as_degraded_not_a_turn_error() {
+    let (mut app, script, storage) = fixture(SummaryMode::SpanRewrite, None);
+    let (sender, receiver) = mpsc::channel();
+    app.subscribe(sender);
+    let outcome = run(&mut app, "KEEP_USER_INTENT");
+    // 判别：修前此场景以 Err("session changed during context
+    // maintenance") 杀 turn；修后跨度改写只降级——run 的任何失败都
+    // 只能是后续的容量错，绝不是维护提交错。
+    if let Err(failure) = outcome {
+        assert!(
+            !failure.error.contains("session changed"),
+            "a span rewrite must degrade, not kill the turn: {}",
+            failure.error
+        );
+    }
+    // 跨度改写每次尝试都被降级（无 usage 记账时连 compaction/end 都
+    // 不落），计数只用于熔断；这里只锁"至少跑了一次摘要"。
+    assert!(
+        script.summaries.load(Ordering::SeqCst) >= 1,
+        "at least one summary attempt ran"
+    );
+    app.close().unwrap();
+    let events = load_events(&storage);
+    // 判别：被改写的那次尝试必然降级——journal 存在带 span 字样的
+    // 失败记账（record_failed_attempt 只在 usage 非零时落 end 对）。
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "compaction/end"
+                && event.data["error"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("span"))),
+        "the degradation reason names the span change"
+    );
+    // 且 run 的失败（若有）不是维护提交错。
+    let _ = &receiver;
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// INV-CP2：计数熔断——同 run 内连续失败到 3 次即暂停自动压缩；下一
+/// 轮真实用户输入（新 RunWorker，计数器结构性复位）恢复再试。修前
+/// 粘性断路器一次失败即永久停摆。
+#[test]
+fn cp2_failure_breaker_counts_three_and_resets_on_the_next_user_round() {
+    let (mut app, script, storage) = fixture(SummaryMode::Failure, None);
+    let first = run(&mut app, "KEEP_USER_INTENT");
+    assert!(
+        first.is_err(),
+        "oversized request still fails the first run"
+    );
+    let after_first = script.summaries.load(Ordering::SeqCst);
+    // 该窄窗的容量恢复链只再给一次维护机会：合计 2 次尝试后熔断
+    // （<3 亦未开闸暂停——粘性修前这里只有 1 次）。
+    assert_eq!(
+        after_first, 2,
+        "counting breaker retries after the first failure (sticky: 1)"
+    );
+    // 第二 run：新用户输入 → 新 RunWorker → 计数结构性复位 → 再试。
+    let second = run(&mut app, "KEEP_USER_INTENT");
+    assert!(second.is_err());
+    let after_second = script.summaries.load(Ordering::SeqCst);
+    assert!(
+        after_second - after_first >= 2,
+        "the next user round resets the failure count and retries again (sticky: 0)"
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+/// INV-CP5（CP-C4 红①/红②）：压力达标时清组先行——最近 5 组保留、更旧
+/// 的文本组替换为占位符、付费摘要零调用（SweepPressure 模式下摘要请求
+/// 到达即 panic，因此 run 完成即为零调用判别）。
+#[test]
+fn cp4_micro_sweep_clears_old_groups_before_any_paid_summary() {
+    let (mut app, script, storage) = fixture(SummaryMode::SweepPressure, None);
+    // 第一轮：宽窗攒真实工具组（清组的受保护地板保护本轮内容——
+    // INV-CP5 的保守面；可清"旧组"来自之前的轮次）。
+    configure_test_model_with_budget(&app, u32::MAX);
+    run(&mut app, "KEEP_USER_INTENT").expect("seed turns accumulate tool groups");
+    // 第二轮：窄窗制造压力——startup/活动维护先清组（旧组 seq < 本轮
+    // replay 地板），压力泄到阈下则零付费摘要（摘要到达即 panic）。
+    let history = app.context_snapshot().unwrap().total_estimate;
+    configure_test_model_with_budget(&app, u32::try_from(history * 11 / 10).unwrap());
+    run(&mut app, "KEEP_USER_INTENT").expect("the sweep absorbs the pressure model-free");
+    assert_eq!(
+        script.summaries.load(Ordering::SeqCst),
+        0,
+        "no paid summary: the sweep reduced the pressure below the threshold"
+    );
+    app.close().unwrap();
+    let events = load_events(&storage);
+    let sweeps = events
+        .iter()
+        .filter(|event| event.event_type == "compaction/prune")
+        .count();
+    // 夹具产出 8 轮 × 2 组 = 16 组；保 5 组 → 至多清 11 组（轮内早期
+    // 组在压力首次达标前生成，实际清除数 ≥ 压力达标时点的旧组数）。
+    assert!(
+        sweeps > 0,
+        "the durable sweep accounting (compaction/prune) is present"
+    );
+    let swept_ids = events
+        .iter()
+        .filter(|event| event.event_type == "tool/result")
+        .filter(|event| {
+            event
+                .data
+                .pointer("/message/content/0/text")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|text| text.contains("[micro-compaction]"))
+        })
+        .filter_map(|event| event.data["message"]["toolCallId"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(
+        !swept_ids.is_empty(),
+        "a swept group leaves the one-line placeholder with its annotation"
+    );
+    // Seven model steps each emitted TWO tool calls. Keeping five complete
+    // steps means both results in rounds 2..=6 survive. The old
+    // results.len()-5 implementation erased some of these recent steps.
+    for round in 2..7 {
+        for index in 0..2 {
+            assert!(
+                !swept_ids.contains(format!("read-{round}-{index}").as_str()),
+                "micro-compaction must not cut a preserved multi-call model step"
+            );
+        }
+    }
+    assert!(
+        swept_ids.contains("read-0-0") || swept_ids.contains("read-1-0"),
+        "older steps are still eligible for model-free clearing"
+    );
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
 }

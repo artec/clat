@@ -675,6 +675,53 @@ Extend the frozen-prefix check named in [testing.md](testing.md) in the same
 change, and run the narrow `scripts/gates.sh` filters for tool access, context
 snapshot, and capability guidance.
 
+#### Initial context principles (2026-11-20)
+
+1. **Tool visibility equals tool callability.** Every tool admitted by the frozen
+   policy has its complete callable schema in the initial request. No
+   name-only index, deferred-schema hint, or discovery instruction may mention
+   a tool that the model cannot call. `RESIDENT` is ordering, not a hidden
+   authorization tier.
+2. **Reduce bytes without hiding capabilities.** Keep the system prefix and
+   tool ordering stable for provider prompt caching. Edit verbose tool
+   descriptions only when invocation semantics, parameter constraints and
+   guidance remain intact. Keep root project instructions concise; extended
+   engineering policy belongs in linked files to read for relevant work.
+   Never silently truncate mandatory project instructions.
+3. **Measure end-to-end, not just bytes.** Report first-request provider
+   input tokens (cache read separated), tool schema count/serialized size,
+   task completion, tool-choice accuracy, failed argument rate, repeated
+   observations, latency and paid cost for equivalent requests and models.
+   Character counts are only local estimates of tokens. Do not claim savings
+   from one unreplicated run.
+4. **No arbitrary tool-turn quota.** A 500-step run that gains evidence can
+   continue. A read-only result that repeats already-seen evidence instead
+   gets one explicit model-facing correction, then a hard stop if the model
+   again produces no new evidence. The bound is on stagnant behavior, not
+   total work. Consecutive and interleaved read cycles share one per-Run
+   evidence ledger; different paths are independent negative-search scopes.
+   Dynamic wait/poll tools are exempt, and writes/process/UI actions
+   invalidate old evidence rather than being cached or skipped. Discovery
+   timestamps do not make unchanged capability data novel. Tool results
+   retain their payload with optional `clat_runtime_feedback`, which marks
+   a correction rather than claiming the tool returned new data. **A durable
+   compaction, pruning or image-offload rewrite invalidates this temporary
+   evidence ledger**, so the model can refresh older observations; this does
+   not change the frozen allowed tool schemas or permissions.
+5. **Fail safely.** The detector is a deterministic heuristic, not a semantic
+   proof that a task is finished. Preserve real tool invocation, permission
+   checks, tool/result evidence, and meaningful recovery after an advisory.
+   If a model still has no progress, stop that Run with a localized error;
+   never silently continue accumulating cost. Extend the semantic test
+   corpus when a legitimate workflow is mistakenly stopped.
+6. **Separate internal summary from the Agent.** Normal requests keep the
+   complete frozen tool definitions across compaction. Internal summarization
+   receives no callable tools and only produces a proposed checkpoint.
+   Its durable replacement is admitted under the per-session journal lane
+   after rechecking the selected span's seq and model-visible content; outside
+   append-only/log-only events do not invalidate a valid span. Invalidated
+   spans degrade the summary rather than corrupting the Run or session.
+
 The system order is the CLAT base, optional reply
 formatting guidance, Wasm sections, MCP manifest sections, and explicitly
 marked adapter system sections. Each

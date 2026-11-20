@@ -167,7 +167,7 @@ impl crate::plugin::Plugin for TestProviderPlugin {
 }
 
 pub(crate) fn is_summary_request(request: &ModelRequest<'_>) -> bool {
-    request.items.last().is_some_and(|item|matches!(item,crate::model::ModelItem::User {content} if content.iter().any(|part|matches!(part,crate::model::ContentPart::Text(text) if text.starts_with("You are summarizing an agent task for context compaction.")))))
+    request.items.last().is_some_and(|item|matches!(item,crate::model::ModelItem::User {content} if content.iter().any(|part|matches!(part,crate::model::ContentPart::Text(text) if text.starts_with("CRITICAL: This is a context-compaction summarization call with no tools available.")))))
 }
 
 /// goal 批次（d9c8b65b）起续轮以 `<goal_round>` 用户消息下发（prompt.rs），

@@ -5,7 +5,7 @@ use crate::model::{ModelItem, ModelOptions, RunSpendLedger, Usage};
 use crate::run::RequestContextManager;
 use crate::tool::ToolDefinition;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 pub(in crate::application) struct ActiveContext {
     pub(in crate::application) compactor: Option<Arc<dyn HistoryCompactor>>,
@@ -23,10 +23,20 @@ pub(in crate::application) struct ActiveContext {
         Arc<Mutex<Vec<std::sync::mpsc::Sender<ApplicationEvent>>>>,
     pub(in crate::application) ledger: Arc<RunSpendLedger>,
     pub(in crate::application) checkpoints: BTreeMap<u64, String>,
-    pub(in crate::application) automatic_summary_failed: Arc<AtomicBool>,
+    /// INV-CP2：连续自动摘要失败计数——达到 `SUMMARY_FAILURE_LIMIT` 暂停
+    /// 本 run 的自动压缩；任一次成功清零（新用户轮由 per-run 计数器
+    /// 结构性复位，不存在"一次失败永久停摆"）。
+    pub(in crate::application) automatic_summary_failures: Arc<std::sync::atomic::AtomicU32>,
+    /// One-shot signal to the Run's evidence tracker: durable history was
+    /// rewritten, so reading the same tool result again may be productive.
+    pub(in crate::application) history_changed: bool,
 }
 
 impl RequestContextManager for ActiveContext {
+    fn take_history_change(&mut self) -> bool {
+        std::mem::take(&mut self.history_changed)
+    }
+
     fn stage_request(&mut self, snapshot: &crate::plugins::services::RuntimeSnapshot) {
         self.recorder
             .lock()
@@ -84,6 +94,7 @@ impl RequestContextManager for ActiveContext {
         definitions: &[ToolDefinition],
         options: &ModelOptions,
     ) -> Result<(), String> {
+        self.history_changed = false;
         let target = crate::model::ContextBudget::resolve(&self.config)?
             .map_or(u64::MAX, |budget| budget.threshold);
         let sessions = self.sessions.clone();
@@ -104,11 +115,16 @@ impl RequestContextManager for ActiveContext {
         }
         let pruned = if cost(items) > target {
             self.boundary()?;
-            self.prune_results(items)?
+            // INV-CP5：trim（单条超限剪枝）之后、付钱摘要之前，先做
+            // 无模型清组泄压——清后压力若已低于阈值，下面的摘要检查
+            // 自然短路（CP-C4 红②）。
+            let pruned = self.prune_results(items)?;
+            pruned + self.sweep_tool_groups(items)?
         } else {
             0
         };
         let images = self.maintain_images(items, instructions, definitions, options, false)?;
+        self.history_changed |= pruned > 0 || images > 0;
         self.notify_maintenance(pruned, images);
         if cost(items) <= target || !self.can_summarize() {
             return Ok(());
@@ -119,6 +135,9 @@ impl RequestContextManager for ActiveContext {
         );
         let result = self.reduce(items, usage, instructions, definitions, &cost, target);
         self.report_summary(&result);
+        if result.as_ref().is_ok_and(|(count, _)| *count > 0) {
+            self.history_changed = true;
+        }
         result?;
         if !self.cancel.is_cancelled() {
             crate::model::project_items_for_image_budget(items, instructions, definitions, options)
@@ -165,7 +184,9 @@ impl ActiveContext {
     }
 
     pub(super) fn can_summarize(&self) -> bool {
-        self.compactor.is_some() && !self.automatic_summary_failed.load(Ordering::Relaxed)
+        self.compactor.is_some()
+            && self.automatic_summary_failures.load(Ordering::Relaxed)
+                < super::SUMMARY_FAILURE_LIMIT
     }
 
     pub(super) fn boundary(&self) -> Result<(), String> {
@@ -203,7 +224,6 @@ impl ActiveContext {
                     checkpoint,
                 })
                 .collect::<Vec<_>>();
-            let revision = self.journal.committed_seq();
             let checkpoints = self.checkpoints.keys().copied().collect::<Vec<_>>();
             let outcome = self
                 .compactor
@@ -234,7 +254,7 @@ impl ActiveContext {
             let Some(summary) = &outcome.summary else {
                 reason = outcome.degraded.clone();
                 if outcome.attempted {
-                    self.automatic_summary_failed.store(true, Ordering::Relaxed);
+                    self.count_summary_failure();
                 }
                 self.record_unapplied(
                     &outcome,
@@ -242,14 +262,24 @@ impl ActiveContext {
                 )?;
                 break;
             };
-            if !self.apply(items, &nodes, summary, &outcome, cost, revision)? {
-                self.automatic_summary_failed.store(true, Ordering::Relaxed);
+            if !self.apply(items, &nodes, summary, &outcome, cost)? {
+                self.count_summary_failure();
                 break;
             }
+            // INV-CP2：任一次成功复位熔断计数。
+            self.automatic_summary_failures
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             count += 1;
         }
         self.boundary()?;
         Ok((count, reason))
+    }
+
+    /// INV-CP2：失败只递增计数（达到阈值由 `can_summarize` 拦截），不再
+    /// 一次性停摆。
+    fn count_summary_failure(&self) {
+        self.automatic_summary_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn apply(
@@ -259,27 +289,27 @@ impl ActiveContext {
         summary: &str,
         outcome: &CompactionOutcome,
         cost: &dyn Fn(&[ModelItem]) -> u64,
-        revision: Option<u64>,
     ) -> Result<bool, String> {
-        let current = self
-            .sessions
-            .compaction_nodes()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(|(seq, item, checkpoint)| CompactionNode {
-                seq,
-                item,
-                checkpoint,
-            })
-            .collect::<Vec<_>>();
-        if current != nodes || self.cancel.is_cancelled() {
-            return Err("session changed during context maintenance".into());
-        }
         let range = outcome.shadowed_start
             ..outcome
                 .shadowed_start
                 .checked_add(outcome.shadowed_count)
                 .ok_or("compaction range overflow")?;
+        // INV-CP1（CP-C1）：跨度锚定提交——重取 surface 后只校验**被选
+        // 跨度**未变（DSH `assertSelectedSpanStable` 同义）；跨度外的
+        // 追加（surface 追加与 log-only 事件，含 `job/*`、回执）必须
+        // 容忍，压缩照常落地、追加内容照常存活。全量 surface 相等与
+        // `committed_seq` CAS 已从活动路径移除（提交走无 CAS 原子组）。
+        // 提交失败只降级本次压缩，绝不向 turn 上抛。
+        let current = self.nodes_after_summary()?;
+        if !span_unchanged(&current, &nodes[range.clone()]) {
+            self.record_unapplied(outcome, "selected span changed during summarization")?;
+            return Ok(false);
+        }
+        if self.cancel.is_cancelled() {
+            self.record_unapplied(outcome, "compaction cancelled")?;
+            return Ok(false);
+        }
         let plan = crate::plugins::CompactionPlan::new(nodes, range)?;
         let candidate = plan.candidate(summary)?;
         let aligned = alignment::live_range(items, candidate.shadowed(), &self.checkpoints);
@@ -287,7 +317,7 @@ impl ActiveContext {
             Ok(replacement) => replacement,
             Err(error) => {
                 self.record_unapplied(outcome, &error)?;
-                return Err(error);
+                return Ok(false);
             }
         };
         let shadowed = candidate.shadowed();
@@ -296,16 +326,24 @@ impl ActiveContext {
             return Ok(false);
         }
         let session = self.sessions.active_id();
-        let seq = write_compaction_events(
+        let seq = match write_compaction_events_span_anchored(
             self.journal.as_ref(),
             shadowed,
             candidate.checkpoint(),
             outcome,
             &self.config,
             self.turn,
-            revision,
-        )
-        .map_err(|error| format!("compaction could not be persisted: {error}"))?;
+        ) {
+            Ok(seq) => seq,
+            Err(error) if error.starts_with("compaction selected span invalidated:") => {
+                // A concurrent in-span replace won the final journal lane.
+                // Keep the original model context and downgrade this summary,
+                // rather than applying a stale checkpoint or killing the Run.
+                self.record_unapplied(outcome, &error)?;
+                return Ok(false);
+            }
+            Err(error) => return Err(format!("compaction could not be persisted: {error}")),
+        };
         *items = updated;
         for node in shadowed {
             self.checkpoints.remove(&node.seq);
@@ -316,8 +354,43 @@ impl ActiveContext {
         Ok(true)
     }
 
+    fn nodes_after_summary(&self) -> Result<Vec<CompactionNode>, String> {
+        Ok(self
+            .sessions
+            .compaction_nodes()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|(seq, item, checkpoint)| CompactionNode {
+                seq,
+                item,
+                checkpoint,
+            })
+            .collect())
+    }
+
     /// Account attempted summaries without publishing a replacement or inventing a model step.
     fn record_unapplied(&self, outcome: &CompactionOutcome, reason: &str) -> Result<(), String> {
         super::record_failed_attempt(self.journal.as_ref(), self.turn, outcome, reason)
     }
+}
+
+/// INV-CP1 跨度锚定校验（DSH `assertSelectedSpanStable` 同义）：被选跨度
+/// 的节点必须在当前 surface 原样在位——同 seq、同 item、同 checkpoint
+/// 标记、仍连续。跨度外的任何追加/变更不影响判定；跨度内节点缺失或被
+/// 改写（并发 prune/replace）即失败。
+fn span_unchanged(current: &[CompactionNode], span: &[CompactionNode]) -> bool {
+    let Some(first) = span.first() else {
+        return true;
+    };
+    let Some(offset) = current.iter().position(|node| node.seq == first.seq) else {
+        return false;
+    };
+    let end = offset + span.len();
+    if end > current.len() {
+        return false;
+    }
+    current[offset..end]
+        .iter()
+        .zip(span.iter())
+        .all(|(a, b)| a.seq == b.seq && a.item == b.item && a.checkpoint == b.checkpoint)
 }

@@ -24,6 +24,7 @@ enum Reply {
     LongOnce,
     LongAlways,
     ToolUnlessDisabled,
+    ToolAlways,
     Panic,
 }
 #[derive(Clone)]
@@ -32,6 +33,7 @@ struct Factory {
     seen: Arc<Mutex<Vec<(ModelConfig, ModelOptions)>>>,
     calls: Arc<AtomicUsize>,
     inputs: Arc<Mutex<Vec<String>>>,
+    tools_seen: Arc<Mutex<Vec<usize>>>,
     directives: Arc<Mutex<Vec<String>>>,
     time_limits: Arc<Mutex<Vec<Option<std::time::Duration>>>>,
     ledger: Arc<crate::model::RunSpendLedger>,
@@ -101,6 +103,11 @@ impl Model for Attempt {
             _ => chunks::rendered_units(evidence, true).join("\n"),
         };
         self.factory.inputs.lock().unwrap().push(input);
+        self.factory
+            .tools_seen
+            .lock()
+            .unwrap()
+            .push(request.tools.len());
         if matches!(self.factory.reply, Reply::RetryAndRecover) && attempt.is_multiple_of(2) {
             return Err(ModelError::transport(
                 "injected retryable transport failure",
@@ -114,11 +121,32 @@ impl Model for Attempt {
         let exhausted = self.config.extra_body["reasoning_effort"] == "high"
             || request.options.output_limit.unwrap_or(0) < 4096;
         let long_answer = "证据".repeat(40000);
-        if matches!(self.factory.reply, Reply::ToolUnlessDisabled) && !request.tools.is_empty() {
+        // INV-CP3 红③：零工具请求下的**持续**幻觉——两次都返回
+        // tool_calls → 降级（一次重试后仍犯）。
+        if matches!(self.factory.reply, Reply::ToolAlways) && request.tools.is_empty() {
+            let mut response = crate::test_support::response("", FinishReason::ToolCalls);
+            response.tool_calls.push(crate::ToolCall {
+                id: "persistent-hallucination".into(),
+                name: "hallucinated_tool".into(),
+                arguments: serde_json::json!({}),
+            });
+            response.usage = Some(Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                ..Default::default()
+            });
+            return Ok(response);
+        }
+        // INV-CP3：摘要请求零工具——工具调用是无工具可用的幻觉；首次
+        // 幻觉后同源重试一次（CP-C3 契约），再犯降级。
+        if matches!(self.factory.reply, Reply::ToolUnlessDisabled)
+            && attempt == 0
+            && request.tools.is_empty()
+        {
             let mut response = crate::test_support::response("", FinishReason::ToolCalls);
             response.tool_calls.push(crate::ToolCall {
                 id: "unexpected-summary-call".into(),
-                name: request.tools[0].name.clone(),
+                name: "hallucinated_tool".into(),
                 arguments: serde_json::json!({}),
             });
             return Ok(response);
@@ -132,7 +160,9 @@ impl Model for Attempt {
             Reply::LongOnce if attempt == 0 => (long_answer.as_str(), FinishReason::Completed),
             Reply::LongAlways => (long_answer.as_str(), FinishReason::Completed),
             Reply::LongOnce => ("Recovered short summary", FinishReason::Completed),
-            Reply::ToolUnlessDisabled => ("Recovered without tools", FinishReason::Completed),
+            Reply::ToolUnlessDisabled | Reply::ToolAlways => {
+                ("Recovered without tools", FinishReason::Completed)
+            }
             Reply::Truncated => ("An unfinished summary", FinishReason::MaxTokens),
             Reply::EmptyOnce if attempt == 0 => ("", FinishReason::Completed),
             Reply::EmptyAlways => ("", FinishReason::Completed),
@@ -169,6 +199,7 @@ fn factory(reply: Reply) -> Factory {
         seen: Default::default(),
         calls: Default::default(),
         inputs: Default::default(),
+        tools_seen: Default::default(),
         directives: Default::default(),
         time_limits: Default::default(),
         ledger: Arc::new(crate::model::RunSpendLedger::new(None)),
@@ -643,5 +674,76 @@ fn harness2_candidate_guidance_reaches_real_summary_requests_without_changing_ge
             .all(|s| s.contains("EXPERIMENT_SOURCE_BINDING"))
     );
     assert!(!baseline.contains("EXPERIMENT_SOURCE_BINDING"));
-    assert_eq!(factory.seen.lock().unwrap()[0].1.output_limit, Some(6000));
+    // CP-C3/INV-CP4 映射：旧值 6000 = 窗口/4（24000/4）；预算钉常量后
+    // 生成额度不再随窗口放大——大窗口一律 16,384（小窗口仍夹逼）。
+    assert_eq!(factory.seen.lock().unwrap()[0].1.output_limit, Some(16_384));
+}
+
+// ── CP-C3 判别测试（2026-11-20，docs/todo/cp1-compaction-stability）──
+
+/// INV-CP3 红①：摘要请求**零工具**——即便 CompactionRequest 携带全部
+/// 会话工具 schema，wire 上发出的每个摘要请求 tools 恒空（修前为保
+/// 前缀缓存全量下发）。
+#[test]
+#[cfg(feature = "runtime-tests")]
+fn cp3_summary_requests_carry_no_tool_schemas() {
+    for active in [false, true] {
+        let (outcome, factory, _) = compact(Reply::ToolUnlessDisabled, active);
+        assert!(outcome.summary.is_some(), "{:?}", outcome.degraded);
+        assert!(
+            factory
+                .tools_seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|count| *count == 0),
+            "every summary request must carry zero tool schemas (INV-CP3)"
+        );
+    }
+}
+
+/// INV-CP4 红②：摘要预算钉常量——128K 与 200K 窗口下生成额度相同
+///（修前随窗口 /4 放大：32K vs 50K），指令目标恒 ~6,000。
+#[test]
+#[cfg(feature = "runtime-tests")]
+fn cp3_summary_budget_is_constant_across_windows() {
+    for window in [128_000u32, 200_000] {
+        let config = ModelConfig {
+            max_context_tokens: Some(window),
+            ..Default::default()
+        };
+        let policy = summary::Policy::new(&config).unwrap();
+        assert_eq!(policy.output_limit(), 16_384, "{window}-token window");
+        assert_eq!(policy.accept_limit(), 8_192, "{window}-token window");
+        assert!(
+            policy.directive_text().contains("6000 tokens"),
+            "the instruction names the fixed ~6,000 target"
+        );
+    }
+}
+
+/// INV-CP3 红③：供应商幻觉工具调用（请求本就零工具）→ 一次同源重试
+/// 后仍犯 → 降级（degraded outcome，非运行级硬错），且两次尝试都被
+/// 计账。
+#[test]
+#[cfg(feature = "runtime-tests")]
+fn cp3_persistent_tool_hallucination_degrades_after_one_retry() {
+    for active in [false, true] {
+        let (outcome, factory, _) = compact(Reply::ToolAlways, active);
+        let degraded = outcome.degraded.as_ref().unwrap();
+        assert!(
+            degraded.message().key == "compaction.summary_tool_call",
+            "the degradation names the tool-call refusal: {degraded:?}"
+        );
+        assert!(
+            outcome.summary.is_none(),
+            "a hallucinating provider never yields a checkpoint"
+        );
+        assert_eq!(
+            factory.calls.load(Ordering::SeqCst),
+            2,
+            "one retry, then degrade"
+        );
+        assert_eq!(outcome.usage.output_tokens, 100, "both attempts accounted");
+    }
 }
