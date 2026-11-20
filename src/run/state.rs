@@ -59,10 +59,10 @@ impl EvidenceTracker {
         self.remember(stamp);
         if barren && self.barren_scopes.insert(scope.clone()) {
             self.barren_order.push_back(scope);
-            if self.barren_order.len() > MAX_TRACKED_EVIDENCE {
-                if let Some(oldest) = self.barren_order.pop_front() {
-                    self.barren_scopes.remove(&oldest);
-                }
+            if self.barren_order.len() > MAX_TRACKED_EVIDENCE
+                && let Some(oldest) = self.barren_order.pop_front()
+            {
+                self.barren_scopes.remove(&oldest);
             }
         }
         if no_new {
@@ -85,10 +85,10 @@ impl EvidenceTracker {
     fn remember(&mut self, stamp: u64) {
         if self.seen.insert(stamp) {
             self.order.push_back(stamp);
-            if self.order.len() > MAX_TRACKED_EVIDENCE {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.seen.remove(&oldest);
-                }
+            if self.order.len() > MAX_TRACKED_EVIDENCE
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.seen.remove(&oldest);
             }
         }
     }
@@ -125,10 +125,10 @@ fn evidence_scope(name: &str, arguments: &serde_json::Value) -> String {
 fn evidence_stamp(name: &str, arguments: &serde_json::Value, output: &serde_json::Value) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut stable = output.clone();
-    if crate::tool::capabilities::is_discovery(name) {
-        if let Some(object) = stable.as_object_mut() {
-            object.remove("observed_at_unix_ms");
-        }
+    if crate::tool::capabilities::is_discovery(name)
+        && let Some(object) = stable.as_object_mut()
+    {
+        object.remove("observed_at_unix_ms");
     }
     let semantic = if !is_barren(&stable) && name == "search" {
         stable
