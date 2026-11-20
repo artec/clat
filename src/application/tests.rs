@@ -3611,6 +3611,7 @@ fn long_tool_loops_run_uninterrupted_without_a_turn_budget() {
         TestBehavior::ToolLoop {
             calls: 40,
             seen: Arc::new(AtomicUsize::new(0)),
+            root: Some(project_root.clone()),
         },
     );
     configure_test_model(&application);

@@ -270,9 +270,11 @@ pub enum TestBehavior {
     /// 计数经 `seen` 跨模型构建共享——RetryModel 每次请求都经工厂重建
     /// 模型，实例内状态不可靠；标题旁路请求直接返回短文本，不消耗
     /// 计数。工具往返各计 usage (1,1)，完成调用经 response() 计 (2,3)。
+    /// `root` 存在时每轮推进新产物文件，满足 EvidenceTracker 新证据要求。
     ToolLoop {
         calls: usize,
         seen: Arc<std::sync::atomic::AtomicUsize>,
+        root: Option<std::path::PathBuf>,
     },
     /// 第一轮调用 ask_user 工具（Pure 效果，免审批），拿到答案后第二
     /// 轮完成：端到端验证 ask-user 端口（asker 由 run 请求安装）。
@@ -549,7 +551,7 @@ impl Model for TestModel {
                 });
                 Ok(response("first answer", FinishReason::Completed))
             }
-            TestBehavior::ToolLoop { calls, seen } => {
+            TestBehavior::ToolLoop { calls, seen, root } => {
                 let is_title = request
                     .instructions
                     .is_some_and(|text| text.contains("Generate a concise title"));
@@ -562,6 +564,10 @@ impl Model for TestModel {
                         delta: "loop complete".into(),
                     });
                     return Ok(response("loop complete", FinishReason::Completed));
+                }
+                if let Some(root) = root.as_ref() {
+                    let _ =
+                        std::fs::write(root.join(format!("step_{n}.txt")), format!("step {n}\n"));
                 }
                 Ok(ModelResponse {
                     text: String::new(),
