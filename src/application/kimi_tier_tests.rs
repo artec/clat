@@ -65,9 +65,18 @@ fn kimi_membership_controls_context_without_impacting_other_vendors() {
     application
         .select_model_preset("kimi-for-coding", None, None)
         .unwrap();
+    // K2.8 Preview 的 1M 窗无档位注记（官方 Kimi Code 模型表）：Plus 档
+    // 同样给 1,048,576，且换档不动它。
+    let (config, _) = application.model_state().unwrap();
+    assert_eq!(config.max_context_tokens, Some(1_048_576));
+    assert_eq!(
+        config.overrides.max_context_tokens,
+        crate::Override::Set(1_048_576)
+    );
+    application.set_kimi_tier("pro").unwrap();
     assert_eq!(
         application.model_state().unwrap().0.max_context_tokens,
-        Some(262_144)
+        Some(1_048_576)
     );
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());

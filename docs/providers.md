@@ -221,8 +221,12 @@ Settings → Models displays a **Plus (256K) / Pro or higher (1M)** radio
 selection beside the Kimi Coding Plan heading, matching the Qwen Token Plan
 heading controls. The user-selected subscription tier is saved as a vendor-wide
 preference in `settings.json` (`kimiTier`), independently of the active model
-or profile; missing historical settings default to Plus. Both built-in Kimi
-Coding Plan presets use 262,144 tokens on Plus or 1,048,576 on Pro and higher.
+or profile; missing historical settings default to Plus. The tier gates the
+flagship `k3.1-pro` only: 262,144 tokens on Plus, 1,048,576 on Pro and
+higher. `kimi-for-coding` (K2.8 Preview) is exempt from the tier gate — the
+official Kimi Code model table lists its 1,048,576-token window with no
+subscription-tier note (available from Plus), so it always uses 1,048,576
+regardless of the selection (live-verified on a Plus account, 2026-11-21).
 Changing the selection immediately updates an active Kimi preset, while other
 vendors retain their own context windows. Selecting Kimi later, including after
 a Host restart, restores the user's tier. An old automatic capacity cache does

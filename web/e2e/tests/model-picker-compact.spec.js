@@ -28,6 +28,42 @@ test('picker groups built-ins by route, preserves custom profiles and aligns to 
   await expect(choices.first().locator('strong')).toHaveText('DeepSeek V4 Pro');
   await expect(choices.first()).not.toContainText('built-in preset');
   await expect(choices.nth(1).locator(':scope > :last-child')).toHaveClass(/model-choice-vision/);
+  // A channel with more models than fit must scroll inside its own pane,
+  // never paint rows beneath the fixed thinking-intensity panel.
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1008, height: 1100 }, { width: 504, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    const layout = await page.evaluate(() => {
+      const browser = document.querySelector('#model-picker-browser');
+      const list = document.querySelector('#model-picker-list');
+      const panel = document.querySelector('.model-thinking-panel');
+      return {
+        browserBottom: browser.getBoundingClientRect().bottom,
+        listBottom: list.getBoundingClientRect().bottom,
+        panelTop: panel.getBoundingClientRect().top,
+        clientHeight: list.clientHeight,
+        scrollHeight: list.scrollHeight,
+        browserOverflow: getComputedStyle(browser).overflowY,
+        resultsOverflow: getComputedStyle(browser.querySelector('.model-picker-results')).overflowY,
+      };
+    });
+    expect(layout.browserOverflow).toBe('hidden');
+    expect(layout.resultsOverflow).toBe('hidden');
+    expect(layout.browserBottom).toBeLessThanOrEqual(layout.panelTop);
+    expect(layout.listBottom).toBeLessThanOrEqual(layout.panelTop);
+    expect(layout.scrollHeight).toBeGreaterThan(layout.clientHeight);
+    await choices.last().scrollIntoViewIfNeeded();
+    const scrolled = await page.evaluate(() => {
+      const list = document.querySelector('#model-picker-list');
+      const last = list.querySelector('.model-choice:last-child');
+      const bottom = list.getBoundingClientRect().bottom;
+      return { scrollTop: list.scrollTop, bottom, lastBottom: last.getBoundingClientRect().bottom,
+        panelTop: document.querySelector('.model-thinking-panel').getBoundingClientRect().top };
+    });
+    expect(scrolled.scrollTop).toBeGreaterThan(0);
+    expect(scrolled.lastBottom).toBeLessThanOrEqual(scrolled.bottom + 1);
+    expect(scrolled.lastBottom).toBeLessThanOrEqual(scrolled.panelTop);
+    await choices.first().scrollIntoViewIfNeeded();
+  }
   await page.locator('#model-picker-custom').click();
   await expect(page.locator('#model-picker-sources')).toBeHidden();
   await page.locator('#model-picker-builtins').click();
@@ -40,6 +76,38 @@ test('picker groups built-ins by route, preserves custom profiles and aligns to 
     composer: document.querySelector('#composer-shell').getBoundingClientRect().right,
   }));
   expect(bounds.popup).toBeLessThanOrEqual(bounds.composer + 1);
+});
+
+test('last selected OpenCode Go preset stays scrollable above thinking controls', async ({ page }) => {
+  await page.route('**/api/model.settings.get', async route => {
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    body.value.active_profile = null;
+    body.value.current.preset = 'opencode-grok-4.7';
+    body.value.current.model = 'grok-4.7';
+    body.value.current.vendor = 'OpenCode Go';
+    body.value.current.image_input = true;
+    await route.fulfill({ response, json: body });
+  });
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#model-picker-trigger');
+  const rows = page.locator('#model-picker-list .model-choice');
+  await expect(rows).toHaveCount(12);
+  await expect(rows.last()).toHaveAttribute('aria-checked', 'true');
+  await rows.last().scrollIntoViewIfNeeded();
+  const positions = await page.evaluate(() => {
+    const list = document.querySelector('#model-picker-list');
+    const last = list.querySelector('.model-choice:last-child');
+    return {
+      listBottom: list.getBoundingClientRect().bottom,
+      lastBottom: last.getBoundingClientRect().bottom,
+      panelTop: document.querySelector('.model-thinking-panel').getBoundingClientRect().top,
+      scrollTop: list.scrollTop,
+    };
+  });
+  expect(positions.scrollTop).toBeGreaterThan(0);
+  expect(positions.lastBottom).toBeLessThanOrEqual(positions.listBottom + 1);
+  expect(positions.lastBottom).toBeLessThanOrEqual(positions.panelTop);
 });
 
 test('thinking intensity retains host-provided levels and updates visual endpoints', async ({ page }) => {

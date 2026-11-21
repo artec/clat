@@ -618,16 +618,17 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .model-picker-modes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3px; padding:3px; border-radius:10px; background:var(--surface-input); border:1px solid var(--line); }
 .model-picker-modes button { min-width:0; padding:7px 8px; border:0; border-radius:7px; font-size:12px; color:var(--text-muted); background:transparent; transition:background .15s ease, color .15s ease; }
 .model-picker-modes button[aria-pressed="true"] { color:var(--text); background:var(--surface-raised); box-shadow:0 1px 4px rgb(0 0 0 / 12%); font-weight:600; }
-.model-picker-browser { display:grid; grid-template-columns:minmax(0,148px) minmax(0,1fr); gap:10px; min-height:128px; max-height:min(314px,38vh); flex:1 1 auto; }
+/* A definite, shrinkable grid height keeps long model lists inside their own scroll pane (including WebKit). */
+.model-picker-browser { display:grid; grid-template-columns:minmax(0,148px) minmax(0,1fr); grid-template-rows:minmax(0,1fr); gap:10px; height:min(314px,38vh); min-height:0; flex:1 1 auto; overflow:hidden; }
 .model-picker-sources { display:flex; flex-direction:column; min-width:0; min-height:0; gap:3px; overflow-y:auto; border-right:1px solid var(--line); padding-right:7px; }
 .model-picker-source { display:flex; align-items:center; justify-content:space-between; gap:4px; width:100%; min-width:0; padding:8px 8px; border:1px solid transparent; border-radius:8px; text-align:left; background:transparent; color:var(--text-soft); font-size:12px; }
 .model-picker-source:hover { background:var(--surface-input); }
 .model-picker-source[aria-pressed="true"] { background:color-mix(in srgb,var(--accent) 10%,var(--surface-input)); border-color:color-mix(in srgb,var(--accent) 35%,var(--line)); color:var(--text); }
 .model-picker-source-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .model-picker-source-count { flex:none; font-size:10px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
-.model-picker-results { display:flex; flex-direction:column; min-width:0; min-height:0; gap:5px; }
+.model-picker-results { display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; gap:5px; overflow:hidden; }
 .model-picker-section-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); font-size:11px; min-height:17px; }
-.model-picker .model-picker-list { display:flex; flex-direction:column; min-height:0; flex:1; gap:3px; overflow-y:auto; overscroll-behavior:contain; }
+.model-picker .model-picker-list { display:flex; flex-direction:column; min-height:0; height:0; flex:1 1 0; gap:3px; overflow-y:auto; overscroll-behavior:contain; }
 .model-picker .model-choice { display:flex; align-items:center; gap:7px; min-height:34px; padding:7px 8px; border-radius:8px; }
 .model-choice-content { flex:1; min-width:0; }
 .model-picker .model-choice strong { color:var(--text-soft); font-size:12px; line-height:1.45; }

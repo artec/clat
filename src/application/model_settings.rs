@@ -548,17 +548,28 @@ fn public_url(endpoint: &str) -> String {
 
 /// The explicit account choice wins over old Kimi model overrides and
 /// applies to both built-in Kimi Coding Plan presets, never custom routes.
+/// `kimi-for-coding`（K2.8 Preview）豁免档位门槛：官方 Kimi Code 模型表
+/// 的最高 1,048,576 无档位注记（Plus 及以上可用），k3.1-pro 的 1M
+/// 才是 Pro/Allegretto 解锁项。负责人裁定 2026-11-21 放开实测，
+/// Plus 档真机验证通过（端点受理 1M 长上下文）——豁免转正，非实验态。
 pub(super) fn apply_kimi_tier(
     config: &mut ModelConfig,
     tier: crate::control_storage::settings::KimiTier,
 ) {
-    if super::dto::matching_preset(config).is_some_and(|preset| preset.vendor == "Kimi Coding Plan")
-    {
-        let window = tier.context_window();
-        config.max_context_tokens = Some(window);
-        config.overrides_version = Some(1);
-        config.overrides.max_context_tokens = crate::Override::Set(window);
+    let Some(preset) = super::dto::matching_preset(config) else {
+        return;
+    };
+    if preset.vendor != "Kimi Coding Plan" {
+        return;
     }
+    let window = if preset.id == "kimi-for-coding" {
+        1_048_576
+    } else {
+        tier.context_window()
+    };
+    config.max_context_tokens = Some(window);
+    config.overrides_version = Some(1);
+    config.overrides.max_context_tokens = crate::Override::Set(window);
 }
 /// VP-2C：入口名 → Qwen Token Plan 端点（调用方已验证 entry 合法）。
 fn qwen_entry_endpoint(entry: &str) -> &'static str {
