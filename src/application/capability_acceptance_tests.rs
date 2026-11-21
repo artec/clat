@@ -679,7 +679,10 @@ fn native_tool_schemas_declare_type_on_every_property() {
     let script = DiscoveryPrelude::new("list_files", vec![Step::Done]);
     let (app, root, _storage) = discovered_app("schema-type-invariant", script);
     let definitions = app.tools.definitions();
-    assert!(!definitions.is_empty(), "resident tool set must be registered");
+    assert!(
+        !definitions.is_empty(),
+        "resident tool set must be registered"
+    );
     for definition in &definitions {
         assert_properties_typed(&definition.input_schema, &definition.name);
     }

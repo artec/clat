@@ -197,7 +197,7 @@ fn denied_tool_loop_is_reported_without_executing_it() {
         .execute("write", &mut Vec::new())
         .expect_err("denied calls should not spin");
     assert!(error.to_string().contains("no new evidence"), "{error}");
-    assert_eq!(model.calls, 3);
+    assert_eq!(model.calls, 4);
 }
 
 struct ForbiddenWrite;
@@ -308,7 +308,7 @@ fn oversized_tool_results_remain_raw_without_pressure_maintenance() {
 }
 
 #[test]
-fn repeated_readonly_evidence_stops_after_a_correction_attempt() {
+fn repeated_readonly_evidence_stops_after_two_correction_attempts() {
     let project = Project::new(".");
     let permissions = AllowAll;
     let tools = ToolRegistry::new();
@@ -321,19 +321,19 @@ fn repeated_readonly_evidence_stops_after_a_correction_attempt() {
         .execute("repeat", &mut Vec::new())
         .expect_err("an unchanged streak stops the run");
     assert!(error.to_string().contains("no new evidence"), "{error}");
-    assert_eq!(model.calls, 3);
+    assert_eq!(model.calls, 4);
     assert_eq!(
         error
             .items()
             .iter()
             .filter(|item| matches!(item, ModelItem::ToolResult(_)))
             .count(),
-        3
+        4
     );
 }
 
 #[test]
-fn discovery_query_stops_after_three_identical_arguments() {
+fn discovery_query_stops_after_two_corrections() {
     for name in ["query_capabilities", "describe_capability"] {
         let project = Project::new(".");
         let permissions = AllowAll;
@@ -357,14 +357,14 @@ fn discovery_query_stops_after_three_identical_arguments() {
             error.to_string().contains("no new evidence"),
             "{name} {error}"
         );
-        assert_eq!(model.calls, 3, "{name}");
+        assert_eq!(model.calls, 4, "{name}");
         assert_eq!(
             error
                 .items()
                 .iter()
                 .filter(|item| matches!(item, ModelItem::ToolResult(_)))
                 .count(),
-            3,
+            4,
             "{name}"
         );
     }
@@ -384,7 +384,7 @@ fn changed_queries_without_new_evidence_receive_correction_then_stop() {
         .execute("search", &mut Vec::new())
         .expect_err("empty searches stop the run");
     assert!(error.to_string().contains("no new evidence"), "{error}");
-    assert_eq!(model.calls, 3);
+    assert_eq!(model.calls, 4);
 }
 
 #[test]

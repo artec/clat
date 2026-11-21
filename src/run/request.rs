@@ -63,6 +63,11 @@ impl Run<'_> {
             receipt: None,
         });
         state.items.push(ModelItem::User { content: parts });
+        // A fresh human input is the strongest new information: it re-arms the
+        // no-progress correction (repeated evidence still corrects immediately,
+        // but the user's new words must not inherit the previous fuse). The
+        // seen-evidence ledger itself stays.
+        state.repeat.note_user_input();
         Ok(())
     }
     pub(super) fn prepare_request(

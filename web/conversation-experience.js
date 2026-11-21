@@ -124,9 +124,18 @@ function positionUsagePopover(popup, trigger, alignment = 'center') {
   if (popup.classList.contains('hidden')) return;
   const anchor = trigger.getBoundingClientRect(), inset = 12;
   const bounds = dom['composer-shell'].getBoundingClientRect();
-  const desired = alignment === 'left' ? bounds.left : alignment === 'right' ? bounds.right - popup.offsetWidth
+  if (popup.id === 'model-picker') alignment = 'composer-end';
+  // The model picker follows the composer right edge, not the trigger center.
+  // Shrink to its shell before measuring; never spill beyond that edge on mobile.
+  if (alignment === 'composer-end') {
+    popup.style.maxWidth = `${Math.max(0, Math.min(bounds.width, innerWidth))}px`;
+  }
+  const desired = alignment === 'left' ? bounds.left
+    : alignment === 'right' || alignment === 'composer-end' ? bounds.right - popup.offsetWidth
     : anchor.left + (anchor.width - popup.offsetWidth) / 2;
-  const left = Math.max(inset, Math.min(desired, innerWidth - popup.offsetWidth - inset));
+  const left = alignment === 'composer-end'
+    ? Math.max(0, Math.min(desired, innerWidth - popup.offsetWidth))
+    : Math.max(inset, Math.min(desired, innerWidth - popup.offsetWidth - inset));
   popup.style.left = `${left}px`;
   popup.style.bottom = `${innerHeight - anchor.top + 12}px`;
   popup.style.maxHeight = `${Math.max(0, Math.min(innerHeight * .65, anchor.top - 24))}px`;

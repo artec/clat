@@ -295,9 +295,12 @@ mod tests {
         assert_eq!(cap_summary_region(&nodes, 0..20, None), 0..20);
         // 小 threshold：从最旧一侧淘汰，保留最新条目在预算内。
         let capped = cap_summary_region(&nodes, 0..20, Some(1));
-        assert!(capped.start > 0, "oldest items are dropped to fit the threshold");
+        assert!(
+            capped.start > 0,
+            "oldest items are dropped to fit the threshold"
+        );
         assert_eq!(capped.end, 20, "newest boundary is kept");
-        assert!(capped.len() >= 1, "at least the newest item remains");
+        assert!(!capped.is_empty(), "at least the newest item remains");
         // 大 threshold：完整范围不动。
         let full = cap_summary_region(&nodes, 0..20, Some(1_000_000));
         assert_eq!(full, 0..20);

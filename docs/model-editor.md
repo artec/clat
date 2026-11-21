@@ -19,6 +19,29 @@ API keys are remembered per vendor. Switching among presets of the same vendor
 does not erase the key, and choosing a preset never copies credentials into a
 session journal.
 
+## Web/Desktop quick switcher
+
+The model button beside the composer opens a compact picker. The top row shows
+the **model maker · model name** (for example, `GLM · GLM 5.3 Flash`) with a
+vision icon only when the active route accepts images. Its settings icon opens
+**Settings → Models**.
+
+Choose **Built-in presets** or **Custom models** first. Built-in presets are
+grouped by **connection channel** (DeepSeek, GLM Coding Plan, Qwen Token Plan,
+Kimi Coding Plan, Hy Token Plan and OpenCode Go); choosing a channel reveals
+only its models. The channel is not the maker: OpenCode Go can serve models from
+several makers. Saved custom profiles are displayed directly as a separate list.
+The picker does not ask for an API key; configure or change credentials under
+**Settings → Models**. Existing saved keys and all preset routing semantics
+are unchanged.
+
+The thinking-intensity control stays beneath the selection list and always
+uses the **available levels returned by the Host for the active model**. Its
+animated progress, endpoint labels and current-level feedback are presentation
+only; changing a level keeps the existing override/save behavior. Motion
+respects the platform's reduced-motion preference. The popup is anchored to the
+composer's right edge and never extends past it.
+
 ## Built-in presets
 
 The shipped catalog is the source used by both the picker and runtime:

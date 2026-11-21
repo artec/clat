@@ -2177,6 +2177,9 @@ mod tests {
         let mut config = ModelConfig {
             preset: Some("deepseek-v4-pro".into()),
             endpoint: "https://api.deepseek.com".into(),
+            // 已配置窗口是唯一权威（07a36c88 起不再从预设/厂商推断）；
+            // 真实加载会把预设的 1M 物化进配置，这里同样显式配置。
+            max_context_tokens: Some(1_000_000),
             ..ModelConfig::default()
         };
 
@@ -2227,8 +2230,9 @@ mod tests {
             "Token: 87% · Cache: 87.00% · Context: 120k/1M"
         );
 
-        // 自定义端点（无预设）：Context 分母未知，省略整段。
+        // 自定义端点（无预设、未配置窗口）：Context 分母未知，省略整段。
         config.preset = None;
+        config.max_context_tokens = None;
         config.endpoint = "https://api.deepseek.com".into();
         assert_eq!(
             full_suffix(&config, &balance, Some(&cached), Some(&turn)),

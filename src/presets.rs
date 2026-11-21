@@ -682,10 +682,8 @@ impl ModelPreset {
                 }
             }
             None => {
-                if seeded {
-                    if let Some(map) = config.extra_headers.as_object_mut() {
-                        map.remove("User-Agent");
-                    }
+                if seeded && let Some(map) = config.extra_headers.as_object_mut() {
+                    map.remove("User-Agent");
                 }
             }
         }

@@ -416,6 +416,19 @@ fn desktop_is_an_optional_native_client_with_no_business_writer() {
                 "clat_core::application",
                 "clat_core::session",
             ] {
+                // Narrow recorded deviation (2026-11-21, notification-sound
+                // batch): notification audio playback is frontend-local UX
+                // I/O — the layering rules scope core-owned spawning to
+                // model/MCP subprocesses. `notification_sounds.rs` is the
+                // single sanctioned home (detached, null stdio, reaped);
+                // every other desktop file keeps the blanket ban.
+                if forbidden == "std::process::Command"
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name == "notification_sounds.rs")
+                {
+                    continue;
+                }
                 assert!(
                     !source.contains(forbidden),
                     "{} bypasses client ports via {forbidden}",

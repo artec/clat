@@ -154,6 +154,26 @@ fn resolve_in_directories(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
+/// Desktop-local audio playback spawn. This is the single sanctioned home for
+/// process spawning in the desktop client: notification sounds are frontend
+/// UX I/O (the layering rules scope core-owned spawning to model/MCP
+/// subprocesses), so the player stays here, detached with null stdio and
+/// reaped on a helper thread. `tests/architecture_boundaries.rs` allowlists
+/// exactly this file for `std::process::Command`.
+pub fn spawn_detached_and_reap(program: &str, args: Vec<String>) {
+    if let Ok(mut child) = Command::new(program)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
 pub fn playback_command(name: &str) -> Option<(PathBuf, Vec<String>)> {
     if !is_safe_sound_name(name) || name == OFF {
         return None;

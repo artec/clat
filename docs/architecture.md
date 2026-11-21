@@ -695,35 +695,38 @@ snapshot, and capability guidance.
    Character counts are only local estimates of tokens. Do not claim savings
    from one unreplicated run.
 4. **No arbitrary tool-turn quota.** A 500-step run that gains evidence can
-   continue. A result that repeats already-seen evidence instead gets one
-   explicit model-facing correction, then a hard stop if the model again
-   produces no new evidence. The bound is on stagnant behavior, not total
-   work. Consecutive and interleaved observation cycles share one per-Run
-   evidence ledger; different paths are independent negative-search scopes.
-   A `read_file` range of the same path counts as repeated evidence only
-   when every line was already covered by prior reads of that path
-   (subset of the coverage union); expanding or full-file reads after a
-   partial read remain Fresh. Disjoint ranges stay independent. Dynamic wait/poll tools are
-   exempt. File writes, destructive actions, UI actions and session-local
-   mutations invalidate old evidence. Process probes (`exec_command` /
-   `run_command`) do **not** clear the ledger or dismiss a pending
-   correction / barren-search scope. Identical commands share a scrubbed
+   continue. Exact same-evidence repeats get up to two model-facing
+   corrections, then a hard stop. Approximate investigate churn — consecutive
+   shell read-probes that only change family (`grep` then `find`) — yields
+   reminders only and never escalates to Stall. The bound is on stagnant
+   behavior, not total work. Consecutive and interleaved observation cycles
+   share one per-Run evidence ledger; different paths are independent
+   negative-search scopes. A `read_file` range of the same path counts as
+   repeated evidence only when every line was already covered by prior reads
+   of that path (subset of the coverage union); expanding or full-file reads
+   after a partial read remain Fresh. Disjoint ranges stay independent.
+   Dynamic wait/poll tools are exempt. File writes, destructive actions, UI
+   actions and session-local mutations invalidate old evidence. Process
+   probes (`exec_command` / `run_command`) do **not** clear the ledger.
+   Progress that resets the exact-correction fuse: reading a previously
+   unseen file path, `web_fetch` / `web_search`, non-shell verification
+   (`cargo` / `curl` / `python` / …), and non-barren structured
+   search/list/discovery. Same-path `read_file` expansions and shell
+   read-probes do not reset that fuse. Identical commands share a scrubbed
    fingerprint (whitespace collapsed, volatile `clat-run-*` / UUID tokens
-   removed).    Shell read-probes (`grep`/`rg`/`find`/`sed`/`head`/`tail`/
+   removed). Shell read-probes (`grep`/`rg`/`find`/`sed`/`head`/`tail`/
    `cat`/`ls` and similar, including `git grep|show|log|diff`) use a coarser
    `family|path-scope` stamp so swapping only the search pattern on the same
    path is not novel; path-scope keeps the full path token (not only the
    first component) so grepping two files under `src/` stays independent.
-   The ninth consecutive shell read-probe is stagnant even across families.
-   Classification uses the primary command of each `;`/`&&` step — a
-   `| tail` or `| grep` filter on `cargo test` / `python` must not count as
-   a read-probe; scripts that also invoke `curl`/`cargo`/`python`/`node`
-   (and similar) are verification, not read-probes; `cat >file` / `sed -i`
-   are writes, not probes, while `2>/dev/null` is not a write. Active `cd`
-   targets are part of the stamp so directory listings in different folders
-   stay independent. Interleaved `read_file` must not dismiss a pending
-   correction — only a non-barren structured search/list/discovery result
-   may. Discovery
+   After eight consecutive shell read-probes, further probes remind even
+   across families — without hard-stopping. Classification uses the primary
+   command of each `;`/`&&` step — a `| tail` or `| grep` filter on
+   `cargo test` / `python` must not count as a read-probe; scripts that also
+   invoke `curl`/`cargo`/`python`/`node` (and similar) are verification, not
+   read-probes; `cat >file` / `sed -i` are writes, not probes, while
+   `2>/dev/null` is not a write. Active `cd` targets are part of the stamp so
+   directory listings in different folders stay independent. Discovery
    timestamps do not make unchanged capability data novel. Tool results
    retain their payload with optional `clat_runtime_feedback`, which marks a
    correction rather than claiming the tool returned new data. **A durable

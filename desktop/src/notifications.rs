@@ -242,31 +242,23 @@ fn delivery_plan(mode: &DesktopSoundMode) -> DeliveryPlan {
     }
 }
 
-fn spawn_detached_and_reap(program: &str, args: Vec<String>) {
-    if let Ok(mut child) = std::process::Command::new(program)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
-}
-
 fn play_fallback_sound(sound: &str) {
     if let Some((program, args)) = crate::notification_sounds::playback_command(sound) {
-        spawn_detached_and_reap(&program.display().to_string(), args);
+        crate::notification_sounds::spawn_detached_and_reap(&program.display().to_string(), args);
     }
 }
 
 fn play_custom_sound(command: &str) {
     #[cfg(target_os = "macos")]
-    spawn_detached_and_reap("sh", vec!["-c".to_owned(), command.to_owned()]);
+    crate::notification_sounds::spawn_detached_and_reap(
+        "sh",
+        vec!["-c".to_owned(), command.to_owned()],
+    );
     #[cfg(windows)]
-    spawn_detached_and_reap("cmd", vec!["/C".to_owned(), command.to_owned()]);
+    crate::notification_sounds::spawn_detached_and_reap(
+        "cmd",
+        vec!["/C".to_owned(), command.to_owned()],
+    );
 }
 
 fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification) {
@@ -294,9 +286,7 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
     let banner_shown = show_banner(app, id, title, body, &plan.banner_audio);
     if let Some(command) = &plan.run_custom_command {
         play_custom_sound(command);
-    } else if !banner_shown
-        && let Some(sound) = &plan.fallback_sound
-    {
+    } else if !banner_shown && let Some(sound) = &plan.fallback_sound {
         play_fallback_sound(sound);
     }
 }

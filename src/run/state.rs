@@ -8,10 +8,10 @@ pub(super) struct StepState {
     pub repeat: EvidenceTracker,
 }
 
-/// A bounded evidence ledger, not a tool-turn quota. Observations with no new
-/// information get one corrective feedback and a chance to recover. True
-/// mutations invalidate old evidence; process probes are fingerprinted instead
-/// of clearing the ledger. Live polling is excluded.
+/// A bounded evidence ledger, not a tool-turn quota. Exact repeats get a few
+/// model-facing corrections then a hard stop; approximate investigate churn
+/// (shell read-probe streaks) only reminds. True mutations and clear progress
+/// signals reset the fuse. Live polling is excluded.
 #[derive(Default)]
 pub(super) struct EvidenceTracker {
     seen: HashSet<u64>,
@@ -24,9 +24,10 @@ pub(super) struct EvidenceTracker {
     read_ranges: HashMap<String, Vec<(u64, u64)>>,
     read_path_order: VecDeque<String>,
     /// Consecutive shell read-probes (`grep`/`find`/…). Diversity across
-    /// families still counts as stagnant once this bound is exceeded.
+    /// families yields reminders only — it does not hard-stop the Run.
     shell_read_streak: u32,
-    correction_pending: bool,
+    /// Exact no-new hits that already produced `Correct` in this fuse window.
+    exact_corrections: u32,
 }
 
 /// A memory bound, not a limit on productive tool calls. Aging out evidence
@@ -34,9 +35,12 @@ pub(super) struct EvidenceTracker {
 const MAX_TRACKED_EVIDENCE: usize = 256;
 
 /// Shell read-probes may change family (`grep` then `find`) without gaining
-/// evidence. Bound consecutive probes so family churn still stalls, but leave
-/// room for a normal multi-file locate before the first edit (Turn 28).
+/// evidence. After this many consecutive probes, remind — but do not Stall.
 const MAX_SHELL_READ_STREAK: u32 = 8;
+
+/// Exact same-evidence repeats: this many `Correct` hints, then Stall.
+/// Two hints matches DSH's soft multi-nudge spirit while keeping a hard fuse.
+const MAX_EXACT_CORRECTIONS: u32 = 2;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum EvidenceDecision {
@@ -63,6 +67,9 @@ impl EvidenceTracker {
         let barren = is_barren(output);
         let scope = evidence_scope(name, arguments);
         let stamp = evidence_stamp(name, arguments, output);
+        let new_file_path = name == "read_file"
+            && read_file_range(arguments)
+                .is_some_and(|(path, _, _)| !self.read_ranges.contains_key(path));
         let covered = name == "read_file" && self.read_range_covered(arguments);
         let shell_read = is_command_probe(name) && is_shell_read_probe(arguments);
         if shell_read {
@@ -72,10 +79,10 @@ impl EvidenceTracker {
             self.shell_read_streak = 0;
         }
         let streak_exhausted = shell_read && self.shell_read_streak > MAX_SHELL_READ_STREAK;
-        let no_new = covered
+        let exact_no_new = covered
             || self.seen.contains(&stamp)
-            || (barren && self.barren_scopes.contains(&scope))
-            || streak_exhausted;
+            || (barren && self.barren_scopes.contains(&scope));
+        let approx_no_new = streak_exhausted && !exact_no_new;
         self.remember(stamp);
         if name == "read_file" {
             // Merge into the coverage union even on repeats so later subset
@@ -90,24 +97,24 @@ impl EvidenceTracker {
                 self.barren_scopes.remove(&oldest);
             }
         }
-        if no_new {
-            if self.correction_pending {
+        if exact_no_new {
+            self.exact_corrections = self.exact_corrections.saturating_add(1);
+            if self.exact_corrections > MAX_EXACT_CORRECTIONS {
                 EvidenceDecision::Stalled
             } else {
-                self.correction_pending = true;
                 EvidenceDecision::Correct
             }
-        } else {
-            // Investigate-class Fresh must not dismiss a pending correction:
-            // interleaved read_file / shell greps previously relit the fuse
-            // forever by looking "novel" while still stuck.
-            if dismisses_pending_correction(name, barren) {
-                self.correction_pending = false;
-                if !barren {
-                    self.barren_scopes.clear();
-                    self.barren_order.clear();
-                }
+        } else if approx_no_new {
+            // Approximate investigate churn: remind only (DSH-like), never Stall.
+            EvidenceDecision::Correct
+        } else if progress_resets_correction(name, arguments, barren, new_file_path) {
+            self.exact_corrections = 0;
+            if !barren {
+                self.barren_scopes.clear();
+                self.barren_order.clear();
             }
+            EvidenceDecision::Fresh
+        } else {
             EvidenceDecision::Fresh
         }
     }
@@ -151,6 +158,13 @@ impl EvidenceTracker {
         }
     }
 
+    /// A claimed human input re-arms the correction fuse only: repeated
+    /// evidence still corrects on its next occurrence, but the escalation to
+    /// Stalled must not cross a fresh user message. The seen ledger stays.
+    pub(super) fn note_user_input(&mut self) {
+        self.exact_corrections = 0;
+    }
+
     pub(super) fn clear(&mut self) {
         self.seen.clear();
         self.order.clear();
@@ -159,17 +173,36 @@ impl EvidenceTracker {
         self.read_ranges.clear();
         self.read_path_order.clear();
         self.shell_read_streak = 0;
-        self.correction_pending = false;
+        self.exact_corrections = 0;
     }
 }
 
-/// Productive search/list/discovery results may recover after a correction.
-/// `read_file` and process tools never dismiss it on their own — only a true
-/// mutation (`clear`) or a non-barren structured find does.
-fn dismisses_pending_correction(name: &str, barren: bool) -> bool {
-    if barren || is_command_probe(name) || name == "read_file" {
+/// Fresh observations that count as real progress reset the exact-repeat fuse.
+/// Shell read-probes and same-path `read_file` expansions do not — they look
+/// novel while still investigating.
+fn progress_resets_correction(
+    name: &str,
+    arguments: &serde_json::Value,
+    barren: bool,
+    new_file_path: bool,
+) -> bool {
+    if barren {
         return false;
     }
+    if new_file_path {
+        return true;
+    }
+    if matches!(name, "web_fetch" | "web_search") {
+        return true;
+    }
+    if is_command_probe(name) {
+        // cargo / curl / python / … verification resets; grep/ls streaks do not.
+        return !is_shell_read_probe(arguments);
+    }
+    if name == "read_file" {
+        return false;
+    }
+    // Non-barren search / list_files / discovery / pure observations.
     true
 }
 
@@ -186,11 +219,13 @@ fn invalidates_evidence(effect: crate::ToolEffect) -> bool {
 }
 
 /// A poll or wait can legitimately return the same observation while
-/// an external actor makes progress on its own clock.
+/// an external actor makes progress on its own clock. `ask_user` is
+/// human-in-the-loop: its result is user input, not model-gathered
+/// evidence, and the conversation advances between asks.
 fn is_live_observation(name: &str) -> bool {
     matches!(
         name,
-        "ui_wait" | "write_stdin" | "job_output" | "job_list" | "terminal_snapshot"
+        "ui_wait" | "write_stdin" | "job_output" | "job_list" | "terminal_snapshot" | "ask_user"
     ) || name.ends_with("_wait")
         || name.ends_with("_poll")
 }
@@ -353,9 +388,8 @@ fn shell_command_has_heavy_primary(cmd: &str) -> bool {
     // Scan every token: live probes often hide `curl` inside `p(){ ...; head; }`
     // bodies after `;`, so primary-of-segment alone misses them.
     cmd.split_whitespace().any(|token| {
-        let cleaned = token.trim_matches(|c: char| {
-            matches!(c, '"' | '\'' | '(' | ')' | '{' | '}' | '`' | ',')
-        });
+        let cleaned = token
+            .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '{' | '}' | '`' | ','));
         is_heavy_shell_binary(binary_basename(cleaned))
     })
 }
@@ -406,9 +440,7 @@ fn shell_segment_writes(segment: &str) -> bool {
             idx += 2;
             continue;
         }
-        if tokens[idx].contains('=')
-            && !tokens[idx].starts_with('-')
-            && !tokens[idx].contains('/')
+        if tokens[idx].contains('=') && !tokens[idx].starts_with('-') && !tokens[idx].contains('/')
         {
             idx += 1;
             continue;
@@ -809,6 +841,10 @@ mod evidence_tests {
         );
         assert_eq!(
             tracker.observe("read_file", &path, &file, read),
+            EvidenceDecision::Correct
+        );
+        assert_eq!(
+            tracker.observe("read_file", &path, &file, read),
             EvidenceDecision::Stalled
         );
     }
@@ -831,6 +867,11 @@ mod evidence_tests {
         changed["query"] = json!("third");
         assert_eq!(
             tracker.observe("search", &json!({"query":"third"}), &changed, read),
+            EvidenceDecision::Correct
+        );
+        changed["query"] = json!("fourth");
+        assert_eq!(
+            tracker.observe("search", &json!({"query":"fourth"}), &changed, read),
             EvidenceDecision::Stalled
         );
     }
@@ -850,6 +891,10 @@ mod evidence_tests {
         );
         assert_eq!(
             tracker.observe("search", &json!({"query":"again"}), &empty, read),
+            EvidenceDecision::Correct
+        );
+        assert_eq!(
+            tracker.observe("search", &json!({"query":"still"}), &empty, read),
             EvidenceDecision::Stalled
         );
     }
@@ -888,6 +933,10 @@ mod evidence_tests {
         assert_eq!(
             tracker.observe("read_file", &args, &output, crate::ToolEffect::Read),
             EvidenceDecision::Fresh
+        );
+        assert_eq!(
+            tracker.observe("read_file", &args, &output, crate::ToolEffect::Read),
+            EvidenceDecision::Correct
         );
         assert_eq!(
             tracker.observe("read_file", &args, &output, crate::ToolEffect::Read),
@@ -942,7 +991,8 @@ mod evidence_tests {
         for (timestamp, expected) in [
             (1, EvidenceDecision::Fresh),
             (2, EvidenceDecision::Correct),
-            (3, EvidenceDecision::Stalled),
+            (3, EvidenceDecision::Correct),
+            (4, EvidenceDecision::Stalled),
         ] {
             let output = json!({"snapshot":"fixed","observed_at_unix_ms":timestamp});
             assert_eq!(
@@ -953,7 +1003,7 @@ mod evidence_tests {
     }
 
     #[test]
-    fn exec_command_does_not_clear_prior_read_evidence() {
+    fn shell_read_does_not_reset_but_verification_exec_does() {
         let mut tracker = EvidenceTracker::default();
         let empty = json!({"total_matches": 0, "matches": []});
         let read = crate::ToolEffect::Read;
@@ -975,20 +1025,23 @@ mod evidence_tests {
             tracker.observe("search", &json!({"query": "b"}), &empty, read),
             EvidenceDecision::Correct
         );
-        // A different probe between barren searches must not dismiss the
-        // pending correction — the next empty search still stalls.
+        // Non-shell verification clears the exact-repeat fuse (progress signal).
         assert_eq!(
             tracker.observe(
                 "exec_command",
-                &json!({"cmd": "pwd"}),
-                &json!({"exit_code": 0, "stdout": "/tmp"}),
+                &json!({"cmd": "cargo test -q"}),
+                &json!({"exit_code": 0, "stdout": "ok"}),
                 execute
             ),
             EvidenceDecision::Fresh
         );
         assert_eq!(
             tracker.observe("search", &json!({"query": "c"}), &empty, read),
-            EvidenceDecision::Stalled
+            EvidenceDecision::Fresh
+        );
+        assert_eq!(
+            tracker.observe("search", &json!({"query": "d"}), &empty, read),
+            EvidenceDecision::Correct
         );
     }
 
@@ -1016,7 +1069,7 @@ mod evidence_tests {
             ),
             EvidenceDecision::Fresh
         );
-        // Fully inside the merged 100-250 coverage.
+        // Fully inside the merged 100-250 coverage — two Correct hints, then Stall.
         assert_eq!(
             tracker.observe(
                 "read_file",
@@ -1031,6 +1084,15 @@ mod evidence_tests {
                 "read_file",
                 &json!({"path": path, "start_line": 120, "end_line": 130}),
                 &json!({"content": "block-d"}),
+                read
+            ),
+            EvidenceDecision::Correct
+        );
+        assert_eq!(
+            tracker.observe(
+                "read_file",
+                &json!({"path": path, "start_line": 110, "end_line": 115}),
+                &json!({"content": "block-e"}),
                 read
             ),
             EvidenceDecision::Stalled
@@ -1103,13 +1165,18 @@ mod evidence_tests {
         );
         assert_eq!(
             tracker.observe("exec_command", &second, &output, execute),
+            EvidenceDecision::Correct
+        );
+        assert_eq!(
+            tracker.observe("exec_command", &second, &output, execute),
             EvidenceDecision::Stalled
         );
     }
 
     #[test]
-    fn diverse_shell_greps_interleaved_with_reads_still_stall() {
-        // Dogfood T23 shape: swap grep patterns + read different files forever.
+    fn diverse_shell_greps_with_new_files_do_not_hard_stall() {
+        // Dogfood T23 shape: swap grep patterns + read different files.
+        // New-file reads reset the exact fuse; approx shell streaks only remind.
         let mut tracker = EvidenceTracker::default();
         let execute = crate::ToolEffect::Execute;
         let read = crate::ToolEffect::Read;
@@ -1157,12 +1224,21 @@ mod evidence_tests {
                 &out,
                 execute
             ),
+            EvidenceDecision::Correct
+        );
+        assert_ne!(
+            tracker.observe(
+                "exec_command",
+                &json!({"cmd": "cd /Users/deng/Documents/GitHub/clat && grep -rn 'another' src"}),
+                &out,
+                execute
+            ),
             EvidenceDecision::Stalled
         );
     }
 
     #[test]
-    fn shell_read_family_diversity_exhausts_streak() {
+    fn shell_read_family_diversity_reminds_without_stall() {
         let mut tracker = EvidenceTracker::default();
         let execute = crate::ToolEffect::Execute;
         let out = json!({"exit_code": 0, "stdout": "ok"});
@@ -1183,23 +1259,36 @@ mod evidence_tests {
                 "{cmd}"
             );
         }
-        // Ninth consecutive shell read-probe is stagnant even with a new family.
+        // Ninth+ consecutive shell read-probes: remind only, never Stall.
+        for cmd in ["cat src/b.rs", "tree src", "rg beta src", "file src/c.rs"] {
+            assert_eq!(
+                tracker.observe("exec_command", &json!({"cmd": cmd}), &out, execute),
+                EvidenceDecision::Correct,
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_same_shell_read_stalls_after_two_corrections() {
+        let mut tracker = EvidenceTracker::default();
+        let execute = crate::ToolEffect::Execute;
+        let out = json!({"exit_code": 0, "stdout": "hits"});
+        let cmd = json!({"cmd": "grep -rn stalled src"});
         assert_eq!(
-            tracker.observe(
-                "exec_command",
-                &json!({"cmd": "cat src/b.rs"}),
-                &out,
-                execute
-            ),
+            tracker.observe("exec_command", &cmd, &out, execute),
+            EvidenceDecision::Fresh
+        );
+        assert_eq!(
+            tracker.observe("exec_command", &cmd, &out, execute),
             EvidenceDecision::Correct
         );
         assert_eq!(
-            tracker.observe(
-                "exec_command",
-                &json!({"cmd": "tree src"}),
-                &out,
-                execute
-            ),
+            tracker.observe("exec_command", &cmd, &out, execute),
+            EvidenceDecision::Correct
+        );
+        assert_eq!(
+            tracker.observe("exec_command", &cmd, &out, execute),
             EvidenceDecision::Stalled
         );
     }

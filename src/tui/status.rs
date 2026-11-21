@@ -237,7 +237,7 @@ pub(super) fn format_tokens(tokens: u64) -> String {
 /// Exact binary-sized windows (e.g. 262_144 = 256K) must agree with
 /// the model picker; arbitrary configured windows retain decimal notation.
 pub(super) fn format_context_window(window: u64) -> String {
-    if window >= 1_048_576 && window % 1_048_576 == 0 {
+    if window >= 1_048_576 && window.is_multiple_of(1_048_576) {
         format!("{}M", window / 1_048_576)
     } else if window >= 16_384 && window.is_power_of_two() {
         format!("{}K", window / 1_024)

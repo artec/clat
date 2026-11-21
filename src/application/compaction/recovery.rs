@@ -8,7 +8,7 @@ impl ActiveContext {
     pub(super) fn recover_capacity(
         &mut self,
         kind: ModelErrorKind,
-        items: &mut Vec<ModelItem>,
+        items: &mut [ModelItem],
         _usage: &mut Usage,
         instructions: Option<&str>,
         definitions: &[ToolDefinition],

@@ -50,6 +50,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/model-picker-layout.js",
+        include_bytes!("../../web/model-picker-layout.js"),
+        "application/javascript",
+    ),
+    (
         "/settings-layout.js",
         include_bytes!("../../web/settings-layout.js"),
         "application/javascript",
@@ -619,6 +624,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/workbench-shell.js",
     "/project-lifecycle.js",
     "/app.js",
+    "/model-picker-layout.js",
 ];
 
 fn project_bundle() -> &'static [u8] {

@@ -226,23 +226,45 @@
                 <header>
                   <div><span class="section-kicker" data-i18n="web.next_run">NEXT RUN</span><strong data-i18n="web.choose_model">Choose model</strong></div>
                 </header>
-                <p id="model-picker-current" class="model-picker-current" role="status"></p>
-                <label class="model-picker-key"><span data-i18n="web.thinking_intensity">Thinking intensity</span>
-                  <span class="model-thinking-field">
-                    <output id="model-thinking-value"></output>
+                <div class="model-picker-current-card">
+                  <div class="model-picker-current-copy">
+                    <span class="model-picker-current-caption" data-i18n="settings_ui.active_model">Current model</span>
+                    <p id="model-picker-current" class="model-picker-current" role="status"></p>
+                  </div>
+                  <button id="model-picker-manage" class="model-picker-manage" type="button"
+                          aria-label="Manage model profiles" data-i18n-aria-label="web.manage_model_profiles"
+                          title="Manage model profiles" data-i18n-title="web.manage_model_profiles">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4l.6 2.1 1.9.8 1.9-1.1 2.8 2.8-1.1 1.9.8 1.9L23 12v4l-2.1.6-.8 1.9 1.1 1.9-2.8 2.8-1.9-1.1-1.9.8L14 25h-4l-.6-2.1-1.9-.8-1.9 1.1-2.8-2.8 1.1-1.9-.8-1.9L1 16v-4l2.1-.6.8-1.9-1.1-1.9 2.8-2.8 1.9 1.1 1.9-.8z" transform="translate(0,-2) scale(1,.96)"/><circle cx="12" cy="12" r="3"/></svg>
+                  </button>
+                </div>
+                <div class="model-picker-modes" role="group" aria-label="Available models" data-i18n-aria-label="web.available_models">
+                  <button id="model-picker-builtins" type="button" aria-pressed="true" data-i18n="web.built_in_presets">Built-in presets</button>
+                  <button id="model-picker-custom" type="button" aria-pressed="false" data-i18n="setup.custom">Custom models</button>
+                </div>
+                <div id="model-picker-browser" class="model-picker-browser">
+                  <nav id="model-picker-sources" class="model-picker-sources" aria-label="Built-in presets" data-i18n-aria-label="web.built_in_presets"></nav>
+                  <div class="model-picker-results">
+                    <div id="model-picker-section-title" class="model-picker-section-title"></div>
+                    <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models" data-i18n-aria-label="web.available_models"></div>
+                  </div>
+                </div>
+                <div class="model-thinking-panel">
+                  <div class="model-thinking-heading">
+                    <label for="model-thinking" data-i18n="web.thinking_intensity">Thinking intensity</label>
+                    <output id="model-thinking-value" for="model-thinking"></output>
+                  </div>
+                  <div class="model-thinking-field">
                     <span class="model-thinking-control">
                       <input id="model-thinking" type="range" min="0" max="0" step="1" value="0" aria-label="Thinking intensity" data-i18n-aria-label="web.thinking_intensity" disabled>
                       <span id="model-thinking-ticks" class="model-thinking-ticks" aria-hidden="true"></span>
                     </span>
-                  </span>
-                </label>
-                <div id="model-picker-list" class="model-picker-list" role="radiogroup" aria-label="Available models" data-i18n-aria-label="web.available_models"></div>
-                <label class="model-picker-key"><span data-i18n="web.preset_api_key">Preset API key</span>
-                  <input id="model-picker-key" type="password" autocomplete="new-password"
-                         placeholder="Optional · uses remembered vendor key" data-i18n-placeholder="web.optional_uses_remembered_vendor_key">
-                </label>
+                    <div id="model-thinking-ends" class="model-thinking-ends" aria-hidden="true">
+                      <span id="model-thinking-min"></span><span id="model-thinking-max"></span>
+                    </div>
+                  </div>
+                </div>
+                <input id="model-picker-key" type="hidden">
                 <p id="model-picker-error" class="error model-picker-error" role="alert"></p>
-                <button id="model-picker-manage" class="model-picker-manage" type="button" data-i18n="web.manage_model_profiles">Manage model profiles…</button>
               </section>
             </div>
             <button id="queue-enqueue" type="button" title="Queue text for the next turn (Ctrl+Q)" data-i18n-title="web.queue_text_for_the_next_turn_ctrl_q" aria-label="Queue next turn" data-i18n-aria-label="web.queue_next_turn" data-i18n="web.queue">Queue</button>

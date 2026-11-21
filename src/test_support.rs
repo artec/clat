@@ -742,7 +742,10 @@ impl Model for TestModel {
                 let has_command_result = current_items.iter().any(|item| {
                     matches!(item, crate::model::ModelItem::ToolResult(result) if result.tool_name == "run_command")
                 });
-                let described = current_items.iter().any(|item| {
+                // Capability introspection happens once per conversation — a
+                // real model does not re-describe the same capability every
+                // turn (EvidenceTracker rightly reads that as a loop).
+                let described = request.items.iter().any(|item| {
                     matches!(item, crate::model::ModelItem::ToolResult(result)
                         if result.tool_name == "describe_capability" && !result.is_error)
                 });

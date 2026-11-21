@@ -35,7 +35,7 @@ struct LongTask {
     mode: SummaryMode,
     snapshots: Mutex<Vec<Vec<ModelItem>>>,
     sessions: Mutex<Option<Arc<crate::session::use_cases::SessionService>>>,
-    /// 项目根（每轮推进 observations.txt 用）。
+    /// 项目根（每轮写入两个新观测文件用）。
     root: Mutex<Option<std::path::PathBuf>>,
     /// SpanRewrite 只改写一次的闸。
     span_rewritten: std::sync::atomic::AtomicBool,
@@ -225,13 +225,17 @@ impl TestModelScript for LongTask {
             1
         );
         let n = self.main.fetch_add(1, Ordering::SeqCst);
-        // 每轮推进文件内容：并行批次的 EvidenceTracker 要求读工具产出
-        // 新证据（同参同出会 stall）；真实长任务也在持续写入再读回。
+        // 每轮写入两个新观测文件再读回：EvidenceTracker 要求读工具产出
+        // 新证据（同文件同参同出会 stall；read_file 的 Fresh 也不撤销待
+        // 发纠正）。真实长任务是扫描大量不同文件，不是反复读同一份。
         if let Some(root) = self.root.lock().unwrap().clone() {
-            let path = root.join("observations.txt");
-            let mut text = std::fs::read_to_string(&path).unwrap_or_default();
-            text.push_str(&format!("round {n} progress\n"));
-            std::fs::write(&path, text).unwrap();
+            for index in 0..2 {
+                std::fs::write(
+                    root.join(format!("observations-{n}-{index}.txt")),
+                    format!("observation evidence {n}-{index}\n").repeat(600),
+                )
+                .unwrap();
+            }
         }
         self.snapshots.lock().unwrap().push(request.items.to_vec());
         if matches!(self.mode, SummaryMode::FailureThenCapacity)
@@ -297,7 +301,10 @@ impl TestModelScript for LongTask {
                 .map(|index| crate::ToolCall {
                     id: format!("read-{n}-{index}"),
                     name: "read_file".into(),
-                    arguments: json!({"path":"observations.txt","max_bytes":16000}),
+                    arguments: json!({
+                        "path": format!("observations-{n}-{index}.txt"),
+                        "max_bytes": 16000
+                    }),
                 })
                 .collect();
             for call in &reply.tool_calls {
@@ -333,11 +340,6 @@ fn fixture(
 ) -> (TrustedProjectApplication, Arc<LongTask>, PathBuf) {
     let (storage, root) = roots("active-context");
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(
-        root.join("observations.txt"),
-        "observation evidence\n".repeat(600),
-    )
-    .unwrap();
     let script = Arc::new(LongTask::new(mode));
     let mut app = mount(
         &Project::new(&root),
@@ -487,8 +489,9 @@ fn active_compaction_provider_capacity_failure_does_not_retry_or_replay_tools() 
     let seen = script.main.load(Ordering::SeqCst);
     assert_eq!(
         script.summaries.load(Ordering::SeqCst),
-        0,
-        "a provider capacity rejection must not trigger a summary retry"
+        2,
+        "only the counting-breaker retries run before the rejection (INV-CP2); \
+         the capacity rejection itself must not add another summary attempt"
     );
     app.close().unwrap();
     let events = load_events(&storage);
@@ -1082,11 +1085,13 @@ fn cp2_failure_breaker_counts_three_and_resets_on_the_next_user_round() {
         "counting breaker retries after the first failure (sticky: 1)"
     );
     // 第二 run：新用户输入 → 新 RunWorker → 计数结构性复位 → 再试。
+    // 该 run 在接纳即超容（清组对 6 条历史泄不动）只给 1 次尝试后硬
+    // 拒——复位的最小判别是"有再试"（粘性修前这里只会是 0）。
     let second = run(&mut app, "KEEP_USER_INTENT");
     assert!(second.is_err());
     let after_second = script.summaries.load(Ordering::SeqCst);
     assert!(
-        after_second - after_first >= 2,
+        after_second > after_first,
         "the next user round resets the failure count and retries again (sticky: 0)"
     );
     app.close().unwrap();
