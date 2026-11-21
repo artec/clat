@@ -132,7 +132,7 @@ fn phase8_pressure_pruning_preserves_raw_evidence_and_never_reexecutes_the_tool(
     exercise_pruner(false);
 }
 #[test]
-fn phase8_provider_overflow_durably_prunes_then_repeats_only_the_model_request() {
+fn phase8_provider_overflow_returns_error_without_compaction_or_retry() {
     exercise_pruner(true);
 }
 fn exercise_pruner(overflow: bool) {
@@ -163,13 +163,13 @@ fn exercise_pruner(overflow: bool) {
             ((fixed + 8000) * 5 / 4) as u32
         },
     );
-    let result = super::tests::run(&mut app, "Inspect the offline evidence.").unwrap();
-    assert_eq!(
-        observed.calls.load(Ordering::SeqCst),
-        if overflow { 3 } else { 2 }
-    );
+    let result = super::tests::run(&mut app, "Inspect the offline evidence.");
+    assert_eq!(observed.calls.load(Ordering::SeqCst), 2);
     if overflow {
-        assert!(result.usage.input_tokens >= 100);
+        let error = result.unwrap_err();
+        assert!(error.error.contains("context capacity"), "{}", error.error);
+    } else {
+        result.unwrap();
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let live = app.sessions.surface_nodes().unwrap();
@@ -180,14 +180,16 @@ fn exercise_pruner(overflow: bool) {
             .iter()
             .filter(|e| e.event_type == "assistant/attempt")
             .count(),
-        usize::from(overflow)
+        0,
+        "server capacity errors do not authorize a retry"
     );
     assert_eq!(
         events
             .iter()
             .filter(|e| e.event_type == "compaction/prune")
             .count(),
-        1
+        usize::from(!overflow),
+        "only configured pre-request pressure can prune"
     );
     let results = events
         .iter()

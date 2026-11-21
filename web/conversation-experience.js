@@ -147,7 +147,11 @@ function installUsagePopover(actions) {
   syncUsageTrigger();
 }
 async function refreshUsage() {
-  const epoch=++usageEpoch, session=state.sessionId, generation=state.selectionGeneration;
+  const epoch=++usageEpoch;
+  // workbench.info is the authority for the selected model and session.
+  // Its session may have updated just before the consumer state is copied.
+  const session=state.workbench?.session ? state.workbench.session.id || null : state.sessionId;
+  const generation=state.selectionGeneration;
   const owner = JSON.stringify([session,generation,state.workbench?.model]);
   if (owner !== usageScope) {
     usageScope = owner;

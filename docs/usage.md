@@ -1012,14 +1012,25 @@ omission even when the plugin is later disabled. Disabled offload never falls
 back to silently dropping images in an adapter. Remaining capacity or modality
 problems fail explicitly. `/context` only reads the durable view.
 
-A provider-confirmed capacity code may trigger request recovery before any text
-or tool increment was delivered. Context overflow permits one repeat only after
-durable maintenance strictly reduced the request. Image recovery must remove an
-eligible retained image on every repeat. Other errors keep ordinary retry rules;
-no recovery repeats a tool or creates new authority. Model switching checks the
-target capacity before publishing its request header. A saved previous route can
-summarize first; failure leaves the previous request header and the newly saved
-Host settings intact.
+CLAT trusts the user's configured context window for each model; it does not
+probe for, infer, or persist a hidden provider/plan limit from error wording.
+Every target model uses the same pre-dispatch request budget, including 1M,
+500K, 256K, 128K and user-defined windows. Before a model switch, CLAT prunes
+or compacts when the measured request exceeds the **target's** input capacity
+(after reserving output). A saved previous route is preferred to produce the
+summary; when unavailable, the target route can attempt bounded summarization.
+If the protected context or even the summary instructions cannot fit, CLAT
+reports the failure without dispatching the target request. Switching back to
+a larger model raises its future budget, but does not restore already compacted
+history; full originals remain in the journal.
+
+Once a request has reached a provider, an unexpected context-capacity or
+membership rejection is reported directly. CLAT does not automatically retry
+it with a guessed smaller context. Independent image-capacity recovery may
+remove eligible images before any text/tool increment and retry only after
+strict image-count reduction. Other errors keep ordinary retry rules; no
+recovery repeats a tool or creates new authority. Failed switch preparation
+keeps the old request header and the newly saved Host settings intact.
 
 Automatic memory lookup samples a bounded UTF-8 query from long messages; the
 full original user message, including its tail, stays in the journal and model
@@ -3501,9 +3512,15 @@ The model picker also sits above conversation navigation controls; its thinking
 intensity selector follows the shared themed form style. Mouse opening leaves
 focus in place; keyboard opening guides focus to the selected model after loading
 without stealing focus from a control the user has already entered.
-It shows the estimated next-request input versus configured capacity, excluding
-unsent drafts, plus the session's last request and the current model route's
-cumulative input/output/cache usage. Context estimates are not cumulative spend.
+It shows the estimated next-request input versus **the currently configured
+model context window**, excluding unsent drafts, plus the session's last request
+and the current model route's cumulative input/output/cache usage. Model switches,
+manual window changes, and Kimi Plus/Pro selection refresh this capacity from the
+Host; neither this popover nor the TUI status line infers a tier from provider
+errors. The TUI status line also shows configured windows for custom vendors and
+uses binary notation (256K/128K) for exact power-of-two windows, without
+substituting a preset value for an explicitly unset window. Context estimates are
+not cumulative spend.
 Provider allowances retain units/currencies and update times. Unsupported,
 loading, failed and zero balances are distinct. The popover reads the existing
 monitor cache; hovering never causes an additional provider balance query.

@@ -256,24 +256,14 @@ was never journaled is rejected with 400 "did not have response messages"
 `[no recorded result]` placeholder response for such calls when serializing
 history.
 
-Plan tiers gate the context window: a Plus-plan key serves `k3.1-pro` up to
-256K context while higher tiers unlock 1M (live-probed 403 "Your current
-plan supports only k3.1-pro up to 256K context", 2026-11-21, on an
-oversized request; the body carries no machine code, only the fixed
-permission-denied template). The preset keeps the documented 1M window —
-no tier is hard-coded. CLAT recognizes the tier-limit 403 as a
-capacity error and routes it through the existing compaction-recovery
-path: the history is compacted below the tier limit and the request
-retried once, so lower tiers work without configuration and higher tiers
-never trigger the path. The reported limit is also threaded into the
-compaction budget as a runtime-discovered window: after the first
-tier-limit 403 the proactive threshold and the recovery retain size are
-computed against the discovered limit instead of the preset window (the
-1M-preset budget kept ~139K of history after recovery — still over a
-256K tier once schemas and the output reserve were added, so the single
-retry hit the wall again). The discovery is in-memory per session: it
-never rewrites the configuration, and a higher-tier key naturally uses
-the full preset window in new sessions.
+The selected Plus / Pro-or-higher tier sets the actual Kimi Coding Plan
+context window. CLAT no longer guesses this entitlement from provider 403
+wording, probes for a smaller window, or stores inferred limits in
+`~/.clat/tier_limits.json`. A mismatch between the user's selected tier and
+the server's actual entitlement is reported as a provider error; no
+automatic capacity-based compaction/retry occurs in response to that error.
+Switching to or from Kimi uses the same target-window compaction policy as
+all other models (including Grok's configured 500K window).
 
 The Coding membership endpoint historically admitted subscription traffic only
 for allowlisted coding-agent User-Agents (community matrix, 2026-08), and the
@@ -627,7 +617,7 @@ secondary sources are recorded rather than silently followed.
 | DeepSeek (`deepseek-flash`, `deepseek-v4-pro`) | [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing), api-docs.deepseek.com, re-checked 2026-11-03 |
 | GLM Coding Plan (`glm-5.3`, `glm-5.3-flash`) | [GLM 5.3 guide](https://docs.z.ai/guides/llm/glm-5.3) + the [Coding endpoint](https://open.bigmodel.cn/api/coding/paas/v4) docs; owner first-party confirmation 2026-08 |
 | Qwen Token Plan (`qwen4-max`, `qwen3.8-flash`) | [Qwen4 Max](https://help.aliyun.com/zh/model-studio/qwen4-max), [Qwen3.8 Flash](https://help.aliyun.com/zh/model-studio/qwen3-8-flash), [Token Plan overview](https://www.alibabacloud.com/help/zh/model-studio/token-plan-personal-overview), checked 2026-11-18 |
-| Kimi Coding Plan (`k3.1-pro`, `kimi-for-coding`) | platform.kimi.com docs — models page and the K3.1 Pro quickstart, fetched 2026-11-03 |
+| Kimi Coding Plan (`k3.1-pro`, `kimi-for-coding`) | Kimi Code docs [model configuration](https://www.kimi.com/code/docs/kimi-code/models.html), re-checked 2026-11-21 (the Coding model table now lives here; previously platform.kimi.com docs, first fetched 2026-11-03) |
 | Hy Token Plan (`hy4`, `hy4-flash`) | TokenHub plan/calling guides (2026-11-04/11-07 updates) behind the [TokenHub console](https://console.cloud.tencent.com/tokenhub/tokenplan), plus the TC-0 live probe (`docs/research/tc0-probe/`) |
 | OpenCode Go (12 presets) | The gateway's own public `GET https://opencode.ai/inference/go/v1/models` — snapshots 2026-11-18 and 2026-11-19 (zero drift between them); [console docs](https://opencode.ai/docs/console/go) for policy |
 

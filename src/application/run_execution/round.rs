@@ -209,7 +209,6 @@ impl RoundExecution {
             checkpoints: worker.deps.sessions.compaction_checkpoints(),
             automatic_summary_failures: Arc::clone(&worker.automatic_summary_failures),
             history_changed: false,
-            discovered_limit: None,
         }))
     }
     fn finish(&self, worker: &mut RunWorker, outcome: ExecutionOutcome) -> ApplicationRunResult {

@@ -42,10 +42,6 @@ pub struct ModelError {
     message: String,
     kind: ModelErrorKind,
     retry_hint: Option<RetryHint>,
-    /// 厂商报告的上下文上限（token）——如 Kimi 档位 403 的
-    /// "up to 256K context"（2026-11-21 live 实测）。容量恢复用它
-    /// 收紧压缩预算的有效窗口；None = 未报告。
-    context_limit: Option<u64>,
 }
 
 impl ModelError {
@@ -56,7 +52,6 @@ impl ModelError {
             message: message.into(),
             kind: ModelErrorKind::Other,
             retry_hint: None,
-            context_limit: None,
         }
     }
 
@@ -65,7 +60,6 @@ impl ModelError {
             message: message.into(),
             kind,
             retry_hint: None,
-            context_limit: None,
         }
     }
 
@@ -90,21 +84,12 @@ impl ModelError {
         self
     }
 
-    pub fn with_context_limit(mut self, limit: u64) -> Self {
-        self.context_limit = Some(limit);
-        self
-    }
-
     pub fn kind(&self) -> ModelErrorKind {
         self.kind
     }
 
     pub fn retry_hint(&self) -> Option<RetryHint> {
         self.retry_hint
-    }
-
-    pub fn context_limit(&self) -> Option<u64> {
-        self.context_limit
     }
 }
 

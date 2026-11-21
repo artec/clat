@@ -234,6 +234,18 @@ pub(super) fn format_tokens(tokens: u64) -> String {
     }
 }
 
+/// Exact binary-sized windows (e.g. 262_144 = 256K) must agree with
+/// the model picker; arbitrary configured windows retain decimal notation.
+pub(super) fn format_context_window(window: u64) -> String {
+    if window >= 1_048_576 && window % 1_048_576 == 0 {
+        format!("{}M", window / 1_048_576)
+    } else if window >= 16_384 && window.is_power_of_two() {
+        format!("{}K", window / 1_024)
+    } else {
+        format_tokens(window)
+    }
+}
+
 /// 缩短路径用于状态栏展示：home 前缀替换为 `~`
 /// （如 `~/Documents/GitHub/clat`），非 home 路径原样返回。
 pub(super) fn abbreviate_home(path: &Path) -> String {
@@ -297,13 +309,8 @@ pub(super) fn status_suffix_segments_localized(
     last_turn_usage: Option<&Usage>,
     locale: LocaleContext,
 ) -> Vec<String> {
-    let window = config.max_context_tokens.map(u64::from).or_else(|| {
-        config
-            .preset
-            .as_deref()
-            .and_then(preset_by_id)
-            .map(|preset| preset.context_window as u64)
-    });
+    // The user-configured limit, including an explicit Clear, is authoritative.
+    let window = config.max_context_tokens.map(u64::from);
     status_telemetry_segments_localized(
         config.vendor(),
         balance,
@@ -323,31 +330,35 @@ pub(super) fn status_telemetry_segments_localized(
     locale: LocaleContext,
 ) -> Vec<String> {
     let mut parts = Vec::new();
-    if vendor == ModelVendor::Other {
-        return parts;
-    }
+    // Even a custom/unknown vendor has a configured context window.
+    // Keep provider-only balance/cache fields hidden for that vendor.
     // DeepSeek 槽位存余额文本，加 Wallet 标签与货币符号；GLM 槽位存
     // 5 小时窗口剩余额度百分比（如 "87%"），加 Token 标签。
-    if let Some(balance) = balance {
-        if vendor == ModelVendor::DeepSeek {
-            parts.push(
-                locale.render(&UiMessage::new("tui.wallet_value").arg("balance", balance.clone())),
-            );
-        } else {
-            parts.push(
-                locale.render(&UiMessage::new("tui.token_value").arg("balance", balance.clone())),
-            );
+    if vendor != ModelVendor::Other {
+        if let Some(balance) = balance {
+            if vendor == ModelVendor::DeepSeek {
+                parts.push(
+                    locale.render(
+                        &UiMessage::new("tui.wallet_value").arg("balance", balance.clone()),
+                    ),
+                );
+            } else {
+                parts
+                    .push(locale.render(
+                        &UiMessage::new("tui.token_value").arg("balance", balance.clone()),
+                    ));
+            }
         }
+        // Cache 段对 DeepSeek/GLM 常驻：无数据时显示 `--%`（该路由尚未跑
+        // 过、或适配器未上报），三段布局自启动起稳定。
+        let cache = route_usage
+            .and_then(cache_hit_percent)
+            .unwrap_or_else(|| "--%".into());
+        parts.push(locale.render(&UiMessage::new("tui.cache_value").arg("cache", cache)));
     }
-    // Cache 段对 DeepSeek/GLM 常驻：无数据时显示 `--%`（该路由尚未跑
-    // 过、或适配器未上报），三段布局自启动起稳定。
-    let cache = route_usage
-        .and_then(cache_hit_percent)
-        .unwrap_or_else(|| "--%".into());
-    parts.push(locale.render(&UiMessage::new("tui.cache_value").arg("cache", cache)));
     // Context 当前值 ≈ 最近一次模型请求的 input+output（下一次请求
-    // 的近似起点）；分母是预设的官方上下文窗口，自定义端点未知则
-    // 省略整段。新会话无请求历史时按 0 计。
+    // 的近似起点）；分母始终来自用户配置的当前模型窗口，包括自定义
+    // 模型。没有配置窗口时省略整段。新会话无请求历史时按 0 计。
     if let Some(window) = window {
         let current = last_turn_usage
             .map(|usage| usage.input_tokens.saturating_add(usage.output_tokens))
@@ -356,7 +367,7 @@ pub(super) fn status_telemetry_segments_localized(
             locale.render(
                 &UiMessage::new("tui.context_value")
                     .arg("current", format_tokens(current))
-                    .arg("window", format_tokens(window)),
+                    .arg("window", format_context_window(window)),
             ),
         );
     }

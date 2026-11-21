@@ -232,11 +232,6 @@ impl OpenAiCompatibleModel {
                 extract_error_message(&text)
             ),
         );
-        // 档位上限（如 Kimi Plus 256K，2026-11-21）附带着错误上行：
-        // 容量恢复靠它收紧压缩预算窗口。
-        if let Some(limit) = super::capacity::plan_limit_from_body(&text) {
-            error = error.with_context_limit(limit);
-        }
         if let Some(hint) = hint {
             error = error.with_retry_hint(hint);
         }
@@ -1816,9 +1811,8 @@ mod tests {
             ModelItem::user_text("go"),
         ];
         // 非回放端点（Kimi 等）：完全空消息整条跳过。
-        let mapped =
-            map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
-                .expect("serialization");
+        let mapped = map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+            .expect("serialization");
         assert_eq!(mapped.len(), 2, "the payloadless assistant turn is skipped");
         assert!(mapped.iter().all(|message| message["role"] != "assistant"));
 
@@ -1843,9 +1837,12 @@ mod tests {
                 arguments: json!({}),
             }),
         ];
-        let tool_messages =
-            map_messages(None, &tool_items, &crate::model::ImageRequestPolicy::default())
-                .expect("serialization");
+        let tool_messages = map_messages(
+            None,
+            &tool_items,
+            &crate::model::ImageRequestPolicy::default(),
+        )
+        .expect("serialization");
         let assistant = tool_messages
             .iter()
             .find(|message| message["role"] == "assistant")
@@ -1872,9 +1869,8 @@ mod tests {
             // 该调用没有 ToolResult —— 会话中被取消/中断。
             ModelItem::user_text("next"),
         ];
-        let mapped =
-            map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
-                .expect("serialization");
+        let mapped = map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+            .expect("serialization");
         let assistant = mapped
             .iter()
             .find(|message| message["role"] == "assistant")

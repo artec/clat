@@ -18,8 +18,9 @@ pub(super) struct EvidenceTracker {
     order: VecDeque<u64>,
     barren_scopes: HashSet<String>,
     barren_order: VecDeque<String>,
-    /// Line ranges already observed per `read_file` path. An overlapping
-    /// range of the same path is not new evidence.
+    /// Merged line coverage per `read_file` path. A new range is not new
+    /// evidence only when every line was already covered (subset), so a
+    /// partial read followed by a full-file read can still expand coverage.
     read_ranges: HashMap<String, Vec<(u64, u64)>>,
     read_path_order: VecDeque<String>,
     /// Consecutive shell read-probes (`grep`/`find`/…). Diversity across
@@ -77,8 +78,8 @@ impl EvidenceTracker {
             || streak_exhausted;
         self.remember(stamp);
         if name == "read_file" {
-            // Grow coverage even on repeats so adjacent overlapping probes
-            // keep counting as already-seen rather than resetting the fuse.
+            // Merge into the coverage union even on repeats so later subset
+            // reads stay detected after an expanding read.
             self.remember_read_range(arguments);
         }
         if barren && self.barren_scopes.insert(scope.clone()) {
@@ -126,11 +127,9 @@ impl EvidenceTracker {
         let Some((path, start, end)) = read_file_range(arguments) else {
             return false;
         };
-        self.read_ranges.get(path).is_some_and(|ranges| {
-            ranges
-                .iter()
-                .any(|&(s, e)| ranges_overlap(s, e, start, end))
-        })
+        self.read_ranges
+            .get(path)
+            .is_some_and(|ranges| range_fully_covered(ranges, start, end))
     }
 
     fn remember_read_range(&mut self, arguments: &serde_json::Value) {
@@ -139,10 +138,9 @@ impl EvidenceTracker {
         };
         let path = path.to_owned();
         let is_new_path = !self.read_ranges.contains_key(&path);
-        self.read_ranges
-            .entry(path.clone())
-            .or_default()
-            .push((start, end));
+        let ranges = self.read_ranges.entry(path.clone()).or_default();
+        ranges.push((start, end));
+        *ranges = merge_line_ranges(ranges);
         if is_new_path {
             self.read_path_order.push_back(path);
             if self.read_path_order.len() > MAX_TRACKED_EVIDENCE
@@ -679,8 +677,46 @@ fn read_file_range(arguments: &serde_json::Value) -> Option<(&str, u64, u64)> {
     Some((path, start, end))
 }
 
-fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
-    a_start <= b_end && b_start <= a_end
+fn merge_line_ranges(ranges: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    let mut ordered = ranges.to_vec();
+    ordered.sort_by_key(|(start, _)| *start);
+    let mut merged = Vec::with_capacity(ordered.len());
+    let (mut cur_start, mut cur_end) = ordered[0];
+    for &(start, end) in &ordered[1..] {
+        if start <= cur_end.saturating_add(1) {
+            cur_end = cur_end.max(end);
+        } else {
+            merged.push((cur_start, cur_end));
+            cur_start = start;
+            cur_end = end;
+        }
+    }
+    merged.push((cur_start, cur_end));
+    merged
+}
+
+/// True when every line in `[start, end]` already appears in the coverage union.
+fn range_fully_covered(ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
+    if start > end {
+        return true;
+    }
+    let mut cursor = start;
+    for &(seg_start, seg_end) in ranges {
+        if seg_end < cursor {
+            continue;
+        }
+        if seg_start > cursor {
+            return false;
+        }
+        cursor = seg_end.saturating_add(1);
+        if cursor > end {
+            return true;
+        }
+    }
+    cursor > end
 }
 
 impl StepState {
@@ -957,7 +993,7 @@ mod evidence_tests {
     }
 
     #[test]
-    fn overlapping_read_file_ranges_are_not_new_evidence() {
+    fn covered_read_file_ranges_are_not_new_evidence() {
         let mut tracker = EvidenceTracker::default();
         let read = crate::ToolEffect::Read;
         let path = "src/run/state.rs";
@@ -970,6 +1006,7 @@ mod evidence_tests {
             ),
             EvidenceDecision::Fresh
         );
+        // Extends coverage with new lines — still Fresh.
         assert_eq!(
             tracker.observe(
                 "read_file",
@@ -977,13 +1014,23 @@ mod evidence_tests {
                 &json!({"content": "block-b"}),
                 read
             ),
-            EvidenceDecision::Correct
+            EvidenceDecision::Fresh
         );
+        // Fully inside the merged 100-250 coverage.
         assert_eq!(
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 180, "end_line": 190}),
                 &json!({"content": "block-c"}),
+                read
+            ),
+            EvidenceDecision::Correct
+        );
+        assert_eq!(
+            tracker.observe(
+                "read_file",
+                &json!({"path": path, "start_line": 120, "end_line": 130}),
+                &json!({"content": "block-d"}),
                 read
             ),
             EvidenceDecision::Stalled
@@ -996,6 +1043,42 @@ mod evidence_tests {
                 read
             ),
             EvidenceDecision::Fresh
+        );
+    }
+
+    #[test]
+    fn partial_then_full_file_read_still_expands_coverage() {
+        // Session de071076 Turn 3: presets.rs:140-480 then whole-file read
+        // was wrongly Correct, then :560-700 Stalled mid-model audit.
+        let mut tracker = EvidenceTracker::default();
+        let read = crate::ToolEffect::Read;
+        let path = "src/presets.rs";
+        assert_eq!(
+            tracker.observe(
+                "read_file",
+                &json!({"path": path, "start_line": 140, "end_line": 480}),
+                &json!({"content": "slice"}),
+                read
+            ),
+            EvidenceDecision::Fresh
+        );
+        assert_eq!(
+            tracker.observe(
+                "read_file",
+                &json!({"path": path}),
+                &json!({"content": "whole"}),
+                read
+            ),
+            EvidenceDecision::Fresh
+        );
+        assert_eq!(
+            tracker.observe(
+                "read_file",
+                &json!({"path": path, "start_line": 560, "end_line": 700}),
+                &json!({"content": "later"}),
+                read
+            ),
+            EvidenceDecision::Correct
         );
     }
 

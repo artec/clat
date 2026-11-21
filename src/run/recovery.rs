@@ -9,7 +9,6 @@ impl Run<'_> {
         state: &mut StepState,
         events: &mut dyn EventSink,
     ) -> Result<ModelResponse, RunError> {
-        let mut context_retried = false;
         loop {
             let (result, partial, delivered, usage) =
                 self.capacity_attempt(&input, state.turn, events);
@@ -31,11 +30,10 @@ impl Run<'_> {
                 return Ok(response);
             }
             let error = result.unwrap_err();
-            let eligible = matches!(
-                error.kind(),
-                ModelErrorKind::ContextCapacity | ModelErrorKind::ImageCapacity
-            ) && !(error.kind() == ModelErrorKind::ContextCapacity
-                && context_retried)
+            // The configured model window is authoritative. A provider
+            // capacity rejection is reported verbatim: never guess a smaller
+            // tier or rewrite history based on the server's error text.
+            let eligible = error.kind() == ModelErrorKind::ImageCapacity
                 && !delivered
                 && !self.cancel.is_cancelled();
             if !partial.is_empty() {
@@ -44,7 +42,6 @@ impl Run<'_> {
             if eligible {
                 match self.recover_request(&error, &input, state) {
                     Ok(Some(next)) => {
-                        context_retried |= error.kind() == ModelErrorKind::ContextCapacity;
                         input = next;
                         continue;
                     }
@@ -131,13 +128,6 @@ impl Run<'_> {
         let Some(manager) = &mut self.context_manager else {
             return Ok(None);
         };
-        // 档位上限（如 Kimi Plus 256K）先于恢复传入：本次恢复压缩与
-        // 后续主动压缩的预算窗口都按实际上限收紧，不再“撞墙-压缩-
-        // 又撞墙”（2026-11-21 live 实测：预设 1M 窗的压缩目标对 256K
-        // 档仍超限）。
-        if let Some(limit) = error.context_limit() {
-            manager.discover_context_limit(limit);
-        }
         manager.failed_capacity_attempt(error.kind())?;
         // Release only the completed attempt's pending reservation, before a summary reserves its own.
         if let Some(ledger) = &self.spend_ledger {

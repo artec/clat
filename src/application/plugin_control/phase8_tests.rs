@@ -93,6 +93,40 @@ fn assert_ports(app: &TrustedProjectApplication, mask: u8) {
 }
 
 #[test]
+fn phase8_same_model_manual_context_shrink_checks_hard_capacity_before_dispatch() {
+    let (root, _) = crate::test_support::roots("phase8-same-model-shrink");
+    let project = Project::new(root.join("project"));
+    std::fs::create_dir_all(project.root()).unwrap();
+    let state = root.join("state");
+    policy(&state, &["builtin.utility_model"]);
+    let mut host = mount(&project, &state);
+    let attached = host.attach(project).unwrap();
+    {
+        let mut app = attached.lock().unwrap();
+        crate::test_support::configure_test_model_with_budget(&app, u32::MAX);
+        run(&mut app);
+        let old_header = app.sessions.last_request_header();
+        let (mut config, credentials) = app.model_state().unwrap();
+        config.max_context_tokens = Some(4096);
+        config.overrides.max_context_tokens = crate::Override::Set(4096);
+        app.save_model_state(&config, &credentials).unwrap();
+
+        // The model ID did not change, only its explicitly configured window.
+        let (request, receiver) = super::phase2_tests::request();
+        let handle = app.start_run(request).unwrap();
+        handle.join().unwrap();
+        let failure = receiver.try_recv().unwrap().unwrap_err();
+        assert!(failure.error.contains("capacity"), "{}", failure.error);
+        assert_eq!(app.sessions.last_request_header(), old_header);
+        assert_eq!(app.model_state().unwrap().0.max_context_tokens, Some(4096));
+    }
+    drop(attached);
+    host.close().unwrap();
+    drop(host);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
 fn phase8_model_switch_failure_keeps_the_last_request_header_and_saved_settings() {
     let (root, _) = crate::test_support::roots("phase8-model-switch");
     let project = Project::new(root.join("project"));
@@ -146,8 +180,9 @@ fn phase8_smaller_model_uses_the_saved_previous_route_before_target_dispatch() {
     let attached = host.attach(project).unwrap();
     {
         let mut app = attached.lock().unwrap();
-        crate::test_support::configure_test_model_with_budget(&app, u32::MAX);
+        crate::test_support::configure_test_model_with_budget(&app, 1_048_576);
         let (mut config, credentials) = app.model_state().unwrap();
+        let large = config.clone();
         app.save_model_profile("previous-large", &config, &credentials)
             .unwrap();
         let fixed = app.context_snapshot().unwrap().input_estimate;
@@ -167,16 +202,77 @@ fn phase8_smaller_model_uses_the_saved_previous_route_before_target_dispatch() {
             app.sessions.last_request_header().unwrap()["config"]["model"],
             "smaller-target"
         );
+        app.save_model_state(&large, &credentials).unwrap();
+        run(&mut app);
+        assert_eq!(
+            app.sessions.last_request_header().unwrap()["config"]["model"],
+            large.model,
+            "up-switch uses the larger configured window without rehydrating history"
+        );
     }
     drop(attached);
     host.close().unwrap();
     drop(host);
     let events = crate::application::tests::load_events(&state);
-    let summary = events
+    let summaries: Vec<_> = events
         .iter()
-        .find(|event| event.event_type == "compaction/summary")
-        .expect("old route must compact before the target dispatch");
-    assert_eq!(summary.data["model"], "deterministic");
+        .filter(|event| event.event_type == "compaction/summary")
+        .collect();
+    assert_eq!(summaries.len(), 1, "only down-switch compacts");
+    assert_eq!(summaries[0].data["model"], "deterministic");
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn phase8_unsaved_source_too_small_fails_without_target_dispatch() {
+    let (root, _) = crate::test_support::roots("phase8-unsaved-source");
+    let project = Project::new(root.join("project"));
+    std::fs::create_dir_all(project.root()).unwrap();
+    let state = root.join("state");
+    policy(&state, &["builtin.utility_model"]);
+    let mut host = mount(&project, &state);
+    let attached = host.attach(project).unwrap();
+    {
+        let mut app = attached.lock().unwrap();
+        crate::test_support::configure_test_model_with_budget(&app, u32::MAX);
+        let (large, credentials) = app.model_state().unwrap();
+        let fixed = app.context_snapshot().unwrap().input_estimate;
+        let (mut request, receiver) = super::phase2_tests::request();
+        request.message = crate::message::PendingMessage::text("证".repeat(20000));
+        app.start_run(request).unwrap().join().unwrap();
+        receiver.try_recv().unwrap().unwrap();
+        let source_header = app.sessions.last_request_header();
+        let mut small = large.clone();
+        small.model = "unsaved-small-route".into();
+        let window = ((fixed + 4000) * 5 / 4) as u32;
+        small.max_context_tokens = Some(window);
+        small.overrides.max_context_tokens = crate::Override::Set(window);
+        app.save_model_state(&small, &credentials).unwrap();
+        let (request, receiver) = super::phase2_tests::request();
+        let handle = app.start_run(request).unwrap();
+        handle.join().unwrap();
+        let failure = receiver.try_recv().unwrap().unwrap_err();
+        assert!(
+            failure.error.contains("capacity"),
+            "the configured target is too small even for summary guidance: {}",
+            failure.error
+        );
+        assert_eq!(app.sessions.last_request_header(), source_header);
+        assert_ne!(
+            app.sessions.last_request_header().unwrap()["config"]["model"],
+            "unsaved-small-route",
+            "failed summary must not publish the target request header"
+        );
+        assert_eq!(app.model_state().unwrap().0.model, "unsaved-small-route");
+    }
+    drop(attached);
+    host.close().unwrap();
+    drop(host);
+    let events = crate::application::tests::load_events(&state);
+    assert!(
+        !events.iter().any(|e| e.event_type == "compaction/summary"),
+        "unfit summary must not replace durable history"
+    );
     crate::test_support::cleanup_tree(&root);
 }
 

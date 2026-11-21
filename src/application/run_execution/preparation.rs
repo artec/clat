@@ -34,12 +34,11 @@ impl worker::RunWorker {
         let target = crate::model::ContextBudget::resolve(&self.deps.config)?;
         self.maintain_before_round(&instructions, &options)?;
         let over = target.is_some_and(|budget| {
-            self.measured_input(&instructions, tail_tokens)
-                > if switched {
-                    budget.capacity
-                } else {
-                    budget.threshold
-                }
+            needs_compaction_before_request(
+                self.measured_input(&instructions, tail_tokens),
+                budget,
+                switched,
+            )
         });
         // Startup and active requests both prune/offload before paying for a summary.
         // A switch must fit before the target request header can be published.
@@ -59,11 +58,12 @@ impl worker::RunWorker {
             )?;
             self.reload_maintained_history()?;
         }
-        if switched
-            && let Some(budget) = target
+        if let Some(budget) = target
             && self.measured_input(&instructions, tail_tokens) > budget.capacity
         {
-            return Err("conversation cannot fit the target model capacity; target request was not dispatched".into());
+            return Err(
+                "conversation cannot fit the configured model capacity; model request was not dispatched".into()
+            );
         }
         Ok(())
     }
@@ -154,12 +154,8 @@ impl worker::RunWorker {
         } else {
             None
         };
-        if switched && previous.is_none() {
-            return Err(
-                "target model capacity requires compaction but the previous route is unavailable"
-                    .into(),
-            );
-        }
+        // Prefer the previous route when saved; otherwise use the configured
+        // target route for bounded summarization before target dispatch.
         let (config, credentials) = previous.as_ref().map_or(
             (&self.deps.config, &self.deps.credentials),
             |(config, credentials)| (config, credentials),
@@ -230,5 +226,61 @@ impl worker::RunWorker {
             }
         }
         Ok(None)
+    }
+}
+/// Model switching uses the target's hard input capacity, not the old
+/// model's pressure threshold. Ongoing turns use the target threshold.
+fn needs_compaction_before_request(
+    measured_input: u64,
+    budget: crate::model::ContextBudget,
+    switched: bool,
+) -> bool {
+    measured_input
+        > if switched {
+            budget.capacity
+        } else {
+            budget.threshold
+        }
+}
+
+#[cfg(test)]
+mod capacity_switch_tests {
+    use super::*;
+
+    #[test]
+    fn generic_switch_uses_configured_500k_256k_and_smaller_windows() {
+        let mut config = ModelConfig {
+            max_context_tokens: Some(1_048_576),
+            output_limit: Some(16_384),
+            ..Default::default()
+        };
+        for (window, compact) in [
+            (1_048_576, false),
+            (500_000, true),
+            (262_144, true),
+            (131_072, true),
+            (65_536, true),
+        ] {
+            config.max_context_tokens = Some(window);
+            let budget = crate::model::ContextBudget::resolve(&config)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                needs_compaction_before_request(490_000, budget, true),
+                compact,
+                "target model window {window}"
+            );
+        }
+        // Switching back to a bigger model does not carry forward the old
+        // limit or force a summary; any earlier compacted history stays
+        // compacted in the durable journal.
+        config.max_context_tokens = Some(1_048_576);
+        let large = crate::model::ContextBudget::resolve(&config)
+            .unwrap()
+            .unwrap();
+        assert!(!needs_compaction_before_request(490_000, large, true));
+        // A same-model follow-up uses proactive pressure threshold.
+        assert!(needs_compaction_before_request(900_000, large, false));
+        assert!(!needs_compaction_before_request(100_000, large, false));
     }
 }

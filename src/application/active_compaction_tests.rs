@@ -478,39 +478,30 @@ fn active_compaction_single_turn_parallel_tools_recompact_and_cold_replay() {
 }
 
 #[test]
-fn active_compaction_summary_failure_preserves_observations_and_accounts_attempt() {
+fn active_compaction_provider_capacity_failure_does_not_retry_or_replay_tools() {
     let (mut app, script, storage) = fixture(SummaryMode::Failure, None);
     assert!(
         run(&mut app, "KEEP_USER_INTENT").is_err(),
         "oversized request must not reach provider after failed summary"
     );
     let seen = script.main.load(Ordering::SeqCst);
-    // CP-C2 映射：旧粘性断路器只尝试 1 次；计数熔断下容量恢复路径会
-    // 再试一次（2 < 阈值 3，熔断未开——由专门的 CP-C2 测试锁 3 次上界）。
     assert_eq!(
         script.summaries.load(Ordering::SeqCst),
-        2,
-        "counting breaker retries after one failure"
+        0,
+        "a provider capacity rejection must not trigger a summary retry"
     );
     app.close().unwrap();
     let events = load_events(&storage);
+    let tools = events
+        .iter()
+        .filter(|event| event.event_type == "tool/result")
+        .count();
+    assert!(tools > 0 && tools <= seen * 2, "no tool must be replayed");
     assert!(
         !events
             .iter()
-            .any(|event| event.event_type == "compaction/summary")
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.event_type == "tool/result")
-            .count(),
-        seen * 2
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| event.event_type == "compaction/end"
-                && event.data["usage"]["inputTokens"].as_u64().unwrap_or(0) > 0)
+            .any(|event| event.event_type == "compaction/summary"),
+        "no inferred-window compaction is allowed after a provider rejection"
     );
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }

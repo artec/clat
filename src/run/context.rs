@@ -23,11 +23,6 @@ pub(crate) trait RequestContextManager: Send {
     ) -> Result<(), String> {
         Ok(())
     }
-    /// 厂商报告的上下文上限（token）——运行时能力发现（如 Kimi 档位
-    /// 403 的 "up to 256K context"，2026-11-21）。管理器用它收紧压缩
-    /// 预算的有效窗口；会话内生效，不写配置（升级档位后新会话自然
-    /// 恢复配置窗口）。
-    fn discover_context_limit(&mut self, _limit: u64) {}
     /// Return true only after durable maintenance changed this request.
     fn recover(
         &mut self,

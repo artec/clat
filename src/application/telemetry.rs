@@ -1,5 +1,9 @@
 //! Numeric-only read surface. No context text, provider config or credentials.
 use super::*;
+
+#[cfg(test)]
+#[path = "capacity_surface_tests.rs"]
+mod capacity_surface_tests;
 impl TrustedProjectApplication {
     pub fn conversation_stats(&self) -> Result<Value, ApplicationError> {
         let snapshot = self.workbench_snapshot()?;

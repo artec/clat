@@ -596,6 +596,66 @@ fn native_connection_state_keeps_the_project_directory_resident() {
 }
 
 #[test]
+fn native_status_context_tracks_host_model_window_including_custom_and_tier_switches() {
+    let (mut app, storage) = shell();
+    let mut snapshot = json!({
+        "model": {
+            "vendor": "Kimi", "protocol": "open_ai_compatible",
+            "model": "k3.1-pro", "preset": "k3.1-pro",
+            "max_context_tokens": 262144
+        },
+        "telemetry": {}
+    });
+    app.native_snapshot(snapshot.clone());
+    assert!(
+        app.native_status_segments()
+            .iter()
+            .any(|s| s == "Context: 0/256K"),
+        "Plus Kimi must display the selected binary context window"
+    );
+
+    // Same model ID; a user changing Plus -> Pro changes the effective
+    // window, so old status state must not survive a new Host snapshot.
+    snapshot["model"]["max_context_tokens"] = json!(1048576);
+    app.native_snapshot(snapshot.clone());
+    assert!(
+        app.native_status_segments()
+            .iter()
+            .any(|s| s == "Context: 0/1M")
+    );
+
+    // The vendor string need not be recognised: custom user-specified
+    // models must still display their configured capacity.
+    snapshot["model"] = json!({
+        "vendor": "Other", "protocol": "open_ai_compatible",
+        "model": "my-model", "max_context_tokens": 500000
+    });
+    app.native_snapshot(snapshot.clone());
+    assert_eq!(app.native_status_segments(), ["Context: 0/500k"]);
+
+    snapshot["model"]["max_context_tokens"] = json!(131072);
+    app.native_snapshot(snapshot.clone());
+    assert_eq!(app.native_status_segments(), ["Context: 0/128K"]);
+
+    // The user explicitly cleared the context setting. Never invent
+    // a capacity from a built-in preset when Host returns null.
+    snapshot["model"] = json!({
+        "vendor": "Kimi", "protocol": "open_ai_compatible",
+        "model": "k3.1-pro", "preset": "k3.1-pro",
+        "max_context_tokens": null
+    });
+    app.native_snapshot(snapshot);
+    assert!(
+        !app.native_status_segments()
+            .iter()
+            .any(|s| s.starts_with("Context:"))
+    );
+
+    drop(app);
+    crate::test_support::cleanup_tree(&storage);
+}
+
+#[test]
 fn native_status_restores_monitor_cache_and_context_from_host_snapshot() {
     let (mut app, storage) = shell();
     let mut snapshot = json!({

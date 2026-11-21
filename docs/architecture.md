@@ -700,8 +700,10 @@ snapshot, and capability guidance.
    produces no new evidence. The bound is on stagnant behavior, not total
    work. Consecutive and interleaved observation cycles share one per-Run
    evidence ledger; different paths are independent negative-search scopes.
-   Overlapping `read_file` ranges of the same path count as repeated
-   evidence; disjoint ranges remain independent. Dynamic wait/poll tools are
+   A `read_file` range of the same path counts as repeated evidence only
+   when every line was already covered by prior reads of that path
+   (subset of the coverage union); expanding or full-file reads after a
+   partial read remain Fresh. Disjoint ranges stay independent. Dynamic wait/poll tools are
    exempt. File writes, destructive actions, UI actions and session-local
    mutations invalidate old evidence. Process probes (`exec_command` /
    `run_command`) do **not** clear the ledger or dismiss a pending
@@ -2335,14 +2337,17 @@ surface retains projected omissions in checkpoints while display replay keeps
 original attachments. Content-only tool replacements do not produce another
 ToolFinished entry or another Task evidence record.
 
-`RequestContextManager` also owns typed capacity recovery. Providers classify
-explicit machine codes at HTTP and streaming boundaries. A repeat is possible
-only without delivered text/tool increments and after durable progress; context
-recovery is bounded to one repeat, image recovery by strict image-count descent.
-The failed attempt is finalized separately before maintenance reserves summary
-spend. Requests recheck cancellation, modality and spend before redispatch.
-Model switches perform target-capacity acceptance before recorder publication;
-configuration persistence itself never invokes a model.
+`RequestContextManager` maintains the configured target model's context budget;
+it never discovers a context limit from provider errors or persists a guessed
+limit. Providers still classify explicit error codes, but context-capacity and
+entitlement rejections from a dispatched request are returned directly instead
+of triggering automatic history compaction/retry. Independent image-capacity
+recovery requires no delivered text/tool increments and strict image-count
+descent; failed attempts are finalized before maintenance spends resources.
+Model switching performs target-capacity acceptance before recorder publication
+and may compact with a saved previous route or the target route in bounded
+chunks. A smaller window can reduce history; a larger one never recreates
+previously compacted history. Configuration persistence never invokes a model.
 
 ### Project list removal
 

@@ -2827,7 +2827,6 @@ async function refreshWorkbench() {
     if (Number.isSafeInteger(info.selection_generation) && info.selection_generation !== selection) return;
     state.workbench = info;
     scheduleMarkdownFileCheck();
-    void refreshUsage();
     decorateConversationBookmarks();
     void reconcileFileReferences();
     renderNextTurnQueue(info.next_turn_queue || []);
@@ -2837,6 +2836,9 @@ async function refreshWorkbench() {
     const permission = info.permission || {};
     observeComposerSession(session.id || null, state.selectionGeneration);
     state.sessionId = session.id || null;
+    // Scope usage to the new session and effective model after a switch,
+    // not the previous session that existed before this Host response.
+    void refreshUsage();
     syncContextUsageReader();
     // HIST-PWA-1/W1：当前 Session 的已提交输入（journal transcript 权威，
     // 含其它客户端提交）——过期响应已在上方 request/switching/selection

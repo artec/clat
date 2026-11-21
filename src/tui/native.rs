@@ -1202,26 +1202,9 @@ impl App {
             Some("OpenCode") => crate::ModelVendor::OpenCode,
             _ => crate::ModelVendor::Other,
         };
-        native.context_window = value["model"]["max_context_tokens"].as_u64().or_else(|| {
-            value["model"]["preset"]
-                .as_str()
-                .and_then(crate::presets::preset_by_id)
-                .map(|preset| preset.context_window as u64)
-        });
-        // 显示生效窗口：档位发现后按收紧值显示（全局缓存按模型名查询，
-        // 快照 JSON 不携带端点字段）。预算与压缩已按同一缓存收紧
-        // （第七层），显示与行为保持一致——不再出现“预算按 256K 跳、
-        // 悬停永远显示 1M”的精神分裂。
-        if let Some(model) = value["model"]["model"].as_str()
-            && !value["model"]["preset"]
-                .as_str()
-                .and_then(crate::presets::preset_by_id)
-                .is_some_and(|preset| preset.vendor == "Kimi Coding Plan")
-            && let Some(limit) = crate::model::lookup_tier_limit_by_model(model)
-            && limit < native.context_window.unwrap_or(u64::MAX)
-        {
-            native.context_window = Some(limit);
-        }
+        // Host's effective model configuration is authoritative, including
+        // null for an explicitly unset window. Do not infer preset defaults.
+        native.context_window = value["model"]["max_context_tokens"].as_u64();
         self.balance = value["telemetry"]["monitor"].as_str().map(str::to_owned);
         self.usage_routes.clear();
         if let Some(usage) = telemetry_usage(&value["telemetry"]["route_usage"]) {
