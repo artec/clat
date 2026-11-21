@@ -31,8 +31,8 @@ The shipped catalog is the source used by both the picker and runtime:
 | GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen4 Max | `qwen4-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Qwen3.8 Flash | `qwen3.8-flash` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
-| Kimi K3.1 Pro | `k3.1-pro` | `https://api.kimi.com/coding/v1` | 1M | 128K |
-| Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 1M | 128K |
+| Kimi K3.1 Pro | `k3.1-pro` | `https://api.kimi.com/coding/v1` | 256K (Plus) / 1M (Pro+) | 128K |
+| Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 256K (Plus) / 1M (Pro+) | 128K |
 | Hy 4 | `hy4` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | Hy 4 Flash | `hy4-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | `https://opencode.ai/inference/go/v1` | 1M | 384K |

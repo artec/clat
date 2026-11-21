@@ -43,18 +43,18 @@ impl RequestContextManager for ActiveContext {
     }
 
     fn discover_context_limit(&mut self, limit: u64) {
-        self.discovered_limit =
-            Some(self.discovered_limit.map_or(limit, |current| current.min(limit)));
+        self.discovered_limit = Some(
+            self.discovered_limit
+                .map_or(limit, |current| current.min(limit)),
+        );
         // 全局持久化：ActiveContext 是 per-run 的（每条消息新建），
         // discovered_limit 不跨 run 存活——没有全局缓存时每条消息都
         // 撞墙-恢复（2026-11-21 实测确认）。写缓存后后续 run 与新
         // 会话从一开始就用收紧预算；缓存按 endpoint|model 键控，
         // 切换模型自动切预算，升级档位后删 ~/.clat/tier_limits.json。
-        crate::model::remember_tier_limit(
-            &self.config.endpoint,
-            &self.config.model,
-            limit,
-        );
+        if !self.kimi_subscription_selected() {
+            crate::model::remember_tier_limit(&self.config.endpoint, &self.config.model, limit);
+        }
     }
 
     fn stage_request(&mut self, snapshot: &crate::plugins::services::RuntimeSnapshot) {
@@ -219,14 +219,11 @@ impl ActiveContext {
     /// 持久）兑底。
     fn effective_config(&self) -> ModelConfig {
         let mut config = self.config.clone();
-        let limit = self
-            .discovered_limit
-            .or_else(|| {
-                crate::model::lookup_tier_limit(
-                    &config.endpoint,
-                    &config.model,
-                )
-            });
+        let limit = self.discovered_limit.or_else(|| {
+            (!self.kimi_subscription_selected())
+                .then(|| crate::model::lookup_tier_limit(&config.endpoint, &config.model))
+                .flatten()
+        });
         if let Some(limit) = limit
             && let Ok(small) = u32::try_from(limit)
             && let Some(window) = config.max_context_tokens
@@ -235,6 +232,14 @@ impl ActiveContext {
             config.max_context_tokens = Some(small);
         }
         config
+    }
+
+    fn kimi_subscription_selected(&self) -> bool {
+        self.config
+            .preset
+            .as_deref()
+            .and_then(crate::presets::preset_by_id)
+            .is_some_and(|preset| preset.vendor == "Kimi Coding Plan")
     }
 
     pub(super) fn boundary(&self) -> Result<(), String> {

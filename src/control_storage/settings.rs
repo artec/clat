@@ -33,6 +33,10 @@ pub(crate) struct SettingsFile {
     pub profiles: BTreeMap<String, ProfileRow>,
     #[serde(default, skip_serializing_if = "UtilitySettingsRow::is_default")]
     pub utility: UtilitySettingsRow,
+    /// Kimi Coding Plan account tier. Independent of the currently selected
+    /// model; missing legacy settings default conservatively to Plus.
+    #[serde(default, rename = "kimiTier")]
+    pub kimi_tier: KimiTier,
 }
 
 impl SettingsFile {
@@ -42,6 +46,39 @@ impl SettingsFile {
             model_state: None,
             profiles: BTreeMap::new(),
             utility: UtilitySettingsRow::default(),
+            kimi_tier: KimiTier::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum KimiTier {
+    #[default]
+    Plus,
+    Pro,
+}
+
+impl KimiTier {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "plus" => Some(Self::Plus),
+            "pro" => Some(Self::Pro),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Plus => "plus",
+            Self::Pro => "pro",
+        }
+    }
+
+    pub(crate) fn context_window(self) -> u32 {
+        match self {
+            Self::Plus => 262_144,
+            Self::Pro => 1_048_576,
         }
     }
 }

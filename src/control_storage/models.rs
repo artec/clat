@@ -98,6 +98,21 @@ impl ControlStorage {
         )
     }
 
+    /// A single vendor-level preference survives model switching, profile
+    /// activation and Host restart. Updates use the existing atomic settings
+    /// commit, without requiring a second model-state write.
+    pub(crate) fn kimi_tier(&self) -> settings::KimiTier {
+        self.lock().settings.kimi_tier
+    }
+
+    pub(crate) fn set_kimi_tier(&self, tier: settings::KimiTier) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| settings::save_settings(&self.dir, &self.root, &state.settings),
+            |state| state.settings.kimi_tier = tier,
+        )
+    }
+
     pub(crate) fn utility_settings(&self) -> Result<settings::UtilitySettingsRow, ControlError> {
         let state = self.lock();
         let utility = state.settings.utility.clone();

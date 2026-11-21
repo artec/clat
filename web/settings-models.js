@@ -24,6 +24,10 @@ function renderSettingsPresets(view) {
         for (const radio of row.entry.querySelectorAll('input')) radio.checked = radio.value === currentEntry;
       }
     }
+    if (row.tier && !row.tierPending) {
+      const currentTier = view.kimi_tier === 'pro' ? 'pro' : 'plus';
+      for (const radio of row.tier.querySelectorAll('input')) radio.checked = radio.value === currentTier;
+    }
   }
   for (const [vendor, row] of settingsPresetRows) if (!groups.has(vendor)) { row.element.remove(); settingsPresetRows.delete(vendor); }
 }
@@ -38,6 +42,7 @@ function settingsPresetRow(vendor, presets) {
   // 时切换单选即时生效（model.preset.entry 只改端点、保留 override）；
   // 未激活时随 Apply 携带 entry。
   let entry = null, entryPending = null;
+  let tier = null, tierPending = null;
   if (vendor === 'Qwen Token Plan') {
     entry = el('div', 'model-vendor-entry');
     entry.setAttribute('role', 'radiogroup');
@@ -74,6 +79,39 @@ function settingsPresetRow(vendor, presets) {
     heading.append(entry);
     heading.classList.add('has-entry');
   }
+  if (vendor === 'Kimi Coding Plan') {
+    tier = el('div', 'model-vendor-entry');
+    tier.setAttribute('role', 'radiogroup');
+    CLATI18n.attribute(tier, 'aria-label', () => settingsUi('kimi_tier'));
+    for (const value of ['plus', 'pro']) {
+      const label = el('label'), radio = el('input');
+      radio.type = 'radio'; radio.name = 'kimi-coding-plan-tier'; radio.value = value;
+      radio.checked = value === 'plus';
+      label.append(radio, el('span', '', () => settingsUi('kimi_tier_' + value)));
+      tier.append(label);
+    }
+    tier.addEventListener('change', event => {
+      if (event.target.type !== 'radio' || tierPending) return;
+      tierPending = event.target.value;
+      for (const radio of tier.querySelectorAll('input')) radio.disabled = true;
+      apply.disabled = true;
+      void (async () => {
+        try {
+          await rpc('model.preset.tier', { tier: tierPending });
+          await refreshWorkbench();
+        } catch (error) {
+          CLATI18n.bind(modelField('settings-error'), 'textContent', () => error.message);
+        } finally {
+          tierPending = null;
+          for (const radio of tier.querySelectorAll('input')) radio.disabled = false;
+          apply.disabled = false;
+          await refreshModelSettings();
+        }
+      })();
+    });
+    heading.append(tier);
+    heading.classList.add('has-entry');
+  }
   heading.append(active);
   const controls = el('div', 'model-vendor-controls'), select = el('select'), key = el('input');
   for (const preset of presets) { const option = el('option', '', modelCapabilityName(preset.name, preset.image_input)); option.value = preset.id; select.append(option); }
@@ -81,7 +119,11 @@ function settingsPresetRow(vendor, presets) {
   key.type = 'password'; key.autocomplete = 'new-password'; key.maxLength = 4096;
   CLATI18n.attribute(key, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.api_key'));
   CLATI18n.attribute(key, 'placeholder', () => settingsUi('preset_key_hint'));
-  const row = { element, active, select, edited: false, get entry() { return entry; }, get entryPending() { return entryPending; } };
+  const row = {
+    element, active, select, edited: false,
+    get entry() { return entry; }, get entryPending() { return entryPending; },
+    get tier() { return tier; }, get tierPending() { return tierPending; },
+  };
   select.onchange = () => { row.edited = true; };
   const apply = el('button', 'secondary', () => settingsUi('apply_preset')); apply.type = 'button';
   apply.onclick = () => modelAction(apply, async () => {

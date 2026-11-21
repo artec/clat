@@ -93,6 +93,20 @@ pub(crate) fn dispatch(
             app.set_model_preset_entry(entry, key).map_err(failure)?;
             Ok(json!({"entry": entry}))
         }
+        "model.preset.tier" => {
+            if params.len() != 1 {
+                return Err(RpcError::bad_request("tier selection accepts only tier"));
+            }
+            let tier = params
+                .get("tier")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::bad_request("tier must be plus or pro"))?;
+            if !matches!(tier, "plus" | "pro") {
+                return Err(RpcError::bad_request("tier must be plus or pro"));
+            }
+            app.set_kimi_tier(tier).map_err(failure)?;
+            Ok(json!({"tier": tier}))
+        }
         _ => Err(RpcError::bad_request("unknown model method")),
     }
 }

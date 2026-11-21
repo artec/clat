@@ -1213,6 +1213,10 @@ impl App {
         // （第七层），显示与行为保持一致——不再出现“预算按 256K 跳、
         // 悬停永远显示 1M”的精神分裂。
         if let Some(model) = value["model"]["model"].as_str()
+            && !value["model"]["preset"]
+                .as_str()
+                .and_then(crate::presets::preset_by_id)
+                .is_some_and(|preset| preset.vendor == "Kimi Coding Plan")
             && let Some(limit) = crate::model::lookup_tier_limit_by_model(model)
             && limit < native.context_window.unwrap_or(u64::MAX)
         {

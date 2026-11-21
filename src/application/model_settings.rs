@@ -22,6 +22,8 @@ pub struct ModelSettingsView {
     pub presets: Vec<ModelPresetView>,
     #[serde(default)]
     pub qwen_entry: String,
+    #[serde(default)]
+    pub kimi_tier: String,
     pub utility: UtilitySettingsView,
 }
 
@@ -237,6 +239,7 @@ impl TrustedProjectApplication {
                         .unwrap_or_default();
                     crate::presets::qwen_entry_for_key(&remembered).to_owned()
                 }),
+            kimi_tier: self.control.kimi_tier().as_str().to_owned(),
             utility: self.utility_settings_view_locked()?,
         })
     }
@@ -336,6 +339,7 @@ impl TrustedProjectApplication {
             .filter(|endpoint| crate::presets::preset_accepts_endpoint(preset, endpoint));
         let mut config = ModelConfig::default();
         preset.apply(&mut config);
+        apply_kimi_tier(&mut config, self.control.kimi_tier());
         // INV-VC8（2026-11-21 负责人复现）：无显式 entry、当前端点也不
         // 可携带时（典型：换厂商后重启再切回），入口随 "Qwen" 记忆槽
         // key 的平台前缀恢复——key 即入口的持久载体（sk-sp- → 千问，
@@ -404,6 +408,29 @@ impl TrustedProjectApplication {
         self.save_model_state_locked(&config, &credentials)
     }
 
+    /// Kimi subscription is a persisted vendor preference, not an API guess.
+    pub fn set_kimi_tier(&self, value: &str) -> Result<(), ApplicationError> {
+        let tier = crate::control_storage::settings::KimiTier::parse(value)
+            .ok_or_else(|| ApplicationError::new("tier must be plus or pro"))?;
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        let (mut config, credentials) = self.model_state()?;
+        self.control
+            .set_kimi_tier(tier)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        let active = super::dto::matching_preset(&config)
+            .is_some_and(|preset| preset.vendor == "Kimi Coding Plan");
+        if active {
+            apply_kimi_tier(&mut config, tier);
+            self.host_storage.publish_models(&config, &credentials);
+        } else {
+            self.host_storage.publish_model_settings();
+        }
+        Ok(())
+    }
     pub fn edit_model_profile(&self, edit: ModelProfileEdit) -> Result<(), ApplicationError> {
         let _update = self
             .host_storage
@@ -519,6 +546,20 @@ fn public_url(endpoint: &str) -> String {
     url.to_string().trim_end_matches('/').to_owned()
 }
 
+/// The explicit account choice wins over old Kimi model overrides and
+/// applies to both built-in Kimi Coding Plan presets, never custom routes.
+pub(super) fn apply_kimi_tier(
+    config: &mut ModelConfig,
+    tier: crate::control_storage::settings::KimiTier,
+) {
+    if super::dto::matching_preset(config).is_some_and(|preset| preset.vendor == "Kimi Coding Plan")
+    {
+        let window = tier.context_window();
+        config.max_context_tokens = Some(window);
+        config.overrides_version = Some(1);
+        config.overrides.max_context_tokens = crate::Override::Set(window);
+    }
+}
 /// VP-2C：入口名 → Qwen Token Plan 端点（调用方已验证 entry 合法）。
 fn qwen_entry_endpoint(entry: &str) -> &'static str {
     match entry {

@@ -1340,7 +1340,8 @@ impl TrustedProjectApplication {
                 let credentials = ProviderCredentials::for_protocol(config.protocol);
                 (config, credentials)
             });
-        let config = config.normalized();
+        let mut config = config.normalized();
+        super::model_settings::apply_kimi_tier(&mut config, self.control.kimi_tier());
         Ok((config, credentials))
     }
 

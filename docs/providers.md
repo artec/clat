@@ -217,6 +217,18 @@ cache and context but does not invent a Token segment.
 
 ### Kimi Coding Plan
 
+Settings → Models displays a **Plus (256K) / Pro or higher (1M)** radio
+selection beside the Kimi Coding Plan heading, matching the Qwen Token Plan
+heading controls. The user-selected subscription tier is saved as a vendor-wide
+preference in `settings.json` (`kimiTier`), independently of the active model
+or profile; missing historical settings default to Plus. Both built-in Kimi
+Coding Plan presets use 262,144 tokens on Plus or 1,048,576 on Pro and higher.
+Changing the selection immediately updates an active Kimi preset, while other
+vendors retain their own context windows. Selecting Kimi later, including after
+a Host restart, restores the user's tier. An old automatic capacity cache does
+not override this explicit choice; CLAT does not verify subscription entitlement.
+The output-token preset and the endpoint/API key remain unchanged.
+
 The preset uses `https://api.kimi.com/coding/v1`, top-level
 `reasoning_effort`, and automatic context caching. Low / High / Max map directly
 to the vendor ladder. `k3.1-pro` (K3.1 Pro) image input is declared by the
