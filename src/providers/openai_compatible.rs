@@ -232,6 +232,11 @@ impl OpenAiCompatibleModel {
                 extract_error_message(&text)
             ),
         );
+        // 档位上限（如 Kimi Plus 256K，2026-11-21）附带着错误上行：
+        // 容量恢复靠它收紧压缩预算窗口。
+        if let Some(limit) = super::capacity::plan_limit_from_body(&text) {
+            error = error.with_context_limit(limit);
+        }
         if let Some(hint) = hint {
             error = error.with_retry_hint(hint);
         }
@@ -1792,6 +1797,96 @@ mod tests {
         )
         .expect_err("a current-turn tool image must also fail before provider I/O");
         assert!(error.to_string().contains("current request image"));
+    }
+
+    /// Moonshot 系端点拒绝完全空的 assistant 消息（2026-11-21 Kimi
+    /// K3.1 实测 400 "must not be empty"；同日实测 content:"" +
+    /// tool_calls 返回 200——空串工具轮的既有决定不动）。无载荷的
+    /// 纯思考轮（无正文、无调用、无结果）在非 reasoning 回放端点必须
+    /// 整条跳过；回放端点（DeepSeek/GLM）reasoning_content 仍是载荷，
+    /// 消息保留。预修复上本测试红。
+    #[test]
+    fn payloadless_assistant_turns_never_serialize_empty() {
+        let items = vec![
+            ModelItem::user_text("hi"),
+            ModelItem::Assistant {
+                content: Vec::new(),
+                reasoning: Some("thinking…".into()),
+            },
+            ModelItem::user_text("go"),
+        ];
+        // 非回放端点（Kimi 等）：完全空消息整条跳过。
+        let mapped =
+            map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+                .expect("serialization");
+        assert_eq!(mapped.len(), 2, "the payloadless assistant turn is skipped");
+        assert!(mapped.iter().all(|message| message["role"] != "assistant"));
+
+        // 回放端点（DeepSeek/GLM）：reasoning_content 是载荷，消息保留。
+        let replayed = messages::map_messages(
+            None,
+            &items,
+            &crate::model::ImageRequestPolicy::default(),
+            true,
+        )
+        .expect("serialization");
+        assert_eq!(replayed.len(), 3, "the replayed reasoning keeps the turn");
+        assert!(replayed[1].get("reasoning_content").is_some());
+
+        // 空正文工具轮不受影响：content:"" + tool_calls 实测 200。
+        let tool_items = vec![
+            ModelItem::user_text("hi"),
+            ModelItem::assistant_text(""),
+            ModelItem::ToolCall(ToolCall {
+                id: "call-1".into(),
+                name: "probe".into(),
+                arguments: json!({}),
+            }),
+        ];
+        let tool_messages =
+            map_messages(None, &tool_items, &crate::model::ImageRequestPolicy::default())
+                .expect("serialization");
+        let assistant = tool_messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("the tool turn is kept");
+        assert_eq!(assistant["content"], "");
+        assert!(assistant.get("tool_calls").is_some());
+    }
+
+    /// Moonshot 系端点要求 assistant 的每个 tool_call_id 都有配对的
+    /// tool 响应消息（2026-11-21 Kimi K3.1 实测 400 "did not have
+    /// response messages"——取消/中断的调用可能没有记录结果）。
+    /// 缺失结果的调用补占位响应，协议配对完整、历史无损。预修复
+    /// （无占位，assistant 的 tool_calls 无响应）上本测试红。
+    #[test]
+    fn unanswered_tool_calls_get_placeholder_responses() {
+        let items = vec![
+            ModelItem::user_text("hi"),
+            ModelItem::assistant_text(""),
+            ModelItem::ToolCall(ToolCall {
+                id: "exec_command:198".into(),
+                name: "exec_command".into(),
+                arguments: json!({"cmd":"true"}),
+            }),
+            // 该调用没有 ToolResult —— 会话中被取消/中断。
+            ModelItem::user_text("next"),
+        ];
+        let mapped =
+            map_messages(None, &items, &crate::model::ImageRequestPolicy::default())
+                .expect("serialization");
+        let assistant = mapped
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("the tool turn is kept");
+        assert!(assistant.get("tool_calls").is_some());
+        let placeholder = mapped
+            .iter()
+            .find(|message| {
+                message["role"] == "tool" && message["tool_call_id"] == "exec_command:198"
+            })
+            .expect("an unanswered call gets a placeholder tool response");
+        assert_eq!(placeholder["content"], "[no recorded result]");
     }
 
     /// MM-2/W5: the verified Chat-Completions route accepts an image directly

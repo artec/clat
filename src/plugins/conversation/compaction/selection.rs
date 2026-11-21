@@ -9,7 +9,7 @@ pub(super) fn choose_range(
     instructions: &str,
     definitions: &[crate::tool::ToolDefinition],
 ) -> Option<Range<usize>> {
-    let _ = (threshold, instructions, definitions);
+    let _ = (instructions, definitions);
     let range = match request.active_checkpoints {
         Some(checkpoints) => active_range(request.nodes, checkpoints).and_then(|mut range| {
             if let Some(head) = request.protected_head {
@@ -53,6 +53,12 @@ pub(super) fn choose_range(
             historical_range(request.nodes, retain, request.protected_head)
         }
     }?;
+    // 第六层：摘要范围按预算分块——摘要请求自身的 prompt（摘要指令 +
+    // 范围内条目）必须能在档位窗口内发出，否则摘要自己 403 降级、
+    // 什么都没压掉（2026-11-21 Kimi Plus 档 live 实测）。保留最新
+    // 条目、淘汰最旧溢出，被淘汰的老条目留给 reduce 循环的下一轮；
+    // 至少保留一条保证进展（单条超限的退化行为与既有一致）。
+    let range = cap_summary_region(request.nodes, range, threshold);
     protected_segment(
         request.nodes,
         range,
@@ -104,6 +110,35 @@ fn protected_segment(
                 .map(|node| estimate_item(&node.item))
                 .sum::<usize>()
         })
+}
+
+/// 摘要范围分块：从最新一侧往回累计 token，保留尽可能多的最新条目
+/// 使摘要请求的 prompt 能在模型窗口内发出；被淘汰的老条目留在历史
+/// 里，reduce 循环的下一轮继续处理。至少保留最新一条（单条自身超限
+/// 仍照发，降级行为与既有一致）。
+fn cap_summary_region(
+    nodes: &[CompactionNode],
+    range: Range<usize>,
+    threshold: Option<usize>,
+) -> Range<usize> {
+    let Some(threshold) = threshold else {
+        return range;
+    };
+    let threshold = threshold as u64;
+    if range.start >= range.end {
+        return range;
+    }
+    let mut tokens = 0u64;
+    let mut start = range.end;
+    for index in (range.start..range.end).rev() {
+        let item = estimate_item(&nodes[index].item) as u64;
+        if tokens.saturating_add(item) > threshold && start < range.end {
+            break;
+        }
+        tokens = tokens.saturating_add(item);
+        start = index;
+    }
+    start..range.end
 }
 
 /// DSH's backwards token tail and balanced seq-group boundary. Even zero retains the last group.
@@ -241,5 +276,32 @@ mod tests {
             2,
             "choose the largest eligible span between protected boundaries"
         );
+    }
+
+    /// 第六层（2026-11-21 Kimi Plus 档 live）：摘要请求自身的 prompt 必须
+    /// 能在档位窗口内发出，否则摘要 403 降级、什么都没压掉。cap 从最新
+    /// 一侧往回保留尽可能多的条目；None 不封顶；单条超限仍包含（降级
+    /// 行为与既有一致）。预修复（无分块，全量范围一次性摘要）上本测试红。
+    #[test]
+    fn summary_region_caps_from_the_oldest_side() {
+        let nodes: Vec<CompactionNode> = (0..20)
+            .map(|seq| CompactionNode {
+                checkpoint: false,
+                seq,
+                item: ModelItem::assistant_text(format!("turn-{seq} {}", "x".repeat(100))),
+            })
+            .collect();
+        // None 不封顶：完整范围。
+        assert_eq!(cap_summary_region(&nodes, 0..20, None), 0..20);
+        // 小 threshold：从最旧一侧淘汰，保留最新条目在预算内。
+        let capped = cap_summary_region(&nodes, 0..20, Some(1));
+        assert!(capped.start > 0, "oldest items are dropped to fit the threshold");
+        assert_eq!(capped.end, 20, "newest boundary is kept");
+        assert!(capped.len() >= 1, "at least the newest item remains");
+        // 大 threshold：完整范围不动。
+        let full = cap_summary_region(&nodes, 0..20, Some(1_000_000));
+        assert_eq!(full, 0..20);
+        // 单条范围：即使超限也不为空（保证进展）。
+        assert_eq!(cap_summary_region(&nodes, 0..1, Some(1)), 0..1);
     }
 }

@@ -16,6 +16,7 @@ pub struct Desktop {
     pub host: Mutex<Option<HostClient>>,
     pub updates: Mutex<crate::update::Updates>,
     pub language: Mutex<clat_core::client_ports::presentation::LanguagePreference>,
+    pub notification_sounds: crate::notification_sounds::SoundState,
     pub quitting: AtomicBool,
     pub quit_pending: AtomicBool,
     pub notification_targets:
@@ -120,6 +121,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         host: Mutex::new(None),
         updates: Mutex::new(crate::update::Updates::new(auto_check)),
         language: Mutex::new(crate::localization::load(app.handle())),
+        notification_sounds: crate::notification_sounds::SoundState::new(
+            crate::notification_sounds::load(app.handle()),
+        ),
         quitting: AtomicBool::new(false),
         quit_pending: AtomicBool::new(false),
         notification_targets: Mutex::new(BTreeMap::new()),
@@ -310,6 +314,9 @@ pub fn run() {
             crate::commands::desktop_install_update,
             crate::commands::desktop_cancel_update,
             crate::commands::desktop_preferences,
+            crate::notification_sounds::desktop_notification_sounds,
+            crate::notification_sounds::desktop_set_notification_sound,
+            crate::notification_sounds::desktop_preview_notification_sound,
             crate::commands::desktop_quit,
             crate::commands::desktop_stop_host,
             crate::commands::desktop_refresh_accessibility,
@@ -355,6 +362,7 @@ fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         tauri::RunEvent::Exit => {
             let state = app.state::<Desktop>();
             state.quitting.store(true, Ordering::Release);
+            state.notification_sounds.stop_preview();
             #[cfg(target_os = "macos")]
             crate::quit_ipc::close(app);
             #[cfg(windows)]

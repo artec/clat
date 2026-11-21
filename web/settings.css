@@ -166,6 +166,9 @@
 #settings-dialog .notification-settings { margin-top:30px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--surface-input); }
 #settings-dialog .notification-settings h3 { margin:0 0 14px; font-size:13px; font-weight:500; }
 #settings-dialog .notification-settings .picker-hint { margin-bottom:0; }
+#settings-dialog .notification-sound-controls { display:flex; align-items:center; gap:8px; flex:none; width:min(250px,45%); }
+#settings-dialog .notification-sound-controls > select { flex:1 1 auto; min-width:0; }
+#settings-dialog .notification-sound-controls > button { flex:none; }
 #settings-dialog .project-setting-row { display:flex; align-items:center; gap:12px; margin:0; padding:16px 20px; border:0; border-bottom:1px solid var(--line); background:transparent; }
 #settings-dialog .project-setting-row:last-child { border-bottom:0; }
 #settings-dialog .project-setting-row > svg { width:18px;height:18px;flex:none;color:var(--text-muted); }
@@ -211,7 +214,7 @@
   #settings-dialog .settings-section-header :is(h2,h3) { font-size:23px; }
   #settings-dialog .settings-row { flex-wrap:wrap; gap:12px; }
   #settings-dialog .settings-row-copy { flex-basis:55%; }
-  #settings-dialog .settings-row > :is(input:not([type=checkbox]),select,.settings-language-control) { width:min(250px,100%); }
+  #settings-dialog .settings-row > :is(input:not([type=checkbox]),select,.settings-language-control,.notification-sound-controls) { width:min(250px,100%); }
   #settings-dialog .settings-row > input[type=number] { width:100px; }
   #settings-dialog .segmented { max-width:100%; }
   #settings-dialog .model-form-grid { grid-template-columns:minmax(0,1fr); }

@@ -14,6 +14,8 @@ mod host_menu;
 #[cfg(any(target_os = "macos", windows))]
 mod localization;
 #[cfg(any(target_os = "macos", windows))]
+mod notification_sounds;
+#[cfg(any(target_os = "macos", windows))]
 mod notifications;
 mod policy;
 #[cfg(any(target_os = "macos", windows))]

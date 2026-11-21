@@ -10,6 +10,7 @@
     "allow-desktop-download-update", "allow-desktop-install-update", "allow-desktop-cancel-update",
     "allow-desktop-preferences", "allow-desktop-quit", "allow-desktop-stop-host", "allow-desktop-window", "allow-desktop-background",
     "allow-desktop-remember-conversation", "allow-desktop-take-tray-intent", "allow-desktop-refresh-accessibility",
-    "allow-desktop-open-browser"
+    "allow-desktop-open-browser", "allow-desktop-notification-sounds",
+    "allow-desktop-set-notification-sound", "allow-desktop-preview-notification-sound"
   ]
 }

@@ -331,13 +331,14 @@ workbench. macOS retains standard system editing/window menus. Native completion
 notifications show the run or background job outcome, the project folder name
 and elapsed time when available. Completion and pending approval/question
 notifications keep conversation text and raw diagnostics in the app, are
-suppressed while the main window is visible and focused, and play the platform
-notification sound (`Funk` on macOS, `Default` on Windows) when CLAT is in the
-background, hidden, or minimized. If notification permission is denied or banner
-delivery fails, Desktop falls back to the local system sound player; set
-`CLAT_NO_BELL=1` to mute notification audio or `CLAT_BELL_COMMAND` for a custom
-detached sound command. Clicking a notification opens its project and admitted
-session.
+suppressed while the main window is visible and focused, and play the selected
+completion sound (default `Funk` on macOS, `Default` on Windows; configurable
+with live preview or muted under **Settings → General & appearance**) when CLAT
+is in the background, hidden, or minimized. If notification permission is denied
+or banner delivery fails, Desktop falls back to the local system sound player;
+set `CLAT_NO_BELL=1` to mute notification audio or `CLAT_BELL_COMMAND` for a
+custom detached sound command. Clicking a notification opens its project and
+admitted session.
 
 Desktop controls use the page's external stylesheets on both the welcome page
 and Host workbench. The bundled terminal and editor also generate runtime style

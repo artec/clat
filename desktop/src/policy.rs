@@ -74,6 +74,9 @@ mod tests {
             "desktop_take_tray_intent",
             "desktop_fonts",
             "desktop_open_browser",
+            "desktop_notification_sounds",
+            "desktop_set_notification_sound",
+            "desktop_preview_notification_sound",
         ] {
             assert!(
                 manifest.contains(&format!("\"{command}\"")),

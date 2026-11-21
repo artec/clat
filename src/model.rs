@@ -7,6 +7,8 @@ mod configuration;
 mod context;
 pub(crate) use context::image_projection_is_over_budget;
 mod context_budget;
+pub(crate) use context_budget::{lookup_tier_limit, remember_tier_limit};
+pub use context_budget::lookup_tier_limit_by_model;
 mod request_meter;
 pub(crate) use request_meter::RequestMeter;
 mod credentials;

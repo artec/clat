@@ -4,7 +4,10 @@ pub(super) fn time() -> Value {
     let int = |min: i64, max: i64| json!({"type":"integer","minimum":min,"maximum":max});
     let zone = json!({"type":"string","maxLength":128,"description":"Explicit IANA time zone, such as Asia/Shanghai or America/New_York"});
     let object = |properties: Value| required_object(properties);
-    json!({"anyOf":[
+    // Moonshot 系端点严格校验 tool schema：每个 property 必须显式声明
+    // type（2026-11-21 Kimi K3.1 实测 400 "type is not defined"）。
+    // anyOf 五分支全是 object 形态，顶层钉 `type:object` 与标准兼容。
+    json!({"type":"object","anyOf":[
         object(json!({"kind":{"type":"string","enum":["delay"]},"delay_ms":int(0,31536000000)})),
         object(json!({"kind":{"type":"string","enum":["at"]},"at_ms":int(-9007199254740991,9007199254740991)})),
         object(json!({"kind":{"type":"string","enum":["interval"]},"anchor_ms":int(-9007199254740991,9007199254740991),"every_ms":int(1000,31622400000)})),

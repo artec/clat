@@ -42,6 +42,19 @@ impl PendingAssistant {
             return;
         };
         let has_calls = !pending.calls.is_empty();
+        // 无载荷的纯思考轮（无正文、无调用、无结果，且 reasoning 不
+        // 回放）序列化后是完全空的 assistant 消息——严格校验端点拒绝
+        // （Moonshot 系 2026-11-21 Kimi K3.1 实测 400 "must not be
+        // empty"）。整条跳过：空消息不携带任何信息。注：空正文 +
+        // tool_calls 的形状同日实测 200，下方“空串不坈 null”的既有
+        // 决定不受影响；DeepSeek/GLM 的 reasoning 回放（replay_plain）
+        // 会给消息带上 reasoning_content 载荷，同样不跳。
+        let reasoning_replayed =
+            replay_plain && pending.reasoning.as_deref().is_some_and(|v| !v.is_empty());
+        let empty_content = pending.content.as_deref().is_none_or(str::is_empty);
+        if !has_calls && empty_content && pending.results.is_empty() && !reasoning_replayed {
+            return;
+        }
         // Empty tool-call content stays an empty string, never null.
         let mut message =
             json!({"role":"assistant", "content":pending.content.unwrap_or_default()});
@@ -54,7 +67,33 @@ impl PendingAssistant {
             message["reasoning_content"] = json!(reasoning);
         }
         messages.push(message);
+        // Moonshot 系端点要求 assistant 的每个 tool_call_id 都有配对的
+        // tool 响应消息（2026-11-21 Kimi K3.1 实测 400 "did not have
+        // response messages"）——取消/中断的调用在会话日志里可能没有
+        // 记录结果。为缺失的调用补一条诚实占位：协议配对完整、历史
+        // 无损，占位文本明确标注结果未记录（不发明数据）。配对是
+        // OpenAI 标准要求，其它厂商只是不校验。先在移动 results 前
+        // 算出未应答 id 列表（拥有所有权，避开 use-after-move）。
+        let unanswered: Vec<String> = pending
+            .calls
+            .iter()
+            .filter_map(|call| call["id"].as_str())
+            .filter(|id| {
+                !pending
+                    .results
+                    .iter()
+                    .any(|result| result["tool_call_id"].as_str() == Some(*id))
+            })
+            .map(str::to_owned)
+            .collect();
         messages.extend(pending.results);
+        for id in unanswered {
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": "[no recorded result]",
+            }));
+        }
     }
 }
 

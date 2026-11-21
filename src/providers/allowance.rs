@@ -185,10 +185,11 @@ fn opencode_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
 /// 缺失或无已知窗口时回落旧形状：`limits[].detail` 绝对值（窗口按
 /// `window.duration/timeUnit` 换算小时）+ 顶层 `usage` 周窗口
 /// （168h，cc-switch 语义）。两形状同存时取 usages——同一 5h 窗
-/// 不重复展示。
+/// 不重复展示；月窗只读 total（code 口径按负责人 2026-11-21 裁定
+/// 忽略），同窗口意外多口径由 `keep_tightest_per_window` 兜底合并。
 fn kimi_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
     if let Some(usages) = body["usages"].as_object() {
-        let items = usages
+        let mut items = usages
             .iter()
             .filter_map(|(key, row)| {
                 let hours = kimi_usage_window_hours(key)?;
@@ -203,15 +204,46 @@ fn kimi_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
             })
             .collect::<Vec<_>>();
         if !items.is_empty() {
+            keep_tightest_per_window(&mut items);
             return Some(items);
         }
     }
     kimi_legacy_allowance_items(body)
 }
 
+/// 同一窗口的多条计量口径合并为一条，取剩余百分比更紧（更小）的
+/// ——与 Web rail 图标"同窗口多值取更紧"的 2026-11-19 负责人裁定
+/// 同语义。负责人 2026-11-21 口径：有多少种窗口就显示多少条，不
+/// 凑数也不重复；月窗 code 口径已按同日裁定忽略（只读 total），
+/// 此处仅作厂商日后新增同窗口口径的兑底（修复背景：月窗
+/// total/code 两口径曾同现两条"每月额度"）。
+fn keep_tightest_per_window(items: &mut Vec<AllowanceItem>) {
+    let mut kept: Vec<AllowanceItem> = Vec::with_capacity(items.len());
+    for item in items.drain(..) {
+        match kept
+            .iter_mut()
+            .find(|existing| existing.window_hours == item.window_hours)
+        {
+            Some(existing) => {
+                let existing_remaining = existing.value.parse::<f64>().unwrap_or(f64::INFINITY);
+                let item_remaining = item.value.parse::<f64>().unwrap_or(f64::INFINITY);
+                if item_remaining < existing_remaining {
+                    *existing = item;
+                }
+            }
+            None => kept.push(item),
+        }
+    }
+    *items = kept;
+}
+
 /// `usages` 键名 → 窗口小时：`limit_<n>h`→n、week 族→168、month 族→720；
-/// 不认识的键丢弃（不发明窗口语义）。
+/// 不认识的键丢弃（不发明窗口语义）。`limit_month_code` 按负责人
+/// 2026-11-21 裁定显式忽略（code 口径不用，月窗只读 total）。
 fn kimi_usage_window_hours(key: &str) -> Option<u64> {
+    if key == "limit_month_code" {
+        return None;
+    }
     let name = key.strip_prefix("limit_")?;
     if let Some(hours) = name.strip_suffix('h') {
         return hours.parse::<u64>().ok().filter(|h| *h > 0);
@@ -419,11 +451,11 @@ mod tests {
                 .is_none()
         );
     }
-    /// 2026-11-21 live /usages 形状：`usages` 携带全部窗口（5h + 月度
-    /// total/code；厂商当前不返回周窗口——日后出现即自动展示），
-    /// used_ratio 是已用比例；usages 在场时 limits[] 的同窗绝对值不
-    /// 重复展示；不认识的键丢弃。预修复（只取 limits 单窗、无
-    /// window_hours）上本测试红。
+    /// 2026-11-21 live /usages 形状：`usages` 携带全部窗口，月窗只读
+    /// total（code 口径按负责人 2026-11-21 裁定忽略，即使比 total
+    /// 更紧也不采用）；厂商当前不返回周窗口——日后出现即自动展示；
+    /// 不认识的键丢弃；usages 在场时 limits[] 不参与。预修复（code
+    /// 参与同窗口取更紧）上本测试红。
     #[test]
     fn kimi_allowance_reports_every_window_from_usages() {
         let body = serde_json::json!({
@@ -433,13 +465,14 @@ mod tests {
             "usages": {
                 "limit_5h": {"used_ratio": 0.0625, "reset_time": "2026-11-21T06:46:26Z"},
                 "limit_month_total": {"used_ratio": 0.25, "reset_time": "2026-12-22T00:00:00Z"},
-                "limit_month_code": {"used_ratio": 0.0, "reset_time": 1797897600000u64},
+                "limit_month_code": {"used_ratio": 0.5, "reset_time": 1797897600000u64},
                 "limit_mystery": {"used_ratio": 0.5}
             }
         });
         let value = parse_allowance("kimi", &body).unwrap();
-        assert_eq!(value.items.len(), 3);
-        // 不依赖 map 迭代序：按窗口与数值认领各条目。
+        // 有多少种窗口显示多少条：5h + 月 = 2 条；月窗只读 total
+        // （剩 75），code（剩 50，更紧）被忽略不参与。
+        assert_eq!(value.items.len(), 2);
         let five_hour = value
             .items
             .iter()
@@ -452,18 +485,9 @@ mod tests {
             .iter()
             .filter(|item| item.window_hours == Some(720))
             .collect();
-        assert_eq!(monthly.len(), 2);
-        // month_total 已用 0.25 → 剩 75；month_code 已用 0 → 剩 100。
-        assert!(
-            monthly
-                .iter()
-                .any(|item| item.value == "75" && item.reset_at == Some(1797897600000))
-        );
-        assert!(
-            monthly
-                .iter()
-                .any(|item| item.value == "100" && item.reset_at == Some(1797897600000))
-        );
+        assert_eq!(monthly.len(), 1);
+        assert_eq!(monthly[0].value, "75");
+        assert_eq!(monthly[0].reset_at, Some(1797897600000));
     }
 
     /// 旧形状回落：limits[] 绝对值 + 窗口描述符换算小时；顶层 usage

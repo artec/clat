@@ -30,11 +30,31 @@ pub(in crate::application) struct ActiveContext {
     /// One-shot signal to the Run's evidence tracker: durable history was
     /// rewritten, so reading the same tool result again may be productive.
     pub(in crate::application) history_changed: bool,
+    /// 厂商报告的上下文档位上限（token；2026-11-21 Kimi Plus 档 256K
+    /// live 实测）。发现后预算按 min(配置窗口, 上限) 算——主动压缩
+    /// 阈值与恢复保留量都收敛到档位内，不再“撞墙-压缩-又撞墙”。
+    /// 会话内运行时态，不写配置（升级档位后新会话自然恢复）。
+    pub(in crate::application) discovered_limit: Option<u64>,
 }
 
 impl RequestContextManager for ActiveContext {
     fn take_history_change(&mut self) -> bool {
         std::mem::take(&mut self.history_changed)
+    }
+
+    fn discover_context_limit(&mut self, limit: u64) {
+        self.discovered_limit =
+            Some(self.discovered_limit.map_or(limit, |current| current.min(limit)));
+        // 全局持久化：ActiveContext 是 per-run 的（每条消息新建），
+        // discovered_limit 不跨 run 存活——没有全局缓存时每条消息都
+        // 撞墙-恢复（2026-11-21 实测确认）。写缓存后后续 run 与新
+        // 会话从一开始就用收紧预算；缓存按 endpoint|model 键控，
+        // 切换模型自动切预算，升级档位后删 ~/.clat/tier_limits.json。
+        crate::model::remember_tier_limit(
+            &self.config.endpoint,
+            &self.config.model,
+            limit,
+        );
     }
 
     fn stage_request(&mut self, snapshot: &crate::plugins::services::RuntimeSnapshot) {
@@ -61,8 +81,10 @@ impl RequestContextManager for ActiveContext {
     ) {
         let estimated_input = crate::model::estimate_request_tokens(instructions, items, tools)
             .saturating_add(tail_tokens);
+        // 档位上限发现后，主动压缩的阈值观察也按收紧后的窗口算。
+        let config = self.effective_config();
         self.sessions
-            .observe_request(&self.config, instructions, tools, usage, estimated_input);
+            .observe_request(&config, instructions, tools, usage, estimated_input);
     }
 
     fn failed_capacity_attempt(
@@ -95,7 +117,9 @@ impl RequestContextManager for ActiveContext {
         options: &ModelOptions,
     ) -> Result<(), String> {
         self.history_changed = false;
-        let target = crate::model::ContextBudget::resolve(&self.config)?
+        // effective_config 已含全局缓存兑底：新 run / 新会话从第一次
+        // maintain 起就用收紧预算（无需先撞墙）。
+        let target = crate::model::ContextBudget::resolve(&self.effective_config())?
             .map_or(u64::MAX, |budget| budget.threshold);
         let sessions = self.sessions.clone();
         let config = self.config.clone();
@@ -189,6 +213,30 @@ impl ActiveContext {
                 < super::SUMMARY_FAILURE_LIMIT
     }
 
+    /// 预算计算用的配置快照：发现档位上限后窗口收紧到 min(配置, 上限)。
+    /// 不修改 self.config——凭据、输出上限等保持原样。上限来源：
+    /// per-run 发现优先，全局缓存（endpoint|model 键控，跨 run/跨会话
+    /// 持久）兑底。
+    fn effective_config(&self) -> ModelConfig {
+        let mut config = self.config.clone();
+        let limit = self
+            .discovered_limit
+            .or_else(|| {
+                crate::model::lookup_tier_limit(
+                    &config.endpoint,
+                    &config.model,
+                )
+            });
+        if let Some(limit) = limit
+            && let Ok(small) = u32::try_from(limit)
+            && let Some(window) = config.max_context_tokens
+            && small < window
+        {
+            config.max_context_tokens = Some(small);
+        }
+        config
+    }
+
     pub(super) fn boundary(&self) -> Result<(), String> {
         self.recorder
             .lock()
@@ -225,12 +273,19 @@ impl ActiveContext {
                 })
                 .collect::<Vec<_>>();
             let checkpoints = self.checkpoints.keys().copied().collect::<Vec<_>>();
+            // 第六层（2026-11-21 live 实测）：压缩器内部的预算与范围选择
+            // 必须看到档位收紧后的窗口——1M 预设配置下，恢复路径的摘要
+            // 请求带全部未保护历史，自身即超 256K 档位（403 → 降级 →
+            // 什么都没压掉 → 重试撞同一堵墙）。effective_config 已按
+            // discovered_limit 收紧（第五层），此处传给压缩器使
+            // candidate/choose_range 的预算与摘要分块都按档位算。
+            let effective = self.effective_config();
             let outcome = self
                 .compactor
                 .as_ref()
                 .ok_or("compaction is unavailable")?
                 .compact(CompactionRequest {
-                    config: &self.config,
+                    config: &effective,
                     credentials: &self.credentials,
                     nodes: &nodes,
                     measured_input: Some(cost(items)),

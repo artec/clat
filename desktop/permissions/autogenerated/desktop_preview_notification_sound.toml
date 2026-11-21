@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-preview-notification-sound"
+description = "Enables the desktop_preview_notification_sound command without any pre-configured scope."
+commands.allow = ["desktop_preview_notification_sound"]
+
+[[permission]]
+identifier = "deny-desktop-preview-notification-sound"
+description = "Denies the desktop_preview_notification_sound command without any pre-configured scope."
+commands.deny = ["desktop_preview_notification_sound"]

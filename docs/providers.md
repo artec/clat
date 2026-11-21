@@ -222,6 +222,47 @@ The preset uses `https://api.kimi.com/coding/v1`, top-level
 to the vendor ladder. `k3.1-pro` (K3.1 Pro) image input is declared by the
 official API documentation, so attach admission is open on that route.
 
+The endpoint also strictly validates tool JSON schemas: every
+`tools.function.parameters` property must declare an explicit `type` — an
+enum-only property is rejected with 400 "type is not defined" (2026-11-21,
+live-reproduced; other vendors accept it, so the gap only surfaces here). The
+same-day fix covered `ui_wait`'s `condition`, `ui_act`'s `action`, and the
+schedule tools' `time` (an `anyOf` without a top-level `type`); an invariant
+test now walks every registered tool schema so new tools cannot regress this.
+
+Messages are validated just as strictly: an assistant message with no
+payload — the empty-string serialization of a thinking-only turn — is
+rejected with 400 "must not be empty" (same day, live-reproduced; an empty
+`content` alongside `tool_calls` is accepted, so tool turns keep their
+historical shape). CLAT now skips payloadless assistant turns when
+serializing history; reasoning-replay endpoints (DeepSeek, GLM) still emit
+`reasoning_content` as the turn's payload and keep the turn. Tool-call
+pairing is enforced too: every `tool_call_id` must be followed by a
+responding tool message, so a cancelled or interrupted call whose result
+was never journaled is rejected with 400 "did not have response messages"
+(same day, live-reproduced). CLAT now synthesizes an honest
+`[no recorded result]` placeholder response for such calls when serializing
+history.
+
+Plan tiers gate the context window: a Plus-plan key serves `k3.1-pro` up to
+256K context while higher tiers unlock 1M (live-probed 403 "Your current
+plan supports only k3.1-pro up to 256K context", 2026-11-21, on an
+oversized request; the body carries no machine code, only the fixed
+permission-denied template). The preset keeps the documented 1M window —
+no tier is hard-coded. CLAT recognizes the tier-limit 403 as a
+capacity error and routes it through the existing compaction-recovery
+path: the history is compacted below the tier limit and the request
+retried once, so lower tiers work without configuration and higher tiers
+never trigger the path. The reported limit is also threaded into the
+compaction budget as a runtime-discovered window: after the first
+tier-limit 403 the proactive threshold and the recovery retain size are
+computed against the discovered limit instead of the preset window (the
+1M-preset budget kept ~139K of history after recovery — still over a
+256K tier once schemas and the output reserve were added, so the single
+retry hit the wall again). The discovery is in-memory per session: it
+never rewrites the configuration, and a higher-tier key naturally uses
+the full preset window in new sessions.
+
 The Coding membership endpoint historically admitted subscription traffic only
 for allowlisted coding-agent User-Agents (community matrix, 2026-08), and the
 preset injected the compatible `claude-cli/2.1.161` disguise. A 2026-11-21 live
@@ -231,11 +272,12 @@ the gate is withdrawn and the disguise retired: the presets now send CLAT's own
 identity User-Agent. Saved configurations seeded by the older preset are
 migrated on the next load; a custom User-Agent in Extra Headers still wins.
 
-The status monitor reads `/usages` and displays every window the vendor reports:
-currently the five-hour window plus two monthly windows (`limit_month_total`,
-`limit_month_code`). No weekly window is reported today; one appears
-automatically if the vendor starts returning it. Each window shows its remaining
-percentage and reset time; the rail icon follows the smallest window.
+The status monitor reads `/usages` and displays one entry per distinct window
+the vendor reports — as many as exist, never padded. Today that is the
+five-hour window plus a single monthly entry read from `limit_month_total`;
+the vendor's `limit_month_code` meter is deliberately ignored (owner ruling,
+2026-11-21). No weekly window is reported today; one appears automatically
+if the vendor starts returning it.
 
 ### Tencent Hy Token Plan
 

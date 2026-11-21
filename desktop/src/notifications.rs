@@ -9,14 +9,14 @@ use tauri_plugin_notification::{NotificationExt, PermissionState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DesktopSoundMode {
-    Default,
+    Sound(String),
     Off,
     Command(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BannerAudio {
-    Sound(&'static str),
+    Sound(String),
     Silent,
 }
 
@@ -24,7 +24,7 @@ enum BannerAudio {
 struct DeliveryPlan {
     banner_audio: BannerAudio,
     run_custom_command: Option<String>,
-    fallback_system_sound_on_banner_failure: bool,
+    fallback_sound: Option<String>,
 }
 
 pub fn start(app: tauri::AppHandle) {
@@ -189,35 +189,37 @@ fn ensure_notification_permission(app: &tauri::AppHandle) -> bool {
     }
 }
 
-fn sound_mode_from_env(no_bell: Option<String>, command: Option<String>) -> DesktopSoundMode {
+fn sound_mode_from_sources(
+    no_bell: Option<String>,
+    command: Option<String>,
+    selected: &str,
+) -> DesktopSoundMode {
     let silenced = no_bell
         .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
     if silenced {
         return DesktopSoundMode::Off;
     }
-    match command {
-        Some(command) if !command.trim().is_empty() => DesktopSoundMode::Command(command),
-        _ => DesktopSoundMode::Default,
+    if let Some(command) = command
+        && !command.trim().is_empty()
+    {
+        return DesktopSoundMode::Command(command);
+    }
+    let normalized = crate::notification_sounds::parse_saved_sound(Some(selected));
+    if normalized == crate::notification_sounds::OFF {
+        DesktopSoundMode::Off
+    } else {
+        DesktopSoundMode::Sound(normalized)
     }
 }
 
-fn desktop_sound_mode() -> DesktopSoundMode {
-    sound_mode_from_env(
+fn desktop_sound_mode(app: &tauri::AppHandle) -> DesktopSoundMode {
+    let selected = app.state::<Desktop>().notification_sounds.selected();
+    sound_mode_from_sources(
         std::env::var("CLAT_NO_BELL").ok(),
         std::env::var("CLAT_BELL_COMMAND").ok(),
+        &selected,
     )
-}
-
-fn platform_notification_sound() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "Funk"
-    }
-    #[cfg(windows)]
-    {
-        "Default"
-    }
 }
 
 fn delivery_plan(mode: &DesktopSoundMode) -> DeliveryPlan {
@@ -225,47 +227,18 @@ fn delivery_plan(mode: &DesktopSoundMode) -> DeliveryPlan {
         DesktopSoundMode::Off => DeliveryPlan {
             banner_audio: BannerAudio::Silent,
             run_custom_command: None,
-            fallback_system_sound_on_banner_failure: false,
+            fallback_sound: None,
         },
         DesktopSoundMode::Command(command) => DeliveryPlan {
             banner_audio: BannerAudio::Silent,
             run_custom_command: Some(command.clone()),
-            fallback_system_sound_on_banner_failure: false,
+            fallback_sound: None,
         },
-        DesktopSoundMode::Default => DeliveryPlan {
-            banner_audio: BannerAudio::Sound(platform_notification_sound()),
+        DesktopSoundMode::Sound(sound) => DeliveryPlan {
+            banner_audio: BannerAudio::Sound(sound.clone()),
             run_custom_command: None,
-            fallback_system_sound_on_banner_failure: true,
+            fallback_sound: Some(sound.clone()),
         },
-    }
-}
-
-fn system_sound_command() -> Option<(std::path::PathBuf, Vec<String>)> {
-    #[cfg(target_os = "macos")]
-    {
-        let sound = "/System/Library/Sounds/Funk.aiff";
-        if !std::path::Path::new(sound).exists() {
-            return None;
-        }
-        Some((
-            std::path::PathBuf::from("afplay"),
-            vec!["-v".into(), "2.0".into(), sound.into()],
-        ))
-    }
-    #[cfg(windows)]
-    {
-        let wav = "C:\\Windows\\Media\\Windows Notify System Generic.wav";
-        if !std::path::Path::new(wav).exists() {
-            return None;
-        }
-        Some((
-            std::path::PathBuf::from("powershell"),
-            vec![
-                "-NoProfile".into(),
-                "-Command".into(),
-                format!("(New-Object System.Media.SoundPlayer '{wav}').PlaySync()"),
-            ],
-        ))
     }
 }
 
@@ -283,8 +256,8 @@ fn spawn_detached_and_reap(program: &str, args: Vec<String>) {
     }
 }
 
-fn play_fallback_sound() {
-    if let Some((program, args)) = system_sound_command() {
+fn play_fallback_sound(sound: &str) {
+    if let Some((program, args)) = crate::notification_sounds::playback_command(sound) {
         spawn_detached_and_reap(&program.display().to_string(), args);
     }
 }
@@ -309,7 +282,7 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
     else {
         return;
     };
-    let plan = delivery_plan(&desktop_sound_mode());
+    let plan = delivery_plan(&desktop_sound_mode(app));
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let state = app.state::<Desktop>();
     if let Ok(mut targets) = state.notification_targets.lock() {
@@ -321,8 +294,10 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
     let banner_shown = show_banner(app, id, title, body, &plan.banner_audio);
     if let Some(command) = &plan.run_custom_command {
         play_custom_sound(command);
-    } else if !banner_shown && plan.fallback_system_sound_on_banner_failure {
-        play_fallback_sound();
+    } else if !banner_shown
+        && let Some(sound) = &plan.fallback_sound
+    {
+        play_fallback_sound(sound);
     }
 }
 
@@ -338,7 +313,7 @@ fn show_banner(
     }
     let builder = app.notification().builder().id(id).title(title).body(body);
     let builder = match audio {
-        BannerAudio::Sound(sound) => builder.sound(*sound),
+        BannerAudio::Sound(sound) => builder.sound(sound),
         BannerAudio::Silent => builder.silent(),
     };
     match builder.show() {
@@ -476,63 +451,54 @@ mod tests {
     }
 
     #[test]
-    fn sound_mode_resolves_env_with_no_bell_precedence() {
-        assert_eq!(sound_mode_from_env(None, None), DesktopSoundMode::Default);
+    fn sound_mode_resolves_env_and_preference_precedence() {
         assert_eq!(
-            sound_mode_from_env(Some("0".into()), None),
-            DesktopSoundMode::Default
+            sound_mode_from_sources(None, None, "Glass"),
+            DesktopSoundMode::Sound("Glass".into())
+        );
+        assert_eq!(
+            sound_mode_from_sources(None, None, "off"),
+            DesktopSoundMode::Off
+        );
+        assert_eq!(
+            sound_mode_from_sources(Some("0".into()), None, "Ping"),
+            DesktopSoundMode::Sound("Ping".into())
         );
         for flag in ["1", "true", "yes", "on", " 1 "] {
             assert_eq!(
-                sound_mode_from_env(Some(flag.into()), Some("afplay x".into())),
+                sound_mode_from_sources(Some(flag.into()), Some("afplay x".into()), "Glass"),
                 DesktopSoundMode::Off,
-                "CLAT_NO_BELL={flag:?} must silence custom commands too"
+                "CLAT_NO_BELL={flag:?} must silence custom commands and preference"
             );
         }
         assert_eq!(
-            sound_mode_from_env(None, Some("   ".into())),
-            DesktopSoundMode::Default
+            sound_mode_from_sources(None, Some("   ".into()), "Hero"),
+            DesktopSoundMode::Sound("Hero".into())
         );
         assert_eq!(
-            sound_mode_from_env(None, Some("afplay ~/ding.aiff".into())),
+            sound_mode_from_sources(None, Some("afplay ~/ding.aiff".into()), "Glass"),
             DesktopSoundMode::Command("afplay ~/ding.aiff".into())
         );
     }
 
     #[test]
-    fn delivery_plan_attaches_platform_sound_and_avoids_double_audio() {
-        let default_plan = delivery_plan(&DesktopSoundMode::Default);
+    fn delivery_plan_attaches_selected_sound_and_avoids_double_audio() {
+        let selected_plan = delivery_plan(&DesktopSoundMode::Sound("Glass".into()));
         assert_eq!(
-            default_plan.banner_audio,
-            BannerAudio::Sound(platform_notification_sound())
+            selected_plan.banner_audio,
+            BannerAudio::Sound("Glass".into())
         );
-        assert!(default_plan.run_custom_command.is_none());
-        assert!(default_plan.fallback_system_sound_on_banner_failure);
+        assert!(selected_plan.run_custom_command.is_none());
+        assert_eq!(selected_plan.fallback_sound.as_deref(), Some("Glass"));
 
         let off_plan = delivery_plan(&DesktopSoundMode::Off);
         assert_eq!(off_plan.banner_audio, BannerAudio::Silent);
         assert!(off_plan.run_custom_command.is_none());
-        assert!(!off_plan.fallback_system_sound_on_banner_failure);
+        assert!(off_plan.fallback_sound.is_none());
 
         let cmd_plan = delivery_plan(&DesktopSoundMode::Command("echo ding".into()));
         assert_eq!(cmd_plan.banner_audio, BannerAudio::Silent);
         assert_eq!(cmd_plan.run_custom_command.as_deref(), Some("echo ding"));
-        assert!(!cmd_plan.fallback_system_sound_on_banner_failure);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_notification_sound_and_fallback_use_funk() {
-        assert_eq!(platform_notification_sound(), "Funk");
-        let (program, args) = system_sound_command().expect("macOS ships afplay and Funk.aiff");
-        assert_eq!(program, std::path::PathBuf::from("afplay"));
-        assert_eq!(
-            args,
-            vec![
-                "-v".to_owned(),
-                "2.0".to_owned(),
-                "/System/Library/Sounds/Funk.aiff".to_owned(),
-            ]
-        );
+        assert!(cmd_plan.fallback_sound.is_none());
     }
 }

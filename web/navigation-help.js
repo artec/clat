@@ -59,6 +59,76 @@ function installPageNotifications() {
   const notificationGroup = el('section', 'notification-settings');
   render(); notificationGroup.append(el('h3', '', () => (CLATI18n.msg("web.online_page_notifications", {}, "Online page notifications"))), notifications, status);
   document.querySelector('[data-settings-panel=appearance]').append(notificationGroup);
+  installDesktopNotificationSound();
+}
+
+function installDesktopNotificationSound() {
+  const invoke = globalThis.__TAURI__?.core?.invoke;
+  const host = document.querySelector('[data-settings-panel=appearance]');
+  if (typeof invoke !== 'function' || !host || document.getElementById('desktop-notification-sound')) return;
+  const select = el('select'); select.id = 'desktop-notification-sound'; select.disabled = true;
+  CLATI18n.attribute(select, 'aria-label', () => CLATI18n.msg('desktop.notification_sound', {}, 'Completion sound'));
+  const preview = el('button', 'secondary', () => CLATI18n.msg('desktop.notification_sound_preview', {}, 'Preview'));
+  preview.type = 'button'; preview.id = 'desktop-notification-sound-preview'; preview.disabled = true;
+  const controls = el('div', 'notification-sound-controls'); controls.append(select, preview);
+  const copy = el('span', 'settings-row-copy');
+  copy.append(
+    el('strong', '', () => CLATI18n.msg('desktop.notification_sound', {}, 'Completion sound')),
+    el('small', '', () => CLATI18n.msg('desktop.notification_sound_hint', {}, 'Played when a task completes while CLAT is in the background.')),
+  );
+  const row = el('div', 'settings-row'); row.append(copy, controls);
+  const status = el('p', 'picker-hint'); status.id = 'desktop-notification-sound-status'; status.setAttribute('role', 'status');
+  const card = el('div', 'settings-card'); card.append(row, status);
+  const section = el('section', 'settings-group-block'); section.id = 'desktop-notification-sound-section';
+  section.append(el('h4', '', () => CLATI18n.msg('desktop.notification_sound_section', {}, 'Desktop notifications')), card);
+  const pageNotice = host.querySelector('.notification-settings');
+  if (pageNotice) pageNotice.before(section); else host.append(section);
+
+  let current = 'Funk';
+  let envOverride = null;
+  let sounds = [];
+  const renderStatus = error => {
+    if (error) { status.textContent = typeof error === 'string' ? error : (error?.message || String(error)); return; }
+    if (envOverride === 'no_bell') status.textContent = CLATI18n.msg('desktop.notification_sound_env_muted', {}, 'Muted by the CLAT_NO_BELL environment variable.');
+    else if (envOverride === 'command') status.textContent = CLATI18n.msg('desktop.notification_sound_env_command', {}, 'Overridden by the CLAT_BELL_COMMAND environment variable.');
+    else status.textContent = '';
+  };
+  const renderOptions = () => {
+    select.replaceChildren();
+    const offOption = document.createElement('option');
+    offOption.value = 'off';
+    offOption.textContent = CLATI18n.msg('desktop.notification_sound_off', {}, 'Muted');
+    select.append(offOption);
+    const list = sounds.slice();
+    if (current && current !== 'off' && !list.includes(current)) list.push(current);
+    for (const name of list) {
+      const option = document.createElement('option');
+      option.value = name; option.textContent = name; select.append(option);
+    }
+    select.value = current || 'off';
+    preview.disabled = select.disabled || select.value === 'off';
+    renderStatus(null);
+  };
+  const applyPayload = data => {
+    sounds = Array.isArray(data?.sounds) ? data.sounds : [];
+    current = typeof data?.selected === 'string' ? data.selected : (data?.default || 'Funk');
+    envOverride = data?.envOverride || null;
+    select.disabled = false;
+    renderOptions();
+  };
+  select.addEventListener('change', async () => {
+    const next = select.value;
+    preview.disabled = next === 'off';
+    try { applyPayload(await invoke('desktop_set_notification_sound', { sound: next, preview: true })); }
+    catch (error) { select.value = current; preview.disabled = current === 'off'; renderStatus(error); }
+  });
+  preview.addEventListener('click', async () => {
+    if (select.value === 'off') return;
+    try { await invoke('desktop_preview_notification_sound', { sound: select.value }); renderStatus(null); }
+    catch (error) { renderStatus(error); }
+  });
+  CLATI18n.onChange(() => { if (!select.disabled) renderOptions(); });
+  invoke('desktop_notification_sounds').then(applyPayload).catch(renderStatus);
 }
 
 function createTranscriptFollow(viewport, onChange) {

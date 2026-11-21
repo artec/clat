@@ -703,18 +703,31 @@ snapshot, and capability guidance.
    Overlapping `read_file` ranges of the same path count as repeated
    evidence; disjoint ranges remain independent. Dynamic wait/poll tools are
    exempt. File writes, destructive actions, UI actions and session-local
-   mutations invalidate old evidence.    Process and network probes
-   (`exec_command` / `run_command` and similar) do **not** clear the ledger
-   or dismiss a pending correction / barren-search scope — they are
-   fingerprinted by a normalized command (whitespace collapsed, volatile
-   `clat-run-*` / UUID tokens scrubbed) so identical re-probes stall while
-   prior search/read evidence stays intact. Discovery timestamps
-   do not make unchanged capability data novel. Tool results retain their
-   payload with optional `clat_runtime_feedback`, which marks a correction
-   rather than claiming the tool returned new data. **A durable compaction,
-   pruning or image-offload rewrite invalidates this temporary evidence
-   ledger**, so the model can refresh older observations; this does not
-   change the frozen allowed tool schemas or permissions.
+   mutations invalidate old evidence. Process probes (`exec_command` /
+   `run_command`) do **not** clear the ledger or dismiss a pending
+   correction / barren-search scope. Identical commands share a scrubbed
+   fingerprint (whitespace collapsed, volatile `clat-run-*` / UUID tokens
+   removed).    Shell read-probes (`grep`/`rg`/`find`/`sed`/`head`/`tail`/
+   `cat`/`ls` and similar, including `git grep|show|log|diff`) use a coarser
+   `family|path-scope` stamp so swapping only the search pattern on the same
+   path is not novel; path-scope keeps the full path token (not only the
+   first component) so grepping two files under `src/` stays independent.
+   The ninth consecutive shell read-probe is stagnant even across families.
+   Classification uses the primary command of each `;`/`&&` step — a
+   `| tail` or `| grep` filter on `cargo test` / `python` must not count as
+   a read-probe; scripts that also invoke `curl`/`cargo`/`python`/`node`
+   (and similar) are verification, not read-probes; `cat >file` / `sed -i`
+   are writes, not probes, while `2>/dev/null` is not a write. Active `cd`
+   targets are part of the stamp so directory listings in different folders
+   stay independent. Interleaved `read_file` must not dismiss a pending
+   correction — only a non-barren structured search/list/discovery result
+   may. Discovery
+   timestamps do not make unchanged capability data novel. Tool results
+   retain their payload with optional `clat_runtime_feedback`, which marks a
+   correction rather than claiming the tool returned new data. **A durable
+   compaction, pruning or image-offload rewrite invalidates this temporary
+   evidence ledger**, so the model can refresh older observations; this does
+   not change the frozen allowed tool schemas or permissions.
 5. **Fail safely.** The detector is a deterministic heuristic, not a semantic
    proof that a task is finished. Preserve real tool invocation, permission
    checks, tool/result evidence, and meaningful recovery after an advisory.

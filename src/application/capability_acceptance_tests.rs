@@ -666,3 +666,41 @@ fn ga3_mcp_env_credential_is_private_in_user_model_chunks_and_journal() {
     assert!(!replay.contains("raw-private-config-value"));
     crate::test_support::cleanup_tree(root.parent().unwrap());
 }
+
+/// Moonshot 系端点对 tool 参数 schema 做严格校验（"moonshot flavored
+/// json schema"）：每个 property 必须显式声明 type——2026-11-21 Kimi
+/// K3.1 实测 400 "properties.condition: type is not defined"（ui_wait
+/// 的 condition 只有 enum 无 type；ui_act 的 action 同病）。不变量：
+/// 已注册工具的 input_schema 中，properties 的每个属性（含嵌套对象
+/// 属性与数组 items 里的对象属性）都显式声明 type。预修复
+/// （ui_wait.condition / ui_act.action 缺 type）上本测试红。
+#[test]
+fn native_tool_schemas_declare_type_on_every_property() {
+    let script = DiscoveryPrelude::new("list_files", vec![Step::Done]);
+    let (app, root, _storage) = discovered_app("schema-type-invariant", script);
+    let definitions = app.tools.definitions();
+    assert!(!definitions.is_empty(), "resident tool set must be registered");
+    for definition in &definitions {
+        assert_properties_typed(&definition.input_schema, &definition.name);
+    }
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(root.parent().unwrap());
+}
+
+/// 递归校验：schema 的 properties 下每个属性都显式声明 type；嵌套
+/// 对象属性与数组 items 里的对象属性同样遵守（严格校验端点逐层检查）。
+fn assert_properties_typed(schema: &Value, path: &str) {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    for (name, property) in properties {
+        assert!(
+            property.get("type").is_some(),
+            "{path}.{name} 缺 type：严格 schema 校验端点（Moonshot 系）会 400"
+        );
+        assert_properties_typed(property, &format!("{path}.{name}"));
+        if let Some(items) = property.get("items") {
+            assert_properties_typed(items, &format!("{path}.{name}[]"));
+        }
+    }
+}

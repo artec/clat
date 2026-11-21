@@ -131,6 +131,13 @@ impl Run<'_> {
         let Some(manager) = &mut self.context_manager else {
             return Ok(None);
         };
+        // 档位上限（如 Kimi Plus 256K）先于恢复传入：本次恢复压缩与
+        // 后续主动压缩的预算窗口都按实际上限收紧，不再“撞墙-压缩-
+        // 又撞墙”（2026-11-21 live 实测：预设 1M 窗的压缩目标对 256K
+        // 档仍超限）。
+        if let Some(limit) = error.context_limit() {
+            manager.discover_context_limit(limit);
+        }
         manager.failed_capacity_attempt(error.kind())?;
         // Release only the completed attempt's pending reservation, before a summary reserves its own.
         if let Some(ledger) = &self.spend_ledger {
