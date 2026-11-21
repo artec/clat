@@ -3,6 +3,7 @@ fn main() {
     if target == "macos" || target == "windows" {
         let manifest = tauri_build::AppManifest::new().commands(&[
             "desktop_info",
+            "desktop_activate_backend",
             "desktop_open_browser",
             "desktop_fonts",
             "desktop_locale",

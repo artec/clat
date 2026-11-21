@@ -53,12 +53,48 @@ pub async fn desktop_info(
         let update = state.updates.lock().map_err(|_| UiMessage::new("desktop.update_state_unavailable"))?;
         let connection_error = state.connection_error.lock().map_err(|_| UiMessage::new("desktop.state_unavailable"))?.clone();
         Ok(json!({"desktopVersion":env!("CARGO_PKG_VERSION"),"backendVersion":env!("CARGO_PKG_VERSION"),
-            "hostVersion":host_version,"hostConnected":host_connected,"startupLoading":state.startup.loading(),"backendError":state.backend_error,"connectionError":connection_error.as_ref().map(|e|&e.raw),"connectionPresentation":connection_error.as_ref().map(|e|e.message()),
+            "hostVersion":host_version,"hostInstance":host.as_ref().map(|v|v.instance_id()),"hostConnected":host_connected,"startupLoading":state.startup.loading(),"backendError":state.backend_error,"connectionError":connection_error.as_ref().map(|e|&e.raw),"connectionPresentation":connection_error.as_ref().map(|e|e.message()),
             "hostStatus":host_status,"backendPending":backend_pending,
             "autoCheck":update.auto_check,"updateStatus":update.status.as_ref().map(|m|crate::localization::context(&app).render(m)),"updatePresentation":update.status,"updateAvailable":update.pending.is_some(),
             "downloaded":update.bytes.is_some(),"updateBusy":update.busy(),"updatePhase":update.phase.id(),"updateCancellable":update.cancellable(),
             "updateVersion":update.pending.as_ref().map(|u|u.version.clone()),"updateReceived":update.received,"updateTotal":update.total}))
     }).await.map_err(|_| UiMessage::new("desktop.info_worker_failed"))?
+}
+
+/// Apply a verified, pending packaged backend only after the caller's
+/// workbench draft guards approve. A second native-side Host identity and
+/// idle check prevents racing a busy or replaced Host.
+#[tauri::command]
+pub async fn desktop_activate_backend(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), UiMessage> {
+    guard(&window)?;
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<(), clat_core::client_ports::presentation::PresentedText> {
+            let state = app.state::<Desktop>();
+            let _connection = state
+                .connection
+                .lock()
+                .map_err(|_| UiMessage::new("desktop.state_unavailable"))?;
+            let current = state
+                .host
+                .lock()
+                .map_err(|_| UiMessage::new("desktop.state_unavailable"))?
+                .clone()
+                .ok_or_else(|| UiMessage::new("desktop.host_unverified"))?;
+            let backend = state
+                .backend
+                .as_ref()
+                .ok_or_else(|| UiMessage::new("desktop.backend_reinstall"))?;
+            let successor = backend.activate_pending(&current)?;
+            crate::startup::save_project(&app, &successor)?;
+            crate::app::connected(&app, successor).map_err(Into::into)
+        },
+    )
+    .await
+    .map_err(|_| UiMessage::new("desktop.project_worker_failed"))?
+    .map_err(|error| error.message())
 }
 
 #[tauri::command]

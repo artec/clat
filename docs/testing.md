@@ -1305,6 +1305,22 @@ suite (`web/e2e/playwright.desktop.config.js`) checks navigation handoff, live
 language changes, draft protection and error recovery. These browser checks mock
 native commands; they do not establish WKWebView/Windows startup behavior.
 
+The Host lifecycle handoff regression is pinned by
+`scripts/gates.sh pending_host_upgrade_ replacement_identity_requires`:
+a compatible busy official Host remains usable; a later idle takeover is
+instance-fenced and never bypasses project trust; same/newer versions are never
+downgraded; success requires a distinct successor instance, exactly the
+installed product version and staged official build fingerprint. A TUI attached
+to the old compatible version must report it. Desktop unit regressions in
+`web/tests/desktop-update.test.cjs` check busy/idle/deferred activation,
+draft refusal, action exclusivity and a pending update that is visible even
+without an installer update. `web/tests/workbench-state.test.cjs` ensures an
+uninitialized composer cannot be mistaken for an empty one.
+`web/e2e/desktop/shell.spec.js` verifies the user-facing pending status and
+synthetic draft protection before a mocked Host switch. Real release installs
+and real Host process replacement on macOS/Windows remain manual dogfood
+requirements; no test may kill the owner's live port 2691 Host.
+
 `web/e2e/tests/desktop-update.spec.js` also injects the native bridge as a same-origin
 test script into the real isolated Host page, retaining its production CSP. It
 checks update actions and unsent-work protection under the actual Host policy.

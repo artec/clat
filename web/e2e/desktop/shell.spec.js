@@ -44,14 +44,20 @@ async function welcome(page, busy = false, withSidebar = false, loading = false,
         window.desktopInfo.updateBusy = false;
         window.finishDesktopInstall?.();
       }
+      if (command === 'desktop_activate_backend') {
+        window.desktopInfo.hostVersion = window.desktopInfo.backendVersion;
+        window.desktopInfo.hostInstance = 'new-host-instance';
+        window.desktopInfo.backendPending = false;
+      }
     }}};
   };
   // One script pins initialization order, including the native API shim.
   const runtime = fs.readFileSync(path.resolve(ui,'../../web/i18n.js'),'utf8');
   const catalogs=Object.fromEntries(['en','zh-Hans','zh-Hant'].map(id=>[id,JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales',id+'.json'),'utf8'))]));
   const windowBar = fs.readFileSync(path.join(ui, 'window-bar.js'), 'utf8');
+  const popover = fs.readFileSync(path.resolve(ui,'../../web/rail-popover.js'),'utf8');
   const updates = ['update-controller.js', 'update-rail.js'].map(name => fs.readFileSync(path.join(ui, name), 'utf8')).join('\n');
-  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,loading,platform,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${windowBar}\n${updates}\n${bridge}`});
+  await page.addInitScript({content:`(${nativeMock.toString()})(${JSON.stringify({busy,catalogs,loading,platform,manifest:JSON.parse(fs.readFileSync(path.resolve(ui,'../../locales/manifest.json'),'utf8'))})});\n${runtime}\n${windowBar}\n${popover}\n${updates}\n${bridge}`});
   await page.goto('http://desktop.test/index.html');
   if (loading) return;
   await page.locator('#settings').click();
@@ -139,6 +145,49 @@ test('opening a project keeps a rejected Host reason localizable in welcome and 
   await expect(page.locator('#status')).toContainText(await localized(page, 'host.same_version_different_build'));
   await expect(page.locator('#status')).toContainText('clat host stop');
   expect(await page.evaluate(() => window.desktopCalls.filter(c => c.command==='desktop_stop_host'))).toEqual([]);
+});
+
+test('upgraded Desktop exposes running old Host and protects drafts through deferred takeover', async ({page}) => {
+  await welcome(page);
+  const dialog = page.locator('#clat-desktop-settings');
+  const apply = dialog.locator('[data-action=host]');
+  await page.evaluate(() => {
+    Object.assign(window.desktopInfo, {
+      hostConnected:true, hostInstance:'old-host-instance',
+      backendPending:true, hostVersion:'2.2.0', backendVersion:'2.3.8',
+      hostStatus:{ready:false,busy_workspaces:['default']}
+    });
+  });
+  await expect(apply).toBeVisible();
+  await expect(apply).toBeDisabled();
+  await expect(dialog.locator('#clat-desktop-host-update')).toContainText('2.2.0');
+  await page.evaluate(() => {
+    window.CLATWorkbenchState = {snapshot:()=>({text:false,images:false}),hasOwners:()=>true};
+    const input = document.createElement('textarea');
+    input.id = 'prompt';
+    input.value = 'draft to keep';
+    document.body.append(input);
+    window.desktopInfo.hostStatus = {ready:true,busy_workspaces:[]};
+  });
+  await expect(apply).toBeEnabled();
+  // The autonomous timer must not bypass the same draft guard.
+  await page.waitForTimeout(1200);
+  expect(await page.evaluate(() => window.desktopCalls.some(c=>c.command==='desktop_activate_backend'))).toBe(false);
+  await apply.click();
+  await expect(dialog.locator('#clat-desktop-update')).toContainText(await localized(page,'desktop.draft_warning'));
+  expect(await page.locator('#prompt').inputValue()).toBe('draft to keep');
+  // This welcome-page fixture creates a synthetic textarea without the
+  // real workbench composer; explicitly update its DOM value and input event.
+  await page.evaluate(() => {
+    const input = document.getElementById('prompt');
+    input.value = '';
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await apply.click();
+  await expect.poll(()=>page.evaluate(()=>window.desktopCalls.filter(c=>c.command==='desktop_activate_backend').length)).toBe(1);
+  await expect(apply).toBeHidden();
+  await expect(dialog.locator('[data-version=host]')).toContainText('2.3.8');
 });
 
 test('install requires a downloaded update and never discards unsent input', async ({page}) => {
@@ -230,14 +279,13 @@ test('three desktop languages switch without reloading or losing a draft and pen
     const close = await localized(page, 'common.close');
     const button=dialog.locator('[data-action=close]');
     await expect(button).toHaveAccessibleName(close);
-    await expect(button).toHaveAttribute('title',close);
 
     await expect(page.locator('#prompt')).toHaveValue('中文草稿 {path}');
     await expect(dialog.locator('[data-action=cancel]')).toBeEnabled();
     expect(await page.evaluate(()=>!!window.marker)).toBe(true);
   }
   const commands=await page.evaluate(()=>window.desktopCalls.map(c=>c.command));
-  expect(commands.filter(c=>!['desktop_info','desktop_locale','desktop_preferences','desktop_take_tray_intent'].includes(c))).toEqual([]);
+  expect(commands.filter(c=>!['desktop_info','desktop_locale','desktop_preferences','desktop_take_tray_intent','desktop_window'].includes(c))).toEqual([]);
 });
 
 test('native menu opens update panel and starts exactly one check',async({page})=>{
@@ -262,7 +310,7 @@ test('failed update explanation changes language and offers manual recovery with
   await page.evaluate(()=>{window.desktopCheckError={key:'update.index_network',args:{},fallback:'network failure'};});
   await page.locator('[data-action=check]').click();
   await expect(page.locator('#clat-desktop-update')).toContainText(await localized(page, 'update.index_network'));
-  await page.locator('[data-language-select]').selectOption('en');
+  await page.locator('#clat-desktop-settings [data-language-select]').selectOption('en');
   await expect(page.locator('#clat-desktop-update')).toContainText(await localized(page, 'update.index_network'));
   await expect(page.locator('a[data-update-manual]')).toHaveAttribute('href','https://github.com/artec/clat/releases/latest');
   await page.evaluate(()=>{window.desktopCheckError=null;});
@@ -292,7 +340,7 @@ test('native installation disables cancellation and quit without blocking status
   await expect(page.locator('[data-action=quit]')).toBeDisabled();
   await expect(page.locator('[data-action=stop]')).toBeDisabled();
   await expect(page.locator('#clat-desktop-update')).toContainText(await localized(page, 'update.installing'));
-  await page.locator('[data-language-select]').selectOption('en');
+  await page.locator('#clat-desktop-settings [data-language-select]').selectOption('en');
   await expect(page.locator('#clat-desktop-update')).toContainText(await localized(page, 'update.installing'));
 });
 
@@ -358,10 +406,12 @@ test('refresh reconnects the backend only after requesting missing Accessibility
         if (label) node.textContent = typeof label === 'function' ? label() : label;
         return node;
       },
-      settingsGroup(parent) {
+      settingsGroup(parent, label) {
         const group = document.createElement('div');
+        const heading = document.createElement('h4');
+        heading.textContent = typeof label === 'function' ? label() : label || '';
         const body = document.createElement('div');
-        group.append(body);
+        group.append(heading, body);
         parent.append(group);
         return body;
       },

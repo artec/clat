@@ -47,6 +47,92 @@ impl PackagedBackend {
         self.stop_at(&root)
     }
 
+    /// Explicitly approved native UI handoff for an older, idle Host.
+    /// The webview checks all unsent drafts before calling this. Core fences
+    /// the Host instance and performs the authoritative idle check atomically;
+    /// it never signals an arbitrary PID or starts a second storage writer.
+    pub fn activate_pending(&self, current: &HostClient) -> Result<HostClient, PresentedText> {
+        let _guard = self
+            .coordination
+            .lock()
+            .map_err(|_| "backend coordination unavailable")?;
+        let root = crate::control_storage::sentinel::default_storage_root()?;
+        let server = match HostClient::discover_startup_with(&root, self.policy.clone())? {
+            StartupDiscovery::Compatible(client) => client,
+            _ => return Err(UiMessage::new("desktop.host_changed").into()),
+        };
+        if server.instance_id() != current.instance_id() {
+            return Err(UiMessage::new("desktop.host_changed").into());
+        }
+        let info = current.call("workbench.info", &serde_json::json!({}))?;
+        let project = Path::new(
+            info["project"]["root"]
+                .as_str()
+                .ok_or("host omitted project root")?,
+        );
+        let successor = self.activate_pending_at(
+            &server,
+            project,
+            &|path| {
+                if Self::project_needs_trust_presented(path)? {
+                    return Err(UiMessage::new("host.upgrade_needs_trust").into());
+                }
+                Ok(())
+            },
+            &|path| self.open_project_inner(path, false),
+        )?;
+        let description = successor.description()?;
+        let BuildMatchPolicy::Backend { fingerprint, .. } = &self.policy else {
+            return Err(UiMessage::new("desktop.host_no_pending").into());
+        };
+        verify_successor(
+            &description,
+            current.instance_id(),
+            successor.instance_id(),
+            fingerprint,
+        )?;
+        Ok(successor)
+    }
+
+    /// The restart decision is based on the host's actual version and a
+    /// serialized, instance-fenced idle RPC. A stale readiness sample cannot
+    /// turn into forced shutdown; the host returns busy instead.
+    fn activate_pending_at(
+        &self,
+        host: &HostClient,
+        project: &Path,
+        check: &impl Fn(&Path) -> Result<(), PresentedText>,
+        activate: &impl Fn(&Path) -> Result<HostClient, PresentedText>,
+    ) -> Result<HostClient, PresentedText> {
+        if !matches!(
+            self.policy,
+            BuildMatchPolicy::Backend { official: true, .. }
+        ) {
+            return Err(UiMessage::new("desktop.host_no_pending").into());
+        }
+        let description = host.description()?;
+        let version = description["product_version"]
+            .as_str()
+            .ok_or("host version missing")?;
+        if description["build_kind"] != "official"
+            || build_identity::compare_product_versions(build_identity::product_version(), version)
+                .map_err(|_| "invalid host product version")?
+                != std::cmp::Ordering::Greater
+        {
+            return Err(UiMessage::new("desktop.host_no_pending").into());
+        }
+        check(project)?;
+        if host.runtime_status()?["ready"] != true
+            || !super::startup::try_upgrade_takeover(host)
+                .map_err(|e| PresentedText::from(e.presentation_or_fallback()))?
+        {
+            return Err(UiMessage::new("host.upgrade_busy")
+                .arg("version", version)
+                .into());
+        }
+        activate(project)
+    }
+
     /// Restart the exact packaged Host the frontend queried. Reuse the
     /// existing trusted project and wait for the old writer to release storage.
     pub fn restart_for_accessibility(
@@ -174,6 +260,25 @@ impl PackagedBackend {
         }
         activate(project).map(BackendConnection::Connected)
     }
+}
+
+/// Do not report an upgrade as successful until the new, distinct Host
+/// advertises the exact staged backend build. Protocol/storage identity is
+/// independently checked by HostClient::connect_checked before this gate.
+fn verify_successor(
+    description: &serde_json::Value,
+    previous_instance: &str,
+    new_instance: &str,
+    staged_fingerprint: &str,
+) -> Result<(), PresentedText> {
+    if previous_instance == new_instance
+        || description["build_kind"] != "official"
+        || description["product_version"] != build_identity::product_version()
+        || description["build_fingerprint"].as_str() != Some(staged_fingerprint)
+    {
+        return Err(UiMessage::new("desktop.host_changed").into());
+    }
+    Ok(())
 }
 
 fn wait_for_writer_release(root: &Path) -> Result<(), PresentedText> {

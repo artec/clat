@@ -3,6 +3,7 @@
   'use strict';
   const downloadPath = 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5';
   const installPath = 'M4 8l3-4h10l3 4v12H4zM4 8h16m-12 6 3 3 5-5';
+  const hostPath = 'M4 4h16v7H4zM4 14h16v6H4zM8 7h.01M8 17h.01';
   function glyph(path) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
     for (const [key,value] of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.5','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'})) svg.setAttribute(key,value);
@@ -37,19 +38,31 @@
       icon.toggleAttribute('hidden',view.busy); ring.element.hidden = !view.busy;
       const percent = view.phase === 'downloading' && view.ratio !== null ? Math.min(99,view.ratio * 100) : null;
       if (view.busy) ring.set(percent);
-      icon.firstChild.setAttribute('d', info.downloaded ? installPath : downloadPath);
-      const heading = info.updateVersion ? t('desktop.install_version',{version:info.updateVersion}) : t('desktop.software_update');
-      const message = updateError && error ? CLATI18n.present(error) : CLATI18n.present(info.updatePresentation,info.updateStatus);
+      icon.firstChild.setAttribute('d', view.hostOnly ? hostPath : info.downloaded ? installPath : downloadPath);
+      const heading = view.hostOnly ? t('desktop.host_update_title') :
+        info.updateVersion ? t('desktop.install_version',{version:info.updateVersion}) : t('desktop.software_update');
+      const message = updateError && error ? CLATI18n.present(error) : view.hostOnly
+        ? t(info.hostStatus?.ready === true ? 'desktop.host_pending_ready' : 'desktop.host_pending_busy',
+          {running:info.hostVersion,installed:info.backendVersion})
+        : CLATI18n.present(info.updatePresentation,info.updateStatus);
       const progress = view.phase === 'downloading' ? t(view.total ? 'desktop.rail_progress' : 'desktop.rail_received',{received:(view.received/1048576).toFixed(1),...(view.total ? {total:(view.total/1048576).toFixed(1),percent:Math.floor(view.ratio*100)} : {})}) : '';
       button.removeAttribute('title');
       facts.replaceChildren();
       const fact=(key,value)=>CLATRailPopover.fact(facts,t('rail.'+key),value);
-      if(info.desktopVersion)fact('current_version',info.desktopVersion);
-      if(info.updateVersion)fact('latest_version',info.updateVersion);
-      if(view.total)fact('package_size',(view.total/1048576).toLocaleString(CLATI18n.locale,{maximumFractionDigits:1})+' MiB');
-      button.setAttribute('aria-label', [heading, view.busy ? t('desktop.working') : view.failed ? t('desktop.rail_failed') : t(view.action === 'install' ? 'desktop.install' : 'desktop.download')].join(' · '));
+      if(view.hostOnly) {
+        CLATRailPopover.fact(facts,t('desktop.host_version'),info.hostVersion);
+        CLATRailPopover.fact(facts,t('desktop.backend_version'),info.backendVersion);
+      } else {
+        if(info.desktopVersion)fact('current_version',info.desktopVersion);
+        if(info.updateVersion)fact('latest_version',info.updateVersion);
+        if(view.total)fact('package_size',(view.total/1048576).toLocaleString(CLATI18n.locale,{maximumFractionDigits:1})+' MiB');
+      }
+      const actionLabel = view.action === 'host' ? 'desktop.host_activate'
+        : view.action === 'install' ? 'desktop.install' : 'desktop.download';
+      button.setAttribute('aria-label', [heading, view.busy ? t('desktop.working') : view.failed ? t('desktop.rail_failed') : t(actionLabel)].join(' · '));
       title.textContent = heading; popup.setAttribute('aria-label',heading); status.textContent = message || ''; detail.textContent = progress;
-      primary.hidden = !view.action; primary.disabled = view.busy; primary.textContent = t(view.failed ? 'desktop.rail_retry' : view.action === 'install' ? 'desktop.install' : 'desktop.download');
+      primary.hidden = !view.action; primary.disabled = view.busy;
+      primary.textContent = t(view.failed ? 'desktop.rail_retry' : actionLabel);
       cancel.hidden = !view.cancellable; cancel.textContent = t(view.phase === 'downloading' ? 'desktop.rail_cancel_download' : 'desktop.cancel_wait'); close.textContent = t('common.close');
       if (!view.visible) hide(); else if (view.failed && updateError && error && error !== previousError) show();
       previousError = error; if (!popup.hidden) position();

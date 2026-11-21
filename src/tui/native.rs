@@ -105,6 +105,7 @@ pub(super) struct NativeState {
     vendor: crate::ModelVendor,
     context_window: Option<u64>,
     pub(super) client: HostClient,
+    upgrade_pending_version: Option<String>,
     pub(super) epoch: u64,
     interrupt: Option<HostEventsInterrupt>,
     pub(super) online: bool,
@@ -181,6 +182,7 @@ impl App {
     }
 
     pub(super) fn open_native(project: Project, client: HostClient) -> Result<Self, String> {
+        let upgrade_pending_version = client.pending_upgrade_version().ok().flatten();
         let mut app = Self::open_minimal(project, Some(client.storage_root().to_path_buf()))?;
         // Bootstrap was read-only; this shell must never mount a local writer.
         app.bootstrap = None;
@@ -189,6 +191,7 @@ impl App {
             vendor: crate::ModelVendor::Other,
             context_window: None,
             client,
+            upgrade_pending_version,
             epoch: 0,
             interrupt: None,
             online: false,
@@ -1036,7 +1039,19 @@ impl App {
                 self.native.as_mut().unwrap().selection =
                     payload["selection_generation"].as_u64().unwrap_or(0);
                 self.restore_host_followups();
-                self.flash_message(UiMessage::new("tui.host_attached"));
+                if let Some(running) = self
+                    .native
+                    .as_ref()
+                    .and_then(|native| native.upgrade_pending_version.clone())
+                {
+                    self.flash_message(
+                        UiMessage::new("tui.host_update_pending")
+                            .arg("running", running)
+                            .arg("installed", env!("CARGO_PKG_VERSION")),
+                    );
+                } else {
+                    self.flash_message(UiMessage::new("tui.host_attached"));
+                }
             }
             "prompt.settled" => self.native_prompt_settled(payload),
             "notice" if payload["kind"] == "selection" => {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-activate-backend"
+description = "Enables the desktop_activate_backend command without any pre-configured scope."
+commands.allow = ["desktop_activate_backend"]
+
+[[permission]]
+identifier = "deny-desktop-activate-backend"
+description = "Denies the desktop_activate_backend command without any pre-configured scope."
+commands.deny = ["desktop_activate_backend"]

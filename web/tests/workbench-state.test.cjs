@@ -9,6 +9,16 @@ function registry(window) {
   return context.CLATWorkbenchState;
 }
 
+test('Host activation can distinguish an unloaded workbench from an empty ready composer', () => {
+  const state = registry();
+  assert.equal(state.hasOwners(), false, 'zero registered owners is not a safe empty draft');
+  const dispose = state.register('project', () => ({text:false}));
+  assert.equal(state.hasOwners(), true);
+  assert.equal(state.hasUnsavedWork('host'), false);
+  dispose();
+  assert.equal(state.hasOwners(), false);
+});
+
 test('native navigation sees inactive owners and pending non-text work', () => {
   const state = registry();
   state.register('visible-project', () => ({ text: false }));

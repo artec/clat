@@ -6,6 +6,17 @@ function runtime(){
 }
 const available=()=>({updateAvailable:true,updateVersion:'3.0.0',updatePhase:'idle',updateBusy:false,updatePresentation:{key:'update.found'}});
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};}
+test('running older Host is visible in the rail even when no installer update exists',()=>{
+ const {api}=runtime();
+ let info={backendPending:true,hostConnected:true,hostVersion:'2.2.0',backendVersion:'2.3.8',hostStatus:{ready:false}};
+ let view=api.project({info});
+ assert.equal(view.visible,true);
+ assert.equal(view.hostOnly,true);
+ assert.equal(view.action,null,'active work blocks takeover');
+ info={...info,hostStatus:{ready:true}};
+ view=api.project({info});
+ assert.equal(view.action,'host','idle Host gets an explicit activation');
+});
 test('only an available update or verified package exposes an actionable shortcut',()=>{
  const {api}=runtime();assert.equal(api.project({info:{updatePhase:'checking'}}).visible,false);
  assert.equal(api.project({info:{updatePresentation:{key:'update.index_network'}}}).visible,false);
@@ -60,4 +71,39 @@ test('install and cancellation use the same operation and retain verified readin
  const c=api.create({invoke:async command=>{calls.push(command);if(command==='desktop_info')return info;if(command==='desktop_install_update'){info={...info,updateBusy:true,updateCancellable:true,updatePhase:'waiting'};await install.promise;}if(command==='desktop_cancel_update'){info={...info,updateBusy:false,updatePhase:'idle',updatePresentation:{key:'update.cancel_install'}};install.resolve();}}});
  await c.refresh();const pending=c.act('install');await c.refresh();assert.equal(api.project(c.snapshot()).cancellable,true);
  await c.act('cancel');await pending;assert.equal(calls.filter(c=>c==='desktop_cancel_update').length,1);assert.equal(api.project(c.snapshot()).action,'install');
+});
+
+test('pending Host update automatically activates once idle and the frontend draft guard approves',async()=>{
+ const runtimeState=runtime(),calls=[];let ready=false,locked=true;
+ const info=()=>({hostConnected:true,hostInstance:'old-123',hostVersion:'2.0.0',backendVersion:'3.0.0',
+   backendPending:true,hostStatus:{ready,busy_workspaces:ready?[]:['work']}});
+ const controller=runtimeState.api.create({
+   invoke:async command=>{calls.push(command);return info();},
+   prepare:action=>{if(action==='host'&&locked)throw {key:'desktop.draft_warning'};return ()=>{};}
+ });
+ controller.start();await controller.refresh();
+ for(let i=0;i<12;i++)runtimeState.tick();
+ await new Promise(setImmediate);
+ assert.equal(calls.filter(v=>v==='desktop_activate_backend').length,0,'busy Host must keep running');
+ ready=true;
+ for(let i=0;i<12;i++)runtimeState.tick();
+ await new Promise(setImmediate);
+ assert.equal(calls.filter(v=>v==='desktop_activate_backend').length,0,'unsent draft must prevent takeover');
+ assert.equal(controller.snapshot().error,null,'automatic draft deferral is not a user-facing failure');
+ locked=false;
+ for(let i=0;i<12;i++)runtimeState.tick();
+ await new Promise(setImmediate);
+ assert.equal(calls.filter(v=>v==='desktop_activate_backend').length,1,'once safe, apply pending Host update');
+ controller.stop();
+});
+test('explicit Host activation uses the same draft gate and prevents parallel actions',async()=>{
+ const {api}=runtime(),calls=[];let blocked=true;
+ const info={backendPending:true,hostConnected:true,hostStatus:{ready:true},hostInstance:'old'};
+ const controller=api.create({invoke:async command=>{calls.push(command);return info;},
+   prepare:action=>{if(action==='host'&&blocked)throw {key:'desktop.draft_warning'};return ()=>{};}});
+ await controller.refresh();await controller.act('host');
+ assert.equal(calls.includes('desktop_activate_backend'),false);
+ assert.equal(controller.snapshot().error.key,'desktop.draft_warning');
+ blocked=false;await controller.act('host');
+ assert.equal(calls.filter(v=>v==='desktop_activate_backend').length,1);
 });

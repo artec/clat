@@ -58,7 +58,9 @@
         <div class="actions"><button data-action="check" data-i18n="desktop.check"></button><button data-action="download" data-i18n="desktop.download"></button><button data-action="install" data-i18n="desktop.install"></button><button data-action="cancel" data-i18n="desktop.cancel_wait"></button><a data-update-manual href="https://github.com/artec/clat/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="desktop.manual_update"></a></div>
       </section>
       <section class="desktop-card"><div class="desktop-card-heading"><h3 data-i18n="desktop.background_title"></h3><span id="clat-desktop-background"></span></div>
-        <p class="secondary" data-i18n="desktop.background_hint"></p><div class="actions"><button data-action="open" data-i18n="desktop.open"></button><button data-action="stop" class="danger" data-i18n="desktop.stop"></button><button data-action="quit" data-i18n="desktop.quit"></button></div>
+        <p class="secondary" data-i18n="desktop.background_hint"></p>
+        <p id="clat-desktop-host-update" role="status" hidden></p>
+        <div class="actions"><button data-action="host" data-i18n="desktop.host_activate" hidden></button><button data-action="open" data-i18n="desktop.open"></button><button data-action="stop" class="danger" data-i18n="desktop.stop"></button><button data-action="quit" data-i18n="desktop.quit"></button></div>
       </section>`;
     const style=document.createElement('style');
     style.textContent=`
@@ -104,11 +106,15 @@
     return {dialog,status,launch,footer,launchLabel};
   };
   function prepareDesktopAction(action) {
-    if (!['install','open','quit','stop','refresh-accessibility'].includes(action)) return () => {};
+    if (!['install','open','quit','stop','host','refresh-accessibility'].includes(action)) return () => {};
+    // Automatic Host activation must never reload an incompletely mounted
+    // workbench, whose drafts cannot yet be inspected by the state owners.
+    if (action === 'host' && (!window.CLATWorkbenchState?.hasOwners?.() || !document.getElementById('prompt')))
+      throw {key:'desktop.draft_warning'};
     const request = new CustomEvent('clat-desktop-action-request', {cancelable:true, detail:{action}});
     const hasComposer = document.querySelector('#prompt')?.value.trim() || document.querySelector('#attachment-rail .attachment-chip');
-    if (!window.dispatchEvent(request) || desktopComposing || (hasComposer && (action !== 'quit' || !window.CLATWorkbenchState))) throw CLATI18n.msg('desktop.draft_warning');
-    if (!['install','stop','refresh-accessibility'].includes(action)) return () => {};
+    if (!window.dispatchEvent(request) || desktopComposing || (hasComposer && (action !== 'quit' || !window.CLATWorkbenchState))) throw {key:'desktop.draft_warning'};
+    if (!['install','stop','host','refresh-accessibility'].includes(action)) return () => {};
     const guard = new CustomEvent('clat-desktop-install-lock',{cancelable:true});
     if (!window.dispatchEvent(guard)) throw CLATI18n.msg('desktop.draft_warning');
     const composer = document.querySelector('#prompt'), previous = composer?.readOnly;
@@ -129,6 +135,9 @@
     dialog.querySelector('[data-action="cancel"]').disabled = !info.updateBusy||info.updatePhase==='installing'||info.updateCancellable===false;
     dialog.querySelector('[data-action="quit"]').disabled = info.updatePhase==='installing';
     dialog.querySelector('[data-action="stop"]').disabled = !info.hostConnected||info.updatePhase==='installing';
+    const host = dialog.querySelector('[data-action="host"]');
+    host.hidden = !info.backendPending;
+    host.disabled = busy||!info.backendPending||info.hostStatus?.ready!==true;
   }
   function renderDesktopPanel(panel,snapshot) {
     const {dialog,status,launch,footer,launchLabel}=panel;
@@ -138,6 +147,11 @@
     const versions={desktop:()=>info.desktopVersion,host:()=>info.hostConnected?info.hostVersion:t('desktop.not_connected'),backend:()=>info.backendVersion+(info.backendPending?t('desktop.pending'):'')};
     for(const [key,value]of Object.entries(versions))CLATI18n.bind(dialog.querySelector('[data-version="'+key+'"]'),'textContent',value);
     CLATI18n.bind(dialog.querySelector('#clat-desktop-background'),'textContent',()=>background()||t('desktop.not_connected'));
+    const hostUpdate = dialog.querySelector('#clat-desktop-host-update');
+    hostUpdate.hidden = !info.backendPending;
+    if (info.backendPending) CLATI18n.bind(hostUpdate,'textContent',()=>
+      t(info.hostStatus?.ready === true ? 'desktop.host_pending_ready' : 'desktop.host_pending_busy',
+        {running:info.hostVersion,installed:info.backendVersion}));
     dialog.querySelector('#clat-desktop-auto').checked = info.autoCheck;
     status.setAttribute('aria-live',info.updatePhase==='downloading'?'off':'polite');
     CLATI18n.bind(status,'textContent',()=>CLATI18n.present(actionError) || CLATI18n.present(info.updatePresentation,info.updateStatus) || info.backendError || CLATI18n.present(info.connectionPresentation,info.connectionError) || '');

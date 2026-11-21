@@ -6,6 +6,26 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 impl HostClient {
+    /// Read-only diagnostic for an already attached TUI. Old, compatible
+    /// official Hosts remain valid for current work but must not masquerade
+    /// as the newly installed CLI build.
+    pub fn pending_upgrade_version(&self) -> Result<Option<String>, String> {
+        let description = self.description()?;
+        if description["build_kind"] != "official" {
+            return Ok(None);
+        }
+        let Some(running) = description["product_version"].as_str() else {
+            return Ok(None);
+        };
+        let newer = super::build_identity::compare_product_versions(
+            super::build_identity::product_version(),
+            running,
+        )
+        .map_err(|_| "invalid Host version")?
+            == std::cmp::Ordering::Greater;
+        Ok(newer.then(|| running.to_owned()))
+    }
+
     pub fn start_command(args: impl Iterator<Item = String>) -> Result<String, String> {
         Self::start_command_presented(args)
             .map(|m| m.english())

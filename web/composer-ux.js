@@ -21,7 +21,8 @@ function installComposerGuard() {
       images: protect && (state.draft.images.length > 0 || composerImageDrafts.size > 0),
       submitting: composerGoalPending !== null || state.draft.sending || state.draft.queuedClientMessageId !== null || pendingTextSteering.size > 0,
       composing,
-      busy: Boolean(document.querySelector('[data-unsaved=true]')) || Boolean(document.querySelector('[data-saving=true]')) || state.switching || state.compactionActive,
+      busy: state.composerDraftLoading || Boolean(document.querySelector('[data-unsaved=true]'))
+        || Boolean(document.querySelector('[data-saving=true]')) || state.switching || state.compactionActive,
     };
   });
 }

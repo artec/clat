@@ -403,6 +403,141 @@ fn explicit_stop_suspends_discovery_even_if_the_same_endpoint_is_still_live() {
 }
 
 #[test]
+fn replacement_identity_requires_a_new_instance_and_exact_staged_official_build() {
+    let good = json!({
+        "build_kind":"official",
+        "product_version":super::super::build_identity::product_version(),
+        "build_fingerprint":"staged-identity"
+    });
+    assert!(verify_successor(&good, "old", "new", "staged-identity").is_ok());
+    assert!(verify_successor(&good, "old", "old", "staged-identity").is_err());
+    assert!(verify_successor(&good, "old", "new", "another-build").is_err());
+    let mut older = good.clone();
+    older["product_version"] = json!("0.0.0");
+    assert!(verify_successor(&older, "old", "new", "staged-identity").is_err());
+    let mut development = good;
+    development["build_kind"] = json!("development");
+    assert!(verify_successor(&development, "old", "new", "staged-identity").is_err());
+}
+
+#[test]
+fn pending_host_upgrade_is_visible_without_changing_a_live_host() {
+    let fixture = Fixture::new(official("0.0.0"), None);
+    let BackendConnection::Connected(client) =
+        fixture.observe(true, &std::cell::Cell::new(0)).unwrap()
+    else {
+        panic!("busy compatible Host should be connectable");
+    };
+    assert_eq!(
+        client.pending_upgrade_version().unwrap(),
+        Some("0.0.0".into())
+    );
+    assert!(
+        !fixture
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v == "host.takeover")
+    );
+}
+
+#[test]
+fn pending_host_upgrade_retries_when_busy_without_losing_the_existing_host() {
+    let fixture = Fixture::new(official("0.0.0"), None);
+    let BackendConnection::Connected(current) =
+        fixture.observe(true, &std::cell::Cell::new(0)).unwrap()
+    else {
+        panic!("busy old Host is compatible");
+    };
+    let activated = std::cell::Cell::new(0);
+    let action = || {
+        fixture.backend.activate_pending_at(
+            &current,
+            &fixture.root.join("project"),
+            &|_| Ok(()),
+            &|_| {
+                activated.set(activated.get() + 1);
+                Ok(current.clone())
+            },
+        )
+    };
+    assert!(action().is_err(), "busy Host must refuse takeover");
+    assert_eq!(activated.get(), 0);
+    assert!(
+        !fixture
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v == "host.takeover")
+    );
+    fixture.busy.store(false, Ordering::SeqCst);
+    assert!(action().is_ok(), "old Host can yield when finally idle");
+    assert_eq!(activated.get(), 1);
+    assert_eq!(
+        fixture
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| *v == "host.takeover")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn pending_host_upgrade_rejects_same_version_and_failed_trust_preflight() {
+    let fixture = Fixture::new(
+        official(super::super::build_identity::product_version()),
+        None,
+    );
+    fixture.busy.store(false, Ordering::SeqCst);
+    let BackendConnection::Connected(current) =
+        fixture.observe(true, &std::cell::Cell::new(0)).unwrap()
+    else {
+        panic!("same-version Host is compatible");
+    };
+    let result = fixture.backend.activate_pending_at(
+        &current,
+        &fixture.root.join("project"),
+        &|_| Ok(()),
+        &|_| panic!("same version must never restart"),
+    );
+    assert!(result.is_err());
+    assert!(
+        !fixture
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v == "host.takeover")
+    );
+
+    let old = Fixture::new(official("0.0.0"), None);
+    let BackendConnection::Connected(client) = old.observe(true, &std::cell::Cell::new(0)).unwrap()
+    else {
+        panic!("old Host initially busy");
+    };
+    old.busy.store(false, Ordering::SeqCst);
+    let denial = old.backend.activate_pending_at(
+        &client,
+        &old.root.join("project"),
+        &|_| Err("project trust revoked".into()),
+        &|_| panic!("untrusted projects cannot activate a replacement"),
+    );
+    assert!(denial.is_err(), "trust preflight must be authoritative");
+    assert!(
+        !old.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v == "host.takeover")
+    );
+}
+
+#[test]
 fn connected_frontend_keeps_its_project_without_hot_replacing_an_idle_host() {
     let fixture = Fixture::new(official("0.0.0"), None);
     let BackendConnection::Connected(mut current) =

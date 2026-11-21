@@ -58,8 +58,15 @@ startup compares semantic product versions. A strictly newer client asks an idle
 old host to yield, waits for the storage-root lease and stable `127.0.0.1:2691`
 address to be released, then starts the replacement there; existing browser pages
 can reconnect to the same address. Active work refuses automatic takeover and
-leaves the old host running. A same-version different build or an older client
-also retains the explicit `clat host stop` path instead of replacing the host.
+leaves the old host running. A TUI that must attach to an older compatible
+official Host shows a localized pending-update notice with both versions:
+finish its work and reopen the TUI to activate the new binary. A running
+Desktop frontend can instead defer the handoff and automatically activate it
+when the Host is idle **and** client drafts are safe, or request activation
+explicitly from the update rail/About dialog. Updating the executable alone
+never alters an already running Host. A same-version different build or an
+older client also retains the explicit `clat host stop` path instead of
+replacing the host.
 Explicit `host status` and `host stop` ignore only build differences so the old
 host remains manageable. Hosts that predate the additive version/fingerprint
 fields retain the existing rollout-compatibility behavior.

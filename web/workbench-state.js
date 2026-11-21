@@ -18,7 +18,10 @@
     return result;
   }
   function hasUnsavedWork(action) { return Object.values(snapshot(action)).some(Boolean); }
-  const api = Object.freeze({ version: 1, register, snapshot, hasUnsavedWork });
+  // Native Host activation must not infer an empty draft from a workbench
+  // that has not yet registered its composer owners.
+  const hasOwners = () => owners.size > 0;
+  const api = Object.freeze({ version: 1, register, snapshot, hasUnsavedWork, hasOwners });
   Object.defineProperty(globalThis, 'CLATWorkbenchState', { value: api });
   if (typeof window !== 'undefined') {
     window.addEventListener('clat-desktop-action-request', event => {

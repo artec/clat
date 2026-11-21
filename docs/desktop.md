@@ -393,10 +393,21 @@ From v2.2.0, automatic discovery and subsequent refresh use one core coordinator
 
 - A compatible Host is connected directly. During initial activation, a newer
   packaged backend can take over when idle; a busy compatible Host remains usable.
-  Once attached, Desktop keeps that Host for this interaction, even if it later
-  becomes idle. A newer backend can activate on the next Desktop launch or explicit
-  project open. This avoids reloading page-local unsent text merely for a newer
-  executable.
+  If Desktop attaches to an older, busy Host, the running version and pending
+  installed backend are shown in **About & updates** and in the main update rail,
+  even when there is no new installer to download. Once the Host becomes idle,
+  Desktop automatically attempts a handoff **only after the current workbench
+  reports no unsent text, attachments, composition, pending operations, or
+  uncommitted project drafts**. While drafts remain, the existing page and old
+  Host are retained, and the update stays pending. The panel also offers
+  **Activate updated Host** when idle for an explicit retry.
+  Core re-discovers the authenticated Host, verifies its exact instance ID,
+  trust and idle state, atomically requests takeover and waits for the exclusive
+  storage root and port before launching the staged backend. A successful
+  replacement must advertise a *different* instance, the installed product
+  version, and the exact staged build fingerprint. Only then does Desktop
+  navigate to the new Host. No arbitrary process termination or version
+  downgrade is permitted.
 - Equal/newer compatible Hosts are reused; an older backend never downgrades one.
   Incompatible protocols, unavailable projects, missing trust and failed takeover
   acknowledgements surface errors instead of forcing a stop or starting a second
