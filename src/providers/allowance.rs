@@ -168,7 +168,7 @@ fn opencode_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
                 kind: "quota".into(),
                 value: remaining.to_string(),
                 unit: Some("%".into()),
-                reset_at: opencode_reset_millis(row.get("resetsAt")),
+                reset_at: allowance_reset_millis(row.get("resetsAt")),
                 window_hours: Some(hours),
             })
         })
@@ -176,9 +176,112 @@ fn opencode_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
     (!items.is_empty()).then_some(items)
 }
 
-/// `resetsAt` 的两种钉值形状：数字（epoch 毫秒）或字符串（ISO 时间
-/// 或 epoch 毫秒文本）。与 glm/kimi 相同的合理上界过滤。
-fn opencode_reset_millis(value: Option<&Value>) -> Option<u64> {
+/// Kimi Coding `GET /coding/v1/usages` 全窗口展示（负责人裁定
+/// 2026-11-21；同日 live 抓取）：顶层 `usages` 对象每窗一条
+/// `{used_ratio, reset_time}`——used_ratio 是已用比例（剩余 =
+/// 100 − used×100），窗口由键名定（`limit_5h`→5、`limit_week*`→168、
+/// `limit_month*`→720；月为名义窗长，实际重置以 reset_time 为准）。
+/// 厂商当前不返回周窗口，日后出现即自动展示（不发明）。`usages`
+/// 缺失或无已知窗口时回落旧形状：`limits[].detail` 绝对值（窗口按
+/// `window.duration/timeUnit` 换算小时）+ 顶层 `usage` 周窗口
+/// （168h，cc-switch 语义）。两形状同存时取 usages——同一 5h 窗
+/// 不重复展示。
+fn kimi_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
+    if let Some(usages) = body["usages"].as_object() {
+        let items = usages
+            .iter()
+            .filter_map(|(key, row)| {
+                let hours = kimi_usage_window_hours(key)?;
+                let used = numeric(row.get("used_ratio")?)?;
+                Some(AllowanceItem {
+                    kind: "quota".into(),
+                    value: (100.0 - used * 100.0).clamp(0.0, 100.0).to_string(),
+                    unit: Some("%".into()),
+                    reset_at: allowance_reset_millis(row.get("reset_time")),
+                    window_hours: Some(hours),
+                })
+            })
+            .collect::<Vec<_>>();
+        if !items.is_empty() {
+            return Some(items);
+        }
+    }
+    kimi_legacy_allowance_items(body)
+}
+
+/// `usages` 键名 → 窗口小时：`limit_<n>h`→n、week 族→168、month 族→720；
+/// 不认识的键丢弃（不发明窗口语义）。
+fn kimi_usage_window_hours(key: &str) -> Option<u64> {
+    let name = key.strip_prefix("limit_")?;
+    if let Some(hours) = name.strip_suffix('h') {
+        return hours.parse::<u64>().ok().filter(|h| *h > 0);
+    }
+    if name == "week" || name.starts_with("week_") {
+        return Some(168);
+    }
+    if name == "month" || name.starts_with("month_") {
+        return Some(720);
+    }
+    None
+}
+
+/// 旧形状 `limits[]` 行的窗口描述符 → 小时（300 分钟 → 5 小时）。
+fn kimi_limit_window_hours(window: &Value) -> Option<u64> {
+    let duration = window.get("duration")?.as_u64()?;
+    let hours = match window.get("timeUnit")?.as_str()? {
+        "TIME_UNIT_MINUTE" => duration.checked_div(60),
+        "TIME_UNIT_HOUR" => Some(duration),
+        "TIME_UNIT_DAY" => duration.checked_mul(24),
+        _ => None,
+    };
+    hours.filter(|h| *h > 0)
+}
+
+/// 旧形状回落：`limits[].detail.{limit,remaining}` 绝对值 → 剩余百分比，
+/// 顶层 `usage.{limit,remaining}` 是周窗口（168h）。重置时间缺失即省略。
+fn kimi_legacy_allowance_items(body: &Value) -> Option<Vec<AllowanceItem>> {
+    let mut items = Vec::new();
+    if let Some(row) = body["limits"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row.get("detail").is_some()))
+    {
+        let detail = row.get("detail")?;
+        let total = numeric(detail.get("limit")?)?;
+        if total <= 0.0 {
+            return None;
+        }
+        let remaining = numeric(detail.get("remaining")?)?;
+        items.push(AllowanceItem {
+            kind: "quota".into(),
+            value: (remaining / total * 100.0).clamp(0.0, 100.0).to_string(),
+            unit: Some("%".into()),
+            reset_at: allowance_reset_millis(detail.get("resetTime")),
+            window_hours: row.get("window").and_then(kimi_limit_window_hours),
+        });
+    }
+    if let Some(item) = body.get("usage").and_then(|row| {
+        let total = numeric(row.get("limit")?)?;
+        if total <= 0.0 {
+            return None;
+        }
+        let remaining = numeric(row.get("remaining")?)?;
+        Some(AllowanceItem {
+            kind: "quota".into(),
+            value: (remaining / total * 100.0).clamp(0.0, 100.0).to_string(),
+            unit: Some("%".into()),
+            reset_at: None,
+            window_hours: Some(168),
+        })
+    }) {
+        items.push(item);
+    }
+    (!items.is_empty()).then_some(items)
+}
+
+/// `resetsAt`/`reset_time` 的两种钉值形状：数字（epoch 毫秒）或字符串
+/// （ISO 时间或 epoch 毫秒文本）。与 glm 相同的合理上界过滤；
+/// opencode/kimi 共用。
+fn allowance_reset_millis(value: Option<&Value>) -> Option<u64> {
     let valid = |millis: u64| (millis > 0 && millis <= 8_640_000_000_000_000).then_some(millis);
     match value? {
         Value::Number(number) => number.as_u64().and_then(valid),
@@ -209,28 +312,7 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
         }
         "glm" => items.extend(glm_allowance_items(body)?),
         "opencode" => items.extend(opencode_allowance_items(body)?),
-        "kimi" => {
-            let detail = body["limits"]
-                .as_array()?
-                .iter()
-                .find_map(|row| row.get("detail"))?;
-            let total = numeric(&detail["limit"])?;
-            if total <= 0.0 {
-                return None;
-            }
-            let remaining = numeric(&detail["remaining"])?;
-            items.push(AllowanceItem {
-                kind: "quota".into(),
-                value: (remaining / total * 100.0).clamp(0.0, 100.0).to_string(),
-                unit: Some("%".into()),
-                reset_at: detail["resetTime"]
-                    .as_str()
-                    .and_then(|text| text.parse::<jiff::Timestamp>().ok())
-                    .and_then(|time| u64::try_from(time.as_millisecond()).ok())
-                    .filter(|time| *time > 0 && *time <= 8_640_000_000_000_000),
-                ..Default::default()
-            });
-        }
+        "kimi" => items.extend(kimi_allowance_items(body)?),
         _ => return None,
     }
     if items.is_empty() {
@@ -337,6 +419,77 @@ mod tests {
                 .is_none()
         );
     }
+    /// 2026-11-21 live /usages 形状：`usages` 携带全部窗口（5h + 月度
+    /// total/code；厂商当前不返回周窗口——日后出现即自动展示），
+    /// used_ratio 是已用比例；usages 在场时 limits[] 的同窗绝对值不
+    /// 重复展示；不认识的键丢弃。预修复（只取 limits 单窗、无
+    /// window_hours）上本测试红。
+    #[test]
+    fn kimi_allowance_reports_every_window_from_usages() {
+        let body = serde_json::json!({
+            "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                        "detail": {"limit": "100", "remaining": "100",
+                                   "resetTime": "2026-11-21T06:46:26.241719Z"}}],
+            "usages": {
+                "limit_5h": {"used_ratio": 0.0625, "reset_time": "2026-11-21T06:46:26Z"},
+                "limit_month_total": {"used_ratio": 0.25, "reset_time": "2026-12-22T00:00:00Z"},
+                "limit_month_code": {"used_ratio": 0.0, "reset_time": 1797897600000u64},
+                "limit_mystery": {"used_ratio": 0.5}
+            }
+        });
+        let value = parse_allowance("kimi", &body).unwrap();
+        assert_eq!(value.items.len(), 3);
+        // 不依赖 map 迭代序：按窗口与数值认领各条目。
+        let five_hour = value
+            .items
+            .iter()
+            .find(|item| item.window_hours == Some(5))
+            .expect("5h window");
+        assert_eq!(five_hour.value, "93.75");
+        assert_eq!(five_hour.reset_at, Some(1795243586000));
+        let monthly: Vec<_> = value
+            .items
+            .iter()
+            .filter(|item| item.window_hours == Some(720))
+            .collect();
+        assert_eq!(monthly.len(), 2);
+        // month_total 已用 0.25 → 剩 75；month_code 已用 0 → 剩 100。
+        assert!(
+            monthly
+                .iter()
+                .any(|item| item.value == "75" && item.reset_at == Some(1797897600000))
+        );
+        assert!(
+            monthly
+                .iter()
+                .any(|item| item.value == "100" && item.reset_at == Some(1797897600000))
+        );
+    }
+
+    /// 旧形状回落：limits[] 绝对值 + 窗口描述符换算小时；顶层 usage
+    /// 周窗口（168h）参与展示；usages 为空对象时同样回落。
+    #[test]
+    fn kimi_allowance_falls_back_to_limits_and_weekly_usage() {
+        let body = serde_json::json!({
+            "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                        "detail": {"limit": 200, "remaining": 130}}],
+            "usage": {"limit": 5000, "remaining": 4200}
+        });
+        let value = parse_allowance("kimi", &body).unwrap();
+        assert_eq!(value.items.len(), 2);
+        assert_eq!(value.items[0].value, "65");
+        assert_eq!(value.items[0].window_hours, Some(5));
+        assert_eq!(value.items[1].value, "84");
+        assert_eq!(value.items[1].window_hours, Some(168));
+        let empty_usages = serde_json::json!({
+            "usages": {},
+            "limits": [{"detail": {"limit": 10, "remaining": 5}}]
+        });
+        let fallback = parse_allowance("kimi", &empty_usages).unwrap();
+        assert_eq!(fallback.items.len(), 1);
+        assert_eq!(fallback.items[0].value, "50");
+    }
+
     #[test]
     fn allowance_keeps_zero_currency_and_quota_units_without_reading_labels() {
         let value = parse_allowance(

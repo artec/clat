@@ -1181,7 +1181,8 @@ level for the next run and persists the effective model configuration:
 
 Cache and context values are session facts restored from journal usage events.
 Where supported, DeepSeek shows wallet balance and GLM/Kimi show remaining
-plan quota. Missing provider data is shown as unknown rather than fabricated.
+plan quota for every window the provider reports (five-hour / weekly / monthly
+as available). Missing provider data is shown as unknown rather than fabricated.
 The host-attached TUI receives these values from the host, including when
 attaching to existing history; it does not run a second quota monitor.
 `workbench.info` exposes this as the additive `model.vendor` and `telemetry`

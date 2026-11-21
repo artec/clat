@@ -51,10 +51,10 @@ The shipped catalog is the source used by both the picker and runtime:
 All use the OpenAI-compatible protocol. The catalog also owns request paths,
 reasoning parameters, usage streaming, context-window seeds, and vendor-specific
 headers. For example, GLM preserves thinking, Qwen uses its
-`low`/`medium`/`xhigh` ladder, the Kimi Coding endpoints require a
-whitelisted coding-agent User-Agent, the OpenCode Go presets send the
-gateway-mandated `clat/<version>` User-Agent plus a stable
-`x-opencode-session` routing header, and the Hy presets always think
+`low`/`medium`/`xhigh` ladder, the Kimi Coding and OpenCode Go presets send
+CLAT's own `clat/<version>` User-Agent (Kimi's coding-agent allowlist gate was
+verified withdrawn on 2026-11-21), the OpenCode Go presets additionally carry a
+stable `x-opencode-session` routing header, and the Hy presets always think
 server-side (no ladder). See [Providers](providers.md#built-in-presets)
 before overriding those fields.
 

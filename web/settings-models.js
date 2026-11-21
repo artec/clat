@@ -14,11 +14,15 @@ function renderSettingsPresets(view) {
     const active = !view.active_profile && presets.some(preset => preset.id === view.current.preset);
     row.active.hidden = !active;
     if (!row.edited && active) row.select.value = view.current.preset;
-    // VP-2C：Qwen Token Plan 双入口单选——当前模型是该厂商预设时按
-    // 配置端点回显选中项（qianwenaiapi 域名 → 千问，否则百炼）。
+    // VP-2C：单选回显——服务端 view.qwen_entry 是单一事实源（激活时按
+    // 配置端点，未激活按记忆 key 平台前缀）；2026-11-21 修复：此前
+    // `entry.value = ...` 设在 radiogroup div 上是静默无效赋值，单选
+    // 永远停在构造默认百炼。entryPending（用户进行中的点击）优先。
     if (row.entry) {
-      const currentEntry = active && view.current.endpoint.includes('qianwenaiapi') ? 'qianwen' : 'aliyun';
-      if (!row.entryPending) row.entry.value = currentEntry;
+      if (!row.entryPending) {
+        const currentEntry = view.qwen_entry === 'qianwen' ? 'qianwen' : 'aliyun';
+        for (const radio of row.entry.querySelectorAll('input')) radio.checked = radio.value === currentEntry;
+      }
     }
   }
   for (const [vendor, row] of settingsPresetRows) if (!groups.has(vendor)) { row.element.remove(); settingsPresetRows.delete(vendor); }

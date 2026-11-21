@@ -5,7 +5,27 @@ use clat_core::client_ports::host::{
 use clat_core::client_ports::presentation::{LocaleContext, UiMessage};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
-use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_notification::{NotificationExt, PermissionState};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DesktopSoundMode {
+    Default,
+    Off,
+    Command(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BannerAudio {
+    Sound(&'static str),
+    Silent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeliveryPlan {
+    banner_audio: BannerAudio,
+    run_custom_command: Option<String>,
+    fallback_system_sound_on_banner_failure: bool,
+}
 
 pub fn start(app: tauri::AppHandle) {
     let clicked = app.clone();
@@ -30,6 +50,7 @@ pub fn start(app: tauri::AppHandle) {
     });
     std::thread::spawn(move || {
         crate::startup::restore(&app);
+        let _ = ensure_notification_permission(&app);
         while !app.state::<Desktop>().quitting.load(Ordering::Acquire) {
             observe_host(&app);
             std::thread::sleep(std::time::Duration::from_secs(5));
@@ -139,9 +160,148 @@ fn refresh(app: &tauri::AppHandle, host: &HostClient) {
     });
 }
 
+fn is_window_in_foreground(visible: bool, minimized: bool, focused: bool) -> bool {
+    visible && !minimized && focused
+}
+
+fn main_window_in_foreground(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    let focused = window.is_focused().unwrap_or(false);
+    is_window_in_foreground(visible, minimized, focused)
+}
+
+fn ensure_notification_permission(app: &tauri::AppHandle) -> bool {
+    match app.notification().permission_state() {
+        Ok(PermissionState::Granted) => true,
+        Ok(PermissionState::Denied) => false,
+        Ok(_) => matches!(
+            app.notification().request_permission(),
+            Ok(PermissionState::Granted)
+        ),
+        Err(error) => {
+            eprintln!("[CLAT] notification permission check failed: {error}");
+            false
+        }
+    }
+}
+
+fn sound_mode_from_env(no_bell: Option<String>, command: Option<String>) -> DesktopSoundMode {
+    let silenced = no_bell
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if silenced {
+        return DesktopSoundMode::Off;
+    }
+    match command {
+        Some(command) if !command.trim().is_empty() => DesktopSoundMode::Command(command),
+        _ => DesktopSoundMode::Default,
+    }
+}
+
+fn desktop_sound_mode() -> DesktopSoundMode {
+    sound_mode_from_env(
+        std::env::var("CLAT_NO_BELL").ok(),
+        std::env::var("CLAT_BELL_COMMAND").ok(),
+    )
+}
+
+fn platform_notification_sound() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Funk"
+    }
+    #[cfg(windows)]
+    {
+        "Default"
+    }
+}
+
+fn delivery_plan(mode: &DesktopSoundMode) -> DeliveryPlan {
+    match mode {
+        DesktopSoundMode::Off => DeliveryPlan {
+            banner_audio: BannerAudio::Silent,
+            run_custom_command: None,
+            fallback_system_sound_on_banner_failure: false,
+        },
+        DesktopSoundMode::Command(command) => DeliveryPlan {
+            banner_audio: BannerAudio::Silent,
+            run_custom_command: Some(command.clone()),
+            fallback_system_sound_on_banner_failure: false,
+        },
+        DesktopSoundMode::Default => DeliveryPlan {
+            banner_audio: BannerAudio::Sound(platform_notification_sound()),
+            run_custom_command: None,
+            fallback_system_sound_on_banner_failure: true,
+        },
+    }
+}
+
+fn system_sound_command() -> Option<(std::path::PathBuf, Vec<String>)> {
+    #[cfg(target_os = "macos")]
+    {
+        let sound = "/System/Library/Sounds/Funk.aiff";
+        if !std::path::Path::new(sound).exists() {
+            return None;
+        }
+        Some((
+            std::path::PathBuf::from("afplay"),
+            vec!["-v".into(), "2.0".into(), sound.into()],
+        ))
+    }
+    #[cfg(windows)]
+    {
+        let wav = "C:\\Windows\\Media\\Windows Notify System Generic.wav";
+        if !std::path::Path::new(wav).exists() {
+            return None;
+        }
+        Some((
+            std::path::PathBuf::from("powershell"),
+            vec![
+                "-NoProfile".into(),
+                "-Command".into(),
+                format!("(New-Object System.Media.SoundPlayer '{wav}').PlaySync()"),
+            ],
+        ))
+    }
+}
+
+fn spawn_detached_and_reap(program: &str, args: Vec<String>) {
+    if let Ok(mut child) = std::process::Command::new(program)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
+fn play_fallback_sound() {
+    if let Some((program, args)) = system_sound_command() {
+        spawn_detached_and_reap(&program.display().to_string(), args);
+    }
+}
+
+fn play_custom_sound(command: &str) {
+    #[cfg(target_os = "macos")]
+    spawn_detached_and_reap("sh", vec!["-c".to_owned(), command.to_owned()]);
+    #[cfg(windows)]
+    spawn_detached_and_reap("cmd", vec!["/C".to_owned(), command.to_owned()]);
+}
+
 fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification) {
     if notice.kind == "workspace.updated" {
         crate::tray::sync_project_titles(app, client);
+        return;
+    }
+    if main_window_in_foreground(app) {
         return;
     }
     static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
@@ -149,6 +309,7 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
     else {
         return;
     };
+    let plan = delivery_plan(&desktop_sound_mode());
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let state = app.state::<Desktop>();
     if let Ok(mut targets) = state.notification_targets.lock() {
@@ -157,13 +318,36 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
         }
         targets.insert(id, (client.clone(), notice));
     }
-    let _ = app
-        .notification()
-        .builder()
-        .id(id)
-        .title(title)
-        .body(body)
-        .show();
+    let banner_shown = show_banner(app, id, title, body, &plan.banner_audio);
+    if let Some(command) = &plan.run_custom_command {
+        play_custom_sound(command);
+    } else if !banner_shown && plan.fallback_system_sound_on_banner_failure {
+        play_fallback_sound();
+    }
+}
+
+fn show_banner(
+    app: &tauri::AppHandle,
+    id: i32,
+    title: &str,
+    body: String,
+    audio: &BannerAudio,
+) -> bool {
+    if !ensure_notification_permission(app) {
+        return false;
+    }
+    let builder = app.notification().builder().id(id).title(title).body(body);
+    let builder = match audio {
+        BannerAudio::Sound(sound) => builder.sound(*sound),
+        BannerAudio::Silent => builder.silent(),
+    };
+    match builder.show() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("[CLAT] desktop notification failed: {error}");
+            false
+        }
+    }
 }
 
 fn notification_content(
@@ -280,5 +464,75 @@ mod tests {
                 ))
             );
         }
+    }
+
+    #[test]
+    fn foreground_check_requires_visible_unminimized_focused_window() {
+        assert!(is_window_in_foreground(true, false, true));
+        assert!(!is_window_in_foreground(true, false, false));
+        assert!(!is_window_in_foreground(false, false, true));
+        assert!(!is_window_in_foreground(true, true, true));
+        assert!(!is_window_in_foreground(false, true, false));
+    }
+
+    #[test]
+    fn sound_mode_resolves_env_with_no_bell_precedence() {
+        assert_eq!(sound_mode_from_env(None, None), DesktopSoundMode::Default);
+        assert_eq!(
+            sound_mode_from_env(Some("0".into()), None),
+            DesktopSoundMode::Default
+        );
+        for flag in ["1", "true", "yes", "on", " 1 "] {
+            assert_eq!(
+                sound_mode_from_env(Some(flag.into()), Some("afplay x".into())),
+                DesktopSoundMode::Off,
+                "CLAT_NO_BELL={flag:?} must silence custom commands too"
+            );
+        }
+        assert_eq!(
+            sound_mode_from_env(None, Some("   ".into())),
+            DesktopSoundMode::Default
+        );
+        assert_eq!(
+            sound_mode_from_env(None, Some("afplay ~/ding.aiff".into())),
+            DesktopSoundMode::Command("afplay ~/ding.aiff".into())
+        );
+    }
+
+    #[test]
+    fn delivery_plan_attaches_platform_sound_and_avoids_double_audio() {
+        let default_plan = delivery_plan(&DesktopSoundMode::Default);
+        assert_eq!(
+            default_plan.banner_audio,
+            BannerAudio::Sound(platform_notification_sound())
+        );
+        assert!(default_plan.run_custom_command.is_none());
+        assert!(default_plan.fallback_system_sound_on_banner_failure);
+
+        let off_plan = delivery_plan(&DesktopSoundMode::Off);
+        assert_eq!(off_plan.banner_audio, BannerAudio::Silent);
+        assert!(off_plan.run_custom_command.is_none());
+        assert!(!off_plan.fallback_system_sound_on_banner_failure);
+
+        let cmd_plan = delivery_plan(&DesktopSoundMode::Command("echo ding".into()));
+        assert_eq!(cmd_plan.banner_audio, BannerAudio::Silent);
+        assert_eq!(cmd_plan.run_custom_command.as_deref(), Some("echo ding"));
+        assert!(!cmd_plan.fallback_system_sound_on_banner_failure);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_notification_sound_and_fallback_use_funk() {
+        assert_eq!(platform_notification_sound(), "Funk");
+        let (program, args) = system_sound_command().expect("macOS ships afplay and Funk.aiff");
+        assert_eq!(program, std::path::PathBuf::from("afplay"));
+        assert_eq!(
+            args,
+            vec![
+                "-v".to_owned(),
+                "2.0".to_owned(),
+                "/System/Library/Sounds/Funk.aiff".to_owned(),
+            ]
+        );
     }
 }

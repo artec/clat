@@ -695,19 +695,26 @@ snapshot, and capability guidance.
    Character counts are only local estimates of tokens. Do not claim savings
    from one unreplicated run.
 4. **No arbitrary tool-turn quota.** A 500-step run that gains evidence can
-   continue. A read-only result that repeats already-seen evidence instead
-   gets one explicit model-facing correction, then a hard stop if the model
-   again produces no new evidence. The bound is on stagnant behavior, not
-   total work. Consecutive and interleaved read cycles share one per-Run
+   continue. A result that repeats already-seen evidence instead gets one
+   explicit model-facing correction, then a hard stop if the model again
+   produces no new evidence. The bound is on stagnant behavior, not total
+   work. Consecutive and interleaved observation cycles share one per-Run
    evidence ledger; different paths are independent negative-search scopes.
-   Dynamic wait/poll tools are exempt, and writes/process/UI actions
-   invalidate old evidence rather than being cached or skipped. Discovery
-   timestamps do not make unchanged capability data novel. Tool results
-   retain their payload with optional `clat_runtime_feedback`, which marks
-   a correction rather than claiming the tool returned new data. **A durable
-   compaction, pruning or image-offload rewrite invalidates this temporary
-   evidence ledger**, so the model can refresh older observations; this does
-   not change the frozen allowed tool schemas or permissions.
+   Overlapping `read_file` ranges of the same path count as repeated
+   evidence; disjoint ranges remain independent. Dynamic wait/poll tools are
+   exempt. File writes, destructive actions, UI actions and session-local
+   mutations invalidate old evidence.    Process and network probes
+   (`exec_command` / `run_command` and similar) do **not** clear the ledger
+   or dismiss a pending correction / barren-search scope — they are
+   fingerprinted by a normalized command (whitespace collapsed, volatile
+   `clat-run-*` / UUID tokens scrubbed) so identical re-probes stall while
+   prior search/read evidence stays intact. Discovery timestamps
+   do not make unchanged capability data novel. Tool results retain their
+   payload with optional `clat_runtime_feedback`, which marks a correction
+   rather than claiming the tool returned new data. **A durable compaction,
+   pruning or image-offload rewrite invalidates this temporary evidence
+   ledger**, so the model can refresh older observations; this does not
+   change the frozen allowed tool schemas or permissions.
 5. **Fail safely.** The detector is a deterministic heuristic, not a semantic
    proof that a task is finished. Preserve real tool invocation, permission
    checks, tool/result evidence, and meaningful recovery after an advisory.

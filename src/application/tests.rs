@@ -6857,32 +6857,134 @@ fn qwen_preset_apply_without_entry_keeps_the_selected_entry() {
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
-/// 携带边界：换到其它厂商后再应用 Qwen 预设（当前端点不被该预设接
-/// 受）时，照旧钉回预设默认百炼——不误携带他厂端点（防漂移语义）。
+/// INV-VC8（2026-11-21 负责人复现）：入口随 key 平台恢复。完整复现
+/// 序列：千问入口 + sk-sp- key 可用 → 换其它厂商 → **重启**（全新应用
+/// 实例挂同一存储根）→ 重选 Qwen Token Plan——入口必须回到千问且 key
+/// 复原，不得回弹百炼造成 key 平台错配（此前表象："key 不翼而飞" +
+/// 入口回百炼，一跑即 401）。
 #[test]
-fn qwen_preset_apply_after_other_vendor_stamps_the_default_entry() {
-    let (storage_root, project_root) = roots("qwen-token-plan-apply-fresh");
+fn qwen_preset_reselect_after_restart_restores_entry_and_key() {
+    let (storage_root, project_root) = roots("qwen-token-plan-reselect");
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let application = mount(&project, &storage_root, TestBehavior::Success);
 
     application
-        .select_model_preset("qwen4-max", Some("sp-key".into()), Some("qianwen"))
+        .select_model_preset("qwen4-max", Some("sk-sp-owner".into()), Some("qianwen"))
         .unwrap();
     application
         .select_model_preset("glm-5.3", Some("glm-key".into()), None)
         .unwrap();
-    let (config, _) = application.model_state().unwrap();
-    assert_eq!(config.vendor(), crate::model::ModelVendor::Glm);
+    application.close().unwrap();
 
-    // 从 GLM 回到 Qwen 预设（无 entry）：GLM 端点不被接受 → 预设默认。
+    let reopened = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage_root, TestBehavior::Success)
+    });
+    reopened
+        .select_model_preset("qwen4-max", None, None)
+        .unwrap();
+    let (config, credentials) = reopened.model_state().unwrap();
+    assert_eq!(
+        config.endpoint, "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+        "entry must be restored from the remembered key platform, not bounce to aliyun"
+    );
+    assert_eq!(config.vendor(), crate::model::ModelVendor::Qwen);
+    assert_eq!(credentials.value(0), Some("sk-sp-owner"));
+    assert!(super::dto::matching_preset(&config).is_some());
+    reopened.close().unwrap();
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// 平台族守卫：无 sk-sp- 前缀的记忆 key（百炼形态 `sk-`+十六进制）
+/// 重选回百炼默认；全新存储无记忆 key 同样百炼默认——推断只在千问
+/// 前缀出现时偏离默认（防漂移语义保留）。
+#[test]
+fn qwen_preset_reselect_entry_follows_the_key_platform_family() {
+    let (storage_root, project_root) = roots("qwen-token-plan-key-family");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 全新存储、无记忆 key：默认百炼。
     application
-        .select_model_preset("qwen4-max", Some("sp-key".into()), None)
+        .select_model_preset("qwen4-max", None, None)
         .unwrap();
     let (config, _) = application.model_state().unwrap();
     assert_eq!(
         config.endpoint,
         "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+
+    // 百炼形态 key：换厂商再回来 → 仍百炼入口（key 原样复用）。
+    const BAILIAN_KEY: &str = "sk-a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    application
+        .select_model_preset("qwen4-max", Some(BAILIAN_KEY.into()), None)
+        .unwrap();
+    application
+        .select_model_preset("glm-5.3", Some("glm-key".into()), None)
+        .unwrap();
+    application
+        .select_model_preset("qwen4-max", None, None)
+        .unwrap();
+    let (config, credentials) = application.model_state().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    assert_eq!(credentials.value(0), Some(BAILIAN_KEY));
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// INV-VC8 回显面（2026-11-21 负责人报告）：设置页单选的单一事实源是
+/// `model.settings.get` 的 `qwen_entry`——激活时按配置端点，未激活
+/// （其它厂商在位）按记忆 key 平台前缀，无 key 默认百炼。此前 web 端
+/// `entry.value=` 赋在 radiogroup div 上是静默无效赋值，单选永远停
+/// 在构造默认百炼。
+#[test]
+fn qwen_entry_view_follows_endpoint_then_remembered_key_platform() {
+    let (storage_root, project_root) = roots("qwen-token-plan-entry-view");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 全新无 key：默认百炼。
+    assert_eq!(
+        application.model_settings_view().unwrap().qwen_entry,
+        "aliyun"
+    );
+
+    // 激活千问入口：按配置端点回显千问。
+    application
+        .select_model_preset("qwen4-max", Some("sk-sp-owner".into()), Some("qianwen"))
+        .unwrap();
+    assert_eq!(
+        application.model_settings_view().unwrap().qwen_entry,
+        "qianwen"
+    );
+
+    // 换其它厂商（Qwen 未激活）：记忆 key 是 sk-sp- → 仍回显千问。
+    application
+        .select_model_preset("glm-5.3", Some("glm-key".into()), None)
+        .unwrap();
+    assert_eq!(
+        application.model_settings_view().unwrap().qwen_entry,
+        "qianwen"
+    );
+
+    // 换百炼形态 key 后再离开：未激活回显百炼。
+    application
+        .select_model_preset(
+            "qwen4-max",
+            Some("sk-a1b2c3d4e5f60718293a4b5c6d7e8f90".into()),
+            None,
+        )
+        .unwrap();
+    application
+        .select_model_preset("glm-5.3", Some("glm-key".into()), None)
+        .unwrap();
+    assert_eq!(
+        application.model_settings_view().unwrap().qwen_entry,
+        "aliyun"
     );
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }

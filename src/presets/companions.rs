@@ -3,7 +3,7 @@
 //! Keeping the larger provider notes here prevents the root preset module from
 //! regaining the shape budget that the preset-table refactor paid down.
 
-use super::{KIMI_WHITELIST_UA, ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS};
+use super::{CLAT_UA, ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS};
 
 /// Kimi Code `kimi-for-coding`（K2.8 Preview，2026-09-11 已全量上线）：
 /// 官方模型表确认同一 Coding 端点、1M 上下文与 low/high/max 档位；
@@ -26,7 +26,7 @@ pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
     preserve_thinking: false,
     thinking_object: false,
     include_usage: true,
-    user_agent: Some(KIMI_WHITELIST_UA),
+    user_agent: Some(CLAT_UA),
 };
 
 /// Tencent Hy4 正式版（GA，2026-11-07 负责人令：丢弃 hy4-preview、

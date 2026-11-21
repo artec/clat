@@ -3597,7 +3597,7 @@
   "cua.error_tree_limit": "輔助使用樹超出觀察範圍。請讀取較小的視窗或子樹。",
   "cua.error_unchanged": "同一元素連續三次操作後介面狀態未變更。動作已派發，但應用程式可能未在前景，或控制項沒有回應。請檢查介面再繼續。",
   "run.error_repeated_discovery": "同一次能力查詢連續執行了 {count} 次。這次執行已停止，不再重複這次呼叫。",
-  "run.error_no_progress": "執行已停止：唯讀工具收到修正提示後仍未產生新證據。請檢查既有結果並更換方法。",
+  "run.error_no_progress": "執行已停止：工具收到修正提示後仍未產生新證據。請檢查既有結果並更換方法。",
   "run.error_repeated_unproductive": "同一個工具連續 {count} 次沒有傳回新的結果。這次執行已停止，不再重複這次呼叫。",
   "run.error_repeated_result": "同一個工具以相同參數連續 {count} 次傳回了相同結果。這次執行已停止，不再重複這次呼叫。",
   "cua.error_unsupported_action": "所選元素在目前視窗或選單中不支援該動作。",

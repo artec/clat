@@ -182,7 +182,13 @@ entry keeps the currently selected entry (the radio is the single source of
 truth; only an explicit entry overrides it), and switching entries accepts a
 newly typed key in the same step — the key field value is submitted with the
 radio, since one platform's key is rejected by the other (identical 401
-bodies, so an entry/key mismatch is easy to misread). The Qianwen AI Platform
+bodies, so an entry/key mismatch is easy to misread). Re-selecting the preset
+later — even after switching to another vendor or restarting — restores the
+entry from the remembered key slot: the `sk-sp-` prefix identifies the
+Qianwen AI Platform key and re-pairs the Qianwen endpoint; any other key
+shape falls back to the Aliyun default. The settings radio mirrors this
+restored entry (`model.settings.get` reports it as `qwen_entry`), so the
+selected option matches the endpoint actually in effect. The Qianwen AI Platform
 applies content inspection to the request text (`data_inspection_failed`);
 conversation content such as fetched web pages can trigger it, in which case
 a fresh session or the Aliyun entry resolves it. They send top-level
@@ -216,14 +222,20 @@ The preset uses `https://api.kimi.com/coding/v1`, top-level
 to the vendor ladder. `k3.1-pro` (K3.1 Pro) image input is declared by the
 official API documentation, so attach admission is open on that route.
 
-The Coding membership endpoint currently filters clients by a coding-agent
-User-Agent. The preset injects the field-verified compatible value
-`claude-cli/2.1.161`; Extra Headers can override it. This is an interoperability
-workaround rather than a core protocol requirement, and users should make
-their own terms/compliance decision before relying on it.
+The Coding membership endpoint historically admitted subscription traffic only
+for allowlisted coding-agent User-Agents (community matrix, 2026-08), and the
+preset injected the compatible `claude-cli/2.1.161` disguise. A 2026-11-21 live
+probe with a valid Coding-plan key returned 200 for CLAT's own `clat/<version>`
+User-Agent — and even a generic client UA — on both inference and `/usages`, so
+the gate is withdrawn and the disguise retired: the presets now send CLAT's own
+identity User-Agent. Saved configurations seeded by the older preset are
+migrated on the next load; a custom User-Agent in Extra Headers still wins.
 
-The status monitor queries the provider's five-hour usage window and displays
-the remaining percentage when available.
+The status monitor reads `/usages` and displays every window the vendor reports:
+currently the five-hour window plus two monthly windows (`limit_month_total`,
+`limit_month_code`). No weekly window is reported today; one appears
+automatically if the vendor starts returning it. Each window shows its remaining
+percentage and reset time; the rail icon follows the smallest window.
 
 ### Tencent Hy Token Plan
 

@@ -31,7 +31,7 @@
 //! 引用会被错误套用直连参数。`model` 字段仍用网关原始 id。
 
 use super::{
-    ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS, OPENCODE_UA, PresetCapabilities, TEXT_CAPS,
+    CLAT_UA, ModelPreset, ModelProtocol, OFFICIAL_VISION_CAPS, PresetCapabilities, TEXT_CAPS,
 };
 
 /// 共用钉值的 const 构造器：各预设仅 id/伴生/能力/名称/窗口与输出
@@ -75,7 +75,7 @@ const fn opencode_preset(
         // 发（纪律裁定：实测有需要再补，extra_body 只带 reasoning_effort）。
         include_usage: false,
         // OpenCode 政策要求自有 UA（不用通用 SDK 名）。
-        user_agent: Some(OPENCODE_UA),
+        user_agent: Some(CLAT_UA),
     }
 }
 

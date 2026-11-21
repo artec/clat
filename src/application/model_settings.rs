@@ -20,6 +20,8 @@ pub struct ModelSettingsView {
     #[serde(default)]
     pub profile_image_input: std::collections::BTreeMap<String, bool>,
     pub presets: Vec<ModelPresetView>,
+    #[serde(default)]
+    pub qwen_entry: String,
     pub utility: UtilitySettingsView,
 }
 
@@ -219,6 +221,22 @@ impl TrustedProjectApplication {
                     image_input: preset.owned_capabilities().accepts_image_input(),
                 })
                 .collect(),
+            // VP-2C 单选回显的单一事实源（2026-11-21 负责人报告"设置页
+            // 单选显示百炼但实际记忆千问"）：当前模型是 Qwen Token Plan
+            // 预设时按配置端点；否则按 "Qwen" 记忆槽 key 平台前缀
+            // （INV-VC8 同源）；无 key → 百炼默认。
+            qwen_entry: crate::presets::qwen_token_plan_entry(&config.endpoint)
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    let remembered = self
+                        .vendor_key(
+                            config.protocol,
+                            crate::presets::QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT,
+                        )
+                        .and_then(|credentials| credentials.value(0).map(str::to_owned))
+                        .unwrap_or_default();
+                    crate::presets::qwen_entry_for_key(&remembered).to_owned()
+                }),
             utility: self.utility_settings_view_locked()?,
         })
     }
@@ -310,8 +328,7 @@ impl TrustedProjectApplication {
         // VP-2C 事故修复（2026-11-20 真机 401）：不带 entry 的应用不得
         // 回弹已选入口。当前端点仍是该预设的合法入口（preset_accepts_
         // endpoint：相等或同属 Qwen Token Plan 双入口）时原样携带——
-        // 单选是入口的唯一事实源；显式 entry 参数才覆盖。换到其它厂商
-        // 后再应用 Qwen 预设（当前端点不被接受）照旧钉回预设默认百炼。
+        // 单选是入口的唯一事实源；显式 entry 参数才覆盖。
         let carried_endpoint = self
             .model_state()
             .ok()
@@ -319,7 +336,25 @@ impl TrustedProjectApplication {
             .filter(|endpoint| crate::presets::preset_accepts_endpoint(preset, endpoint));
         let mut config = ModelConfig::default();
         preset.apply(&mut config);
-        if let Some(endpoint) = entry_endpoint.or(carried_endpoint.as_deref()) {
+        // INV-VC8（2026-11-21 负责人复现）：无显式 entry、当前端点也不
+        // 可携带时（典型：换厂商后重启再切回），入口随 "Qwen" 记忆槽
+        // key 的平台前缀恢复——key 即入口的持久载体（sk-sp- → 千问，
+        // 否则百炼）。按预设默认端点取槽即可：双入口同 vendor 同槽。
+        let restored_entry = if entry_endpoint.is_none()
+            && carried_endpoint.is_none()
+            && crate::presets::qwen_token_plan_entry(preset.endpoint).is_some()
+        {
+            self.vendor_key(config.protocol, &config.endpoint)
+                .and_then(|credentials| credentials.value(0).map(str::to_owned))
+                .filter(|key| !key.trim().is_empty())
+                .map(|key| qwen_entry_endpoint(crate::presets::qwen_entry_for_key(&key)))
+        } else {
+            None
+        };
+        if let Some(endpoint) = entry_endpoint
+            .or(carried_endpoint.as_deref())
+            .or(restored_entry)
+        {
             config.endpoint = endpoint.into();
         }
         // 双入口共用 "Qwen" Key 记忆槽（一套 Key 裁定）：换端点不换槽。
