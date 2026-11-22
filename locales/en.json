@@ -3828,5 +3828,14 @@
   "help.quota_tencent_step_2": "Copy the sub-account's SecretId and SecretKey into Settings → Authorizations → Tencent Hunyuan.",
   "help.quota_tencent_step_3": "Then attach the QcloudHunyuanReadOnlyAccess policy to the sub-account (Hunyuan read-only) and press Refresh back in CLAT; the ring then shows the remaining percentage.",
   "help.quota_tencent_question": "Why create a sub-account instead of using my main keys?",
-  "help.quota_tencent_answer": "Main-account keys carry full permissions; a read-only sub-account key can only view quota, which is far safer if it ever leaks."
+  "help.quota_tencent_answer": "Main-account keys carry full permissions; a read-only sub-account key can only view quota, which is far safer if it ever leaks.",
+  "authorization.bailian": "Aliyun Bailian",
+  "authorization.bailian_method": "Browser sign-in on the Aliyun console",
+  "help.quota_bailian_title": "Aliyun Bailian Token Plan quota",
+  "help.quota_bailian_summary": "Sign in once on the Bailian console and the rail quota ring shows your Token Plan allowance.",
+  "help.quota_bailian_step_1": "When the rail quota ring shows a key glyph (or via Settings → Authorizations → Aliyun Bailian), click Sign in.",
+  "help.quota_bailian_step_2": "The browser opens the Aliyun console login page; after signing in it calls back to CLAT on this machine automatically.",
+  "help.quota_bailian_step_3": "The ring then shows the remaining percentage; hover for window details. Credentials are stored locally, encrypted, and can be removed anytime.",
+  "help.quota_bailian_question": "The browser says the callback site is not reachable. What now?",
+  "help.quota_bailian_answer": "The login page calls back to 127.0.0.1 on this machine; allow the site's local network access in the browser, or retry and open the URL in another browser such as Firefox."
 }

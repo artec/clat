@@ -75,6 +75,7 @@
 //! re-derive, or full re-login) as routine. This crate holds no state;
 //! persistence belongs to the integrator.
 
+pub mod bailian;
 pub mod device;
 pub mod envelope;
 pub mod error;
@@ -83,6 +84,9 @@ pub mod quota;
 pub mod tencent;
 pub mod transport;
 
+pub use bailian::{
+    CONSOLE_ORIGIN_DOMESTIC, ConsoleCallback, ConsoleCallbackWait, console_login_url, new_state,
+};
 pub use device::{
     DEFAULT_AUTH_BASE, DEFAULT_GATEWAY_JSON, DeviceLogin, PollStatus, Session, UserIdentity,
     derive_cli_access_token, poll_device_login, start_device_login,

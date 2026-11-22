@@ -29,7 +29,8 @@ const HELP_TOPICS = [
   {"id":"utility","group":"settings","icon":"sparkles","target":"settings:utility","related":["models","git","chat"]},
   {"id":"about","group":"settings","icon":"info","target":"settings:desktop","related":["projects","models"]},
   {"id":"git_settings","group":"settings","icon":"branch","target":"settings:git","related":["git","models"]},
-  {"id":"quota_qianwen","group":"settings","icon":"permission-write","target":"settings:authorizations","related":["quota_tencent","models"]},
-  {"id":"quota_tencent","group":"settings","icon":"permission-write","target":"settings:authorizations","related":["quota_qianwen","models"]},
+  {"id":"quota_qianwen","group":"settings","icon":"permission-write","target":"settings:authorizations","related":["quota_bailian","quota_tencent","models"]},
+  {"id":"quota_bailian","group":"settings","icon":"permission-write","target":"settings:authorizations","related":["quota_qianwen","quota_tencent","models"]},
+  {"id":"quota_tencent","group":"settings","icon":"permission-write","target":"settings:authorizations","related":["quota_qianwen","quota_bailian","models"]},
   {"id":"keyboard","group":"conversation","icon":"help","target":"conversation","related":["chat","files","git"]}
 ];

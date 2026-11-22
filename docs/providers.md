@@ -192,8 +192,11 @@ selected option matches the endpoint actually in effect. Console-credential quot
 quota icon in the left rail can sign in through the platform's device flow —
 click the ring with the key glyph, approve in the browser, and the per-window
 usage percentages appear (credentials are stored locally, encrypted at rest
-with an embedded key; the model API key is never involved). The Aliyun entry
-console quota is not wired yet.
+with an embedded key; the model API key is never involved). The Aliyun
+entry works the same way through its own console sign-in (2026-11-22): the
+browser calls back to a local listener on this machine and hands CLAT the
+console access token; quota then reads from the Bailian console gateway as
+plain percentages.
 In Web and Desktop, open **Settings → Authorizations** to manage the Qianwen
 and Tencent quota credentials from any model or project. Start or repeat the
 Qianwen browser authorization, save or replace the Tencent Cloud API key, and

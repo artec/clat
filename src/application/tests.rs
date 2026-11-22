@@ -7037,6 +7037,13 @@ fn console_allowance_marks_needs_auth_for_console_capable_routes() {
     let tencent = poll_allowance_status(&application, "needs_auth");
     assert_eq!(tencent["auth"], "tencent");
 
+    // 百炼入口（QUOTA-2 补债）：needs_auth + auth=bailian。
+    application
+        .select_model_preset("qwen4-max", Some("sk-bailian".into()), Some("aliyun"))
+        .unwrap();
+    let bailian = poll_allowance_status(&application, "needs_auth");
+    assert_eq!(bailian["auth"], "bailian");
+
     // 腾讯 Key 落盘：blob 加密（无明文）、缓存失效后 needs_auth 语义
     // 仍由下一次读取决定（本测试不再触发读取 → 零网络）。
     application

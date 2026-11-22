@@ -3,7 +3,7 @@ const helpText = key => CLATI18n.msg('help.' + key);
 let helpCenter = null;
 
 function currentHelpTopic(view) {
-  if (view.id === 'settings-dialog') return ({terminal:'terminal_font',web:'network',desktop:'about',git:'git_settings'})[currentSettingsCategory] || currentSettingsCategory;
+  if (view.id === 'settings-dialog') return ({terminal:'terminal_font',web:'network',desktop:'about',git:'git_settings',authorizations:'quota_qianwen',remote:'wechat'})[currentSettingsCategory] || currentSettingsCategory;
   return ({conversation:'chat','file-browser':'files','workspace-review':'git','turn-review':'operations','task-review':'processes','workflow-details':'workflow','terminal-page':'terminal','resources-dialog':'resources','jobs-dialog':'tasks','history-dialog':'history','market-dialog':'extensions'})[view.id] || 'chat';
 }
 

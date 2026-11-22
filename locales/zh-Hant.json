@@ -3828,5 +3828,14 @@
   "help.quota_tencent_step_2": "將子帳號的 SecretId 和 SecretKey 複製填入 設定 → 授權 → 騰訊混元。",
   "help.quota_tencent_step_3": "再到子帳號的權限策略中新增 QcloudHunyuanReadOnlyAccess 權限（混元唯讀），回來點重新整理，額度環即顯示剩餘百分比。",
   "help.quota_tencent_question": "為什麼建議新建子帳號而不用主帳號金鑰？",
-  "help.quota_tencent_answer": "主帳號金鑰權限過大；唯讀子帳號金鑰即使洩露也只能查看額度，安全得多。"
+  "help.quota_tencent_answer": "主帳號金鑰權限過大；唯讀子帳號金鑰即使洩露也只能查看額度，安全得多。",
+  "authorization.bailian": "阿里雲百煉",
+  "authorization.bailian_method": "瀏覽器登入阿里雲主控台授權",
+  "help.quota_bailian_title": "阿里雲百煉 Token Plan 額度",
+  "help.quota_bailian_summary": "登入一次百煉主控台，左導航額度環即可顯示 Token Plan 剩餘額度。",
+  "help.quota_bailian_step_1": "左導航額度環出現 ⚿ 金鑰字元時點擊（或開啟 設定 → 授權 → 阿里雲百煉），點「登入授權」。",
+  "help.quota_bailian_step_2": "瀏覽器會開啟阿里雲主控台登入頁；登入完成後頁面會自動回呼本機的 CLAT。",
+  "help.quota_bailian_step_3": "額度環隨後顯示剩餘百分比，懸停可看窗口明細；憑據加密存在本地，可隨時移除。",
+  "help.quota_bailian_question": "瀏覽器提示無法存取回呼網站怎麼辦？",
+  "help.quota_bailian_answer": "登入頁需要回呼本機 127.0.0.1；請在瀏覽器裡允許該網站的本地網路存取，或重試並換 Firefox 等瀏覽器開啟授權地址。"
 }

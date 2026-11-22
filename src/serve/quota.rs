@@ -14,20 +14,32 @@ pub(crate) fn dispatch(
     let app = shared.app.lock().expect("application lock");
     match method {
         "quota.console.login" => {
-            if !params.is_empty() {
-                return Err(RpcError::bad_request("console login accepts no fields"));
+            // provider 可选（默认 qianwen，向后兼容旧调用方）：qianwen =
+            // 设备码流；bailian = 本地回调流。其余值拒绝。
+            let provider = login_provider(params)?;
+            let view = match provider {
+                "qianwen" => app.console_login_start(),
+                "bailian" => app.console_bailian_login_start(),
+                _ => unreachable!("login_provider guards the value"),
             }
-            serde_json::to_value(app.console_login_start().map_err(failure)?)
-                .map_err(|_| RpcError::internal("console login unavailable"))
+            .map_err(failure)?;
+            serde_json::to_value(view).map_err(|_| RpcError::internal("console login unavailable"))
         }
-        "quota.console.state" => Ok(app.console_login_state()),
+        "quota.console.state" => {
+            let provider = login_provider(params)?;
+            Ok(match provider {
+                "qianwen" => app.console_login_state(),
+                "bailian" => app.console_bailian_login_state(),
+                _ => unreachable!("login_provider guards the value"),
+            })
+        }
         "quota.console.cancel" => {
-            if !params.is_empty() {
-                return Err(RpcError::bad_request(
-                    "console login cancellation accepts no fields",
-                ));
+            let provider = login_provider(params)?;
+            match provider {
+                "qianwen" => app.console_login_cancel(),
+                "bailian" => app.console_bailian_login_cancel(),
+                _ => unreachable!("login_provider guards the value"),
             }
-            app.console_login_cancel();
             Ok(json!({"cancelled": true}))
         }
         "quota.authorizations.get" => {
@@ -72,4 +84,14 @@ pub(crate) fn dispatch(
 
 fn failure(error: crate::ApplicationError) -> RpcError {
     RpcError::bad_request(error.to_string())
+}
+
+fn login_provider(params: &serde_json::Map<String, Value>) -> Result<&str, RpcError> {
+    match params.get("provider") {
+        None => Ok("qianwen"),
+        Some(Value::String(provider)) if provider == "qianwen" || provider == "bailian" => {
+            Ok(provider)
+        }
+        Some(_) => Err(RpcError::bad_request("provider must be qianwen or bailian")),
+    }
 }

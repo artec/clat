@@ -107,10 +107,11 @@ function installAuthorizationSettings() {
   const page = dom['settings-dialog'];
   const panel = page.querySelector('[data-settings-panel=authorizations]');
   const qianwen = authorizationCard('qianwen', 'sparkles');
+  const bailian = authorizationCard('bailian', 'alibaba-cloud');
   const tencent = authorizationCard('tencent', 'cloud');
-  const cards = { qianwen, tencent };
+  const cards = { qianwen, bailian, tencent };
   let snapshot = null, timer, epoch = 0, request = 0, mutating = false, refreshing = false;
-  let loginUrl = null;
+  const loginUrls = { qianwen: null, bailian: null };
   const errors = {};
   const mobile = matchMedia('(max-width: 760px)');
   const active = () => context.isActive() && pageIsOpen(page) && !panel.hidden
@@ -132,17 +133,21 @@ function installAuthorizationSettings() {
   feedback.setAttribute('role', 'status');
   toolbar.append(feedback, refreshAll);
 
-  qianwen.primary = authorizationButton('sign_in', () => void startLogin(), null, true);
-  qianwen.open = authorizationButton('open_login', () => void openLogin(), 'open', true);
-  qianwen.cancel = authorizationButton('cancel_login', () => void cancelLogin());
+  for (const provider of ['qianwen', 'bailian']) {
+    const row = cards[provider];
+    row.primary = authorizationButton('sign_in', () => void startLogin(provider), null, true);
+    row.open = authorizationButton('open_login', () => void openLogin(provider), 'open', true);
+    row.cancel = authorizationButton('cancel_login', () => void cancelLogin(provider));
+  }
   tencent.primary = authorizationButton('add_key', showTencentForm, null, true);
   for (const [provider, row] of Object.entries(cards)) {
     row.remove = authorizationButton('remove', () => void remove(provider), 'trash');
     row.actions.append(row.remove, row.primary);
   }
   qianwen.actions.append(qianwen.cancel, qianwen.open);
+  bailian.actions.append(bailian.cancel, bailian.open);
   tencent.card.append(credential.form);
-  panel.append(toolbar, qianwen.card, tencent.card);
+  panel.append(toolbar, ...Object.values(cards).map(row => row.card));
 
   function showTencentForm() {
     if (!active() || mutating) return;
@@ -159,27 +164,27 @@ function installAuthorizationSettings() {
 
   function paintCard(provider, row) {
     const view = snapshot?.providers.find(item => item.provider === provider);
-    const phase = provider === 'qianwen' ? snapshot?.qianwen_login : null;
+    const phase = provider === 'tencent' ? null : provider === 'qianwen' ? snapshot?.qianwen_login : snapshot?.bailian_login;
     const waiting = phase === 'starting' || phase === 'pending';
     const configured = Boolean(view?.configured);
     const key = !view ? 'loading' : waiting ? 'awaiting_approval'
       : !configured ? 'disconnected' : view.allowance?.status === 'needs_auth' ? 'reauthorize'
-        : provider === 'qianwen' ? 'connected' : 'key_saved';
+        : provider === 'tencent' ? 'key_saved' : 'connected';
     row.state.dataset.state = key;
     CLATI18n.bind(row.state, 'textContent', () => view || !errors.refresh ? authorizationText(key) : '');
     authorizationQuota(row.quota, view);
     row.remove.hidden = !configured || waiting || (provider === 'tencent' && !credential.form.hidden);
-    row.primary.hidden = provider === 'qianwen' ? Boolean(waiting && loginUrl) : !credential.form.hidden;
+    row.primary.hidden = provider === 'tencent' ? !credential.form.hidden : Boolean(waiting && loginUrls[provider]);
     row.primary.disabled = mutating || !view || phase === 'starting';
     row.remove.disabled = mutating;
-    if (provider === 'qianwen') {
+    if (provider === 'tencent') {
+      label(row.primary, configured ? 'replace_key' : 'add_key');
+    } else {
       label(row.primary, waiting ? 'continue_login' : configured ? 'sign_in_again' : 'sign_in');
-      row.open.hidden = !waiting || !loginUrl;
+      row.open.hidden = !waiting || !loginUrls[provider];
       row.open.disabled = mutating;
       row.cancel.hidden = !waiting;
       row.cancel.disabled = mutating;
-    } else {
-      label(row.primary, configured ? 'replace_key' : 'add_key');
     }
     const outcome = ['expired', 'denied', 'failed'].includes(phase) ? 'login_' + phase : null;
     const message = errors[provider] || outcome;
@@ -210,8 +215,11 @@ function installAuthorizationSettings() {
       const value = await rpc('quota.authorizations.get', force ? { refresh: true } : {});
       if (!current()) return;
       snapshot = value;
-      if (value.qianwen_login !== 'pending') loginUrl = null;
-      if (['starting', 'pending'].includes(value.qianwen_login) || value.providers.some(row => row.refreshing)) {
+      if (value.qianwen_login !== 'pending') loginUrls.qianwen = null;
+      if (value.bailian_login !== 'pending') loginUrls.bailian = null;
+      if (['starting', 'pending'].includes(value.qianwen_login)
+        || ['starting', 'pending'].includes(value.bailian_login)
+        || value.providers.some(row => row.refreshing)) {
         timer = setTimeout(() => void refresh(), 1000);
       }
     } catch {
@@ -247,30 +255,31 @@ function installAuthorizationSettings() {
     }
   }
 
-  async function startLogin() {
-    await mutate('qianwen', 'login_failed', async current => {
-      const view = await rpc('quota.console.login', {});
+  async function startLogin(provider = 'qianwen') {
+    await mutate(provider, 'login_failed', async current => {
+      const view = await rpc('quota.console.login', { provider });
       if (!current()) return;
-      loginUrl = view.url;
-      if (globalThis.CLATDesktop?.openInBrowser) await openLogin();
+      loginUrls[provider] = view.url;
+      if (globalThis.CLATDesktop?.openInBrowser) await openLogin(provider);
     });
-    if (active() && loginUrl) qianwen.open.focus();
+    if (active() && loginUrls[provider]) cards[provider].open.focus();
   }
 
-  async function openLogin() {
-    if (!loginUrl) return;
+  async function openLogin(provider = 'qianwen') {
+    const url = loginUrls[provider];
+    if (!url) return;
     const started = epoch;
-    try { await openMarkdownUrl(loginUrl); }
-    catch { if (active() && epoch === started) { errors.qianwen = 'open_failed'; paint(); } }
+    try { await openMarkdownUrl(url); }
+    catch { if (active() && epoch === started) { errors[provider] = 'open_failed'; paint(); } }
   }
 
-  async function cancelLogin() {
+  async function cancelLogin(provider = 'qianwen') {
     const started = epoch;
-    await mutate('qianwen', 'action_failed', async current => {
-      await rpc('quota.console.cancel', {});
-      if (current()) loginUrl = null;
+    await mutate(provider, 'action_failed', async current => {
+      await rpc('quota.console.cancel', { provider });
+      if (current()) loginUrls[provider] = null;
     });
-    if (active() && epoch === started) qianwen.primary.focus();
+    if (active() && epoch === started) cards[provider].primary.focus();
   }
 
   async function saveTencentKey(params) {
@@ -295,7 +304,8 @@ function installAuthorizationSettings() {
     epoch++;
     request++;
     clearTimeout(timer);
-    loginUrl = null;
+    loginUrls.qianwen = null;
+    loginUrls.bailian = null;
     refreshing = false;
     credential.form.reset();
     credential.form.hidden = true;
@@ -319,7 +329,7 @@ function installAuthorizationSettings() {
       openSettings('authorizations');
       if (!active()) return;
       if (provider === 'tencent') showTencentForm();
-      else if (provider === 'qianwen') void startLogin();
+      else if (provider === 'qianwen' || provider === 'bailian') void startLogin(provider);
     },
   };
 }

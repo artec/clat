@@ -3828,5 +3828,14 @@
   "help.quota_tencent_step_2": "将子账号的 SecretId 和 SecretKey 复制填入 设置 → 授权 → 腾讯混元。",
   "help.quota_tencent_step_3": "再到子账号的权限策略中添加 QcloudHunyuanReadOnlyAccess 权限（混元只读），回来点刷新，额度环即显示剩余百分比。",
   "help.quota_tencent_question": "为什么建议新建子账号而不用主账号密钥？",
-  "help.quota_tencent_answer": "主账号密钥权限过大；只读子账号密钥即使泄露也只能查看额度，安全得多。"
+  "help.quota_tencent_answer": "主账号密钥权限过大；只读子账号密钥即使泄露也只能查看额度，安全得多。",
+  "authorization.bailian": "阿里云百炼",
+  "authorization.bailian_method": "浏览器登录阿里云控制台授权",
+  "help.quota_bailian_title": "阿里云百炼 Token Plan 额度",
+  "help.quota_bailian_summary": "登录一次百炼控制台，左导航额度环即可显示 Token Plan 剩余额度。",
+  "help.quota_bailian_step_1": "左导航额度环出现 ⚿ 密钥字符时点击（或打开 设置 → 授权 → 阿里云百炼），点“登录授权”。",
+  "help.quota_bailian_step_2": "浏览器会打开阿里云控制台登录页；登录完成后页面会自动回调本机的 CLAT。",
+  "help.quota_bailian_step_3": "额度环随后显示剩余百分比，悬停可看窗口明细；凭据加密存在本地，可随时移除。",
+  "help.quota_bailian_question": "浏览器提示无法访问回调站点怎么办？",
+  "help.quota_bailian_answer": "登录页需要回调本机 127.0.0.1；请在浏览器里允许该站点的本地网络访问，或重试并换 Firefox 等浏览器打开授权地址。"
 }

@@ -24,6 +24,8 @@ struct ConsoleCredentialFile {
     qianwen: Option<ConsoleCredentialRow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tencent: Option<ConsoleCredentialRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bailian: Option<ConsoleCredentialRow>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -59,6 +61,7 @@ impl ControlStorage {
         Ok(match provider {
             "qianwen" => file.qianwen,
             "tencent" => file.tencent,
+            "bailian" => file.bailian,
             _ => None,
         })
     }
@@ -112,6 +115,7 @@ impl ControlStorage {
         let slot = match provider {
             "qianwen" => &mut file.qianwen,
             "tencent" => &mut file.tencent,
+            "bailian" => &mut file.bailian,
             _ => return Err("unknown console credential provider".to_string()),
         };
         if !change(slot) {

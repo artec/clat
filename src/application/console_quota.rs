@@ -39,6 +39,15 @@ struct QianwenCredential {
     derived: String,
 }
 
+/// 百炼控制台会话（加密 blob 的明文形状）——本地回调登录交付的
+/// access_token 即额度网关 Bearer，无需派生。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BailianCredential {
+    access_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    console_region: Option<String>,
+}
+
 /// 腾讯云 Key（加密 blob 的明文形状）。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TencentCredential {
@@ -86,14 +95,18 @@ pub(super) fn console_provider(endpoint: &str) -> Option<&'static str> {
         || endpoint.contains("lkeap.cloud.tencent.com")
     {
         Some("tencent")
+    } else if endpoint.contains("token-plan") && endpoint.contains("maas.aliyuncs.com") {
+        // 百炼 Token Plan 入口（ap-southeast-1 与 cn-beijing 变体同判）。
+        Some("bailian")
     } else {
         None
     }
 }
 
+mod callback_flow;
 mod device_flow;
 
-const PROVIDERS: [&str; 2] = ["qianwen", "tencent"];
+const PROVIDERS: [&str; 3] = ["qianwen", "tencent", "bailian"];
 type CacheKey = (PathBuf, &'static str);
 
 #[derive(Default)]
@@ -122,6 +135,7 @@ impl TrustedProjectApplication {
         Ok(serde_json::json!({
             "providers": providers,
             "qianwen_login": self.console_login_state()["status"],
+            "bailian_login": self.console_bailian_login_state()["status"],
         }))
     }
 
@@ -129,6 +143,7 @@ impl TrustedProjectApplication {
         match provider {
             "qianwen" => device_flow::remove(&self.control)?,
             "tencent" => remove_credential(&self.control, "tencent")?,
+            "bailian" => callback_flow::remove(&self.control)?,
             _ => return Err(ApplicationError::new("unknown console credential provider")),
         }
         self.emit_console_authorization_changed();
@@ -301,7 +316,48 @@ fn fetch_once(control: &ControlStorage, provider: &str) -> ProviderAllowance {
     match provider {
         "qianwen" => qianwen_allowance(control),
         "tencent" => tencent_allowance(control),
+        "bailian" => bailian_allowance(control),
         _ => ProviderAllowance::state("unsupported"),
+    }
+}
+
+/// 百炼额度：本地回调登录的 access_token 直接作 Bearer 打
+/// `bailian-cs.console.aliyun.com` form 信封（百分比 0..100 标度）。
+fn bailian_allowance(control: &ControlStorage) -> ProviderAllowance {
+    let Some(row) = control.read_console_credential("bailian").ok().flatten() else {
+        return needs_auth("bailian");
+    };
+    let bytes = match unseal(&row.blob) {
+        Ok(bytes) => bytes,
+        Err(_) => return needs_auth("bailian"),
+    };
+    let credential = match serde_json::from_slice::<BailianCredential>(&bytes) {
+        Ok(credential) => credential,
+        Err(_) => return needs_auth("bailian"),
+    };
+    if credential.access_token.trim().is_empty() {
+        return needs_auth("bailian");
+    }
+    let transport = UreqTransport::new(FETCH_TIMEOUT);
+    let client = QuotaClient::new(&transport, Platform::Bailian, credential.access_token);
+    match client.query_usage() {
+        Ok(windows) if !windows.is_empty() => ProviderAllowance {
+            status: "available".into(),
+            updated_at: None,
+            auth: None,
+            items: windows
+                .into_iter()
+                .map(|window| AllowanceItem {
+                    kind: "quota".into(),
+                    value: format!("{:.1}", window.remaining_percent),
+                    unit: Some("%".into()),
+                    reset_at: window.reset_at_ms,
+                    window_hours: Some(window.window_hours),
+                })
+                .collect(),
+        },
+        Ok(_) => ProviderAllowance::state("failed"),
+        Err(_) => ProviderAllowance::state("failed"),
     }
 }
 
@@ -488,8 +544,13 @@ mod tests {
             console_provider(
                 "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
             ),
-            None
+            Some("bailian")
         );
+        assert_eq!(
+            console_provider("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
+            Some("bailian")
+        );
+        assert_eq!(console_provider("https://bailian.console.aliyun.com"), None);
         assert_eq!(console_provider("https://api.deepseek.com/v1"), None);
     }
 
