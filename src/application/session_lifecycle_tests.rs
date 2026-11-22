@@ -17,6 +17,25 @@ fn start_run_text(
     })
 }
 
+/// 序列敏感测试的确定性夹具：关掉 utility 异步写者（自动命名/摘要/
+/// 建议/自动跟进）。X4 家族复发（CI 2026-11-22 两轮盒子，旋转变受害
+/// 者）：`TestBehavior::Success` 会真生成标题，title worker 的 journal
+/// 写入落在断言窗内——`committed_seq` 漂移 +1，或删除后为被删会话
+/// 复写 overview 使目录复活。关设置即可（`maybe_autotitle` 逐任务读
+/// 设置），不必逐行为旁路。
+fn quiet_utilities(application: &TrustedProjectApplication) {
+    use crate::application::UtilitySettingsEdit;
+    application
+        .edit_utility_settings(UtilitySettingsEdit {
+            naming_enabled: false,
+            summary_enabled: Some(false),
+            suggestions_enabled: false,
+            automatic_followups: false,
+            profile: None,
+        })
+        .unwrap();
+}
+
 /// INV-SL2：归档会话不接纳新 run。提交明确拒绝（`session.archived`），
 /// 零 journal 写入（committed 序号不动）、零目录物化（会话数不变）；
 /// 浏览（switch 到归档会话）不受影响，提交在浏览态同样拒绝；恢复后
@@ -28,6 +47,7 @@ fn archived_sessions_reject_run_admission_without_writes_or_materialization() {
     std::fs::create_dir_all(&root).unwrap();
     let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
     configure_test_model(&app);
+    quiet_utilities(&app);
     run(&mut app, "first turn in A").unwrap();
     let a = app.current_session_id().unwrap();
     app.new_session().unwrap();
@@ -71,6 +91,7 @@ fn delete_lives_only_in_the_archived_domain_and_leaves_no_orphans() {
     std::fs::create_dir_all(&root).unwrap();
     let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
     configure_test_model(&app);
+    quiet_utilities(&app);
     run(&mut app, "victim session content").unwrap();
     let victim = app.current_session_id().unwrap();
     assert_eq!(
@@ -173,6 +194,7 @@ fn delete_refuses_share_referenced_sessions_until_references_are_gone() {
     std::fs::create_dir_all(&root).unwrap();
     let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
     configure_test_model(&app);
+    quiet_utilities(&app);
     if let Some(worker) = &mut app.title_worker {
         worker.shutdown().unwrap();
     }

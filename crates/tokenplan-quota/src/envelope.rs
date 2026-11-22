@@ -160,6 +160,95 @@ pub fn unwrap_qianwen_payload(outer_data: &Value) -> Result<&Value, QuotaError> 
         .ok_or_else(|| QuotaError::shape("harness business has no data"))
 }
 
+/// Qianwen **cs-data** form envelope (`cs-data.qianwenai.com/cli/api.json`):
+/// same BroadScope action as Bailian but the QIANWENAI cornerstone and a
+/// pinned `switchUserType: 3` (verified against qianwen-cli
+/// `buildCsDataRequest`; serves the apikeyMgr usage family with the derived
+/// cliAccessToken as Bearer).
+pub fn qianwen_cs_data_request(api: &str, data: &Value) -> (String, String) {
+    let mut data = data.clone();
+    if let Some(object) = data.as_object_mut() {
+        object.insert(
+            "cornerstoneParam".into(),
+            json!({
+                "protocol": "V2",
+                "console": "ONE_CONSOLE",
+                "productCode": "p_efm",
+                "switchUserType": 3,
+                "consoleSite": "QIANWENAI",
+            }),
+        );
+    }
+    let params = json!({
+        "Api": api,
+        "V": API_VERSION,
+        "Data": data,
+    });
+    let url = format!(
+        "https://cs-data.qianwenai.com/cli/api.json?action={GATEWAY_ACTION}&product={GATEWAY_PRODUCT}&api={}",
+        urlencode(api)
+    );
+    let form = format!(
+        "params={}&region={DEFAULT_REGION}",
+        urlencode(&params.to_string())
+    );
+    (url, form)
+}
+
+/// cs-data response layers: outer `{code, successResponse, data}` →
+/// gateway `{success, errorCode, DataV2}` → business `{code:"SUCCESS",
+/// success, data}`. `BailianGateway.Login.NotLogined` names an expired
+/// derived credential (re-derive, do not re-login).
+pub fn unwrap_cs_data_payload(raw: &Value) -> Result<&Value, QuotaError> {
+    unwrap_outer(raw)?;
+    let success = raw.get("successResponse").and_then(Value::as_bool);
+    if success != Some(true) {
+        return Err(QuotaError::shape("cs-data gateway did not confirm success"));
+    }
+    let gateway = raw
+        .get("data")
+        .ok_or_else(|| QuotaError::shape("cs-data response has no data"))?;
+    let error_code = gateway
+        .get("errorCode")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if error_code == "BailianGateway.Login.NotLogined" {
+        return Err(QuotaError::envelope(
+            error_code,
+            "derived credential expired",
+        ));
+    }
+    if gateway.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err(QuotaError::shape("cs-data gateway did not confirm success"));
+    }
+    let payload = gateway
+        .get("DataV2")
+        .ok_or_else(|| QuotaError::shape("cs-data response has no DataV2"))?;
+    let ret = payload
+        .get("ret")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+        .and_then(Value::as_str)
+        .ok_or_else(|| QuotaError::shape("cs-data DataV2 has no ret"))?;
+    if !ret.starts_with("SUCCESS::") {
+        let (code, message) = split_ret(ret);
+        return Err(QuotaError::business(code, message));
+    }
+    let business = payload
+        .get("data")
+        .ok_or_else(|| QuotaError::shape("cs-data DataV2 has no data"))?;
+    if business.get("success").and_then(Value::as_bool) != Some(true)
+        || business.get("code").and_then(Value::as_str) != Some("SUCCESS")
+    {
+        return Err(QuotaError::shape(
+            "cs-data business layer did not confirm success",
+        ));
+    }
+    business
+        .get("data")
+        .ok_or_else(|| QuotaError::shape("cs-data business has no data"))
+}
+
 /// Bailian layers: walk `DataV2`/`data` and require every `ret` string to be
 /// `SUCCESS::…` (verified against bailian-cli `unwrapConsoleResponse`).
 pub fn unwrap_bailian_payload(raw: &Value) -> Result<&Value, QuotaError> {

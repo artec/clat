@@ -138,6 +138,31 @@ mod tests {
         }
     }
 
+    fn percent_decode(value: &str) -> Option<String> {
+        let mut out = Vec::new();
+        let bytes = value.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'%' if index + 2 < bytes.len() + 1 && index + 2 < bytes.len() + 1 => {
+                    let hex = bytes.get(index + 1..index + 3)?;
+                    let byte = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+                    out.push(byte);
+                    index += 3;
+                }
+                b'+' => {
+                    out.push(b' ');
+                    index += 1;
+                }
+                byte => {
+                    out.push(byte);
+                    index += 1;
+                }
+            }
+        }
+        String::from_utf8(out).ok()
+    }
+
     fn device_login() -> DeviceLogin {
         DeviceLogin {
             token: "dev-token".into(),
@@ -154,8 +179,9 @@ mod tests {
         let transport = Scripted::new(vec![
             // derive response
             r#"{"code":"200","successResponse":true,"data":{"cliAccessToken":"cli-1"}}"#,
-            // usage response: outer → gateway DataV2 → harness → per fields
-            r#"{"code":"200","successResponse":true,"data":{"DataV2":{"ret":["SUCCESS::"],"data":{"success":true,"data":{"per5HourPercentage":10,"per5HourResetTime":1795300000000,"per1WeekPercentage":42.5,"per1WeekResetTime":1795900000000}}}}}"#,
+            // usage response: cs-data form gateway layers with 0..1 ratios
+            // (live capture shape, 2026-11-22).
+            r#"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::ok"],"data":{"code":"SUCCESS","success":true,"data":{"per5HourPercentage":0.10,"per5HourResetTime":1795300000000,"per1WeekPercentage":0.425,"per1WeekResetTime":1795900000000}}},"success":true,"errorCode":""},"successResponse":true}"#,
         ]);
         let guard = transport.lock().unwrap();
         let locked = &*guard;
@@ -177,16 +203,30 @@ mod tests {
         drop(guard);
         assert_eq!(windows.len(), 2);
         assert_eq!(windows[0].key, "per5Hour");
-        assert_eq!(windows[0].remaining_percent, 90.0);
+        assert!((windows[0].remaining_percent - 90.0).abs() < 1e-9);
         assert_eq!(windows[1].key, "per1Week");
 
-        // Wire assertion: JSON body, stringified Data with cornerstoneParam.
+        // Wire assertion: cs-data form gateway (host + form + cornerstone).
         let sent = Scripted::last_request(&transport);
-        assert_eq!(sent.url, DEFAULT_GATEWAY_JSON);
-        let body: Value = serde_json::from_str(&sent.body.expect("usage posts a body")).unwrap();
-        assert_eq!(body["product"], envelope::GATEWAY_PRODUCT);
-        let data: Value = serde_json::from_str(body["params"]["Data"].as_str().unwrap()).unwrap();
-        assert_eq!(data["cornerstoneParam"]["consoleSite"], "QIANWENAI");
+        assert!(
+            sent.url
+                .starts_with("https://cs-data.qianwenai.com/cli/api.json?"),
+            "{}",
+            sent.url
+        );
+        let form = sent.body.expect("cs-data usage posts a form");
+        let decoded = form
+            .strip_prefix("params=")
+            .and_then(|encoded| encoded.split("&region=").next())
+            .and_then(percent_decode)
+            .expect("params is the first field");
+        let params: Value = serde_json::from_str(&decoded).unwrap();
+        assert_eq!(params["Api"], quota::USAGE_API);
+        assert_eq!(
+            params["Data"]["cornerstoneParam"]["consoleSite"],
+            "QIANWENAI"
+        );
+        assert_eq!(params["Data"]["cornerstoneParam"]["switchUserType"], 3);
         let auth = sent
             .headers
             .iter()
@@ -227,6 +267,51 @@ mod tests {
         assert_eq!(body["params"]["Api"], quota::EQUITY_API);
     }
 
+    /// 2026-11-22 live capture（负责人授权凭据实弹）：cs-data form 信封 +
+    /// 比率标度（per1MonthPercentage 0..1 → ×100）。端点接错（JSON 网关）
+    /// 或忘了 ×100 都会在此红——正是"授权完成却刷不出额度"事故的两个
+    /// 真实根因。
+    #[test]
+    fn qianwen_usage_reads_cs_data_ratios() {
+        let transport = Scripted::new(vec![
+            r#"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::ok"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per1MonthPercentage":0.14863470413333332,"per1MonthResetTime":1797782400000},"success":true}},"success":true,"errorCode":""},"httpStatusCode":"200","successResponse":true}"#,
+        ]);
+        let guard = transport.lock().unwrap();
+        let client = QuotaClient::new(
+            &*guard,
+            Platform::Qianwen {
+                gateway_json: String::new(),
+            },
+            "derived-token".into(),
+        );
+        let windows = client.query_usage().unwrap();
+        drop(guard);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].key, "per1Month");
+        assert_eq!(windows[0].window_hours, 720);
+        assert!((windows[0].used_percent - 14.863_470_413).abs() < 1e-6);
+        assert!((windows[0].remaining_percent - 85.136_529_586).abs() < 1e-4);
+        assert_eq!(windows[0].reset_at_ms, Some(1_797_782_400_000));
+
+        let sent = Scripted::last_request(&transport);
+        assert!(
+            sent.url
+                .starts_with("https://cs-data.qianwenai.com/cli/api.json?"),
+            "{}",
+            sent.url
+        );
+        let form = sent.body.expect("cs-data posts a form");
+        assert!(form.contains("switchUserType%22%3A3"), "{form}");
+        assert!(form.contains("QIANWENAI"));
+        let auth = sent
+            .headers
+            .iter()
+            .find(|(name, _)| name == "Authorization")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        assert_eq!(auth, "Bearer derived-token");
+    }
+
     #[test]
     fn bailian_usage_posts_form_envelope_and_parses_windows() {
         let transport = Scripted::new(vec![
@@ -260,7 +345,7 @@ mod tests {
     #[test]
     fn usage_errors_surface_as_business_errors() {
         let transport = Scripted::new(vec![
-            r#"{"code":"200","successResponse":true,"data":{"DataV2":{"ret":["Err::no quota"],"data":{}}}}"#,
+            r#"{"code":"200","data":{"DataV2":{"ret":["Err::no quota"],"data":{}},"success":true,"errorCode":""},"successResponse":true}"#,
         ]);
         let guard = transport.lock().unwrap();
         let client = QuotaClient::new(

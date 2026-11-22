@@ -3814,5 +3814,19 @@
   "authorization.open_failed": "无法打开授权页面，请重试。",
   "authorization.save_failed": "无法保存密钥，请检查两项输入后重试。",
   "authorization.load_failed": "无法读取主机上的授权，请刷新重试。",
-  "authorization.action_failed": "无法更新授权，请重试。"
+  "authorization.action_failed": "无法更新授权，请重试。",
+  "help.quota_qianwen_title": "千问 AI 平台 Token Plan 额度",
+  "help.quota_qianwen_summary": "授权一次千问控制台，左导航额度环即可显示 Token Plan 剩余额度。",
+  "help.quota_qianwen_step_1": "左导航额度环出现 ⚿ 密钥字符时点击（或打开 设置 → 授权 → 千问 AI 平台），点“授权”。",
+  "help.quota_qianwen_step_2": "浏览器会打开千问登录页，在那里确认授权后回到 CLAT。",
+  "help.quota_qianwen_step_3": "额度环随后显示剩余百分比，悬停可看窗口明细；凭据加密存在本地，可随时移除。",
+  "help.quota_qianwen_question": "授权会用到我的模型 API key 吗？",
+  "help.quota_qianwen_answer": "不会。授权走平台登录，凭据与模型 key 分开加密保存，只用于读取额度。",
+  "help.quota_tencent_title": "腾讯混元 Token Plan 额度",
+  "help.quota_tencent_summary": "给 CLAT 一把只读云密钥，左导航额度环即可显示混元 Token Plan 剩余积分。",
+  "help.quota_tencent_step_1": "在腾讯云控制台打开 访问管理，新建子账号。",
+  "help.quota_tencent_step_2": "将子账号的 SecretId 和 SecretKey 复制填入 设置 → 授权 → 腾讯混元。",
+  "help.quota_tencent_step_3": "再到子账号的权限策略中添加 QcloudHunyuanReadOnlyAccess 权限（混元只读），回来点刷新，额度环即显示剩余百分比。",
+  "help.quota_tencent_question": "为什么建议新建子账号而不用主账号密钥？",
+  "help.quota_tencent_answer": "主账号密钥权限过大；只读子账号密钥即使泄露也只能查看额度，安全得多。"
 }

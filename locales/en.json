@@ -3814,5 +3814,19 @@
   "authorization.open_failed": "Could not open the authorization page. Try again.",
   "authorization.save_failed": "Could not save the key. Check both fields and try again.",
   "authorization.load_failed": "Could not read authorizations from the Host. Try refreshing.",
-  "authorization.action_failed": "Could not update the authorization. Try again."
+  "authorization.action_failed": "Could not update the authorization. Try again.",
+  "help.quota_qianwen_title": "Qianwen AI Platform Token Plan quota",
+  "help.quota_qianwen_summary": "Authorize the Qianwen console once and the rail quota ring shows your Token Plan allowance.",
+  "help.quota_qianwen_step_1": "When the rail quota ring shows a key glyph (or via Settings → Authorizations → Qianwen AI Platform), click Authorize.",
+  "help.quota_qianwen_step_2": "The browser opens the Qianwen sign-in page; approve there and return to CLAT.",
+  "help.quota_qianwen_step_3": "The ring now shows the remaining percentage; hover for window details. Credentials are stored locally, encrypted, and can be removed anytime.",
+  "help.quota_qianwen_question": "Does the authorization touch my model API key?",
+  "help.quota_qianwen_answer": "No. Authorization goes through the platform sign-in; its credential is stored separately from model keys and is only used to read quota.",
+  "help.quota_tencent_title": "Tencent Hunyuan Token Plan quota",
+  "help.quota_tencent_summary": "Grant CLAT a read-only cloud key and the rail quota ring shows your Hy Token Plan credits.",
+  "help.quota_tencent_step_1": "In the Tencent Cloud console open Access Management and create a sub-account.",
+  "help.quota_tencent_step_2": "Copy the sub-account's SecretId and SecretKey into Settings → Authorizations → Tencent Hunyuan.",
+  "help.quota_tencent_step_3": "Then attach the QcloudHunyuanReadOnlyAccess policy to the sub-account (Hunyuan read-only) and press Refresh back in CLAT; the ring then shows the remaining percentage.",
+  "help.quota_tencent_question": "Why create a sub-account instead of using my main keys?",
+  "help.quota_tencent_answer": "Main-account keys carry full permissions; a read-only sub-account key can only view quota, which is far safer if it ever leaks."
 }

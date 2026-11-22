@@ -15,7 +15,8 @@
 use serde_json::{Value, json};
 
 use crate::envelope::{
-    self, bailian_gateway_request, unwrap_bailian_payload, unwrap_outer, unwrap_qianwen_payload,
+    self, bailian_gateway_request, qianwen_cs_data_request, unwrap_bailian_payload,
+    unwrap_cs_data_payload, unwrap_outer, unwrap_qianwen_payload,
 };
 use crate::error::QuotaError;
 use crate::transport::{HttpRequest, HttpTransport, Method};
@@ -83,18 +84,16 @@ impl<'a> QuotaClient<'a> {
         }
     }
 
-    /// Per-window usage percentages. Empty `Vec` means the account has no
-    /// metered windows (not an error).
+    /// Per-window usage. Empty `Vec` means the account has no metered
+    /// windows (not an error). Qianwen serves the usage family on the
+    /// **cs-data** form gateway and reports ratios 0..1 (×100 here); Bailian
+    /// reports percentages directly (same field names, different scale).
     pub fn query_usage(&self) -> Result<Vec<UsageWindow>, QuotaError> {
         match &self.platform {
-            Platform::Qianwen { gateway_json } => {
-                let body = envelope::qianwen_gateway_body(
-                    USAGE_API,
-                    &json!({}),
-                    gateway_domain(gateway_json),
-                );
-                let raw = self.post_json(gateway_json, &body)?;
-                parse_windows(unwrap_qianwen_payload(unwrap_outer(&raw)?)?)
+            Platform::Qianwen { .. } => {
+                let (url, form) = qianwen_cs_data_request(USAGE_API, &json!({}));
+                let raw = self.post_form(&url, &form)?;
+                parse_windows_scaled(unwrap_cs_data_payload(&raw)?, 100.0)
             }
             Platform::Bailian => {
                 let (url, form) = bailian_gateway_request(USAGE_API, &json!({}));
@@ -168,7 +167,13 @@ type HttpResponse = crate::transport::HttpResponse;
 
 /// Discover windows from the `per*` fields actually present, so metering
 /// changes don't break parsing (same discovery contract as bailian-cli).
+/// `scale` multiplies the provider's percentage fields (Qianwen cs-data
+/// reports 0..1 ratios; Bailian reports percentages — scale 1.0).
 pub fn parse_windows(record: &Value) -> Result<Vec<UsageWindow>, QuotaError> {
+    parse_windows_scaled(record, 1.0)
+}
+
+pub fn parse_windows_scaled(record: &Value, scale: f64) -> Result<Vec<UsageWindow>, QuotaError> {
     let Some(object) = record.as_object() else {
         return Err(QuotaError::shape("usage payload is not an object"));
     };
@@ -200,12 +205,15 @@ pub fn parse_windows(record: &Value) -> Result<Vec<UsageWindow>, QuotaError> {
     Ok(windows
         .into_iter()
         .filter_map(|(key, hours, _, percentage, reset_at_ms)| {
-            percentage.map(|used| UsageWindow {
-                key,
-                window_hours: hours,
-                used_percent: used,
-                remaining_percent: (100.0 - used).clamp(0.0, 100.0),
-                reset_at_ms,
+            percentage.map(|used| {
+                let used = (used * scale).clamp(0.0, 100.0);
+                UsageWindow {
+                    key,
+                    window_hours: hours,
+                    used_percent: used,
+                    remaining_percent: (100.0 - used).clamp(0.0, 100.0),
+                    reset_at_ms,
+                }
             })
         })
         .collect())
