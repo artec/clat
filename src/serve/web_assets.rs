@@ -25,6 +25,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/authorization-settings.js",
+        include_bytes!("../../web/authorization-settings.js"),
+        "application/javascript",
+    ),
+    (
         "/model-setup-form.js",
         include_bytes!("../../web/model-setup-form.js"),
         "application/javascript",
@@ -577,6 +582,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/composer-popovers.js",
     "/composer-permissions.js",
     "/rail-allowance.js",
+    "/authorization-settings.js",
     "/conversation-experience.js",
     "/user-message-reader.js",
     "/context-usage-reader.js",

@@ -537,6 +537,8 @@ const ICON_PATHS = {
   plus: ["M12 5v14M5 12h14"],
   "chevron-down": ["m6 9 6 6 6-6"],
   refresh: ["M20 11a8 8 0 1 0-2 7M20 4v7h-7"],
+  key: ['M14.5 14.5a5.5 5.5 0 1 0-5-3.2L3 17.8V21h3.2l1.6-1.6V17h2.4l2.1-2.9c.7.3 1.4.4 2.2.4Z','M16 7.5h.01'],
+  cloud: ['M7 18a4 4 0 0 1-.7-7.9 5.8 5.8 0 0 1 11-.8A4.4 4.4 0 0 1 18 18Z'],
   edit: ['M3.5 20.5 5.1 14.1 15 4.2a2.65 2.65 0 0 1 3.75 0l1.05 1.05a2.65 2.65 0 0 1 0 3.75L9.9 18.9Z', 'M13.2 6l4.8 4.8'],
   goal: ['M20.6 10a9 9 0 1 1-6.6-6.6M17 12a5 5 0 1 1-5-5M12 12l7-7m-3 0h3v3'],
   pause: ['M9 5v14m6-14v14'],
@@ -3658,6 +3660,9 @@ function selectSettingsCategory(category) {
   }
   settingsLayout?.select(category);
   if (category === 'acp') void acpSettingsRefresh?.();
+  if (category === 'authorizations' && pageIsOpen(dom['settings-dialog'])) {
+    dom['settings-dialog'].dispatchEvent(new Event('clat:authorizations-enter'));
+  }
   if (category === 'git') dom['settings-dialog'].dispatchEvent(new Event('clat:git-settings-enter'));
   if (category === 'projects') {
     renderWorkspaceDirectory(context.organization.rows());

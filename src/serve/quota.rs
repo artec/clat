@@ -1,6 +1,4 @@
-//! QUOTA-2：控制台凭据额度的授权面（薄投影）。
-//! 千问设备码登录与腾讯云 Key 输入都从额度图标点击发起；本模块只做
-//! 参数校验与转发，凭据与轮询逻辑全部在 application/console_quota.rs。
+//! Host RPC projection for console quota authorizations.
 use super::{protocol::RpcError, state::ServeShared};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,6 +21,38 @@ pub(crate) fn dispatch(
                 .map_err(|_| RpcError::internal("console login unavailable"))
         }
         "quota.console.state" => Ok(app.console_login_state()),
+        "quota.console.cancel" => {
+            if !params.is_empty() {
+                return Err(RpcError::bad_request(
+                    "console login cancellation accepts no fields",
+                ));
+            }
+            app.console_login_cancel();
+            Ok(json!({"cancelled": true}))
+        }
+        "quota.authorizations.get" => {
+            let refresh = match params.get("refresh") {
+                None => false,
+                Some(Value::Bool(refresh)) => *refresh,
+                _ => return Err(RpcError::bad_request("refresh must be a boolean")),
+            };
+            if params.keys().any(|field| field != "refresh") {
+                return Err(RpcError::bad_request("unknown authorization query field"));
+            }
+            app.console_authorizations(refresh).map_err(failure)
+        }
+        "quota.authorizations.remove" => {
+            let provider = params
+                .get("provider")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::bad_request("provider required"))?;
+            if params.len() != 1 {
+                return Err(RpcError::bad_request("unknown authorization removal field"));
+            }
+            app.console_authorization_remove(provider)
+                .map_err(failure)?;
+            Ok(json!({"removed": true}))
+        }
         "quota.tencent.key" => {
             let secret_id = params
                 .get("secret_id")

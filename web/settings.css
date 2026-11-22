@@ -36,6 +36,37 @@
 #settings-dialog .settings-row-copy strong, #settings-dialog strong.settings-row-copy { font-weight:500; }
 #settings-dialog .settings-row-copy small { margin-top:4px; color:var(--text-muted); font-size:12px; line-height:1.65; }
 #settings-dialog .settings-row-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+#settings-dialog .authorization-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:-12px 0 12px; }
+#settings-dialog .authorization-toolbar > button { margin-inline-start:auto; flex:none; }
+#settings-dialog .authorization-card + .authorization-card { margin-top:14px; }
+#settings-dialog .authorization-card-head,
+#settings-dialog .authorization-details { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px 20px; padding:15px 18px; }
+#settings-dialog .authorization-identity { display:flex; align-items:center; gap:12px; min-width:0; }
+#settings-dialog .authorization-identity h4 { margin:0; color:var(--text); font-size:var(--text-size-ui); font-weight:600; }
+#settings-dialog .authorization-identity p,
+#settings-dialog .authorization-message { margin:3px 0 0; color:var(--text-muted); font-size:12px; line-height:1.55; overflow-wrap:anywhere; }
+#settings-dialog .authorization-mark { display:grid; place-items:center; flex:none; width:36px; height:36px; border:1px solid var(--line); border-radius:9px; background:var(--surface); color:var(--signal); }
+#settings-dialog .authorization-mark svg { width:18px; height:18px; }
+#settings-dialog .authorization-state { display:inline-flex; align-items:center; gap:7px; color:var(--text-muted); font-size:12px; white-space:nowrap; }
+#settings-dialog .authorization-state::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+#settings-dialog .authorization-state:is([data-state=connected],[data-state=key_saved],[data-state=awaiting_approval]) { color:var(--signal); }
+#settings-dialog .authorization-details { border-top:1px solid var(--line); background:var(--surface); }
+#settings-dialog .authorization-details > .settings-row-actions { margin-inline-start:auto; }
+#settings-dialog .authorization-details button,
+#settings-dialog .authorization-toolbar button { display:inline-flex; align-items:center; gap:6px; }
+#settings-dialog :is(.authorization-details,.authorization-toolbar) button > svg { width:13px; height:13px; flex:none; }
+#settings-dialog .authorization-quota { display:grid; flex:1 1 240px; gap:8px; min-width:0; color:var(--text-muted); font-size:12px; }
+#settings-dialog .authorization-quota:empty { display:none; }
+#settings-dialog .authorization-quota p { margin:0; }
+#settings-dialog .authorization-quota-window { display:grid; grid-template-columns:auto minmax(48px,1fr) auto; align-items:center; gap:4px 10px; }
+#settings-dialog .authorization-quota-window strong { color:var(--text); font-weight:500; }
+#settings-dialog .authorization-quota-window progress { width:100%; height:5px; accent-color:var(--accent); }
+#settings-dialog .authorization-quota-window small { grid-column:1 / -1; }
+#settings-dialog .authorization-card > .authorization-message { margin:0; padding:0 18px 14px; background:var(--surface); }
+#settings-dialog .authorization-message[data-error=true] { color:var(--danger); }
+#settings-dialog .authorization-credentials { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); gap:12px; padding:15px 18px; border-top:1px solid var(--line); }
+#settings-dialog .authorization-credentials label { display:grid; gap:4px; min-width:0; color:var(--text-soft); font-size:12px; }
+#settings-dialog .authorization-credentials .settings-row-actions { grid-column:1 / -1; }
 #settings-dialog .settings-content :is(input:not([type=radio]):not([type=checkbox]),select,textarea) { min-width:0; min-height:32px; padding:6px 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); color:var(--text); font:400 var(--text-size-ui)/1.5 var(--font-ui); }
 #settings-dialog .settings-row > :is(input:not([type=checkbox]),select,.settings-language-control) { flex:none; width:min(250px,45%); }
 #settings-dialog .settings-row > input[type=number] { width:100px; text-align:end; }

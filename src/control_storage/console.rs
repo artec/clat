@@ -42,17 +42,20 @@ impl Default for Unit {
 }
 
 impl ControlStorage {
+    fn console_credentials(&self) -> Result<ConsoleCredentialFile, String> {
+        let Some(text) =
+            crate::private_fs::read_private_text(&self.dir, "console-credentials.json", LIMIT)?
+        else {
+            return Ok(ConsoleCredentialFile::default());
+        };
+        serde_json::from_str(&text).map_err(|_| "invalid console credential file".to_string())
+    }
+
     pub(crate) fn read_console_credential(
         &self,
         provider: &str,
     ) -> Result<Option<ConsoleCredentialRow>, String> {
-        let Some(text) =
-            crate::private_fs::read_private_text(&self.dir, "console-credentials.json", LIMIT)?
-        else {
-            return Ok(None);
-        };
-        let file: ConsoleCredentialFile = serde_json::from_str(&text)
-            .map_err(|_| "invalid console credential file".to_string())?;
+        let file = self.console_credentials()?;
         Ok(match provider {
             "qianwen" => file.qianwen,
             "tencent" => file.tencent,
@@ -65,32 +68,62 @@ impl ControlStorage {
         provider: &str,
         row: &ConsoleCredentialRow,
     ) -> Result<(), String> {
-        let mut file = match crate::private_fs::read_private_text(
-            &self.dir,
-            "console-credentials.json",
-            LIMIT,
-        ) {
-            Ok(Some(text)) => serde_json::from_str(&text)
-                .map_err(|_| "invalid console credential file".to_string())?,
-            Ok(None) => ConsoleCredentialFile::default(),
-            Err(_) => ConsoleCredentialFile::default(),
-        };
-        let row = ConsoleCredentialRow {
-            client_id: row.client_id.clone(),
-            blob: row.blob.clone(),
-            updated_at: Some(super::timestamp::now_iso8601()),
-        };
-        match provider {
-            "qianwen" => file.qianwen = Some(row),
-            "tencent" => file.tencent = Some(row),
+        self.update_console_credential(provider, |slot| {
+            *slot = Some(ConsoleCredentialRow {
+                client_id: row.client_id.clone(),
+                blob: row.blob.clone(),
+                updated_at: Some(super::timestamp::now_iso8601()),
+            });
+            true
+        })?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_console_credential(&self, provider: &str) -> Result<(), String> {
+        self.update_console_credential(provider, |slot| slot.take().is_some())?;
+        Ok(())
+    }
+
+    pub(crate) fn refresh_console_credential(
+        &self,
+        provider: &str,
+        previous: &ConsoleCredentialRow,
+        blob: String,
+    ) -> Result<bool, String> {
+        self.update_console_credential(provider, |slot| {
+            let Some(row) = slot.as_mut().filter(|row| *row == previous) else {
+                return false;
+            };
+            row.blob = blob;
+            true
+        })
+    }
+
+    fn update_console_credential(
+        &self,
+        provider: &str,
+        change: impl FnOnce(&mut Option<ConsoleCredentialRow>) -> bool,
+    ) -> Result<bool, String> {
+        let _lock = self
+            .console_updates
+            .lock()
+            .expect("console credential updates");
+        let mut file = self.console_credentials()?;
+        let slot = match provider {
+            "qianwen" => &mut file.qianwen,
+            "tencent" => &mut file.tencent,
             _ => return Err("unknown console credential provider".to_string()),
+        };
+        if !change(slot) {
+            return Ok(false);
         }
         let text = serde_json::to_string(&file)
             .map_err(|_| "invalid console credential file".to_string())?;
         if text.len() > LIMIT {
             return Err("console credential storage limit reached".to_string());
         }
-        crate::private_fs::write_text_atomic_in_dir(&self.dir, "console-credentials.json", &text)
+        crate::private_fs::write_text_atomic_in_dir(&self.dir, "console-credentials.json", &text)?;
+        Ok(true)
     }
 }
 
@@ -154,5 +187,67 @@ mod tests {
                 .is_none()
         );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn console_credential_removal_survives_reopen_and_fences_stale_refresh() {
+        let (root, _) = crate::test_support::roots("console-credential-removal");
+        std::fs::create_dir_all(&root).unwrap();
+        crate::control_storage::sentinel::initialize(&root).unwrap();
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        let old = ConsoleCredentialRow {
+            blob: "old".into(),
+            ..Default::default()
+        };
+        let other = ConsoleCredentialRow {
+            blob: "other-provider".into(),
+            ..Default::default()
+        };
+        storage.write_console_credential("qianwen", &old).unwrap();
+        storage.write_console_credential("tencent", &other).unwrap();
+        let previous = storage.read_console_credential("qianwen").unwrap().unwrap();
+        storage.remove_console_credential("qianwen").unwrap();
+        assert!(
+            !storage
+                .refresh_console_credential("qianwen", &previous, "stale".into())
+                .unwrap()
+        );
+        drop(storage);
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        assert!(
+            storage
+                .read_console_credential("qianwen")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .read_console_credential("tencent")
+                .unwrap()
+                .unwrap()
+                .blob,
+            other.blob
+        );
+        let replacement = ConsoleCredentialRow {
+            blob: "replacement".into(),
+            ..Default::default()
+        };
+        storage
+            .write_console_credential("qianwen", &replacement)
+            .unwrap();
+        assert!(
+            !storage
+                .refresh_console_credential("qianwen", &previous, "stale".into())
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .read_console_credential("qianwen")
+                .unwrap()
+                .unwrap()
+                .blob,
+            replacement.blob
+        );
+        crate::test_support::cleanup_tree(root.parent().unwrap());
     }
 }

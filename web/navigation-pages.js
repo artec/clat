@@ -66,7 +66,7 @@ function setupSettingsDirtyProtection() {
   settings.addEventListener('focusin',event=>{const section=event.target.closest('[data-settings-panel]');if(section&&!section.dataset.unsaved)capture(section);});
   settings.addEventListener('input',event=>{
     const section=event.target.closest('[data-settings-panel]');
-    if(!section||event.target.closest('.model-vendor')||['appearance','terminal','git'].includes(section.dataset.settingsPanel))return;
+    if(!section||event.target.closest('.model-vendor')||['appearance','terminal','git','authorizations'].includes(section.dataset.settingsPanel))return;
     if(section.dataset.settingsPanel==='permissions'&&!permissionEditTarget)permissionEditTarget={project:state.workbench?.project?.root,session:state.sessionId,generation:state.selectionGeneration};
     section.dataset.unsaved='true';
     let bar=section.querySelector('.settings-draft-bar');
@@ -82,6 +82,7 @@ function setupSettingsDirtyProtection() {
 
 let acknowledgeSettingsSave = () => {};
 function installNavigationPages() {
+  authorizationSettings = installAuthorizationSettings();
   const mcpSettings=installMcpSettings();
   const skillSettings=installSkillSettings();
   installComputerUseSettings();

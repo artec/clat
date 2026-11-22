@@ -87,6 +87,7 @@ pub(crate) struct ControlStorage {
     dir: Dir,
     state: Mutex<ControlState>,
     web_updates: Mutex<()>,
+    console_updates: Mutex<()>,
     #[cfg(any(target_os = "macos", windows, test))]
     pub(crate) ui_authority: crate::native_tools::ui::Authority,
     pub(crate) ui_activity: Arc<crate::native_tools::ui_activity::Activity>,
@@ -146,6 +147,7 @@ impl ControlStorage {
         let projcache_file = projcache::load(&storages_dir, &storages_root);
         let storage = Self {
             web_updates: Mutex::new(()),
+            console_updates: Mutex::new(()),
             #[cfg(any(target_os = "macos", windows, test))]
             ui_authority: Default::default(),
             ui_activity: Default::default(),

@@ -1,8 +1,7 @@
 //! QUOTA-2：控制台凭据额度（千问设备码 + 腾讯云 Key）。
 //!
-//! 负责人裁定（2026-11-22）：额度图标三态——有额度（悬停弹框/点击无操作）、
-//! 可授权未授权（悬停禁用/点击发起授权：千问弹浏览器、腾讯弹输入框）、
-//! 其余维持现状隐藏。模型 API key 永不参与（INV-QA1）。
+//! 额度图标展示当前模型的额度，也能打开授权中心。授权和缓存按存储根
+//! 共享，额度授权独立于模型 API key（INV-QA1）。
 //!
 //! 凭据 at-rest：嵌入式密钥 AES-256-GCM（裁定原文"防君子不防小人"的
 //! 遮羞布级——开源可审、可逆，但明文永不落盘、不能直接拷贝复用）。
@@ -15,11 +14,12 @@ use crate::providers::{AllowanceItem, ProviderAllowance};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokenplan_quota::{
-    DeviceLogin, Platform, PollStatus, QuotaClient, QuotaError, Session, Tc3Credential,
-    TokenHubClient, UreqTransport,
+    Platform, QuotaClient, Session, Tc3Credential, TokenHubClient, UreqTransport,
 };
+use uuid::Uuid;
 
 /// 遮羞布密钥（裁定：公开于源码；防拷贝、不防逆向）。
 const FIG_LEAF_KEY: &[u8; 32] = include_bytes!("console_quota.fig-leaf.key");
@@ -91,122 +91,52 @@ pub(super) fn console_provider(endpoint: &str) -> Option<&'static str> {
     }
 }
 
-/// 进程级 TTL 缓存（键 = 工作区根 + provider）。额度是账号级读数；键含
-/// 根目录使测试的多存储根互不串扰。
-static CACHE: Mutex<Option<HashMap<String, (Instant, ProviderAllowance)>>> = Mutex::new(None);
-/// 在途刷新键（防刷新线程风暴）；一次一个。
-static REFRESHING: Mutex<Option<HashMap<String, ()>>> = Mutex::new(None);
+mod device_flow;
 
-/// 进行中的设备码登录（键 = 工作区根 + provider）。
-struct DeviceFlow {
-    login: DeviceLogin,
-    status: String,
-    #[allow(dead_code)]
-    started: Instant,
+const PROVIDERS: [&str; 2] = ["qianwen", "tencent"];
+type CacheKey = (PathBuf, &'static str);
+
+#[derive(Default)]
+struct CachedAllowance {
+    last: Option<(Instant, ProviderAllowance)>,
+    request: Option<Uuid>,
 }
 
-static DEVICE_FLOWS: Mutex<Option<HashMap<String, DeviceFlow>>> = Mutex::new(None);
+static CACHE: Mutex<Option<HashMap<CacheKey, CachedAllowance>>> = Mutex::new(None);
 
 impl TrustedProjectApplication {
-    /// 控制台能力端点的额度（telemetry 在此覆盖 monitor 的 unsupported）。
-    /// 读路径零网络（INV-QA4）：新鲜缓存直取；陈旧值在场则后台刷新、
-    /// 立即回陈旧值；首次无值 → "loading" + 后台拉取（同 CoreMonitor 姿势，
-    /// 绝不阻塞 RPC 线程）。
+    /// The rail follows the active model. Settings can read both providers.
     pub fn console_allowance(&self) -> Option<ProviderAllowance> {
         let provider = console_provider(&self.model_state().ok()?.0.endpoint)?;
-        let key = format!("{}|{provider}", self.canonical_root.display());
-        {
-            let mut cache = CACHE.lock().expect("console quota cache");
-            let map = cache.get_or_insert_with(HashMap::new);
-            if let Some((at, value)) = map.get(&key) {
-                if at.elapsed() < cache_ttl(value) {
-                    return Some(value.clone());
-                }
-                // 陈旧但已有读数：后台刷新、立即回旧值。
-                if value.status != "loading" && spawn_refresh(self, &key, provider) {
-                    return Some(value.clone());
-                }
-                if value.status == "loading" {
-                    return Some(value.clone());
-                }
-            }
-            map.insert(key.clone(), (Instant::now(), loading()));
-            spawn_refresh(self, &key, provider);
-            Some(loading())
-        }
+        Some(read_allowance(self, provider, false).0)
     }
 
-    /// 发起千问设备码登录；后台线程轮询，完成后落凭据并广播刷新。
-    pub fn console_login_start(&self) -> Result<serde_json::Value, ApplicationError> {
-        let transport = UreqTransport::new(FETCH_TIMEOUT);
-        let row = self
-            .control
-            .read_console_credential("qianwen")
-            .map_err(ApplicationError::new)?;
-        let client_id = row
-            .and_then(|row| row.client_id.filter(|id| !id.trim().is_empty()))
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let login = tokenplan_quota::start_device_login(
-            &transport,
-            &client_id,
-            tokenplan_quota::DEFAULT_AUTH_BASE,
-        )
-        .map_err(|error| ApplicationError::new(console_error(error)))?;
-        let view = serde_json::json!({
-            "url": login.verification_url,
-            "expires_in": login.expires_in_secs,
-            "interval": login.interval_secs,
-        });
-        let flow_key = format!("{}|qianwen", self.canonical_root.display());
-        DEVICE_FLOWS
-            .lock()
-            .expect("console device flows")
-            .get_or_insert_with(HashMap::new)
-            .insert(
-                flow_key.clone(),
-                DeviceFlow {
-                    status: "pending".into(),
-                    started: Instant::now(),
-                    login,
-                },
-            );
-        // client_id 持久化（非机密；机器标识）——失败不阻断登录。
-        if let Some(existing) = self
-            .control
-            .read_console_credential("qianwen")
-            .ok()
-            .flatten()
-        {
-            let _ = self.control.write_console_credential(
-                "qianwen",
-                &ConsoleCredentialRow {
-                    client_id: Some(client_id.clone()),
-                    blob: existing.blob,
-                    updated_at: existing.updated_at,
-                },
-            );
-        }
-        let control = Arc::clone(&self.control);
-        let subscribers = Arc::clone(&self.subscribers);
-        let root = self.canonical_root.display().to_string();
-        std::thread::Builder::new()
-            .name("clat-console-device-login".into())
-            .spawn(move || device_login_worker(control, subscribers, root, flow_key, client_id))
-            .map_err(|error| ApplicationError::new(format!("spawn device login: {error}")))?;
-        Ok(view)
+    pub fn console_authorizations(
+        &self,
+        refresh: bool,
+    ) -> Result<serde_json::Value, ApplicationError> {
+        let providers = PROVIDERS
+            .into_iter()
+            .map(|provider| authorization_view(self, provider, refresh))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(serde_json::json!({
+            "providers": providers,
+            "qianwen_login": self.console_login_state()["status"],
+        }))
     }
 
-    /// 设备码登录状态（web 轮询用）。
-    pub fn console_login_state(&self) -> serde_json::Value {
-        let flow_key = format!("{}|qianwen", self.canonical_root.display());
-        let status = DEVICE_FLOWS
-            .lock()
-            .expect("console device flows")
-            .as_ref()
-            .and_then(|map| map.get(&flow_key))
-            .map(|flow| flow.status.clone())
-            .unwrap_or_else(|| "none".into());
-        serde_json::json!({"status": status})
+    pub fn console_authorization_remove(&self, provider: &str) -> Result<(), ApplicationError> {
+        match provider {
+            "qianwen" => device_flow::remove(&self.control)?,
+            "tencent" => remove_credential(&self.control, "tencent")?,
+            _ => return Err(ApplicationError::new("unknown console credential provider")),
+        }
+        self.emit_console_authorization_changed();
+        Ok(())
+    }
+
+    fn emit_console_authorization_changed(&self) {
+        notify_changed(&self.subscribers);
     }
 
     /// 腾讯云 Key 落盘（遮羞布加密）并失效缓存。
@@ -244,67 +174,122 @@ impl TrustedProjectApplication {
                 },
             )
             .map_err(ApplicationError::new)?;
-        invalidate_cache(&self.canonical_root);
+        invalidate_cache(&self.control, "tencent");
+        self.emit_console_authorization_changed();
         Ok(())
     }
 }
 
-fn loading() -> ProviderAllowance {
-    ProviderAllowance {
-        status: "loading".into(),
-        updated_at: None,
-        auth: None,
-        items: Vec::new(),
-    }
+fn authorization_view(
+    app: &TrustedProjectApplication,
+    provider: &'static str,
+    refresh: bool,
+) -> Result<serde_json::Value, ApplicationError> {
+    let row = app
+        .control
+        .read_console_credential(provider)
+        .map_err(ApplicationError::new)?;
+    let (allowance, refreshing) = if row.is_some() {
+        read_allowance(app, provider, refresh)
+    } else {
+        (needs_auth(provider), false)
+    };
+    Ok(serde_json::json!({
+        "provider": provider,
+        "configured": row.is_some(),
+        "configured_at": row.and_then(|row| row.updated_at),
+        "allowance": allowance,
+        "refreshing": refreshing,
+    }))
 }
 
-/// 去重地起一个一次性刷新线程；已在途则返回 false。
-fn spawn_refresh(app: &TrustedProjectApplication, key: &str, provider: &'static str) -> bool {
-    {
-        let mut refreshing = REFRESHING.lock().expect("console quota refreshing");
-        let map = refreshing.get_or_insert_with(HashMap::new);
-        if map.contains_key(key) {
-            return false;
-        }
-        map.insert(key.to_owned(), ());
+fn remove_credential(
+    control: &ControlStorage,
+    provider: &'static str,
+) -> Result<(), ApplicationError> {
+    control
+        .remove_console_credential(provider)
+        .map_err(ApplicationError::new)?;
+    invalidate_cache(control, provider);
+    Ok(())
+}
+
+fn notify_changed(subscribers: &Mutex<Vec<mpsc::Sender<ApplicationEvent>>>) {
+    subscribers
+        .lock()
+        .expect("subscribers")
+        .retain(|sender| sender.send(ApplicationEvent::MonitorUpdated(None)).is_ok());
+}
+
+fn cache_key(control: &ControlStorage, provider: &'static str) -> CacheKey {
+    (control.root_path().to_owned(), provider)
+}
+
+fn read_allowance(
+    app: &TrustedProjectApplication,
+    provider: &'static str,
+    force: bool,
+) -> (ProviderAllowance, bool) {
+    let key = cache_key(&app.control, provider);
+    let mut cache = CACHE.lock().expect("console quota cache");
+    let entry = cache
+        .get_or_insert_with(HashMap::new)
+        .entry(key.clone())
+        .or_default();
+    let fresh = entry
+        .last
+        .as_ref()
+        .is_some_and(|(at, value)| at.elapsed() < cache_ttl(value));
+    if entry.request.is_none() && (force || !fresh) {
+        entry.request = spawn_refresh(app, key);
     }
+    let value = entry
+        .last
+        .as_ref()
+        .map(|(_, value)| value.clone())
+        .unwrap_or_else(|| {
+            if entry.request.is_some() {
+                ProviderAllowance::state("loading")
+            } else {
+                ProviderAllowance::state("failed")
+            }
+        });
+    (value, entry.request.is_some())
+}
+
+fn spawn_refresh(app: &TrustedProjectApplication, key: CacheKey) -> Option<Uuid> {
+    let request = Uuid::new_v4();
     let control = Arc::clone(&app.control);
-    let root = app.canonical_root.display().to_string();
-    let key = key.to_owned();
-    let failure_key = key.clone();
+    let subscribers = Arc::clone(&app.subscribers);
     std::thread::Builder::new()
         .name("clat-console-quota".into())
         .spawn(move || {
-            let value = fetch_for(control, &root, provider);
-            CACHE
-                .lock()
-                .expect("console quota cache")
-                .get_or_insert_with(HashMap::new)
-                .insert(key.clone(), (Instant::now(), value));
-            REFRESHING
-                .lock()
-                .expect("console quota refreshing")
-                .as_mut()
-                .map(|map| map.remove(&key));
+            let value = fetch_for(&control, key.1);
+            if finish_refresh(&key, request, value) {
+                notify_changed(&subscribers);
+            }
         })
-        .map(|_| true)
-        .unwrap_or_else(|_| {
-            REFRESHING
-                .lock()
-                .expect("console quota refreshing")
-                .as_mut()
-                .map(|map| map.remove(&failure_key));
-            false
-        })
+        .ok()
+        .map(|_| request)
 }
 
-/// 后台刷新体：不依赖 TrustedProjectApplication 的临时借用（存储根 +
-/// provider 已完全决定读数；派生重试同 console_allowance_fetch 语义）。
-fn fetch_for(control: Arc<ControlStorage>, _root: &str, provider: &str) -> ProviderAllowance {
-    let mut value = fetch_once(control.as_ref(), provider);
+fn finish_refresh(key: &CacheKey, request: Uuid, value: ProviderAllowance) -> bool {
+    let mut cache = CACHE.lock().expect("console quota cache");
+    if let Some(entry) = cache.as_mut().and_then(|map| map.get_mut(key))
+        && entry.request == Some(request)
+    {
+        entry.last = Some((Instant::now(), value));
+        entry.request = None;
+        return true;
+    }
+    false
+}
+
+fn fetch_for(control: &ControlStorage, provider: &str) -> ProviderAllowance {
+    let mut value = fetch_once(control, provider);
     if provider == "qianwen"
         && value.status == "failed"
-        && let Some(retried) = rederive_retry(control.as_ref())
+        && let Some(retried) = rederive_retry(control)
     {
         value = retried;
     }
@@ -382,14 +367,12 @@ fn rederive_retry(control: &ControlStorage) -> Option<ProviderAllowance> {
     .ok()?;
     credential.derived = derived;
     let blob = seal(&serde_json::to_string(&credential).ok()?).ok()?;
-    let _ = control.write_console_credential(
-        "qianwen",
-        &ConsoleCredentialRow {
-            client_id: row.client_id,
-            blob,
-            updated_at: row.updated_at,
-        },
-    );
+    if !control
+        .refresh_console_credential("qianwen", &row, blob)
+        .ok()?
+    {
+        return None;
+    }
     Some(qianwen_allowance(control))
 }
 
@@ -459,10 +442,9 @@ fn cache_ttl(value: &ProviderAllowance) -> Duration {
     }
 }
 
-fn invalidate_cache(root: &std::path::Path) {
-    let prefix = format!("{}|", root.display());
+fn invalidate_cache(control: &ControlStorage, provider: &'static str) {
     if let Some(map) = CACHE.lock().expect("console quota cache").as_mut() {
-        map.retain(|key, _| !key.starts_with(&prefix))
+        map.remove(&cache_key(control, provider));
     }
 }
 
@@ -471,112 +453,6 @@ fn now_millis() -> Option<u64> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|elapsed| elapsed.as_millis() as u64)
-}
-
-fn console_error(error: QuotaError) -> String {
-    format!("console quota: {error}")
-}
-
-/// 设备码轮询线程：pending → complete/failed/expired；成功即加密落盘
-/// 并广播 MonitorUpdated（触发前端 workbench 刷新→环出现）。
-fn device_login_worker(
-    control: Arc<ControlStorage>,
-    subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
-    root: String,
-    flow_key: String,
-    client_id: String,
-) {
-    let transport = UreqTransport::new(FETCH_TIMEOUT);
-    let (login, auth_base) = {
-        let mut flows = DEVICE_FLOWS.lock().expect("console device flows");
-        let flow = flows
-            .as_mut()
-            .and_then(|map| map.get_mut(&flow_key))
-            .expect("device flow registered before spawn");
-        (flow.login.clone(), tokenplan_quota::DEFAULT_AUTH_BASE)
-    };
-    let deadline = Instant::now() + Duration::from_secs(login.expires_in_secs.max(5));
-    let interval = Duration::from_secs(login.interval_secs.clamp(1, 10));
-    let mut outcome = String::new();
-    let mut session: Option<Session> = None;
-    while Instant::now() < deadline {
-        std::thread::sleep(interval);
-        match tokenplan_quota::poll_device_login(&transport, &login, auth_base) {
-            Ok(PollStatus::Complete(complete)) => {
-                session = Some(complete);
-                outcome = "complete".into();
-                break;
-            }
-            Ok(PollStatus::SlowDown) => continue,
-            Ok(PollStatus::ExpiredToken) => {
-                outcome = "expired".into();
-                break;
-            }
-            Ok(PollStatus::AccessDenied) => {
-                outcome = "denied".into();
-                break;
-            }
-            Ok(PollStatus::AuthorizationPending) => continue,
-            Err(error) => {
-                outcome = format!("failed: {}", console_error(error));
-                break;
-            }
-        }
-    }
-    if outcome.is_empty() {
-        outcome = "expired".into();
-    }
-    if let Some(session) = session {
-        let derived = tokenplan_quota::derive_cli_access_token(
-            &transport,
-            &session,
-            tokenplan_quota::DEFAULT_GATEWAY_JSON,
-        );
-        match derived {
-            Ok(derived) => {
-                let credential = QianwenCredential {
-                    access_token: session.access_token,
-                    refresh_token: session.refresh_token,
-                    expires_at: session.expires_at,
-                    derived,
-                };
-                let stored = serde_json::to_string(&credential)
-                    .ok()
-                    .and_then(|plain| seal(&plain).ok())
-                    .and_then(|blob| {
-                        control
-                            .write_console_credential(
-                                "qianwen",
-                                &ConsoleCredentialRow {
-                                    client_id: Some(client_id),
-                                    blob,
-                                    updated_at: None,
-                                },
-                            )
-                            .ok()
-                    });
-                outcome = if stored.is_some() {
-                    invalidate_cache(std::path::Path::new(&root));
-                    "complete".into()
-                } else {
-                    "failed: credential storage failed".into()
-                };
-            }
-            Err(error) => outcome = format!("failed: {}", console_error(error)),
-        }
-    }
-    if let Some(flow) = DEVICE_FLOWS
-        .lock()
-        .expect("console device flows")
-        .as_mut()
-        .and_then(|map| map.get_mut(&flow_key))
-    {
-        flow.status = outcome;
-    }
-    subscribers
-        .lock()
-        .expect("subscribers")
-        .retain(|sender| sender.send(ApplicationEvent::MonitorUpdated(None)).is_ok());
 }
 
 #[cfg(test)]

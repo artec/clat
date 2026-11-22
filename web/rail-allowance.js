@@ -186,38 +186,8 @@ function createRailAllowance(){
   }
   // 裁定：有额度 → 悬停弹框、点击无响应；needs_auth → 悬停禁用、点击授权。
   const card=CLATRailPopover.attach(button,popup,{parent:document.body,enabled:()=>allowance?.kind!=='auth',onOpen(){render();clock??=setInterval(render,60000);},onClose(){clearInterval(clock);clock=null;}});
-  let authPending=false;
-  async function qianwenLoginFlow(){
-    if(authPending)return;authPending=true;
-    try{
-      const view=await rpc('quota.console.login',{});
-      if(view?.url)window.open(view.url,'_blank','noopener');
-      const deadline=Date.now()+(Number(view?.expires_in)||300)*1000+5000;
-      for(;;){
-        await new Promise(resolve=>setTimeout(resolve,2000));
-        const state=await rpc('quota.console.state',{});
-        if(state?.status!=='pending')break;
-        if(Date.now()>deadline)break;
-      }
-      await refreshWorkbench();
-    }catch(error){CLATI18n.bind(popup,'aria-label',()=>error.message);}
-    finally{authPending=false;}
-  }
-  async function tencentKeyFlow(){
-    if(authPending)return;authPending=true;
-    try{
-      const secretId=await CLATDialog.prompt(railText('tencent_secret_id'));
-      if(secretId===null)return;
-      const secretKey=await CLATDialog.prompt(railText('tencent_secret_key'));
-      if(secretKey===null)return;
-      await rpc('quota.tencent.key',{secret_id:secretId,secret_key:secretKey});
-      await refreshWorkbench();
-    }catch(error){CLATI18n.bind(popup,'aria-label',()=>error.message);}
-    finally{authPending=false;}
-  }
   button.onclick=()=>{
-    if(!allowance||allowance.kind!=='auth')return;
-    if(allowance.provider==='tencent')void tencentKeyFlow();else void qianwenLoginFlow();
+    if(allowance?.kind==='auth')authorizationSettings?.open(allowance.provider);
   };
   function update(value){
     const next=projectRailAllowance(value?.allowance);

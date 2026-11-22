@@ -194,6 +194,13 @@ click the ring with the key glyph, approve in the browser, and the per-window
 usage percentages appear (credentials are stored locally, encrypted at rest
 with an embedded key; the model API key is never involved). The Aliyun entry
 console quota is not wired yet.
+In Web and Desktop, open **Settings → Authorizations** to manage the Qianwen
+and Tencent quota credentials from any model or project. Start or repeat the
+Qianwen browser authorization, save or replace the Tencent Cloud API key, and
+choose **Refresh all** to refresh the plan quotas. Removing an authorization
+deletes the Host's saved quota credential. Model API keys are managed in
+**Models**. Authorizations are shared across projects on the same Host.
+
 The Qianwen AI Platform
 applies content inspection to the request text (`data_inspection_failed`);
 conversation content such as fetched web pages can trigger it, in which case
@@ -300,7 +307,7 @@ deliberately not covered; those vendors already have direct presets).
 Generate the key in the TokenHub console; the same key and URL serve both
 plans and deduct by model id.
 
-Console-credential quota (2026-11-22): the model key cannot read quota
+Console-credential quota (2026-11-22): the model key cannot read quota.
 TokenHub exposes it through the Tencent Cloud OpenAPI
 (`tokenhub.tencentcloudapi.com`, TC3-signed). The rail quota icon offers a
 key-glyph ring on this route: click it and paste a cloud **SecretId /
@@ -363,15 +370,8 @@ Interactive CLAT sessions (TUI, workbench) fit that intent. Headless `clat
 exec` in CI or scripted automation is a gray zone — you alone are responsible
 for complying with the plan's terms.
 
-**Plan balance**: Tencent does expose `DescribeTokenPlan`
-(`tokenhub.tencentcloudapi.com`), which reports the plan's remaining quota —
-but it is a Tencent Cloud API 3.0 control-plane call that requires an
-account-level TC3 signature (SecretId/SecretKey) plus the plan's TeamId. The
-plan's Bearer API key cannot call it (probe-pinned
-`AuthFailure.InvalidAuthorization`), and the `/plan/v3` data plane has no
-balance route. CLAT therefore shows no quota segment for this vendor rather
-than fabricating one; the status surface keeps the usage-derived cache and
-context facts. Check remaining points in the
+Use **Settings → Authorizations** to manage the Tencent Cloud key and refresh
+the personal plan quota. You can also check it in the
 [TokenHub console](https://console.cloud.tencent.com/tokenhub/tokenplan).
 Concurrency limits scale with the plan tier and may tighten at peak hours.
 
