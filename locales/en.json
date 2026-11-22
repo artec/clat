@@ -3773,5 +3773,9 @@
   "acp.embedded_binary": "Embedded binary resource",
   "acp.agent_image": "Image from this session",
   "acp.agent_audio": "Audio from this session",
-  "acp.question_from": "{agent} asks\n{detail}"
+  "acp.question_from": "{agent} asks\n{detail}",
+  "rail.auth_needed": "Sign in to read the quota",
+  "rail.auth_needed_key": "Enter a key to read the quota",
+  "rail.tencent_secret_id": "Tencent Cloud SecretId",
+  "rail.tencent_secret_key": "Tencent Cloud SecretKey"
 }

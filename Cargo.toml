@@ -17,6 +17,7 @@ default-members = [".", "crates/core"]
 members = [
     "desktop",
     "crates/core",
+    "crates/tokenplan-quota",
     "sdk/wit-proposals/net-runtime",
     "plugins/digest",
     "plugins/greeter",

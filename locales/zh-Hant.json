@@ -3773,5 +3773,9 @@
   "acp.embedded_binary": "內嵌的二進位資源",
   "acp.agent_image": "此對話中的圖片",
   "acp.agent_audio": "此對話中的音訊",
-  "acp.question_from": "{agent} 提問\n{detail}"
+  "acp.question_from": "{agent} 提問\n{detail}",
+  "rail.auth_needed": "登入後可查看額度",
+  "rail.auth_needed_key": "填入金鑰後可查看額度",
+  "rail.tencent_secret_id": "騰訊雲 SecretId",
+  "rail.tencent_secret_key": "騰訊雲 SecretKey"
 }

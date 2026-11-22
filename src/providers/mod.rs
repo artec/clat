@@ -8,8 +8,7 @@ pub(crate) mod outbound_guard;
 
 mod allowance;
 mod capacity;
-#[cfg(test)]
-pub(crate) use allowance::AllowanceItem;
+pub use allowance::AllowanceItem;
 pub use allowance::ProviderAllowance;
 pub(crate) use allowance::fetch_provider_allowance;
 

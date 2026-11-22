@@ -188,7 +188,13 @@ entry from the remembered key slot: the `sk-sp-` prefix identifies the
 Qianwen AI Platform key and re-pairs the Qianwen endpoint; any other key
 shape falls back to the Aliyun default. The settings radio mirrors this
 restored entry (`model.settings.get` reports it as `qwen_entry`), so the
-selected option matches the endpoint actually in effect. The Qianwen AI Platform
+selected option matches the endpoint actually in effect. Console-credential quota (2026-11-22): on the Qianwen entry the
+quota icon in the left rail can sign in through the platform's device flow —
+click the ring with the key glyph, approve in the browser, and the per-window
+usage percentages appear (credentials are stored locally, encrypted at rest
+with an embedded key; the model API key is never involved). The Aliyun entry
+console quota is not wired yet.
+The Qianwen AI Platform
 applies content inspection to the request text (`data_inspection_failed`);
 conversation content such as fetched web pages can trigger it, in which case
 a fresh session or the Aliyun entry resolves it. They send top-level
@@ -293,6 +299,15 @@ separate "general" Token Plan aggregating third-party open models is
 deliberately not covered; those vendors already have direct presets).
 Generate the key in the TokenHub console; the same key and URL serve both
 plans and deduct by model id.
+
+Console-credential quota (2026-11-22): the model key cannot read quota
+TokenHub exposes it through the Tencent Cloud OpenAPI
+(`tokenhub.tencentcloudapi.com`, TC3-signed). The rail quota icon offers a
+key-glyph ring on this route: click it and paste a cloud **SecretId /
+SecretKey** pair (create one in the Tencent Cloud console, ideally on a
+read-only sub-account). The remaining-credits percentage is computed from
+the provider-reported total/used; the pair is stored locally, encrypted at
+rest with an embedded key.
 
 Hy note (2026-11-07): the GA release upgraded the preset in place from
 `hy4-preview` to `hy4`; the endpoint spelling follows the official plan

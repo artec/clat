@@ -8,6 +8,7 @@
 
 mod acp;
 mod builtin_plugins;
+pub(crate) mod console;
 pub(crate) use builtin_plugins::Snapshot as BuiltinConfigSnapshot;
 pub(crate) mod im;
 pub(crate) mod json_file;

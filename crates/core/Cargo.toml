@@ -27,7 +27,12 @@ clat-wasm-net = { path = "../../sdk/wit-proposals/net-runtime" }
 # protocol adapter; decrypted bytes immediately enter the existing attachment
 # admission path and are never exposed as a host path.
 aes = "0.8.4"
+# QUOTA-2 控制台凭据 at-rest 加密（负责人裁定"遮羞布"级：嵌入式密钥
+# AES-256-GCM，防拷贝不防逆向；标准结构，非自造密码学）。
+aes-gcm = "0.10"
 base64 = "0.22.1"
+# 独立 Token Plan 额度模块（千问设备码流 + 腾讯 TC3；零内部依赖可开源）。
+tokenplan-quota = { path = "../tokenplan-quota" }
 dirs = "=7.0.0"
 # Capability-relative filesystem operations keep project writes bound to an
 # opened directory handle across symlink and directory-replacement races.

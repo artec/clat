@@ -105,6 +105,12 @@ function railResetCountdown(minutes,t){
 }
 const railText=(key,args)=>CLATI18n.t('rail.'+key,args);
 function projectRailAllowance(allowance){
+  // QUOTA-2（2026-11-22 负责人裁定）：可授权未授权 → ring + ⚿ 态
+  //（悬停禁用、点击发起授权）；provider 决定点击动作（浏览器设备码/密钥输入）。
+  if(allowance?.status==='needs_auth'){
+    const provider=allowance.auth==='tencent'?'tencent':'qianwen';
+    return {kind:'auth',provider,updated:allowance.updated_at};
+  }
   if(allowance?.status!=='available')return null;
   const items=(allowance.items||[]).filter(item=>item.kind==='quota'&&item.unit==='%'&&String(item.value).trim()!==''&&Number.isFinite(Number(item.value))&&Number(item.value)>=0&&Number(item.value)<=100);
   if(items.length){
@@ -124,6 +130,15 @@ function projectRailAllowance(allowance){
   return {kind:'money',items:money,updated:allowance.updated_at};
 }
 function paintRailAllowance(button,ring,mark,balance,allowance){
+  if(allowance.kind==='auth'){
+    ring.element.hidden=false;mark.hidden=true;
+    delete button.dataset.low;delete button.dataset.critical;delete button.dataset.empty;
+    ring.set(0);
+    // 数字位放 ⚿（裁定：统一百分比圆圈，不发明新图标）。
+    ring.element.children[1].textContent='⚿';
+    CLATI18n.attribute(button,'aria-label',()=>railText(allowance.provider==='tencent'?'auth_needed_key':'auth_needed'));
+    return;
+  }
   const wallet=allowance.kind==='money';
   ring.element.hidden=wallet;mark.hidden=!wallet;
   delete button.dataset.low;delete button.dataset.critical;delete button.dataset.empty;
@@ -169,7 +184,41 @@ function createRailAllowance(){
     if(allowance.updated)CLATRailPopover.fact(popup,text('updated'),new Date(allowance.updated).toLocaleString(CLATI18n.locale));
     CLATI18n.attribute(popup,'aria-label',()=>text(wallet?'wallet':'allowance'));
   }
-  const card=CLATRailPopover.attach(button,popup,{parent:document.body,onOpen(){render();clock??=setInterval(render,60000);},onClose(){clearInterval(clock);clock=null;}});button.onclick=card.toggle;
+  // 裁定：有额度 → 悬停弹框、点击无响应；needs_auth → 悬停禁用、点击授权。
+  const card=CLATRailPopover.attach(button,popup,{parent:document.body,enabled:()=>allowance?.kind!=='auth',onOpen(){render();clock??=setInterval(render,60000);},onClose(){clearInterval(clock);clock=null;}});
+  let authPending=false;
+  async function qianwenLoginFlow(){
+    if(authPending)return;authPending=true;
+    try{
+      const view=await rpc('quota.console.login',{});
+      if(view?.url)window.open(view.url,'_blank','noopener');
+      const deadline=Date.now()+(Number(view?.expires_in)||300)*1000+5000;
+      for(;;){
+        await new Promise(resolve=>setTimeout(resolve,2000));
+        const state=await rpc('quota.console.state',{});
+        if(state?.status!=='pending')break;
+        if(Date.now()>deadline)break;
+      }
+      await refreshWorkbench();
+    }catch(error){CLATI18n.bind(popup,'aria-label',()=>error.message);}
+    finally{authPending=false;}
+  }
+  async function tencentKeyFlow(){
+    if(authPending)return;authPending=true;
+    try{
+      const secretId=await CLATDialog.prompt(railText('tencent_secret_id'));
+      if(secretId===null)return;
+      const secretKey=await CLATDialog.prompt(railText('tencent_secret_key'));
+      if(secretKey===null)return;
+      await rpc('quota.tencent.key',{secret_id:secretId,secret_key:secretKey});
+      await refreshWorkbench();
+    }catch(error){CLATI18n.bind(popup,'aria-label',()=>error.message);}
+    finally{authPending=false;}
+  }
+  button.onclick=()=>{
+    if(!allowance||allowance.kind!=='auth')return;
+    if(allowance.provider==='tencent')void tencentKeyFlow();else void qianwenLoginFlow();
+  };
   function update(value){
     const next=projectRailAllowance(value?.allowance);
     // A failed refresh cannot keep an old reading looking current.

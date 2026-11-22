@@ -84,6 +84,7 @@ pub use changes::{WorkspaceChanges, WorkspaceDiff, WorkspaceReview};
 pub use discovery::{InteractionCatalog, InteractionCommand};
 pub use files::FileBrowser;
 pub use tasks::TaskReader;
+mod console_quota;
 #[cfg(test)]
 mod context_tests;
 mod dto;

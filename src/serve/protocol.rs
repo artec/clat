@@ -164,6 +164,9 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "session.compact",
     "session.rewind.check",
     "session.rewind.send",
+    "quota.console.login",
+    "quota.console.state",
+    "quota.tencent.key",
     "model.overrides.set",
     "model.settings.get",
     "model.setup.get",
@@ -484,6 +487,9 @@ pub(crate) fn dispatch(
     }
     if method.starts_with("model.") && method != "model.overrides.set" {
         return super::models::dispatch(method, params, shared);
+    }
+    if method.starts_with("quota.") {
+        return super::quota::dispatch(method, params, shared);
     }
     // iLink binding/outbound serialization is root-scoped, not project-scoped.
     // Every project window consumes the original host-owned control lane.

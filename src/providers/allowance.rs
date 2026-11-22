@@ -7,6 +7,10 @@ pub struct ProviderAllowance {
     pub status: String,
     pub updated_at: Option<u64>,
     pub items: Vec<AllowanceItem>,
+    /// QUOTA-2：`needs_auth` 时标识授权通道（"qianwen"/"tencent"）——
+    /// 前端据此决定点击动作（浏览器设备码 / 密钥输入框）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct AllowanceItem {
@@ -354,6 +358,7 @@ fn parse_allowance(kind: &str, body: &Value) -> Option<ProviderAllowance> {
         status: "available".into(),
         items,
         updated_at: None,
+        auth: None,
     })
 }
 #[cfg(test)]

@@ -5,6 +5,18 @@ use super::*;
 #[path = "capacity_surface_tests.rs"]
 mod capacity_surface_tests;
 impl TrustedProjectApplication {
+    fn console_allowance_or_unsupported(
+        app: &TrustedProjectApplication,
+    ) -> crate::providers::ProviderAllowance {
+        app.console_allowance()
+            .unwrap_or_else(|| crate::providers::ProviderAllowance {
+                status: "unsupported".into(),
+                updated_at: None,
+                items: Vec::new(),
+                auth: None,
+            })
+    }
+
     pub fn conversation_stats(&self) -> Result<Value, ApplicationError> {
         let snapshot = self.workbench_snapshot()?;
         let (config, credentials) = self.model_state()?;
@@ -40,7 +52,9 @@ impl TrustedProjectApplication {
                 "capacity":config.max_context_tokens,"output_reserve":value.output_reserve_estimate,"estimated":true})),
             "last_request":snapshot.last_request_usage.as_ref().map(crate::wire::usage_to_json),
             "route":snapshot.route_usage.as_ref().map(crate::wire::usage_to_json),
-            "allowance":self.monitor.as_ref().map(|monitor| monitor.allowance(&config,&credentials)),
+            "allowance":super::console_quota::console_provider(&config.endpoint)
+                .map(|_| Self::console_allowance_or_unsupported(self))
+                .or_else(|| self.monitor.as_ref().map(|monitor| monitor.allowance(&config,&credentials))),
         }))
     }
 }

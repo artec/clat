@@ -38,6 +38,7 @@ mod page_queries;
 mod plugins;
 pub(crate) mod protocol;
 mod questions;
+mod quota;
 mod remote;
 mod remote_prompt;
 mod remote_steering;

@@ -150,3 +150,5 @@ web/model-setup.css text eol=lf
 
 # Harness2 pinned upstream compatibility patch must retain LF.
 scripts/harness2/upstream-clat.patch text eol=lf
+# QUOTA-2 遮羞布密钥（include_bytes! 逐字节消费；Windows autocrlf 会改行尾使其失效）
+src/application/console_quota.fig-leaf.key -text

@@ -3773,5 +3773,9 @@
   "acp.embedded_binary": "嵌入的二进制资源",
   "acp.agent_image": "此会话中的图片",
   "acp.agent_audio": "此会话中的音频",
-  "acp.question_from": "{agent} 提问\n{detail}"
+  "acp.question_from": "{agent} 提问\n{detail}",
+  "rail.auth_needed": "登录后可查看额度",
+  "rail.auth_needed_key": "填入密钥后可查看额度",
+  "rail.tencent_secret_id": "腾讯云 SecretId",
+  "rail.tencent_secret_key": "腾讯云 SecretKey"
 }

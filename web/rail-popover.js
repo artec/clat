@@ -20,7 +20,7 @@
       @media(prefers-reduced-motion:reduce){.rail-ring[data-spinning=true] svg{animation:none}}
     `;document.head.append(style);
   }
-  function attach(button,popup,{parent=document.body,onOpen=()=>{},onClose=()=>{}}={}){
+  function attach(button,popup,{parent=document.body,onOpen=()=>{},onClose=()=>{},enabled=()=>true}={}){
     installStyle();popup.classList.add('rail-popover');popup.hidden=true;popup.tabIndex=-1;popup.setAttribute('role','dialog');parent.append(popup);
     button.setAttribute('aria-haspopup','dialog');button.setAttribute('aria-expanded','false');
     if(popup.id)button.setAttribute('aria-controls',popup.id);
@@ -34,7 +34,7 @@
     };
     const clear=()=>{clearTimeout(timer);timer=null;};
     const hide=(focus=false)=>{clear();pinned=false;dismissed=true;if(!popup.hidden){popup.hidden=true;onClose();}button.setAttribute('aria-expanded','false');if(focus&&button.isConnected)button.focus({preventScroll:true});};
-    const show=(pin=false,focus=pin)=>{clear();if(button.hidden||!button.isConnected||!button.getClientRects().length)return;dismissed=false;pinned ||= pin;onOpen();popup.hidden=false;button.setAttribute('aria-expanded','true');position();if(focus)popup.focus({preventScroll:true});};
+    const show=(pin=false,focus=pin)=>{clear();if(enabled()===false)return;if(button.hidden||!button.isConnected||!button.getClientRects().length)return;dismissed=false;pinned ||= pin;onOpen();popup.hidden=false;button.setAttribute('aria-expanded','true');position();if(focus)popup.focus({preventScroll:true});};
     const leave=()=>{clear();if(!pinned)timer=setTimeout(()=>{if(!popup.matches(':hover')&&!button.matches(':hover')&&!popup.contains(document.activeElement)&&document.activeElement!==button)hide();},180);};
     button.addEventListener('pointerenter',()=>{dismissed=false;clear();timer=setTimeout(()=>show(false,false),180);});button.addEventListener('pointerleave',leave);
     popup.addEventListener('pointerenter',clear);popup.addEventListener('pointerleave',leave);

@@ -7009,6 +7009,76 @@ fn qwen_entry_view_follows_endpoint_then_remembered_key_platform() {
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
+/// QUOTA-2 判别：控制台能力端点（千问入口/腾讯 tokenhub）的 telemetry
+/// allowance 覆盖 monitor 的 unsupported——无凭据时诚实标 needs_auth 并
+/// 携带 auth 通道（前端据此决定 ⚿ 点击动作）。hermetic：本测试只走到
+/// 存储读取层，绝不发起网络。
+#[test]
+fn console_allowance_marks_needs_auth_for_console_capable_routes() {
+    let (storage_root, project_root) = roots("console-quota-needs-auth");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+
+    // 千问入口：needs_auth + auth=qianwen（后台线程翻出存储读数）。
+    application
+        .select_model_preset("qwen4-max", Some("sp-key".into()), Some("qianwen"))
+        .unwrap();
+    let qianwen = poll_allowance_status(&application, "needs_auth");
+    assert_eq!(
+        qianwen["auth"], "qianwen",
+        "auth channel must name the provider"
+    );
+
+    // 腾讯 tokenhub：needs_auth + auth=tencent。
+    application
+        .select_model_preset("hy4", Some("sk-tp-probe".into()), None)
+        .unwrap();
+    let tencent = poll_allowance_status(&application, "needs_auth");
+    assert_eq!(tencent["auth"], "tencent");
+
+    // 腾讯 Key 落盘：blob 加密（无明文）、缓存失效后 needs_auth 语义
+    // 仍由下一次读取决定（本测试不再触发读取 → 零网络）。
+    application
+        .console_set_tencent_key("AKIDtest0123456789", "Gu5testsecret")
+        .unwrap();
+    let text = std::fs::read_to_string(storage_root.join("console-credentials.json")).unwrap();
+    assert!(
+        !text.contains("AKIDtest0123456789"),
+        "secret id must not be plaintext"
+    );
+    assert!(
+        !text.contains("Gu5testsecret"),
+        "secret key must not be plaintext"
+    );
+    assert!(
+        text.contains("tencent"),
+        "row is filed under the tencent provider"
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// 轮询后台刷新线程翻出的 allowance（loading → 终态；2s 上限）。
+fn poll_allowance_status(
+    application: &crate::TrustedProjectApplication,
+    expected: &str,
+) -> serde_json::Value {
+    for _ in 0..40 {
+        if let Ok(stats) = application.conversation_stats() {
+            let status = stats["allowance"]["status"].as_str().unwrap_or_default();
+            if status == expected {
+                return stats["allowance"].clone();
+            }
+            assert!(
+                status == "loading" || status == expected,
+                "unexpected intermediate allowance status: {status}"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("allowance never reached {expected}");
+}
+
 /// 事故回归（2026-11-20 真机 401）：一套 Key 二选一——key 框新 key 随
 /// model.preset.entry 一步提交（旧平台 key 打新端点必然 401）；不带
 /// key 的切换沿用现值（既有非破坏语义不变）；非法 key 显式拒绝。

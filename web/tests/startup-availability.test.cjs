@@ -9,6 +9,7 @@ function fixture(){
   closeQuestionCards(){},conversationRounds:{stop(){}},runActivity:{hide(){}},context:{changed(){}},
   updateRunState(){},updateRunDetail(){},setTimeout(){},
   clearRoundFollowups(){},invalidateSuggestion(){},syncSuggestionControl(){},hydrateComposerDraft(){},stageReadyComposerImages(){},
+  resetRewindAction(){},
  };
  vm.createContext(scope);
  vm.runInContext(fs.readFileSync('web/workflow-details.js','utf8').replace(/\r\n/g,'\n'),scope);

@@ -300,13 +300,7 @@ fn publish(app: &tauri::AppHandle, client: &HostClient, notice: HostNotification
     }
 }
 
-fn show_banner(
-    app: &tauri::AppHandle,
-    id: i32,
-    title: &str,
-    body: String,
-    silent: bool,
-) -> bool {
+fn show_banner(app: &tauri::AppHandle, id: i32, title: &str, body: String, silent: bool) -> bool {
     if !ensure_notification_permission(app) {
         return false;
     }

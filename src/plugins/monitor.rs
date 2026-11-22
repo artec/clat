@@ -206,6 +206,7 @@ mod tests {
             ProviderAllowance {
                 status: "available".into(),
                 updated_at: Some(1),
+                auth: None,
                 items: vec![crate::providers::AllowanceItem {
                     kind: "quota".into(),
                     value: "87".into(),

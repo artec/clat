@@ -510,6 +510,7 @@ mod tests {
             active_session_id: None,
             run_active: false,
             compacting: false,
+            background_activities: Vec::new(),
         }];
         assert!(apply_project_titles(&mut rows, &directory));
         assert_eq!(rows[0].project_title, "New alias");

@@ -9,6 +9,7 @@ function element(tag, _className, text) {
     tag, children: text === undefined ? [] : [typeof text === 'function' ? text() : text],
     classList: { add() {}, toggle() {} },
     setAttribute() {},
+    dispatchEvent() {},
     closest() { return null; },
     replaceWith(next) { this.replacement = next; },
     isConnected: true,
@@ -25,6 +26,7 @@ function visibleText(node) {
 
 const scope = vm.createContext({
   el: element,
+  Event: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
   document: { createDocumentFragment: () => element('fragment'), createTextNode: text => text },
   ResizeObserver: class {},
   queueMicrotask() {},
