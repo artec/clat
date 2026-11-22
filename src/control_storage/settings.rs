@@ -88,6 +88,12 @@ impl KimiTier {
 pub(crate) struct UtilitySettingsRow {
     #[serde(rename = "namingEnabled")]
     pub naming_enabled: bool,
+    #[serde(
+        rename = "summaryEnabled",
+        default = "session_summary_default",
+        skip_serializing_if = "is_true"
+    )]
+    pub summary_enabled: bool,
     #[serde(rename = "suggestionsEnabled")]
     pub suggestions_enabled: bool,
     #[serde(default = "automatic_followups_default")]
@@ -102,10 +108,19 @@ impl UtilitySettingsRow {
     }
 }
 
+fn session_summary_default() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 impl Default for UtilitySettingsRow {
     fn default() -> Self {
         Self {
             naming_enabled: true,
+            summary_enabled: session_summary_default(),
             suggestions_enabled: false,
             automatic_followups: true,
             profile: None,

@@ -128,6 +128,7 @@ impl App {
                 self.flash_status(message);
             }
             // N2：自动命名/改名落盘成功——右标题即时更新，无需重拉快照。
+            ApplicationEvent::ConversationSummaryUpdated { .. } => {}
             ApplicationEvent::TitleUpdated { title } => {
                 self.session_title = Some(title);
             }

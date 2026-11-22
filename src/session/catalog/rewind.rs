@@ -8,9 +8,12 @@ pub(crate) fn last_aborted_text_turn(events: &[SessionEvent], message_seq: u64) 
         event_spec(&event.event_type).is_some_and(|spec| spec.replay == ReplayKind::TurnStart)
     })?;
     let tail = events.get(start + 1..)?;
-    let end = tail
-        .iter()
-        .rposition(|event| event.event_type != "session/end-seed")?;
+    let end = tail.iter().rposition(|event| {
+        !matches!(
+            event.event_type.as_str(),
+            "session/end-seed" | super::conversation_summary::EVENT
+        )
+    })?;
     let (end, body) = tail.get(..=end)?.split_last()?;
     let (user, rest) = body.split_first()?;
     let turn = events[start].data.get("turn")?.as_u64()?;
@@ -36,7 +39,8 @@ pub(crate) fn last_aborted_text_turn(events: &[SessionEvent], message_seq: u64) 
 fn is_rewindable_observation(event: &SessionEvent) -> bool {
     matches!(
         event.event_type.as_str(),
-        "assistant/attempt"
+        super::conversation_summary::EVENT
+            | "assistant/attempt"
             | "assistant/chunk"
             | "assistant/message"
             | "request/context"

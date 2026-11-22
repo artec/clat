@@ -74,8 +74,12 @@ function compactPickerRows(choices) {
 }
 
 function compactPickerThinking(current) {
-  renderThinkingSlider(current);
   const slider = document.getElementById('model-thinking');
+  const panel = document.querySelector('.model-thinking-panel');
+  // Host notifications can arrive while a level is still being dragged or saved.
+  // Keep the local preview steady; reconcile against the latest Host view on settle.
+  if (slider.hasAttribute('data-saving') || panel.dataset.preview === 'true') return;
+  renderThinkingSlider(current);
   const ticks = document.getElementById('model-thinking-ticks');
   const levels = current.thinking_levels || [];
   const endpoints = document.getElementById('model-thinking-ends');
@@ -86,7 +90,6 @@ function compactPickerThinking(current) {
     CLATI18n.bind(document.getElementById('model-thinking-max'), 'textContent',
       () => thinkingLevelLabel(levels[levels.length - 1]));
   }
-  const panel = document.querySelector('.model-thinking-panel');
   const paint = () => {
     const index = Number(slider.value);
     for (const [i, tick] of [...ticks.children].entries()) {
@@ -172,6 +175,14 @@ function compactPickerRender(view) {
 
 // The original popover, RPC and slider save handlers remain authoritative.
 renderModelPicker = compactPickerRender;
+// The save handler removes data-saving only after its final Host refresh.
+// Reconcile once then, including rollback after a rejected override.
+const compactThinkingInput = document.getElementById('model-thinking');
+new MutationObserver(() => {
+  if (!compactThinkingInput.hasAttribute('data-saving') && compactPickerView) {
+    compactPickerThinking(compactPickerView.current);
+  }
+}).observe(compactThinkingInput, { attributes: true, attributeFilter: ['data-saving'] });
 dom['model-picker-manage'].replaceChildren(svgIcon('settings'));
 const compactPickerTrigger = dom['model-picker-trigger'];
 new MutationObserver(() => {

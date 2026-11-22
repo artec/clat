@@ -178,7 +178,9 @@ impl TrustedProjectApplication {
                 ""
             }
         );
-        request.message = crate::message::PendingMessage::text(prompt.clone());
+        let mut message = crate::message::PendingMessage::text(prompt.clone());
+        message.summary_locale = request.message.summary_locale;
+        request.message = message;
         let result = self.start_run(request);
         match result {
             Ok(handle) => Ok((handle, prompt)),

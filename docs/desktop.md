@@ -331,14 +331,17 @@ workbench. macOS retains standard system editing/window menus. Native completion
 notifications show the run or background job outcome, the project folder name
 and elapsed time when available. Completion and pending approval/question
 notifications keep conversation text and raw diagnostics in the app, are
-suppressed while the main window is visible and focused, and play the selected
-completion sound (default `Funk` on macOS, `Default` on Windows; configurable
-with live preview or muted under **Settings → General & appearance**) when CLAT
-is in the background, hidden, or minimized. If notification permission is denied
-or banner delivery fails, Desktop falls back to the local system sound player;
-set `CLAT_NO_BELL=1` to mute notification audio or `CLAT_BELL_COMMAND` for a
-custom detached sound command. Clicking a notification opens its project and
-admitted session.
+suppressed while the main window is visible and focused, and are configured
+under a single **Notifications** section in **Settings → General & appearance**
+(replacing the browser-only online page notifications control in Desktop).
+Desktop sends system notification banners silently and plays the selected
+completion sound directly (default `Funk` on macOS, `Default` on Windows;
+configurable with live preview or muted) when CLAT is in the background, hidden,
+or minimized, so Do Not Disturb or a disabled banner toggle does not silence the
+alert when **Play sound when desktop notifications are off** is enabled. Set
+`CLAT_NO_BELL=1` to mute notification audio or `CLAT_BELL_COMMAND` for a custom
+detached sound command. Clicking a notification opens its project and admitted
+session.
 
 Desktop controls use the page's external stylesheets on both the welcome page
 and Host workbench. The bundled terminal and editor also generate runtime style
@@ -515,7 +518,7 @@ draft. The composer also saves drafts before the first message is sent.
 Quit from the Desktop settings once draft writes finish. Before using the
 native project picker or updating, finish any protected work flagged by the
 desktop bridge. The in-page project list switches projects without stopping
-their runs.
+their runs. In Settings → Projects, the active project is labeled beside its name.
 The workbench bridge checks inactive projects and conversations, staged images,
 unfinished submissions, composition and custom answers before its Open project,
 Install and Quit actions. Installation preflight checks all owners before any

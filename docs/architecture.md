@@ -515,8 +515,15 @@ notices. Concurrent handle joins wait for the same worker settlement.
 Manual and automatic title updates live in `application/title.rs`. A targeted
 rename validates the selected session and performs its durable write within one
 Application mutable borrow, so an intent for an earlier session cannot rename a
-later selection. Session RPC adaptation is grouped in `serve/protocol/sessions.rs`;
-its identity/title/watermark reads share one Application lock. WeChat RPC
+later selection. The same auxiliary worker also handles session summaries.
+Naming and summary policies are independent. A user-owned title narrows the
+request to summary only, and a combined request returns both fields when both
+policies apply. The summary append requires the original active coordinator and
+uses an ignorable, log-only event with the source message sequences. The
+workbench reads the bounded summary projection from the active session and
+refreshes it on a session-scoped Application notice. Session RPC adaptation is
+grouped in `serve/protocol/sessions.rs`; its identity/title/watermark reads share
+one Application lock. WeChat RPC
 adaptation lives in `serve/protocol/wechat.rs`; root routing and existing
 binding/outbound locks are retained by the transport boundary.
 

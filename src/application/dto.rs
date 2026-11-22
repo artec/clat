@@ -108,6 +108,7 @@ pub const WORKBENCH_RECENT_INPUTS_LIMIT: usize = 50;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkbenchSessionSnapshot {
     pub id: Option<SessionId>,
+    pub summary: Option<crate::session::catalog::conversation_summary::ConversationSummary>,
     pub title: Option<String>,
     pub committed_seq: Option<u64>,
     /// 当前会话最近已提交 user 文本（旧→新，含其它客户端的提交；

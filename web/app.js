@@ -202,6 +202,7 @@ function setMarkdownLinkActions(node, getItems, primary) {
   const menu = event => {
     const items = getItems();
     if (!items.length) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
+    node.dispatchEvent(new Event('clat:markdown-link-menu', {bubbles:true}));
     if (event?.button === 2) editorMenu(items, node, event.clientX, event.clientY);
     else editorPopup(items, node);
   };
@@ -551,6 +552,11 @@ const ICON_PATHS = {
   'terminal-take-input': ['M9 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2', 'M3 12h12m-4-4 4 4-4 4m5 0h2'],
   'terminal-clear-screen': ['M13 5H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6M3 9h10', 'm18 3 1.2 3.8L23 8l-3.8 1.2L18 13l-1.2-3.8L13 8l3.8-1.2Z'],
   chat: ['M4 4h16v12H9l-5 4V4Z', 'M8 8h8M8 12h5'],
+  'session-summary': [
+    'M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6',
+    'M8 12h5m-5 4h3',
+    'M18 2.5 19 5l2.5 1L19 7l-1 2.5L17 7l-2.5-1L17 5Z',
+  ],
   panel: ['M3 5h18v14H3zM9 5v14'],
   close: ['m6 6 12 12M18 6 6 18'],
   folder: ['M3 7h7l2-3h9v16H3z'],
@@ -715,6 +721,10 @@ const state = {
   runActive: false,
   turnTarget: null,
   nextTurnTarget: null,
+  nextTurnRpcId: null,
+  activeRewind: null,
+  pendingRewind: null,
+  runStateText: '',
   turnRevision: 0,
   compactionActive: false,
   switching: false,
@@ -815,7 +825,7 @@ for (const id of [
   'detail-run', 'detail-seq', 'detail-session', 'detail-model', 'detail-protocol',
   'detail-context', 'detail-budget', 'compact-session', 'capability-list', 'detail-mcp', 'mcp-servers',
   'settings-open', 'settings-dialog', 'theme-options', 'reading-options', 'permission-options',
-  'utility-naming-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile',
+  'utility-naming-enabled', 'utility-summary-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile',
   'utility-settings-save', 'utility-settings-error', 'utility-settings-saved',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
   'wechat-status', 'wechat-counts', 'wechat-qr', 'wechat-qr-image', 'wechat-qr-state',
@@ -992,6 +1002,7 @@ async function refreshBuiltinAvailability() {
 }
 
 async function connect() {
+  resetRewindAction();
   state.workbench = null;
   state.workbenchRequest = (state.workbenchRequest || 0) + 1;
   state.builtinAvailability = null;
@@ -1009,6 +1020,7 @@ async function connect() {
     state.workbenchRequest++;
     window.dispatchEvent(new Event('clat:builtin-availability'));
     if (error.name === 'AbortError') return;
+    resetRewindAction();
     closeQuestionCards();
     state.connected = false;
     conversationRounds.stop();
@@ -1079,6 +1091,8 @@ function dispatchFrame(frame) {
     case 'prompt.settled': onSettled(payload.ctl); break;
     case 'notice': onNotice(payload.ctl); break;
     case 'replay.begin':
+      resetRewindAction();
+      state.nextTurnRpcId = null;
       composerReceiptIds.clear();
       conversationRounds.reset();
       runActivity.clear();
@@ -1217,6 +1231,7 @@ function handleLive(event) {
   if (!event || !event.type) return;
   switch (event.type) {
     case 'run_started': {
+      resetRewindAction();
       const previousPencil = lastUserBubble()?.querySelector('.message-rewind-pencil');
       if (previousPencil) previousPencil.hidden = true;
       acceptComposerReceipt(event.client_message_id);
@@ -1241,8 +1256,11 @@ function handleLive(event) {
       syncInteractionControls();
       state.run = null;
       if (event.prompt || event.content_blocks?.length) {
-        liveMessageNodes.push(addUserMessage(event.prompt, event.content_blocks, event.client_message_id));
+        const message = addUserMessage(event.prompt, event.content_blocks, event.client_message_id);
+        liveMessageNodes.push(message);
+        exposeActiveRewind(message, state.nextTurnRpcId);
       }
+      state.nextTurnRpcId = null;
       break;
     }
     case 'model_requested':
@@ -1338,6 +1356,7 @@ function handleLive(event) {
 }
 
 function finishRun(event) {
+  hideActiveRewind();
   invalidateSuggestion();
   if (state.run && state.run.assistant) {
     state.run.assistant.finishReasoning();
@@ -1388,6 +1407,7 @@ function onSubscribed(ctl) {
   if (ctl && Object.prototype.hasOwnProperty.call(ctl, 'session_id')) {
     state.sessionId = ctl.session_id || null;
   }
+  renderConversationSummary();
   syncContextUsageReader();
   conversationRounds.scope(state.sessionId);
   state.history.outline = Array.isArray(ctl && ctl.message_outline) ? ctl.message_outline : [];
@@ -1471,6 +1491,7 @@ function onSettled(ctl) {
   //   过的 rpc id）不立 verdict、不改 run 状态、不做交代——runActive
   //   是活跃 Run 的事实来源，终态文案不得与它矛盾。
   const rpcId = typeof (ctl && ctl.prompt_rpc_id) === 'string' ? ctl.prompt_rpc_id : null;
+  const editingStoppedTurn = settlePendingRewind(rpcId, outcome.type, ctl?.stopped_prompt);
   const ownsTerminal = !state.runActive;
   const fresh = !rpcId || !state.settledRpcIds.has(rpcId);
   if (fresh && ownsTerminal) {
@@ -1482,7 +1503,7 @@ function onSettled(ctl) {
         }
         break;
       case 'cancelled':
-        refreshStoppedMessageEditor();
+        if (!editingStoppedTurn) refreshStoppedMessageEditor();
         if (noteRunOutcome('cancelled')) {
           addVerdict('cancelled', CLATI18n.msg("web.line_cancelled_after_value_turns",{value1:((outcome.turns || 0))},"cancelled after {value1} turns"));
         }
@@ -1497,7 +1518,7 @@ function onSettled(ctl) {
     if (outcome.type === 'completed' && rpcId && context.isActive() && !dom.transcript.closest('.hidden,[hidden]') && state.utilitySettings?.automatic_followups !== false && builtinReady('builtin.utility_model')) void loadRoundFollowups(rpcId);
     accountUnfinishedWork(outcome.type, rpcId ? `settled:${rpcId}` : `live:${outcome.type}`);
     const idleText = settledIdleText(outcome.type);
-    if (idleText && (dom['run-state'].textContent === '' || dom['run-state'].dataset.presentation === 'web.running')) {
+    if (idleText && (!String(state.runStateText) || state.runStateText?.key === 'web.running')) {
       updateRunState(idleText);
     }
   }
@@ -1647,6 +1668,7 @@ function onNotice(ctl) {
   switch (ctl && ctl.kind) {
     case 'run_turn_target':
       state.nextTurnTarget = payload?.turn_target || null;
+      state.nextTurnRpcId = payload?.prompt_rpc_id || null;
       break;
     case 'background_job':
       window.dispatchEvent(new CustomEvent('clat:job-change',{detail:payload}));
@@ -1702,6 +1724,9 @@ function onNotice(ctl) {
         refreshWorkbench();
       }
       syncInteractionControls();
+      break;
+    case 'conversation_summary':
+      if (payload?.session_id === state.sessionId) void refreshWorkbench();
       break;
     case 'title':
       if (payload && payload.title) {
@@ -2065,7 +2090,72 @@ function lastUserBubble() {
 }
 
 function refreshStoppedMessageEditor() {
-  stoppedMessageEditors.get(lastUserBubble())?.();
+  stoppedMessageEditors.get(lastUserBubble())?.refresh();
+}
+
+function exposeActiveRewind(message, rpcId) {
+  const editor = stoppedMessageEditors.get(message);
+  if (!editor || !rpcId || !state.turnTarget) return;
+  state.activeRewind = { message, target: state.turnTarget, rpcId };
+  editor.showRunning(true);
+}
+
+function hideActiveRewind() {
+  const active = state.activeRewind;
+  if (active) stoppedMessageEditors.get(active.message)?.showRunning(false);
+  state.activeRewind = null;
+}
+
+function clearPendingRewind() {
+  const pending = state.pendingRewind;
+  if (pending) stoppedMessageEditors.get(pending.message)?.setPending(false);
+  state.pendingRewind = null;
+  renderRunState();
+}
+
+function resetRewindAction() {
+  hideActiveRewind();
+  if (state.pendingRewind) clearPendingRewind();
+}
+
+async function stopForRewind(message) {
+  const active = state.activeRewind;
+  if (state.pendingRewind || !state.connected || state.switching || !state.runActive
+    || state.stream?.signal.aborted || active?.message !== message || active.target !== state.turnTarget) return;
+  const intent = { ...active, stream: state.stream, generation: state.selectionGeneration, settled: false };
+  state.pendingRewind = intent;
+  stoppedMessageEditors.get(message).setPending(true);
+  renderRunState();
+  try {
+    await rpc('run.cancel', { expectedTurn: intent.target, expected_selection_generation: intent.generation });
+  } catch (error) {
+    if (state.pendingRewind !== intent || intent.settled) return;
+    clearPendingRewind();
+    updateRunState(CLATI18n.msg('web.line_cancel_failed_value', {value1:error.message}));
+  }
+}
+
+function settlePendingRewind(rpcId, outcome, stoppedPrompt) {
+  const intent = state.pendingRewind;
+  if (!intent || intent.settled || intent.rpcId !== rpcId) return false;
+  intent.settled = true;
+  const target = stoppedPrompt?.session_id && Number.isSafeInteger(stoppedPrompt?.seq)
+    ? { id: stoppedPrompt.session_id, seq: stoppedPrompt.seq } : null;
+  void openRewindAfterStop(intent, outcome, target);
+  return true;
+}
+
+async function openRewindAfterStop(intent, outcome, target) {
+  const editor = stoppedMessageEditors.get(intent.message);
+  if (outcome === 'cancelled') {
+    if (!target && !state.sessionId) await refreshWorkbench();
+    await editor.refresh(target, true);
+  }
+  if (state.pendingRewind !== intent) return;
+  clearPendingRewind();
+  if (state.stream !== intent.stream || state.selectionGeneration !== intent.generation
+    || state.switching || !context.isActive() || intent.message.closest('.hidden,[hidden]')) return;
+  if (outcome !== 'cancelled' || !editor.open(target)) updateRunState(CLATI18n.msg('web.rewind_unavailable'));
 }
 
 function attachLastTurnEditor(message, body, original) {
@@ -2073,8 +2163,13 @@ function attachLastTurnEditor(message, body, original) {
   const pencil = el('button', 'icon-button message-action-icon message-rewind-pencil');
   pencil.type = 'button';
   pencil.append(svgIcon('edit'));
-  CLATI18n.attribute(pencil, 'aria-label', () => CLATI18n.msg('web.rewind_edit'));
-  CLATI18n.attribute(pencil, 'title', () => CLATI18n.msg('web.rewind_edit'));
+  let running = false;
+  const label = () => CLATI18n.msg(running ? 'web.rewind_stop_edit' : 'web.rewind_edit');
+  const bindLabel = () => {
+    CLATI18n.attribute(pencil, 'aria-label', label);
+    CLATI18n.attribute(pencil, 'title', label);
+  };
+  bindLabel();
   pencil.hidden = true;
   actions.prepend(pencil);
   let receipt = null;
@@ -2082,33 +2177,50 @@ function attachLastTurnEditor(message, body, original) {
   const current = () => state.connected && !state.stream?.signal.aborted
     && !state.switching && !state.history.replaying
     && !state.runActive && !state.compactionActive && lastUserBubble() === message;
-  const refresh = async () => {
-    if (checking || !current() || body.hidden || !message.dataset.seq || !state.sessionId) return;
-    const { sessionId: id, selectionGeneration: generation, stream } = state;
-    const seq = Number(message.dataset.seq);
+  const refresh = async (target = null, afterStop = false) => {
+    if ((state.pendingRewind && !afterStop) || checking || !current() || body.hidden) return;
+    const { selectionGeneration: generation, stream } = state;
+    const id = target?.id ?? state.sessionId;
+    const seq = target?.seq ?? Number(message.dataset.seq);
+    const matchingSession = () => (state.sessionId ?? target?.id) === id;
+    if (!id || !Number.isSafeInteger(seq) || !matchingSession()) return;
     // Keep the confirmed action available while the Host checks it again.
     checking = true;
     try {
       const result = await rpc('session.rewind.check', { id, seq });
-      if (!current() || stream !== state.stream || id !== state.sessionId
-        || generation !== state.selectionGeneration || seq !== Number(message.dataset.seq)) return;
+      if (!current() || stream !== state.stream || !matchingSession()
+        || generation !== state.selectionGeneration || (!target && seq !== Number(message.dataset.seq))) return;
       receipt = result.eligible && result.generation === generation
         ? { id, seq, revision: result.revision, expected_selection_generation: generation }
         : null;
+      if (receipt && target) message.dataset.seq = String(seq);
       pencil.hidden = body.hidden || !receipt;
     } catch { /* A failed refresh does not change the last confirmed result. */ }
     finally { checking = false; }
   };
-  stoppedMessageEditors.set(message, refresh);
-  message.addEventListener('pointerenter', refresh);
+  const open = (target = null) => {
+    if (!receipt || body.hidden || !current() || receipt.id !== (state.sessionId ?? target?.id)
+      || receipt.seq !== Number(message.dataset.seq)
+      || receipt.expected_selection_generation !== state.selectionGeneration) return false;
+    editLastTurn(message, body, pencil, original, receipt, () => current() && Boolean(receipt));
+    return true;
+  };
+  stoppedMessageEditors.set(message, {
+    refresh, open,
+    showRunning(active) {
+      running = active;
+      pencil.hidden = !active;
+      bindLabel();
+    },
+    setPending(pending) { pencil.disabled = pending; },
+  });
+  message.addEventListener('pointerenter', () => void refresh());
   message.addEventListener('focusin', () => {
     if (pencil.hidden && !body.hidden) void refresh();
   });
   pencil.addEventListener('click', () => {
-    if (!receipt || body.hidden || !current() || receipt.id !== state.sessionId
-      || receipt.seq !== Number(message.dataset.seq)
-      || receipt.expected_selection_generation !== state.selectionGeneration) return;
-    editLastTurn(message, body, pencil, original, receipt, () => current() && Boolean(receipt));
+    if (state.activeRewind?.message === message) void stopForRewind(message);
+    else if (!state.pendingRewind) open();
   });
 }
 
@@ -2848,6 +2960,10 @@ async function refreshWorkbench() {
       state.runActive = Boolean(info.active_run);
       state.turnTarget = info.active_run?.turn_target || null;
     }
+    const rewind = state.activeRewind;
+    if (rewind && info.active_run?.turn_target === rewind.target) {
+      messageTime(rewind.message, info.active_run.started);
+    }
     state.compactionActive = Boolean(info.active_compaction);
     void hydrateComposerDraft(info);
     void stageReadyComposerImages();
@@ -3141,6 +3257,7 @@ window.addEventListener('resize', () => {
 
 function setSwitching(active) {
   state.switching = active;
+  renderConversationSummary();
   if(active)conversationRounds.stop();else conversationRounds.tick();
   syncInteractionControls();
   renderSessions();
@@ -3708,6 +3825,7 @@ function renderUtilitySettings(settings, profiles = []) {
   syncUtilityAvailability();
   if (!builtinReady('builtin.utility_model') || settings.automatic_followups === false) clearRoundFollowups();
   dom['utility-naming-enabled'].checked = settings.naming_enabled !== false;
+  dom['utility-summary-enabled'].checked = settings.summary_enabled !== false;
   dom['utility-suggestions-enabled'].checked = settings.suggestions_enabled === true;
   document.getElementById('utility-followups-enabled').checked = settings.automatic_followups !== false;
   const select = dom['utility-profile'];
@@ -3793,6 +3911,7 @@ async function saveUtilitySettings(button) {
   try {
     const settings = {
       naming_enabled: dom['utility-naming-enabled'].checked,
+      summary_enabled: dom['utility-summary-enabled'].checked,
       suggestions_enabled: dom['utility-suggestions-enabled'].checked,
       automatic_followups: document.getElementById('utility-followups-enabled').checked,
       profile: dom['utility-profile'].value || null,
@@ -3819,7 +3938,7 @@ async function saveUtilitySettings(button) {
 dom['utility-settings-save'].addEventListener('click', (event) => saveUtilitySettings(event.currentTarget));
 // 用户动过的表单不被迟到的后台读取重绘（profile 编辑器同款围栏）：
 // uncheck/check 到 save 之间落地的旧响应不得复位勾选（2026-09-16 病历）。
-for (const field of ['utility-naming-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile']) {
+for (const field of ['utility-naming-enabled', 'utility-summary-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile']) {
   dom[field].addEventListener('input', () => { utilityFormGeneration++; });
   dom[field].addEventListener('change', () => { utilityFormGeneration++; });
 }
@@ -3833,7 +3952,10 @@ function renderWorkspaceDirectory(projects){
   for(const workspace of projects){
     const row=el('article','project-setting-row'),copy=el('div'),name=el('strong','project-title-line');
     name.append(el('span','',()=>workspace.title));copy.append(name,el('small','',workspace.root));
-    copy.append(el('small','',()=>workspace.run_active?pageText('running'):workspace.root===state.workbench?.project?.root?pageText('current_project'):''));
+    if(workspace.root===state.workbench?.project?.root){
+      name.append(el('span','project-current-label',()=>pageText('current_project')));
+    }
+    if(workspace.run_active)copy.append(el('small','',()=>pageText('running')));
     const open=pageAction('switch_project',()=>void context.openProject(workspace).catch(failure=>{error.textContent=failure.message;}));
     const link=el('a','workspace-link',()=>pageText('new_window'));link.href='/?workspace='+encodeURIComponent(workspace.route_id||'default');link.hidden=!workspace.route_id;link.target='_blank';link.rel='noopener';
     const more=context.organization.menuButton(workspace);context.organization.bind(row,workspace,more);
@@ -4432,6 +4554,12 @@ async function retryDraftImage(image) {
 }
 
 function updateRunState(text) {
+  state.runStateText = text;
+  renderRunState();
+}
+
+function renderRunState() {
+  const text = state.pendingRewind ? CLATI18n.msg('web.rewind_stopping') : state.runStateText;
   dom['run-state'].dataset.presentation = text?.key || '';
   CLATI18n.bind(dom['run-state'], "textContent", () => text);
 }

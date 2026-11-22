@@ -100,6 +100,7 @@ impl RunWorker {
         if let Some(sender) = &self.deps.title_sender {
             let _ = sender.try_send(AutotitleJob {
                 session_id: self.input.session_id.clone(),
+                summary_locale: self.deps.summary_locale,
                 config: self.deps.config.clone(),
                 credentials: self.deps.credentials.clone(),
             });

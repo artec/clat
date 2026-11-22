@@ -4068,12 +4068,21 @@ impl crate::test_support::TestModelScript for RewindScript {
                 matches!(part, ContentPart::Text(text) if text.ends_with("stopped question"))
             })
         });
-        let text = if waits_for_stop {
+        let silent_until_stop = last_user.is_some_and(|content| {
+            content.iter().any(|part| {
+                matches!(part, ContentPart::Text(text) if text == "A silent stopped question")
+            })
+        });
+        let text = if silent_until_stop {
+            ""
+        } else if waits_for_stop {
             "An unfinished answer"
         } else {
             "A completed answer"
         };
-        events.emit(ModelEvent::TextDelta { delta: text.into() });
+        if !text.is_empty() {
+            events.emit(ModelEvent::TextDelta { delta: text.into() });
+        }
         if waits_for_stop {
             let deadline = Instant::now() + WAIT;
             while !request.cancel.is_cancelled() && Instant::now() < deadline {
@@ -4118,6 +4127,12 @@ fn serve_e2e_host_success() {
 #[ignore = "Playwright workbench host with production interactive policy"]
 fn serve_e2e_host_workbench() {
     host_serve_modes_for_playwright("workbench", TestBehavior::Success, 0, true);
+}
+
+#[test]
+#[ignore = "Playwright session summary host with deterministic utility output"]
+fn serve_e2e_host_session_summary() {
+    host_serve_modes_for_playwright("session-summary", TestBehavior::SessionSummary, 0, true);
 }
 
 #[test]

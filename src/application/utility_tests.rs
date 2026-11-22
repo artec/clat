@@ -580,6 +580,7 @@ fn prompt_suggestions_enable_persist_and_generate() {
     application
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,
@@ -645,6 +646,7 @@ fn suggestion_failure_leaves_bounded_sanitized_evidence() {
     application
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,
@@ -727,6 +729,7 @@ fn utility_journey_title_suggestion_adoption_and_restart() {
     application
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,
@@ -803,6 +806,7 @@ fn utility_failures_never_leak_provider_text() {
     application
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,
@@ -838,6 +842,7 @@ fn utility_failures_never_leak_provider_text() {
     application
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,
@@ -870,6 +875,7 @@ fn cancelled_utility_request_reports_cancelled_category() {
     application
         .edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,

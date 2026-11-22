@@ -1,6 +1,7 @@
 //! The pinned journal vocabulary: one seat selects validation, surface and replay.
 //! Envelope-only means preserved without interpreting its payload. New required
 //! DSH metadata belongs here; it does not require a replay skip-list change.
+pub(crate) mod conversation_summary;
 mod maintenance;
 pub(crate) mod rewind;
 mod run_events;
@@ -147,7 +148,7 @@ macro_rules! vocabulary {
     (@project $project:path) => {Some($project)};
     (@job) => {None};
     (@job $phase:ident) => {Some(JobPhase::$phase)};
-    ($( $name:literal => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)? $(; $project:path)?) $(@ $inspection:ident)? ),* $(,)?) => {
+    ($( $name:expr => ($validate:expr, $surface:literal, $replay:ident, $retired:literal $(, $step:literal $(, $job:ident)?)? $(; $project:path)?) $(@ $inspection:ident)? ),* $(,)?) => {
         pub(crate) const KNOWN_EVENT_TYPES: &[&str] = &[$($name),*];
         const EVENTS: &[EventSpec] = &[$(EventSpec {
             name: $name, validate: $validate, surface: $surface,
@@ -161,6 +162,7 @@ macro_rules! vocabulary {
 }
 vocabulary! {
     "agent-preset/selected" => (None, false, Skip, false),
+    conversation_summary::EVENT => (Some(conversation_summary::validate), false, Skip, false),
     "clat/plan/change" => (Some(validation::plan_document), false, Skip, false),
     "clat/budget" => (None, false, Skip, false),
     "clat/task" => (Some(validation::task), false, Skip, false),
@@ -283,13 +285,13 @@ mod tests {
         // The upstream set is sorted; every entry is known and the surface
         // subset is exactly the five released message types, including
         // the protected system head and V4 developer messages.
-        assert_eq!(KNOWN_EVENT_TYPES.len(), 69);
+        assert_eq!(KNOWN_EVENT_TYPES.len(), 70);
         assert_eq!(
             KNOWN_EVENT_TYPES
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            69,
+            70,
             "each vocabulary seat must be unique"
         );
         assert!(is_known_type("user/message"));

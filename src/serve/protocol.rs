@@ -10,7 +10,7 @@
 mod sessions;
 mod wechat;
 
-mod message_input;
+pub(super) mod message_input;
 use super::approver;
 use super::state::ServeShared;
 use crate::application::{ApplicationRunDone, ApplicationRunFailure};
@@ -674,16 +674,26 @@ fn dispatch_project(
 }
 
 fn cancel_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
-    // Idempotent even without an active run.
-    if let Some(session) = optional_str(params, "session_id")? {
-        if !with_app(shared, |app| app.cancel_conversation_run(&session)) {
-            let message = crate::i18n::UiMessage::new("pages.conversation_unavailable");
-            return Err(RpcError::busy(message.english()).with_presentation(message));
+    let session = optional_str(params, "session_id")?;
+    let expected = optional_str(params, "expectedTurn")?;
+    with_app(shared, |app| {
+        if let Some(target) = &expected
+            && shared.matching_input_round(target).is_none()
+        {
+            let message = crate::i18n::UiMessage::new("input.turn_changed");
+            return Err(RpcError::not_pending(message.english()).with_presentation(message));
         }
-    } else {
-        with_app(shared, |app| app.cancel_active_run());
-    }
-    Ok(json!({}))
+        // Unscoped Stop remains idempotent even when no run is active.
+        if let Some(session) = &session {
+            if !app.cancel_conversation_run(session) {
+                let message = crate::i18n::UiMessage::new("pages.conversation_unavailable");
+                return Err(RpcError::busy(message.english()).with_presentation(message));
+            }
+        } else {
+            app.cancel_active_run();
+        }
+        Ok(json!({}))
+    })
 }
 
 fn set_permission(
@@ -968,6 +978,7 @@ fn parse_thinking_override(value: Option<&Value>) -> Result<crate::ThinkingLevel
 /// phase-4 goal continuation remain core-owned.
 fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
     let command = required_str(params, "command")?;
+    let summary_locale = message_input::summary_locale(params)?;
     let trimmed = command.trim();
     let token = trimmed
         .strip_prefix('/')
@@ -1024,13 +1035,14 @@ fn command_run(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result
     {
         shared.release_run_claim();
     }
-    command_reply(outcome, claimed_goal_run, shared)
+    command_reply(outcome, claimed_goal_run, shared, summary_locale)
 }
 
 fn command_reply(
     outcome: crate::CommandOutcome,
     claimed_goal_run: Option<String>,
     shared: &Arc<ServeShared>,
+    summary_locale: Option<crate::i18n::Locale>,
 ) -> Result<Value, RpcError> {
     match outcome {
         crate::CommandOutcome::StartPluginManagement => Ok(json!({"kind":"plugin_manager"})),
@@ -1058,7 +1070,7 @@ fn command_reply(
         }
         crate::CommandOutcome::StartTaskRun(request) => {
             let id = claimed_goal_run.ok_or_else(|| RpcError::internal("task run lacks claim"))?;
-            start_goal_run(shared, id, Some(request))
+            start_goal_run(shared, id, Some(request), summary_locale)
         }
         crate::CommandOutcome::ShowGoal(view) => Ok(json!({
             "kind": "goal", "goal": view, "message": view.to_text(),"presentation":view.presentation(),
@@ -1076,7 +1088,7 @@ fn command_reply(
             let rpc_id = claimed_goal_run.ok_or_else(|| {
                 RpcError::internal("goal run command reached execution without a run claim")
             })?;
-            start_goal_run(shared, rpc_id, None)
+            start_goal_run(shared, rpc_id, None, summary_locale)
         }
         crate::CommandOutcome::SessionReset => Ok(json!({ "kind": "session_reset" })),
         crate::CommandOutcome::StartVisionProbe(_) => {
@@ -1103,6 +1115,7 @@ fn start_goal_run(
     shared: &Arc<ServeShared>,
     rpc_id: String,
     task: Option<crate::task::TaskResume>,
+    summary_locale: Option<crate::i18n::Locale>,
 ) -> Result<Value, RpcError> {
     let kind = if task.is_some() {
         "task_run"
@@ -1120,8 +1133,10 @@ fn start_goal_run(
         } else {
             app.goal_run_message()
         };
+        let mut input = crate::message::PendingMessage::text(String::new());
+        input.summary_locale = summary_locale;
         let request = ApplicationRunRequest {
-            message: crate::message::PendingMessage::text(String::new()),
+            message: input,
             asker: Some(Arc::new(super::questions::ServeAsker::new(shared))),
             approver: Arc::new(approver::ServeApprover::new(Arc::clone(shared))),
             events: Box::new(FanoutSink {

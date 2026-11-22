@@ -978,6 +978,7 @@ fn steering_image_projection_mismatch_fails_before_commit_and_provider_io() {
             }],
             submission_digest: None,
             contains_session_share: false,
+            summary_locale: None,
         }),
         PushOutcome::Accepted
     );

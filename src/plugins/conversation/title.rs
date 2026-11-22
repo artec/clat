@@ -19,6 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 mod contracts;
+mod summary;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) use contracts::{GeneratedTitle, SessionTitler};
@@ -72,6 +73,42 @@ impl SessionTitler for DefaultSessionTitler {
         self.utility.enabled(UtilityTask::SessionTitle)
     }
 
+    fn summary_enabled(&self) -> bool {
+        self.utility.enabled(UtilityTask::SessionSummary {
+            locale: crate::i18n::Locale::default(),
+            include_title: false,
+        })
+    }
+
+    fn generate_with_summary(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+        conversation: &str,
+        locale: crate::i18n::Locale,
+        include_title: bool,
+        cancel: &CancelToken,
+    ) -> Result<GeneratedTitle, UtilityFailure> {
+        let output = self.utility.generate(
+            UtilityTask::SessionSummary {
+                locale,
+                include_title,
+            },
+            config,
+            credentials,
+            conversation,
+            cancel,
+        )?;
+        let (title, summary) =
+            summary::read_model_output(&output.text, conversation, locale, include_title);
+        Ok(GeneratedTitle {
+            title,
+            summary,
+            provider: output.provider,
+            model: output.model,
+        })
+    }
+
     fn generate_title(
         &self,
         config: &ModelConfig,
@@ -90,6 +127,7 @@ impl SessionTitler for DefaultSessionTitler {
         // 调用方保留旧标题并记 evidence（INV-F1 语义）。
         Ok(GeneratedTitle {
             title: sanitize_title_outcome(&output.text, conversation).unwrap_or_default(),
+            summary: None,
             provider: output.provider,
             model: output.model,
         })

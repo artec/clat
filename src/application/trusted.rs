@@ -863,6 +863,7 @@ impl TrustedProjectApplication {
             },
             session: crate::WorkbenchSessionSnapshot {
                 id: self.current_session_id(),
+                summary: self.workbench_conversation_summary()?,
                 title: self.workbench_session_title()?,
                 committed_seq: self.committed_seq(),
                 recent_inputs: self
@@ -887,6 +888,20 @@ impl TrustedProjectApplication {
             goal_armed: self.goal()?.is_some_and(|goal| goal.armed),
             mcp: self.mcp_status(),
         })
+    }
+
+    fn workbench_conversation_summary(
+        &self,
+    ) -> Result<
+        Option<crate::session::catalog::conversation_summary::ConversationSummary>,
+        ApplicationError,
+    > {
+        // When the utility plugin is absent or its setting is off, the
+        // saved summary remains session metadata without being exposed.
+        if self.title_worker.is_none() || !self.utility_settings_view()?.summary_enabled {
+            return Ok(None);
+        }
+        self.sessions.conversation_summary().map_err(session_error)
     }
 
     /// 注入下一次 run worker spawn 失败（A-03 不变量的测试钩）。

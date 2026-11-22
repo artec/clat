@@ -539,6 +539,7 @@ fn utility_settings_notify_every_attached_project() {
         b.subscribe(tx_b);
         a.edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: false,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,

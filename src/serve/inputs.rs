@@ -88,6 +88,7 @@ fn submit(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Valu
         Some(id.to_owned()),
         draft.uploads.iter().map(std::path::PathBuf::from).collect(),
     );
+    message.summary_locale = super::protocol::message_input::summary_locale(params)?;
     message.bind_session_share_identity(&draft.session_shares);
     if text.trim().is_empty() && draft.uploads.is_empty() && draft.session_shares.is_empty() {
         return Err(failed("empty input"));

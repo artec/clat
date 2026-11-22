@@ -8,7 +8,7 @@ const path = require('path');
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const HOSTS = ['queue-command', 'run-command', 'long-stream', 'success', 'reasoning', 'history', 'compact-slow', 'question', 'native-write', 'ag5-joint', 'ag8-orderlive', 'ag8-hist'];
 HOSTS.push('native-jobs');
-HOSTS.push('workbench');
+HOSTS.push('workbench', 'session-summary');
 HOSTS.push('project-tree');
 HOSTS.push('rewind');
 if (process.env.CLAT_PLG2_MARKET_URL) HOSTS.push('plugin-market');

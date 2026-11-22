@@ -2,7 +2,7 @@ use crate::CancelToken;
 use crate::model::{ModelConfig, ProviderCredentials};
 use crate::plugins::services::SessionTitler;
 use crate::session::id::SessionId;
-use crate::session::use_cases::{SessionService, SetTitleExpectation};
+use crate::session::use_cases::{SessionService, SetTitleExpectation, TitleAttempt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -14,6 +14,7 @@ use super::*;
 /// and bounded conversation together for this session, immediately before I/O.
 pub(super) struct AutotitleJob {
     pub(super) session_id: SessionId,
+    pub(super) summary_locale: Option<crate::i18n::Locale>,
     pub(super) config: ModelConfig,
     pub(super) credentials: ProviderCredentials,
 }
@@ -90,54 +91,138 @@ fn maybe_autotitle(
 ) {
     let AutotitleJob {
         session_id,
-        config,
-        credentials,
+        summary_locale,
+        ..
     } = job;
-    if cancel.is_cancelled() || !titler.enabled() {
+    let naming_enabled = titler.enabled();
+    let summary_enabled = titler.summary_enabled();
+    if cancel.is_cancelled() || (!naming_enabled && !summary_enabled) {
         return;
     }
-    let attempt = match producer.commit(|| sessions.prepare_title_attempt(session_id)) {
+    let attempt = match producer.commit(|| {
+        sessions.prepare_overview(
+            session_id,
+            crate::session::event::now_ms(),
+            naming_enabled,
+            summary_enabled,
+            *summary_locale,
+        )
+    }) {
         Ok(Ok(Some(attempt))) => attempt,
         Ok(Ok(None)) | Err(_) => return,
         Ok(Err(error)) => {
-            let _ = producer.commit(|| {
-                append_utility_evidence(
-                    storage_root,
-                    "session-title",
-                    Some(session_id.as_str()),
-                    "prepare",
-                    &super::bounded_reason(&error.to_string()),
-                )
-            });
+            log_failed_attempt(
+                producer,
+                storage_root,
+                session_id,
+                "prepare",
+                &super::bounded_reason(&error.to_string()),
+            );
             return;
         }
     };
-    let generated = match titler.generate_title(config, credentials, &attempt.context, cancel) {
+    let generated = match generate_session_overview(titler, job, &attempt, cancel) {
         Ok(generated) => generated,
         Err(failure) => {
-            let _ = producer.commit(|| {
-                append_utility_evidence(
-                    storage_root,
-                    "session-title",
-                    Some(session_id.as_str()),
-                    "generate",
-                    &failure.safe_text(),
-                )
-            });
+            log_failed_attempt(
+                producer,
+                storage_root,
+                session_id,
+                "generate",
+                &failure.safe_text(),
+            );
             return;
         }
     };
     let _ = producer.commit(|| {
-        commit_generated_title(
-            sessions,
-            subscribers,
+        if titler.summary_enabled() {
+            commit_generated_summary(
+                sessions,
+                subscribers,
+                storage_root,
+                session_id,
+                &attempt,
+                generated.summary.as_deref(),
+            );
+        }
+        if attempt.include_title && titler.enabled() {
+            commit_generated_title(
+                sessions,
+                subscribers,
+                storage_root,
+                session_id,
+                &attempt.expectation,
+                &attempt.message_seqs,
+                generated,
+            );
+        }
+    });
+}
+
+fn log_failed_attempt(
+    producer: &crate::plugin::lifecycle::Producer,
+    storage_root: &Path,
+    session_id: &SessionId,
+    phase: &str,
+    reason: &str,
+) {
+    let _ = producer.commit(|| {
+        append_utility_evidence(
             storage_root,
-            session_id,
-            &attempt.expectation,
-            &attempt.message_seqs,
-            generated,
+            "session-title",
+            Some(session_id.as_str()),
+            phase,
+            reason,
         )
     });
+}
+
+fn generate_session_overview(
+    titler: &dyn SessionTitler,
+    job: &AutotitleJob,
+    attempt: &TitleAttempt,
+    cancel: &CancelToken,
+) -> Result<crate::plugins::services::GeneratedTitle, crate::plugins::services::UtilityFailure> {
+    if let Some(locale) = attempt.summary_locale {
+        return titler.generate_with_summary(
+            &job.config,
+            &job.credentials,
+            &attempt.context,
+            locale,
+            attempt.include_title,
+            cancel,
+        );
+    }
+    titler.generate_title(&job.config, &job.credentials, &attempt.context, cancel)
+}
+
+fn commit_generated_summary(
+    sessions: &SessionService,
+    subscribers: &Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
+    storage_root: &Path,
+    session_id: &SessionId,
+    attempt: &TitleAttempt,
+    summary: Option<&str>,
+) {
+    let (Some(locale), Some(text)) = (attempt.summary_locale, summary) else {
+        return;
+    };
+    match sessions.record_conversation_summary(attempt, text, locale) {
+        Ok(true) => broadcast_to(
+            subscribers,
+            ApplicationEvent::ConversationSummaryUpdated {
+                session_id: session_id.clone(),
+            },
+        ),
+        Ok(false) => {}
+        Err(error) => append_utility_evidence(
+            storage_root,
+            "session-summary",
+            Some(session_id.as_str()),
+            "commit",
+            &super::bounded_reason(&error.to_string()),
+        ),
+    }
 }
 
 /// 生成的标题落盘（清洗为空 → 证据行；CAS/属主拒绝是正常语义不留痕）并

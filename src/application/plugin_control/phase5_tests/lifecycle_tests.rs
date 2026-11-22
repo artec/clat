@@ -347,6 +347,7 @@ fn phase5_compaction_and_git_models_run_independently_of_auxiliary_execution() {
         let settings = app.utility_settings_view().unwrap();
         app.edit_utility_settings(crate::application::UtilitySettingsEdit {
             naming_enabled: true,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: settings.profile,

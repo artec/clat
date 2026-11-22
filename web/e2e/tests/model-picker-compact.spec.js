@@ -110,6 +110,88 @@ test('last selected OpenCode Go preset stays scrollable above thinking controls'
   expect(positions.lastBottom).toBeLessThanOrEqual(positions.panelTop);
 });
 
+test('thinking preview stays smooth and stable while the Host saves and refreshes', async ({ page }) => {
+  let savedLevel = 'high';
+  let finishSave;
+  const pendingSave = new Promise(resolve => { finishSave = resolve; });
+  await page.route('**/api/model.settings.get', async route => {
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    body.value.current.thinking_levels = ['low', 'high', 'max'];
+    body.value.current.thinking_level = savedLevel;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route('**/api/workbench.info', async route => {
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    body.value.model.thinking_level = savedLevel;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route('**/api/model.overrides.set', async route => {
+    expect(route.request().postDataJSON()).toMatchObject({
+      field: 'thinking_level', state: 'set', value: 'max',
+    });
+    await pendingSave;
+    savedLevel = 'max';
+    await route.fulfill({ json: { ok: true, value: {} } });
+  });
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#model-picker-trigger');
+  const slider = page.locator('#model-thinking');
+  await expect(slider).toHaveValue('1');
+  const animation = await slider.evaluate(input => {
+    const fill = getComputedStyle(input.parentElement, '::after');
+    return { property: fill.transitionProperty, duration: fill.transitionDuration };
+  });
+  expect(animation.property).toContain('transform');
+  expect(animation.duration).not.toBe('0s');
+  await slider.press('End');
+  await expect(slider).toHaveAttribute('data-saving', '');
+  // Switching modes re-renders the picker while the backend still reports the
+  // old value. Neither that render nor a Host refresh may rewind the preview.
+  await page.locator('#model-picker-custom').click();
+  await page.locator('#model-picker-builtins').click();
+  await expect(slider).toHaveValue('2');
+  await expect(page.locator('#model-thinking-value')).toHaveText(/max/i);
+  finishSave();
+  await expect(slider).not.toHaveAttribute('data-saving', '', LIVE);
+  await expect(slider).toBeEnabled(LIVE);
+  await expect(slider).toHaveValue('2');
+  await expect(page.locator('#model-picker-label')).toContainText('max');
+  await expect(page.locator('#model-thinking-ticks > span[data-current="true"]')).toHaveCount(1);
+});
+
+test('thinking preview rolls back after a rejected save', async ({ page }) => {
+  await page.route('**/api/model.settings.get', async route => {
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    body.value.current.thinking_levels = ['low', 'high', 'max'];
+    body.value.current.thinking_level = 'high';
+    await route.fulfill({ response, json: body });
+  });
+  await page.route('**/api/model.overrides.set', async route => {
+    await route.fulfill({ json: { ok: false, error: { message: 'Override rejected' } } });
+  });
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#model-picker-trigger');
+  const slider = page.locator('#model-thinking');
+  await expect(slider).toHaveValue('1');
+  await slider.press('End');
+  await expect(page.locator('#model-picker-error')).toContainText('Override rejected', LIVE);
+  await expect(slider).toBeEnabled(LIVE);
+  await expect(slider).toHaveValue('1', LIVE);
+  await expect(page.locator('#model-thinking-ticks > span[data-current="true"]')).toHaveCount(1);
+});
+
+test('thinking intensity honors reduced-motion preference', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await openWorkbench(page, hostInfo('success'));
+  await page.click('#model-picker-trigger');
+  const style = await page.locator('#model-thinking').evaluate(input =>
+    getComputedStyle(input.parentElement, '::after').transitionDuration);
+  expect(parseFloat(style)).toBeLessThan(0.001);
+});
+
 test('thinking intensity retains host-provided levels and updates visual endpoints', async ({ page }) => {
   await page.route('**/api/model.settings.get', async route => {
     const response = await fetchBrowserRequest(route);

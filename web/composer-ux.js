@@ -118,9 +118,11 @@ function composerOwns(owner) {
 }
 
 function composerSubmissionParams(text, images, clientMessageId = state.draft.clientMessageId) {
-  return images.length === 0 ? { text, clientMessageId } : {
-    text, draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
-    attachments: images.map((image) => image.uploadId), clientMessageId,
+  const params = { text, clientMessageId, summaryLocale: CLATI18n.locale };
+  if (!images.length) return params;
+  return {
+    ...params, draftScopeId: state.draft.scope && state.draft.scope.draftScopeId,
+    attachments: images.map((image) => image.uploadId),
   };
 }
 
@@ -283,7 +285,7 @@ async function submitComposerCommand({ text, owner }) {
     resubscribe();
     return true;
   }
-  const value = await rpc('command.run', { command: text });
+  const value = await rpc('command.run', { command: text, summaryLocale: CLATI18n.locale });
   if (!composerOwns(owner)) return true;
   if (value?.kind === 'plugin_manager') {
     dom['market-open'].click();
@@ -509,6 +511,22 @@ function installSelectionQuote() {
   const button = el('button', 'selection-quote hidden', () => (CLATI18n.msg("web.quote_selection", {}, "Quote selection")));
   button.type = 'button';
   let chosen = null;
+  let awaitingSelectionGesture = false;
+  const clear = () => { hide(button); chosen = null; };
+  const suppress = () => { awaitingSelectionGesture = true; clear(); };
+  // A context gesture can queue a selectionchange even after its menu closes.
+  dom.transcript.addEventListener('pointerdown', event => {
+    if (event.button === 2 || (event.button === 0 && event.ctrlKey)) suppress();
+    else if (event.button === 0) awaitingSelectionGesture = false;
+  }, true);
+  dom.transcript.addEventListener('contextmenu', suppress, true);
+  dom.transcript.addEventListener('clat:markdown-link-menu', suppress);
+  document.addEventListener('keydown', event => {
+    if (!awaitingSelectionGesture || event.target.closest?.('[role="menu"]')) return;
+    const extendsSelection = event.shiftKey && /^(Arrow(Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(event.key);
+    const selectsAll = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a';
+    if (extendsSelection || selectsAll) awaitingSelectionGesture = false;
+  }, true);
   button.addEventListener('pointerdown', (event) => event.preventDefault());
   button.addEventListener('click', () => {
     if (chosen && chosen.owner === composerScope) quoteSelection(chosen.text, chosen.role, chosen.seq);
@@ -516,7 +534,8 @@ function installSelectionQuote() {
   });
   document.body.appendChild(button);
   document.addEventListener('selectionchange', () => {
-    hide(button); chosen = null;
+    clear();
+    if (awaitingSelectionGesture) return;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount !== 1 || state.switching) return;
     const range = selection.getRangeAt(0);

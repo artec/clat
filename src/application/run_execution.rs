@@ -35,6 +35,7 @@ use worker::RunWorker;
 /// The complete input needed to create a waiting run worker. Admission data is
 /// deliberately absent: spawning must happen before any durable user fact.
 pub(super) struct RunExecutionSpec {
+    pub(super) summary_locale: Option<crate::i18n::Locale>,
     pub(super) target: Option<Arc<super::target_services::TargetServices>>,
     pub(super) run_plugins: Vec<Arc<dyn Plugin>>,
     pub(super) config: ModelConfig,
@@ -95,8 +96,8 @@ impl RunHandle {
         &self.model
     }
 
-    /// Exclusive journal cursor for rebuilding history before this execution.
-    /// Frozen at initial admission, including when a goal continues in-worker.
+    /// Sequence of the initial admitted user message, used as the exclusive
+    /// replay cursor. Frozen even when a goal continues in-worker.
     pub fn replay_before_seq(&self) -> Option<u64> {
         self.replay_before_seq
     }
@@ -214,6 +215,7 @@ struct RunWorkerDeps {
     goal_service: super::execution_features::GoalRunPort,
     task_service: super::execution_features::TaskRunPort,
     subagent_service: Option<Arc<crate::subagent::SubagentService>>,
+    summary_locale: Option<crate::i18n::Locale>,
     title_sender: Option<mpsc::SyncSender<AutotitleJob>>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>,
     slots: RunSlots,
@@ -628,6 +630,7 @@ impl RunWorkerDeps {
             goal_service: app.goal_port(),
             task_service: app.task_port(),
             subagent_service: app.subagents.clone(),
+            summary_locale: spec.summary_locale,
             title_sender: app
                 .title_worker
                 .as_ref()

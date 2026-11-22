@@ -19,6 +19,7 @@ pub(crate) mod query;
 mod rewind;
 mod task;
 mod utility;
+pub(crate) use utility::TitleAttempt;
 mod writers;
 use active::{ActiveSession, checkpoint_active, fold_if_behind};
 use folding_journal::ProjectionFoldJournal;

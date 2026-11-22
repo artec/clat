@@ -98,6 +98,7 @@ impl ConfigStore for ControlCapabilities {
             .utility_settings()
             .map(|settings| UtilitySettings {
                 naming_enabled: settings.naming_enabled,
+                summary_enabled: settings.summary_enabled,
                 suggestions_enabled: settings.suggestions_enabled,
                 automatic_followups: settings.automatic_followups,
                 profile: settings.profile,
@@ -109,6 +110,7 @@ impl ConfigStore for ControlCapabilities {
         self.storage
             .set_utility_settings(crate::control_storage::settings::UtilitySettingsRow {
                 naming_enabled: settings.naming_enabled,
+                summary_enabled: settings.summary_enabled,
                 suggestions_enabled: settings.suggestions_enabled,
                 automatic_followups: settings.automatic_followups,
                 profile: settings.profile,

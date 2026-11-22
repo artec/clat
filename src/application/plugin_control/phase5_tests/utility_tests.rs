@@ -50,6 +50,7 @@ fn setup() -> (
         // 写入 utility-log 失败证据，干扰"不该有日志"断言（GOAL-REG-1）。
         app.edit_utility_settings(UtilitySettingsEdit {
             naming_enabled: false,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: false,
             profile: None,

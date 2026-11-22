@@ -533,7 +533,7 @@ impl ServeShared {
                 event: "notice",
                 data: super::shapes::ctl_data(&json!({
                     "kind": "run_turn_target",
-                    "payload": { "turn_target": run.turn_target() },
+                    "payload": { "turn_target": run.turn_target(), "prompt_rpc_id": run.rpc_id },
                 })),
             };
             run.buffer.push(boundary.clone());
@@ -866,6 +866,7 @@ impl ServeShared {
                 };
                 let settled = super::shapes::with_prompt_rpc_id(settled, &rpc_id);
                 let settled = super::shapes::with_admission_receipt(settled, receipt.as_deref());
+                let settled = super::shapes::with_stopped_prompt(settled, &handle);
                 let settled = match shared
                     .app
                     .lock()

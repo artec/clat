@@ -225,6 +225,8 @@ pub struct PendingMessage {
     pub(crate) submission_digest: Option<String>,
     /// Process-local admission metadata. The journal stores only user text.
     pub(crate) contains_session_share: bool,
+    /// Submitting client language for the auxiliary session summary.
+    pub(crate) summary_locale: Option<crate::i18n::Locale>,
 }
 
 impl PendingMessage {
@@ -237,6 +239,7 @@ impl PendingMessage {
             admitted_images: Vec::new(),
             submission_digest: None,
             contains_session_share: false,
+            summary_locale: None,
         }
     }
 
@@ -253,7 +256,13 @@ impl PendingMessage {
             admitted_images: Vec::new(),
             submission_digest: None,
             contains_session_share: false,
+            summary_locale: None,
         }
+    }
+
+    pub fn with_summary_locale(mut self, locale: crate::i18n::Locale) -> Self {
+        self.summary_locale = Some(locale);
+        self
     }
 
     pub(crate) fn append_session_share_texts<'a>(

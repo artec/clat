@@ -218,6 +218,7 @@ pub(crate) fn goal_round_completion(request: &ModelRequest<'_>) -> Option<ToolCa
 #[allow(dead_code)]
 pub enum TestBehavior {
     Success,
+    SessionSummary,
     /// 普通对话快速完成；compaction summary 持续到取消或 3 秒，用于
     /// 浏览器 F5 恢复活动压缩槽与取消控制的确定性验收。
     SlowCompaction,
@@ -357,6 +358,34 @@ impl ModelFactory for TestFactory {
     }
 }
 
+fn session_summary_response(
+    request: &ModelRequest<'_>,
+    events: &mut dyn crate::model::ModelEventSink,
+) -> Result<ModelResponse, ModelError> {
+    let instructions = request.instructions.unwrap_or("");
+    if request.tools.is_empty()
+        && (instructions.contains(r#"string field "summary""#)
+            || instructions.contains(r#"fields "title" and "summary""#))
+    {
+        let summary = if instructions.contains("Simplified Chinese") {
+            "已完成初步检查，下一步补齐测试。"
+        } else if instructions.contains("Traditional Chinese") {
+            "已完成初步檢查，下一步補齊測試。"
+        } else {
+            "Initial review complete. Next, add a focused test."
+        };
+        let mut output = json!({"summary":summary});
+        if instructions.starts_with("Generate a concise title") {
+            output["title"] = json!("Review progress");
+        }
+        return Ok(response(&output.to_string(), FinishReason::Completed));
+    }
+    events.emit(ModelEvent::TextDelta {
+        delta: "done".into(),
+    });
+    Ok(response("done", FinishReason::Completed))
+}
+
 struct TestModel {
     behavior: TestBehavior,
 }
@@ -388,6 +417,7 @@ impl Model for TestModel {
         }
         let summary_request = is_summary_request(&request);
         let mut outcome = match &self.behavior {
+            TestBehavior::SessionSummary => session_summary_response(&request, events),
             TestBehavior::Success => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 events.emit(ModelEvent::TextDelta {

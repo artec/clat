@@ -84,6 +84,7 @@ fn live_glm_title_race_rejects_stale_summary() {
         .unwrap()
         .sender
         .try_send(super::super::title::AutotitleJob {
+            summary_locale: None,
             session_id: id,
             config,
             credentials,

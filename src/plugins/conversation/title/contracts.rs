@@ -4,6 +4,7 @@ use crate::model::{ModelConfig, ProviderCredentials};
 
 pub(crate) struct GeneratedTitle {
     pub(crate) title: String,
+    pub(crate) summary: Option<String>,
     pub(crate) provider: String,
     pub(crate) model: String,
 }
@@ -17,6 +18,22 @@ pub(crate) struct GeneratedTitle {
 pub(crate) trait SessionTitler: Send + Sync {
     fn enabled(&self) -> bool {
         true
+    }
+
+    fn summary_enabled(&self) -> bool {
+        false
+    }
+
+    fn generate_with_summary(
+        &self,
+        _config: &ModelConfig,
+        _credentials: &ProviderCredentials,
+        _conversation: &str,
+        _locale: crate::i18n::Locale,
+        _include_title: bool,
+        _cancel: &crate::CancelToken,
+    ) -> Result<GeneratedTitle, UtilityFailure> {
+        Err(UtilityFailure::Disabled)
     }
 
     fn generate_title(

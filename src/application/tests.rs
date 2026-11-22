@@ -599,6 +599,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
     let application = mount(&project, &storage_root, TestBehavior::Success);
     let defaults = application.utility_settings_view().unwrap();
     assert!(defaults.naming_enabled);
+    assert!(defaults.summary_enabled);
     assert!(defaults.automatic_followups);
     assert!(!defaults.suggestions_enabled);
     assert_eq!(defaults.profile, None);
@@ -616,7 +617,8 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
         .unwrap();
     application
         .edit_utility_settings(UtilitySettingsEdit {
-            naming_enabled: false,
+            naming_enabled: true,
+            summary_enabled: Some(false),
             suggestions_enabled: true,
             automatic_followups: false,
             profile: Some("small".into()),
@@ -624,7 +626,18 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
         .unwrap();
     let view = application.model_settings_view().unwrap();
     assert_eq!(view.utility.profile.as_deref(), Some("small"));
-    assert!(!view.utility.naming_enabled);
+    assert!(view.utility.naming_enabled);
+    assert!(!view.utility.summary_enabled);
+    // A caller from before the independent summary switch leaves it unchanged.
+    application
+        .edit_utility_settings(
+            serde_json::from_value(serde_json::json!({
+                "naming_enabled": false, "suggestions_enabled": true,
+                "automatic_followups": false, "profile": "small",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     assert!(view.utility.suggestions_enabled);
     assert!(
         !serde_json::to_string(&view)
@@ -641,6 +654,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
         application.utility_settings_view().unwrap(),
         crate::application::UtilitySettingsView {
             naming_enabled: false,
+            summary_enabled: false,
             suggestions_enabled: true,
             automatic_followups: false,
             profile: Some("small".into()),
@@ -654,6 +668,7 @@ fn utility_settings_are_host_owned_persistent_and_clear_deleted_profile_refs() {
         application
             .edit_utility_settings(UtilitySettingsEdit {
                 naming_enabled: true,
+                summary_enabled: None,
                 suggestions_enabled: false,
                 automatic_followups: false,
                 profile: Some("missing".into()),
@@ -686,6 +701,7 @@ fn manual_prompt_suggestion_uses_shared_utility_without_journal_writes() {
     application
         .edit_utility_settings(crate::application::UtilitySettingsEdit {
             naming_enabled: false,
+            summary_enabled: None,
             suggestions_enabled: true,
             automatic_followups: true,
             profile: None,
@@ -2076,6 +2092,7 @@ fn rename_facade_gates_journals_and_broadcasts() {
                     | ApplicationEvent::ModelsUpdated
                     | ApplicationEvent::CompactionUpdated(_)
                     | ApplicationEvent::CompactionRecorded { .. }
+                    | ApplicationEvent::ConversationSummaryUpdated { .. }
                     | ApplicationEvent::TitleUpdated { .. }
                     | ApplicationEvent::McpStartupNotice { .. }
                     | ApplicationEvent::LanguageIntelligenceNotice { .. }
@@ -2908,6 +2925,7 @@ fn image_and_text_steering_share_durable_admission_and_forged_blocks_are_refused
         admitted_images: Vec::new(),
         submission_digest: None,
         contains_session_share: false,
+        summary_locale: None,
     };
     assert!(matches!(
         application.steer(with_image_block),

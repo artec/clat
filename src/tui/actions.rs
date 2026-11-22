@@ -1338,6 +1338,7 @@ impl App {
                 return false;
             }
         };
+        let message = message.with_summary_locale(self.locale.locale);
         let share_owner = self.session_id.clone();
         let sender = self
             .event_sender
@@ -1413,7 +1414,8 @@ impl App {
             .expect("event channel is installed by run()");
         let (completion, completed) = mpsc::channel();
         let request = ApplicationRunRequest {
-            message: crate::message::PendingMessage::text(String::new()),
+            message: crate::message::PendingMessage::text(String::new())
+                .with_summary_locale(self.locale.locale),
             asker: Some(Arc::new(ChannelUserAsker::new(sender.clone()))),
             approver: Arc::new(ChannelApprover::new(sender.clone())),
             events: Box::new(ChannelEventSink(sender.clone())),

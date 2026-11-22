@@ -4,6 +4,7 @@ use crate::model::{CancelToken, ModelConfig, ProviderCredentials};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UtilitySettings {
     pub(crate) naming_enabled: bool,
+    pub(crate) summary_enabled: bool,
     pub(crate) suggestions_enabled: bool,
     pub(crate) automatic_followups: bool,
     pub(crate) profile: Option<String>,
@@ -12,6 +13,10 @@ pub(crate) struct UtilitySettings {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UtilityTask {
     SessionTitle,
+    SessionSummary {
+        locale: crate::i18n::Locale,
+        include_title: bool,
+    },
     PromptSuggestion,
     Followups,
 }

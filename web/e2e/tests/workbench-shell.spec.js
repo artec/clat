@@ -158,7 +158,7 @@ test('completed replies open project files and let users copy paths and preview 
     await expect.poll(() => page.evaluate(() => globalThis.replyOpenedUrl)).toBe(localHost);
     await page.evaluate(() => { delete globalThis.CLATDesktop; });
 
-    await reply.getByRole('button', {name:'Outside'}).click();
+    await reply.getByRole('button', {name:'Outside'}).click({button:'right'});
     await expect(action('open_file')).toBeDisabled();
     await expect(action('copy_path')).toBeDisabled();
     await action('copy_absolute_path').click();
@@ -174,6 +174,55 @@ test('completed replies open project files and let users copy paths and preview 
     await action('open_file').click();
     await expect(page.locator('#file-browser .cm-content')).toHaveText('File made by the reply', LIVE);
   } finally { fs.rmSync(path.dirname(absolute), {recursive:true, force:true}); }
+});
+
+test('right-clicking a reply link dismisses the quote and allows a new selection', async ({ page }) => {
+  const fs = require('node:fs'), path = require('node:path');
+  await openWorkbench(page, hostInfo('workbench'));
+  const root = await page.evaluate(async () => (await rpc('workbench.info', {})).project.root);
+  const file = path.join(root, 'quote-menu-fixture.md');
+  fs.writeFileSync(file, 'Documentation');
+  try {
+    await page.evaluate(file => {
+      handleReplay({
+        type: 'assistant_message', seq: 991992,
+        text: `[Providers](<${file}>)
+
+A sentence worth quoting.`,
+      });
+    }, file);
+    const reply = page.locator('.msg.assistant[data-seq="991992"]');
+    const link = reply.getByRole('button', {name:'Providers'});
+    const quote = page.locator('.selection-quote');
+    const menu = page.getByRole('menu');
+    const selectText = locator => locator.evaluate(node => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    });
+
+    await expect(link).toBeVisible(LIVE);
+    await selectText(link);
+    await expect(quote).toBeVisible();
+    await link.click({button:'right'});
+    await expect(menu.locator('[data-action="copy_path"]')).toBeVisible();
+    // Reproduce WebKit delivering a word selection after the context menu opens.
+    await selectText(link);
+    await expect(quote).toBeHidden({timeout:1500});
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    await selectText(link);
+    await expect(quote).toBeHidden({timeout:1500});
+
+    const paragraph = reply.getByText('A sentence worth quoting.', {exact:true});
+    await paragraph.dispatchEvent('pointerdown', {button:0, pointerType:'mouse'});
+    await selectText(paragraph);
+    await expect(quote).toBeVisible();
+    await quote.click();
+    await expect(page.locator('#prompt')).toHaveValue(/> A sentence worth quoting\./);
+  } finally { fs.rmSync(file, {force:true}); }
 });
 
 test('application toolbar history returns between features without losing their work', async ({ page }) => {

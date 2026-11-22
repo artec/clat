@@ -39,7 +39,9 @@ function pageSettingsLeave() {
 }
 function setupSettingsSections() {
   const general = document.querySelector('[data-settings-panel=appearance]');
-  general.append(document.getElementById('page-notifications')?.closest('.notification-settings') || el('span'));
+  const notificationSection = document.getElementById('desktop-notification-sound-section')
+    || document.getElementById('page-notifications')?.closest('.notification-settings');
+  if (notificationSection) general.append(notificationSection);
   for (const section of document.querySelectorAll('[data-settings-panel]')) {
     const scope = el('p', 'page-scope', () => settingsScope(section.dataset.settingsPanel));
     section.prepend(scope);

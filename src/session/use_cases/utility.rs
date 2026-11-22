@@ -1,13 +1,17 @@
 //! CLAT-private utility scheduling. Same-turn naming is coalesced before I/O.
 use super::*;
+use crate::i18n::Locale;
+use crate::session::catalog::conversation_summary::{self, ConversationSummary};
 use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::io::Read as _;
+use std::sync::Weak;
 
 const BUDGET_FILE: &str = "clat-utility-budget.json";
 const BYTE_CAP: u64 = 1024;
 const CONTEXT_CHARS: usize = 6000;
-const CONTEXT_MESSAGES: usize = 12;
+const CONTEXT_MESSAGES: usize = conversation_summary::MAX_SOURCE_MESSAGES;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +40,9 @@ pub(crate) struct TitleAttempt {
     pub(crate) expectation: SetTitleExpectation,
     pub(crate) context: String,
     pub(crate) message_seqs: Vec<u64>,
+    pub(crate) include_title: bool,
+    pub(crate) summary_locale: Option<Locale>,
+    coordinator: Weak<SessionCoordinator>,
 }
 
 pub(crate) struct SuggestionAttempt {
@@ -43,6 +50,7 @@ pub(crate) struct SuggestionAttempt {
 }
 
 impl SessionService {
+    #[cfg(test)]
     pub(crate) fn prepare_title_attempt(
         &self,
         session: &SessionId,
@@ -50,10 +58,22 @@ impl SessionService {
         self.prepare_title_attempt_at(session, now_ms())
     }
 
+    #[cfg(test)]
     pub(super) fn prepare_title_attempt_at(
         &self,
         session: &SessionId,
         time_ms: i64,
+    ) -> Result<Option<TitleAttempt>, SessionError> {
+        self.prepare_overview(session, time_ms, true, false, None)
+    }
+
+    pub(crate) fn prepare_overview(
+        &self,
+        session: &SessionId,
+        time_ms: i64,
+        naming_enabled: bool,
+        summary_enabled: bool,
+        client_locale: Option<Locale>,
     ) -> Result<Option<TitleAttempt>, SessionError> {
         let guard = self.active.lock().expect("active");
         let Some(active) = guard.as_ref() else {
@@ -63,12 +83,18 @@ impl SessionService {
             return Ok(None);
         }
         fold_if_behind(active, &self.backend)?;
-        let (turns, expectation) = {
+        let (turns, expectation, include_title, summary_locale) = {
             let projections = active.projections.lock().expect("projections");
             let title = projections.state_snapshot("title").unwrap_or_default();
-            if title.get("source").and_then(Value::as_str) == Some("user") {
+            let include_title = naming_enabled && title["source"].as_str() != Some("user");
+            if !include_title && !summary_enabled {
                 return Ok(None);
             }
+            let summary_locale = summary_enabled.then(|| {
+                client_locale
+                    .or_else(|| summary_snapshot(&projections).map(|item| item.locale))
+                    .unwrap_or_default()
+            });
             let turns = projections
                 .state_snapshot("stats")
                 .and_then(|stats| stats.get("turns").and_then(Value::as_u64));
@@ -77,7 +103,12 @@ impl SessionService {
                 .and_then(Value::as_u64)
                 .map(SetTitleExpectation::Exact)
                 .unwrap_or(SetTitleExpectation::NoTitle);
-            (turns.unwrap_or(0), expectation)
+            (
+                turns.unwrap_or(0),
+                expectation,
+                include_title,
+                summary_locale,
+            )
         };
         // Admission and settlement of the first turn share one naming slot.
         // The bounded replay context below still requires durable input.
@@ -106,6 +137,55 @@ impl SessionService {
             expectation,
             context,
             message_seqs,
+            include_title,
+            summary_locale,
+            coordinator: Arc::downgrade(&active.coordinator),
+        }))
+    }
+
+    pub(crate) fn record_conversation_summary(
+        &self,
+        attempt: &TitleAttempt,
+        text: &str,
+        locale: Locale,
+    ) -> Result<bool, SessionError> {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(false);
+        };
+        if !attempt
+            .coordinator
+            .ptr_eq(&Arc::downgrade(&active.coordinator))
+        {
+            return Ok(false);
+        }
+        if !conversation_summary::within_limit(text, locale) {
+            return Err(SessionError::Corruption(
+                "invalid generated summary text".into(),
+            ));
+        }
+        let event = crate::session::run_journal::NewSessionEvent::new(
+            conversation_summary::EVENT,
+            json!({"text": text, "locale": locale, "messageSeqs": attempt.message_seqs, "updatedAtMs": now_ms()}),
+        )
+        .log_only();
+        active
+            .shared_journal(&self.backend)?
+            .append_atomic_durable(&[event])
+            .map_err(SessionError::Corruption)?;
+        Ok(true)
+    }
+
+    pub(crate) fn conversation_summary(&self) -> Result<Option<ConversationSummary>, SessionError> {
+        let guard = self.active.lock().expect("active");
+        let Some(active) = guard.as_ref() else {
+            return Ok(None);
+        };
+        fold_if_behind(active, &self.backend)?;
+        let projections = active.projections.lock().expect("projections");
+        Ok(summary_snapshot(&projections).and_then(|mut summary| {
+            summary.text = conversation_summary::fit_text(&summary.text, summary.locale)?;
+            Some(summary)
         }))
     }
 
@@ -133,6 +213,10 @@ impl SessionService {
         }
         Ok(Some(SuggestionAttempt { context }))
     }
+}
+
+fn summary_snapshot(projections: &ProjectionRegistry) -> Option<ConversationSummary> {
+    serde_json::from_value(projections.state_snapshot(conversation_summary::PROJECTION)?).ok()
 }
 
 fn write_budget(dir: &Dir, budget: &UtilityBudget) -> Result<(), SessionError> {

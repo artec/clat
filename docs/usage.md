@@ -1757,7 +1757,7 @@ process-only override; it neither reads nor changes the persistent token.
 
 The Workbench settings panel exposes a host-wide companion utility policy.
 Disabling `builtin.utility_model` in `builtin-plugins.json` and restarting stops
-automatic naming, prompt suggestions and followups. Settings and manual renaming
+automatic naming, session summaries, prompt suggestions and followups. Settings and manual renaming
 remain available; compaction and Git keep their own model calls and shared route
 configuration. Re-enabling does not catch up old auxiliary jobs: new completed
 turns trigger future automatic work. The Extensions view explains effective
@@ -1781,6 +1781,19 @@ is kept instead of saving a mid-word fragment. The TUI conversation header and
 the PWA header/sidebar ellipsize long titles visually within the available
 width; what is stored stays whole and manual renames (bounded separately at
 60 characters) always take precedence.
+
+**Session summary** is a separate switch directly below **Continuous naming**.
+It defaults to on. Web and Desktop show the latest short progress paragraph and
+its update time at the top of the current conversation's right work area.
+Summaries continue after a manual rename and also work with continuous naming
+turned off. When both features run, they share one auxiliary model request.
+Turning off the summary hides it and stops future generation. The last saved
+summary is available again when the switch is turned back on.
+
+A summary uses the interface language captured when the turn is submitted.
+The next eligible turn after a language change uses the new language. Chinese
+summaries are limited to 80 characters and English summaries to 40 words.
+The active conversation restores its latest saved summary when reopened.
 Manual prompt suggestions
 are off by default. In Web/Desktop, use the add menu to request one next-message
 hint when the policy, session and idle state allow it. In the TUI,
@@ -2245,7 +2258,8 @@ attachment must finish its admission receipt before switching.
 Settled replies and fenced code have **Copy reply** / **Copy code** actions
 that copy their original text, including Markdown/code line breaks. Selecting
 body text exposes **Quote selection**, which appends an editable quote without
-replacing the current draft. Clipboard failures are reported on the button.
+replacing the current draft. Opening a link’s context menu dismisses the quote
+action until a new selection gesture. Clipboard failures are reported on the button.
 
 The PWA `/` picker shares the structured command/skill catalog and fill-only
 keyboard behavior above. Model, permission, resume, rename and compact entries
@@ -2959,10 +2973,15 @@ cached next-step suggestions as well as new suggestion generation.
 Pending state and operation receipts are process-local;
 they are not a persistent queue across Host restarts.
 
-After explicitly stopping a text-only run in Web/PWA/Desktop, hover over its last
-user message. For an eligible turn, the pencil is the first action in the
-bubble's action row and opens an editor that grows as the text wraps. **Send and rerun**
-replaces the last turn in
+In Web/PWA/Desktop, hover over the user message for the active text-only run
+to see its pencil alongside the other actions and timestamp. Select the pencil
+to stop the run and open the inline editor
+when the Host confirms the turn can be replaced. You can do this before the
+model has produced any output. The Host supplies the admitted prompt identity
+when cancellation settles, independently of the message outline. The composer
+shows a waiting status during the stop and eligibility check. If you use Stop separately, the
+pencil for an eligible stopped turn is available on hover or keyboard focus.
+**Send and rerun** replaces the last turn in
 the same conversation and starts the edited text through normal input
 admission. The original message and its response are removed from replay and
 model context. Earlier turns and project files are preserved.

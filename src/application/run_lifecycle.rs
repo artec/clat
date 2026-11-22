@@ -58,7 +58,9 @@ impl TrustedProjectApplication {
             .next_round()
             .map_err(ApplicationError::new)?;
         // goal 续轮是 core 合成消息：覆盖客户端载荷，无幂等键。
-        request.message = crate::message::PendingMessage::text(round.prompt.clone());
+        let mut message = crate::message::PendingMessage::text(round.prompt.clone());
+        message.summary_locale = request.message.summary_locale;
+        request.message = message;
         let visible_prompt = round.display_text.clone().unwrap_or_default();
         let catalog = run_catalog(CancelToken::new(), Arc::clone(&request.approver));
         match self.start_run_with_catalog(request, catalog, Some(round)) {
@@ -106,6 +108,7 @@ impl TrustedProjectApplication {
             self,
             RunExecutionSpec {
                 target: None,
+                summary_locale: request_message.summary_locale,
                 run_plugins,
                 config: config.clone(),
                 credentials: credentials.clone(),

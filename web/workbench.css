@@ -484,6 +484,10 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .extension-modules .shell-label { font-weight: 400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .extension-modules small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color: var(--text-muted); line-height: 1.5; font-size: var(--text-size-secondary); }
 .extension-back { margin: 4px 12px 12px; }
+.conversation-summary { margin: 0 0 12px; padding: 12px; border-radius: 10px; background: var(--surface-raised); border: 1px solid var(--line); }
+.conversation-summary-meta { display: flex; gap: 7px; align-items: center; color: var(--text-muted); font-size: var(--text-size-secondary); }
+.conversation-summary-meta svg { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.conversation-summary-text { margin: 8px 0 0; color: var(--text); font-size: var(--text-size-ui); line-height: 1.6; overflow-wrap: anywhere; }
 .context-work-heading{display:flex;align-items:center;gap:8px;min-height:30px;font-size:var(--text-size-ui);list-style:none}.context-work-heading>svg{width:16px;height:16px;flex:none;color:var(--text-muted)}
 .context-work-heading strong{font-weight:500;flex:1}.context-work-heading small{color:var(--text-muted);font-size:var(--text-size-secondary)}.context-work-details>summary{cursor:pointer}.context-work-details>summary:after{content:'›';color:var(--text-muted);transform:rotate(90deg)}.context-work-details[open]>summary:after{transform:rotate(-90deg)}
 .context-work-preview{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--text-muted);font-size:var(--text-size-secondary);line-height:1.6;margin:3px 0 8px}.context-work-details[open]+.context-work-preview{display:none}
@@ -524,7 +528,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
   }
 }
 .msg.user .message-actions { justify-content: flex-end; }
-.msg.user:has(> .message-rewind-editor) > .message-actions { display: none; }
+.msg.user:has(> .message-rewind-editor) > .message-actions { visibility: hidden; }
 .message-rewind-editor {
   grid-column: 2 / -1;
   min-inline-size: 0;
@@ -646,10 +650,13 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .model-thinking-heading output { display:inline-flex; align-items:center; justify-content:center; min-width:58px; min-height:26px; padding:3px 10px; border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line)); border-radius:99px; background:color-mix(in srgb,var(--accent) 10%,var(--surface-input)); color:var(--accent); font-size:12px; text-align:center; transition:transform .18s ease,color .18s ease,background .18s ease; }
 .model-thinking-panel[data-preview="true"] .model-thinking-heading output { transform:translateY(-2px) scale(1.04); background:color-mix(in srgb,var(--accent) 18%,var(--surface-input)); }
 .model-thinking-panel .model-thinking-field { display:grid; gap:4px; }
-@property --thinking-ratio { syntax:"<number>"; inherits:true; initial-value:0; }
-.model-thinking-panel .model-thinking-control { --thinking-thumb:26px; --thinking-track:10px; height:35px; transition:--thinking-ratio .22s cubic-bezier(.2,.75,.25,1); }
-/* Track, native range and tick centers all share the control's 17.5px midline. */
-.model-thinking-panel .model-thinking-control::before { inset:calc(50% - var(--thinking-track)/2) 0 auto; height:var(--thinking-track); border-radius:99px; box-shadow:inset 0 1px 3px rgb(0 0 0 / 15%),0 0 0 1px color-mix(in srgb,var(--accent) 12%,transparent); }
+.model-thinking-panel .model-thinking-control { --thinking-thumb:26px; --thinking-track:10px; height:35px; }
+/* The fill moves on a compositor transform instead of repainting a gradient every frame.
+   Track, fill, native thumb and tick centers share the control's 17.5px midline. */
+.model-thinking-panel .model-thinking-control::before,
+.model-thinking-panel .model-thinking-control::after { content:''; position:absolute; inset:calc(50% - var(--thinking-track)/2) 0 auto; height:var(--thinking-track); border-radius:99px; pointer-events:none; }
+.model-thinking-panel .model-thinking-control::before { background:var(--line-strong); box-shadow:inset 0 1px 3px rgb(0 0 0 / 15%),0 0 0 1px color-mix(in srgb,var(--accent) 12%,transparent); }
+.model-thinking-panel .model-thinking-control::after { background:var(--accent); transform-origin:left center; transform:scaleX(var(--thinking-ratio,0)); transition:transform .22s cubic-bezier(.2,.75,.25,1); will-change:transform; }
 .model-thinking-panel #model-thinking { height:35px; min-height:35px; }
 .model-thinking-panel #model-thinking::-webkit-slider-runnable-track { height:var(--thinking-track); }
 .model-thinking-panel #model-thinking::-moz-range-track { height:var(--thinking-track); }
@@ -674,7 +681,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
   .model-thinking-panel { padding:10px; }
 }
 @media (prefers-reduced-motion:reduce) {
-  .model-picker-modes button,.model-thinking-heading output,.model-thinking-panel .model-thinking-control,
+  .model-picker-modes button,.model-thinking-heading output,.model-thinking-panel .model-thinking-control::after,
   .model-thinking-panel .model-thinking-ticks>span,.model-thinking-panel #model-thinking::-webkit-slider-thumb,
   .model-thinking-panel #model-thinking::-moz-range-thumb { transition:none; }
   .model-thinking-panel:has(#model-thinking[data-saving]) .model-thinking-heading output { animation:none; }
@@ -777,7 +784,8 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .session-context-menu>.error{max-width:260px;padding:0 10px;white-space:normal}
 @media(hover:none){.project-organizable>.project-more{display:inline-flex}}
 
-.project-title-line{display:flex!important;align-items:center;gap:6px}
+.project-title-line{display:flex!important;align-items:baseline;flex-wrap:wrap;gap:0 6px;overflow-wrap:anywhere}
+.project-current-label{color:var(--accent);font-size:11px;line-height:1.4}
 
 /* A turn has one process disclosure; messages remain in their original slots. */
 .round-process-heading{display:flex;align-items:center;gap:8px;width:calc(100% - 36px);margin:4px 0 20px 36px;padding:8px 0 12px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--text-muted);text-align:start;font:var(--text-size-ui)/1.5 var(--font-ui);cursor:pointer}

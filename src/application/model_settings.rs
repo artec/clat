@@ -30,6 +30,8 @@ pub struct ModelSettingsView {
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct UtilitySettingsView {
     pub naming_enabled: bool,
+    #[serde(default = "automatic_followups_default")]
+    pub summary_enabled: bool,
     pub suggestions_enabled: bool,
     #[serde(default = "automatic_followups_default")]
     pub automatic_followups: bool,
@@ -40,6 +42,7 @@ pub struct UtilitySettingsView {
 #[serde(deny_unknown_fields)]
 pub struct UtilitySettingsEdit {
     pub naming_enabled: bool,
+    pub summary_enabled: Option<bool>,
     pub suggestions_enabled: bool,
     #[serde(default = "automatic_followups_default")]
     pub automatic_followups: bool,
@@ -257,6 +260,7 @@ impl TrustedProjectApplication {
         let settings = self.config.load_utility_settings().map_err(store_error)?;
         Ok(UtilitySettingsView {
             naming_enabled: settings.naming_enabled,
+            summary_enabled: settings.summary_enabled,
             suggestions_enabled: settings.suggestions_enabled,
             automatic_followups: settings.automatic_followups,
             profile: settings.profile,
@@ -273,9 +277,19 @@ impl TrustedProjectApplication {
             .profile
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty());
+        let summary_enabled = match edit.summary_enabled {
+            Some(enabled) => enabled,
+            None => {
+                self.config
+                    .load_utility_settings()
+                    .map_err(store_error)?
+                    .summary_enabled
+            }
+        };
         self.config
             .save_utility_settings(crate::plugins::services::UtilitySettings {
                 naming_enabled: edit.naming_enabled,
+                summary_enabled,
                 suggestions_enabled: edit.suggestions_enabled,
                 automatic_followups: edit.automatic_followups,
                 profile,

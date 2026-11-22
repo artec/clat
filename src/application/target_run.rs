@@ -139,6 +139,7 @@ impl TrustedProjectApplication {
         let waiting = RunExecutionEngine::spawn(
             self,
             RunExecutionSpec {
+                summary_locale: None,
                 target: Some(target.clone()),
                 run_plugins: crate::plugins::run_catalog(cancel, request.approver.clone()),
                 config: request.config,

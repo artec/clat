@@ -45,6 +45,7 @@ pub(super) fn parse(params: &Map<String, Value>, steering: bool) -> Result<Submi
         id,
         uploads.iter().map(PathBuf::from).collect(),
     );
+    message.summary_locale = summary_locale(params)?;
     message.bind_session_share_identity(&shares);
     Ok(Submission {
         message,
@@ -52,6 +53,19 @@ pub(super) fn parse(params: &Map<String, Value>, steering: bool) -> Result<Submi
         draft_scope_id: scope,
         shares,
     })
+}
+
+pub(in crate::serve) fn summary_locale(
+    params: &Map<String, Value>,
+) -> Result<Option<crate::i18n::Locale>, RpcError> {
+    params
+        .get("summaryLocale")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|_| RpcError::bad_request("invalid summaryLocale"))
+        })
+        .transpose()
 }
 
 #[cfg(test)]

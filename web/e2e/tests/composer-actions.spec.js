@@ -196,9 +196,10 @@ test('a stopped turn offers a hover edit action and can be rerun', async ({ page
   const original = user('An original stopped question');
   await expect(partial).toBeVisible(LIVE);
   await original.hover();
-  await expect(pencil(original)).toBeHidden();
+  await expect(original.getByRole('button', { name: 'Stop and edit message' })).toBeVisible();
   const id = await page.evaluate(() => state.sessionId);
   // Stop without moving the pointer away from the active bubble.
+  await original.hover();
   await expect(stop).toBeVisible(LIVE);
   await stop.evaluate(button => button.focus({ preventScroll: true }));
   await page.keyboard.press('Enter');
@@ -255,10 +256,137 @@ test('a stopped turn offers a hover edit action and can be rerun', async ({ page
   await newGoal.click();
   await page.fill('#prompt', 'Verify new work in the same conversation');
   await page.click('#send');
-  await expect.poll(() => page.evaluate(async previousGoalId => {
-    const workflow = await rpc('workflow.details', {});
-    const current = workflow.goal?.goal;
-    return { session: workflow.session, objective: current?.objective,
-      freshGoal: Boolean(current?.id) && current.id !== previousGoalId, rounds: current?.roundsStarted };
-  }, completedGoal.goal.id), LIVE).toEqual({ session: id, objective: 'Verify new work in the same conversation', freshGoal: true, rounds: 1 });
+  try {
+    await expect.poll(() => page.evaluate(async previousGoalId => {
+      const workflow = await rpc('workflow.details', {});
+      const current = workflow.goal?.goal;
+      return { session: workflow.session, objective: current?.objective,
+        freshGoal: Boolean(current?.id) && current.id !== previousGoalId, started: current?.roundsStarted > 0 };
+    }, completedGoal.goal.id), LIVE).toEqual({ session: id, objective: 'Verify new work in the same conversation', freshGoal: true, started: true });
+  } finally {
+    await page.evaluate(() => rpc('run.cancel', {}));
+    await expect.poll(() => page.evaluate(async () => (await rpc('workbench.info', {})).active_run), LIVE).toBeNull();
+  }
+});
+
+test('the running pencil stops and opens the editor without a second click', async ({ page }) => {
+  await openWorkbench(page, hostInfo('rewind'));
+  const previousSelection = await page.evaluate(() => state.selectionGeneration);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await page.waitForFunction(previous => state.connected && !state.switching
+    && state.selectionGeneration !== previous, previousSelection, LIVE);
+
+  const prompt = page.locator('#prompt');
+  const status = page.locator('#run-state');
+  const text = 'One-click stopped question';
+  const message = page.locator('#transcript .msg.user').filter({hasText:text});
+  const editor = message.getByRole('textbox');
+  await prompt.fill(text);
+  await page.click('#send');
+  const pencil = message.locator('.message-rewind-pencil');
+  await prompt.hover();
+  await expect(pencil).toBeHidden(LIVE);
+  await expect(message.locator('.message-actions')).toHaveCSS('pointer-events', 'none');
+  await prompt.fill('Keep this draft');
+  await message.hover();
+  await expect(pencil).toBeVisible(LIVE);
+  await expect(message.locator('[data-action="copy-message"]')).toBeVisible();
+  await expect(message.locator('.message-time')).toHaveAttribute('datetime', /T/, LIVE);
+
+  let releaseCancel, releaseCheck;
+  const cancelGate = new Promise(resolve => { releaseCancel = resolve; });
+  const checkGate = new Promise(resolve => { releaseCheck = resolve; });
+  await page.route('**/api/run.cancel', async route => {
+    await cancelGate;
+    await route.continue();
+  }, {times:1});
+  await page.route('**/api/session.rewind.check', async route => {
+    await checkGate;
+    await route.continue();
+  }, {times:1});
+  try {
+    const cancellation = page.waitForRequest(request => request.url().endsWith('/api/run.cancel'));
+    await pencil.click();
+    const request = await cancellation;
+    expect(request.postDataJSON().expectedTurn).toBeTruthy();
+    await expect(status).toBeVisible();
+    await expect(status).toHaveAttribute('data-presentation', 'web.rewind_stopping');
+    await expect(pencil).toBeDisabled();
+    await expect(editor).toBeHidden();
+
+    const check = page.waitForRequest(request => request.url().endsWith('/api/session.rewind.check'));
+    releaseCancel();
+    await check;
+    await expect(status).toHaveAttribute('data-presentation', 'web.rewind_stopping');
+    await expect(editor).toBeHidden();
+
+    releaseCheck();
+    await expect(editor).toHaveValue(text, LIVE);
+    await expect(editor).toBeFocused();
+    await expect(status).not.toHaveAttribute('data-presentation', 'web.rewind_stopping');
+    await expect(prompt).toHaveValue('Keep this draft');
+    await message.getByRole('button', {name:'Cancel', exact:true}).click();
+    await expect(editor).toBeHidden();
+    await expect(message).toContainText(text);
+  } finally {
+    releaseCancel();
+    releaseCheck();
+    await page.unrouteAll({behavior:'wait'});
+  }
+});
+
+
+test('a just-sent prompt can be edited before any model output without a message outline', async ({ page }) => {
+  await page.addInitScript(() => {
+    const fetchStream = window.fetch;
+    window.fetch = async (input, options) => {
+      const response = await fetchStream(input, options);
+      if (typeof input !== 'string' || !input.endsWith('/api/events') || !response.ok) return response;
+      let pending = '';
+      const frames = new TransformStream({
+        transform(chunk, controller) {
+          const complete = (pending + chunk).split('\n\n');
+          pending = complete.pop();
+          for (let frame of complete) {
+            if (frame.startsWith('event: prompt.settled')) {
+              // The message outline is optional in the terminal frame.
+              frame = frame.replace(/^data: (.*)$/m, (_, data) => {
+                const payload = JSON.parse(data);
+                delete payload.ctl.message_outline;
+                return 'data: ' + JSON.stringify(payload);
+              });
+            }
+            controller.enqueue(frame + '\n\n');
+          }
+        },
+      });
+      const body = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(frames).pipeThrough(new TextEncoderStream());
+      return new Response(body, {status:response.status, headers:response.headers});
+    };
+  });
+  await openWorkbench(page, hostInfo('rewind'));
+  const previousSelection = await page.evaluate(() => state.selectionGeneration);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await page.waitForFunction(previous => state.connected && !state.switching
+    && state.selectionGeneration !== previous, previousSelection, LIVE);
+
+  const text = 'A silent stopped question';
+  const messages = page.locator('#transcript .msg.user');
+  const original = messages.filter({hasText:text});
+  await page.locator('#prompt').fill(text);
+  await page.click('#send');
+  await original.hover();
+  await expect(page.locator('#transcript .msg.assistant')).toHaveCount(0);
+  await original.locator('.message-rewind-pencil').click();
+  const editor = original.getByRole('textbox');
+  await expect(editor).toHaveValue(text, {timeout:5000});
+  await expect(page.locator('#run-state')).not.toHaveAttribute('data-presentation', 'web.rewind_stopping');
+  await editor.fill('The corrected prompt');
+  await original.getByRole('button', {name:'Send and rerun'}).click();
+  await expect(messages.filter({hasText:'The corrected prompt'})).toHaveCount(1, LIVE);
+  await expect(original).toHaveCount(0);
+  await expect.poll(() => page.evaluate(async () => {
+    const history = await rpc('session.history', {});
+    return history.events.filter(event => event.type === 'user_message').map(event => event.text);
+  }), LIVE).toEqual(['The corrected prompt']);
 });

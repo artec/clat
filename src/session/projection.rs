@@ -49,6 +49,7 @@ impl ProjectionRegistry {
                 Box::new(TranscriptUnit::default()),
                 Box::new(MessageOutlineUnit::default()),
                 Box::new(TitleUnit::default()),
+                Box::new(crate::session::catalog::conversation_summary::SummaryUnit::default()),
                 Box::new(crate::background_jobs::projection::JobUnit::default()),
                 Box::new(PermissionModeUnit::default()),
                 Box::new(PlanModeUnit::default()),

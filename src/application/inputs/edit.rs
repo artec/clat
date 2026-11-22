@@ -77,6 +77,7 @@ impl TrustedProjectApplication {
             Some(id.to_owned()),
             draft.uploads.iter().map(std::path::PathBuf::from).collect(),
         );
+        message.summary_locale = old.message.summary_locale;
         message.bind_session_share_identity(&draft.session_shares);
         message.resolve_staged_attachments(paths);
         if self.current_session_id().is_some() {

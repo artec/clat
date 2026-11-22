@@ -699,9 +699,21 @@ fn rewind_send_replaces_the_stopped_turn_and_rejects_a_stale_editor() {
     let addr = handle.addr;
     let mut events = SseClient::connect(addr);
     submit(addr, "old-input", "original rewind text");
-    events.wait_for("event", WAIT);
-    input_rpc(addr, "run.cancel", json!({}));
-    events.wait_settled();
+    events.wait_for_run_event("run_started", WAIT);
+    let info = input_rpc(addr, "workbench.info", json!({}));
+    let target = info["active_run"]["turn_target"].as_str().unwrap();
+    let stale = json!({"expectedTurn": format!("{target}-stale")});
+    let (_, refused) = post_rpc_json(addr, TEST_TOKEN, "run.cancel", &stale.to_string());
+    assert_eq!(
+        refused["error"]["presentation"]["key"],
+        "input.turn_changed"
+    );
+    assert_eq!(
+        input_rpc(addr, "workbench.info", json!({}))["active_run"]["turn_target"],
+        target
+    );
+    input_rpc(addr, "run.cancel", json!({"expectedTurn":target}));
+    let settled: Value = serde_json::from_str(&events.wait_settled().data).unwrap();
     let session = input_rpc(addr, "session.info", json!({}));
     let history = input_rpc(addr, "session.history", json!({}));
     let seq = history["events"]
@@ -711,6 +723,10 @@ fn rewind_send_replaces_the_stopped_turn_and_rejects_a_stale_editor() {
         .find(|event| event["text"] == "original rewind text")
         .unwrap()["seq"]
         .clone();
+    assert_eq!(
+        settled["ctl"]["stopped_prompt"],
+        json!({"session_id": session["session_id"], "seq": seq})
+    );
     let target = json!({"id":session["session_id"],"seq":seq});
     let check = input_rpc(addr, "session.rewind.check", target.clone());
     assert_eq!(check["eligible"], true);

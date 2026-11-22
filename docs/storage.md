@@ -244,6 +244,7 @@ The journal folds into independent projections:
   optional versioned acceptance/verification/completion provenance;
 - human transcript;
 - title;
+- the latest auxiliary session summary and its language/update time;
 - todo state;
 - permission mode;
 - usage/statistics;

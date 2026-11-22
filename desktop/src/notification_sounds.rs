@@ -9,32 +9,55 @@ use tauri::Manager;
 
 pub const OFF: &str = "off";
 const PREFERENCE_KEY: &str = "notificationSound";
+const BANNER_PREFERENCE_KEY: &str = "notificationBannerEnabled";
+const SOUND_WHEN_BANNER_OFF_KEY: &str = "notificationSoundWhenBannerOff";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotificationPreferences {
+    pub sound: String,
+    pub banner_enabled: bool,
+    pub sound_when_banner_off: bool,
+}
+
+impl Default for NotificationPreferences {
+    fn default() -> Self {
+        Self {
+            sound: default_sound().to_owned(),
+            banner_enabled: true,
+            sound_when_banner_off: true,
+        }
+    }
+}
 
 pub struct SoundState {
-    selected: Mutex<String>,
+    prefs: Mutex<NotificationPreferences>,
     preview_child: Mutex<Option<Child>>,
 }
 
 impl SoundState {
-    pub fn new(selected: String) -> Self {
+    pub fn new(prefs: NotificationPreferences) -> Self {
         Self {
-            selected: Mutex::new(selected),
+            prefs: Mutex::new(prefs),
             preview_child: Mutex::new(None),
         }
     }
 
-    pub fn selected(&self) -> String {
-        self.selected
+    pub fn preferences(&self) -> NotificationPreferences {
+        self.prefs
             .lock()
             .map(|guard| guard.clone())
-            .unwrap_or_else(|_| default_sound().to_owned())
+            .unwrap_or_default()
     }
 
-    pub fn set_selected(&self, sound: String) -> Result<(), UiMessage> {
+    pub fn selected(&self) -> String {
+        self.preferences().sound
+    }
+
+    pub fn update(&self, prefs: NotificationPreferences) -> Result<(), UiMessage> {
         *self
-            .selected
+            .prefs
             .lock()
-            .map_err(|_| UiMessage::new("desktop.state_unavailable"))? = sound;
+            .map_err(|_| UiMessage::new("desktop.state_unavailable"))? = prefs;
         Ok(())
     }
 
@@ -214,17 +237,32 @@ pub fn parse_saved_sound(value: Option<&str>) -> String {
     }
 }
 
-pub fn load(app: &tauri::AppHandle) -> String {
+pub fn parse_preferences(prefs: Option<&Value>) -> NotificationPreferences {
+    let sound = parse_saved_sound(
+        prefs
+            .and_then(|value| value.get(PREFERENCE_KEY))
+            .and_then(Value::as_str),
+    );
+    let banner_enabled = prefs
+        .and_then(|value| value.get(BANNER_PREFERENCE_KEY))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let sound_when_banner_off = prefs
+        .and_then(|value| value.get(SOUND_WHEN_BANNER_OFF_KEY))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    NotificationPreferences {
+        sound,
+        banner_enabled,
+        sound_when_banner_off,
+    }
+}
+
+pub fn load(app: &tauri::AppHandle) -> NotificationPreferences {
     let saved = crate::localization::path(app)
         .and_then(|path| load_ui_preferences(&path))
-        .ok()
-        .and_then(|prefs| {
-            prefs
-                .get(PREFERENCE_KEY)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-    parse_saved_sound(saved.as_deref())
+        .ok();
+    parse_preferences(saved.as_ref())
 }
 
 fn validate_choice(sound: &str, available: &[String]) -> Result<String, UiMessage> {
@@ -254,11 +292,13 @@ pub fn env_override() -> Option<&'static str> {
 }
 
 fn payload(app: &tauri::AppHandle, sounds: Vec<String>) -> Value {
-    let selected = app.state::<Desktop>().notification_sounds.selected();
+    let prefs = app.state::<Desktop>().notification_sounds.preferences();
     json!({
-        "selected": selected,
+        "selected": prefs.sound,
         "default": default_sound(),
         "sounds": sounds,
+        "bannerEnabled": prefs.banner_enabled,
+        "soundWhenBannerOff": prefs.sound_when_banner_off,
         "envOverride": env_override(),
     })
 }
@@ -298,22 +338,37 @@ pub async fn desktop_notification_sounds(
 pub async fn desktop_set_notification_sound(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-    sound: String,
+    sound: Option<String>,
+    banner_enabled: Option<bool>,
+    sound_when_banner_off: Option<bool>,
     preview: Option<bool>,
 ) -> Result<Value, UiMessage> {
     crate::commands::guard(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let sounds = available_sounds();
-        let validated = validate_choice(&sound, &sounds)?;
+        let mut next = app.state::<Desktop>().notification_sounds.preferences();
+        let sound_changed = sound.is_some();
+        if let Some(sound) = sound {
+            next.sound = validate_choice(&sound, &sounds)?;
+        }
+        if let Some(enabled) = banner_enabled {
+            next.banner_enabled = enabled;
+        }
+        if let Some(enabled) = sound_when_banner_off {
+            next.sound_when_banner_off = enabled;
+        }
         save_ui_preferences(
             &crate::localization::path(&app)?,
-            &json!({ PREFERENCE_KEY: validated }),
+            &json!({
+                PREFERENCE_KEY: next.sound,
+                BANNER_PREFERENCE_KEY: next.banner_enabled,
+                SOUND_WHEN_BANNER_OFF_KEY: next.sound_when_banner_off,
+            }),
         )?;
-        app.state::<Desktop>()
-            .notification_sounds
-            .set_selected(validated.clone())?;
-        if preview.unwrap_or(true) {
-            let _ = preview_sound(&app, &validated);
+        let selected = next.sound.clone();
+        app.state::<Desktop>().notification_sounds.update(next)?;
+        if sound_changed && preview.unwrap_or(true) {
+            let _ = preview_sound(&app, &selected);
         }
         Ok(payload(&app, sounds))
     })
@@ -361,6 +416,19 @@ mod tests {
         assert_eq!(parse_saved_sound(Some("../evil")), default_sound());
         assert_eq!(parse_saved_sound(Some("off")), "off");
         assert_eq!(parse_saved_sound(Some("Glass")), "Glass");
+        assert_eq!(parse_preferences(None), NotificationPreferences::default());
+        assert_eq!(
+            parse_preferences(Some(&json!({
+                PREFERENCE_KEY: "Ping",
+                BANNER_PREFERENCE_KEY: false,
+                SOUND_WHEN_BANNER_OFF_KEY: true,
+            }))),
+            NotificationPreferences {
+                sound: "Ping".to_owned(),
+                banner_enabled: false,
+                sound_when_banner_off: true,
+            }
+        );
     }
 
     #[test]

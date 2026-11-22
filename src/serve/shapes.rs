@@ -49,6 +49,13 @@ pub(crate) fn workbench_snapshot_json(
     methods: &[&str],
 ) -> Value {
     let mut value = workbench_base_json(snapshot, active_run, active_compaction, methods);
+    if let Some(summary) = &snapshot.session.summary {
+        value["session"]["summary"] = json!({
+            "text": summary.text,
+            "locale": summary.locale,
+            "updated_at_ms": summary.updated_at_ms,
+        });
+    }
     value["model"]["vendor"] = json!(snapshot.model.vendor.storage_key());
     value["telemetry"] = json!({
         "monitor": snapshot.monitor_status,
@@ -377,6 +384,16 @@ pub(crate) fn with_prompt_rpc_id(mut settled: Value, rpc_id: &str) -> Value {
     settled
 }
 
+/// Identify the admitted prompt independently of the optional navigation outline.
+pub(crate) fn with_stopped_prompt(mut settled: Value, handle: &crate::RunHandle) -> Value {
+    if settled["outcome"]["type"] == "cancelled"
+        && let (Some(session), Some(seq)) = (handle.session_id(), handle.replay_before_seq())
+    {
+        settled["stopped_prompt"] = json!({"session_id": session.as_str(), "seq": seq});
+    }
+    settled
+}
+
 /// Refresh the full-session navigator at the same durable settlement boundary
 /// that publishes the completed transcript. This keeps the live PWA outline
 /// authoritative without inventing provisional journal sequence numbers in
@@ -486,6 +503,10 @@ pub(crate) fn notice_ctl(event: &ApplicationEvent) -> Value {
                 "payload",
                 json!({"session": session.as_str(), "seq": seq, "summary": summary, "disclosure": disclosure}),
             ),
+        ]),
+        ApplicationEvent::ConversationSummaryUpdated { session_id } => object(vec![
+            ("kind", json!("conversation_summary")),
+            ("payload", json!({"session_id":session_id.as_str()})),
         ]),
         ApplicationEvent::TitleUpdated { title } => object(vec![
             ("kind", Value::String("title".into())),
@@ -691,6 +712,7 @@ mod tests {
                 workspace_id: Some("workspace-1".into()),
             },
             session: crate::WorkbenchSessionSnapshot {
+                summary: None,
                 id: Some(crate::SessionId::new("session-1")),
                 title: Some("active work".into()),
                 committed_seq: Some(42),

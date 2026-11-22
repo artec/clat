@@ -62,7 +62,8 @@ function createShellInspector(shell) {
   const status = el('div', 'context-status'); status.id = 'context-status';
   const plan = el('div', 'context-plan'); plan.id = 'context-plan';
   const resources = el('section', 'context-resources'); resources.id = 'context-resources';
-  overview.append(connection, status, plan, resources, details);
+  shell.conversationSummary = createConversationSummary();
+  overview.append(connection, shell.conversationSummary.card, status, plan, resources, details);
   const back = shellButton('context-overview-open', 'previous', () => experienceText('overview'), () => shell.overview());
   back.classList.add('extension-back'); back.hidden = true;
   const cards = el('nav', 'extension-modules');
@@ -76,6 +77,35 @@ function createShellInspector(shell) {
   }
   overview.insertBefore(cards,resources); scroll.append(back,overview);
   for (const {id,key} of WORKSPACE_TOOLS) shell.tools.register(id,key);
+}
+
+function createConversationSummary() {
+  const card = el('section', 'conversation-summary');
+  card.id = 'conversation-summary';
+  card.hidden = true;
+  CLATI18n.attribute(card, 'aria-label', () => shellText('session_summary'));
+  const meta = el('div', 'conversation-summary-meta');
+  const time = el('time');
+  const text = el('p', 'conversation-summary-text');
+  meta.append(svgIcon('session-summary'), time);
+  card.append(meta, text);
+  return { card, time, text };
+}
+
+function renderConversationSummary() {
+  const view = workbenchShell?.conversationSummary;
+  if (!view) return;
+  const session = state.workbench?.session;
+  const summary = !state.switching && session?.id === state.sessionId ? session?.summary : null;
+  const date = new Date(summary?.updated_at_ms);
+  view.card.hidden = !(summary?.text && Number.isFinite(date.getTime()));
+  view.text.textContent = view.card.hidden ? '' : summary.text;
+  if (view.card.hidden) return;
+  view.text.lang = summary.locale;
+  view.time.dateTime = date.toISOString();
+  CLATI18n.bind(view.time, 'textContent', () => shellText('session_summary_updated', {
+    time: new Intl.DateTimeFormat(CLATI18n.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date),
+  }));
 }
 
 function mountShellDialog(shell, id, trigger, route, host, type) {
@@ -327,7 +357,12 @@ function installWorkbenchShell() {
   };
   window.addEventListener('popstate', route);
   window.addEventListener('clat:activated', route);
-  window.addEventListener('clat:workbench-updated', () => { refreshApplicationToolbar(shell); void refreshShellContext(); });
+  window.addEventListener('clat:builtin-availability', renderConversationSummary);
+  window.addEventListener('clat:workbench-updated', () => {
+    renderConversationSummary();
+    refreshApplicationToolbar(shell);
+    void refreshShellContext();
+  });
   if (context.isActive() && location.hash && location.hash !== '#/workbench'
       && location.hash !== '#/settings/computer-use') route();
   context.renderDirectory();

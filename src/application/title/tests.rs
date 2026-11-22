@@ -40,6 +40,7 @@ impl SessionTitler for RecordingTitler {
         let mut calls = self.0.lock().unwrap();
         calls.push(conversation.into());
         Ok(crate::plugins::services::GeneratedTitle {
+            summary: None,
             title: format!("topic {}", calls.len()),
             provider: "test".into(),
             model: "small".into(),
@@ -70,6 +71,7 @@ fn utility_worker_updates_provider_titles_but_manual_rename_ends_model_calls() {
     let id = sessions.new_session(&project).unwrap().id;
     let config = ModelConfig::default();
     let job = AutotitleJob {
+        summary_locale: None,
         session_id: id.clone(),
         credentials: ProviderCredentials::for_protocol(config.protocol),
         config,
@@ -195,6 +197,7 @@ fn generated_titles_persist_whole_and_replay_whole_overflow_keeps_old_title() {
     let id = sessions.new_session(&project).unwrap().id;
     let config = ModelConfig::default();
     let job = AutotitleJob {
+        summary_locale: None,
         session_id: id.clone(),
         credentials: ProviderCredentials::for_protocol(config.protocol),
         config,
@@ -317,6 +320,7 @@ fn disabled_naming_never_reserves_budget_or_calls_the_provider() {
     completed_turn(&sessions, 1, "no automatic naming");
     let config = ModelConfig::default();
     let job = AutotitleJob {
+        summary_locale: None,
         session_id: id.clone(),
         credentials: ProviderCredentials::for_protocol(config.protocol),
         config,
@@ -354,6 +358,7 @@ fn cancelled_title_result_cannot_commit_or_notify() {
         ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
             cancel.cancel();
             Ok(crate::plugins::services::GeneratedTitle {
+                summary: None,
                 title: "late result".into(),
                 provider: "test".into(),
                 model: "test".into(),
@@ -371,6 +376,7 @@ fn cancelled_title_result_cannot_commit_or_notify() {
     let before = sessions.title_state();
     let (tx, rx) = mpsc::channel();
     let job = AutotitleJob {
+        summary_locale: None,
         session_id: id,
         config: ModelConfig::default(),
         credentials: ProviderCredentials::for_protocol(ModelConfig::default().protocol),
@@ -411,6 +417,7 @@ fn phase5_title_timeout_retains_lease_and_suppresses_late_commit() {
                 .recv_timeout(crate::test_support::HANG)
                 .unwrap();
             Ok(crate::plugins::services::GeneratedTitle {
+                summary: None,
                 title: "late".into(),
                 provider: "test".into(),
                 model: "test".into(),
@@ -467,6 +474,7 @@ fn phase5_title_timeout_retains_lease_and_suppresses_late_commit() {
     worker
         .sender
         .send(AutotitleJob {
+            summary_locale: None,
             session_id: id,
             config: ModelConfig::default(),
             credentials: ProviderCredentials::for_protocol(ModelConfig::default().protocol),
@@ -492,4 +500,120 @@ fn phase5_title_timeout_retains_lease_and_suppresses_late_commit() {
     assert!(!utility.active());
     sessions.quiesce_active().unwrap();
     crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn conversation_summary_refreshes_with_a_manual_title_and_reopens_with_its_session() {
+    use crate::i18n::Locale;
+    use crate::session::key::SessionKey;
+    use crate::test_support::cleanup_tree;
+
+    struct Summarizer(Mutex<Vec<(Locale, bool)>>);
+    impl SessionTitler for Summarizer {
+        fn summary_enabled(&self) -> bool {
+            true
+        }
+        fn generate_title(
+            &self,
+            _: &ModelConfig,
+            _: &ProviderCredentials,
+            _: &str,
+            _: &CancelToken,
+        ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
+            panic!("summary and title should use one shared request")
+        }
+        fn generate_with_summary(
+            &self,
+            _: &ModelConfig,
+            _: &ProviderCredentials,
+            _: &str,
+            locale: Locale,
+            include_title: bool,
+            _: &CancelToken,
+        ) -> Result<crate::plugins::services::GeneratedTitle, UtilityFailure> {
+            let mut calls = self.0.lock().unwrap();
+            calls.push((locale, include_title));
+            Ok(crate::plugins::services::GeneratedTitle {
+                title: "Generated topic".into(),
+                summary: Some(
+                    match locale {
+                        Locale::Traditional => "實作及測試已完成。",
+                        _ => "已有初步进展。",
+                    }
+                    .into(),
+                ),
+                provider: "test".into(),
+                model: "small".into(),
+            })
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!("clat-session-summary-{}", uuid::Uuid::new_v4()));
+    let sessions = SessionService::new(root.clone(), JsonlCompression::Zstd).unwrap();
+    let project = ProjectKey::from_cwd("/tmp/session-summary");
+    let id = sessions.new_session(&project).unwrap().id;
+    let config = ModelConfig::default();
+    let mut job = AutotitleJob {
+        summary_locale: Some(Locale::Simplified),
+        session_id: id.clone(),
+        credentials: ProviderCredentials::for_protocol(config.protocol),
+        config,
+    };
+    let titler = Summarizer(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel();
+    let subscribers = Arc::new(Mutex::new(vec![tx]));
+    let cancel = CancelToken::new();
+    let run_auxiliary = |sessions: &SessionService, job: &AutotitleJob| {
+        maybe_autotitle(&titler, sessions, job, &cancel, &subscribers, &root);
+    };
+
+    completed_turn(&sessions, 1, "Implement and test");
+    run_auxiliary(&sessions, &job);
+    assert_eq!(sessions.title_state().0.as_deref(), Some("Generated topic"));
+    assert_eq!(
+        sessions.conversation_summary().unwrap().unwrap().text,
+        "已有初步进展。"
+    );
+    assert_eq!(
+        rx.try_iter()
+            .filter(|event| matches!(event,
+                ApplicationEvent::ConversationSummaryUpdated {session_id} if *session_id == id
+            ))
+            .count(),
+        1
+    );
+    assert!(
+        sessions
+            .set_title(
+                &id,
+                SetTitleExpectation::Force,
+                "My title",
+                TitleSource::User
+            )
+            .unwrap()
+    );
+
+    completed_turn(&sessions, 2, "Tests passed");
+    job.summary_locale = Some(Locale::Traditional);
+    run_auxiliary(&sessions, &job);
+    run_auxiliary(&sessions, &job);
+    assert_eq!(
+        *titler.0.lock().unwrap(),
+        [(Locale::Simplified, true), (Locale::Traditional, false)]
+    );
+    let latest = sessions.conversation_summary().unwrap().unwrap();
+    assert_eq!(latest.text, "實作及測試已完成。");
+    assert_eq!(latest.locale, Locale::Traditional);
+    assert_eq!(sessions.title_state().0.as_deref(), Some("My title"));
+
+    sessions.quiesce_active().unwrap();
+    drop(sessions);
+    let reopened = SessionService::new(root.clone(), JsonlCompression::Zstd).unwrap();
+    reopened.new_session(&project).unwrap();
+    assert!(reopened.conversation_summary().unwrap().is_none());
+    reopened.resume(&SessionKey { project, id }).unwrap();
+    assert_eq!(reopened.conversation_summary().unwrap(), Some(latest));
+    assert_eq!(reopened.title_state().0.as_deref(), Some("My title"));
+    reopened.quiesce_active().unwrap();
+    cleanup_tree(&root);
 }
