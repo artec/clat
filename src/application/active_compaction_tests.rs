@@ -34,6 +34,7 @@ struct LongTask {
     summary_released: std::sync::atomic::AtomicBool,
     mode: SummaryMode,
     snapshots: Mutex<Vec<Vec<ModelItem>>>,
+    catalog: Mutex<Option<Vec<crate::ToolDefinition>>>,
     sessions: Mutex<Option<Arc<crate::session::use_cases::SessionService>>>,
     /// 项目根（每轮写入两个新观测文件用）。
     root: Mutex<Option<std::path::PathBuf>>,
@@ -51,6 +52,7 @@ impl LongTask {
             summary_released: std::sync::atomic::AtomicBool::new(false),
             mode,
             snapshots: Mutex::new(Vec::new()),
+            catalog: Mutex::new(None),
             sessions: Mutex::new(None),
             root: Mutex::new(None),
             span_rewritten: std::sync::atomic::AtomicBool::new(false),
@@ -214,6 +216,17 @@ impl TestModelScript for LongTask {
                 .any(|definition| definition.name == "read_file"),
             "normal agent requests keep the complete authorized file tool schema after compaction"
         );
+        if matches!(self.mode, SummaryMode::Normal) && !self.goal_input.load(Ordering::SeqCst) {
+            let mut catalog = self.catalog.lock().unwrap();
+            if let Some(initial) = catalog.as_ref() {
+                assert_eq!(
+                    request.tools, initial,
+                    "the full tool catalog is stable during compaction"
+                );
+            } else {
+                *catalog = Some(request.tools.to_vec());
+            }
+        }
         let tail = request
             .options
             .request_tail
@@ -310,14 +323,6 @@ impl TestModelScript for LongTask {
             for call in &reply.tool_calls {
                 events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
             }
-        } else if goal && !request.tools.iter().any(|tool| tool.name == "update_goal") {
-            reply.text.clear();
-            reply.finish_reason = FinishReason::ToolCalls;
-            reply.tool_calls.push(crate::ToolCall {
-                id: "describe-goal".into(),
-                name: "describe_capability".into(),
-                arguments: json!({"name": "update_goal"}),
-            });
         } else if goal {
             reply.text.clear();
             reply.finish_reason = FinishReason::ToolCalls;
@@ -1162,4 +1167,184 @@ fn cp4_micro_sweep_clears_old_groups_before_any_paid_summary() {
         "older steps are still eligible for model-free clearing"
     );
     crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn compaction_recovers_one_test_observation_after_two_checkpoints_and_reopen() {
+    let (storage, root) = roots("compaction-original-evidence");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = Project::new(&root);
+    let script = Arc::new(CompactionEvidenceScript::default());
+    let behavior = || TestBehavior::Scripted(script.clone());
+    let mut app = mount(&project, &storage, behavior());
+    if let Some(worker) = app.title_worker.as_mut() {
+        worker.shutdown().unwrap();
+    }
+    configure_test_model_with_budget(&app, u32::MAX);
+    run(&mut app, "Record one test result").unwrap();
+    for index in 0..6 {
+        std::fs::write(root.join(index.to_string()), "some evidence").unwrap();
+        run(&mut app, &format!("Collect file {index}")).unwrap();
+    }
+    let session = app.current_session_id().unwrap();
+    let journal = app.sessions.journal().unwrap();
+    let mut items = app
+        .sessions
+        .surface_nodes()
+        .unwrap()
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect::<Vec<_>>();
+    let observation = app
+        .sessions
+        .maintenance_events()
+        .into_iter()
+        .find(|event| event.data["message"]["toolCallId"] == "one-verification")
+        .unwrap();
+    *script.reference.lock().unwrap() =
+        json!({"session_id":session.as_str(),"event_seq":observation.seq});
+    let (config, _) = app.model_state().unwrap();
+    let maintenance = super::compaction::maintenance::DurableMaintenance {
+        sessions: &app.sessions,
+        journal: journal.as_ref(),
+        cancel: &crate::CancelToken::new(),
+        config: &config,
+        pruner: app.pruner.as_deref(),
+        image_offload: None,
+        protected_floor: u64::MAX,
+    };
+    assert!(maintenance.sweep_tool_groups(&mut items).unwrap() > 0);
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, ModelItem::ToolResult(result)
+        if result.call_id == "one-verification" && result.output.to_string().contains("session_event_read")))
+    );
+    drop(journal);
+    for i in 0..2 {
+        run(
+            &mut app,
+            &format!("Historical follow-up {i} {}", "context ".repeat(2000)),
+        )
+        .unwrap();
+        assert!(
+            app.compact_session()
+                .unwrap()
+                .join_report()
+                .unwrap()
+                .unwrap()
+                .shadowed_count
+                > 0
+        );
+        let checkpoints = app.sessions.compaction_checkpoints();
+        assert_eq!(checkpoints.len(), 1);
+        let checkpoint = checkpoints.values().next().unwrap();
+        assert!(checkpoint.contains(&format!("\"seq\":{}", observation.seq)));
+        assert!(checkpoint.contains("\"exit_code\":7"));
+    }
+    app.close().unwrap();
+    let mut reopened =
+        crate::test_support::reopen_after_close(|| mount_result(&project, &storage, behavior()));
+    reopened.switch_session(session).unwrap();
+    run(&mut reopened, "Recall the exact historical test result").unwrap();
+    assert_eq!(script.readbacks.load(Ordering::SeqCst), 1);
+    assert_eq!(script.executions.load(Ordering::SeqCst), 1);
+    reopened.close().unwrap();
+    let executed = load_events(&storage)
+        .into_iter()
+        .filter(|event| {
+            event.event_type == "tool/result"
+                && event.data["message"]["toolCallId"] == "one-verification"
+                && matches!(
+                    event.surface_op,
+                    Some(crate::session::event::SurfaceOp::Append)
+                )
+        })
+        .count();
+    assert_eq!(
+        executed, 1,
+        "historical lookup never re-executes the verification"
+    );
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct CompactionEvidenceScript {
+    executions: AtomicUsize,
+    readbacks: AtomicUsize,
+    reference: Mutex<Value>,
+}
+
+#[cfg(unix)]
+impl TestModelScript for CompactionEvidenceScript {
+    fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        events: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        if crate::test_support::is_summary_request(&request) {
+            return Ok(crate::test_support::response(
+                &crate::test_support::checkpoint("A verification took place."),
+                FinishReason::Completed,
+            ));
+        }
+        if let Some(ModelItem::ToolResult(result)) = request.items.last() {
+            assert!(!result.is_error, "{}", result.output);
+            if result.tool_name == "session_event_read" {
+                let json: Value =
+                    serde_json::from_str(result.output["json"].as_str().unwrap()).unwrap();
+                assert_eq!(json["fields"]["exit_code"], 7);
+                assert_eq!(json["fields"]["verification_receipt"]["status"], "failed");
+                assert_eq!(json["fields"]["verification_receipt"]["failed"], 1);
+                self.readbacks.fetch_add(1, Ordering::SeqCst);
+            }
+            return Ok(crate::test_support::response(
+                "done",
+                FinishReason::Completed,
+            ));
+        }
+        let Some(ModelItem::User { content }) = request.items.last() else {
+            return Ok(crate::test_support::response(
+                "done",
+                FinishReason::Completed,
+            ));
+        };
+        let [crate::model::ContentPart::Text(text)] = content.as_slice() else {
+            panic!("expected text input");
+        };
+        let call = if text == "Record one test result" {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            crate::ToolCall {
+                id: "one-verification".into(),
+                name: "run_command".into(),
+                arguments: json!({
+                    "argv":["/bin/sh","-c","printf '%s\n' 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'; exit 7"],
+                    "verification":{"format":"rust-test-summary","minimum_executed":1}
+                }),
+            }
+        } else if let Some(path) = text.strip_prefix("Collect file ") {
+            crate::ToolCall {
+                id: format!("read-file-{path}"),
+                name: "read_file".into(),
+                arguments: json!({"path":path}),
+            }
+        } else if text == "Recall the exact historical test result" {
+            crate::ToolCall {
+                id: "one-readback".into(),
+                name: "session_event_read".into(),
+                arguments: self.reference.lock().unwrap().clone(),
+            }
+        } else {
+            return Ok(crate::test_support::response(
+                "done",
+                FinishReason::Completed,
+            ));
+        };
+        let mut reply = crate::test_support::response("", FinishReason::ToolCalls);
+        events.emit(ModelEvent::ToolCallCompleted { call: call.clone() });
+        reply.tool_calls.push(call);
+        Ok(reply)
+    }
 }

@@ -144,9 +144,9 @@ fn cycling_preset_resets_thinking_level() {
     let credentials = ProviderCredentials::for_protocol(config.protocol);
     let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
     select(&mut editor, RowKind::Preset);
-    // 从 pro 起步，一步右移到 GLM（SF-1 删除 vision-exp 后的轮转序）。
+    // 从 pro 起步，一步右移到 GLM 5.4（Coding Plan 旗舰入口）。
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.4"));
     let (built, _) = editor.build().unwrap();
     assert_eq!(built.thinking_level, None);
 }
@@ -425,7 +425,7 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     assert_eq!(config.extra_body["reasoning_effort"], "high");
     assert_eq!(config.extra_body["thinking"]["type"], "enabled");
 
-    // Next step lands on Pro, then GLM, then GLM Flash, then
+    // Next step lands on Pro, then GLM 5.4 / 5.3 / Flash, then
     // Qwen, Kimi, Kimi utility, Tencent Hy4, Hy3, then Custom.
     // （SF-1 2026-09-10：vision-exp 下架，Pro 的下一步直达 GLM。）
     editor.handle_key(key(KeyCode::Right));
@@ -434,13 +434,15 @@ fn cycling_preset_applies_official_deepseek_parameters() {
         Some("deepseek-v4-pro")
     );
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.4"));
     let (config, _) = editor.build().unwrap();
     assert_eq!(
         config.endpoint,
         "https://open.bigmodel.cn/api/coding/paas/v4"
     );
     assert_eq!(config.extra_body["thinking"]["clear_thinking"], false);
+    editor.handle_key(key(KeyCode::Right));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3"));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3-flash"));
     editor.handle_key(key(KeyCode::Right));
@@ -576,8 +578,8 @@ fn picker_esc_backtracks_one_level_then_cancels() {
     let mut picker = new_picker();
     picker.handle_key(picker_key(KeyCode::Down));
     picker.handle_key(picker_key(KeyCode::Enter));
-    // MM-2：GLM Coding Plan 下有两个模型。
-    assert_eq!(picker.row_count(), 2);
+    // GLM Coding Plan：5.4 / 5.3 / 5.3 Flash。
+    assert_eq!(picker.row_count(), 3);
 
     // 二级 Esc 返回一级。
     assert!(matches!(
@@ -701,14 +703,14 @@ fn picker_digits_quick_select_models_and_custom() {
         picker.handle_key(picker_key(KeyCode::Char('2'))),
         PickerAction::Continue
     ));
-    // MM-2：GLM Coding Plan 下有两个模型（5.3 与 5.3 Flash）。
-    assert_eq!(picker.row_count(), 2);
-    // 数字 1 确认第一个模型，数字 2 选 Flash。
+    // GLM Coding Plan：5.4 / 5.3 / 5.3 Flash。
+    assert_eq!(picker.row_count(), 3);
+    // 数字 1 确认第一个模型（5.4）；5.3 / Flash 为 2 / 3。
     let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
     else {
         panic!("expected SelectPreset");
     };
-    assert_eq!(preset.id, "glm-5.3");
+    assert_eq!(preset.id, "glm-5.4");
 
     // 一级数字 3 进入 Qwen Token Plan（VP-2B：两模型），5 快选
     // Custom。

@@ -75,6 +75,17 @@ impl SessionQueryService {
         key: &SessionKey,
         cancel: &CancelToken,
         agent: bool,
+        visitor: impl FnMut(&SessionEvent),
+    ) -> Result<String, QueryError> {
+        self.scan_with_original(key, cancel, agent, None, visitor)
+    }
+
+    fn scan_with_original(
+        &self,
+        key: &SessionKey,
+        cancel: &CancelToken,
+        agent: bool,
+        original_seq: Option<u64>,
         mut visitor: impl FnMut(&SessionEvent),
     ) -> Result<String, QueryError> {
         let deadline = Instant::now() + DEADLINE;
@@ -94,6 +105,9 @@ impl SessionQueryService {
                 }
                 if let Some(SurfaceOp::Replace { start, end }) = &event.surface_op
                     && !search::preserves_history(event)
+                    && !(original_seq == Some(*start)
+                        && start == end
+                        && crate::session::catalog::is_tool_result_replacement(event))
                 {
                     hidden.push((*start, *end));
                 }
@@ -112,7 +126,11 @@ impl SessionQueryService {
                 if event.seq < floor && !hidden.iter().any(|(a, b)| (*a..=*b).contains(&event.seq))
                 {
                     // Agent reads public message observations, not reasoning/configuration.
-                    if !agent || search::document(event).is_some() {
+                    if !agent
+                        || search::document(event).is_some()
+                        || (original_seq == Some(event.seq)
+                            && !search::tool_facts(event).is_empty())
+                    {
                         visitor(event);
                     }
                 }
@@ -187,10 +205,18 @@ impl SessionQueryService {
             .seq
             .ok_or_else(|| QueryError::new("invalid_reference"))?;
         let mut value = None;
-        self.scan(&key,cancel,agent,|event|{
-            if event.seq==seq {
-                value=Some(if agent {json!({"seq":seq,"time":event.time,"type":event.event_type,"text":search::document(event).map(|d|d.text)})}
-                else {serde_json::to_value(event).expect("event serializes")});
+        self.scan_with_original(&key, cancel, agent, Some(seq), |event| {
+            if event.seq == seq {
+                value = Some(if agent {
+                    let mut observation = json!({"seq":seq,"time":event.time,"type":event.event_type,"text":search::document(event).map(|d|d.text)});
+                    let fields = search::tool_facts(event);
+                    if !fields.is_empty() {
+                        observation["fields"] = Value::Object(fields);
+                    }
+                    observation
+                } else {
+                    serde_json::to_value(event).expect("event serializes")
+                });
             }
         })?;
         let text = serde_json::to_string_pretty(&redact_value(

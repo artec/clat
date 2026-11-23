@@ -15,7 +15,7 @@ pub(in crate::application) struct IdleCompaction<'a> {
     pub instructions: String,
     pub tail_tokens: u64,
     pub definitions: Vec<ToolDefinition>,
-    pub force: bool,
+    pub intent: CompactionIntent,
     /// INV-CP2：连续失败计数——闲置路径失败递增、成功清零。
     pub automatic_summary_failures: Option<&'a AtomicU32>,
 }
@@ -76,7 +76,7 @@ impl IdleCompaction<'_> {
             spend_ledger: None,
             instructions: self.instructions.clone(),
             tool_definitions: self.definitions.clone(),
-            force: self.force,
+            intent: self.intent,
             cancel: self.cancel.clone(),
         }))
     }
@@ -110,7 +110,7 @@ impl IdleCompaction<'_> {
             .checked_add(outcome.shadowed_count)
             .ok_or("compaction range overflow")?;
         let plan = crate::plugins::CompactionPlan::new(nodes, outcome.shadowed_start..end)?;
-        let candidate = plan.candidate(summary)?;
+        let candidate = source_candidate(self.sessions, &plan, summary)?;
         let shadowed = candidate.shadowed();
         if self
             .sessions

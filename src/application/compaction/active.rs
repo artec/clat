@@ -247,7 +247,7 @@ impl ActiveContext {
                     spend_ledger: Some(Arc::clone(&self.ledger)),
                     instructions: instructions.unwrap_or_default().to_owned(),
                     tool_definitions: definitions.to_vec(),
-                    force: target == 0,
+                    intent: CompactionIntent::automatic(target == 0),
                     cancel: self.cancel.clone(),
                 });
             usage.add_assign(&outcome.usage);
@@ -315,7 +315,14 @@ impl ActiveContext {
             return Ok(false);
         }
         let plan = crate::plugins::CompactionPlan::new(nodes, range)?;
-        let candidate = plan.candidate(summary)?;
+        let session = self.sessions.active_id();
+        let candidate = match source_candidate(&self.sessions, &plan, summary) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                self.record_unapplied(outcome, &error)?;
+                return Ok(false);
+            }
+        };
         let aligned = alignment::live_range(items, candidate.shadowed(), &self.checkpoints);
         let updated = match aligned.and_then(|range| candidate.replace_live(items, range)) {
             Ok(replacement) => replacement,
@@ -329,7 +336,6 @@ impl ActiveContext {
             self.record_unapplied(outcome, "summary would not reduce the active context")?;
             return Ok(false);
         }
-        let session = self.sessions.active_id();
         let seq = match write_compaction_events_span_anchored(
             self.journal.as_ref(),
             shadowed,

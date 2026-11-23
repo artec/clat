@@ -70,3 +70,55 @@ test('session summary follows language, survives manual naming, and has its own 
   await expect(card).toBeVisible(LIVE);
   await expect(card).toContainText('已完成初步檢查');
 });
+
+test('a full-length summary body stops at five lines and toggles in place', async ({ page }) => {
+  await openWorkbench(page, hostInfo('session-summary'));
+  await page.locator('.application-toolbar [data-action="inspector"]').click();
+  const card = page.locator('#conversation-summary');
+  const body = card.locator('.conversation-summary-text');
+  const box = () => body.evaluate(node => {
+    const style = getComputedStyle(node);
+    return {
+      limit: parseFloat(style.lineHeight) * 5 + 1,
+      height: node.clientHeight,
+      content: node.scrollHeight,
+      fade: style.maskImage || style.webkitMaskImage,
+    };
+  });
+  await page.locator('#prompt').fill('Summarize at full length');
+  await page.locator('#send').click();
+  // The host saves its largest English summary; it must wrap past five lines.
+  await expect(card).toContainText('remaining work covers', LIVE);
+  await expect(body).toHaveClass(/is-clamped/);
+  await expect(body).toHaveAttribute('role', 'button');
+  await expect(body).toHaveAttribute('aria-expanded', 'false');
+  const clamped = await box();
+  expect(clamped.height).toBeLessThanOrEqual(clamped.limit);
+  expect(clamped.content).toBeGreaterThan(clamped.height);
+  expect(clamped.fade).toContain('linear-gradient');
+
+  await body.click();
+  await expect(body).toHaveAttribute('aria-expanded', 'true');
+  await expect(body).not.toHaveClass(/is-clamped/);
+  const expanded = await box();
+  expect(expanded.height).toBe(expanded.content);
+  expect(expanded.fade).toBe('none');
+
+  // The keyboard toggles the same body, and a fresh document starts clamped.
+  await body.focus();
+  await page.keyboard.press('Enter');
+  await expect(body).toHaveAttribute('aria-expanded', 'false');
+  await body.focus();
+  await page.keyboard.press('Space');
+  await expect(body).toHaveAttribute('aria-expanded', 'true');
+  await body.click();
+  await expect(body).toHaveAttribute('aria-expanded', 'false');
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => state.sessionId), LIVE).not.toBeNull();
+  if (await page.locator('#inspector-toggle').getAttribute('aria-expanded') !== 'true') {
+    await page.locator('.application-toolbar [data-action="inspector"]').click();
+  }
+  await expect(card).toContainText('remaining work covers', LIVE);
+  await expect(body).toHaveClass(/is-clamped/);
+  await expect(body).toHaveAttribute('aria-expanded', 'false');
+});

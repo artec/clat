@@ -186,3 +186,233 @@ fn manual_compaction_cancel_keeps_slot_until_summary_worker_really_stops() {
     assert!(result.unwrap().is_err());
     assert!(idle);
 }
+
+const FIRST_SOURCE: &str = "keep verification constraint V17";
+const LATEST_SOURCE: &str = "final verification finding R81";
+
+#[derive(Default)]
+struct WideHistorySummary {
+    merge_calls: AtomicUsize,
+    window: u32,
+    refuse_merge: bool,
+}
+
+impl TestModelScript for WideHistorySummary {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        use crate::model::{ContentPart, ModelItem};
+        use crate::test_support::{checkpoint, is_summary_request, response};
+        if !is_summary_request(&request) {
+            return Ok(response("ready", crate::FinishReason::Completed));
+        }
+        assert!(request.tools.is_empty());
+        let input = crate::model::estimate_request_tokens(
+            request.instructions,
+            request.items,
+            request.tools,
+        );
+        let output = u64::from(request.options.output_limit.expect("summary output budget"));
+        assert!(
+            input + output + 512 <= u64::from(self.window),
+            "summary request exceeded the window"
+        );
+        let texts = request
+            .items
+            .iter()
+            .flat_map(|item| match item {
+                ModelItem::User { content } | ModelItem::Assistant { content, .. } => {
+                    content.as_slice()
+                }
+                _ => &[],
+            })
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => Some(text.as_str()),
+                ContentPart::Image { .. } => None,
+            });
+        let text = texts.collect::<Vec<_>>().join("\n");
+        if text.contains("## Part 2\n") {
+            self.merge_calls.fetch_add(1, Ordering::SeqCst);
+            if self.refuse_merge {
+                return Ok(response("refused merge", crate::FinishReason::Refusal));
+            }
+        }
+        let covered = [FIRST_SOURCE, LATEST_SOURCE]
+            .into_iter()
+            .filter(|marker| text.contains(marker))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(response(
+            &checkpoint(&format!("Verified fixture facts:\n{covered}")),
+            crate::FinishReason::Completed,
+        ))
+    }
+}
+
+fn manual_history_fixture(
+    name: &str,
+    script: Arc<WideHistorySummary>,
+) -> (TrustedProjectApplication, PathBuf) {
+    let budget = script.window;
+    let (storage, root) = roots(name);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(
+        &Project::new(&root),
+        &storage,
+        TestBehavior::Scripted(script),
+    );
+    configure_test_model_with_budget(&app, budget);
+    if let Some(worker) = app.title_worker.as_mut() {
+        worker.shutdown().unwrap();
+    }
+    run(&mut app, "Keep the session's verified state").unwrap();
+    (app, storage)
+}
+
+fn append_manual_history(
+    app: &TrustedProjectApplication,
+    cycle: usize,
+    messages: usize,
+    bytes_per_message: usize,
+) {
+    use crate::session::{event::payloads, run_journal::NewSessionEvent};
+    let mut events = Vec::new();
+    for step in 0..messages {
+        let source = if step == 0 {
+            FIRST_SOURCE
+        } else {
+            "intermediate observation"
+        };
+        let finding = if step + 1 == messages {
+            LATEST_SOURCE
+        } else {
+            ""
+        };
+        let body = format!("{source} {} {finding}", "x".repeat(bytes_per_message));
+        events.push(
+            NewSessionEvent::new(
+                "assistant/message",
+                payloads::assistant_message(
+                    (cycle + 2) as u64,
+                    (step + 1) as u64,
+                    vec![payloads::text_block(&body)],
+                    "test",
+                    "deterministic",
+                    None,
+                ),
+            )
+            .append(Vec::new()),
+        );
+    }
+    events.push(
+        NewSessionEvent::new(
+            "user/message",
+            payloads::user_message(&format!(
+                "Latest user input {cycle}: keep both verified facts"
+            )),
+        )
+        .append(Vec::new()),
+    );
+    app.sessions
+        .journal()
+        .unwrap()
+        .append_atomic_durable(&events)
+        .unwrap();
+}
+
+#[test]
+fn manual_compaction_shrinks_million_token_history_in_one_operation_across_repeated_cycles() {
+    let script = Arc::new(WideHistorySummary {
+        window: 1_000_000,
+        ..Default::default()
+    });
+    let (mut app, storage) = manual_history_fixture("manual-million", script.clone());
+    let mut measurements = Vec::new();
+    for cycle in 0..8 {
+        let (messages, bytes) = if cycle == 0 {
+            (20, 198_000)
+        } else {
+            (4, 104_000)
+        };
+        append_manual_history(&app, cycle, messages, bytes);
+        let before_snapshot = app.context_snapshot().unwrap();
+        let before = before_snapshot.input_estimate;
+        assert!(before >= if cycle == 0 { 980_000 } else { 100_000 });
+        let report = app
+            .compact_session()
+            .unwrap()
+            .join_report()
+            .unwrap()
+            .unwrap();
+        assert!(report.shadowed_count > 0);
+        let after_snapshot = app.context_snapshot().unwrap();
+        let after = after_snapshot.input_estimate;
+        assert_eq!(before_snapshot.tool_names, after_snapshot.tool_names);
+        assert_eq!(
+            before_snapshot.tool_schemas_estimate,
+            after_snapshot.tool_schemas_estimate
+        );
+        assert!(after <= 100_000, "cycle {cycle}: {before} → {after} tokens");
+        measurements.push((before, after));
+        let checkpoints = app.sessions.compaction_checkpoints();
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "the old checkpoint joins the next summary"
+        );
+        let checkpoint = checkpoints.values().next().unwrap();
+        assert!(checkpoint.contains(FIRST_SOURCE) && checkpoint.contains(LATEST_SOURCE));
+        assert!(
+            app.sessions
+                .surface_nodes()
+                .unwrap()
+                .last()
+                .is_some_and(|(_, item)| {
+                    item == &crate::ModelItem::user_text(format!(
+                        "Latest user input {cycle}: keep both verified facts"
+                    ))
+                })
+        );
+    }
+    assert!(
+        script.merge_calls.load(Ordering::SeqCst) > 0,
+        "the over-window history must be merged"
+    );
+    app.close().unwrap();
+    let events = load_events(&storage);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "compaction/summary")
+            .count(),
+        8
+    );
+    assert!(events.iter().any(|event| {
+        event.data["message"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.len() > 198_000 && text.starts_with(FIRST_SOURCE))
+    }));
+    eprintln!("manual compaction (local estimates): {measurements:?}");
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn manual_compaction_refused_merge_keeps_all_original_history_live() {
+    let script = Arc::new(WideHistorySummary {
+        window: 48_000,
+        refuse_merge: true,
+        ..Default::default()
+    });
+    let (mut app, storage) = manual_history_fixture("manual-merge-refused", script.clone());
+    append_manual_history(&app, 0, 4, 72_000);
+    let before = app.sessions.surface_nodes().unwrap();
+    let outcome = app.compact_session().unwrap().join_report().unwrap();
+    assert!(outcome.is_err(), "a partial summary must not be committed");
+    assert_eq!(script.merge_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(app.sessions.surface_nodes().unwrap(), before);
+    assert!(app.sessions.compaction_checkpoints().is_empty());
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}

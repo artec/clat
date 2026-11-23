@@ -23,17 +23,6 @@ pub(crate) const RESIDENT: &[&str] = &[
     "lsp",
 ];
 
-/// Every allowed tool is in the initial schema. `exit_plan_mode` stays out until
-/// Plan Mode is the frozen policy. `update_goal` stays out until this run
-/// already carries a goal, because continuation cannot progress without it.
-pub(crate) fn is_published(name: &str, plan_mode: bool, goal_tools: bool) -> bool {
-    match name {
-        "exit_plan_mode" => plan_mode,
-        "update_goal" => goal_tools,
-        _ => true,
-    }
-}
-
 pub(crate) fn sort_published(definitions: &mut [ToolDefinition]) {
     definitions.sort_by(|left, right| rank(&left.name).cmp(&rank(&right.name)));
 }

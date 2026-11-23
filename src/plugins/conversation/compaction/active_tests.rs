@@ -99,7 +99,7 @@ fn active_compaction_selection_requires_an_exchange_after_a_protected_boundary()
         spend_ledger: None,
         instructions: String::new(),
         tool_definitions: vec![],
-        force: true,
+        intent: CompactionIntent::Forced,
         cancel: CancelToken::new(),
     };
     assert_eq!(selection::choose_range(&request, None, "", &[]), Some(2..5));
@@ -215,7 +215,7 @@ fn history_compaction_splits_an_oversized_turn_without_losing_rendered_evidence(
         spend_ledger: None,
         instructions: String::new(),
         tool_definitions: Vec::new(),
-        force: true,
+        intent: CompactionIntent::Forced,
         cancel: CancelToken::new(),
     };
     let transcripts = Arc::new(Mutex::new(Vec::new()));

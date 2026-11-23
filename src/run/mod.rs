@@ -41,7 +41,6 @@ pub(crate) struct Run<'a> {
     tool_definitions: Option<std::sync::Arc<[crate::tool::ToolDefinition]>>,
     /// Full schemas appended after the frozen resident prefix. Run-local:
     /// a new run starts empty, and a child run does not share this list.
-    promotions: std::sync::Mutex<Vec<crate::tool::ToolDefinition>>,
     /// B1 花费护栏（F-1：与 recorder 预警同一账本——含插件采样归并，
     /// 预警数字与终止文案同源）。每轮模型请求前读；越顶以三要素错误
     /// 终止（教学式文案）。
@@ -79,7 +78,6 @@ impl<'a> Run<'a> {
             tool_pipeline: None,
             tool_access: crate::tool::ToolAccessPolicy::all(),
             tool_definitions: None,
-            promotions: std::sync::Mutex::new(Vec::new()),
             spend_ledger: None,
             capabilities: ModelCapabilities::default(),
             session_id: None,
@@ -217,9 +215,6 @@ impl<'a> Run<'a> {
         // 在发 RunCompleted/RunFailed/RunCancelled 前主动封口；guard
         // 防的是未来 early-return 或下层 panic 绕过那些显式路径。
         let _seal_guard = SteeringSealGuard(self.steering.clone());
-        if let Ok(mut promoted) = self.promotions.lock() {
-            promoted.clear();
-        }
         self.steering.inputs().agent_started();
         self.drive(items, message, client_message_id, events)
     }

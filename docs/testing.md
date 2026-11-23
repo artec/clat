@@ -756,6 +756,21 @@ while internal summarization receives no tools. Narrow regression filters:
 `scripts/gates.sh cp1_review_stale_span cp1_review_compaction_invalidates`.
 These checks do not prove real-provider summary quality or performance.
 
+The compaction continuation tests compare complete tool definitions across
+the active compaction boundary, follow a real long-file cursor past four
+pages, and recover a single process verification receipt after a sweep, two
+checkpoints and cold reopen. `session_event_read` must recover the cited
+committed receipt without starting that process again.
+
+Manual compaction has a separate large-history regression through the public
+entry point. It covers roughly one million estimated input tokens, a real
+multi-request summary merge under the configured capacity, then seven more
+append-and-compact cycles. Each operation must leave at most 100,000 estimated
+input tokens in the fixture, while keeping the newest input and original journal
+entries. A refused final merge must leave the active history intact. These
+scripted-provider tests establish local bounds and commit behavior for the
+fixture.
+
 The conversation/alignment cases cover complete call/result batches, protected
 users and owned checkpoint identities, duplicate/missing anchors, unchanged
 image/provider-state tails, UTF-8 chunk reconstruction including tail evidence,
@@ -1290,6 +1305,21 @@ History query coverage: `scripts/gates.sh history_query` exercises real committe
 collapsed layouts, three-language accessible names and tooltips, dialog access,
 and the shared send/stop position through a real isolated mock-model run and
 cancellation. An unsent draft must survive cancellation and language changes.
+
+Session summary body coverage: `web/tests/conversation-summary.test.cjs` drives
+`createConversationSummary` / `renderConversationSummary` with a body whose
+layout follows its text and the inspector width. It checks that only a body
+measured past five lines is clamped and announced as a collapsed disclosure,
+that a click and Enter/Space expand it in place and collapse it again, that a
+drag selection is not a toggle, that new text and a resized inspector are
+measured again, and that a hidden card is not measured. `web/e2e/tests/session-summary.spec.js`
+runs the real path on the `session-summary` Host: the prompt
+`Summarize at full length` makes the deterministic Host save a 315-character
+English summary (the limit is 40 words and 320 characters), which must wrap past
+five lines in the default inspector. The spec measures the clamped height against
+five line boxes, the fade mask, the expanded height against the content height,
+keyboard toggling and the clamped default after a reload. No test may hardcode
+the card's pixel size or copy.
 
 Desktop resume checks: `cargo test -p clat-desktop --bin clat-desktop startup::`
 covers first launch, an existing Host, one startup attempt, explicit-stop/manual

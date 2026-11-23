@@ -9,7 +9,6 @@
 
 mod accounting;
 mod candidate;
-#[cfg(test)]
 pub(crate) use candidate::CompactionCandidate;
 mod chunks;
 mod evidence;
@@ -34,7 +33,7 @@ use crate::plugin::{
     Plugin, PluginContext, PluginDescriptor, PluginError, PluginId, ScopeKind, ServiceId,
 };
 use crate::plugins::services::{
-    COMPACTION_SERVICE, COMPACTION_SERVICE_ID, CompactionNode, CompactionOutcome,
+    COMPACTION_SERVICE, COMPACTION_SERVICE_ID, CompactionIntent, CompactionNode, CompactionOutcome,
     CompactionRequest, HistoryCompactor, PROMPT_SERVICE, PROMPT_SERVICE_ID, PROVIDER_SERVICE,
     PROVIDER_SERVICE_ID, PromptRegistry, ProviderRegistry, TOOL_SERVICE, TOOL_SERVICE_ID,
 };
@@ -122,7 +121,7 @@ impl DefaultHistoryCompactor {
             request.config,
         ) as u64;
         let pressure = pressure.max(request.measured_input.unwrap_or(0));
-        if !request.force && budget.is_none_or(|budget| pressure < budget.threshold) {
+        if !request.intent.is_forced() && budget.is_none_or(|budget| pressure < budget.threshold) {
             return Ok(CompactionOutcome::default());
         }
         let range = selection::choose_range(

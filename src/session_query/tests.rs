@@ -955,3 +955,56 @@ fn history_empty_query_lists_all_sessions_in_authorized_scope_with_pagination() 
     );
     assert!(f.service.reader.current().is_none());
 }
+
+#[test]
+fn history_query_reads_cited_original_tool_result_with_bounded_redacted_facts() {
+    let fixture = Fixture::new();
+    let prepared = fixture.write(
+        "/tmp/query-one",
+        "tool-source",
+        "Keep the verification result",
+    );
+    let original = payloads::tool_result(
+        1,
+        1,
+        "verify",
+        payloads::tool_result_content(&json!({"exit_code":7,"api_key":"fixture-secret"})),
+        false,
+    );
+    let mut replacement = original.clone();
+    replacement["message"]["content"] =
+        payloads::tool_result_content(&Value::String("compacted".into()));
+    let mut replacement = SessionEvent::new("tool/result", 2, 2, replacement);
+    replacement.surface_op = Some(crate::session::event::SurfaceOp::Replace { start: 1, end: 1 });
+    replacement.source_event_seqs = Some(vec![1]);
+    drop(
+        fixture
+            .backend
+            .append_batch(
+                prepared,
+                1,
+                &[
+                    SessionEvent::new("tool/result", 1, 1, original).append(vec![]),
+                    replacement,
+                ],
+            )
+            .unwrap(),
+    );
+
+    let response = fixture
+        .service
+        .read(
+            HistoryReadRequest {
+                reference: fixture.reference("tool-source", 1),
+                trusted_projects: false,
+                offset: 0,
+                version: None,
+            },
+            &CancelToken::new(),
+            true,
+        )
+        .unwrap();
+    let observed: Value = serde_json::from_str(&response.json).unwrap();
+    assert_eq!(observed["fields"], json!({"exit_code":7}));
+    assert!(!response.json.contains("fixture-secret"));
+}

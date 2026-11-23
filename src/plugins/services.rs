@@ -674,6 +674,25 @@ pub(crate) struct CompactionNode {
     pub checkpoint: bool,
 }
 
+/// The trigger determines the range policy. Only an explicit manual request
+/// can select history beyond a single summary request's budget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompactionIntent {
+    Automatic,
+    Forced,
+    Manual,
+}
+
+impl CompactionIntent {
+    pub(crate) fn automatic(force: bool) -> Self {
+        if force { Self::Forced } else { Self::Automatic }
+    }
+
+    pub(crate) fn is_forced(self) -> bool {
+        self != Self::Automatic
+    }
+}
+
 /// 一次压缩请求。`nodes` 是 surface 投影当前节点序列（post-replace，
 /// 前缀可能已是上一版摘要）；`todo_context` 不再注入压缩视图——它属
 /// 于非耐久的请求组装。
@@ -689,8 +708,7 @@ pub(crate) struct CompactionRequest<'a> {
     pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
     pub instructions: String,
     pub tool_definitions: Vec<crate::tool::ToolDefinition>,
-    /// `/compact` 手动路径为 true：无视阈值强制压缩。
-    pub force: bool,
+    pub intent: CompactionIntent,
     pub cancel: CancelToken,
 }
 
@@ -714,7 +732,7 @@ pub(crate) struct CompactionOutcome {
 }
 
 pub(crate) trait HistoryCompactor: Send + Sync {
-    /// 按上下文压力决定是否压缩并产出摘要文本（`force` 时主动压缩）。
+    /// 根据触发方式和上下文压力选取历史并生成摘要。
     fn compact(&self, request: CompactionRequest<'_>) -> CompactionOutcome;
 }
 

@@ -28,6 +28,9 @@ pub(crate) trait ProjectionUnit: Send {
     fn maintenance_events(&self) -> Option<Vec<SessionEvent>> {
         None
     }
+    fn original_tool_result(&self, _seq: u64) -> Option<(u64, crate::tool::ToolResult)> {
+        None
+    }
     fn last_system_head(&self) -> Option<(u64, String)> {
         None
     }
@@ -77,6 +80,12 @@ impl ProjectionRegistry {
             .iter()
             .find_map(|unit| unit.maintenance_events())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn original_tool_result(&self, seq: u64) -> Option<(u64, crate::tool::ToolResult)> {
+        self.units
+            .iter()
+            .find_map(|unit| unit.original_tool_result(seq))
     }
 
     /// Serialized state of one unit by key (checkpoint row value shape).
@@ -836,6 +845,9 @@ impl ProjectionUnit for SurfaceUnit {
                 })
                 .collect(),
         )
+    }
+    fn original_tool_result(&self, seq: u64) -> Option<(u64, crate::tool::ToolResult)> {
+        crate::session::adapter::original_tool_result(&self.events, seq)
     }
     fn last_system_head(&self) -> Option<(u64, String)> {
         system_head_state(&self.events)

@@ -367,10 +367,18 @@ fn session_summary_response(
         && (instructions.contains(r#"string field "summary""#)
             || instructions.contains(r#"fields "title" and "summary""#))
     {
+        // An English summary at the limit's width ceiling (320 characters at
+        // most) wraps past the five visible lines of the work area card.
+        let full_length = request.items.iter().any(|item| {
+            matches!(item, crate::model::ModelItem::User { content }
+                if content.iter().any(|part| matches!(part, crate::model::ContentPart::Text(text) if text.contains("Summarize at full length"))))
+        });
         let summary = if instructions.contains("Simplified Chinese") {
             "已完成初步检查，下一步补齐测试。"
         } else if instructions.contains("Traditional Chinese") {
             "已完成初步檢查，下一步補齊測試。"
+        } else if full_length {
+            "Initial review complete and remaining work covers focused verification, regression coverage, documentation refresh, dependency audit, performance measurement, accessibility review, localization parity, integration testing, release notes, rollout planning, monitoring alerts, backup verification and final acceptance"
         } else {
             "Initial review complete. Next, add a focused test."
         };

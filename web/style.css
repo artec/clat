@@ -448,8 +448,8 @@ button:disabled { cursor: default; opacity: .45; }
 .composer-hint { min-width: 0; flex: 1; color: var(--text-muted); font-size: 11px; }
 .composer-actions { min-width: 0; flex: 1 1 180px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .composer-actions > button { flex-shrink: 0; }
-.model-picker-seat { position: relative; flex: 0 1 auto; width: max-content; min-width: 0; max-width: 210px; }
-.model-picker-trigger { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 210px; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-soft); background: transparent; font: 600 12px var(--font-ui); }
+.model-picker-seat { position: relative; flex: 0 1 auto; width: max-content; min-width: 0; max-width: 300px; }
+.model-picker-trigger { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 300px; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-soft); background: transparent; font: 600 12px var(--font-ui); }
 .model-picker-trigger:hover:not(:disabled), .model-picker-trigger[aria-expanded="true"] { border-color: color-mix(in srgb, var(--signal) 65%, var(--line)); color: var(--text); background: var(--surface-raised); }
 .model-picker-trigger > svg:first-child { width: 15px; color: var(--signal); }
 .model-picker-trigger > svg { flex-shrink: 0; }

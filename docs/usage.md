@@ -943,8 +943,11 @@ summarizing again. A persistence failure stops execution without repeating tools
 already executed.
 
 `/compact` manually selects the largest safe balanced history span with zero
-recent-tail budget while no run is active; the final node group and protected
-system boundaries remain outside the selection.
+recent-tail budget while no run is active. The span can exceed one summary
+request's capacity. CLAT summarizes it in bounded requests when necessary,
+merges the parts, and publishes one checkpoint after the complete summary is
+ready. The final node group and protected system boundaries remain outside the
+selection. Automatic maintenance keeps its pressure-based selection policy.
 Only one manual compaction can be active in a project. Repeating the request is
 rejected immediately; it does not wait for the first request to finish. Host
 state and cancellation are shared across clients regardless of which core entry
@@ -990,9 +993,15 @@ model-free micro-compaction sweep, then eligible historical image offload, and
 finally model summarization if still needed. The sweep clears old completed
 tool groups — keeping the five most recent complete model-step groups
 (each group may contain several tool results) — before any paid summary:
-each cleared result becomes a one-line placeholder preserving the tool name,
-call id, original sequence number and character count, while the original
-stays in the journal. Image, audio, attachment, unknown/non-text, error,
+when the replacement is smaller, each cleared result becomes a one-line
+placeholder preserving the tool name, call id, original sequence number and
+character count. Pruned and swept results
+include a reference to the original committed observation in the same session.
+Checkpoints carry bounded structured facts such as recorded exit codes and
+verification status and counts. The agent can use `session_event_read` to check
+a cited observation after compaction or reopening, using the existing project
+scope and redaction. Process output omitted from the journal at recording time
+remains transient. Image, audio, attachment, unknown/non-text, error,
 ambiguous-error and already-cleared results, plus anything at or after the
 protected replay floor, are never swept.
 `builtin.tool_result_pruner` trims Unicode text over 8,192 code points to a
@@ -1087,10 +1096,11 @@ The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
-hardcoded per preset, never probed at runtime: six presets across four
+hardcoded per preset, never probed at runtime: seven presets across four
 vendors open image input — officially-declared for `deepseek-flash`,
 `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, probe-verified for
-`glm-5.3-flash` — and, for custom configurations, it is unlocked only by a
+`glm-5.3-flash`, with `glm-5.4` reusing the Flash vision matrix — and, for custom
+configurations, it is unlocked only by a
 passing `/vision-probe`.
 When switching to a text-only route, the enabled offload policy can durably omit
 eligible historical input images. Current-turn images and model output images
@@ -1793,6 +1803,10 @@ summary is available again when the switch is turned back on.
 A summary uses the interface language captured when the turn is submitted.
 The next eligible turn after a language change uses the new language. Chinese
 summaries are limited to 80 characters and English summaries to 40 words.
+The card shows at most five lines. When the text wraps past them, the last line
+fades to show that more follows; clicking the body, or pressing Enter or Space
+on it, expands the whole summary in place until it is clicked again. A summary
+that fits is shown whole and has nothing to expand.
 The active conversation restores its latest saved summary when reopened.
 Manual prompt suggestions
 are off by default. In Web/Desktop, use the add menu to request one next-message

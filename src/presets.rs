@@ -314,6 +314,29 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
     // SF-1 ③（2026-09-10）：`deepseek-v4-flash-vision-exp` 条目已删除
     // ——官方公告 V4.0 Flash Vision (Exp) 与 V4.0 Flash 同日下架，其
     // 视觉位由 V4.1 Flash（上方）继承。
+    // GLM 5.4：请求参数与 glm-5.3 同构（同 Coding Plan 端点 / 窗 /
+    // thinking）；视觉能力面与 glm-5.3-flash 对齐（GLM_FLASH_VERIFIED_CAPS：
+    // input/tool_result 均 [Text, Image]，图片策略 F-2/F-3/F-5）。
+    // 排在 5.3 之前，作为 GLM Coding Plan 当前旗舰入口。
+    ModelPreset {
+        id: "glm-5.4",
+        utility_model: Some("glm-5.3-flash"),
+        capabilities: GLM_FLASH_VERIFIED_CAPS,
+        name: "GLM 5.4",
+        description: "Zhipu flagship multimodal coding model via GLM Coding Plan (reads images)",
+        vendor: "GLM Coding Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "glm-5.4",
+        endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
+        request_path: "/chat/completions",
+        output_limit: 128 * 1024,
+        context_window: 1_000_000,
+        reasoning_effort: Some("high"),
+        preserve_thinking: true,
+        thinking_object: true,
+        include_usage: false,
+        user_agent: None,
+    },
     ModelPreset {
         id: "glm-5.3",
         utility_model: Some("glm-5.3-flash"),
@@ -1020,6 +1043,10 @@ mod tests {
         assert_eq!(glm.context_window, 1_000_000);
         assert_eq!(glm.output_limit, 128 * 1024);
 
+        let glm54 = preset_by_id("glm-5.4").expect("glm-5.4");
+        assert_eq!(glm54.context_window, 1_000_000);
+        assert_eq!(glm54.output_limit, 128 * 1024);
+
         let qwen = preset_by_id("qwen4-max").expect("qwen");
         assert_eq!(qwen.context_window, 1_000_000);
         assert_eq!(qwen.output_limit, 131_072);
@@ -1184,9 +1211,9 @@ mod tests {
         assert_eq!(presets_by_vendor("DeepSeek").len(), 2);
         // SF-1（2026-09-10）：V4.0 Flash/Vision Exp 下架后 DeepSeek 只
         // 剩 flash（V4.1）+ pro 两条。
-        // MM-2：GLM 5.3 Flash 与 glm-5.3 同 vendor（共享 key 槽/额度
-        // 监控接线）。
-        assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 2);
+        // GLM 5.4 / 5.3 / Flash 同 vendor（共享 key 槽/额度监控接线）。
+        assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 3);
+        assert_eq!(presets_by_vendor("GLM Coding Plan")[0].id, "glm-5.4");
         // VP-2B：Qwen Token Plan 两模型（max + flash，同 key 槽）。
         assert_eq!(presets_by_vendor("Qwen Token Plan").len(), 2);
         assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen4-max");
@@ -1233,6 +1260,7 @@ mod tests {
         let expected = [
             ("deepseek-v4-pro", Some("deepseek-flash")),
             ("deepseek-flash", None),
+            ("glm-5.4", Some("glm-5.3-flash")),
             ("glm-5.3", Some("glm-5.3-flash")),
             ("glm-5.3-flash", None),
             ("qwen4-max", Some("qwen3.8-flash")),
@@ -1303,6 +1331,7 @@ mod tests {
             let expects_images = matches!(
                 preset.id,
                 "deepseek-flash"
+                    | "glm-5.4"
                     | "glm-5.3-flash"
                     | "qwen4-max"
                     | "qwen3.8-flash"
@@ -1347,12 +1376,15 @@ mod tests {
             assert!(caps.image_input_verified, "{id}: officially-declared");
             assert_eq!(caps.tool_result_modalities, vec![Modality::Text], "{id}");
         }
-        // 探针实证腿（MM-0 U-6）：glm-5.3-flash 是唯一 tool_result 开图。
-        let glm = preset_by_id("glm-5.3-flash").unwrap().owned_capabilities();
-        assert_eq!(
-            glm.tool_result_modalities,
-            vec![Modality::Text, Modality::Image]
-        );
+        // 探针实证腿（MM-0 U-6）：glm-5.3-flash；glm-5.4 视觉面与 flash 对齐。
+        for id in ["glm-5.3-flash", "glm-5.4"] {
+            let glm = preset_by_id(id).unwrap().owned_capabilities();
+            assert_eq!(
+                glm.tool_result_modalities,
+                vec![Modality::Text, Modality::Image],
+                "{id}"
+            );
+        }
         // 纯文本预设不含 Image 模态（hy4 已于 2026-11-07 裁定为多模态，
         // 移入上方 officially-declared 金测；OC-Go 网关侧 deepseek-v4-pro
         // 与 glm-5.3 视觉位为 ❌）。
@@ -1502,6 +1534,40 @@ mod tests {
         assert!(caps.image_input_verified);
         assert_eq!(caps.input_modalities, vec![Modality::Text, Modality::Image]);
         assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
+    }
+
+    /// GLM 5.4：请求参数钉死为 glm-5.3 同构；视觉面钉死为
+    /// glm-5.3-flash（GLM_FLASH_VERIFIED_CAPS）。
+    #[test]
+    fn glm_54_copies_53_request_params_and_flash_vision() {
+        let preset = preset_by_id("glm-5.4").expect("preset exists");
+        let baseline = preset_by_id("glm-5.3").expect("baseline");
+        let flash = preset_by_id("glm-5.3-flash").expect("flash");
+        assert_eq!(preset.model, "glm-5.4");
+        assert_eq!(preset.vendor, baseline.vendor);
+        assert_eq!(preset.endpoint, baseline.endpoint);
+        assert_eq!(preset.request_path, baseline.request_path);
+        assert_eq!(preset.output_limit, baseline.output_limit);
+        assert_eq!(preset.context_window, baseline.context_window);
+        assert_eq!(preset.reasoning_effort, baseline.reasoning_effort);
+        assert_eq!(preset.preserve_thinking, baseline.preserve_thinking);
+        assert_eq!(preset.thinking_object, baseline.thinking_object);
+        assert_eq!(preset.include_usage, baseline.include_usage);
+        assert_eq!(preset.utility_model, Some("glm-5.3-flash"));
+        assert_eq!(preset.capabilities, flash.capabilities);
+
+        let mut config = ModelConfig::default();
+        preset.apply(&mut config);
+        assert_eq!(config.extra_body["thinking"]["type"], "enabled");
+        assert_eq!(config.extra_body["thinking"]["clear_thinking"], false);
+        assert_eq!(config.extra_body["reasoning_effort"], "high");
+        let caps = config.capabilities;
+        assert!(caps.accepts_image_input());
+        assert!(caps.tool_result_modalities.contains(&Modality::Image));
+        let policy = config.image_policy;
+        assert_eq!(policy.media_types, vec!["image/png", "image/jpeg"]);
+        assert_eq!(policy.max_images, 5);
+        assert_eq!(policy.max_bytes, 5_000_000);
     }
 
     /// MM-2 W3：GLM 5.3 Flash 预设参数金测——全部字段以 MM-0

@@ -301,7 +301,7 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
   .composer-add-group + .composer-add-group { border-left: 0; border-top: 1px solid var(--line); padding: 8px 0 0; }
   .context-tabs { flex-wrap: wrap; }
   .tool-card.plan-artifact { margin-left: 0; }
-  .model-picker-trigger { max-width: 130px; }
+  .model-picker-seat, .model-picker-trigger { max-width: 200px; }
   #composer-plan-toggle .shell-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -488,6 +488,10 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .conversation-summary-meta { display: flex; gap: 7px; align-items: center; color: var(--text-muted); font-size: var(--text-size-secondary); }
 .conversation-summary-meta svg { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
 .conversation-summary-text { margin: 8px 0 0; color: var(--text); font-size: var(--text-size-ui); line-height: 1.6; overflow-wrap: anywhere; }
+/* A long summary stops at five lines; the last line fades and a click expands the body in place. */
+.conversation-summary-text.is-clamped { max-height: calc(5 * 1.6em); overflow: hidden; cursor: pointer; mask-image: linear-gradient(#000 calc(100% - 1.6em), transparent 100%); -webkit-mask-image: linear-gradient(#000 calc(100% - 1.6em), transparent 100%); }
+.conversation-summary-text.is-overflowing:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (forced-colors: active) { .conversation-summary-text.is-clamped { mask-image: none; -webkit-mask-image: none; outline: 1px solid ButtonText; } }
 .context-work-heading{display:flex;align-items:center;gap:8px;min-height:30px;font-size:var(--text-size-ui);list-style:none}.context-work-heading>svg{width:16px;height:16px;flex:none;color:var(--text-muted)}
 .context-work-heading strong{font-weight:500;flex:1}.context-work-heading small{color:var(--text-muted);font-size:var(--text-size-secondary)}.context-work-details>summary{cursor:pointer}.context-work-details>summary:after{content:'›';color:var(--text-muted);transform:rotate(90deg)}.context-work-details[open]>summary:after{transform:rotate(-90deg)}
 .context-work-preview{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--text-muted);font-size:var(--text-size-secondary);line-height:1.6;margin:3px 0 8px}.context-work-details[open]+.context-work-preview{display:none}

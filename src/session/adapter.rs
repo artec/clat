@@ -121,7 +121,37 @@ pub(crate) fn is_foreign_context(data: &Value) -> bool {
     )
 }
 
-fn model_tool_result(data: &Value) -> Result<ModelItem, String> {
+pub(crate) fn original_tool_result(
+    events: &[SessionEvent],
+    replacement_seq: u64,
+) -> Option<(u64, crate::tool::ToolResult)> {
+    let mut seq = replacement_seq;
+    loop {
+        let event = events.get(usize::try_from(seq).ok()?)?;
+        if event.seq != seq
+            || crate::session::catalog::replay_kind(&event.event_type)
+                != crate::session::catalog::ReplayKind::ToolResult
+        {
+            return None;
+        }
+        match event.surface_op.as_ref() {
+            Some(super::event::SurfaceOp::Replace { start, end })
+                if start == end && *start < seq =>
+            {
+                seq = *start
+            }
+            Some(super::event::SurfaceOp::Append) => {
+                return match model_tool_result(&event.data).ok()? {
+                    ModelItem::ToolResult(result) => Some((seq, result)),
+                    _ => None,
+                };
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub(crate) fn model_tool_result(data: &Value) -> Result<ModelItem, String> {
     let message = &data["message"];
     let result = if message["role"] == "tool" {
         message

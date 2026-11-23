@@ -3,7 +3,7 @@ use crate::event::{EventSink, RunEvent};
 use crate::i18n::{PresentedText, UiMessage};
 use crate::model::{ModelConfig, ProviderCredentials};
 use crate::plugins::services::{
-    CompactionNode, CompactionOutcome, CompactionRequest, HistoryCompactor,
+    CompactionIntent, CompactionNode, CompactionOutcome, CompactionRequest, HistoryCompactor,
 };
 use crate::session::event::payloads;
 use crate::session::recorder::SessionRecorder;
@@ -71,6 +71,19 @@ impl EventSink for RecorderHandle {
             sink.emit(event);
         }
     }
+}
+
+fn source_candidate<'a>(
+    sessions: &SessionService,
+    plan: &crate::plugins::CompactionPlan<'a>,
+    summary: &str,
+) -> Result<crate::plugins::CompactionCandidate<'a>, String> {
+    let session = sessions.active_id();
+    plan.candidate_with_sources(
+        summary,
+        session.as_ref().map(crate::SessionId::as_str),
+        &|seq| sessions.original_tool_result(seq),
+    )
 }
 
 struct CompactionCommit {

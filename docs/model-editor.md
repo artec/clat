@@ -50,6 +50,7 @@ The shipped catalog is the source used by both the picker and runtime:
 |---|---|---|---:|---:|
 | DeepSeek V4.1 Flash | `deepseek-flash` | `https://api.deepseek.com` | 1M | 384K |
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | `https://api.deepseek.com` | 1M | 384K |
+| GLM 5.4 | `glm-5.4` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | GLM 5.3 | `glm-5.3` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen4 Max | `qwen4-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
@@ -81,10 +82,10 @@ stable `x-opencode-session` routing header, and the Hy presets always think
 server-side (no ladder). See [Providers](providers.md#built-in-presets)
 before overriding those fields.
 
-GLM 5.3 Flash is currently the only built-in preset with probe-verified native
-image input; the officially-declared vision presets — `deepseek-flash`,
-`qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, and `hy4` —
-and GLM 5.3 Flash all enable
+GLM 5.3 Flash carries probe-verified native image input (including image tool
+results); GLM 5.4 reuses that same vision matrix. The officially-declared vision
+presets — `deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`,
+`kimi-for-coding`, and `hy4` — plus GLM 5.3 Flash and GLM 5.4 all enable
 the image attachments described in
 [Using CLAT](usage.md#image-attachments), as do the ten OpenCode Go vision
 presets (`opencode-deepseek-v4.1-flash`, `opencode-kimi-k3.1-pro`,
@@ -101,7 +102,7 @@ configurations referencing the old ids simply stop resolving to a preset.
 
 Most presets also declare a companion utility model used only for automatic
 session naming, manual prompt suggestions and automatic Web/Desktop next steps: `deepseek-v4-pro` uses
-`deepseek-flash`, `glm-5.3` uses `glm-5.3-flash`, `qwen4-max` uses
+`deepseek-flash`, `glm-5.3` and `glm-5.4` use `glm-5.3-flash`, `qwen4-max` uses
 `qwen3.8-flash`, `k3.1-pro` uses `kimi-for-coding`, and `hy4` uses
 `hy4-flash`. The OpenCode Go flagships use the gateway's flash tiers —
 `opencode-glm-5.3` uses `opencode-glm-5.3-flash`, and presets without an

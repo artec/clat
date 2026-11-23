@@ -330,7 +330,7 @@ fn compact_with_capacity(
         } else {
             vec![]
         },
-        force: true,
+        intent: CompactionIntent::Forced,
         cancel,
     });
     (outcome, factory, config)

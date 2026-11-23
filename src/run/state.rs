@@ -21,13 +21,18 @@ pub(super) struct EvidenceTracker {
     /// Merged line coverage per `read_file` path. A new range is not new
     /// evidence only when every line was already covered (subset), so a
     /// partial read followed by a full-file read can still expand coverage.
-    read_ranges: HashMap<String, Vec<(u64, u64)>>,
+    read_ranges: HashMap<String, ReadCoverage>,
     read_path_order: VecDeque<String>,
     /// Consecutive shell read-probes (`grep`/`find`/…). Diversity across
     /// families yields reminders only — it does not hard-stop the Run.
     shell_read_streak: u32,
     /// Exact no-new hits that already produced `Correct` in this fuse window.
     exact_corrections: u32,
+}
+
+struct ReadCoverage {
+    version: String,
+    ranges: Vec<(u64, u64)>,
 }
 
 /// A memory bound, not a limit on productive tool calls. Aging out evidence
@@ -67,10 +72,19 @@ impl EvidenceTracker {
         let barren = is_barren(output);
         let scope = evidence_scope(name, arguments);
         let stamp = evidence_stamp(name, arguments, output);
-        let new_file_path = name == "read_file"
-            && read_file_range(arguments)
-                .is_some_and(|(path, _, _)| !self.read_ranges.contains_key(path));
-        let covered = name == "read_file" && self.read_range_covered(arguments);
+        let read = (name == "read_file")
+            .then(|| ReadObservation::from_result(arguments, output))
+            .flatten();
+        let covered = read
+            .as_ref()
+            .is_some_and(|read| self.read_range_covered(read));
+        let new_read = read.as_ref().is_some_and(|read| {
+            read.range.is_none()
+                || self
+                    .read_ranges
+                    .get(read.path)
+                    .is_none_or(|old| old.version != read.version)
+        });
         let shell_read = is_command_probe(name) && is_shell_read_probe(arguments);
         if shell_read {
             self.shell_read_streak = self.shell_read_streak.saturating_add(1);
@@ -84,10 +98,8 @@ impl EvidenceTracker {
             || (barren && self.barren_scopes.contains(&scope));
         let approx_no_new = streak_exhausted && !exact_no_new;
         self.remember(stamp);
-        if name == "read_file" {
-            // Merge into the coverage union even on repeats so later subset
-            // reads stay detected after an expanding read.
-            self.remember_read_range(arguments);
+        if let Some(read) = read {
+            self.remember_read_range(read);
         }
         if barren && self.barren_scopes.insert(scope.clone()) {
             self.barren_order.push_back(scope);
@@ -107,7 +119,7 @@ impl EvidenceTracker {
         } else if approx_no_new {
             // Approximate investigate churn: remind only (DSH-like), never Stall.
             EvidenceDecision::Correct
-        } else if progress_resets_correction(name, arguments, barren, new_file_path) {
+        } else if progress_resets_correction(name, arguments, barren, new_read) {
             self.exact_corrections = 0;
             if !barren {
                 self.barren_scopes.clear();
@@ -130,24 +142,36 @@ impl EvidenceTracker {
         }
     }
 
-    fn read_range_covered(&self, arguments: &serde_json::Value) -> bool {
-        let Some((path, start, end)) = read_file_range(arguments) else {
+    fn read_range_covered(&self, read: &ReadObservation<'_>) -> bool {
+        let Some((start, end)) = read.range else {
             return false;
         };
-        self.read_ranges
-            .get(path)
-            .is_some_and(|ranges| range_fully_covered(ranges, start, end))
+        self.read_ranges.get(read.path).is_some_and(|old| {
+            old.version == read.version && range_fully_covered(&old.ranges, start, end)
+        })
     }
 
-    fn remember_read_range(&mut self, arguments: &serde_json::Value) {
-        let Some((path, start, end)) = read_file_range(arguments) else {
-            return;
-        };
-        let path = path.to_owned();
+    fn remember_read_range(&mut self, read: ReadObservation<'_>) {
+        let path = read.path.to_owned();
         let is_new_path = !self.read_ranges.contains_key(&path);
-        let ranges = self.read_ranges.entry(path.clone()).or_default();
-        ranges.push((start, end));
-        *ranges = merge_line_ranges(ranges);
+        let coverage = self
+            .read_ranges
+            .entry(path.clone())
+            .or_insert_with(|| ReadCoverage {
+                version: read.version.to_owned(),
+                ranges: Vec::new(),
+            });
+        if coverage.version != read.version {
+            coverage.version = read.version.to_owned();
+            coverage.ranges.clear();
+        }
+        if let Some(range) = read.range {
+            coverage.ranges.push(range);
+            coverage.ranges = merge_line_ranges(&coverage.ranges);
+            if coverage.ranges.len() > MAX_TRACKED_EVIDENCE {
+                coverage.ranges.remove(0);
+            }
+        }
         if is_new_path {
             self.read_path_order.push_back(path);
             if self.read_path_order.len() > MAX_TRACKED_EVIDENCE
@@ -184,12 +208,12 @@ fn progress_resets_correction(
     name: &str,
     arguments: &serde_json::Value,
     barren: bool,
-    new_file_path: bool,
+    new_read: bool,
 ) -> bool {
     if barren {
         return false;
     }
-    if new_file_path {
+    if new_read {
         return true;
     }
     if matches!(name, "web_fetch" | "web_search") {
@@ -691,22 +715,37 @@ fn looks_like_uuid(bytes: &[u8]) -> bool {
         })
 }
 
-fn read_file_range(arguments: &serde_json::Value) -> Option<(&str, u64, u64)> {
-    let path = arguments
-        .get("path")
-        .and_then(serde_json::Value::as_str)
-        .filter(|path| !path.is_empty())?;
-    let start = arguments
-        .get("start_line")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1)
-        .max(1);
-    let end = arguments
-        .get("end_line")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(u64::MAX)
-        .max(start);
-    Some((path, start, end))
+struct ReadObservation<'a> {
+    path: &'a str,
+    version: &'a str,
+    range: Option<(u64, u64)>,
+}
+
+impl<'a> ReadObservation<'a> {
+    fn from_result(arguments: &serde_json::Value, output: &'a serde_json::Value) -> Option<Self> {
+        let path = output.get("path")?.as_str()?;
+        let version = output.get("file_version")?.as_str()?;
+        let content = output.get("content")?.as_str()?;
+        if content.is_empty() || output["beyond_eof"] == true {
+            return None;
+        }
+        let start = output.get("start_line")?.as_u64()?;
+        let end = output.get("end_line")?.as_u64()?;
+        // Cursor and byte-offset pages can start inside a line. Use the exact
+        // request/result fingerprint for those pages, and only merge whole
+        // lines returned by line-based reads of this version of the file.
+        let range = if arguments.get("cursor").is_some() || arguments.get("start_byte").is_some() {
+            None
+        } else {
+            let end = end.saturating_sub(u64::from(output["partial_line"] == true));
+            (start > 0 && start <= end).then_some((start, end))
+        };
+        Some(Self {
+            path,
+            version,
+            range,
+        })
+    }
 }
 
 fn merge_line_ranges(ranges: &[(u64, u64)]) -> Vec<(u64, u64)> {
@@ -1054,7 +1093,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 100, "end_line": 200}),
-                &json!({"content": "block-a"}),
+                &json!({"path":path,"file_version":"v1","start_line":100,"end_line":200,"content":"block-a"}),
                 read
             ),
             EvidenceDecision::Fresh
@@ -1064,7 +1103,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 150, "end_line": 250}),
-                &json!({"content": "block-b"}),
+                &json!({"path":path,"file_version":"v1","start_line":150,"end_line":250,"content":"block-b"}),
                 read
             ),
             EvidenceDecision::Fresh
@@ -1074,7 +1113,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 180, "end_line": 190}),
-                &json!({"content": "block-c"}),
+                &json!({"path":path,"file_version":"v1","start_line":180,"end_line":190,"content":"block-c"}),
                 read
             ),
             EvidenceDecision::Correct
@@ -1083,7 +1122,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 120, "end_line": 130}),
-                &json!({"content": "block-d"}),
+                &json!({"path":path,"file_version":"v1","start_line":120,"end_line":130,"content":"block-d"}),
                 read
             ),
             EvidenceDecision::Correct
@@ -1092,7 +1131,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 110, "end_line": 115}),
-                &json!({"content": "block-e"}),
+                &json!({"path":path,"file_version":"v1","start_line":110,"end_line":115,"content":"block-e"}),
                 read
             ),
             EvidenceDecision::Stalled
@@ -1101,7 +1140,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 400, "end_line": 420}),
-                &json!({"content": "disjoint"}),
+                &json!({"path":path,"file_version":"v1","start_line":400,"end_line":420,"content":"disjoint"}),
                 read
             ),
             EvidenceDecision::Fresh
@@ -1119,7 +1158,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 140, "end_line": 480}),
-                &json!({"content": "slice"}),
+                &json!({"path":path,"file_version":"v1","start_line":140,"end_line":480,"content":"slice"}),
                 read
             ),
             EvidenceDecision::Fresh
@@ -1128,7 +1167,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path}),
-                &json!({"content": "whole"}),
+                &json!({"path":path,"file_version":"v1","start_line":1,"end_line":800,"content":"whole"}),
                 read
             ),
             EvidenceDecision::Fresh
@@ -1137,7 +1176,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": path, "start_line": 560, "end_line": 700}),
-                &json!({"content": "later"}),
+                &json!({"path":path,"file_version":"v1","start_line":560,"end_line":700,"content":"later"}),
                 read
             ),
             EvidenceDecision::Correct
@@ -1212,7 +1251,7 @@ mod evidence_tests {
             tracker.observe(
                 "read_file",
                 &json!({"path": "src/plugins/process.rs", "start_line": 378, "end_line": 400}),
-                &json!({"content": "b"}),
+                &json!({"path":"src/plugins/process.rs","file_version":"v1","start_line":378,"end_line":400,"content":"b"}),
                 read
             ),
             EvidenceDecision::Fresh

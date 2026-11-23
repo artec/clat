@@ -50,11 +50,22 @@ impl<'a> CompactionPlan<'a> {
         &self,
         summary: &str,
     ) -> Result<super::candidate::CompactionCandidate<'a>, String> {
+        self.candidate_with_sources(summary, None, &|_| None)
+    }
+
+    pub(crate) fn candidate_with_sources(
+        &self,
+        summary: &str,
+        session_id: Option<&str>,
+        recover: &dyn Fn(u64) -> Option<(u64, crate::tool::ToolResult)>,
+    ) -> Result<super::candidate::CompactionCandidate<'a>, String> {
         super::candidate::CompactionCandidate::new(
             self.nodes,
             self.range.clone(),
             self.tokens,
             summary,
+            session_id,
+            recover,
         )
     }
 }

@@ -40,6 +40,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 |---|---|---:|---:|---|
 | DeepSeek V4.1 Flash | `deepseek-flash` | 1M | 384K | `high` |
 | DeepSeek V4.0 Pro | `deepseek-v4-pro` | 1M | 384K | `high` |
+| GLM 5.4 Coding Plan | `glm-5.4` | 1M | 128K | `high` |
 | GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen4 Max Token Plan | `qwen4-max` | 1M | 128K | `medium` |
@@ -64,9 +65,10 @@ The preset catalog configures the OpenAI-compatible adapter:
 Vision capability is hardcoded per preset, never probed at runtime: the
 image-input routes are `deepseek-flash`, `qwen4-max`,
 `qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, and `hy4`, plus
-`glm-5.3-flash` (also verified for image tool results) — the vendor-declared
+`glm-5.3-flash` and `glm-5.4` (both verified for image tool results; 5.4
+reuses the Flash vision matrix) — the vendor-declared
 routes follow official vendor documentation (Hy 4 per the 2026-11-07 owner
-ruling), the GLM route is proven by CLAT's own live probe, and the ten
+ruling), the GLM Flash route is proven by CLAT's own live probe, and the ten
 OpenCode Go vision routes (`opencode-deepseek-v4.1-flash`,
 `opencode-kimi-k3.1-pro`, `opencode-kimi-k3`, `opencode-glm-5.3-flash`,
 `opencode-qwen4-max`, `opencode-minimax-m3`, `opencode-claude-haiku-5-5`,
@@ -387,7 +389,7 @@ GLM-5.3 line, Qwen4, MiniMax M3) plus four overseas closed models added by
 the owner on 2026-11-19 (Claude Haiku 5.5, GPT-6 Luna, Gemini 4 Argon,
 Grok 4.7). The gateway is OpenAI-compatible; preset ids carry an
 `opencode-` prefix because four gateway model ids collide with the direct
-Connection-plan presets (`glm-5.3`, `glm-5.3-flash`, `qwen4-max`,
+Connection-plan presets (`glm-5.4`, `glm-5.3`, `glm-5.3-flash`, `qwen4-max`,
 `deepseek-v4-pro`) — the `model` field still uses the raw gateway id.
 Context and output values are pinned from the gateway's public `/v1/models`
 snapshot (including non-power-of-two originals — GPT-6 Luna's
@@ -637,7 +639,7 @@ secondary sources are recorded rather than silently followed.
 | Preset family | Primary source (dated) |
 |---|---|
 | DeepSeek (`deepseek-flash`, `deepseek-v4-pro`) | [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing), api-docs.deepseek.com, re-checked 2026-11-03 |
-| GLM Coding Plan (`glm-5.3`, `glm-5.3-flash`) | [GLM 5.3 guide](https://docs.z.ai/guides/llm/glm-5.3) + the [Coding endpoint](https://open.bigmodel.cn/api/coding/paas/v4) docs; owner first-party confirmation 2026-08 |
+| GLM Coding Plan (`glm-5.4`, `glm-5.3`, `glm-5.3-flash`) | [GLM 5.3 guide](https://docs.z.ai/guides/llm/glm-5.3) + the [Coding endpoint](https://open.bigmodel.cn/api/coding/paas/v4) docs; owner first-party confirmation 2026-08; `glm-5.4` reuses the Flash vision matrix |
 | Qwen Token Plan (`qwen4-max`, `qwen3.8-flash`) | [Qwen4 Max](https://help.aliyun.com/zh/model-studio/qwen4-max), [Qwen3.8 Flash](https://help.aliyun.com/zh/model-studio/qwen3-8-flash), [Token Plan overview](https://www.alibabacloud.com/help/zh/model-studio/token-plan-personal-overview), checked 2026-11-18 |
 | Kimi Coding Plan (`k3.1-pro`, `kimi-for-coding`) | Kimi Code docs [model configuration](https://www.kimi.com/code/docs/kimi-code/models.html), re-checked 2026-11-21 (the Coding model table now lives here; previously platform.kimi.com docs, first fetched 2026-11-03) |
 | Hy Token Plan (`hy4`, `hy4-flash`) | TokenHub plan/calling guides (2026-11-04/11-07 updates) behind the [TokenHub console](https://console.cloud.tencent.com/tokenhub/tokenplan), plus the TC-0 live probe (`docs/research/tc0-probe/`) |

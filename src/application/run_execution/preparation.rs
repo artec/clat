@@ -172,7 +172,7 @@ impl worker::RunWorker {
             instructions: instructions.to_owned(),
             tail_tokens,
             definitions: self.context.tool_definitions.to_vec(),
-            force: switched,
+            intent: crate::plugins::services::CompactionIntent::automatic(switched),
             automatic_summary_failures: Some(&self.automatic_summary_failures),
         }
         .execute();

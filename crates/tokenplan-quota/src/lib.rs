@@ -94,7 +94,8 @@ pub use device::{
 pub use error::QuotaError;
 pub use quota::{EquityItem, Platform, QuotaClient, USAGE_API, UsageWindow};
 pub use tencent::{
-    DEFAULT_REGION, PersonalPackage, TOKENHUB_HOST, TOKENHUB_VERSION, Tc3Credential, TokenHubClient,
+    DEFAULT_REGION, PersonalPackage, TOKENHUB_HOST, TOKENHUB_VERSION, Tc3Credential,
+    TokenHubClient, tc3_authorization,
 };
 pub use transport::{HttpRequest, HttpResponse, HttpTransport, Method, UreqTransport};
 

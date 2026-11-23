@@ -14,8 +14,6 @@ pub(crate) struct CapabilityView {
     id: String,
     entries: Vec<Entry>,
     model: bool,
-    plan_mode: bool,
-    goal_tools: bool,
 }
 impl CapabilityView {
     pub(super) fn capture(state: &ToolRegistryState, access: Option<&ToolAccessPolicy>) -> Self {
@@ -44,23 +42,12 @@ impl CapabilityView {
             id: uuid::Uuid::new_v4().to_string(),
             entries,
             model: access.is_some(),
-            plan_mode: access.is_some_and(|policy| policy.planning()),
-            goal_tools: access.is_some_and(|policy| policy.goal_tools()),
         }
     }
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = self
             .entries
             .iter()
-            .filter(|entry| {
-                !self.model
-                    || !entry.owner.as_str().starts_with("builtin.")
-                    || super::super::resident::is_published(
-                        &entry.definition.name,
-                        self.plan_mode,
-                        self.goal_tools,
-                    )
-            })
             .map(|entry| entry.definition.clone())
             .collect::<Vec<_>>();
         if self.model {

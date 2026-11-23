@@ -95,7 +95,6 @@ impl Tool for DiscoveryTool {
         let mut detail = registry.query_capabilities(args, cancel)?;
         if let Some(object) = detail.as_object_mut() {
             object.insert("name".into(), json!(name));
-            object.insert("promote".into(), json!(true));
         }
         Ok(detail)
     }

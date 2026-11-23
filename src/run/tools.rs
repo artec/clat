@@ -43,11 +43,6 @@ impl Run<'_> {
             Ok(output) => (output, false),
             Err(error) => (tool.error_output(&error), true),
         };
-        let output = if !is_error && call.name == "describe_capability" {
-            self.settle_promotion(output)
-        } else {
-            output
-        };
         let approved = call.name == "exit_plan_mode"
             && !is_error
             && output.get("approved").and_then(serde_json::Value::as_bool) == Some(true);
@@ -252,6 +247,13 @@ impl Run<'_> {
         let denied = if !self.tool_access.allows(definition) {
             let reason = self.tool_access.denial_reason(definition).to_owned();
             Some((reason.clone(), reason))
+        } else if self.tool_definitions.as_ref().is_some_and(|definitions| {
+            !definitions
+                .iter()
+                .any(|published| published.name == definition.name)
+        }) {
+            let reason = "tool is not part of this run's frozen catalog";
+            Some((reason.to_owned(), reason.to_owned()))
         } else {
             self.tool_access
                 .validate_call(definition, &call.arguments)
@@ -338,55 +340,5 @@ impl Run<'_> {
         }
         state.items.push(ModelItem::ToolResult(result.clone()));
         events.emit(RunEvent::ToolFinished { result });
-    }
-    fn settle_promotion(&self, mut output: serde_json::Value) -> serde_json::Value {
-        if output.get("promote").and_then(|value| value.as_bool()) != Some(true) {
-            return output;
-        }
-        let name = output
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let promoted = self.note_promotion(&name);
-        if let Some(object) = output.as_object_mut() {
-            object.insert("promoted".into(), serde_json::json!(promoted));
-            object.insert(
-                "message".into(),
-                serde_json::json!(if promoted {
-                    "Included in the next model request of this run."
-                } else {
-                    "Already available in this request."
-                }),
-            );
-        }
-        output
-    }
-    fn note_promotion(&self, name: &str) -> bool {
-        if crate::tool::resident::is_published(
-            name,
-            self.tool_access.planning(),
-            self.tool_access.goal_tools(),
-        ) {
-            return false;
-        }
-        let Some(definition) = self
-            .tools
-            .installed_view()
-            .and_then(|view| view.definition_named(name))
-        else {
-            return false;
-        };
-        if !self.tool_access.allows(&definition) {
-            return false;
-        }
-        let Ok(mut promoted) = self.promotions.lock() else {
-            return false;
-        };
-        if promoted.iter().any(|item| item.name == definition.name) {
-            return true;
-        }
-        promoted.push(definition);
-        true
     }
 }

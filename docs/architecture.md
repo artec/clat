@@ -709,16 +709,18 @@ snapshot, and capability guidance.
    behavior, not total work. Consecutive and interleaved observation cycles
    share one per-Run evidence ledger; different paths are independent
    negative-search scopes. A `read_file` range of the same path counts as
-   repeated evidence only when every line was already covered by prior reads
-   of that path (subset of the coverage union); expanding or full-file reads
-   after a partial read remain Fresh. Disjoint ranges stay independent.
+   repeated evidence when every returned complete line was already covered
+   for that file version. Cursor and byte-offset pages use the exact
+   request/result fingerprint, so successive segments of one long line
+   remain distinct, and failed or empty reads add no line coverage.
    Dynamic wait/poll tools are exempt. File writes, destructive actions, UI
    actions and session-local mutations invalidate old evidence. Process
    probes (`exec_command` / `run_command`) do **not** clear the ledger.
    Progress that resets the exact-correction fuse: reading a previously
-   unseen file path, `web_fetch` / `web_search`, non-shell verification
+   unseen file path or version, seeing a new cursor or byte-offset page,
+   `web_fetch` / `web_search`, non-shell verification
    (`cargo` / `curl` / `python` / …), and non-barren structured
-   search/list/discovery. Same-path `read_file` expansions and shell
+   search/list/discovery. Same-version, line-based `read_file` expansions and shell
    read-probes do not reset that fuse. Identical commands share a scrubbed
    fingerprint (whitespace collapsed, volatile `clat-run-*` / UUID tokens
    removed). Shell read-probes (`grep`/`rg`/`find`/`sed`/`head`/`tail`/
@@ -1782,7 +1784,9 @@ External descriptions remain data, with provider trust and missing claims visibl
 
 `RunContextSnapshot` obtains the capability view and actual model definitions
 from one registry capture. Activation publishes that immutable view; cleanup and
-session selection invalidate it. Model discovery never falls back to idle/global
+session selection invalidate it. Plan-exit and Goal-update eligibility use the
+same frozen policy for publication, discovery and dispatch. Dispatch also requires
+membership in the captured schema set. Model discovery never falls back to idle/global
 tools. User commands go through Application's idle-only diagnostic view and the
 same query engine. Frontends display core content and perform no matching or
 permission decisions. Attached TUI preserves capability JSON arguments when

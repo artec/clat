@@ -100,11 +100,14 @@ impl DurableMaintenance<'_> {
             else {
                 continue;
             };
-            let Some(pruned) = pruner.prune(blocks) else {
+            let Some(mut pruned) = pruner.prune(blocks) else {
                 continue;
             };
             let before = self.sessions.surface_nodes().map_err(|e| e.to_string())?;
             let index = live_index(items, &before, event.seq)?;
+            if let Some((_, evidence)) = self.source_note(event.seq) {
+                pruned.insert(0, json!({"type":"text","text":evidence}));
+            }
             let tokens = before
                 .iter()
                 .filter(|(seq, _)| *seq == event.seq)
@@ -166,18 +169,24 @@ impl DurableMaintenance<'_> {
                 .filter(|(seq, _)| *seq == event.seq)
                 .map(|(_, item)| crate::model::estimate_model_item_tokens(item))
                 .sum::<u64>();
+            let (original_seq, evidence) = self
+                .source_note(event.seq)
+                .unwrap_or_else(|| (event.seq, String::new()));
             let placeholder = json!([{
                 "type": "text",
                 "text": format!(
-                    "{MICRO_SWEEP_MARKER}: {tool_name} call {} seq {} chars {chars}; the original is preserved in the session journal.",
+                    "{MICRO_SWEEP_MARKER}: {tool_name} call {} seq {original_seq} chars {chars}. {evidence}",
                     event.data["message"]["toolCallId"].as_str().unwrap_or_default(),
-                    event.seq,
                 ),
             }]);
             let mut data = event.data;
             *data
                 .pointer_mut(sweep_pointer(&data))
                 .ok_or("missing tool result content")? = placeholder;
+            let projected = crate::session::adapter::model_tool_result(&data)?;
+            if crate::model::estimate_model_item_tokens(&projected) >= tokens {
+                continue;
+            }
             let revision = self.journal.committed_seq();
             let range = self.journal.append_atomic_durable_at(revision, &[
                 NewSessionEvent::new("compaction/prune",json!({"shadowedRange":{"start":event.seq,"end":event.seq},"shadowedSeqs":[event.seq],"shadowedTokenCount":tokens})).log_only(),
@@ -187,6 +196,25 @@ impl DurableMaintenance<'_> {
             count += 1;
         }
         Ok(count)
+    }
+
+    fn source_note(&self, seq: u64) -> Option<(u64, String)> {
+        let (seq, source) = self.sessions.original_tool_result(seq)?;
+        let session_id = self.sessions.active_id()?;
+        let reference = json!({"session_id":session_id.as_str(),"event_seq":seq});
+        let fields = if source.is_error {
+            serde_json::Map::new()
+        } else {
+            crate::tool::evidence::tool_facts(&source.output)
+        };
+        let mut note = format!(
+            "For original evidence, use session_event_read with {reference} when that tool is available."
+        );
+        if !fields.is_empty() {
+            let fields = Value::Object(fields);
+            note = format!("Recorded tool fields: {fields}. {note}");
+        }
+        Some((seq, note))
     }
 
     /// 清组候选：按 seq 升序的 tool/result 事件，保留最近

@@ -79,6 +79,9 @@ function createShellInspector(shell) {
   for (const {id,key} of WORKSPACE_TOOLS) shell.tools.register(id,key);
 }
 
+// The summary body shows at most this many lines until the reader expands it.
+const SUMMARY_LINES = 5;
+
 function createConversationSummary() {
   const card = el('section', 'conversation-summary');
   card.id = 'conversation-summary';
@@ -89,7 +92,37 @@ function createConversationSummary() {
   const text = el('p', 'conversation-summary-text');
   meta.append(svgIcon('session-summary'), time);
   card.append(meta, text);
-  return { card, time, text };
+  // Overflow is measured, not guessed from length: wrapping follows the
+  // inspector width, the font and the summary language. Only a body that
+  // really overflows fades, focuses and toggles; the fade is the only
+  // expand affordance, so nothing is added when the text already fits.
+  let expanded = false;
+  const measure = () => {
+    if (!text.getClientRects().length) return;
+    const overflowing = text.scrollHeight > parseFloat(getComputedStyle(text).lineHeight) * SUMMARY_LINES + 1;
+    text.classList.toggle('is-overflowing', overflowing);
+    text.classList.toggle('is-clamped', overflowing && !expanded);
+    if (!overflowing) {
+      for (const name of ['tabindex', 'role', 'aria-expanded']) text.removeAttribute(name);
+      return;
+    }
+    text.setAttribute('tabindex', '0');
+    text.setAttribute('role', 'button');
+    text.setAttribute('aria-expanded', String(expanded));
+  };
+  text.onclick = () => {
+    // A drag selection inside the body is reading, not a toggle request.
+    if (text.classList.contains('is-overflowing') && !window.getSelection()?.toString()) {
+      expanded = !expanded;
+      measure();
+    }
+  };
+  text.onkeydown = event => {
+    if (text.classList.contains('is-overflowing') && ['Enter', ' '].includes(event.key)) { event.preventDefault(); text.click(); }
+  };
+  // The inspector is resizable and the window changes width.
+  new ResizeObserver(measure).observe(text);
+  return { card, time, text, measure };
 }
 
 function renderConversationSummary() {
@@ -106,6 +139,7 @@ function renderConversationSummary() {
   CLATI18n.bind(view.time, 'textContent', () => shellText('session_summary_updated', {
     time: new Intl.DateTimeFormat(CLATI18n.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date),
   }));
+  view.measure();
 }
 
 function mountShellDialog(shell, id, trigger, route, host, type) {

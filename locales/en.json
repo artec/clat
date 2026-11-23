@@ -1528,6 +1528,7 @@
   "tui.preset_description_deepseek-flash": "Fast multimodal DeepSeek V4.1 for everyday agent work (reads images)",
   "tui.preset_description_deepseek-v4-pro": "DeepSeek V4 Pro for the most complex agent tasks",
   "tui.preset_description_glm-5.3": "Zhipu flagship coding model via GLM Coding Plan",
+  "tui.preset_description_glm-5.4": "Zhipu flagship multimodal coding model via GLM Coding Plan (reads images)",
   "tui.preset_description_glm-5.3-flash": "Zhipu multimodal vision model via GLM Coding Plan (reads images)",
   "tui.preset_description_hy4-flash": "Tencent Hy4 Flash companion model via Hy Token Plan",
   "tui.preset_description_hy4": "Tencent Hunyuan flagship model (always-on thinking)",

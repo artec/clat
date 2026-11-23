@@ -773,10 +773,10 @@ fn model_requests_explain_available_built_in_capabilities() {
 }
 
 #[test]
-fn describe_capability_appends_a_deferred_schema_without_moving_the_prefix() {
-    let (storage, root) = roots("context-promote-tool");
+fn registered_tool_schemas_are_published_on_the_initial_request() {
+    let (storage, root) = roots("context-initial-tools");
     std::fs::create_dir_all(&root).unwrap();
-    let probe = Arc::new(PromotionScript {
+    let probe = Arc::new(InitialToolsScript {
         step: AtomicUsize::new(0),
         prefix: Mutex::new(Vec::new()),
     });
@@ -794,12 +794,12 @@ fn describe_capability_appends_a_deferred_schema_without_moving_the_prefix() {
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }
 
-struct PromotionScript {
+struct InitialToolsScript {
     step: AtomicUsize,
     prefix: Mutex<Vec<String>>,
 }
 
-impl TestModelScript for PromotionScript {
+impl TestModelScript for InitialToolsScript {
     fn stream(
         &self,
         request: crate::ModelRequest<'_>,
@@ -832,16 +832,16 @@ impl TestModelScript for PromotionScript {
                     reasoning: None,
                 })
             }
-            _ => Err(crate::ModelError::request("unexpected promotion step")),
+            _ => Err(crate::ModelError::request("unexpected model step")),
         }
     }
 }
 
 #[test]
-fn deferred_tool_call_is_refused_until_describe_capability() {
-    let (storage, root) = roots("context-deferred-refusal");
+fn registered_tool_can_be_called_without_describing_it_first() {
+    let (storage, root) = roots("context-direct-tool-call");
     std::fs::create_dir_all(&root).unwrap();
-    let probe = Arc::new(DeferredRefusal {
+    let probe = Arc::new(DirectToolCall {
         step: AtomicUsize::new(0),
     });
     let mut app = mount(
@@ -855,11 +855,11 @@ fn deferred_tool_call_is_refused_until_describe_capability() {
     crate::test_support::cleanup_tree(storage.parent().unwrap());
 }
 
-struct DeferredRefusal {
+struct DirectToolCall {
     step: AtomicUsize,
 }
 
-impl TestModelScript for DeferredRefusal {
+impl TestModelScript for DirectToolCall {
     fn stream(
         &self,
         request: crate::ModelRequest<'_>,
@@ -908,7 +908,7 @@ impl TestModelScript for DeferredRefusal {
                     reasoning: None,
                 })
             }
-            _ => Err(crate::ModelError::request("unexpected refusal step")),
+            _ => Err(crate::ModelError::request("unexpected model step")),
         }
     }
 }

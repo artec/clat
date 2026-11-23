@@ -1528,6 +1528,7 @@
   "tui.preset_description_deepseek-flash": "适合日常 Agent 工作的快速多模态 DeepSeek V4.1（可读取图片）",
   "tui.preset_description_deepseek-v4-pro": "适合复杂 Agent 任务的 DeepSeek V4 Pro",
   "tui.preset_description_glm-5.3": "通过 GLM Coding Plan 使用智谱旗舰编程模型",
+  "tui.preset_description_glm-5.4": "通过 GLM Coding Plan 使用智谱旗舰多模态编程模型（可读取图片）",
   "tui.preset_description_glm-5.3-flash": "通过 GLM Coding Plan 使用智谱多模态视觉模型（可读取图片）",
   "tui.preset_description_hy4-flash": "通过 Hy Token Plan 使用腾讯 Hy4 Flash 伴生模型",
   "tui.preset_description_hy4": "腾讯混元旗舰模型（始终开启思考）",

@@ -516,6 +516,141 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "live probe: reads the owner's real ~/.clat credentials; prints no secrets"]
+    fn live_probe_scales_and_times() {
+        let path = std::path::PathBuf::from(std::env::var_os("HOME").expect("home dir"))
+            .join(".clat/console-credentials.json");
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let slot = |name: &str| {
+            file[name]["blob"]
+                .as_str()
+                .and_then(|blob| unseal(blob).ok())
+        };
+        let transport = UreqTransport::new(FETCH_TIMEOUT);
+        for provider in ["qianwen", "bailian"] {
+            let Some(bytes) = slot(provider) else {
+                println!("{provider}: no slot");
+                continue;
+            };
+            let bearer = if provider == "qianwen" {
+                serde_json::from_slice::<QianwenCredential>(&bytes)
+                    .unwrap()
+                    .derived
+            } else {
+                serde_json::from_slice::<BailianCredential>(&bytes)
+                    .unwrap()
+                    .access_token
+            };
+            let platform = if provider == "qianwen" {
+                Platform::Qianwen {
+                    gateway_json: String::new(),
+                }
+            } else {
+                Platform::Bailian
+            };
+            let client = QuotaClient::new(&transport, platform, bearer);
+            match client.query_usage() {
+                Ok(windows) => {
+                    println!("{provider} windows={}", windows.len());
+                    for window in &windows {
+                        println!(
+                            "{provider} {:?} used={:.4} remaining={:.1} reset_at_ms={:?}",
+                            window.key,
+                            window.used_percent,
+                            window.remaining_percent,
+                            window.reset_at_ms
+                        );
+                    }
+                }
+                Err(error) => println!("{provider} usage error: {error}"),
+            }
+        }
+        let Some(bytes) = slot("tencent") else {
+            println!("TENCENT: no slot");
+            return;
+        };
+        let credential: TencentCredential = serde_json::from_slice(&bytes).unwrap();
+        let pair = Tc3Credential {
+            secret_id: credential.secret_id,
+            secret_key: credential.secret_key,
+            token: None,
+        };
+        let client = TokenHubClient::new(&transport, pair.clone());
+        match client.personal_package("hy") {
+            Ok(package) => println!("TENCENT parsed: {package:?}"),
+            Err(error) => println!("TENCENT parsed error: {error}"),
+        }
+        // Raw envelope inventory: keys always; values only for quota/time-like
+        // fields (never identifiers or request ids).
+        use tokenplan_quota::HttpTransport as _;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let payload = r#"{"ProductType":"personal-hunyuan"}"#.to_string();
+        let authorization = tokenplan_quota::tc3_authorization(
+            &pair,
+            tokenplan_quota::TOKENHUB_HOST,
+            "tokenhub",
+            now,
+            "DescribeTokenPlanPersonalPackage",
+            &payload,
+        );
+        let response = transport
+            .send(tokenplan_quota::HttpRequest {
+                method: tokenplan_quota::Method::Post,
+                url: format!("https://{}/", tokenplan_quota::TOKENHUB_HOST),
+                headers: vec![
+                    (
+                        "Content-Type".into(),
+                        "application/json; charset=utf-8".into(),
+                    ),
+                    ("Host".into(), tokenplan_quota::TOKENHUB_HOST.into()),
+                    ("Authorization".into(), authorization),
+                    (
+                        "X-TC-Action".into(),
+                        "DescribeTokenPlanPersonalPackage".into(),
+                    ),
+                    ("X-TC-Region".into(), tokenplan_quota::DEFAULT_REGION.into()),
+                    ("X-TC-Timestamp".into(), now.to_string()),
+                    (
+                        "X-TC-Version".into(),
+                        tokenplan_quota::TOKENHUB_VERSION.into(),
+                    ),
+                ],
+                body: Some(payload),
+            })
+            .unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        let Some(envelope) = raw.get("Response") else {
+            println!(
+                "TENCENT raw: no Response envelope ({})",
+                &response.body[..response.body.len().min(300)]
+            );
+            return;
+        };
+        let keys: Vec<_> = envelope
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
+        println!("TENCENT raw keys: {keys:?}");
+        for key in keys {
+            let value = &envelope[&key];
+            let lowered = key.to_ascii_lowercase();
+            let printable = value.is_number()
+                || [
+                    "time", "expire", "status", "renew", "cycle", "quota", "used", "credit",
+                ]
+                .iter()
+                .any(|needle| lowered.contains(needle));
+            if printable {
+                println!("TENCENT raw {key} = {value}");
+            }
+        }
+    }
+
+    #[test]
     fn seal_unseal_round_trips_and_rejects_tampering() {
         let blob = seal("secret-payload").unwrap();
         assert_ne!(blob, "secret-payload");

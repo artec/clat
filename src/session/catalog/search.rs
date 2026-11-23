@@ -55,6 +55,16 @@ pub(crate) fn document(event: &SessionEvent) -> Option<SearchDocument> {
         .join("\n");
     (!text.is_empty()).then_some(SearchDocument { kind, text })
 }
+pub(crate) fn tool_facts(event: &SessionEvent) -> serde_json::Map<String, Value> {
+    if replay_kind(&event.event_type) == ReplayKind::ToolResult
+        && let Ok(crate::model::ModelItem::ToolResult(result)) =
+            crate::session::adapter::model_tool_result(&event.data)
+    {
+        return crate::tool::evidence::tool_facts(&result.output);
+    }
+    Default::default()
+}
+
 fn search_tool_text(text: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return crate::redact::redact_secrets(text);

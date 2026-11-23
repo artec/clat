@@ -105,6 +105,12 @@ impl SessionService {
             .map(|event| count(&event.data))
             .sum()
     }
+    pub(crate) fn original_tool_result(&self, seq: u64) -> Option<(u64, crate::tool::ToolResult)> {
+        let active = self.active.lock().expect("active");
+        let projections = active.as_ref()?.projections.lock().expect("projections");
+        projections.original_tool_result(seq)
+    }
+
     pub(crate) fn maintenance_events(&self) -> Vec<SessionEvent> {
         let active = self.active.lock().expect("active");
         active

@@ -160,7 +160,7 @@ impl ManualCompactionWork {
             instructions: self.instructions,
             tail_tokens: self.tail_tokens,
             definitions: self.definitions,
-            force: true,
+            intent: CompactionIntent::Manual,
             automatic_summary_failures: None,
         }
         .execute()

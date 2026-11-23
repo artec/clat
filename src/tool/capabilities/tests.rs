@@ -631,3 +631,54 @@ fn ga3_rework_secret_constraints_reject_registration_without_rewriting_or_partia
     }
     assert_eq!(registry.definitions().len(), 1);
 }
+
+#[test]
+fn conditional_tools_share_frozen_visibility_and_callability() {
+    let registry = Arc::new(ToolRegistry::new());
+    let (_plan, _) = register(&registry, "exit_plan_mode", json!({"type":"object"}));
+    let (_goal, _) = register(&registry, "update_goal", json!({"type":"object"}));
+    let (_read, _) = register(&registry, "read_file", json!({"type":"object"}));
+    let ordinary = ToolAccessPolicy::all();
+    let goal = ordinary.clone().with_goal_tools(true);
+    for (policy, expected) in [
+        (ordinary, vec!["read_file"]),
+        (goal, vec!["read_file", "update_goal"]),
+    ] {
+        let view = registry.capability_view(Some(&policy));
+        registry.install_capabilities(view.clone());
+        let definitions = view.definitions();
+        assert_eq!(definitions, registry.definitions_for(&policy));
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let page = query(&registry, json!({"limit":4}));
+        assert_eq!(
+            page["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for tool in registry.definitions() {
+            assert_eq!(policy.allows(&tool), expected.contains(&tool.name.as_str()));
+        }
+        let describe = super::interface::DiscoveryTool {
+            registry: Arc::downgrade(&registry),
+            detail: true,
+        };
+        let detail = describe
+            .invoke(
+                &json!({"name":"read_file"}),
+                &Project::new("."),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        assert!(detail.get("promote").is_none());
+    }
+}

@@ -32,6 +32,96 @@ fn cp1_review_compaction_invalidates_read_evidence_without_changing_tool_schemas
     assert_eq!(model.calls, 3);
 }
 
+#[test]
+fn long_file_cursor_advances_and_only_repeated_page_stalls() {
+    for (repeat, bounded) in [(false, false), (false, true), (true, true)] {
+        let root = std::env::temp_dir().join(format!("clat-read-cursor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("long.txt"), "测".repeat(1800)).unwrap();
+        let project = Project::new(&root);
+        let tools = ToolRegistry::new();
+        register_test_tool(&tools, crate::native_tools::ReadFileTool);
+        let mut model = CursorReadModel {
+            repeat,
+            bounded,
+            first_cursor: None,
+            pages: 0,
+        };
+        let result = Run::new(&mut model, &tools, &AllowAll, &project)
+            .execute("Read the whole file", &mut Vec::new());
+        crate::test_support::cleanup_tree(&root);
+        if repeat {
+            assert!(result.is_err(), "repeating one page must stop");
+            assert_eq!(
+                model.pages, 5,
+                "the same page only stalls after two corrections"
+            );
+        } else {
+            assert_eq!(result.expect("each new page is evidence").text, "finished");
+            assert!(model.pages > 4);
+        }
+    }
+}
+
+struct CursorReadModel {
+    repeat: bool,
+    bounded: bool,
+    first_cursor: Option<String>,
+    pages: usize,
+}
+
+impl Model for CursorReadModel {
+    fn provider(&self) -> &str {
+        "offline"
+    }
+    fn model_id(&self) -> &str {
+        "cursor-read"
+    }
+    fn stream(
+        &mut self,
+        request: ModelRequest<'_>,
+        _: &mut dyn ModelEventSink,
+    ) -> Result<ModelResponse, ModelError> {
+        let last = request.items.last();
+        let mut args = json!({"path":"long.txt","max_bytes":512});
+        if self.bounded {
+            args["end_line"] = json!(1);
+        }
+        if let Some(ModelItem::ToolResult(result)) = last {
+            assert!(!result.is_error);
+            if !self.repeat {
+                assert!(
+                    result.output.get("clat_runtime_feedback").is_none(),
+                    "new page received a correction"
+                );
+            }
+            let Some(cursor) = result.output["next_cursor"].as_str() else {
+                return Ok(crate::test_support::response(
+                    "finished",
+                    crate::model::FinishReason::Completed,
+                ));
+            };
+            let cursor = if self.repeat {
+                self.first_cursor
+                    .get_or_insert_with(|| cursor.to_owned())
+                    .as_str()
+            } else {
+                cursor
+            };
+            args["cursor"] = json!(cursor);
+        }
+        self.pages += 1;
+        assert!(self.pages < 32, "bounded scripted reads");
+        let mut response = crate::test_support::response("", crate::model::FinishReason::ToolCalls);
+        response.tool_calls.push(ToolCall {
+            id: format!("page-{}", self.pages),
+            name: "read_file".into(),
+            arguments: args,
+        });
+        Ok(response)
+    }
+}
+
 struct MockCompactionForEvidence {
     rewritten: bool,
     changed: bool,
@@ -1876,7 +1966,9 @@ struct PlanForgedWriteModel {
     calls: usize,
 }
 
-struct EmptyCatalogModel;
+struct EmptyCatalogModel {
+    attempted: bool,
+}
 
 impl Model for EmptyCatalogModel {
     fn provider(&self) -> &str {
@@ -1896,15 +1988,27 @@ impl Model for EmptyCatalogModel {
             request.tools.is_empty(),
             "the model request must consume the frozen definitions, not re-read the registry"
         );
-        Ok(ModelResponse {
-            text: "done".into(),
-            tool_calls: vec![],
-            finish_reason: FinishReason::Completed,
-            usage: None,
-            provider_response_id: None,
-            provider_state: vec![],
-            reasoning: None,
-        })
+        if self.attempted {
+            let Some(ModelItem::ToolResult(result)) = request.items.last() else {
+                panic!("the model should receive the refusal");
+            };
+            assert!(
+                result.is_error,
+                "a known tool outside the frozen schema may not run"
+            );
+            return Ok(crate::test_support::response(
+                "done",
+                FinishReason::Completed,
+            ));
+        }
+        self.attempted = true;
+        let mut response = crate::test_support::response("", FinishReason::ToolCalls);
+        response.tool_calls.push(ToolCall {
+            id: "outside-frozen-catalog".into(),
+            name: "echo".into(),
+            arguments: json!({"value":"must not execute"}),
+        });
+        Ok(response)
     }
 }
 
@@ -1913,13 +2017,23 @@ fn model_request_consumes_the_frozen_tool_definition_snapshot() {
     let project = Project::new(".");
     let tools = ToolRegistry::new();
     register_test_tool(&tools, EchoTool);
-    let mut model = EmptyCatalogModel;
+    let mut model = EmptyCatalogModel { attempted: false };
     let mut events = Vec::new();
 
     Run::new(&mut model, &tools, &AllowAll, &project)
         .with_tool_definitions(Vec::<ToolDefinition>::new().into())
         .execute("use frozen catalog", &mut events)
         .expect("empty frozen catalog remains authoritative");
+    assert!(
+        events.iter().any(
+            |event| matches!(event, RunEvent::PermissionDenied { tool, .. } if tool == "echo")
+        )
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolStarted { tool, .. } if tool == "echo"))
+    );
 }
 
 impl Model for PlanForgedWriteModel {

@@ -131,6 +131,11 @@ impl ToolAccessPolicy {
     }
 
     pub(crate) fn allows(&self, definition: &ToolDefinition) -> bool {
+        if (definition.name == "exit_plan_mode" && !self.plan_mode)
+            || (definition.name == "update_goal" && !self.goal_tools)
+        {
+            return false;
+        }
         if matches!(
             definition.name.as_str(),
             "request_plan_mode" | "propose_goal"
@@ -171,6 +176,12 @@ impl ToolAccessPolicy {
         {
             return "new workflow requests require an ordinary foreground session outside Plan Mode";
         }
+        if definition.name == "exit_plan_mode" && !self.plan_mode {
+            return "exit_plan_mode requires an active Plan Mode run";
+        }
+        if definition.name == "update_goal" && !self.goal_tools {
+            return "update_goal requires an active goal";
+        }
         if self.readonly_child {
             "tool unavailable to a read-only subagent"
         } else if is_task_tool(&definition.name) && !self.task_progress_enabled {
@@ -185,14 +196,6 @@ impl ToolAccessPolicy {
     #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn is_plan_mode(&self) -> bool {
         self.plan_mode
-    }
-
-    pub(crate) fn planning(&self) -> bool {
-        self.plan_mode
-    }
-
-    pub(crate) fn goal_tools(&self) -> bool {
-        self.goal_tools
     }
 
     pub(crate) fn with_goal_tools(mut self, enabled: bool) -> Self {
@@ -265,6 +268,7 @@ impl Default for ToolAccessPolicy {
 pub(crate) mod capabilities;
 pub use capabilities::ToolCapability;
 mod access;
+pub(crate) mod evidence;
 pub(crate) mod resident;
 pub(crate) use access::ToolAccessSlot;
 
@@ -925,18 +929,9 @@ impl ToolRegistry {
         let mut definitions = state
             .order
             .iter()
-            .filter_map(|name| {
-                let entry = state.by_name.get(name)?;
-                let builtin = entry.owner.as_str().starts_with("builtin.");
-                let visible = access.allows(&entry.definition)
-                    && (!builtin
-                        || resident::is_published(
-                            &entry.definition.name,
-                            access.planning(),
-                            access.goal_tools(),
-                        ));
-                visible.then(|| access.model_definition(entry.definition.clone()))
-            })
+            .filter_map(|name| state.by_name.get(name))
+            .filter(|entry| access.allows(&entry.definition))
+            .map(|entry| access.model_definition(entry.definition.clone()))
             .collect::<Vec<_>>();
         resident::sort_published(&mut definitions);
         definitions

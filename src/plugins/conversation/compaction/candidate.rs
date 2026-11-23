@@ -13,8 +13,10 @@ impl<'a> CompactionCandidate<'a> {
         range: Range<usize>,
         tokens: u64,
         summary: &str,
+        session_id: Option<&str>,
+        recover: &dyn Fn(u64) -> Option<(u64, crate::tool::ToolResult)>,
     ) -> Result<Self, String> {
-        let framed = super::evidence::frame(summary, &nodes[range.clone()])?;
+        let framed = super::evidence::frame(summary, &nodes[range.clone()], session_id, recover)?;
         if summary.trim().is_empty()
             || estimate_item(&ModelItem::user_text(&framed)) as u64 >= tokens
         {

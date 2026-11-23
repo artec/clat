@@ -21,7 +21,7 @@ pub(super) fn choose_range(
                         .map_or(0, |index| index + 1),
                 );
             }
-            if !request.force {
+            if !request.intent.is_forced() {
                 let retain = crate::model::ContextBudget::resolve(request.config)
                     .ok()
                     .flatten()?
@@ -42,7 +42,7 @@ pub(super) fn choose_range(
             (range.start < range.end).then_some(range)
         }),
         None => {
-            let retain = if request.force {
+            let retain = if request.intent.is_forced() {
                 0
             } else {
                 crate::model::ContextBudget::resolve(request.config)
@@ -53,12 +53,14 @@ pub(super) fn choose_range(
             historical_range(request.nodes, retain, request.protected_head)
         }
     }?;
-    // 第六层：摘要范围按预算分块——摘要请求自身的 prompt（摘要指令 +
-    // 范围内条目）必须能在档位窗口内发出，否则摘要自己 403 降级、
-    // 什么都没压掉（2026-11-21 Kimi Plus 档 live 实测）。保留最新
-    // 条目、淘汰最旧溢出，被淘汰的老条目留给 reduce 循环的下一轮；
-    // 至少保留一条保证进展（单条超限的退化行为与既有一致）。
-    let range = cap_summary_region(request.nodes, range, threshold);
+    // Automatic maintenance retains its bounded cut. Manual compaction sends the
+    // full protected span to the capacity-checked, chunked summary executor, so
+    // the boundary of one model request does not leave an old prefix in context.
+    let range = if request.intent == CompactionIntent::Manual {
+        range
+    } else {
+        cap_summary_region(request.nodes, range, threshold)
+    };
     protected_segment(
         request.nodes,
         range,
@@ -249,7 +251,7 @@ mod tests {
                 item: ModelItem::user_text("historical evidence ".repeat(100)),
             })
             .collect::<Vec<_>>();
-        let request = CompactionRequest {
+        let mut request = CompactionRequest {
             config: &ModelConfig::default(),
             credentials: &crate::ProviderCredentials::default(),
             nodes: &nodes,
@@ -260,10 +262,10 @@ mod tests {
             spend_ledger: None,
             instructions: String::new(),
             tool_definitions: vec![],
-            force: true,
+            intent: CompactionIntent::Manual,
             cancel: CancelToken::default(),
         };
-        let selected = choose_range(&request, None, "", &[]).unwrap();
+        let selected = choose_range(&request, Some(1), "", &[]).unwrap();
         assert!(selected.end < nodes.len());
         assert!(
             !request
@@ -274,7 +276,14 @@ mod tests {
         assert_eq!(
             selected.len(),
             2,
-            "choose the largest eligible span between protected boundaries"
+            "manual compaction takes the whole eligible span between boundaries"
+        );
+        request.intent = CompactionIntent::Forced;
+        let bounded = choose_range(&request, Some(1), "", &[]).unwrap();
+        assert_eq!(
+            bounded.len(),
+            1,
+            "automatic recovery retains the bounded cut"
         );
     }
 

@@ -100,7 +100,7 @@ fn live_glm_checkpoint_retains_global_facts() {
                 spend_ledger: None,
                 instructions,
                 tool_definitions: definitions,
-                force: true,
+                intent: crate::plugins::services::CompactionIntent::Forced,
                 cancel: crate::CancelToken::new(),
             });
     let summary = result.summary.unwrap_or_default();
