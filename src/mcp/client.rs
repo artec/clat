@@ -13,6 +13,7 @@ use super::transport::{
 };
 use crate::application::{EXIT_JOIN_GRACE, join_with_grace};
 use crate::model::CancelToken;
+use crate::presets::GlmCodingEntry;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
 use serde::{Deserialize, Serialize};
@@ -1279,18 +1280,24 @@ impl Tool for McpTool {
 /// - vision：本地 stdio `npx @z_ai/mcp-server`（@latest 防旧缓存），
 ///   `Z_AI_API_KEY` 环境变量鉴权（截图转码、OCR、图表分析等 8 工具，
 ///   需 Node.js ≥ 18）。
-pub fn glm_mcp_pack(api_key: &str) -> Vec<(String, McpServerConfig)> {
+pub(crate) fn glm_mcp_pack(entry: GlmCodingEntry, api_key: &str) -> Vec<(String, McpServerConfig)> {
+    let origin = entry.origin();
     let remote = |path: &'static str| {
         let mut headers = std::collections::BTreeMap::new();
         headers.insert("Authorization".to_owned(), format!("Bearer {api_key}"));
         McpServerConfig {
-            url: Some(format!("https://open.bigmodel.cn/api/mcp/{path}/mcp")),
+            url: Some(format!("{origin}/api/mcp/{path}/mcp")),
             headers,
             ..McpServerConfig::default()
         }
     };
     let mut vision_env = std::collections::BTreeMap::new();
     vision_env.insert("Z_AI_API_KEY".to_owned(), api_key.to_owned());
+    let mode = match entry {
+        GlmCodingEntry::BigModel => "ZHIPU",
+        GlmCodingEntry::Zai => "ZAI",
+    };
+    vision_env.insert("Z_AI_MODE".to_owned(), mode.to_owned());
     vec![
         ("glm-search".to_owned(), remote("web_search_prime")),
         ("glm-reader".to_owned(), remote("web_reader")),
@@ -2040,7 +2047,7 @@ for line in sys.stdin:
     /// 视觉服务器（npx + 环境变量鉴权），密钥进内存配置。
     #[test]
     fn glm_pack_carries_the_four_official_servers() {
-        let pack = glm_mcp_pack("glm-key-1");
+        let pack = glm_mcp_pack(GlmCodingEntry::BigModel, "glm-key-1");
         assert_eq!(pack.len(), 4);
         let names: Vec<&str> = pack.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
@@ -2090,7 +2097,7 @@ for line in sys.stdin:
                 ..McpServerConfig::default()
             },
         );
-        let merged = merge_vendor_pack(&mut config, &glm_mcp_pack("k"));
+        let merged = merge_vendor_pack(&mut config, &glm_mcp_pack(GlmCodingEntry::BigModel, "k"));
         assert_eq!(merged, 3, "only entries without a user override merge");
         assert_eq!(config.len(), 4);
         assert_eq!(

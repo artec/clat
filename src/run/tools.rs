@@ -80,11 +80,7 @@ impl Run<'_> {
         } else {
             tool.result_blocks(&output)
         };
-        let output = if evidence == EvidenceDecision::Correct {
-            Self::with_correction(output)
-        } else {
-            output
-        };
+        let output = Self::with_evidence_feedback(output, &evidence);
         (
             ToolResult {
                 blocks,
@@ -97,11 +93,22 @@ impl Run<'_> {
             evidence,
         )
     }
-    fn with_correction(mut output: serde_json::Value) -> serde_json::Value {
-        let correction = serde_json::json!({
-            "code": "NO_NEW_EVIDENCE",
-            "message": "This read-only observation adds no new evidence compared with this run's prior results. Do not repeat the same search or read. Use existing evidence, choose a genuinely different approach, or explain what blocks progress."
-        });
+    fn with_evidence_feedback(
+        mut output: serde_json::Value,
+        evidence: &EvidenceDecision,
+    ) -> serde_json::Value {
+        let (code, message) = match evidence {
+            EvidenceDecision::Correct => (
+                "NO_NEW_EVIDENCE",
+                "This read-only observation adds no new evidence compared with this run's prior results. Do not repeat the same search or read. Use existing evidence, choose a genuinely different approach, or explain what blocks progress.",
+            ),
+            EvidenceDecision::Advise => (
+                "REVIEW_SHELL_PROBES",
+                "Review the shell evidence already collected before running more inspections. If evidence is still missing, target the specific file, range, or fact you need.",
+            ),
+            _ => return output,
+        };
+        let correction = serde_json::json!({"code":code, "message":message});
         if let Some(object) = output.as_object_mut() {
             object.insert("clat_runtime_feedback".into(), correction);
             output
@@ -215,11 +222,7 @@ impl Run<'_> {
             &output,
             crate::ToolEffect::Pure,
         );
-        let output = if evidence == EvidenceDecision::Correct {
-            Self::with_correction(output)
-        } else {
-            output
-        };
+        let output = Self::with_evidence_feedback(output, &evidence);
         self.publish_result(
             state,
             ToolResult {
@@ -303,11 +306,7 @@ impl Run<'_> {
             &output,
             crate::ToolEffect::Pure,
         );
-        let output = if evidence == EvidenceDecision::Correct {
-            Self::with_correction(output)
-        } else {
-            output
-        };
+        let output = Self::with_evidence_feedback(output, &evidence);
         let mut result = ToolResult {
             blocks: Vec::new(),
             image_parts: Vec::new(),

@@ -721,24 +721,23 @@ snapshot, and capability guidance.
    `web_fetch` / `web_search`, non-shell verification
    (`cargo` / `curl` / `python` / …), and non-barren structured
    search/list/discovery. Same-version, line-based `read_file` expansions and shell
-   read-probes do not reset that fuse. Identical commands share a scrubbed
-   fingerprint (whitespace collapsed, volatile `clat-run-*` / UUID tokens
-   removed). Shell read-probes (`grep`/`rg`/`find`/`sed`/`head`/`tail`/
-   `cat`/`ls` and similar, including `git grep|show|log|diff`) use a coarser
-   `family|path-scope` stamp so swapping only the search pattern on the same
-   path is not novel; path-scope keeps the full path token (not only the
-   first component) so grepping two files under `src/` stays independent.
+   read-probes do not reset that fuse. An exact process repeat requires the same
+   invocation, working directory and complete observed output and status.
+   In-flight, truncated or lossy output cannot establish an exact repeat.
+   Shell read-probes (`grep`, `rg`, `find`, `sed`, `cat`, `ls` and similar)
+   also have an advisory fingerprint for their read targets across all steps.
+   It uses the command families, full path scopes, active directories and
+   observed results when complete. Matching this fingerprint only advises
+   the model to review the evidence it already gathered.
    After eight consecutive shell read-probes, further probes remind even
-   across families — without hard-stopping. Classification uses the primary
-   command of each `;`/`&&` step — a `| tail` or `| grep` filter on
-   `cargo test` / `python` must not count as a read-probe; scripts that also
-   invoke `curl`/`cargo`/`python`/`node` (and similar) are verification, not
-   read-probes; `cat >file` / `sed -i` are writes, not probes, while
-   `2>/dev/null` is not a write. Active `cd` targets are part of the stamp so
-   directory listings in different folders stay independent. Discovery
-   timestamps do not make unchanged capability data novel. Tool results
-   retain their payload with optional `clat_runtime_feedback`, which marks a
-   correction rather than claiming the tool returned new data. **A durable
+   across families, without hard-stopping. Classification uses the primary
+   command of each top-level step, including steps separated by newlines.
+   Quoted and continued lines stay inside their step. A piped output filter
+   on a build or test does not make it a read-probe. Scripts with recognized
+   execution or write operations are excluded from the read-probe heuristic.
+   Discovery timestamps do not make unchanged capability data novel. Tool
+   results retain their payload with optional `clat_runtime_feedback`, which
+   carries the advisory or correction. **A durable
    compaction, pruning or image-offload rewrite invalidates this temporary
    evidence ledger**, so the model can refresh older observations; this does
    not change the frozen allowed tool schemas or permissions.

@@ -158,6 +158,9 @@ impl TrustedProjectApplication {
         let preset = crate::presets::preset_by_id(id).ok_or_else(|| setup_error("invalid"))?;
         let mut config = ModelConfig::default();
         preset.apply(&mut config);
+        if let Some(endpoint) = self.glm_preset_endpoint(preset) {
+            config.endpoint = endpoint.into();
+        }
         let mut credentials = self
             .vendor_key(config.protocol, &config.endpoint)
             .unwrap_or_else(|| ProviderCredentials::for_protocol(config.protocol));

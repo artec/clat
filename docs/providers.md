@@ -127,9 +127,11 @@ reasoning is never synthesized.
 
 ### GLM Coding Plan
 
-The preset uses the dedicated endpoint
-`https://open.bigmodel.cn/api/coding/paas/v4`, not the generic platform URL. It
-sends enabled preserved thinking:
+The presets use the dedicated Coding Plan endpoint for the entry selected in
+**Settings → Models**. The China entry uses `https://open.bigmodel.cn/api/coding/paas/v4`
+and the international entry uses `https://api.z.ai/api/coding/paas/v4`.
+Each entry uses its own API key. See the [official endpoint guide](https://zcode.z.ai/cn/docs/configuration).
+Both entries send enabled preserved thinking:
 
 ```json
 {

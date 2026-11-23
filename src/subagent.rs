@@ -6,14 +6,12 @@
 //! task/token/time/output budgets. Enabling and run binding are process-local;
 //! every child activation itself is durably described in the parent session.
 
-use crate::event::{EventSink, RunEvent};
-use crate::model::{ModelConfig, ModelItem, ModelOptions, ProviderCredentials, Usage};
-use crate::permission::AllowAll;
+use crate::model::{ModelConfig, ProviderCredentials, Usage};
 use crate::plugins::services::ProviderRegistry;
 use crate::session::id::SessionId;
 use crate::session::run_journal::{NewSessionEvent, RunJournal};
-use crate::tool::{ToolAccessPolicy, ToolRegistry};
-use crate::{CancelToken, Project, Run};
+use crate::tool::ToolRegistry;
+use crate::{CancelToken, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -21,6 +19,9 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+
+mod budget;
+mod child;
 
 pub const MAX_TASKS_PER_CALL: usize = 2;
 pub const MAX_CHILDREN_PER_RUN: u32 = 4;
@@ -76,6 +77,8 @@ pub struct SubagentResult {
     pub output: String,
     pub stop_reason: String,
     pub usage: Usage,
+    /// Includes conservative estimates for attempts that returned no usage.
+    charged_tokens: u64,
     pub elapsed_ms: u64,
     pub tools: Vec<String>,
     pub input_digest: String,
@@ -263,6 +266,7 @@ impl SubagentService {
             service: Arc::clone(self),
             reservation,
             actual_usage: Usage::default(),
+            charged_tokens: 0,
             started: call_started,
         };
 
@@ -313,195 +317,7 @@ impl SubagentService {
                 }));
             }
         });
-        indexed.sort_by_key(|(index, _)| *index);
-
-        let mut results = Vec::with_capacity(indexed.len());
-        let mut actual_usage = Usage::default();
-        let mut failure = None;
-        for (_, result) in indexed {
-            match result {
-                Ok(result) => {
-                    actual_usage.add_assign(&result.usage);
-                    results.push(result);
-                }
-                Err(error) if failure.is_none() => failure = Some(error),
-                Err(_) => {}
-            }
-        }
-        reservation.actual_usage = actual_usage;
-        if let Some(error) = failure {
-            // Once a worker's end fact cannot be committed, its true usage is
-            // an unknown commit outcome. Charge the full reservation rather
-            // than letting a model retry through the parent token ceiling.
-            reservation.actual_usage = Usage {
-                input_tokens: reservation.reservation.token_reservation,
-                ..Usage::default()
-            };
-            return Err(error);
-        }
-        Ok(results)
-    }
-
-    fn run_one(
-        self: &Arc<Self>,
-        binding: RunBinding,
-        id: String,
-        input_digest: String,
-        task: SubagentTask,
-        parent_cancel: &CancelToken,
-    ) -> Result<SubagentResult, String> {
-        let deadline = Instant::now() + Duration::from_secs(task.timeout_secs);
-        let cancel = parent_cancel.child_with_deadline(deadline);
-        let _worker = self.register_worker(id.clone(), cancel.clone())?;
-        let started = Instant::now();
-        let mut config = binding.config.clone();
-        let access = ToolAccessPolicy::readonly_child();
-        let definitions = self.tools.definitions_for(&access);
-        let prompt = child_prompt(&task);
-        let estimated_input = crate::model::estimate_request_tokens(
-            Some(task.role.instructions()),
-            &[ModelItem::user_text(prompt.clone())],
-            &definitions,
-        );
-        if estimated_input >= task.max_tokens {
-            return self.finish_preflight_error(
-                &binding,
-                &id,
-                &task,
-                &input_digest,
-                started.elapsed(),
-                format!(
-                    "child request estimate {estimated_input} reaches token cap {}",
-                    task.max_tokens
-                ),
-            );
-        }
-        let output_cap = task
-            .max_tokens
-            .saturating_sub(estimated_input)
-            .min(u64::from(u32::MAX));
-        config.output_limit = Some(
-            config
-                .output_limit
-                .map_or(output_cap as u32, |value| value.min(output_cap as u32)),
-        );
-        let providers = Arc::clone(&self.providers);
-        let factory_config = config.clone();
-        let factory_credentials = binding.credentials.clone();
-        let model = crate::providers::retry_model(
-            config.protocol.to_string(),
-            config.model.clone(),
-            Box::new(move || providers.build(&factory_config, &factory_credentials)),
-        );
-        // Subagents share the same fail-closed capability contract as the
-        // primary runtime: no paid 400 probe and no path-bearing fallback.
-        let mut model = model;
-        let ledger = Arc::new(crate::model::RunSpendLedger::new(Some(task.max_tokens)));
-        let options = ModelOptions {
-            output_limit: config.output_limit,
-            temperature: config.temperature,
-            parallel_tool_calls: Some(false),
-            ..ModelOptions::default()
-        };
-        let mut events = ChildEvents::default();
-        let run = Run::new(model.as_mut(), &self.tools, &AllowAll, &self.project)
-            .with_model_options(options)
-            .with_spend_ledger(Some(ledger))
-            .with_cancel_token(cancel.clone())
-            .with_tool_access(access)
-            .with_instructions(task.role.instructions())
-            .with_capabilities(config.capabilities.clone())
-            // OC-1：子运行携带父会话 id——OpenCode 网关按会话归并，
-            // 子代理请求属于同一会话（缺失该头会被该网关 400 拒绝）。
-            .with_session_id(Some(binding.session.to_string()));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut run = run;
-            run.execute_with_items(
-                vec![ModelItem::user_text(prompt)],
-                crate::message::MessageContent::text(task.task.clone()),
-                None,
-                &mut events,
-            )
-        }));
-        let elapsed = started.elapsed();
-        let (output, usage, stop_reason) = match outcome {
-            Ok(Ok(done)) => {
-                let reason = if cancel.is_cancelled() || events.cancelled {
-                    "aborted"
-                } else {
-                    "completed"
-                };
-                (done.text, done.usage, reason.to_owned())
-            }
-            Ok(Err(error)) => {
-                let (message, _, usage, _) = error.into_parts();
-                (
-                    message,
-                    usage,
-                    if cancel.is_cancelled() {
-                        "aborted"
-                    } else {
-                        "error"
-                    }
-                    .into(),
-                )
-            }
-            Err(payload) => (
-                format!(
-                    "subagent panicked: {}",
-                    crate::plugin::panic_message(payload)
-                ),
-                Usage::default(),
-                "error".into(),
-            ),
-        };
-        let output = truncate_utf8(&output, MAX_CHILD_OUTPUT_BYTES);
-        let output_digest = sha256(output.as_bytes());
-        let result = SubagentResult {
-            id: id.clone(),
-            role: task.role,
-            output,
-            stop_reason,
-            usage,
-            elapsed_ms: elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-            tools: events.tools.into_iter().collect(),
-            input_digest: input_digest.clone(),
-            output_digest,
-        };
-        let end = lifecycle_end(&result, &binding, &task);
-        binding
-            .journal
-            .append(NewSessionEvent::new("clat/subagent", end).log_only())?;
-        binding.journal.flush()?;
-        Ok(result)
-    }
-
-    fn finish_preflight_error(
-        &self,
-        binding: &RunBinding,
-        id: &str,
-        task: &SubagentTask,
-        input_digest: &str,
-        elapsed: Duration,
-        message: String,
-    ) -> Result<SubagentResult, String> {
-        let output = truncate_utf8(&message, MAX_CHILD_OUTPUT_BYTES);
-        let result = SubagentResult {
-            id: id.to_owned(),
-            role: task.role,
-            output: output.clone(),
-            stop_reason: "error".into(),
-            usage: Usage::default(),
-            elapsed_ms: elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-            tools: Vec::new(),
-            input_digest: input_digest.to_owned(),
-            output_digest: sha256(output.as_bytes()),
-        };
-        binding.journal.append(
-            NewSessionEvent::new("clat/subagent", lifecycle_end(&result, binding, task)).log_only(),
-        )?;
-        binding.journal.flush()?;
-        Ok(result)
+        reservation.settle_workers(indexed)
     }
 
     fn reserve(&self, tasks: &[SubagentTask]) -> Result<Reservation, String> {
@@ -568,25 +384,28 @@ impl SubagentService {
         })
     }
 
-    fn reconcile(&self, reservation: &Reservation, actual_usage: &Usage, actual_wall_ms: u64) {
+    fn reconcile(
+        &self,
+        reservation: &Reservation,
+        actual_usage: &Usage,
+        charged_tokens: u64,
+        actual_wall_ms: u64,
+    ) {
         if let Ok(mut inner) = self.inner.lock()
             && let Some(binding) = &mut inner.binding
             && binding.session == reservation.binding.session
         {
-            let actual_tokens = actual_usage
-                .input_tokens
-                .saturating_add(actual_usage.output_tokens);
             binding.reserved_tokens = binding
                 .reserved_tokens
                 .saturating_sub(reservation.token_reservation);
-            binding.used_tokens = binding.used_tokens.saturating_add(actual_tokens);
+            binding.used_tokens = binding.used_tokens.saturating_add(charged_tokens);
             binding.reserved_wall_ms = binding
                 .reserved_wall_ms
                 .saturating_sub(reservation.wall_reservation);
             binding.wall_ms = binding.wall_ms.saturating_add(actual_wall_ms);
             binding.round_usage.add_assign(actual_usage);
             if let Some(ledger) = &binding.round_ledger {
-                ledger.charge(actual_tokens);
+                ledger.charge(charged_tokens);
             }
         }
     }
@@ -675,7 +494,36 @@ struct ReservationGuard {
     service: Arc<SubagentService>,
     reservation: Reservation,
     actual_usage: Usage,
+    charged_tokens: u64,
     started: Instant,
+}
+
+impl ReservationGuard {
+    fn settle_workers(
+        &mut self,
+        mut indexed: Vec<(usize, Result<SubagentResult, String>)>,
+    ) -> Result<Vec<SubagentResult>, String> {
+        indexed.sort_by_key(|(index, _)| *index);
+        let mut results = Vec::with_capacity(indexed.len());
+        let mut failure = None;
+        for (_, result) in indexed {
+            match result {
+                Ok(result) => {
+                    self.actual_usage.add_assign(&result.usage);
+                    self.charged_tokens = self.charged_tokens.saturating_add(result.charged_tokens);
+                    results.push(result);
+                }
+                Err(error) if failure.is_none() => failure = Some(error),
+                Err(_) => {}
+            }
+        }
+        if let Some(error) = failure {
+            // An unknown end-commit outcome consumes the full reservation.
+            self.charged_tokens = self.charged_tokens.max(self.reservation.token_reservation);
+            return Err(error);
+        }
+        Ok(results)
+    }
 }
 
 impl Drop for ReservationGuard {
@@ -683,26 +531,9 @@ impl Drop for ReservationGuard {
         self.service.reconcile(
             &self.reservation,
             &self.actual_usage,
+            self.charged_tokens,
             self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         );
-    }
-}
-
-#[derive(Default)]
-struct ChildEvents {
-    tools: BTreeSet<String>,
-    cancelled: bool,
-}
-
-impl EventSink for ChildEvents {
-    fn emit(&mut self, event: RunEvent) {
-        match event {
-            RunEvent::ToolStarted { tool, .. } => {
-                self.tools.insert(tool);
-            }
-            RunEvent::RunCancelled { .. } => self.cancelled = true,
-            _ => {}
-        }
     }
 }
 
@@ -1157,6 +988,29 @@ mod tests {
             timeout_secs: 1,
             max_tokens: 1,
         }
+    }
+
+    #[test]
+    fn subagent_parent_budget_charges_unreported_spend_without_inventing_usage() {
+        let service = Arc::new(reservation_service());
+        let ledger = Arc::new(crate::model::RunSpendLedger::new(Some(100)));
+        service.begin_round(Arc::clone(&ledger)).unwrap();
+        let task = SubagentTask {
+            max_tokens: 100,
+            ..reservation_task()
+        };
+        let reservation = service.reserve(std::slice::from_ref(&task)).unwrap();
+        let guard = ReservationGuard {
+            service: Arc::clone(&service),
+            reservation,
+            actual_usage: Usage::default(),
+            charged_tokens: 100,
+            started: Instant::now(),
+        };
+        drop(guard);
+        assert_eq!(ledger.committed(), 100);
+        assert!(service.reserve(&[reservation_task()]).is_err());
+        assert_eq!(service.take_round_usage(), Usage::default());
     }
 
     #[test]

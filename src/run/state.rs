@@ -1,6 +1,7 @@
 //! Owned progress shared by steps; terminal construction keeps history and accounting together.
 use super::*;
 use std::collections::{HashMap, HashSet, VecDeque};
+mod shell;
 pub(super) struct StepState {
     pub items: Vec<ModelItem>,
     pub usage: Usage,
@@ -14,8 +15,8 @@ pub(super) struct StepState {
 /// signals reset the fuse. Live polling is excluded.
 #[derive(Default)]
 pub(super) struct EvidenceTracker {
-    seen: HashSet<u64>,
-    order: VecDeque<u64>,
+    exact_stamps: StampWindow,
+    shell_probe_stamps: StampWindow,
     barren_scopes: HashSet<String>,
     barren_order: VecDeque<String>,
     /// Merged line coverage per `read_file` path. A new range is not new
@@ -28,6 +29,32 @@ pub(super) struct EvidenceTracker {
     shell_read_streak: u32,
     /// Exact no-new hits that already produced `Correct` in this fuse window.
     exact_corrections: u32,
+}
+
+#[derive(Default)]
+struct StampWindow {
+    seen: HashSet<u64>,
+    order: VecDeque<u64>,
+}
+
+impl StampWindow {
+    fn repeated(&mut self, stamp: u64) -> bool {
+        if !self.seen.insert(stamp) {
+            return true;
+        }
+        self.order.push_back(stamp);
+        if self.order.len() > MAX_TRACKED_EVIDENCE
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.seen.remove(&oldest);
+        }
+        false
+    }
+
+    fn clear(&mut self) {
+        self.seen.clear();
+        self.order.clear();
+    }
 }
 
 struct ReadCoverage {
@@ -50,6 +77,7 @@ const MAX_EXACT_CORRECTIONS: u32 = 2;
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum EvidenceDecision {
     Fresh,
+    Advise,
     Correct,
     Stalled,
 }
@@ -69,6 +97,9 @@ impl EvidenceTracker {
             self.clear();
             return EvidenceDecision::Fresh;
         }
+        if is_command_probe(name) {
+            return self.observe_command(name, arguments, output);
+        }
         let barren = is_barren(output);
         let scope = evidence_scope(name, arguments);
         let stamp = evidence_stamp(name, arguments, output);
@@ -85,19 +116,9 @@ impl EvidenceTracker {
                     .get(read.path)
                     .is_none_or(|old| old.version != read.version)
         });
-        let shell_read = is_command_probe(name) && is_shell_read_probe(arguments);
-        if shell_read {
-            self.shell_read_streak = self.shell_read_streak.saturating_add(1);
-        } else if is_command_probe(name) {
-            // A real process step (build/test/curl/…) breaks the read-probe streak.
-            self.shell_read_streak = 0;
-        }
-        let streak_exhausted = shell_read && self.shell_read_streak > MAX_SHELL_READ_STREAK;
-        let exact_no_new = covered
-            || self.seen.contains(&stamp)
-            || (barren && self.barren_scopes.contains(&scope));
-        let approx_no_new = streak_exhausted && !exact_no_new;
-        self.remember(stamp);
+        let previously_seen = self.exact_stamps.repeated(stamp);
+        let exact_no_new =
+            covered || previously_seen || (barren && self.barren_scopes.contains(&scope));
         if let Some(read) = read {
             self.remember_read_range(read);
         }
@@ -110,36 +131,60 @@ impl EvidenceTracker {
             }
         }
         if exact_no_new {
-            self.exact_corrections = self.exact_corrections.saturating_add(1);
-            if self.exact_corrections > MAX_EXACT_CORRECTIONS {
-                EvidenceDecision::Stalled
-            } else {
-                EvidenceDecision::Correct
-            }
-        } else if approx_no_new {
-            // Approximate investigate churn: remind only (DSH-like), never Stall.
-            EvidenceDecision::Correct
-        } else if progress_resets_correction(name, arguments, barren, new_read) {
-            self.exact_corrections = 0;
-            if !barren {
-                self.barren_scopes.clear();
-                self.barren_order.clear();
-            }
-            EvidenceDecision::Fresh
+            return self.correct_exact_repeat();
+        }
+        if progress_resets_correction(name, barren, new_read) {
+            self.reset_corrections();
+        }
+        EvidenceDecision::Fresh
+    }
+
+    fn observe_command(
+        &mut self,
+        name: &str,
+        arguments: &serde_json::Value,
+        output: &serde_json::Value,
+    ) -> EvidenceDecision {
+        if output["running"] == true {
+            return EvidenceDecision::Fresh;
+        }
+        let command = shell::observe(name, arguments, output);
+        let exact_repeat = command
+            .exact
+            .is_some_and(|stamp| self.exact_stamps.repeated(stamp));
+        let repeated_probe = command
+            .probe
+            .is_some_and(|stamp| self.shell_probe_stamps.repeated(stamp));
+        if command.probe.is_some() {
+            self.shell_read_streak = self.shell_read_streak.saturating_add(1);
         } else {
-            EvidenceDecision::Fresh
+            self.shell_read_streak = 0;
+        }
+        if exact_repeat {
+            return self.correct_exact_repeat();
+        }
+        if repeated_probe || self.shell_read_streak > MAX_SHELL_READ_STREAK {
+            return EvidenceDecision::Advise;
+        }
+        if command.probe.is_none() && command.exact.is_some() && !is_barren(output) {
+            self.reset_corrections();
+        }
+        EvidenceDecision::Fresh
+    }
+
+    fn correct_exact_repeat(&mut self) -> EvidenceDecision {
+        self.exact_corrections = self.exact_corrections.saturating_add(1);
+        if self.exact_corrections > MAX_EXACT_CORRECTIONS {
+            EvidenceDecision::Stalled
+        } else {
+            EvidenceDecision::Correct
         }
     }
 
-    fn remember(&mut self, stamp: u64) {
-        if self.seen.insert(stamp) {
-            self.order.push_back(stamp);
-            if self.order.len() > MAX_TRACKED_EVIDENCE
-                && let Some(oldest) = self.order.pop_front()
-            {
-                self.seen.remove(&oldest);
-            }
-        }
+    fn reset_corrections(&mut self) {
+        self.exact_corrections = 0;
+        self.barren_scopes.clear();
+        self.barren_order.clear();
     }
 
     fn read_range_covered(&self, read: &ReadObservation<'_>) -> bool {
@@ -190,8 +235,8 @@ impl EvidenceTracker {
     }
 
     pub(super) fn clear(&mut self) {
-        self.seen.clear();
-        self.order.clear();
+        self.exact_stamps.clear();
+        self.shell_probe_stamps.clear();
         self.barren_scopes.clear();
         self.barren_order.clear();
         self.read_ranges.clear();
@@ -204,12 +249,7 @@ impl EvidenceTracker {
 /// Fresh observations that count as real progress reset the exact-repeat fuse.
 /// Shell read-probes and same-path `read_file` expansions do not — they look
 /// novel while still investigating.
-fn progress_resets_correction(
-    name: &str,
-    arguments: &serde_json::Value,
-    barren: bool,
-    new_read: bool,
-) -> bool {
+fn progress_resets_correction(name: &str, barren: bool, new_read: bool) -> bool {
     if barren {
         return false;
     }
@@ -218,10 +258,6 @@ fn progress_resets_correction(
     }
     if matches!(name, "web_fetch" | "web_search") {
         return true;
-    }
-    if is_command_probe(name) {
-        // cargo / curl / python / … verification resets; grep/ls streaks do not.
-        return !is_shell_read_probe(arguments);
     }
     if name == "read_file" {
         return false;
@@ -274,16 +310,6 @@ fn evidence_stamp(name: &str, arguments: &serde_json::Value, output: &serde_json
     }
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     name.hash(&mut hash);
-    if is_command_probe(name) {
-        // Shell read-probes collapse to family|scope so swapping grep patterns
-        // is not novel evidence. Other commands keep a scrubbed full fingerprint.
-        if let Some(coarse) = shell_read_probe_fingerprint(arguments) {
-            coarse.hash(&mut hash);
-        } else {
-            command_fingerprint(arguments).hash(&mut hash);
-        }
-        return hash.finish();
-    }
     let semantic = if !is_barren(&stable) && name == "search" {
         stable
             .get("matches")
@@ -319,400 +345,6 @@ fn evidence_stamp(name: &str, arguments: &serde_json::Value, output: &serde_json
 
 fn is_command_probe(name: &str) -> bool {
     matches!(name, "exec_command" | "run_command")
-}
-
-fn is_shell_read_probe(arguments: &serde_json::Value) -> bool {
-    shell_read_probe_fingerprint(arguments).is_some()
-}
-
-fn command_fingerprint(arguments: &serde_json::Value) -> String {
-    if let Some(argv) = arguments.get("argv").and_then(serde_json::Value::as_array) {
-        let joined = argv
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<Vec<_>>()
-            .join("\0");
-        return scrub_volatile(&joined);
-    }
-    let cmd = arguments
-        .get("cmd")
-        .or_else(|| arguments.get("command"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    scrub_volatile(&collapse_whitespace(cmd))
-}
-
-/// `grep|src/foo.rs`, `find|.`, `git-grep|.` — pattern text is ignored.
-/// Scope keeps the full path token so grepping two different files under
-/// `src/` stays independent (Turn 28 false stall used to collapse them to
-/// `grep|src`).
-///
-/// Only the **primary** command of each `;` / `&&` step counts. A trailing
-/// `| tail` / `| grep` filter on `cargo test` must not reclassify a build as
-/// a shell read-probe (Turn 24). Scripts that also run `curl` / `cargo` /
-/// `python` are verification, not read-probes — even if a later `; head`
-/// fragment appears (Turn 28 live probe). `cd` targets are folded into the
-/// stamp so `cd A && ls` and `cd B && ls` stay distinct (Turn 40).
-fn shell_read_probe_fingerprint(arguments: &serde_json::Value) -> Option<String> {
-    if let Some(argv) = arguments.get("argv").and_then(serde_json::Value::as_array) {
-        let parts = argv
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<Vec<_>>();
-        if argv_has_heavy_primary(&parts) {
-            return None;
-        }
-        return fingerprint_read_tokens(&parts);
-    }
-    let cmd = arguments
-        .get("cmd")
-        .or_else(|| arguments.get("command"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let scrubbed = scrub_volatile(&collapse_whitespace(cmd));
-    if shell_command_has_heavy_primary(&scrubbed) {
-        return None;
-    }
-    let mut cd_scope = ".".to_owned();
-    for segment in split_shell_sequence(&scrubbed) {
-        if let Some(dir) = cd_segment_target(segment) {
-            cd_scope = scrub_volatile(dir);
-            continue;
-        }
-        if shell_segment_writes(segment) {
-            continue;
-        }
-        let primary = segment.split('|').next().unwrap_or(segment).trim();
-        let tokens = tokenize_shell_segment(primary);
-        if let Some(fp) = fingerprint_read_tokens(&tokens) {
-            return Some(attach_cd_scope(fp, &cd_scope));
-        }
-    }
-    None
-}
-
-fn cd_segment_target(segment: &str) -> Option<&str> {
-    let primary = segment.split('|').next().unwrap_or(segment).trim();
-    let tokens = tokenize_shell_segment(primary);
-    if tokens.first().copied() != Some("cd") {
-        return None;
-    }
-    tokens.get(1).copied().filter(|dir| !dir.is_empty())
-}
-
-fn attach_cd_scope(fingerprint: String, cd_scope: &str) -> String {
-    if cd_scope == "." {
-        fingerprint
-    } else {
-        format!("{fingerprint}@{cd_scope}")
-    }
-}
-
-fn shell_command_has_heavy_primary(cmd: &str) -> bool {
-    // Scan every token: live probes often hide `curl` inside `p(){ ...; head; }`
-    // bodies after `;`, so primary-of-segment alone misses them.
-    cmd.split_whitespace().any(|token| {
-        let cleaned = token
-            .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '{' | '}' | '`' | ','));
-        is_heavy_shell_binary(binary_basename(cleaned))
-    })
-}
-
-fn argv_has_heavy_primary(parts: &[&str]) -> bool {
-    parts
-        .iter()
-        .any(|part| is_heavy_shell_binary(binary_basename(part)))
-}
-
-fn is_heavy_shell_binary(bin: &str) -> bool {
-    matches!(
-        bin,
-        "curl"
-            | "wget"
-            | "cargo"
-            | "rustc"
-            | "python"
-            | "python3"
-            | "node"
-            | "npm"
-            | "pnpm"
-            | "yarn"
-            | "bun"
-            | "bash"
-            | "sh"
-            | "zsh"
-            | "fish"
-            | "ruby"
-            | "perl"
-            | "php"
-            | "go"
-            | "make"
-            | "cmake"
-            | "docker"
-            | "podman"
-    )
-}
-
-/// `cat >file`, `sed -i`, and similar mutate via the shell — not read-probes.
-/// Do **not** treat `2>/dev/null` as a write: that made `ls … 2>/dev/null`
-/// fall through to a later `stat` and collide (Turn 40).
-fn shell_segment_writes(segment: &str) -> bool {
-    let tokens = tokenize_shell_segment(segment);
-    let mut idx = 0;
-    while idx < tokens.len() {
-        if tokens[idx] == "cd" {
-            idx += 2;
-            continue;
-        }
-        if tokens[idx].contains('=') && !tokens[idx].starts_with('-') && !tokens[idx].contains('/')
-        {
-            idx += 1;
-            continue;
-        }
-        break;
-    }
-    let bin = tokens.get(idx).map(|token| binary_basename(token));
-    if matches!(bin, Some("cat" | "tee")) && has_stdout_file_redirect(segment) {
-        return true;
-    }
-    if !matches!(bin, Some("sed" | "perl")) {
-        return false;
-    }
-    tokens[idx + 1..].iter().any(|token| {
-        *token == "-i"
-            || (*token).starts_with("-i")
-            || *token == "--in-place"
-            || (*token).starts_with("--in-place=")
-    })
-}
-
-/// `cat >file` / `>>file`, but not `2>/dev/null` or `2>&1`.
-fn has_stdout_file_redirect(segment: &str) -> bool {
-    let bytes = segment.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'>' {
-            i += 1;
-            continue;
-        }
-        let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
-        if prev == Some(b'>') {
-            i += 1;
-            continue;
-        }
-        if prev == Some(b'&') {
-            i += 1;
-            continue;
-        }
-        if prev.is_some_and(|c| c.is_ascii_digit()) {
-            // `2>/dev/null`, `1>&2` — not a stdout write by cat/tee.
-            i += 1;
-            continue;
-        }
-        return true;
-    }
-    false
-}
-
-fn fingerprint_read_tokens(tokens: &[&str]) -> Option<String> {
-    let mut idx = 0;
-    while idx < tokens.len() {
-        let token = tokens[idx];
-        if token == "cd" {
-            idx += 2;
-            continue;
-        }
-        if token.contains('=') && !token.starts_with('-') && !token.contains('/') {
-            idx += 1;
-            continue;
-        }
-        break;
-    }
-    if idx >= tokens.len() {
-        return None;
-    }
-    let bin = binary_basename(tokens[idx]);
-    let (family, rest) = if bin == "git" {
-        let sub = *tokens.get(idx + 1)?;
-        if !matches!(
-            sub,
-            "grep" | "show" | "log" | "diff" | "ls-files" | "blame" | "status"
-        ) {
-            return None;
-        }
-        (format!("git-{sub}"), idx + 2)
-    } else if is_shell_read_binary(bin) {
-        (bin.to_owned(), idx + 1)
-    } else {
-        return None;
-    };
-    let scope = path_scope_from_tokens(&tokens[rest..]);
-    Some(format!("{family}|{scope}"))
-}
-
-fn is_shell_read_binary(bin: &str) -> bool {
-    matches!(
-        bin,
-        "grep"
-            | "egrep"
-            | "fgrep"
-            | "rg"
-            | "ag"
-            | "ack"
-            | "find"
-            | "sed"
-            | "head"
-            | "tail"
-            | "cat"
-            | "ls"
-            | "tree"
-            | "wc"
-            | "stat"
-            | "file"
-            | "nm"
-            | "strings"
-            | "basename"
-            | "dirname"
-            | "realpath"
-            | "readlink"
-    )
-}
-
-fn binary_basename(token: &str) -> &str {
-    token
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(token)
-        .split('\\')
-        .next_back()
-        .unwrap_or(token)
-}
-
-fn path_scope_from_tokens(tokens: &[&str]) -> String {
-    for token in tokens {
-        if token.starts_with('-') {
-            continue;
-        }
-        if let Some(scope) = path_scope_token(token) {
-            return scope;
-        }
-    }
-    ".".to_owned()
-}
-
-fn path_scope_token(token: &str) -> Option<String> {
-    let trimmed = token.trim_matches(|c| c == '"' || c == '\'');
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed == "." || trimmed == ".." {
-        return Some(".".to_owned());
-    }
-    if trimmed.starts_with('-') {
-        return None;
-    }
-    let known_root = matches!(
-        trimmed,
-        "src" | "docs" | "crates" | "locales" | "scripts" | "web" | "desktop" | "sdk" | "tests"
-    );
-    let has_sep = trimmed.contains('/') || trimmed.contains('\\');
-    // Require a separator or known root so grep patterns like `foo.bar` are
-    // not mistaken for path scopes. Keep the full path so two files under
-    // the same root remain distinct scopes.
-    if !known_root && !has_sep {
-        return None;
-    }
-    Some(trimmed.replace('\\', "/"))
-}
-
-/// Split on `;` and `&&` only — keep pipelines intact so `| tail` filters
-/// stay attached to their primary command.
-fn split_shell_sequence(cmd: &str) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let bytes = cmd.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b';' {
-            segments.push(cmd[start..i].trim());
-            i += 1;
-            start = i;
-            continue;
-        }
-        if bytes[i] == b'&' && i + 1 < bytes.len() && bytes[i + 1] == b'&' {
-            segments.push(cmd[start..i].trim());
-            i += 2;
-            start = i;
-            continue;
-        }
-        i += 1;
-    }
-    segments.push(cmd[start..].trim());
-    segments
-        .into_iter()
-        .filter(|segment| !segment.is_empty())
-        .collect()
-}
-
-fn tokenize_shell_segment(segment: &str) -> Vec<&str> {
-    segment.split_whitespace().collect()
-}
-
-fn collapse_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Replace CLAT run-dir ids and UUID-shaped tokens so re-probes of the same
-/// command shape are not treated as novel evidence.
-fn scrub_volatile(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while !rest.is_empty() {
-        if let Some(idx) = rest.find("clat-run-") {
-            out.push_str(&rest[..idx]);
-            out.push_str("clat-run-<id>");
-            rest = &rest[idx + "clat-run-".len()..];
-            let skip = rest
-                .find(|c: char| !c.is_ascii_hexdigit() && c != '-')
-                .unwrap_or(rest.len());
-            rest = &rest[skip..];
-            continue;
-        }
-        if let Some((idx, token_len)) = next_uuid_token(rest) {
-            out.push_str(&rest[..idx]);
-            out.push_str("<uuid>");
-            rest = &rest[idx + token_len..];
-            continue;
-        }
-        out.push_str(rest);
-        break;
-    }
-    collapse_whitespace(&out)
-}
-
-fn next_uuid_token(value: &str) -> Option<(usize, usize)> {
-    const UUID_LEN: usize = 36;
-    let bytes = value.as_bytes();
-    let mut i = 0;
-    while i + UUID_LEN <= bytes.len() {
-        if looks_like_uuid(&bytes[i..i + UUID_LEN]) {
-            return Some((i, UUID_LEN));
-        }
-        i += 1;
-    }
-    None
-}
-
-fn looks_like_uuid(bytes: &[u8]) -> bool {
-    bytes.len() == 36
-        && bytes[8] == b'-'
-        && bytes[13] == b'-'
-        && bytes[18] == b'-'
-        && bytes[23] == b'-'
-        && bytes.iter().enumerate().all(|(i, b)| match i {
-            8 | 13 | 18 | 23 => true,
-            _ => b.is_ascii_hexdigit(),
-        })
 }
 
 struct ReadObservation<'a> {
@@ -1184,7 +816,83 @@ mod evidence_tests {
     }
 
     #[test]
-    fn normalized_exec_probes_share_one_fingerprint() {
+    fn shell_evidence_multiline_audit_probes_remind_without_stalling() {
+        let mut tracker = EvidenceTracker::default();
+        let out = json!({"exit_code": 0, "stdout": "same collected facts"});
+        for (index, query) in ["group_id", "try_wait", "signal", "kill"]
+            .into_iter()
+            .enumerate()
+        {
+            let cmd = format!(
+                "cd /repo\nCG=$(ls -d /deps/command-group-* | head -1)\necho 'checking process groups'\ngrep -n '{query}' \"$CG/src/child.rs\" | head -20"
+            );
+            let decision = tracker.observe(
+                "exec_command",
+                &json!({"cmd": cmd}),
+                &out,
+                crate::ToolEffect::Execute,
+            );
+            if index == 0 {
+                assert_eq!(decision, EvidenceDecision::Fresh);
+            } else {
+                assert_ne!(decision, EvidenceDecision::Fresh, "{query} should remind");
+                assert_ne!(
+                    decision,
+                    EvidenceDecision::Stalled,
+                    "{query} remains advisory"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shell_evidence_changed_output_and_later_scope_are_progress() {
+        let mut tracker = EvidenceTracker::default();
+        let exec = crate::ToolEffect::Execute;
+        for path in ["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs"] {
+            let cmd = format!("cd /repo; ls src; grep -n check {path}");
+            // Same first command and visible output, but a different later source.
+            assert_eq!(
+                tracker.observe(
+                    "exec_command",
+                    &json!({"cmd": cmd}),
+                    &json!({"exit_code": 0, "stdout": "same first part"}),
+                    exec
+                ),
+                EvidenceDecision::Fresh,
+                "{path}"
+            );
+        }
+        for index in 0..4 {
+            assert_eq!(
+                tracker.observe(
+                    "exec_command",
+                    &json!({"cmd": "sed -n '1,4p' src/state.rs"}),
+                    &json!({"exit_code": 0, "stdout": format!("state {index}")}),
+                    exec
+                ),
+                EvidenceDecision::Fresh,
+                "new observation {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_evidence_truncated_streams_cannot_prove_an_exact_repeat() {
+        let mut tracker = EvidenceTracker::default();
+        let cmd = json!({"cmd": "rg finding src"});
+        let out =
+            json!({"exit_code": 0, "stdout": "same visible excerpt", "output_truncated": true});
+        for _ in 0..5 {
+            assert_ne!(
+                tracker.observe("exec_command", &cmd, &out, crate::ToolEffect::Execute),
+                EvidenceDecision::Stalled
+            );
+        }
+    }
+
+    #[test]
+    fn changing_a_command_scratch_directory_does_not_prove_a_repeat() {
         let mut tracker = EvidenceTracker::default();
         let execute = crate::ToolEffect::Execute;
         let first = json!({
@@ -1196,6 +904,10 @@ mod evidence_tests {
         let output = json!({"exit_code": 0, "stdout": "pong"});
         assert_eq!(
             tracker.observe("exec_command", &first, &output, execute),
+            EvidenceDecision::Fresh
+        );
+        assert_eq!(
+            tracker.observe("exec_command", &second, &output, execute),
             EvidenceDecision::Fresh
         );
         assert_eq!(
@@ -1245,7 +957,7 @@ mod evidence_tests {
                 &out,
                 execute
             ),
-            EvidenceDecision::Correct
+            EvidenceDecision::Advise
         );
         assert_eq!(
             tracker.observe(
@@ -1263,7 +975,7 @@ mod evidence_tests {
                 &out,
                 execute
             ),
-            EvidenceDecision::Correct
+            EvidenceDecision::Advise
         );
         assert_ne!(
             tracker.observe(
@@ -1302,7 +1014,7 @@ mod evidence_tests {
         for cmd in ["cat src/b.rs", "tree src", "rg beta src", "file src/c.rs"] {
             assert_eq!(
                 tracker.observe("exec_command", &json!({"cmd": cmd}), &out, execute),
-                EvidenceDecision::Correct,
+                EvidenceDecision::Advise,
                 "{cmd}"
             );
         }
@@ -1384,7 +1096,7 @@ mod evidence_tests {
                 &out,
                 execute
             ),
-            EvidenceDecision::Correct
+            EvidenceDecision::Advise
         );
         assert_eq!(
             tracker.observe(

@@ -247,7 +247,7 @@ impl SubagentScript {
                                 "task": "Read the marker and report its evidence",
                                 "references": ["marker.txt"],
                                 "timeout_seconds": 10,
-                                "max_tokens": 10_000
+                                "max_tokens": 30_000
                             }]
                         }),
                     }],
@@ -273,8 +273,10 @@ impl SubagentScript {
                 assert!(!result.is_error);
                 assert_eq!(result.output["depth"], 1);
                 assert_eq!(result.output["results"][0]["role"], "explorer");
+                let child = &result.output["results"][0];
+                assert_eq!(child["stop_reason"], "completed", "{child}");
                 assert!(
-                    result.output["results"][0]["output"]
+                    child["output"]
                         .as_str()
                         .unwrap()
                         .contains("marker evidence")
@@ -384,7 +386,19 @@ impl SubagentScript {
             .iter()
             .all(|forbidden| !names.contains(forbidden))
         );
-        match self.child_step.fetch_add(1, Ordering::SeqCst) {
+        let step = self.child_step.fetch_add(1, Ordering::SeqCst);
+        if let Some(spent) = [0, 4, 9].get(step) {
+            let input = crate::model::estimate_request_tokens(
+                request.instructions,
+                request.items,
+                request.tools,
+            );
+            assert_eq!(
+                u64::from(request.options.output_limit.unwrap()),
+                30_000 - spent - input
+            );
+        }
+        match step {
             0 => Ok(tool_call(
                 "outside-read",
                 "read_file",
@@ -531,6 +545,17 @@ fn readonly_delegation_defaults_on_and_preserves_scope_and_lifecycle() {
         }))
         .unwrap();
     configure_test_model(&application);
+
+    // A wide-output preset fills the child's first reservation to its cap.
+    // Reported usage is small and must free the rest before the next model step.
+    let (mut config, credentials) = application.model_state().unwrap();
+    config.output_limit = Some(131_072);
+    config.overrides.output_limit = crate::Override::Set(131_072);
+    application.save_model_state(&config, &credentials).unwrap();
+    assert_eq!(
+        application.model_state().unwrap().0.output_limit,
+        Some(131_072)
+    );
 
     let approvals = Arc::new(AtomicUsize::new(0));
     assert!(application.subagents_enabled());

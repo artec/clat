@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::json_file::{self, Loaded, UnitTag};
+use crate::presets::GlmCodingEntry;
 
 pub(crate) const SETTINGS_NAME: &str = "settings.json";
 pub(crate) const SETTINGS_UNIT: (&str, u64) = ("settings", 1);
@@ -37,6 +38,8 @@ pub(crate) struct SettingsFile {
     /// model; missing legacy settings default conservatively to Plus.
     #[serde(default, rename = "kimiTier")]
     pub kimi_tier: KimiTier,
+    #[serde(default, rename = "glmEntry")]
+    pub glm_entry: GlmCodingEntry,
 }
 
 impl SettingsFile {
@@ -47,6 +50,7 @@ impl SettingsFile {
             profiles: BTreeMap::new(),
             utility: UtilitySettingsRow::default(),
             kimi_tier: KimiTier::default(),
+            glm_entry: GlmCodingEntry::default(),
         }
     }
 }

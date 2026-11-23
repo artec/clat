@@ -435,113 +435,85 @@ impl App {
             }
             PickerAction::SwitchProfile(name) => self.switch_local_profile(name),
             PickerAction::DeleteProfile(name) => self.delete_local_profile(name),
-            PickerAction::SelectPreset(preset) => {
-                let mut config = self.config.clone();
-                preset.apply(&mut config);
-                // 换模型不携带旧档位：归位 None，新模型跟随预设默认
-                // （与编辑器 cycle_preset 同一不变量）。
-                config.thinking_level = None;
-                let same_endpoint = self.config.endpoint.trim_end_matches('/')
-                    == preset.endpoint.trim_end_matches('/');
-                let key_present = self
-                    .credentials
-                    .value(0)
-                    .is_some_and(|value| !value.trim().is_empty());
-                if same_endpoint && key_present {
-                    match self
-                        .application
-                        .as_ref()
-                        .ok_or_else(|| {
-                            self.locale
-                                .text("tui.project_application_is_unavailable")
-                                .to_owned()
-                        })
-                        .and_then(|application| {
-                            application
-                                .save_model_state(&config, &self.credentials)
-                                .map_err(|error| error.to_string())
-                        }) {
-                        Ok(()) => {
-                            self.config = config;
-                            // 端点或密钥可能已变化，触发立即重新查询。
-                            self.refresh_balance_now();
-                            self.picker = None;
-                            self.picker_return = None;
-                            self.flash_message(
-                                UiMessage::new("tui.message_model_switched_to_value")
-                                    .arg("value1", (preset.name).to_string()),
-                            );
-                        }
-                        Err(error) => self.flash_message(
-                            UiMessage::new("tui.message_failed_to_save_model_value")
-                                .arg("error", (error).to_string()),
-                        ),
-                    }
-                } else if let Some(restored) = self
-                    .application
-                    .as_ref()
-                    .and_then(|application| {
-                        application.vendor_key(preset.protocol, preset.endpoint)
-                    })
-                    .filter(|credentials| {
-                        credentials
-                            .value(0)
-                            .is_some_and(|value| !value.trim().is_empty())
-                    })
-                {
-                    // INV-VK2（厂商 key 记忆库）：该厂商的 key 之前输入
-                    // 过已被记忆（save_model_state 输入即记忆）——直接
-                    // 回填落位，不再弹编辑器要 key（修复：切走再切回
-                    // 反复要 key）。
-                    match self
-                        .application
-                        .as_ref()
-                        .ok_or_else(|| {
-                            self.locale
-                                .text("tui.project_application_is_unavailable")
-                                .to_owned()
-                        })
-                        .and_then(|application| {
-                            application
-                                .save_model_state(&config, &restored)
-                                .map_err(|error| error.to_string())
-                        }) {
-                        Ok(()) => {
-                            self.config = config;
-                            self.credentials = restored;
-                            self.refresh_balance_now();
-                            self.picker = None;
-                            self.picker_return = None;
-                            self.flash_message(
-                                UiMessage::new(
-                                    "tui.message_model_switched_to_value_saved_key_restored",
-                                )
-                                .arg("value1", (preset.name).to_string()),
-                            );
-                        }
-                        Err(error) => self.flash_message(
-                            UiMessage::new("tui.message_failed_to_save_model_value")
-                                .arg("error", (error).to_string()),
-                        ),
-                    }
-                } else {
-                    // INV-U1：转编辑器补密钥前拍下导航态（二级列表 + 光
-                    // 标行），取消时原位重建。
-                    self.picker_return = self.picker.as_ref().map(ModelPicker::snapshot);
-                    self.picker = None;
-                    let mut editor = ModelEditor::new_with_descriptors(
-                        &config,
-                        self.credentials.clone(),
-                        self.provider_descriptors.clone(),
-                    );
-                    editor.apply_preset_and_focus_key(preset);
-                    self.editor = Some(editor);
-                    self.flash_message(
-                        UiMessage::new("tui.message_enter_the_api_key_for_value")
-                            .arg("value1", (preset.vendor).to_string()),
-                    );
-                }
+            PickerAction::SelectPreset(preset) => self.select_local_preset(preset),
+        }
+    }
+
+    fn select_local_preset(&mut self, preset: &'static crate::presets::ModelPreset) {
+        let mut config = self.config.clone();
+        preset.apply(&mut config);
+        if let Some(endpoint) = self
+            .application
+            .as_ref()
+            .and_then(|application| application.glm_preset_endpoint(preset))
+        {
+            config.endpoint = endpoint.into();
+        }
+        config.thinking_level = None;
+        let same_endpoint =
+            self.config.endpoint.trim_end_matches('/') == config.endpoint.trim_end_matches('/');
+        let has_key = |credentials: &crate::ProviderCredentials| {
+            credentials
+                .value(0)
+                .is_some_and(|value| !value.trim().is_empty())
+        };
+        let (credentials, message) = if same_endpoint && has_key(&self.credentials) {
+            (
+                self.credentials.clone(),
+                "tui.message_model_switched_to_value",
+            )
+        } else if let Some(restored) = self
+            .application
+            .as_ref()
+            .and_then(|application| application.vendor_key(config.protocol, &config.endpoint))
+            .filter(has_key)
+        {
+            (
+                restored,
+                "tui.message_model_switched_to_value_saved_key_restored",
+            )
+        } else {
+            // Keep the picker position so cancelling key entry restores it.
+            self.picker_return = self.picker.as_ref().map(ModelPicker::snapshot);
+            self.picker = None;
+            let mut editor = ModelEditor::new_with_descriptors(
+                &config,
+                self.credentials.clone(),
+                self.provider_descriptors.clone(),
+            );
+            editor.apply_preset_and_focus_key(preset);
+            self.editor = Some(editor);
+            self.flash_message(
+                UiMessage::new("tui.message_enter_the_api_key_for_value")
+                    .arg("value1", preset.vendor.to_owned()),
+            );
+            return;
+        };
+        let result = self
+            .application
+            .as_ref()
+            .ok_or_else(|| {
+                self.locale
+                    .text("tui.project_application_is_unavailable")
+                    .to_owned()
+            })
+            .and_then(|application| {
+                application
+                    .save_model_state(&config, &credentials)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => {
+                self.config = config;
+                self.credentials = credentials;
+                self.refresh_balance_now();
+                self.picker = None;
+                self.picker_return = None;
+                self.flash_message(UiMessage::new(message).arg("value1", preset.name.to_owned()));
             }
+            Err(error) => self.flash_message(
+                UiMessage::new("tui.message_failed_to_save_model_value").arg("error", error),
+            ),
         }
     }
 

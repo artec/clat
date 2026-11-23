@@ -1206,7 +1206,9 @@ impl ModelEditor {
     fn apply_preset_fields(&mut self, preset: &ModelPreset) {
         self.protocol = preset.protocol;
         self.model = preset.model.into();
-        self.endpoint = preset.endpoint.into();
+        if !crate::presets::preset_accepts_endpoint(preset, &self.endpoint) {
+            self.endpoint = preset.endpoint.into();
+        }
         self.request_path = preset.request_path.into();
         self.output_limit = preset.output_limit.to_string();
         self.temperature = String::new();

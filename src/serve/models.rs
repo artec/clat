@@ -69,8 +69,7 @@ pub(crate) fn dispatch(
                 Some(Value::String(key)) => Some(key.clone()),
                 _ => return Err(RpcError::bad_request("API key must be a string")),
             };
-            // VP-2C：Qwen Token Plan 双入口单选（"aliyun"|"qianwen"，
-            // 仅该厂商预设合法；其余预设携带时由 Application 显式拒绝）。
+            // The Application validates the entry against the selected preset.
             let entry = match params.get("entry") {
                 None => None,
                 Some(Value::String(entry)) => Some(entry.as_str()),
@@ -84,7 +83,7 @@ pub(crate) fn dispatch(
                 .get("entry")
                 .and_then(Value::as_str)
                 .ok_or_else(|| RpcError::bad_request("entry required"))?;
-            // VP-2C 事故修复：可选 api_key——key 框新 key 随单选一步提交。
+            // An optional key is submitted with the destination entry.
             let key = match params.get("api_key") {
                 None => None,
                 Some(Value::String(key)) => Some(key.clone()),

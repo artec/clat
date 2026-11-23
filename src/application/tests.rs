@@ -6,6 +6,8 @@ mod agent_evidence;
 mod argument_recovery;
 #[path = "automatic_tests.rs"]
 mod automatic_tests;
+#[path = "glm_entry_tests.rs"]
+mod glm_entry;
 #[path = "kimi_tier_tests.rs"]
 mod kimi_tier_tests;
 pub(super) use automatic_tests::{authorize as authorize_schedule, draft as schedule_draft};

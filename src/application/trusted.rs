@@ -1385,7 +1385,7 @@ impl TrustedProjectApplication {
         // 记忆库（空 key 不抹掉已记忆值）；`Other` 端点不入库（自定义
         // 端点互不相干，绝不互相串 key）。失败不回滚主状态：记忆库是
         // 增益，主保存已成功。
-        if let Some(vendor) = crate::model::endpoint_vendor(&config.endpoint).storage_key()
+        if let Some(vendor) = crate::presets::vendor_credential_slot(&config.endpoint)
             && credentials
                 .value(0)
                 .is_some_and(|value| !value.trim().is_empty())
@@ -1404,7 +1404,7 @@ impl TrustedProjectApplication {
         protocol: crate::model::ModelProtocol,
         endpoint: &str,
     ) -> Option<ProviderCredentials> {
-        let vendor = crate::model::endpoint_vendor(endpoint).storage_key()?;
+        let vendor = crate::presets::vendor_credential_slot(endpoint)?;
         self.config.load_vendor_key(vendor, protocol).ok().flatten()
     }
 
@@ -1485,7 +1485,7 @@ impl TrustedProjectApplication {
         else {
             return Ok(None);
         };
-        if let Some(vendor) = crate::model::endpoint_vendor(&config.endpoint).storage_key()
+        if let Some(vendor) = crate::presets::vendor_credential_slot(&config.endpoint)
             && credentials
                 .value(0)
                 .is_some_and(|value| !value.trim().is_empty())
@@ -1786,11 +1786,14 @@ pub(super) fn glm_mcp_pack_from_control(
     if let Some(preset) = config.preset.as_deref().and_then(preset_by_id) {
         preset.apply(&mut config);
     }
-    let api_key = credentials.value(0).unwrap_or_default().trim().to_owned();
-    if config.vendor() != crate::model::ModelVendor::Glm || api_key.is_empty() {
+    let Some(entry) = crate::presets::GlmCodingEntry::from_gateway(&config.endpoint) else {
+        return Vec::new();
+    };
+    let api_key = credentials.value(0).unwrap_or_default().trim();
+    if api_key.is_empty() {
         return Vec::new();
     }
-    crate::mcp::client::glm_mcp_pack(&api_key)
+    crate::mcp::client::glm_mcp_pack(entry, api_key)
 }
 
 impl Drop for TrustedProjectApplication {

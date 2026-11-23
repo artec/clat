@@ -9,6 +9,12 @@ use serde_json::{Value, json};
 
 mod companions;
 use companions::{HY4, HY4_FLASH, KIMI_FOR_CODING};
+mod entry;
+pub(crate) use entry::{
+    GlmCodingEntry, preset_entry_endpoint, qwen_entry_endpoint, vendor_credential_slot,
+};
+pub use entry::{QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT, QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT};
+pub use entry::{preset_accepts_endpoint, qwen_entry_for_key, qwen_token_plan_entry};
 mod opencode;
 use opencode::{
     OC_CLAUDE_HAIKU_5_5, OC_DEEPSEEK_V4_PRO, OC_DEEPSEEK_V41_FLASH, OC_GEMINI_4_ARGON, OC_GLM_53,
@@ -327,7 +333,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         vendor: "GLM Coding Plan",
         protocol: ModelProtocol::OpenAiCompatible,
         model: "glm-5.4",
-        endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
+        endpoint: GlmCodingEntry::BigModel.endpoint(),
         request_path: "/chat/completions",
         output_limit: 128 * 1024,
         context_window: 1_000_000,
@@ -346,7 +352,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         vendor: "GLM Coding Plan",
         protocol: ModelProtocol::OpenAiCompatible,
         model: "glm-5.3",
-        endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
+        endpoint: GlmCodingEntry::BigModel.endpoint(),
         request_path: "/chat/completions",
         output_limit: 128 * 1024,
         context_window: 1_000_000,
@@ -380,7 +386,7 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         vendor: "GLM Coding Plan",
         protocol: ModelProtocol::OpenAiCompatible,
         model: "glm-5.3-flash",
-        endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
+        endpoint: GlmCodingEntry::BigModel.endpoint(),
         request_path: "/chat/completions",
         output_limit: 131_072,
         context_window: 1_000_000,
@@ -498,51 +504,6 @@ pub fn preset_by_id(id: &str) -> Option<&'static ModelPreset> {
     MODEL_PRESETS.iter().find(|preset| preset.id == id)
 }
 
-/// Qwen Token Plan 双入口（VP-2C，负责人裁定 2026-11-20）：同一套预设
-/// 与 Key，单选决定端点。预设钉阿里云百炼（新加坡 MaaS）端点；单选
-/// qianwen 时配置端点切千问 AI 平台（Token Plan 专属主机，2026-11-20
-/// 负责人测试 Key 真机核实：qwen4-max/qwen3.8-flash 在列，effort
-/// low/medium/xhigh 全有效——接受八档 superset，usage/cached_tokens
-/// 形状与百炼同形）。两入口共用厂商识别 `ModelVendor::Qwen` 与
-/// "Qwen" Key 记忆槽（一套 Key 裁定：不考虑双平台并存的场景）。
-pub const QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT: &str =
-    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
-pub const QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT: &str =
-    "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1";
-
-/// 端点 → 入口名（"aliyun" / "qianwen"）；仅对 Qwen Token Plan 两端点
-/// 有值，其余端点（含自定义）None。
-pub fn qwen_token_plan_entry(endpoint: &str) -> Option<&'static str> {
-    match endpoint {
-        QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT => Some("aliyun"),
-        QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT => Some("qianwen"),
-        _ => None,
-    }
-}
-
-/// INV-VC8（2026-11-21 负责人复现）：入口随 key 平台恢复。`sk-sp-`
-/// 前缀是千问平台 Token Plan key 的独有印记（负责人 2026-11-20 实测
-/// 全长 key 唯此形态）；百炼 Model Studio key 是 `sk-` + 纯十六进制，
-/// 不可能拼出 `sp`。一套 Key 二选一下，key 槽就是入口选择的持久载体
-/// ——无需任何新存储，换厂商/重启后重选预设据此配对端点。前缀未知
-/// 时回落百炼（降级安全：单选点一下即改）。
-pub fn qwen_entry_for_key(key: &str) -> &'static str {
-    if key.trim_start().starts_with("sk-sp-") {
-        "qianwen"
-    } else {
-        "aliyun"
-    }
-}
-
-/// 预设是否接受该配置端点：自身端点相等，或 Qwen Token Plan 预设接受
-/// 双入口的另一端点（`matching_preset` 因此不因单选切端点而失配——
-/// 厂商显示与 route vendor key 继续成立）。
-pub fn preset_accepts_endpoint(preset: &ModelPreset, endpoint: &str) -> bool {
-    preset.endpoint == endpoint
-        || (qwen_token_plan_entry(preset.endpoint).is_some()
-            && qwen_token_plan_entry(endpoint).is_some())
-}
-
 /// 一级选择列表：内置厂商（按首次出现顺序去重）+ 自定义入口。
 pub fn preset_vendors() -> Vec<&'static str> {
     let mut vendors = Vec::new();
@@ -642,10 +603,7 @@ impl ModelPreset {
         config.preset = Some(self.id.to_owned());
         config.protocol = self.protocol;
         config.model = self.model.to_owned();
-        // VP-2C：双入口预设的单选端点在归一化的无条件钉值下**不回弹**
-        //——配置已指向本预设的合法入口（如 Qwen Token Plan 的千问
-        // 平台）时保留现值；其余情况照常钉预设端点（防预设漂移语义
-        // 不变：随机自定义端点仍被钉回）。
+        // Preserve a selected official entry across preset normalization.
         if !preset_accepts_endpoint(self, &config.endpoint) || config.endpoint.is_empty() {
             config.endpoint = self.endpoint.to_owned();
         }

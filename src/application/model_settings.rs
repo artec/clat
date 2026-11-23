@@ -1,5 +1,9 @@
 //! Transport-neutral, secret-write-only model editing contract.
 use super::*;
+use crate::presets::{
+    GlmCodingEntry, ModelPreset, preset_accepts_endpoint, preset_entry_endpoint,
+    qwen_entry_endpoint, qwen_entry_for_key, qwen_token_plan_entry,
+};
 use crate::{ModelConfig, ModelProtocol, ProviderCredentials};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +26,8 @@ pub struct ModelSettingsView {
     pub presets: Vec<ModelPresetView>,
     #[serde(default)]
     pub qwen_entry: String,
+    #[serde(default)]
+    pub glm_entry: String,
     #[serde(default)]
     pub kimi_tier: String,
     pub utility: UtilitySettingsView,
@@ -230,7 +236,7 @@ impl TrustedProjectApplication {
             // 单选显示百炼但实际记忆千问"）：当前模型是 Qwen Token Plan
             // 预设时按配置端点；否则按 "Qwen" 记忆槽 key 平台前缀
             // （INV-VC8 同源）；无 key → 百炼默认。
-            qwen_entry: crate::presets::qwen_token_plan_entry(&config.endpoint)
+            qwen_entry: qwen_token_plan_entry(&config.endpoint)
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
                     let remembered = self
@@ -240,8 +246,12 @@ impl TrustedProjectApplication {
                         )
                         .and_then(|credentials| credentials.value(0).map(str::to_owned))
                         .unwrap_or_default();
-                    crate::presets::qwen_entry_for_key(&remembered).to_owned()
+                    qwen_entry_for_key(&remembered).to_owned()
                 }),
+            glm_entry: GlmCodingEntry::from_preset_config(&config)
+                .unwrap_or_else(|| self.control.glm_entry())
+                .as_str()
+                .to_owned(),
             kimi_tier: self.control.kimi_tier().as_str().to_owned(),
             utility: self.utility_settings_view_locked()?,
         })
@@ -320,62 +330,32 @@ impl TrustedProjectApplication {
         let preset = crate::presets::preset_by_id(id)
             .ok_or_else(|| ApplicationError::new("unknown model preset"))?;
         validate_key(api_key.as_deref())?;
-        // VP-2C：Qwen Token Plan 双入口单选——entry 仅对该厂商预设合法，
-        // 决定预设应用后的配置端点（百炼默认 / 千问平台）。其余厂商
-        // 预设不接受该参数（显式报错，不静默忽略）。
-        let entry_endpoint = match entry {
-            None => None,
-            Some(entry @ ("aliyun" | "qianwen")) => {
-                let endpoint = crate::presets::qwen_token_plan_entry(preset.endpoint)
-                    .map(|_| qwen_entry_endpoint(entry))
-                    .ok_or_else(|| {
-                        ApplicationError::new("entry selection requires a Qwen Token Plan preset")
-                    })?;
-                Some(endpoint)
-            }
-            Some(_) => {
-                return Err(ApplicationError::new("entry must be aliyun or qianwen"));
-            }
-        };
+        let entry_endpoint = entry
+            .map(|entry| resolve_preset_entry(preset, entry))
+            .transpose()?;
         let _update = self
             .host_storage
             .model_updates
             .lock()
             .expect("model updates");
-        // VP-2C 事故修复（2026-11-20 真机 401）：不带 entry 的应用不得
-        // 回弹已选入口。当前端点仍是该预设的合法入口（preset_accepts_
-        // endpoint：相等或同属 Qwen Token Plan 双入口）时原样携带——
-        // 单选是入口的唯一事实源；显式 entry 参数才覆盖。
+        // Without an explicit choice, keep the active built-in entry or restore
+        // the vendor's remembered entry when switching back.
         let carried_endpoint = self
             .model_state()
             .ok()
+            .filter(|(config, _)| {
+                GlmCodingEntry::from_endpoint(preset.endpoint).is_none()
+                    || GlmCodingEntry::from_preset_config(config).is_some()
+            })
             .map(|(config, _)| config.endpoint)
-            .filter(|endpoint| crate::presets::preset_accepts_endpoint(preset, endpoint));
+            .filter(|endpoint| preset_accepts_endpoint(preset, endpoint));
         let mut config = ModelConfig::default();
         preset.apply(&mut config);
         apply_kimi_tier(&mut config, self.control.kimi_tier());
-        // INV-VC8（2026-11-21 负责人复现）：无显式 entry、当前端点也不
-        // 可携带时（典型：换厂商后重启再切回），入口随 "Qwen" 记忆槽
-        // key 的平台前缀恢复——key 即入口的持久载体（sk-sp- → 千问，
-        // 否则百炼）。按预设默认端点取槽即可：双入口同 vendor 同槽。
-        let restored_entry = if entry_endpoint.is_none()
-            && carried_endpoint.is_none()
-            && crate::presets::qwen_token_plan_entry(preset.endpoint).is_some()
-        {
-            self.vendor_key(config.protocol, &config.endpoint)
-                .and_then(|credentials| credentials.value(0).map(str::to_owned))
-                .filter(|key| !key.trim().is_empty())
-                .map(|key| qwen_entry_endpoint(crate::presets::qwen_entry_for_key(&key)))
-        } else {
-            None
-        };
-        if let Some(endpoint) = entry_endpoint
+        config.endpoint = entry_endpoint
             .or(carried_endpoint.as_deref())
-            .or(restored_entry)
-        {
-            config.endpoint = endpoint.into();
-        }
-        // 双入口共用 "Qwen" Key 记忆槽（一套 Key 裁定）：换端点不换槽。
+            .unwrap_or_else(|| self.remembered_preset_endpoint(preset))
+            .into();
         let mut credentials = self
             .vendor_key(config.protocol, &config.endpoint)
             .unwrap_or_else(|| ProviderCredentials::for_protocol(config.protocol));
@@ -385,19 +365,33 @@ impl TrustedProjectApplication {
         self.save_model_state_locked(&config, &credentials)
     }
 
-    /// VP-2C：单选切换**当前** Qwen Token Plan 模型的入口——只改写端点，
-    /// 预设其余钉值与用户 override（思考档位等）原样保留（非破坏切换）。
-    /// 当前模型不是 Qwen Token Plan 预设路由时显式拒绝。Key 复用现有
-    /// 凭据（双入口同槽）。
+    /// The GLM Coding Plan choice applies to all its built-in presets.
+    pub fn glm_preset_endpoint(&self, preset: &ModelPreset) -> Option<&'static str> {
+        GlmCodingEntry::from_endpoint(preset.endpoint)?;
+        Some(self.control.glm_entry().endpoint())
+    }
+
+    fn remembered_preset_endpoint(&self, preset: &ModelPreset) -> &'static str {
+        if let Some(endpoint) = self.glm_preset_endpoint(preset) {
+            return endpoint;
+        }
+        if qwen_token_plan_entry(preset.endpoint).is_some() {
+            return self
+                .vendor_key(preset.protocol, preset.endpoint)
+                .as_ref()
+                .and_then(|credentials| credentials.value(0))
+                .and_then(|key| qwen_entry_endpoint(qwen_entry_for_key(key)))
+                .unwrap_or(preset.endpoint);
+        }
+        preset.endpoint
+    }
+
+    /// Switch the active preset's entry while preserving its model overrides.
     pub fn set_model_preset_entry(
         &self,
         entry: &str,
         api_key: Option<String>,
     ) -> Result<(), ApplicationError> {
-        let endpoint = match entry {
-            "aliyun" | "qianwen" => qwen_entry_endpoint(entry),
-            _ => return Err(ApplicationError::new("entry must be aliyun or qianwen")),
-        };
         validate_key(api_key.as_deref())?;
         let _update = self
             .host_storage
@@ -405,17 +399,15 @@ impl TrustedProjectApplication {
             .lock()
             .expect("model updates");
         let (mut config, mut credentials) = self.model_state()?;
-        if !super::dto::matching_preset(&config)
-            .is_some_and(|preset| crate::presets::qwen_token_plan_entry(preset.endpoint).is_some())
-        {
-            return Err(ApplicationError::new(
-                "the active model is not a Qwen Token Plan preset",
-            ));
+        let preset = super::dto::matching_preset(&config)
+            .ok_or_else(|| ApplicationError::new("the active model is not a built-in preset"))?;
+        let endpoint = resolve_preset_entry(preset, entry)?;
+        if GlmCodingEntry::from_endpoint(endpoint).is_some() && config.endpoint != endpoint {
+            credentials = self
+                .vendor_key(config.protocol, endpoint)
+                .unwrap_or_else(|| ProviderCredentials::for_protocol(config.protocol));
         }
         config.endpoint = endpoint.into();
-        // VP-2C 事故修复（2026-11-20 真机 401）：一套 Key 二选一——key
-        // 框已输入新平台 key 时单选一步完成"换端点+换 key"，否则旧平台
-        // key 打新端点必然 401。缺省沿用现值（既有非破坏语义不变）。
         if let Some(key) = api_key {
             credentials.set_value(0, key);
         }
@@ -585,12 +577,12 @@ pub(super) fn apply_kimi_tier(
     config.overrides_version = Some(1);
     config.overrides.max_context_tokens = crate::Override::Set(window);
 }
-/// VP-2C：入口名 → Qwen Token Plan 端点（调用方已验证 entry 合法）。
-fn qwen_entry_endpoint(entry: &str) -> &'static str {
-    match entry {
-        "qianwen" => crate::presets::QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT,
-        _ => crate::presets::QWEN_TOKEN_PLAN_ALIYUN_ENDPOINT,
-    }
+fn resolve_preset_entry(
+    preset: &ModelPreset,
+    entry: &str,
+) -> Result<&'static str, ApplicationError> {
+    preset_entry_endpoint(preset, entry)
+        .ok_or_else(|| ApplicationError::new("entry is not supported by this model preset"))
 }
 
 fn validate_key(key: Option<&str>) -> Result<(), ApplicationError> {

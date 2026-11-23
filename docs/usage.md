@@ -694,11 +694,12 @@ CLAT publishes complete schemas for all tools currently allowed by the frozen
 Run policy. It does not require discovering or promoting a hidden tool before
 calling it. To reduce cold-start cost, CLAT keeps commonly used schemas first
 and concise project instructions in the prompt; applicable extended project
-rules remain available as normal project files. During a Run, CLAT can warn
-the model when read-only tools repeatedly return previously seen evidence;
-if its next attempt still makes no progress, CLAT stops that Run with a
-localized diagnostic instead of silently repeating calls. Legitimate ongoing
-wait/poll operations are not subject to that static-evidence rule.
+rules remain available as normal project files. During a Run, recurring shell
+inspections, including multi-line scripts, can prompt the model to review the
+evidence it has already collected. Exact repeats can stop the Run after two
+corrections. A command requires the same invocation and complete observed result
+to count as an exact repeat. Ongoing wait and poll operations are exempt from
+the static-evidence rule.
 
 ### Operate a desktop application
 
@@ -849,7 +850,11 @@ Child count, token, wall-time, task, reference, and output sizes are hard-capped
 parent cancellation propagates to children, and start/end provenance is written
 to the parent journal. Child usage is included in the parent run result and
 spend ledger; a child reservation that cannot fit the remaining parent/Goal
-token budget is rejected before launch.
+token budget is rejected before launch. Each child request uses the remaining
+child budget for both its estimated input and output allowance. Provider usage
+replaces that request's reservation when available, so an unused output allowance
+is available to later requests. An attempt without usage is charged its
+reservation conservatively.
 
 The shipped HTTP provider adapters consume the child deadline and cancellation
 token. The provider interface is cooperative, so a future third-party adapter

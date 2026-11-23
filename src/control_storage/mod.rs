@@ -513,11 +513,15 @@ impl ControlStorage {
         config: &ModelConfig,
         runtime: &ProviderCredentials,
     ) -> Result<(), ControlError> {
+        let glm_entry = crate::presets::GlmCodingEntry::from_preset_config(config);
         let (config_value, runtime_value) = encode_config_pair(config, runtime)?;
         self.commit(
             self.lock(),
             |state| settings::save_settings(&self.dir, &self.root, &state.settings),
             |state| {
+                if let Some(entry) = glm_entry {
+                    state.settings.glm_entry = entry;
+                }
                 state.settings.model_state = Some(settings::ModelStateRow {
                     config: config_value,
                     runtime: runtime_value,
@@ -526,6 +530,10 @@ impl ControlStorage {
                 });
             },
         )
+    }
+
+    pub(crate) fn glm_entry(&self) -> crate::presets::GlmCodingEntry {
+        self.lock().settings.glm_entry
     }
 
     pub(crate) fn save_profile(

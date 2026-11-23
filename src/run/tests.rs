@@ -219,6 +219,89 @@ fn repeated_evidence_feedback_reaches_the_model_before_hard_stop() {
     assert_eq!(model.steps, 3);
 }
 
+#[test]
+fn shell_evidence_advises_the_model_and_accepts_a_new_scope() {
+    struct ShellFixture;
+    impl Tool for ShellFixture {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "exec_command".into(),
+                description: "offline shell fixture".into(),
+                input_schema: json!({"type": "object"}),
+                effect: ToolEffect::Execute,
+                strict: false,
+            }
+        }
+
+        fn invoke(&self, _: &Value, _: &Project, _: &CancelToken) -> Result<Value, ToolError> {
+            Ok(json!({"exit_code": 0, "stdout": "same visible output"}))
+        }
+    }
+
+    struct ReviewScript(usize);
+    impl Model for ReviewScript {
+        fn provider(&self) -> &str {
+            "offline"
+        }
+        fn model_id(&self) -> &str {
+            "shell-review"
+        }
+        fn stream(
+            &mut self,
+            request: ModelRequest<'_>,
+            _: &mut dyn ModelEventSink,
+        ) -> Result<ModelResponse, ModelError> {
+            let step = self.0;
+            self.0 += 1;
+            if step > 0 {
+                let result = request
+                    .items
+                    .iter()
+                    .rev()
+                    .find_map(|item| match item {
+                        ModelItem::ToolResult(result) => Some(result),
+                        _ => None,
+                    })
+                    .expect("the previous observation reaches the model");
+                assert_eq!(result.output["stdout"], "same visible output");
+                if (2..=4).contains(&step) {
+                    assert_eq!(
+                        result.output["clat_runtime_feedback"]["code"],
+                        "REVIEW_SHELL_PROBES"
+                    );
+                } else {
+                    assert!(result.output.get("clat_runtime_feedback").is_none());
+                }
+            }
+            let Some(term) = ["group_id", "wait", "signal", "kill", "test"].get(step) else {
+                return Ok(crate::test_support::response(
+                    "completed review",
+                    FinishReason::Completed,
+                ));
+            };
+            let path = if step == 4 {
+                "src/tests.rs"
+            } else {
+                "src/process.rs"
+            };
+            let mut response = crate::test_support::response("", FinishReason::ToolCalls);
+            response.tool_calls.push(ToolCall {
+                id: format!("inspect-{step}"), name: "exec_command".into(),
+                arguments: json!({"cmd":format!("cd /repo\necho inspection\ngrep -n '{term}' {path}")}),
+            });
+            Ok(response)
+        }
+    }
+
+    let tools = ToolRegistry::new();
+    register_test_tool(&tools, ShellFixture);
+    let mut model = ReviewScript(0);
+    let run = Run::new(&mut model, &tools, &AllowAll, &Project::new("."))
+        .execute("review process handling", &mut Vec::new())
+        .unwrap();
+    assert_eq!(run.text, "completed review");
+}
+
 struct CorrectingModel {
     steps: usize,
 }

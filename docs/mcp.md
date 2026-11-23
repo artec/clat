@@ -150,8 +150,9 @@ user stores secrets there.
 
 ## GLM Coding Plan pack
 
-When GLM 5.3 Coding Plan and its API key are active at project mount, CLAT
-merges four provider-supplied capabilities in memory:
+When GLM Coding Plan and its API key are active at project mount, CLAT merges
+four provider-supplied capabilities in memory. The remote servers and the
+vision subprocess use the same BigModel or Z.ai entry as that model route.
 
 | Name | Transport | Tools |
 |---|---|---|

@@ -72,6 +72,14 @@ The shipped catalog is the source used by both the picker and runtime:
 | Gemini 4 Argon · OpenCode Go | `opencode-gemini-4-argon` | `https://opencode.ai/inference/go/v1` | 1M | 64K |
 | Grok 4.7 · OpenCode Go | `opencode-grok-4.7` | `https://opencode.ai/inference/go/v1` | 500K | 256K |
 
+In **Settings → Models**, the GLM Coding Plan heading lets you choose
+**bigmodel.cn** (China, the default) or **z.ai** (international). With a GLM
+Coding Plan preset active, the choice takes effect immediately. Otherwise,
+select the entry and click **Apply** on that card. CLAT remembers the entry
+across model changes and restarts and saves an API key for each entry. Use the
+key from the platform you choose. The international entry uses
+`https://api.z.ai/api/coding/paas/v4` for the GLM Coding Plan presets above.
+
 All use the OpenAI-compatible protocol. The catalog also owns request paths,
 reasoning parameters, usage streaming, context-window seeds, and vendor-specific
 headers. For example, GLM preserves thinking, Qwen uses its

@@ -1,5 +1,10 @@
 /* Built-in routes come from the same Host catalog as TUI, never a second model table. */
 const settingsPresetRows = new Map();
+const settingsPresetEntries = new Map([
+  ['Qwen Token Plan', { field: 'qwen_entry', values: ['aliyun', 'qianwen'] }],
+  ['GLM Coding Plan', { field: 'glm_entry', values: ['bigmodel', 'zai'] }],
+]);
+
 function renderSettingsPresets(view) {
   const host = modelField('presets');
   if (!host) return;
@@ -14,16 +19,7 @@ function renderSettingsPresets(view) {
     const active = !view.active_profile && presets.some(preset => preset.id === view.current.preset);
     row.active.hidden = !active;
     if (!row.edited && active) row.select.value = view.current.preset;
-    // VP-2C：单选回显——服务端 view.qwen_entry 是单一事实源（激活时按
-    // 配置端点，未激活按记忆 key 平台前缀）；2026-11-21 修复：此前
-    // `entry.value = ...` 设在 radiogroup div 上是静默无效赋值，单选
-    // 永远停在构造默认百炼。entryPending（用户进行中的点击）优先。
-    if (row.entry) {
-      if (!row.entryPending) {
-        const currentEntry = view.qwen_entry === 'qianwen' ? 'qianwen' : 'aliyun';
-        for (const radio of row.entry.querySelectorAll('input')) radio.checked = radio.value === currentEntry;
-      }
-    }
+    row.entry?.sync(view);
     if (row.tier && !row.tierPending) {
       const currentTier = view.kimi_tier === 'pro' ? 'pro' : 'plus';
       for (const radio of row.tier.querySelectorAll('input')) radio.checked = radio.value === currentTier;
@@ -31,52 +27,60 @@ function renderSettingsPresets(view) {
   }
   for (const [vendor, row] of settingsPresetRows) if (!groups.has(vendor)) { row.element.remove(); settingsPresetRows.delete(vendor); }
 }
+
+function settingsPresetEntry(choice, active, key, apply) {
+  const group = el('div', 'model-vendor-entry');
+  group.setAttribute('role', 'radiogroup');
+  CLATI18n.attribute(group, 'aria-label', () => settingsUi(choice.field));
+  const radios = choice.values.map(value => {
+    const label = el('label'), radio = el('input');
+    radio.type = 'radio'; radio.name = choice.field; radio.value = value;
+    label.append(radio, el('span', '', () => settingsUi(choice.field + '_' + value)));
+    group.append(label);
+    return radio;
+  });
+  let current = choice.values[0], pending = null;
+  const paint = () => { for (const radio of radios) radio.checked = radio.value === (pending ?? current); };
+  const disable = disabled => { for (const radio of radios) radio.disabled = disabled; };
+  const clear = () => { pending = null; paint(); };
+  paint();
+  group.addEventListener('change', event => {
+    if (!radios.includes(event.target) || event.target.disabled) return;
+    const requested = event.target.value;
+    pending = requested;
+    if (active.hidden) return;
+    disable(true);
+    void modelAction(apply, async () => {
+      const submittedKey = key.value;
+      const params = { entry: requested };
+      if (submittedKey) params.api_key = submittedKey;
+      await rpc('model.preset.entry', params);
+      current = requested;
+      if (key.value === submittedKey) key.value = '';
+    }).finally(() => { clear(); disable(false); });
+  });
+  return {
+    group, disable, clear,
+    get pending() { return pending; },
+    sync(view) {
+      const value = view[choice.field];
+      current = choice.values.includes(value) ? value : choice.values[0];
+      paint();
+    },
+  };
+}
+
 function settingsPresetRow(vendor, presets) {
   const element = el('article', 'settings-card model-vendor'), heading = el('div', 'model-vendor-heading');
   const active = el('small', '', () => settingsUi('active_model'));
+  const controls = el('div', 'model-vendor-controls'), select = el('select'), key = el('input');
+  const apply = el('button', 'secondary', () => settingsUi('apply_preset')); apply.type = 'button';
   heading.append(el('strong', '', vendor));
-  // VP-2C（2026-11-20 负责人裁定）：Qwen Token Plan 标题后加双入口
-  // 单选（阿里云百炼 / 千问 AI 平台）——同一套预设与 Key，单选只切
-  // 端点；2026-11-20 布局反馈：紧贴标题同一行横排（has-entry 类，
-  // 见 settings.css），"当前模型"标记仍靠右。当前模型是该厂商预设
-  // 时切换单选即时生效（model.preset.entry 只改端点、保留 override）；
-  // 未激活时随 Apply 携带 entry。
-  let entry = null, entryPending = null;
+  const entryChoice = settingsPresetEntries.get(vendor);
+  const entry = entryChoice ? settingsPresetEntry(entryChoice, active, key, apply) : null;
   let tier = null, tierPending = null;
-  if (vendor === 'Qwen Token Plan') {
-    entry = el('div', 'model-vendor-entry');
-    entry.setAttribute('role', 'radiogroup');
-    CLATI18n.attribute(entry, 'aria-label', () => settingsUi('qwen_entry'));
-    for (const value of ['aliyun', 'qianwen']) {
-      const label = el('label'), radio = el('input');
-      radio.type = 'radio'; radio.name = 'qwen-token-plan-entry'; radio.value = value;
-      radio.checked = value === 'aliyun';
-      label.append(radio, el('span', '', () => settingsUi('qwen_entry_' + value)));
-      entry.append(label);
-    }
-    entry.addEventListener('change', event => {
-      if (event.target.type !== 'radio') return;
-      if (active.hidden) { entryPending = event.target.value; return; }
-      entryPending = null;
-      const radio = event.target;
-      radio.disabled = true;
-      void (async () => {
-        try {
-          // VP-2C 事故修复（2026-11-20 真机 401）：key 框已输入新平台
-          // key 时随单选一并提交（一套 Key 二选一，旧 key 打新端点必
-          // 401）；成功才清空，失败保留供重试。
-          const params = { entry: radio.value };
-          if (key.value) params.api_key = key.value;
-          await rpc('model.preset.entry', params);
-          key.value = '';
-          await refreshModelSettings();
-          await refreshWorkbench();
-        } catch (error) {
-          CLATI18n.bind(modelField('settings-error'), 'textContent', () => error.message);
-        } finally { radio.disabled = false; }
-      })();
-    });
-    heading.append(entry);
+  if (entry) {
+    heading.append(entry.group);
     heading.classList.add('has-entry');
   }
   if (vendor === 'Kimi Coding Plan') {
@@ -113,27 +117,35 @@ function settingsPresetRow(vendor, presets) {
     heading.classList.add('has-entry');
   }
   heading.append(active);
-  const controls = el('div', 'model-vendor-controls'), select = el('select'), key = el('input');
   for (const preset of presets) { const option = el('option', '', modelCapabilityName(preset.name, preset.image_input)); option.value = preset.id; select.append(option); }
   CLATI18n.attribute(select, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.model_id'));
   key.type = 'password'; key.autocomplete = 'new-password'; key.maxLength = 4096;
   CLATI18n.attribute(key, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.api_key'));
   CLATI18n.attribute(key, 'placeholder', () => settingsUi('preset_key_hint'));
   const row = {
-    element, active, select, edited: false,
-    get entry() { return entry; }, get entryPending() { return entryPending; },
+    element, active, select, entry, edited: false,
     get tier() { return tier; }, get tierPending() { return tierPending; },
   };
   select.onchange = () => { row.edited = true; };
-  const apply = el('button', 'secondary', () => settingsUi('apply_preset')); apply.type = 'button';
-  apply.onclick = () => modelAction(apply, async () => {
+  apply.onclick = async () => {
     const params = { id: select.value };
-    if (key.value) params.api_key = key.value;
-    if (entryPending) params.entry = entryPending;
-    key.value = ''; select.disabled = true;
-    try { await rpc('model.preset.select', params); row.edited = false; entryPending = null; }
-    finally { select.disabled = false; }
-  });
+    const submittedKey = key.value;
+    if (submittedKey) params.api_key = submittedKey;
+    if (entry?.pending) params.entry = entry.pending;
+    select.disabled = true;
+    entry?.disable(true);
+    try {
+      await modelAction(apply, async () => {
+        await rpc('model.preset.select', params);
+        row.edited = false;
+        entry?.clear();
+        if (key.value === submittedKey) key.value = '';
+      });
+    } finally {
+      select.disabled = false;
+      entry?.disable(false);
+    }
+  };
   controls.append(select, key, apply); element.append(heading, controls);
   return row;
 }

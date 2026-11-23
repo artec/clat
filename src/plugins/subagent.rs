@@ -126,7 +126,7 @@ impl Tool for DelegateReadonlyTool {
                                     "items": {"type": "string", "minLength": 1, "maxLength": 4096}
                                 },
                                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_CHILD_TIMEOUT_SECS},
-                                "max_tokens": {"type": "integer", "minimum": 1, "maximum": MAX_CHILD_TOKENS}
+                                "max_tokens": {"type": "integer", "minimum": 1, "maximum": MAX_CHILD_TOKENS, "description": "Total input and output budget across all model requests for this child."}
                             },
                             "required": ["role", "task"],
                             "additionalProperties": false
