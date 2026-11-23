@@ -250,10 +250,46 @@ pub fn unwrap_cs_data_payload(raw: &Value) -> Result<&Value, QuotaError> {
 }
 
 /// Bailian layers: walk `DataV2`/`data` and require every `ret` string to be
-/// `SUCCESS::…` (verified against bailian-cli `unwrapConsoleResponse`).
+/// `SUCCESS::…`; each layer's `success`/`successResponse`/`failed`/`errorCode`
+/// markers are checked the way bailian-cli `unwrapConsoleResponse` does.
+/// Live 2026-11-23: with the shared account pinned to the QIANWENAI site the
+/// gateway answers HTTP 200 with
+/// `{"data":{"success":false,"errorCode":"BailianGateway.Login.NotLogined"}}`
+/// — a failure that must surface, not collapse into an empty success.
 pub fn unwrap_bailian_payload(raw: &Value) -> Result<&Value, QuotaError> {
     let mut payload = raw;
     for _ in 0..6 {
+        if let Some(object) = payload.as_object() {
+            let success = object.get("success").and_then(Value::as_bool);
+            let success_response = object.get("successResponse").and_then(Value::as_bool);
+            let failed = object.get("failed").and_then(Value::as_bool);
+            let error_code = object
+                .get("errorCode")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            if success == Some(false)
+                || success_response == Some(false)
+                || failed == Some(true)
+                || (success != Some(true)
+                    && success_response != Some(true)
+                    && !error_code.is_empty()
+                    && error_code != "0"
+                    && error_code != "200")
+            {
+                let message = object
+                    .get("errorMsg")
+                    .or_else(|| object.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let code = if error_code.is_empty() {
+                    "BailianGatewayError"
+                } else {
+                    error_code
+                };
+                return Err(QuotaError::envelope(code, message));
+            }
+        }
         if let Some(ret) = payload.get("ret").and_then(Value::as_array) {
             for entry in ret {
                 let Some(entry) = entry.as_str() else {

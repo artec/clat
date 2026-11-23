@@ -239,6 +239,45 @@ fn numeric(value: Option<&Value>) -> Option<f64> {
         .filter(|v| v.is_finite())
 }
 
+/// TokenHub package timestamps are Beijing wall-clock strings without a zone
+/// (`StartTime`/`ExpireTime`, e.g. `2026-12-23 13:12:43`; live 2026-11-23 the
+/// package opened 13:12 local — UTC would have been in the future). China has
+/// no DST, so fixed UTC+8 is exact: parse to epoch milliseconds, `None` for
+/// anything else.
+pub fn beijing_time_to_epoch_ms(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 19
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b' '
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| text[range].parse::<u64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    // days_from_civil (Howard Hinnant) — the inverse of `utc_date`'s algorithm.
+    let y = year as i64 - if month <= 2 { 1 } else { 0 };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month as i64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let seconds = days * 86_400 + (hour as i64 - 8) * 3_600 + minute as i64 * 60 + second as i64;
+    u64::try_from(seconds).ok().map(|seconds| seconds * 1000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +428,31 @@ mod tests {
     fn empty_package_is_a_shape_error_not_silent_zero() {
         let error = parse_personal_package(&serde_json::json!({"RequestId":"r"})).unwrap_err();
         assert!(matches!(error, QuotaError::Shape(_)));
+    }
+
+    #[test]
+    fn beijing_wall_clock_parses_to_epoch_millis() {
+        // Live package window captured 2026-11-23.
+        assert_eq!(
+            beijing_time_to_epoch_ms("2026-12-23 13:12:43"),
+            Some(1_798_002_763_000)
+        );
+        // Epoch boundary in Beijing is 08:00 local.
+        assert_eq!(beijing_time_to_epoch_ms("1970-01-01 08:00:00"), Some(0));
+        // Leap day and century boundaries.
+        assert_eq!(
+            beijing_time_to_epoch_ms("2000-02-29 12:00:00"),
+            Some(951_796_800_000)
+        );
+        assert_eq!(
+            beijing_time_to_epoch_ms("2100-03-01 00:00:00"),
+            Some(4_107_513_600_000)
+        );
+        // Anything that is not a bare Beijing wall-clock string stays unknown.
+        assert_eq!(beijing_time_to_epoch_ms("2026-13-01 00:00:00"), None);
+        assert_eq!(beijing_time_to_epoch_ms("2026-12-23T13:12:43"), None);
+        assert_eq!(beijing_time_to_epoch_ms("2026-12-23 13:12"), None);
+        assert_eq!(beijing_time_to_epoch_ms("2026-12-23 24:00:00"), None);
+        assert_eq!(beijing_time_to_epoch_ms(""), None);
     }
 }

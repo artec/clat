@@ -9,7 +9,10 @@
 //! 3. The browser calls the local listener with `state` + `access_token`
 //!    (query params on GET, or a JSON body on POST/PUT/PATCH; the page may
 //!    CORS-preflight — answer `OPTIONS` with `Access-Control-Allow-Private-
-//!    Network: true`).
+//!    Network: true`). The success reply itself repeats
+//!    `Access-Control-Allow-Origin: *` so the page can read it; without that
+//!    header the browser blocks the reply from the page, which then never
+//!    confirms and hangs open after authorizing.
 //! 4. `200 OK` closes the wait; anything else keeps listening until the
 //!    deadline (bailian-cli waits 15 minutes).
 //!
@@ -197,7 +200,13 @@ fn serve_connection(stream: &mut TcpStream, expected_state: &str) -> Served {
         let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 4\r\n\r\nbad\n");
         return Served::Rejected;
     }
-    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 3\r\n\r\nOK\n");
+    // The console page posts cross-origin and READS this reply to confirm the
+    // hand-off and close its tab: the success response itself must carry
+    // `Access-Control-Allow-Origin` (official kb-dsh callback). Without it the
+    // browser blocks the reply from the page and the tab hangs after
+    // authorizing (owner-reported 2026-11-23; the token still reached this
+    // listener, so the login worked — only the page stayed open).
+    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 3\r\n\r\nOK\n");
     Served::Callback(ConsoleCallback {
         access_token,
         console_site: fields
@@ -303,9 +312,15 @@ mod tests {
             .as_bytes(),
         )
         .unwrap();
-        let mut buffer = [0u8; 128];
+        let mut buffer = [0u8; 256];
         let read = real.read(&mut buffer).unwrap();
-        assert!(String::from_utf8_lossy(&buffer[..read]).starts_with("HTTP/1.1 200"));
+        let response = String::from_utf8_lossy(&buffer[..read]).to_string();
+        assert!(response.starts_with("HTTP/1.1 200"));
+        // The page reads this reply cross-origin; the header is the close signal.
+        assert!(
+            response.contains("Access-Control-Allow-Origin: *"),
+            "{response}"
+        );
         let callback = worker.join().unwrap();
         assert_eq!(callback.access_token, "token-1");
         assert_eq!(callback.console_region.as_deref(), Some("cn-beijing"));

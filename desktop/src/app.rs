@@ -247,6 +247,10 @@ fn fit_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+const WINDOWS_TRAY_ICON: tauri::image::Image<'static> =
+    tauri::include_image!("icons/clat-tray-windows.png");
+
 #[cfg(windows)]
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -259,7 +263,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 crate::tray::activate(app, id);
             }
         })
-        .icon(tauri::include_image!("icons/clat-stat.png"))
+        .icon(WINDOWS_TRAY_ICON)
         .icon_as_template(false)
         .tooltip("CLAT")
         .show_menu_on_left_click(false);
@@ -277,6 +281,42 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     })
     .build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn windows_tray_icon_is_visible_on_light_and_dark_backgrounds() {
+    fn luminance(rgb: [f64; 3]) -> f64 {
+        let [red, green, blue] = rgb.map(|channel| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
+    }
+
+    let icon = WINDOWS_TRAY_ICON;
+    let rgba = icon.rgba();
+    let total_pixels = rgba.len() / 4;
+    for background in [247.0 / 255.0, 36.0 / 255.0] {
+        let backdrop = luminance([background; 3]);
+        let visible_pixels = rgba
+            .chunks_exact(4)
+            .filter(|pixel| {
+                let alpha = f64::from(pixel[3]) / 255.0;
+                let composite = [pixel[0], pixel[1], pixel[2]]
+                    .map(|channel| f64::from(channel) / 255.0 * alpha + background * (1.0 - alpha));
+                let foreground = luminance(composite);
+                (backdrop.max(foreground) + 0.05) / (backdrop.min(foreground) + 0.05) >= 3.0
+            })
+            .count();
+        assert!(
+            visible_pixels * 8 >= total_pixels,
+            "too little of the tray icon is visible against background {background:.2}"
+        );
+    }
 }
 
 pub fn run() {

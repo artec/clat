@@ -85,9 +85,11 @@ impl<'a> QuotaClient<'a> {
     }
 
     /// Per-window usage. Empty `Vec` means the account has no metered
-    /// windows (not an error). Qianwen serves the usage family on the
-    /// **cs-data** form gateway and reports ratios 0..1 (×100 here); Bailian
-    /// reports percentages directly (same field names, different scale).
+    /// windows (not an error). Both entries serve the usage family on form
+    /// gateways and report **0..1 ratios** (Qianwen on cs-data, Bailian on
+    /// the console gateway — live-captured 2026-11-23: Bailian
+    /// `per1MonthPercentage: 0.1799` while the Qianwen entry read 17.99%;
+    /// bailian-cli `quota-box` likewise renders `ratio × 100`).
     pub fn query_usage(&self) -> Result<Vec<UsageWindow>, QuotaError> {
         match &self.platform {
             Platform::Qianwen { .. } => {
@@ -98,7 +100,7 @@ impl<'a> QuotaClient<'a> {
             Platform::Bailian => {
                 let (url, form) = bailian_gateway_request(USAGE_API, &json!({}));
                 let raw = self.post_form(&url, &form)?;
-                parse_windows(unwrap_bailian_payload(&raw)?)
+                parse_windows_scaled(unwrap_bailian_payload(&raw)?, 100.0)
             }
         }
     }
@@ -167,8 +169,8 @@ type HttpResponse = crate::transport::HttpResponse;
 
 /// Discover windows from the `per*` fields actually present, so metering
 /// changes don't break parsing (same discovery contract as bailian-cli).
-/// `scale` multiplies the provider's percentage fields (Qianwen cs-data
-/// reports 0..1 ratios; Bailian reports percentages — scale 1.0).
+/// `scale` multiplies the provider's ratio fields (both gateways report
+/// 0..1 ratios; scale 100 turns them into percentages).
 pub fn parse_windows(record: &Value) -> Result<Vec<UsageWindow>, QuotaError> {
     parse_windows_scaled(record, 1.0)
 }

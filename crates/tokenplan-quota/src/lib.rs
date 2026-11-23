@@ -95,7 +95,7 @@ pub use error::QuotaError;
 pub use quota::{EquityItem, Platform, QuotaClient, USAGE_API, UsageWindow};
 pub use tencent::{
     DEFAULT_REGION, PersonalPackage, TOKENHUB_HOST, TOKENHUB_VERSION, Tc3Credential,
-    TokenHubClient, tc3_authorization,
+    TokenHubClient, beijing_time_to_epoch_ms,
 };
 pub use transport::{HttpRequest, HttpResponse, HttpTransport, Method, UreqTransport};
 
@@ -345,6 +345,47 @@ mod tests {
             .map(|(_, value)| value.as_str())
             .unwrap();
         assert_eq!(auth, "Bearer console-access-token");
+    }
+
+    #[test]
+    fn bailian_usage_reads_unit_ratios_like_the_qianwen_entry() {
+        // Live-captured 2026-11-23: the Bailian gateway reported
+        // `per1MonthPercentage: 0.1799` for the same account the Qianwen
+        // cs-data entry read as 17.99% used — the ratio scale is 0..1 here
+        // too; reading it as a percentage showed a phantom 99.8% remaining.
+        let transport = Scripted::new(vec![
+            r#"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::ok"],"data":{"success":true,"errorCode":"","data":{"per1MonthPercentage":0.1799,"per1MonthResetTime":1797782400000}}},"success":true},"httpStatusCode":"200","successResponse":true}"#,
+        ]);
+        let guard = transport.lock().unwrap();
+        let client = QuotaClient::new(&*guard, Platform::Bailian, "console-access-token".into());
+        let windows = client.query_usage().unwrap();
+        drop(guard);
+        assert_eq!(windows.len(), 1);
+        assert!((windows[0].used_percent - 17.99).abs() < 1e-9);
+        assert!((windows[0].remaining_percent - 82.01).abs() < 1e-9);
+        assert_eq!(windows[0].reset_at_ms, Some(1_797_782_400_000));
+    }
+
+    #[test]
+    fn bailian_site_pin_error_surfaces_instead_of_empty_success() {
+        // Live-captured 2026-11-23, right after a successful Qianwen cs-data
+        // query pinned the shared account to the QIANWENAI console site:
+        // HTTP 200, `success:false`, `errorCode:BailianGateway.Login.NotLogined`.
+        // The unwrap must surface this, not collapse into an empty success.
+        let transport = Scripted::new(vec![
+            r#"{"code":"200","data":{"success":false,"httpStatus":200,"errorCode":"BailianGateway.Login.NotLogined","api":"zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage","errorMsg":"BailianGateway.Login.NotLogined"},"httpStatusCode":"200","requestId":"90beb3fa-88a3-4a23-9d29-e1b7bfdf6001","successResponse":true}"#,
+        ]);
+        let guard = transport.lock().unwrap();
+        let client = QuotaClient::new(&*guard, Platform::Bailian, "console-access-token".into());
+        let error = client.query_usage().unwrap_err();
+        drop(guard);
+        assert_eq!(
+            error,
+            QuotaError::envelope(
+                "BailianGateway.Login.NotLogined",
+                "BailianGateway.Login.NotLogined",
+            )
+        );
     }
 
     #[test]

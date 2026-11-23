@@ -197,8 +197,20 @@ usage percentages appear (credentials are stored locally, encrypted at rest
 with an embedded key; the model API key is never involved). The Aliyun
 entry works the same way through its own console sign-in (2026-11-22): the
 browser calls back to a local listener on this machine and hands CLAT the
-console access token; quota then reads from the Bailian console gateway as
-plain percentages.
+console access token; quota then reads from the Bailian console gateway. Both
+entries report the same `per*` window fields as **0..1 ratios** and CLAT
+scales them ×100 (2026-11-23 live capture: the Bailian gateway returned
+`per1MonthPercentage: 0.1799` for the account the Qianwen entry read as
+17.99% used). One platform caveat: the two console sites share one login
+session (ONE_CONSOLE), and a successful Qianwen quota read pins that session
+to the Qianwen site — the Bailian gateway then answers
+`BailianGateway.Login.NotLogined` for some minutes until the pin decays, so
+the Bailian card may read unavailable right after a Qianwen refresh and
+recover on its own; a fresh Bailian browser login re-pins the session the
+other way. The callback page itself is confirmed by a reply that repeats
+`Access-Control-Allow-Origin: *` (2026-11-23: without it the page never saw
+the reply and the browser tab hung open after authorizing, even though the
+token had already reached this machine).
 In Web and Desktop, open **Settings → Authorizations** to manage the Qianwen
 and Tencent quota credentials from any model or project. Start or repeat the
 Qianwen browser authorization, save or replace the Tencent Cloud API key, and
@@ -318,8 +330,12 @@ TokenHub exposes it through the Tencent Cloud OpenAPI
 key-glyph ring on this route: click it and paste a cloud **SecretId /
 SecretKey** pair (create one in the Tencent Cloud console, ideally on a
 read-only sub-account). The remaining-credits percentage is computed from
-the provider-reported total/used; the pair is stored locally, encrypted at
-rest with an embedded key.
+the provider-reported total/used; the hover popover and the authorization
+card also show the cycle refresh time from the package's `ExpireTime`
+(2026-11-23: a Beijing wall-clock string without a zone — parsed as fixed
+UTC+8, never as UTC, since the live package opened 13:12 local and a UTC
+reading would have been in the future). The pair is stored locally,
+encrypted at rest with an embedded key.
 
 Hy note (2026-11-07): the GA release upgraded the preset in place from
 `hy4-preview` to `hy4`; the endpoint spelling follows the official plan

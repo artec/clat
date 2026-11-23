@@ -105,9 +105,11 @@ Application icons are generated from the owner-provided `icons/clat.png`.
 Preserve its existing transparent margins and rounded artwork; do not substitute
 the website favicon or add another mask. The pinned Tauri CLI's `icon` command
 generates `icon.icns` (macOS), `icon.ico` (Windows), and `icon.png` (native window image). Only these desktop outputs are retained; mobile assets are
-not used. The independent tray/status-bar image is `icons/clat-stat.png`,
-embedded at compile time with its supplied colors and transparency; it is not
-a macOS template mask. Rebuild the application bundles after changing icons.
+not used. The macOS menu bar embeds the supplied white `icons/clat-stat.png`
+with its original transparency. The Windows tray embeds the blue
+`icons/clat-tray-windows.png`, exported from the 32×32 entry in `icons/icon.ico`
+for visibility on light and dark backgrounds. Rebuild the application bundles
+after changing icons.
 
 Archive handling uses a pinned development-only `tar` package to preserve native
 executable modes and PAX metadata while rejecting traversal, links and special

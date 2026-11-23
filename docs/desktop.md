@@ -602,9 +602,10 @@ with Bun; they do not launch Python or a separate Node runtime. Dependencies
 are pinned in `desktop/bun.lock`. The installed applications remain native
 Rust programs and require none of these development tools.
 
-The application/Dock icon derives from `desktop/icons/clat.png`; the menu-bar
-(macOS) and tray (Windows) use the separate `desktop/icons/clat-stat.png`,
-retaining its original colors and transparency.
+The application/Dock icon derives from `desktop/icons/clat.png`. The macOS
+menu bar uses the white `desktop/icons/clat-stat.png`. The Windows tray uses the
+blue `desktop/icons/clat-tray-windows.png` for visibility on light and dark
+backgrounds, including the hidden icons panel.
 
 
 ### Navigation settings and directory selection
