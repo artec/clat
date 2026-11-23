@@ -37,11 +37,19 @@ The CLI verifies the payload using its unchanged embedded release public key;
 its signature-covered comment must equal `CLAT <tag> release index`.
 The CLI then matches the signed version, exact asset name, archive hash and
 checksum-file hash, and validates the one-entry checksum file before extracting.
+Before extraction the archive listing is also checked for link entries (symbolic
+and hard links) on every platform and archive format; an archive containing one
+is rejected before anything is written to the work directory.
 All three download URLs must match this repository and the exact release tag.
 Desktop verifies the same payload with its independent embedded desktop public
 key, then passes the authenticated platform metadata to the official updater.
 The updater still requires a version-bound package signature and rejects
 substitution or downgrade. No trust keys are rotated by this format change.
+
+The shell and PowerShell installers fetch a prebuilt binary and verify only its
+same-origin SHA-256 sidecar; they do not verify the signed `latest.json`. That
+installer path therefore trusts the release origin itself, while the in-app
+updater and the manual signature check below do not.
 
 ### Transition and first installation
 

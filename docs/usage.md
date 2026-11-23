@@ -1806,8 +1806,12 @@ Turning off the summary hides it and stops future generation. The last saved
 summary is available again when the switch is turned back on.
 
 A summary uses the interface language captured when the turn is submitted.
-The next eligible turn after a language change uses the new language. Chinese
-summaries are limited to 80 characters and English summaries to 40 words.
+The next eligible turn after a language change uses the new language. The
+generation prompt asks the model for at most 80 characters on Chinese
+interfaces and 40 words on English interfaces; how the model applies that
+budget to mixed-language text is its own decision, and CLAT neither validates
+nor truncates the result — the returned text (after control-character cleanup)
+is stored and displayed whole.
 The card shows at most five lines. When the text wraps past them, the last line
 fades to show that more follows; clicking the body, or pressing Enter or Space
 on it, expands the whole summary in place until it is clicked again. A summary

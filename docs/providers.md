@@ -199,8 +199,12 @@ usage percentages appear (credentials are stored locally, encrypted at rest
 with an embedded key; the model API key is never involved). The Aliyun
 entry works the same way through its own console sign-in (2026-11-22): the
 browser calls back to a local listener on this machine and hands CLAT the
-console access token; quota then reads from the Bailian console gateway. Both
-entries report the same `per*` window fields as **0..1 ratios** and CLAT
+console access token (cancelling the sign-in closes that listener at once; a
+callback that reaches this machine afterwards is never stored); quota then
+reads from the Bailian console gateway. The listener accepts requests split
+across reads, parses exactly the declared body, and rejects oversized requests
+or ambiguous length headers. Both entries report the same `per*` window
+fields as **0..1 ratios** and CLAT
 scales them ×100 (2026-11-23 live capture: the Bailian gateway returned
 `per1MonthPercentage: 0.1799` for the account the Qianwen entry read as
 17.99% used). One platform caveat: the two console sites share one login

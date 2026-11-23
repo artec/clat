@@ -15,6 +15,8 @@ pub enum QuotaError {
     Envelope { code: String, message: String },
     /// The inner business layer reported failure (`ret` not `SUCCESS::`).
     Business { code: String, message: String },
+    /// The integrator cancelled the operation before it finished.
+    Cancelled,
 }
 
 impl QuotaError {
@@ -45,6 +47,7 @@ impl fmt::Display for QuotaError {
                 write!(f, "gateway envelope error {code}: {message}")
             }
             Self::Business { code, message } => write!(f, "business error {code}: {message}"),
+            Self::Cancelled => write!(f, "cancelled"),
         }
     }
 }

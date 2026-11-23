@@ -4,65 +4,21 @@ use crate::session::event::SessionEvent;
 use crate::session::projection::{CheckpointRow, ProjectionUnit};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use unicode_segmentation::UnicodeSegmentation;
 
 pub(crate) const EVENT: &str = "clat/session-summary";
 pub(crate) const PROJECTION: &str = "session_summary";
 pub(crate) const MAX_SOURCE_MESSAGES: usize = 12;
+/// Prompt-side budgets only（负责人裁定 2026-11-23）：请求文本告诉模型
+/// "at most 80 characters / 40 words"，混排文本怎么理解由模型决定；
+/// CLAT 不按这两个数验证、截断或拒绝——过控制字符清洗的原样入库展示。
 pub(crate) const CHINESE_CHARACTER_LIMIT: usize = 80;
 pub(crate) const ENGLISH_WORD_LIMIT: usize = 40;
-// Existing journal entries and checkpoints were written with a 100-character cap.
-const STORED_CHINESE_CHARACTER_LIMIT: usize = 100;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConversationSummary {
     pub text: String,
     pub locale: Locale,
     pub updated_at_ms: i64,
-}
-
-pub(crate) fn within_limit(text: &str, locale: Locale) -> bool {
-    valid_text(text, locale, CHINESE_CHARACTER_LIMIT)
-}
-
-fn valid_stored_text(text: &str, locale: Locale) -> bool {
-    valid_text(text, locale, STORED_CHINESE_CHARACTER_LIMIT)
-}
-
-fn valid_text(text: &str, locale: Locale, chinese_limit: usize) -> bool {
-    !text.is_empty()
-        && text.trim() == text
-        && !text.chars().any(char::is_control)
-        && match locale {
-            Locale::English => {
-                text.chars().count() <= 320 && text.unicode_words().count() <= ENGLISH_WORD_LIMIT
-            }
-            Locale::Simplified | Locale::Traditional => text.chars().count() <= chinese_limit,
-        }
-}
-
-pub(crate) fn fit_text(text: &str, locale: Locale) -> Option<String> {
-    if within_limit(text, locale) {
-        return Some(text.to_owned());
-    }
-    let boundaries: Vec<_> = match locale {
-        Locale::English => text
-            .split_word_bound_indices()
-            .map(|(index, _)| index)
-            .collect(),
-        Locale::Simplified | Locale::Traditional => text
-            .grapheme_indices(true)
-            .map(|(index, _)| index)
-            .collect(),
-    };
-    boundaries
-        .into_iter()
-        .rev()
-        .filter(|end| *end > 0)
-        .find_map(|end| {
-            let shortened = format!("{}…", text[..end].trim_end());
-            within_limit(&shortened, locale).then_some(shortened)
-        })
 }
 
 pub(super) fn validate(event: &SessionEvent, _: u32) -> Result<(), String> {
@@ -88,9 +44,6 @@ fn parse(event: &SessionEvent) -> Result<ConversationSummary, String> {
     let text = event.data["text"].as_str().ok_or("missing summary text")?;
     let locale = serde_json::from_value(event.data["locale"].clone())
         .map_err(|_| "invalid summary locale")?;
-    if !valid_stored_text(text, locale) {
-        return Err("invalid summary text".into());
-    }
     let updated_at_ms = event.data["updatedAtMs"]
         .as_i64()
         .filter(|time| *time >= 0)
@@ -140,12 +93,6 @@ impl ProjectionUnit for SummaryUnit {
     fn restore(&mut self, row: &CheckpointRow) -> Result<(), String> {
         let current: Option<ConversationSummary> =
             serde_json::from_value(row.val.clone()).map_err(|error| error.to_string())?;
-        if current
-            .as_ref()
-            .is_some_and(|summary| !valid_stored_text(&summary.text, summary.locale))
-        {
-            return Err("invalid checkpoint summary".into());
-        }
         self.current = current;
         self.as_of = row.seq;
         Ok(())
@@ -182,11 +129,14 @@ mod tests {
             super::super::ReplayKind::Skip
         );
 
-        let invalid = summary(2, 200, &"测".repeat(101));
-        assert!(admit_events(&[initial.clone(), invalid]).is_err());
-        let latest = summary(2, 200, "测试通过。");
+        // 负责人裁定（2026-11-23）：80/40 只是提示词约束，超限不再拒绝——
+        // 中英混排长文本原样入库（重新加上长度检查会在这里翻红）。
+        let oversized = summary(2, 150, &format!("{} renderMarkdown", "测".repeat(101)));
+        assert!(admit_events(&[initial.clone(), oversized]).is_ok());
+
+        let latest = summary(3, 200, "测试通过。");
         let mut future_source = latest.clone();
-        future_source.data["messageSeqs"] = json!([2]);
+        future_source.data["messageSeqs"] = json!([3]);
         assert!(admit_events(&[future_source]).is_err());
         let mut live = ProjectionRegistry::clat();
         live.fold_one(&initial).unwrap();

@@ -285,3 +285,198 @@ fn delete_refuses_share_referenced_sessions_until_references_are_gone() {
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
 }
+
+/// INV-SL7：删除依次动三个存储（会话目录 → 恢复账本 → 组织索引），中途
+/// 停下的删除必须可以继续。目录已删而组织索引仍标为已归档，正是上一次
+/// 删除停在存储之间的残态：重试只做剩余清理并成功，不再移动选择；三处
+/// 都没有残留的 id 仍是明确的“不存在”（上测的幂等重删契约不变）。
+#[test]
+fn delete_resumes_when_an_earlier_delete_stopped_between_its_stores() {
+    let (storage, root) = roots("sl7-delete-resume");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    quiet_utilities(&app);
+    run(&mut app, "victim session content").unwrap();
+    let victim = app.current_session_id().unwrap();
+    app.set_session_organization(victim.as_str(), None, Some(true), true)
+        .unwrap();
+    app.new_session().unwrap();
+    run(&mut app, "keeper session").unwrap();
+    let keeper = app.current_session_id().unwrap();
+    // The state an interrupted delete leaves behind: the directory (first
+    // store) is gone while the organization index (last store) still lists
+    // the archived id.
+    app.sessions
+        .remove_session(&app.session_key(&victim))
+        .unwrap();
+    assert!(
+        app.list_sessions()
+            .unwrap()
+            .iter()
+            .all(|s| s.id.as_str() != victim.as_str())
+    );
+    assert!(
+        app.selection_is_archived(&victim).unwrap(),
+        "the organization index must still carry the archived id"
+    );
+
+    // Before the fix the retry died on "does not exist" and stranded the id.
+    assert_eq!(
+        app.delete_session(victim.as_str(), true).unwrap(),
+        false,
+        "a resumed delete never moves the selection"
+    );
+    assert!(
+        !app.selection_is_archived(&victim).unwrap(),
+        "the resumed delete must forget the organization index entry"
+    );
+    assert_eq!(app.current_session_id(), Some(keeper));
+    assert!(
+        !crate::test_support::storage_tree_mentions(&storage, victim.as_str()),
+        "no store may mention the deleted id any more"
+    );
+    // Nothing is left anywhere, so a further delete stays an explicit not-found.
+    assert!(
+        app.delete_session(victim.as_str(), true)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist")
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
+/// INV-SL8：删除当前浏览的归档会话时，选择先按 /new 语义腾空，再动存储。
+/// 之后某个存储写失败时 Host 其实已经切换——错误必须如实带上“选择已
+/// 变更”，各客户端才会重同步；重试完成清理后不再移动选择。
+#[test]
+fn delete_that_fails_after_vacating_the_selection_reports_that_the_selection_moved() {
+    let (storage, root) = roots("sl8-delete-selection-moved");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    quiet_utilities(&app);
+    run(&mut app, "browsed archived conversation").unwrap();
+    let victim = app.current_session_id().unwrap();
+    app.set_session_organization(victim.as_str(), None, Some(true), true)
+        .unwrap();
+    // Browsing an archived conversation is the normal entry for its delete.
+    app.switch_session(victim.clone()).unwrap();
+    app.inject_next_session_forget_failure(victim.as_str());
+
+    let error = app.delete_session(victim.as_str(), true).unwrap_err();
+    assert!(
+        error.selection_changed(),
+        "the Host already moved off the deleted conversation: {error}"
+    );
+    assert!(
+        app.current_session_id().is_none(),
+        "the selection was vacated to Fresh before the stores were touched"
+    );
+    // Half done: the directory is gone, the organization index still lists
+    // the archived id.
+    assert!(app.selection_is_archived(&victim).unwrap());
+    // The retry finishes the cleanup without moving the selection again.
+    let current = app.current_session_id();
+    assert_eq!(app.delete_session(victim.as_str(), true).unwrap(), false);
+    assert!(!app.selection_is_archived(&victim).unwrap());
+    assert_eq!(app.current_session_id(), current);
+    assert!(
+        !crate::test_support::storage_tree_mentions(&storage, victim.as_str()),
+        "no store may mention the deleted id once the retry succeeds"
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
+/// INV-SL7 的边界：续做入口只服务于「目录已经不在」的会话。直接调用它
+/// 时，日志仍在磁盘上的会话必须被拒绝——那条会话只是没被列出（例如
+/// 头部不可读），绝不能经续做路径被删掉（不消失不变量）。
+#[test]
+fn interrupted_delete_resume_never_removes_a_conversation_whose_journal_remains() {
+    let (storage, root) = roots("sl7-resume-keeps-journal");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(&Project::new(&root), &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    quiet_utilities(&app);
+    run(&mut app, "still on disk").unwrap();
+    let victim = app.current_session_id().unwrap();
+    app.set_session_organization(victim.as_str(), None, Some(true), true)
+        .unwrap();
+    app.new_session().unwrap();
+    let error = app.finish_interrupted_delete(victim.as_str()).unwrap_err();
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    assert!(
+        app.sessions.has_log(&app.session_key(&victim)),
+        "the journal must still be on disk"
+    );
+    assert!(
+        app.selection_is_archived(&victim).unwrap(),
+        "the organization entry must be untouched"
+    );
+    assert_eq!(
+        app.list_sessions()
+            .unwrap()
+            .iter()
+            .filter(|s| s.id == victim)
+            .count(),
+        1
+    );
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}
+
+#[test]
+fn interrupted_delete_resume_preserves_an_existing_session_directory() {
+    let (storage, root) = roots("sl7-resume-keeps-directory");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = Project::new(&root);
+    let mut app = mount(&project, &storage, TestBehavior::Success);
+    configure_test_model(&app);
+    quiet_utilities(&app);
+    run(&mut app, "preserve this archived conversation").unwrap();
+    let archived = app.current_session_id().unwrap();
+    app.set_session_organization(archived.as_str(), None, Some(true), true)
+        .unwrap();
+    app.new_session().unwrap();
+
+    let session_dir = crate::session::path_layout::session_dir(
+        &storage.join("sessions"),
+        app.project_key().header_cwd.as_deref(),
+        &archived,
+    );
+    let journal = session_dir.join(crate::session::compat::log_file_name(
+        JsonlCompression::Zstd,
+    ));
+    let retained = session_dir.join("retained-journal.tmp");
+    let original = std::fs::read(&journal).unwrap();
+    std::fs::rename(&journal, &retained).unwrap();
+    assert!(app.list_sessions().unwrap().is_empty());
+
+    let outcome = app.delete_session(archived.as_str(), true);
+    assert!(
+        outcome.is_err(),
+        "the session directory still exists: {outcome:?}"
+    );
+    assert_eq!(std::fs::read(&retained).unwrap(), original);
+    assert!(app.selection_is_archived(&archived).unwrap());
+
+    std::fs::rename(&retained, &journal).unwrap();
+    app.close().unwrap();
+    let mut reopened = mount(&project, &storage, TestBehavior::Success);
+    assert!(
+        reopened
+            .list_sessions()
+            .unwrap()
+            .iter()
+            .any(|session| { session.id == archived && session.archived })
+    );
+    assert!(!reopened.switch_session(archived).unwrap().replay.is_empty());
+    reopened.close().unwrap();
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}

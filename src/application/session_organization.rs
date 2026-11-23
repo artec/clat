@@ -28,6 +28,11 @@ impl TrustedProjectApplication {
     /// 删除是正常路径）：先按 /new 语义腾空选择（quiesce writer + 持久
     /// 化 None，两阶段），再整删目录；调用方据此跳转全新会话。
     /// 返回值 = 是否发生了该腾空跳转。
+    ///
+    /// INV-SL7：三个存储依次遗忘且每步幂等，停在存储之间的删除可以续做
+    /// （见 [`Self::finish_interrupted_delete`]）。INV-SL8：选择腾空之后
+    /// 才有存储失败时，错误带上「选择已变更」——Host 已经切换，各客户端
+    /// 据此重同步，即使本次调用报告的是失败。
     pub fn delete_session(&mut self, id: &str, confirmed: bool) -> Result<bool, ApplicationError> {
         self.reject_session_switch_while_busy()?;
         if !confirmed {
@@ -35,15 +40,9 @@ impl TrustedProjectApplication {
                 "explicit delete confirmation required",
             ));
         }
-        let Some(summary) = self
-            .list_sessions()?
-            .iter()
-            .find(|summary| summary.id.as_str() == id)
-            .cloned()
-        else {
-            return Err(ApplicationError::new(
-                "session does not exist in this project",
-            ));
+        let sessions = self.list_sessions()?;
+        let Some(summary) = sessions.iter().find(|summary| summary.id.as_str() == id) else {
+            return self.finish_interrupted_delete(id);
         };
         if !summary.archived {
             return Err(ApplicationError::presented(crate::i18n::UiMessage::new(
@@ -71,16 +70,60 @@ impl TrustedProjectApplication {
                     .arg("titles", titles),
             ));
         }
+        self.commit_session_delete(id)
+    }
+
+    /// INV-SL7：组织索引仍标为已归档且会话目录确认已不存在时，续做剩余
+    /// 清理。目录存在或检查失败时，归档标记本身不能授权物理删除。
+    pub(super) fn finish_interrupted_delete(&mut self, id: &str) -> Result<bool, ApplicationError> {
+        let session = SessionId::new(id);
+        if !self.selection_is_archived(&session)?
+            || !self
+                .sessions
+                .confirm_session_directory_removed(&self.session_key(&session))
+                .map_err(session_error)?
+        {
+            return Err(ApplicationError::new(
+                "session does not exist in this project",
+            ));
+        }
+        self.forget_session_metadata(id)?;
+        Ok(false)
+    }
+
+    /// 删除的提交段：目标仍是当前打开的会话时先按 /new 语义腾空选择
+    /// （quiesce writer + 持久化 None，两阶段），再让三个存储依次遗忘它。
+    /// 每一步都幂等，任何一步失败后重试从停下的地方继续。选择已经腾空
+    /// 而后续步骤失败时，错误带上「选择已变更」（INV-SL8）——Host 内部
+    /// 已经切换，各客户端必须据此重同步，即使本次调用报告的是失败。
+    fn commit_session_delete(&mut self, id: &str) -> Result<bool, ApplicationError> {
         let jumped_to_new = self
             .current_session_id()
             .is_some_and(|open| open.as_str() == id);
         if jumped_to_new {
             self.new_session()?;
         }
+        self.forget_session_everywhere(id).map_err(|error| {
+            if jumped_to_new {
+                error.with_selection_changed()
+            } else {
+                error
+            }
+        })?;
+        Ok(jumped_to_new)
+    }
+
+    /// 让三个存储遗忘一个会话，顺序固定且每步幂等（已不存在视为已删）：
+    /// 会话整个存储目录（journal + checkpoint + 投影缓存）→ 每轮的原生
+    /// 文件恢复证据账本（file-review，项目级存储；工作区侧保留物不动）→
+    /// 组织 flags（归档/置顶 + sessionIds 成员索引）。无孤儿。
+    fn forget_session_everywhere(&self, id: &str) -> Result<(), ApplicationError> {
         let key = self.session_key(&SessionId::new(id));
         self.sessions.remove_session(&key).map_err(session_error)?;
-        // 会话每轮的原生文件恢复证据账本（file-review，项目级存储）：
-        // 会话删除后不再可达，一并清除（工作区侧保留物不动）。
+        self.forget_session_metadata(id)
+    }
+
+    fn forget_session_metadata(&self, id: &str) -> Result<(), ApplicationError> {
         if let Some(review) = self.project.file_review() {
             review
                 .remove_session(id)
@@ -91,7 +134,7 @@ impl TrustedProjectApplication {
                 .forget_session(workspace, id)
                 .map_err(|error| ApplicationError::new(error.to_string()))?;
         }
-        Ok(jumped_to_new)
+        Ok(())
     }
 
     pub fn set_session_organization(
@@ -160,5 +203,16 @@ impl TrustedProjectApplication {
             summary.archived = archived;
         }
         summaries.sort_by_key(|s| (!s.pinned, std::cmp::Reverse(s.last_activity_ms)));
+    }
+}
+
+#[cfg(test)]
+impl TrustedProjectApplication {
+    /// Test seam for the delete chain: the next organization-index write for
+    /// this session fails, the way a full disk does between the delete's
+    /// stores. The serve RPC tests reach it through the application because
+    /// they cannot see the private storage handle.
+    pub(crate) fn inject_next_session_forget_failure(&self, id: &str) {
+        self.control.inject_next_forget_session_failure(id);
     }
 }

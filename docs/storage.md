@@ -475,6 +475,21 @@ first vacated to Fresh with `/new` semantics — the writer is quiesced and
 `activeSessionId` persisted as none — and only then is the directory
 removed; clients jump to a fresh conversation.
 
+The delete spans three stores and is resumable: the session directory, the
+per-turn native file-recovery ledger, then the workspace organization entry
+(archived/pinned flags and the session-id membership). Each step is idempotent,
+and the organization entry is written last. When a later step fails after the
+directory is gone, repeating `session.delete` with the same id and
+`confirmed` recognizes the leftover archived entry and finishes the remaining
+stores instead of reporting not-found; it does not move the selection. The
+retry requires confirmed absence of the session directory and syncs the
+removal before touching the remaining stores. An existing directory or an
+inspection error stops the retry, even when the conversation is absent from
+the list. An id with no residue anywhere stays an explicit not-found. When
+the deleted conversation was the one being browsed, the Host publishes the
+selection change even if a later store fails. The call reports the failure
+and the selection generation still advances.
+
 A successful delete removes the session's whole storage directory (journal,
 checkpoint, projection cache) and its per-turn native file-recovery ledgers
 under `file-review/<sha256(canonical-project)>/`; retained recovery material

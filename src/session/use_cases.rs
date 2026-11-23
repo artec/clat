@@ -357,6 +357,15 @@ impl SessionService {
             .map_err(|error| SessionError::Io(format!("remove session storage: {error}")))
     }
 
+    pub(crate) fn confirm_session_directory_removed(
+        &self,
+        key: &SessionKey,
+    ) -> Result<bool, SessionError> {
+        self.root
+            .confirm_session_directory_removed(key)
+            .map_err(|error| SessionError::Io(format!("inspect session storage: {error}")))
+    }
+
     #[cfg(test)]
     pub(crate) fn inject_persistence_faults(&self, hooks: crate::session::persistence::FaultHooks) {
         self.backend.inject_faults(hooks);

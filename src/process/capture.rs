@@ -104,7 +104,7 @@ fn collect_capture(
     deadline: Instant,
     cancel: &CancelToken,
 ) -> Result<Captured, String> {
-    let (mut stdout, mut stderr, mut status) = (None, None, None);
+    let (mut stdout, mut stderr, mut leader_exited) = (None, None, false);
     loop {
         if cancel.is_cancelled() {
             return Err("process capture cancelled".into());
@@ -116,14 +116,19 @@ fn collect_capture(
                 stderr = Some(result?);
             }
         }
-        if status.is_none() {
-            status = child.try_wait().map_err(|e| e.to_string())?;
+        // Observed, not reaped: the caller's `terminate_group` on a late
+        // failure still needs the leader to hold the group id
+        // (2026-11-23 audit A-2).
+        if !leader_exited {
+            leader_exited = group_leader_exited(child).map_err(|e| e.to_string())?;
         }
-        if let (Some(status), Some(stdout), Some(stderr)) = (status, &mut stdout, &mut stderr) {
+        // Reaped last: once the capture succeeds no group signal can follow.
+        if leader_exited && stdout.is_some() && stderr.is_some() {
+            let status = child.wait().map_err(|e| e.to_string())?;
             return Ok(Captured {
                 status,
-                stdout: std::mem::take(stdout),
-                stderr: std::mem::take(stderr),
+                stdout: stdout.unwrap_or_default(),
+                stderr: stderr.unwrap_or_default(),
             });
         }
         if Instant::now() >= deadline {

@@ -729,3 +729,163 @@ fn plg6_plugin_manager_uses_only_host_ports_and_catalog_vocabulary() {
         "plugin vocabulary must have one registry home"
     );
 }
+
+/// Every `include_bytes!` target is compiled byte-for-byte. Without a
+/// `-text` or `text eol=lf` attribute, `core.autocrlf` rewrites it on Windows
+/// checkouts and the binary embeds different bytes per platform (2026-08-22
+/// snapshots, 2026-08-24 market signatures, 2026-11-23 web assets).
+#[test]
+fn include_bytes_targets_are_line_ending_pinned() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Outside a git work tree (a source archive) no checkout can rewrite
+    // line endings, so there is nothing to pin. Inside one, a failing git is
+    // a broken guard, not a pass.
+    if !root.join(".git").exists() {
+        return;
+    }
+    let sources = git_bytes(root, &["ls-files", "-z", "--", "*.rs"]);
+    let sources = String::from_utf8_lossy(&sources);
+    let mut targets = std::collections::BTreeSet::new();
+    for source in sources.split('\0').filter(|source| !source.is_empty()) {
+        let text = fs::read_to_string(root.join(source))
+            .map(|text| text.replace("\r\n", "\n"))
+            .unwrap();
+        for literal in include_bytes_literals(&text) {
+            if let Some(target) = include_bytes_target(root, source, &literal) {
+                targets.insert(target);
+            }
+        }
+    }
+    assert!(!targets.is_empty(), "no include_bytes! targets found");
+    let tracked = git_bytes(root, &["ls-files", "-z"]);
+    let tracked = String::from_utf8_lossy(&tracked);
+    let untracked: Vec<&str> = targets
+        .iter()
+        .map(String::as_str)
+        .filter(|target| !tracked.split('\0').any(|file| file == *target))
+        .collect();
+    let paths = targets
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\0");
+    let attributes = git_with_stdin(
+        root,
+        &["check-attr", "-z", "--stdin", "text", "eol"],
+        &paths,
+    );
+    let attributes = String::from_utf8_lossy(&attributes);
+    // `check-attr -z` prints (path, attribute, value) triples.
+    let records: Vec<&str> = attributes.split('\0').collect();
+    let mut unpinned = Vec::new();
+    for target in &targets {
+        let pinned = records.chunks_exact(3).any(|record| {
+            record[0] == target.as_str()
+                && ((record[1] == "text" && record[2] == "unset")
+                    || (record[1] == "eol" && record[2] == "lf"))
+        });
+        if !pinned {
+            unpinned.push(target.as_str());
+        }
+    }
+    assert!(
+        unpinned.is_empty(),
+        "include_bytes! targets without a -text / text eol=lf attribute in .gitattributes:\n{}",
+        unpinned.join("\n")
+    );
+    assert!(
+        untracked.is_empty(),
+        "include_bytes! targets that are not tracked:\n{}",
+        untracked.join("\n")
+    );
+}
+
+/// Runs git in `root` and returns its stdout; a failing git fails the guard.
+fn git_bytes(root: &Path, arguments: &[&str]) -> Vec<u8> {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(arguments)
+        .output()
+        .expect("launch git");
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    output.stdout
+}
+
+/// Runs git in `root` with NUL-separated `input` on stdin.
+fn git_with_stdin(root: &Path, arguments: &[&str], input: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("git")
+        .current_dir(root)
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("launch git");
+    child
+        .stdin
+        .take()
+        .expect("git stdin")
+        .write_all(input.as_bytes())
+        .expect("feed git stdin");
+    let output = child.wait_with_output().expect("git exits");
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    output.stdout
+}
+
+/// String-literal arguments of every `include_bytes!` call in `source`.
+fn include_bytes_literals(source: &str) -> Vec<String> {
+    // Split so this file's own source never matches the needle it scans for.
+    let needle = concat!("include", "_bytes", "!(");
+    let mut literals = Vec::new();
+    let mut rest = source;
+    while let Some(at) = rest.find(needle) {
+        // The needle already ends in `(`; what follows is the literal.
+        rest = &rest[at + needle.len()..];
+        let Some(body) = rest.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let mut literal = Vec::new();
+        let mut bytes = body.bytes();
+        while let Some(byte) = bytes.next() {
+            match byte {
+                b'"' => break,
+                b'\\' => literal.push(bytes.next().unwrap_or(b'\\')),
+                _ => literal.push(byte),
+            }
+        }
+        if !literal.is_empty() {
+            literals.push(String::from_utf8_lossy(&literal).into_owned());
+        }
+    }
+    literals
+}
+
+/// Resolves an `include_bytes!` literal against its source file. `None` when
+/// it leaves the repository: this repository's attributes cannot pin it.
+fn include_bytes_target(root: &Path, source: &str, literal: &str) -> Option<String> {
+    let path = root.join(source).parent()?.join(literal);
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+        .strip_prefix(root)
+        .ok()?
+        .to_str()
+        .map(|target| target.replace('\\', "/"))
+}

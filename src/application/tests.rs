@@ -7088,6 +7088,119 @@ fn poll_allowance_status(
     panic!("allowance never reached {expected}");
 }
 
+/// 取出百炼回调登录视图里的监听端口与 state（URL 形状由
+/// tokenplan-quota 的 `console_login_url` 钉死）。
+fn bailian_listener(view: &serde_json::Value) -> (u16, String) {
+    let url = view["url"].as_str().expect("login url");
+    let notice = url
+        .split("notice=127.0.0.1:")
+        .nth(1)
+        .expect("notice host:port");
+    let (port, state) = notice.split_once("?state=").expect("notice state");
+    (port.parse().expect("port"), state.to_owned())
+}
+
+/// 控制台页面向本机监听器投递一次合法回调。
+fn bailian_deliver(port: u16, state: &str, token: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.write_all(
+        format!(
+            "GET /cli/auth?state={state}&access_token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+}
+
+/// 在给定窗口内轮询凭据文件，报告百炼凭据是否出现。
+fn bailian_credential_appears(storage_root: &std::path::Path, window: std::time::Duration) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        let stored = std::fs::read_to_string(storage_root.join("console-credentials.json"))
+            .unwrap_or_default()
+            .contains("\"bailian\"");
+        if stored || started.elapsed() >= window {
+            return stored;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// 2026-11-23 审计 A-1 判别：取消百炼回调登录是撤销。取消之后，仍开着
+/// 的控制台页面完成登录时，凭据不得落盘——取消必须唤醒后台等待并关闭
+/// 监听器；监听器来不及关时到达的回调，也只有在提交流仍是当前流时才
+/// 能写入。修复前取消只删表项，后台继续监听 15 分钟并照常写盘。
+#[test]
+fn console_bailian_login_cancel_discards_a_late_callback() {
+    let (storage_root, project_root) = roots("console-bailian-cancel-late");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let (port, state) = bailian_listener(&application.console_bailian_login_start().unwrap());
+    assert_eq!(
+        application.console_bailian_login_state()["status"],
+        "pending"
+    );
+
+    application.console_bailian_login_cancel();
+    assert_eq!(application.console_bailian_login_state()["status"], "none");
+
+    // The console tab outlived the cancel and finishes sign-in anyway. The
+    // listener may already be closed (refused) or still draining this very
+    // callback (accepted); neither path may store the credential.
+    let _ = bailian_deliver(port, &state, "late-token");
+    assert!(
+        !bailian_credential_appears(&storage_root, std::time::Duration::from_secs(1)),
+        "a credential was stored after the login was cancelled"
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+/// 取消必须唤醒正在服务中的连接：请求头还没发完的连接不能把监听器拖到
+/// 请求预算耗尽；取消之后才补完的请求也无处可投。
+#[test]
+fn console_bailian_login_cancel_closes_a_stalled_listener() {
+    use std::io::Write as _;
+    let (storage_root, project_root) = roots("console-bailian-cancel-in-flight");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = Project::new(&project_root);
+    let application = mount(&project, &storage_root, TestBehavior::Success);
+    let (port, state) = bailian_listener(&application.console_bailian_login_start().unwrap());
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // The page has sent everything but the blank line that ends the head.
+    let request = format!(
+        "GET /cli/auth?state={state}&access_token=in-flight HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+    );
+    let held = "\r\n\r\n".len();
+    stream
+        .write_all(&request.as_bytes()[..request.len() - held])
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    application.console_bailian_login_cancel();
+    // Nothing but the cancellation can end this wait: the request is still
+    // incomplete, so the listener must close well inside the 5s request
+    // budget a cancelled wait would otherwise sit through.
+    let mut closed = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            closed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        closed,
+        "cancel must close the callback listener mid-request"
+    );
+    // Whatever the page sends after the cancel lands on a closed listener.
+    let _ = stream.write_all(&request.as_bytes()[request.len() - held..]);
+    assert!(
+        !bailian_credential_appears(&storage_root, std::time::Duration::from_millis(200)),
+        "a callback already being served stored a credential after the cancel"
+    );
+    crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
 /// 事故回归（2026-11-20 真机 401）：一套 Key 二选一——key 框新 key 随
 /// model.preset.entry 一步提交（旧平台 key 打新端点必然 401）；不带
 /// key 的切换沿用现值（既有非破坏语义不变）；非法 key 显式拒绝。

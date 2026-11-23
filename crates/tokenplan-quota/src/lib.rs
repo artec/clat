@@ -85,7 +85,8 @@ pub mod tencent;
 pub mod transport;
 
 pub use bailian::{
-    CONSOLE_ORIGIN_DOMESTIC, ConsoleCallback, ConsoleCallbackWait, console_login_url, new_state,
+    CONSOLE_ORIGIN_DOMESTIC, ConsoleCallback, ConsoleCallbackCancel, ConsoleCallbackWait,
+    console_login_url, new_state,
 };
 pub use device::{
     DEFAULT_AUTH_BASE, DEFAULT_GATEWAY_JSON, DeviceLogin, PollStatus, Session, UserIdentity,

@@ -15,20 +15,33 @@
 //!    confirms and hangs open after authorizing.
 //! 4. `200 OK` closes the wait; anything else keeps listening until the
 //!    deadline (bailian-cli waits 15 minutes).
+//! 5. One request is read whole — the head, then the body announced by
+//!    `Content-Length` — inside a bounded budget, so a request split across
+//!    TCP segments is still one request. Cancelling the wait closes the
+//!    listener.
 //!
 //! Quota reading needs no extra derivation: the callback `access_token` is
 //! the Bearer for `bailian-cs.console.aliyun.com` (see `quota::Platform`).
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::error::QuotaError;
 
 pub const CONSOLE_ORIGIN_DOMESTIC: &str = "https://bailian.console.aliyun.com";
-const CALLBACK_BODY_LIMIT: usize = 64 * 1024;
+/// One callback request (head and body together) never exceeds this size.
+const CALLBACK_REQUEST_LIMIT: usize = 64 * 1024;
+/// Budget for reading one whole request: the head plus the announced body.
+const CALLBACK_REQUEST_BUDGET: Duration = Duration::from_secs(5);
+/// Accept polling and the longest blocking read. Both bound how soon a
+/// cancellation is noticed, whether the wait looks idle or is mid-request.
+const CALLBACK_POLL: Duration = Duration::from_millis(50);
+const CALLBACK_TIMEOUT: &str = "console login timed out: no credentials received";
 
 /// The callback payload the console-login page delivers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,6 +74,23 @@ pub struct ConsoleCallbackWait {
     pub port: u16,
     pub state: String,
     pub url: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// Ends the wait started by the matching [`ConsoleCallbackWait`]: `wait`
+/// returns `QuotaError::Cancelled` within one poll interval and, on return,
+/// drops its listener. Clones share one flag.
+#[derive(Clone, Debug)]
+pub struct ConsoleCallbackCancel(Arc<AtomicBool>);
+
+impl ConsoleCallbackCancel {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 impl ConsoleCallbackWait {
@@ -78,48 +108,53 @@ impl ConsoleCallbackWait {
             port,
             state,
             url,
+            cancelled: Arc::default(),
         })
     }
 
-    /// Block until a valid callback arrives or the deadline passes. Extra
-    /// connections (preflights, favicon probes) are answered and skipped.
+    /// A handle that ends this wait; see [`ConsoleCallbackCancel`].
+    pub fn cancel_handle(&self) -> ConsoleCallbackCancel {
+        ConsoleCallbackCancel(Arc::clone(&self.cancelled))
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Block until a valid callback arrives, the deadline passes or the
+    /// matching [`ConsoleCallbackCancel`] is cancelled. Extra connections
+    /// (preflights, favicon probes) are answered and skipped.
     pub fn wait(self, deadline: Duration) -> Result<ConsoleCallback, QuotaError> {
-        let expires = std::time::Instant::now() + deadline;
+        let expires = Instant::now() + deadline;
+        self.listener
+            .set_nonblocking(true)
+            .map_err(|error| QuotaError::Transport(error.to_string()))?;
         loop {
-            let remaining = expires.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(QuotaError::Transport(
-                    "console login timed out: no credentials received".into(),
-                ));
+            if self.cancelled() {
+                return Err(QuotaError::Cancelled);
             }
-            self.listener
-                .set_nonblocking(false)
-                .map_err(|error| QuotaError::Transport(error.to_string()))?;
-            // Poll for the next connection within the remaining budget.
-            self.listener
-                .set_nonblocking(true)
-                .map_err(|error| QuotaError::Transport(error.to_string()))?;
-            let accepted = loop {
-                match self.listener.accept() {
-                    Ok((stream, _)) => break Some(stream),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= expires {
-                            break None;
-                        }
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(error) => return Err(QuotaError::Transport(error.to_string())),
+            let remaining = expires.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(QuotaError::Transport(CALLBACK_TIMEOUT.into()));
+            }
+            let accepted = match self.listener.accept() {
+                Ok((stream, _)) => Some(stream),
+                // Poll for the next connection within the remaining budget.
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(CALLBACK_POLL.min(remaining));
+                    None
                 }
+                Err(error) => return Err(QuotaError::Transport(error.to_string())),
             };
             let Some(mut stream) = accepted else {
-                return Err(QuotaError::Transport(
-                    "console login timed out: no credentials received".into(),
-                ));
+                continue;
             };
+            // An accepted socket can inherit the listener's non-blocking mode (BSD).
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_nonblocking(false)
                 .map_err(|error| QuotaError::Transport(error.to_string()))?;
-            match serve_connection(&mut stream, &self.state) {
+            let budget = Instant::now() + CALLBACK_REQUEST_BUDGET.min(remaining);
+            match serve_connection(&mut stream, &self.state, budget, &self.cancelled) {
                 Served::Preflight | Served::Rejected => continue,
                 Served::Callback(callback) if callback.access_token.is_empty() => continue,
                 Served::Callback(callback) => return Ok(callback),
@@ -134,15 +169,120 @@ enum Served {
     Callback(ConsoleCallback),
 }
 
-fn serve_connection(stream: &mut TcpStream, expected_state: &str) -> Served {
-    let mut buffer = [0u8; CALLBACK_BODY_LIMIT];
-    let Ok(read) = stream.read(&mut buffer) else {
+fn serve_connection(
+    stream: &mut TcpStream,
+    expected_state: &str,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Served {
+    // A stalled, oversized or cancelled request gets no reply: the console
+    // page retries, and a reply would confirm a credential we did not take.
+    let read = |chunk: &mut [u8], timeout| {
+        stream.set_read_timeout(Some(timeout))?;
+        stream.read(chunk)
+    };
+    let Some(request) = read_request(read, deadline, cancelled) else {
         return Served::Rejected;
     };
-    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-    let (head, body) = request
-        .split_once("\r\n\r\n")
-        .unwrap_or((request.as_str(), ""));
+    reply(stream, &request, expected_state)
+}
+
+/// Reads one whole HTTP request: the head up to the blank line, then the
+/// body announced by `Content-Length`. Returns `None` once the peer stalls
+/// past `deadline`, the request exceeds `CALLBACK_REQUEST_LIMIT`, the peer
+/// disconnects or the wait is cancelled.
+fn read_request(
+    mut read_chunk: impl FnMut(&mut [u8], Duration) -> io::Result<usize>,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Option<String> {
+    let mut request = Vec::new();
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return None;
+        }
+        if let Some(head_end) = head_end(&request) {
+            let total = request_size(&request[..head_end])?;
+            if let Some(frame) = request.get(..total) {
+                return Some(String::from_utf8_lossy(frame).into_owned());
+            }
+        }
+        let capacity = CALLBACK_REQUEST_LIMIT - request.len();
+        if capacity == 0 {
+            return None;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let mut chunk = [0u8; 4096];
+        let chunk_limit = chunk.len().min(capacity);
+        let read = match read_chunk(&mut chunk[..chunk_limit], CALLBACK_POLL.min(remaining)) {
+            Ok(read) => read,
+            // A timed-out read is one poll tick, not the end of the request.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => return None,
+        };
+        if read == 0 {
+            return None;
+        }
+        request.extend_from_slice(&chunk[..read]);
+    }
+}
+
+/// Offset just past the blank line that ends the request head.
+fn head_end(request: &[u8]) -> Option<usize> {
+    request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|at| at + 4)
+}
+
+fn request_size(head: &[u8]) -> Option<usize> {
+    let total = head.len().checked_add(content_length(head)?)?;
+    (total <= CALLBACK_REQUEST_LIMIT).then_some(total)
+}
+
+/// A single unambiguous Content-Length, or zero when there is no length header.
+/// The callback listener only supports length-delimited request bodies.
+fn content_length(head: &[u8]) -> Option<usize> {
+    let head = String::from_utf8_lossy(head);
+    let mut length = None;
+    for line in head
+        .split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+    {
+        let (name, value) = line.split_once(':')?;
+        if name.is_empty() || name.bytes().any(|b| b.is_ascii_whitespace()) {
+            return None;
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return None;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            let value = value.trim();
+            if length.is_some() || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            length = Some(value.parse().ok()?);
+        }
+    }
+    Some(length.unwrap_or(0))
+}
+
+/// Parses a complete request and answers it.
+fn reply(stream: &mut TcpStream, request: &str, expected_state: &str) -> Served {
+    let (head, body) = request.split_once("\r\n\r\n").unwrap_or((request, ""));
     let mut lines = head.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
@@ -176,19 +316,7 @@ fn serve_connection(stream: &mut TcpStream, expected_state: &str) -> Served {
         .split_once('?')
         .map(|(_, query)| query)
         .unwrap_or_default();
-    let mut fields = parse_query(query);
-    if matches!(method.as_str(), "POST" | "PUT" | "PATCH")
-        && !body.trim().is_empty()
-        && let Ok(payload) = serde_json::from_str::<Value>(body.trim())
-        && let Some(object) = payload.as_object()
-    {
-        for (key, value) in object {
-            let Some(text) = value.as_str() else { continue };
-            fields
-                .entry(key.to_ascii_lowercase())
-                .or_insert_with(|| text.to_string());
-        }
-    }
+    let mut fields = callback_fields(&method, query, body);
 
     let state_matches = fields.get("state").map(String::as_str) == Some(expected_state);
     let access_token = fields
@@ -222,6 +350,29 @@ fn serve_connection(stream: &mut TcpStream, expected_state: &str) -> Served {
             .remove("workspace_id")
             .or_else(|| fields.remove("workspaceid")),
     })
+}
+
+/// Query fields, completed with the string members of a JSON body: the page
+/// may POST/PUT/PATCH the credentials instead of using the query string.
+fn callback_fields(
+    method: &str,
+    query: &str,
+    body: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut fields = parse_query(query);
+    if matches!(method, "POST" | "PUT" | "PATCH")
+        && !body.trim().is_empty()
+        && let Ok(payload) = serde_json::from_str::<Value>(body.trim())
+        && let Some(object) = payload.as_object()
+    {
+        for (key, value) in object {
+            let Some(text) = value.as_str() else { continue };
+            fields
+                .entry(key.to_ascii_lowercase())
+                .or_insert_with(|| text.to_string());
+        }
+    }
+    fields
 }
 
 fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
@@ -264,6 +415,45 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_framing_only_reads_the_declared_body() {
+        let head = "POST /cli/auth HTTP/1.1\r\nContent-Length: 2\r\n\r\n";
+        let mut input = io::Cursor::new(format!("{head}{{}}unused bytes"));
+        let request = read_request(
+            |chunk, _| input.read(chunk),
+            Instant::now() + CALLBACK_REQUEST_BUDGET,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(request.as_deref(), Some(format!("{head}{{}}").as_str()));
+    }
+
+    #[test]
+    fn callback_framing_rejects_ambiguous_body_lengths() {
+        for fields in [
+            "Content-Length: \r\n",
+            "Content-Length: 2\r\ncontent-length: 2\r\n",
+            "Content-Length: 2\r\n 0\r\n",
+            "Transfer-Encoding: chunked\r\nContent-Length: 2\r\n",
+        ] {
+            let head = format!("POST /cli/auth HTTP/1.1\r\n{fields}\r\n");
+            assert_eq!(content_length(head.as_bytes()), None, "{fields:?}");
+        }
+    }
+
+    #[test]
+    fn callback_framing_checks_the_combined_request_size() {
+        let header =
+            |length| format!("POST /cli/auth HTTP/1.1\r\nContent-Length: {length:05}\r\n\r\n");
+        let head_size = header(0).len();
+        let fits = CALLBACK_REQUEST_LIMIT - head_size;
+        assert_eq!(
+            request_size(header(fits).as_bytes()),
+            Some(CALLBACK_REQUEST_LIMIT)
+        );
+        assert_eq!(request_size(header(fits + 1).as_bytes()), None);
+        assert_eq!(request_size(header(usize::MAX).as_bytes()), None);
+    }
 
     fn get(_path: &str) -> std::io::Result<usize> {
         let stream = TcpStream::connect(("127.0.0.1", 0))?;
@@ -380,5 +570,124 @@ mod tests {
         let callback = worker.join().unwrap();
         assert_eq!(callback.access_token, "via-post");
         assert_eq!(callback.workspace_id.as_deref(), Some("ws-9"));
+    }
+
+    /// One request may span several TCP segments. The listener must wait for
+    /// the rest instead of parsing (and answering) the truncated first read.
+    #[test]
+    fn callback_wait_reads_a_request_split_across_segments() {
+        let wait = ConsoleCallbackWait::start(CONSOLE_ORIGIN_DOMESTIC).unwrap();
+        let port = wait.port;
+        let state = wait.state.clone();
+        let worker = std::thread::spawn(move || wait.wait(Duration::from_secs(5)).unwrap());
+        let mut real = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        real.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let request = format!(
+            "GET /cli/auth?state={state}&access_token=split-token HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+        );
+        let split = request.find("split-token").unwrap() + "split".len();
+        real.write_all(&request.as_bytes()[..split]).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        real.write_all(&request.as_bytes()[split..]).unwrap();
+        let mut buffer = [0u8; 256];
+        let read = real.read(&mut buffer).unwrap();
+        let response = String::from_utf8_lossy(&buffer[..read]).to_string();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let callback = worker.join().unwrap();
+        assert_eq!(callback.access_token, "split-token");
+    }
+
+    /// The console page posts its credentials as a JSON body; the body may
+    /// arrive after the head. The listener must honor `Content-Length`.
+    #[test]
+    fn callback_wait_reads_a_post_body_that_arrives_after_the_head() {
+        let wait = ConsoleCallbackWait::start(CONSOLE_ORIGIN_DOMESTIC).unwrap();
+        let port = wait.port;
+        let state = wait.state.clone();
+        let worker = std::thread::spawn(move || wait.wait(Duration::from_secs(5)).unwrap());
+        let mut real = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        real.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let body = format!("{{\"state\":\"{state}\",\"accessToken\":\"late-body\"}}");
+        real.write_all(
+            format!(
+                "POST /cli/auth HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        real.write_all(body.as_bytes()).unwrap();
+        let mut buffer = [0u8; 256];
+        let read = real.read(&mut buffer).unwrap();
+        let response = String::from_utf8_lossy(&buffer[..read]).to_string();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let callback = worker.join().unwrap();
+        assert_eq!(callback.access_token, "late-body");
+    }
+
+    /// Cancelling ends the wait within a poll interval instead of waiting out
+    /// the deadline. `wait` takes `self`, so returning also drops the listener;
+    /// a credential delivered afterwards has nowhere to land.
+    #[test]
+    fn cancel_ends_the_wait_without_waiting_out_the_deadline() {
+        let wait = ConsoleCallbackWait::start(CONSOLE_ORIGIN_DOMESTIC).unwrap();
+        let cancel = wait.cancel_handle();
+        let worker = std::thread::spawn(move || wait.wait(Duration::from_secs(60)));
+        cancel.cancel();
+        assert!(cancel.is_cancelled());
+        assert!(matches!(worker.join().unwrap(), Err(QuotaError::Cancelled)));
+    }
+
+    /// A connection that already opened and stalled must not hold the wait
+    /// for the rest of its request budget.
+    #[test]
+    fn cancel_interrupts_a_stalled_connection() {
+        let wait = ConsoleCallbackWait::start(CONSOLE_ORIGIN_DOMESTIC).unwrap();
+        let cancel = wait.cancel_handle();
+        let port = wait.port;
+        let worker = std::thread::spawn(move || wait.wait(Duration::from_secs(60)));
+        let mut stalled = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stalled.write_all(b"GET /cli/auth?state=").unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let cancelled_at = std::time::Instant::now();
+        cancel.cancel();
+        assert!(matches!(worker.join().unwrap(), Err(QuotaError::Cancelled)));
+        assert!(
+            cancelled_at.elapsed() < CALLBACK_REQUEST_BUDGET,
+            "cancel must interrupt the stalled read, not wait out its budget"
+        );
+    }
+
+    /// A head larger than the limit is dropped without a reply and does not
+    /// consume the wait: the real callback that follows still succeeds.
+    #[test]
+    fn callback_wait_drops_an_oversized_head_and_keeps_listening() {
+        let wait = ConsoleCallbackWait::start(CONSOLE_ORIGIN_DOMESTIC).unwrap();
+        let port = wait.port;
+        let state = wait.state.clone();
+        let worker = std::thread::spawn(move || wait.wait(Duration::from_secs(5)).unwrap());
+        let mut flood = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let padding = "x".repeat(CALLBACK_REQUEST_LIMIT + 4096);
+        let _ = flood
+            .write_all(format!("GET / HTTP/1.1\r\nHost: x\r\nX-Pad: {padding}\r\n\r\n").as_bytes());
+        drop(flood);
+        let mut real = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        real.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        real.write_all(
+            format!(
+                "GET /cli/auth?state={state}&access_token=after-flood HTTP/1.1\r\nHost: x\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut buffer = [0u8; 256];
+        let read = real.read(&mut buffer).unwrap();
+        let response = String::from_utf8_lossy(&buffer[..read]).to_string();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(worker.join().unwrap().access_token, "after-flood");
     }
 }

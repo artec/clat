@@ -404,14 +404,8 @@ fn validate_asset_name(name: &str) -> Result<(), String> {
 /// 先让系统解包器只列出 entry，再逐项拒绝绝对路径、父级遍历、
 /// Windows 盘符和反斜线路径。验证通过前不触碰解压目标目录。
 fn validate_archive(archive: &Path, asset_name: &str) -> Result<(), String> {
-    let output = if asset_name.ends_with(".zip") && !cfg!(windows) {
-        Command::new("unzip").arg("-Z1").arg(archive).output()
-    } else if asset_name.ends_with(".zip") {
-        Command::new("tar").arg("-tf").arg(archive).output()
-    } else {
-        Command::new("tar").arg("-tzf").arg(archive).output()
-    }
-    .map_err(|error| format!("inspect archive {asset_name}: {error}"))?;
+    let output = archive_listing(asset_name, archive, false)
+        .map_err(|error| format!("inspect archive {asset_name}: {error}"))?;
     if !output.status.success() {
         return Err(format!(
             "inspect archive {asset_name}: {}",
@@ -431,27 +425,51 @@ fn validate_archive(archive: &Path, asset_name: &str) -> Result<(), String> {
     for entry in listing.lines() {
         validate_archive_entry(entry)?;
     }
-    // tar/bsdtar 的 verbose 列表首字符是 entry 类型。解压前拒绝
-    // symlink/hardlink，避免 link target 在落盘阶段指向工作目录外。
-    if !asset_name.ends_with(".zip") || cfg!(windows) {
-        let verbose = if asset_name.ends_with(".zip") {
-            Command::new("tar").arg("-tvf").arg(archive).output()
-        } else {
-            Command::new("tar").arg("-tvzf").arg(archive).output()
-        }
+    // tar/bsdtar 与 zipinfo 的 verbose 列表首字符都是 entry 类型。三条分支
+    // 一律在解压**之前**拒绝 symlink/hardlink：链接条目一旦落地，target 就
+    // 可能指向工作目录外（2026-11-23 审计 B-3：Unix 的 ZIP 分支过去只在
+    // 解压之后才扫描）。
+    let verbose = archive_listing(asset_name, archive, true)
         .map_err(|error| format!("inspect archive links {asset_name}: {error}"))?;
-        if !verbose.status.success() {
-            return Err(format!(
-                "inspect archive links {asset_name}: {}",
-                String::from_utf8_lossy(&verbose.stderr).trim()
-            ));
-        }
-        let verbose = String::from_utf8_lossy(&verbose.stdout);
-        if verbose.lines().any(archive_listing_line_is_link) {
-            return Err(format!("archive {asset_name} contains a link entry"));
-        }
+    if !verbose.status.success() {
+        return Err(format!(
+            "inspect archive links {asset_name}: {}",
+            String::from_utf8_lossy(&verbose.stderr).trim()
+        ));
+    }
+    let verbose = String::from_utf8_lossy(&verbose.stdout);
+    if verbose.lines().any(archive_listing_line_is_link) {
+        return Err(format!("archive {asset_name} contains a link entry"));
     }
     Ok(())
+}
+
+/// 让稍后真正解包的同一个系统工具列出归档，列出与解包就不会对 entry 名
+/// 或类型产生分歧。`types` 为 true 时每行以 entry 类型开头。Windows 自带
+/// bsdtar；Unix 的 ZIP 保留既有的 unzip 路径。
+fn archive_listing(
+    asset_name: &str,
+    archive: &Path,
+    types: bool,
+) -> std::io::Result<std::process::Output> {
+    let mut command = match (asset_name.ends_with(".zip"), cfg!(windows)) {
+        (true, false) => {
+            let mut command = Command::new("unzip");
+            command.arg(if types { "-Zl" } else { "-Z1" });
+            command
+        }
+        (true, true) => {
+            let mut command = Command::new("tar");
+            command.arg(if types { "-tvf" } else { "-tf" });
+            command
+        }
+        (false, _) => {
+            let mut command = Command::new("tar");
+            command.arg(if types { "-tvzf" } else { "-tzf" });
+            command
+        }
+    };
+    command.arg(archive).output()
 }
 
 fn archive_listing_line_is_link(line: &str) -> bool {

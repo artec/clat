@@ -98,6 +98,8 @@ pub(crate) struct ControlStorage {
     fail_next_chat_mapping_save: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     fail_next_remote_intent: std::sync::atomic::AtomicU8,
+    #[cfg(test)]
+    fail_next_forget_session: Mutex<Option<String>>,
 }
 
 impl ControlStorage {
@@ -169,6 +171,8 @@ impl ControlStorage {
             fail_next_chat_mapping_save: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_remote_intent: std::sync::atomic::AtomicU8::new(0),
+            #[cfg(test)]
+            fail_next_forget_session: Mutex::new(None),
         };
         if report.changed {
             let state = storage.lock();
@@ -448,6 +452,16 @@ impl ControlStorage {
     pub(crate) fn inject_next_chat_mapping_save_failure(&self) {
         self.fail_next_chat_mapping_save
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Test seam: the next `forget_session` of exactly this session fails the
+    /// way a full disk does, before the registry is touched.
+    #[cfg(test)]
+    pub(crate) fn inject_next_forget_session_failure(&self, session: &str) {
+        *self
+            .fail_next_forget_session
+            .lock()
+            .expect("forget-session fault") = Some(session.to_owned());
     }
 
     #[cfg(test)]

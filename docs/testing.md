@@ -1314,8 +1314,9 @@ that a click and Enter/Space expand it in place and collapse it again, that a
 drag selection is not a toggle, that new text and a resized inspector are
 measured again, and that a hidden card is not measured. `web/e2e/tests/session-summary.spec.js`
 runs the real path on the `session-summary` Host: the prompt
-`Summarize at full length` makes the deterministic Host save a 315-character
-English summary (the limit is 40 words and 320 characters), which must wrap past
+`Summarize at full length` makes the deterministic Host save a long
+(315-character) English summary — well beyond the advisory prompt budget —
+which must wrap past
 five lines in the default inspector. The spec measures the clamped height against
 five line boxes, the fade mask, the expanded height against the content height,
 keyboard toggling and the clamped default after a reload. No test may hardcode

@@ -64,16 +64,24 @@ fn select(id: Option<String>, shared: &Arc<ServeShared>) -> Result<Value, RpcErr
 /// 与 session.new 同款广播 selection notice，让其他客户端重同步。
 fn delete(params: &Map<String, Value>, shared: &Arc<ServeShared>) -> Result<Value, RpcError> {
     let id = required_str(params, "id")?;
-    let jumped_to_new = with_app(shared, |app| {
-        app.delete_session(
+    let outcome = with_app(shared, |app| {
+        let outcome = app.delete_session(
             &id,
             params.get("confirmed").and_then(Value::as_bool) == Some(true),
-        )
-    })
-    .map_err(session_error)?;
-    if jumped_to_new {
-        shared.advance_selection_generation();
-    }
+        );
+        // Publish under the application lock, like `select`: the selection is
+        // vacated before the stores are touched, so a later store failure
+        // still leaves the Host switched (INV-SL8) and clients must resync.
+        if outcome.as_ref().is_ok_and(|jumped_to_new| *jumped_to_new)
+            || outcome
+                .as_ref()
+                .is_err_and(ApplicationError::selection_changed)
+        {
+            shared.advance_selection_generation();
+        }
+        outcome
+    });
+    let jumped_to_new = outcome.map_err(session_error)?;
     Ok(json!({ "deleted": true, "jumped_to_new": jumped_to_new }))
 }
 

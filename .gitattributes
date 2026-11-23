@@ -37,6 +37,14 @@ web/task-review.js text eol=lf
 
 # Embedded plugin control asset uses LF on every platform.
 web/plugin-market.js text eol=lf
+# 2026-11-23 audit B-4: the embedded development workbench assets, the
+# input-method icons and the manifest sit outside the web/* patterns above
+# and were never pinned. tests/architecture_boundaries.rs now guards every
+# include_bytes! target.
+web/development/*.js text eol=lf
+web/development/*.css text eol=lf
+web/icons/*.svg text eol=lf
+web/manifest.webmanifest text eol=lf
 
 # PLG-3 author probe inputs are compiled verbatim and source-hashed.
 sdk/dsh-wasm-spike/*.mjs text eol=lf

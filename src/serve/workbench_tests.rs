@@ -256,3 +256,67 @@ fn session_delete_rpc_requires_confirmation_and_is_explicit_about_missing_ids() 
     crate::test_support::cleanup_tree(&storage);
     crate::test_support::cleanup_tree(&root);
 }
+
+/// INV-SL8 的 RPC 面：删除当前浏览的归档会话时 Host 先切换选择；随后的
+/// 存储写失败也要推进选择代次，其他客户端才会重同步——与 session.new /
+/// session.switch 在“选择已提交、清理失败”时的做法一致。重试完成清理时
+/// 选择没有再动，代次不前进。
+#[test]
+fn session_delete_rpc_publishes_a_selection_change_even_when_cleanup_fails() {
+    use crate::test_support::{CountingApprover, SharedEvents};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
+
+    let (shared, storage, root) = fixture("workbench-session-delete-selection");
+    let victim = protocol::with_app(&shared, |app| {
+        crate::test_support::configure_test_model(app);
+        let (completion, receiver) = mpsc::channel();
+        let handle = app
+            .start_run(crate::ApplicationRunRequest {
+                message: crate::message::PendingMessage::text("browsed archived conversation"),
+                approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+                asker: None,
+                events: Box::new(SharedEvents(Arc::new(Mutex::new(Vec::new())))),
+                completion,
+            })
+            .unwrap();
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap()
+            .unwrap();
+        handle.join().unwrap();
+        let id = app.current_session_id().unwrap();
+        app.set_session_organization(id.as_str(), None, Some(true), true)
+            .unwrap();
+        app.switch_session(id.clone()).unwrap();
+        app.inject_next_session_forget_failure(id.as_str());
+        id.as_str().to_owned()
+    });
+    let before = shared.selection_generation();
+    let call = || {
+        protocol::dispatch(
+            "session.delete",
+            &json!({ "id": victim, "confirmed": true }),
+            &shared,
+        )
+    };
+    let failed = call().unwrap_err();
+    assert!(
+        failed.message.contains("injected"),
+        "the cleanup failure is reported, not swallowed: {failed:?}"
+    );
+    assert_eq!(
+        shared.selection_generation(),
+        before + 1,
+        "the Host switched before the failure: clients must resync"
+    );
+    // The retry finishes the cleanup; the selection did not move again.
+    assert_eq!(
+        call().unwrap(),
+        json!({ "deleted": true, "jumped_to_new": false })
+    );
+    assert_eq!(shared.selection_generation(), before + 1);
+    drop(shared);
+    crate::test_support::cleanup_tree(&storage);
+    crate::test_support::cleanup_tree(&root);
+}

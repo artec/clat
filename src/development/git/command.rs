@@ -97,18 +97,17 @@ pub(super) fn run_index(
     let stderr = child.inner().stderr.take().ok_or("git_pipe")?;
     let out = std::thread::spawn(move || drain(stdout));
     let err = std::thread::spawn(move || drain(stderr));
+    // Finished or cancelled: hooks and credential helpers cannot retain pipes
+    // beyond the parent operation, so the group is KILLed before the leader is
+    // reaped — its zombie keeps the group id reserved for that KILL
+    // (2026-11-23 audit A-2).
     let status = loop {
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() || crate::process::group_leader_exited(&mut child).map_err(io)? {
             let _ = child.kill();
             break child.wait().map_err(io)?;
         }
-        if let Some(status) = child.try_wait().map_err(io)? {
-            break status;
-        }
         std::thread::sleep(Duration::from_millis(15));
     };
-    // Hooks/credential helpers cannot retain pipes beyond the parent operation.
-    let _ = child.kill();
     let stdout = out.join().map_err(|_| "git_reader")??;
     let stderr = err.join().map_err(|_| "git_reader")??;
     if cancel.is_cancelled() {

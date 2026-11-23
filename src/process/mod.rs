@@ -28,6 +28,8 @@ mod playwright_json;
 mod receipt;
 mod recovery;
 mod terminal;
+#[cfg(unix)]
+mod terminate;
 pub(crate) mod verification;
 pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) use receipt::{Format, VerificationSpec, invocation_digest};
@@ -1508,11 +1510,35 @@ enum ChildHandle {
 }
 
 impl ChildHandle {
-    fn try_wait(&mut self) -> std::io::Result<Option<TerminalStatus>> {
+    /// Whether the leader has exited. On Unix the leader is left unreaped:
+    /// its zombie keeps the process-group id reserved until
+    /// [`Self::terminate_tree`] or [`Self::settle`] reaps it after the last
+    /// group signal (2026-11-23 audit A-2).
+    fn leader_exited(&mut self) -> std::io::Result<bool> {
         match self {
-            Self::Group(child) => child.try_wait().map(|status| status.map(group_status)),
+            Self::Group(child) => group_leader_exited(child),
             #[cfg(not(windows))]
-            Self::Pty { child, .. } => child.try_wait().map(|status| status.map(pty_status)),
+            Self::Pty { child, .. } => {
+                #[cfg(unix)]
+                {
+                    child.process_id().map_or(Ok(false), |pid| {
+                        terminate::exited_without_reaping(pid as libc::pid_t)
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    Ok(child.try_wait()?.is_some())
+                }
+            }
+        }
+    }
+
+    /// Reaps a leader that has exited. No group signal may follow.
+    fn settle(&mut self) -> std::io::Result<TerminalStatus> {
+        match self {
+            Self::Group(child) => child.wait().map(group_status),
+            #[cfg(not(windows))]
+            Self::Pty { child, .. } => child.wait().map(pty_status),
         }
     }
 
@@ -1527,40 +1553,72 @@ impl ChildHandle {
             } => {
                 #[cfg(unix)]
                 if let Some(group) = *process_group {
-                    let mut leader_status = None;
-                    unsafe {
-                        libc::kill(-group, libc::SIGTERM);
-                    }
-                    let deadline = Instant::now() + KILL_GRACE;
-                    while Instant::now() < deadline {
-                        if leader_status.is_none()
-                            && let Ok(Some(status)) = child.try_wait()
-                        {
-                            leader_status = Some(status);
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    // Leader exit does not prove the process group is empty:
-                    // TERM-ignoring descendants may still be running. Always
-                    // send the final group KILL before returning.
-                    unsafe {
-                        libc::kill(-group, libc::SIGKILL);
-                    }
-                    if let Some(status) = leader_status {
-                        return pty_status(status);
-                    }
+                    let mut session = terminate::PtySession {
+                        child: child.as_mut(),
+                        group,
+                    };
+                    return terminate::terminate(
+                        &mut session,
+                        terminate::GracePeriod::Full,
+                        killed_status,
+                    );
                 }
+                // No process group to signal: a pid-based kill is safe either way.
                 let _ = child.kill();
-                child.wait().map(pty_status).unwrap_or(TerminalStatus {
-                    exit_code: None,
-                    signal: Some("killed".into()),
-                    timed_out: false,
-                    cancelled: false,
-                    terminated: true,
-                })
+                child
+                    .wait()
+                    .map(pty_status)
+                    .unwrap_or_else(|_| killed_status())
             }
         }
     }
+}
+
+/// A leader whose exit status could not be read.
+fn killed_status() -> TerminalStatus {
+    TerminalStatus {
+        exit_code: None,
+        signal: Some("killed".into()),
+        timed_out: false,
+        cancelled: false,
+        terminated: true,
+    }
+}
+
+/// A leader whose status was never obtained.
+fn unknown_status() -> TerminalStatus {
+    TerminalStatus {
+        exit_code: None,
+        signal: Some("unknown".into()),
+        timed_out: false,
+        cancelled: false,
+        terminated: false,
+    }
+}
+
+/// A leader whose exit could not be observed.
+fn wait_failed(error: std::io::Error) -> TerminalStatus {
+    TerminalStatus {
+        exit_code: None,
+        signal: Some(format!("wait failed: {error}")),
+        timed_out: false,
+        cancelled: false,
+        terminated: false,
+    }
+}
+
+/// Whether a group-spawned command's leader has exited. On Unix the leader is
+/// left unreaped, so a group signal that may still follow cannot hit a reused
+/// process-group id (2026-11-23 audit A-2); reap it with `wait` once no group
+/// signal can follow.
+#[cfg(unix)]
+pub(crate) fn group_leader_exited(child: &mut command_group::GroupChild) -> std::io::Result<bool> {
+    terminate::exited_without_reaping(child.id() as libc::pid_t)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn group_leader_exited(child: &mut command_group::GroupChild) -> std::io::Result<bool> {
+    Ok(child.try_wait()?.is_some())
 }
 
 fn strip_credential_shaped_env(process: &mut std::process::Command) {
@@ -1774,7 +1832,8 @@ fn monitor_process(
     readers: Vec<JoinHandle<()>>,
     reader_done: Vec<Arc<AtomicBool>>,
 ) {
-    let mut terminal = None;
+    // Assigned on every exit path of the loop below.
+    let terminal: Option<TerminalStatus>;
     let mut final_flags = None;
     let mut leader_done_at = None;
     loop {
@@ -1798,31 +1857,26 @@ fn monitor_process(
             terminal = Some(child.terminate_tree());
             break;
         }
+        // Observed, not reaped: `terminate_tree` may still signal the group
+        // below and needs the leader to hold its id (2026-11-23 audit A-2).
         if leader_done_at.is_none() {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    terminal = Some(status);
-                    leader_done_at = Some(now);
-                }
-                Ok(None) => {}
+            match child.leader_exited() {
+                Ok(true) => leader_done_at = Some(now),
+                Ok(false) => {}
                 Err(error) => {
-                    terminal = Some(TerminalStatus {
-                        exit_code: None,
-                        signal: Some(format!("wait failed: {error}")),
-                        timed_out: false,
-                        cancelled: false,
-                        terminated: false,
-                    });
+                    terminal = Some(wait_failed(error));
                     break;
                 }
             }
         }
         if let Some(done_at) = leader_done_at {
             if reader_done.iter().all(|done| done.load(Ordering::Acquire)) {
+                // Reaped last: the readers are done, so no group signal follows.
+                terminal = Some(child.settle().unwrap_or_else(|_| unknown_status()));
                 break;
             }
             if now >= done_at + DRAIN_GRACE {
-                let _ = child.terminate_tree();
+                terminal = Some(child.terminate_tree());
                 break;
             }
         }
@@ -1910,26 +1964,20 @@ fn pty_status(status: portable_pty::ExitStatus) -> TerminalStatus {
 fn terminate_group(child: &mut command_group::GroupChild) -> TerminalStatus {
     #[cfg(unix)]
     {
-        use command_group::{Signal, UnixChildExt as _};
-        let _ = child.signal(Signal::SIGTERM);
-        let deadline = Instant::now() + KILL_GRACE;
-        while Instant::now() < deadline {
-            if let Ok(Some(status)) = child.try_wait() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return group_status(status);
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        terminate::terminate(
+            &mut terminate::GroupCommand(child),
+            terminate::GracePeriod::UntilLeaderExit,
+            killed_status,
+        )
     }
-    let _ = child.kill();
-    child.wait().map(group_status).unwrap_or(TerminalStatus {
-        exit_code: None,
-        signal: Some("killed".into()),
-        timed_out: false,
-        cancelled: false,
-        terminated: true,
-    })
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+        child
+            .wait()
+            .map(group_status)
+            .unwrap_or_else(|_| killed_status())
+    }
 }
 
 #[cfg(test)]

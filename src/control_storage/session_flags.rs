@@ -51,6 +51,17 @@ impl ControlStorage {
         workspace: &str,
         session: &str,
     ) -> Result<(), ControlError> {
+        #[cfg(test)]
+        {
+            let mut fault = self
+                .fail_next_forget_session
+                .lock()
+                .expect("forget-session fault");
+            if fault.as_deref() == Some(session) {
+                *fault = None;
+                return Err(control_error("injected organization index write failure"));
+            }
+        }
         self.commit(
             self.lock(),
             |state| self.save_registry(state),

@@ -1,6 +1,4 @@
 use super::{TITLE_RAW_MAX_BYTES, sanitize_title_outcome, scrub_title_text};
-use crate::i18n::Locale;
-use crate::session::catalog::conversation_summary::fit_text;
 use serde::Deserialize;
 
 #[derive(Default, Deserialize)]
@@ -10,10 +8,12 @@ struct ModelOutput {
     summary: serde_json::Value,
 }
 
+/// 负责人裁定（2026-11-23）：80/40 只是提示词约束——模型自己决定怎么理解；
+/// CLAT 不验证、不截断。产出只做控制字符清洗后原样入库，清洗后为空不算
+/// 摘要。
 pub(super) fn read_model_output(
     raw: &str,
     conversation: &str,
-    locale: Locale,
     include_title: bool,
 ) -> (String, Option<String>) {
     if raw.len() > TITLE_RAW_MAX_BYTES {
@@ -38,42 +38,32 @@ pub(super) fn read_model_output(
     } else {
         String::new()
     };
-    (
-        title,
-        summary.and_then(|text| fit_text(&scrub_title_text(&text), locale)),
-    )
+    let summary = summary
+        .map(|text| scrub_title_text(&text))
+        .filter(|text| !text.trim().is_empty());
+    (title, summary)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::catalog::conversation_summary::within_limit;
     use serde_json::json;
 
     #[test]
-    fn conversation_summary_bounds_model_output_and_keeps_valid_titles_independent() {
-        let output = json!({"title":"Sidebar progress", "summary":"测试".repeat(60)}).to_string();
-        for locale in [Locale::Simplified, Locale::Traditional] {
-            let (title, zh) = read_model_output(&output, "", locale, true);
-            assert_eq!(title, "Sidebar progress");
-            let zh = zh.unwrap();
-            assert_eq!(zh.chars().count(), 80);
-            assert!(zh.ends_with('…'));
-        }
+    fn summaries_pass_through_whatever_the_model_returned() {
+        // 中英混排超限文本原样通过：没有 80/40 执法，没有省略号截断。
+        let mixed = format!("{} with renderMarkdown API checks", "已完成测试".repeat(30));
+        let output = json!({"title":"Sidebar progress", "summary": mixed}).to_string();
+        let (title, summary) = read_model_output(&output, "", true);
+        assert_eq!(title, "Sidebar progress");
+        assert_eq!(summary.as_deref(), Some(mixed.as_str()));
 
-        let output = json!({"title":"Sidebar progress", "summary":vec!["progress"; 45].join(" ")})
-            .to_string();
-        let (title, en) = read_model_output(&output, "", Locale::English, false);
+        // 清洗后为空不算摘要；title 与 summary 相互独立。
+        let (title, summary) = read_model_output(r#"{"summary": "  "}"#, "", true);
         assert!(title.is_empty());
-        let en = en.unwrap();
-        assert!(within_limit(&en, Locale::English));
-        assert!(en.ends_with("progress…"));
-        let (title, summary) = read_model_output(
-            r#"{"title":"Valid title","summary":null}"#,
-            "",
-            Locale::Traditional,
-            true,
-        );
+        assert_eq!(summary, None);
+        let (title, summary) =
+            read_model_output(r#"{"title":"Valid title","summary":null}"#, "", true);
         assert_eq!(title, "Valid title");
         assert!(summary.is_none());
     }

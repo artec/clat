@@ -100,7 +100,7 @@ impl SessionTitler for DefaultSessionTitler {
             cancel,
         )?;
         let (title, summary) =
-            summary::read_model_output(&output.text, conversation, locale, include_title);
+            summary::read_model_output(&output.text, conversation, include_title);
         Ok(GeneratedTitle {
             title,
             summary,

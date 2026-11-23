@@ -75,6 +75,17 @@ impl SessionRootDir {
         open_dir_nofollow(&self.dir, Path::new(bucket))
     }
 
+    /// Confirm absence and finish syncing a removal that may have failed after unlinking.
+    /// An entry of any type keeps the slot occupied, and inspection errors propagate.
+    pub(crate) fn confirm_session_directory_removed(&self, key: &SessionKey) -> io::Result<bool> {
+        if confirm_missing_entry(&self.dir, Path::new(&key.project.bucket))? {
+            return Ok(true);
+        }
+        let parent = self.open_bucket(&key.project.bucket)?;
+        let entry = path_layout::encode_segment(key.id.as_str());
+        confirm_missing_entry(&parent, Path::new(&entry))
+    }
+
     /// SL-1（INV-SL4）：删除一个会话的整个存储目录（journal +
     /// checkpoint + 投影缓存同域）。仅归档域删除链路调用；调用方
     /// （Application）已用守卫排除活跃/被选择目标。带退避重试——
@@ -101,6 +112,17 @@ impl SessionRootDir {
 
     pub(crate) fn open_or_create_child(parent: &Dir, name: &Path) -> io::Result<Dir> {
         open_or_create_child(parent, name)
+    }
+}
+
+fn confirm_missing_entry(parent: &Dir, entry: &Path) -> io::Result<bool> {
+    match parent.symlink_metadata(entry) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            sync_dir(parent)?;
+            Ok(true)
+        }
+        Err(error) => Err(error),
     }
 }
 

@@ -159,11 +159,7 @@ impl SessionService {
         {
             return Ok(false);
         }
-        if !conversation_summary::within_limit(text, locale) {
-            return Err(SessionError::Corruption(
-                "invalid generated summary text".into(),
-            ));
-        }
+        // 负责人裁定（2026-11-23）：80/40 只是提示词约束，入库不验证长度。
         let event = crate::session::run_journal::NewSessionEvent::new(
             conversation_summary::EVENT,
             json!({"text": text, "locale": locale, "messageSeqs": attempt.message_seqs, "updatedAtMs": now_ms()}),
@@ -183,10 +179,7 @@ impl SessionService {
         };
         fold_if_behind(active, &self.backend)?;
         let projections = active.projections.lock().expect("projections");
-        Ok(summary_snapshot(&projections).and_then(|mut summary| {
-            summary.text = conversation_summary::fit_text(&summary.text, summary.locale)?;
-            Some(summary)
-        }))
+        Ok(summary_snapshot(&projections))
     }
 
     pub(crate) fn prepare_suggestion_attempt(
