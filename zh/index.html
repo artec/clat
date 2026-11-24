@@ -392,7 +392,7 @@
     <header class="hero">
       <img class="big" src="../logo.png" alt="CLAT logo">
       <h1>CLAT</h1>
-      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.3.10 — 最新版本</a></div>
+      <div><a class="release-pill" href="https://github.com/artec/clat/releases/latest" data-release>v2.3.12 — 最新版本</a></div>
       <p class="tagline">稳如磐石的 Agent 底座 · DSH 的 TUI 客户端 · Rust 单文件</p>
       <div class="term">
         <div class="row"><span class="p">❯</span><span>clat</span></div>
@@ -411,11 +411,11 @@
       <div class="shot">
         <img src="https://raw.githubusercontent.com/artec/clat/main/screen.zh.png" alt="CLAT 桌面版截图" loading="lazy">
       </div>
-      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.3.10 实测 16.6 MiB），
+      <!-- 数据带：数字须真实。下载体积 = macOS tar.gz 压缩包大小（v2.3.12 实测 16.7 MiB），
            发布时复核压缩包即可。 -->
       <div class="stats">
         <div class="stat">
-          <div class="stat-number">16.6 MB</div>
+          <div class="stat-number">16.7 MB</div>
           <div class="stat-label">下载体积：单二进制，无需 Node / Python</div>
         </div>
         <div class="stat">
@@ -682,10 +682,17 @@
           })
           .catch(function () { /* 保持预置文案与原按钮 */ });
       }
-      // Intel Mac 精化：Chromium 系可异步取真实架构（Safari 无此 API，保持默认）。
-      if (desktopSuffix === '-macos-arm64.dmg' && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
-        navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (info) {
-          if (info && info.architecture === 'x86') {
+      // 架构精化：Chromium 系可异步取真实架构（Safari 无此 API，保持默认）。
+      // Windows-on-ARM 的 UA 被冻结为 Win64; x64，必须在此纠正为 arm64；
+      // Intel Mac 同理由默认的 Apple Silicon 精化为 x64。
+      if (desktopSuffix && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness']).then(function (info) {
+          if (!info) return;
+          var arm64 = info.architecture === 'arm' && String(info.bitness) === '64';
+          if (arm64 && desktopSuffix === '-windows-x64-setup.exe') {
+            desktopSuffix = '-windows-arm64-setup.exe';
+            applyDesktop();
+          } else if (info.architecture === 'x86' && desktopSuffix === '-macos-arm64.dmg') {
             desktopSuffix = '-macos-x64.dmg';
             applyDesktop();
           }
