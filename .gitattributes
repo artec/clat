@@ -44,6 +44,7 @@ web/plugin-market.js text eol=lf
 web/development/*.js text eol=lf
 web/development/*.css text eol=lf
 web/icons/*.svg text eol=lf
+web/icons/*.png -text
 web/manifest.webmanifest text eol=lf
 
 # PLG-3 author probe inputs are compiled verbatim and source-hashed.

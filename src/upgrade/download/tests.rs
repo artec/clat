@@ -136,6 +136,7 @@ fn upgrade_zip_with_a_symlink_entry_is_rejected_before_extraction() {
 
 /// A stored (uncompressed) ZIP. Entry types live in the central directory's
 /// external attributes, which is where zipinfo reads them.
+#[cfg(unix)]
 fn zip_with_entries<const N: usize>(entries: [(&str, &str, u32); N]) -> Vec<u8> {
     // version 2.0, no flags, stored, 1980-01-01 00:00.
     const FIXED: [u8; 10] = [20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0];
@@ -181,6 +182,7 @@ fn zip_with_entries<const N: usize>(entries: [(&str, &str, u32); N]) -> Vec<u8> 
     zip
 }
 
+#[cfg(unix)]
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = u32::MAX;
     for &byte in data {
