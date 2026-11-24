@@ -600,6 +600,22 @@ fn agent_command_spawning_is_owned_only_by_process_service() {
         .map(|s| s.replace("\r\n", "\n"))
         .expect("process service");
     assert!(owner.contains(".group_spawn()"));
+    for path in rust_sources(root) {
+        let relative = path
+            .strip_prefix(root)
+            .expect("source path")
+            .to_string_lossy();
+        if path == root.join("src/process/mod.rs") || relative.contains("tests") {
+            continue;
+        }
+        let source = fs::read_to_string(&path)
+            .map(|text| text.replace("\r\n", "\n"))
+            .expect("read source");
+        assert!(
+            !source.contains(".group_spawn()"),
+            "{relative} must use process::spawn_group so Windows children do not open a console"
+        );
+    }
     let pty_owner = fs::read_to_string(root.join("src/process/terminal.rs"))
         .map(|s| s.replace("\r\n", "\n"))
         .expect("process-owned PTY implementation");

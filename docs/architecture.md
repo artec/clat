@@ -185,7 +185,9 @@ Git subprocess boundary, Windows verbatim disk and UNC paths are converted to
 Git's path spelling, including frozen index environment variables, temporary
 worktrees and commit message files. Frozen index digests and commit checks
 remain mandatory; path representation must not turn staged content into an
-apparently empty index.
+apparently empty index. Non-interactive Windows children, including every Git
+query, start with `CREATE_NO_WINDOW`. A desktop host has no console of its
+own, so omitting that flag opens a terminal window for each invocation.
 
 Third-party packages of both runtime kinds are activated from one immutable
 local store. The package tree is copied and fsynced before an atomic registry

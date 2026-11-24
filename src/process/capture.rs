@@ -63,7 +63,7 @@ pub(crate) fn capture_command_cancellable(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.group_spawn().map_err(|e| {
+    let mut child = super::spawn_group(&mut command).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             "spawn-not-found: executable is not installed".into()
         } else {

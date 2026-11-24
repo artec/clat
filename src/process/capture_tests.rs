@@ -1,5 +1,42 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn redirected_background_capture_does_not_allocate_a_console_window() {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleWindow};
+
+    const MODE: &str = "CLAT_CAPTURE_CONSOLE_TEST_MODE";
+    const TEST: &str =
+        "process::capture::tests::redirected_background_capture_does_not_allocate_a_console_window";
+    let next_mode = match std::env::var(MODE).as_deref() {
+        Ok("probe") => {
+            assert!(
+                unsafe { GetConsoleWindow() }.is_null(),
+                "background command acquired a console window"
+            );
+            return;
+        }
+        Ok("detached-parent") => {
+            // A Desktop backend starts without a console. Detach only this fixture process.
+            assert_ne!(unsafe { FreeConsole() }, 0);
+            assert!(unsafe { GetConsoleWindow() }.is_null());
+            "probe"
+        }
+        _ => "detached-parent",
+    };
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", TEST, "--nocapture"])
+        .env(MODE, next_mode);
+    let output = capture_command(command, 64 * 1024, crate::test_support::HANG).unwrap();
+    assert!(
+        output.status.success(),
+        "{next_mode} fixture failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn infrastructure_capture_enforces_output_and_time_limits_without_shells() {
     capture_limits(false);

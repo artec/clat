@@ -43,6 +43,24 @@ pub(crate) mod review;
 pub(crate) use capture::capture_command;
 pub(crate) use capture::capture_command_cancellable;
 
+/// Non-interactive process group. A windowless Windows host must not let a
+/// console-subsystem child such as `git.exe` allocate its own terminal.
+pub(crate) fn spawn_group(
+    command: &mut std::process::Command,
+) -> std::io::Result<command_group::GroupChild> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        // The group builder replaces the flags on Command when it spawns.
+        command.group().creation_flags(CREATE_NO_WINDOW).spawn()
+    }
+    #[cfg(not(windows))]
+    {
+        command.group_spawn()
+    }
+}
+
 const STREAM_RING_BYTES: usize = 256 * 1024;
 const MANAGED_STDOUT_RING_BYTES: usize = 4 * 1024 * 1024 + 64 * 1024;
 const MANAGED_STDERR_RING_BYTES: usize = 256 * 1024;
@@ -71,8 +89,7 @@ pub(crate) fn probe_command(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let mut child = process
-        .group_spawn()
+    let mut child = spawn_group(&mut process)
         .map_err(|error| format!("process probe spawn failed: {error}"))?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -1684,9 +1701,8 @@ fn spawn_piped(
     options: PipedSpawnOptions,
 ) -> Result<Arc<ProcessEntry>, String> {
     let mut process = background_piped_command(&planned, workdir, &options);
-    let mut child = process
-        .group_spawn()
-        .map_err(|error| format!("process spawn failed: {error}"))?;
+    let mut child =
+        spawn_group(&mut process).map_err(|error| format!("process spawn failed: {error}"))?;
     let pipes = (
         child.inner().stdin.take(),
         child.inner().stdout.take(),

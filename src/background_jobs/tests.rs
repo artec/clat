@@ -325,6 +325,21 @@ fn native_job_error_after_spawn_never_claims_not_executed_or_replays() {
     assert!(!f.registry.has_active());
 }
 #[test]
+fn failed_job_recovery_is_not_running_work() {
+    let f = Fixture::new();
+    f.registry
+        .recovery_failed(JobError::new("persistence_failed").detail("corrupt session log"));
+    assert!(
+        !f.registry.has_active(),
+        "a ledger that could not be read has no live process and must not block host restart"
+    );
+    assert!(
+        f.registry.try_list().is_err(),
+        "listing still reports the recovery failure instead of an empty ledger"
+    );
+}
+
+#[test]
 fn native_job_restart_records_unknown_without_replaying_and_g7_is_scoped() {
     use crate::task::{JobObservation, JobQuery};
     let f = Fixture::new();

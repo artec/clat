@@ -3756,6 +3756,7 @@ in Discover. Offline mode uses the existing explicitly labelled preview catalog.
 
 The workspace Git tool keeps its existing entry points and uses the shared
 breadcrumb close control to return to the conversation.
+On Windows, background Git operations run without opening a terminal window.
 Its sidebar combines a compact commit form, conflict/staged/working-tree groups,
 repository selection and a commit graph. Hover or focus file rows for actions;
 click a file to preview its diff, double-click to pin its comparison tab. Tabs keep

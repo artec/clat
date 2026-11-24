@@ -1,6 +1,5 @@
 //! Human writes honor Git configuration; read commands retain the isolated query policy.
 use super::*;
-use command_group::CommandGroup;
 use std::{
     io::Read,
     process::{Command, Stdio},
@@ -92,7 +91,7 @@ pub(super) fn run_index(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.group_spawn().map_err(io)?;
+    let mut child = crate::process::spawn_group(&mut cmd).map_err(io)?;
     let stdout = child.inner().stdout.take().ok_or("git_pipe")?;
     let stderr = child.inner().stderr.take().ok_or("git_pipe")?;
     let out = std::thread::spawn(move || drain(stdout));

@@ -155,9 +155,8 @@ impl JobRegistry {
         *self.notice.lock().unwrap() = Some(notice);
     }
     pub(crate) fn has_active(&self) -> bool {
-        if self.ready().is_err() {
-            return true;
-        }
+        // A failed ledger read restores nothing and adopts no process.
+        // Reporting it as live work blocks host restart with an empty registry.
         self.state
             .lock()
             .unwrap()

@@ -1,5 +1,5 @@
 //! An owned non-interactive process group with bounded teardown.
-use command_group::{CommandGroup as _, GroupChild};
+use command_group::GroupChild;
 use std::io;
 use std::process::{ChildStdout, Command, ExitStatus};
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ impl SupervisedChild {
         #[cfg(not(unix))]
         let _ = grace;
         Ok(Self {
-            child: Some(command.group_spawn()?),
+            child: Some(super::spawn_group(command)?),
             #[cfg(unix)]
             grace,
             reap_limit,
