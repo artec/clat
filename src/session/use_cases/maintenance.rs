@@ -9,39 +9,28 @@ impl SessionService {
         tools: &[crate::ToolDefinition],
         tail_tokens: u64,
     ) -> crate::model::RequestMeasurement {
-        let session = self
-            .active_id()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-        self.meter.lock().expect("request meter").measure(
-            &session,
+        let (session, calibration) = {
+            let active = self.active.lock().expect("active");
+            active.as_ref().map_or_else(
+                || (None, None),
+                |active| {
+                    let projections = active.projections.lock().expect("projections");
+                    (
+                        Some(active.key.id.clone()),
+                        projections.request_calibration(),
+                    )
+                },
+            )
+        };
+        crate::model::measure_request(
+            calibration.as_ref(),
+            session.as_ref().map_or("", SessionId::as_str),
             config,
             instructions,
             items,
             tools,
             tail_tokens,
         )
-    }
-    pub(crate) fn observe_request(
-        &self,
-        config: &crate::ModelConfig,
-        instructions: Option<&str>,
-        tools: &[crate::ToolDefinition],
-        usage: &crate::Usage,
-        estimated_input: u64,
-    ) {
-        let session = self
-            .active_id()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-        self.meter.lock().expect("request meter").observe(
-            &session,
-            config,
-            instructions,
-            tools,
-            usage,
-            estimated_input,
-        );
     }
 
     pub(crate) fn compaction_nodes(&self) -> Result<Vec<(u64, ModelItem, bool)>, SessionError> {

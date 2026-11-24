@@ -2644,6 +2644,7 @@
   "experience.unavailable": "暂不可用",
   "experience.loading": "读取中…",
   "experience.estimate": "下一次请求的输入估算，不含未发送草稿。",
+  "experience.estimate_uncalibrated": "下一次请求的本地估算，可能与供应商实测有较大差异，不含未发送草稿。",
   "experience.last_request": "本会话 · 最近一次请求",
   "experience.route": "当前模型路由 · 累计",
   "experience.input": "输入 token",

@@ -110,8 +110,8 @@ pub mod history {
         HistoryEventRow, HistoryEventsPage, HistoryEventsRequest, HistoryHit, HistoryPage,
         HistoryReadRequest, HistoryReader, HistoryReference, HistorySearch, OperationDetail,
         OperationDetailRequest, OperationFilter, OperationRow, OperationsPage, OperationsRequest,
-        SessionShare, SessionShareSelection, TrajectoryDetail, TrajectoryDetailRequest,
-        TrajectoryPage, TrajectoryRequest,
+        SessionShare, SessionShareReader, SessionShareSelection, TrajectoryDetail,
+        TrajectoryDetailRequest, TrajectoryPage, TrajectoryRequest,
     };
     pub use crate::session_query::command::{HistoryCommandRequest, parse_history_command};
 
@@ -130,4 +130,8 @@ pub mod workflow {
 
 pub mod development {
     pub use crate::application::{DevelopmentService, GitModel, OperationView};
+}
+
+pub mod local_process {
+    pub use crate::process::SupervisedChild;
 }

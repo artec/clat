@@ -1,41 +1,17 @@
+use super::login_flow::{DEVICE, LoginFailure, Start};
 use super::*;
 use serde_json::{Value, json};
 use tokenplan_quota::{DeviceLogin, PollStatus};
 
-struct Flow {
-    id: Uuid,
-    status: &'static str,
-    view: Option<Value>,
-}
-
-static FLOWS: Mutex<Option<HashMap<PathBuf, Flow>>> = Mutex::new(None);
-
 impl TrustedProjectApplication {
     pub fn console_login_start(&self) -> Result<Value, ApplicationError> {
-        let root = self.control.root_path();
-        let id = Uuid::new_v4();
-        {
-            let mut flows = FLOWS.lock().expect("console device flows");
-            let flows = flows.get_or_insert_with(HashMap::new);
-            if let Some(flow) = flows.get(root) {
-                match flow.status {
-                    "pending" => return Ok(flow.view.clone().expect("pending device view")),
-                    "starting" => return Err(ApplicationError::new("console login is starting")),
-                    _ => {}
-                }
-            }
-            flows.insert(
-                root.to_owned(),
-                Flow {
-                    id,
-                    status: "starting",
-                    view: None,
-                },
-            );
-        }
+        let id = match DEVICE.start(&self.control)? {
+            Start::New(id) => id,
+            Start::Pending(view) => return Ok(view),
+        };
         let attempt = self.begin_console_login(id);
         if attempt.is_err() {
-            settle_flow(&self.control, id, Err("failed"));
+            DEVICE.settle(&self.control, id, Err(LoginFailure::Failed));
         }
         attempt
     }
@@ -58,18 +34,14 @@ impl TrustedProjectApplication {
             return Err(ApplicationError::new("invalid console verification URL"));
         }
         let view = json!({"url": login.verification_url, "expires_in": login.expires_in_secs, "interval": login.interval_secs});
-        let mut flows = FLOWS.lock().expect("console device flows");
-        let flow = current_flow(&mut flows, &self.control, id)
-            .ok_or_else(|| ApplicationError::new("console login was cancelled"))?;
-        flow.status = "pending";
-        flow.view = Some(view.clone());
+        DEVICE.publish(&self.control, id, view.clone(), None)?;
         let control = Arc::clone(&self.control);
         let subscribers = Arc::clone(&self.subscribers);
         std::thread::Builder::new()
             .name("clat-console-device-login".into())
             .spawn(move || {
                 let result = poll_login(&control, id, &login);
-                if settle_flow(&control, id, result) {
+                if DEVICE.settle(&control, id, result) {
                     notify_changed(&subscribers);
                 }
             })
@@ -78,44 +50,12 @@ impl TrustedProjectApplication {
     }
 
     pub fn console_login_state(&self) -> Value {
-        let flows = FLOWS.lock().expect("console device flows");
-        let status = flows
-            .as_ref()
-            .and_then(|map| map.get(self.control.root_path()))
-            .map_or("none", |flow| flow.status);
-        json!({"status": status})
+        json!({"status": DEVICE.status(&self.control)})
     }
 
     pub fn console_login_cancel(&self) {
-        let mut flows = FLOWS.lock().expect("console device flows");
-        if let Some(flows) = flows.as_mut()
-            && flows
-                .get(self.control.root_path())
-                .is_some_and(|flow| matches!(flow.status, "starting" | "pending"))
-        {
-            flows.remove(self.control.root_path());
-        }
+        DEVICE.cancel(&self.control);
     }
-}
-
-pub(super) fn remove(control: &ControlStorage) -> Result<(), ApplicationError> {
-    let mut flows = FLOWS.lock().expect("console device flows");
-    remove_credential(control, "qianwen")?;
-    if let Some(flows) = flows.as_mut() {
-        flows.remove(control.root_path());
-    }
-    Ok(())
-}
-
-fn current_flow<'a>(
-    flows: &'a mut Option<HashMap<PathBuf, Flow>>,
-    control: &ControlStorage,
-    id: Uuid,
-) -> Option<&'a mut Flow> {
-    flows
-        .as_mut()?
-        .get_mut(control.root_path())
-        .filter(|flow| flow.id == id)
 }
 
 fn valid_verification_url(value: &str) -> bool {
@@ -134,7 +74,7 @@ fn poll_login(
     control: &ControlStorage,
     id: Uuid,
     login: &DeviceLogin,
-) -> Result<ConsoleCredentialRow, &'static str> {
+) -> Result<ConsoleCredentialRow, LoginFailure> {
     let transport = UreqTransport::new(FETCH_TIMEOUT);
     let deadline = Instant::now() + Duration::from_secs(login.expires_in_secs.clamp(1, 900));
     let mut interval = Duration::from_secs(login.interval_secs.clamp(1, 900));
@@ -142,17 +82,11 @@ fn poll_login(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining <= interval {
             std::thread::sleep(remaining);
-            return Err("expired");
+            return Err(LoginFailure::Expired);
         }
         std::thread::sleep(interval);
-        if current_flow(
-            &mut FLOWS.lock().expect("console device flows"),
-            control,
-            id,
-        )
-        .is_none()
-        {
-            return Err("cancelled");
+        if !DEVICE.is_pending(control, id) {
+            return Err(LoginFailure::Cancelled);
         }
         match tokenplan_quota::poll_device_login(
             &transport,
@@ -160,11 +94,11 @@ fn poll_login(
             tokenplan_quota::DEFAULT_AUTH_BASE,
         ) {
             Ok(PollStatus::Complete(session)) => return seal_session(&transport, login, session),
-            Ok(PollStatus::ExpiredToken) => return Err("expired"),
-            Ok(PollStatus::AccessDenied) => return Err("denied"),
+            Ok(PollStatus::ExpiredToken) => return Err(LoginFailure::Expired),
+            Ok(PollStatus::AccessDenied) => return Err(LoginFailure::Denied),
             Ok(PollStatus::AuthorizationPending) => {}
             Ok(PollStatus::SlowDown) => interval += Duration::from_secs(5),
-            Err(_) => return Err("failed"),
+            Err(_) => return Err(LoginFailure::Failed),
         }
     }
 }
@@ -173,21 +107,21 @@ fn seal_session(
     transport: &UreqTransport,
     login: &DeviceLogin,
     session: Session,
-) -> Result<ConsoleCredentialRow, &'static str> {
+) -> Result<ConsoleCredentialRow, LoginFailure> {
     let derived = tokenplan_quota::derive_cli_access_token(
         transport,
         &session,
         tokenplan_quota::DEFAULT_GATEWAY_JSON,
     )
-    .map_err(|_| "failed")?;
+    .map_err(|_| LoginFailure::Failed)?;
     let credential = QianwenCredential {
         access_token: session.access_token,
         refresh_token: session.refresh_token,
         expires_at: session.expires_at,
         derived,
     };
-    let plain = serde_json::to_string(&credential).map_err(|_| "failed")?;
-    let blob = seal(&plain).map_err(|_| "failed")?;
+    let plain = serde_json::to_string(&credential).map_err(|_| LoginFailure::Failed)?;
+    let blob = seal(&plain).map_err(|_| LoginFailure::Failed)?;
     Ok(ConsoleCredentialRow {
         client_id: Some(login.client_id.clone()),
         blob,
@@ -195,30 +129,23 @@ fn seal_session(
     })
 }
 
-fn settle_flow(
-    control: &ControlStorage,
-    id: Uuid,
-    result: Result<ConsoleCredentialRow, &'static str>,
-) -> bool {
-    let mut flows = FLOWS.lock().expect("console device flows");
-    let Some(flow) = current_flow(&mut flows, control, id) else {
-        return false;
-    };
-    flow.view = None;
-    flow.status = match result {
-        Ok(row) if control.write_console_credential("qianwen", &row).is_ok() => {
-            invalidate_cache(control, "qianwen");
-            "complete"
-        }
-        Ok(_) => "failed",
-        Err(status) => status,
-    };
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settled_device_login_cannot_be_settled_again() {
+        let (root, _) = crate::test_support::roots("console-device-settled");
+        std::fs::create_dir_all(&root).unwrap();
+        crate::control_storage::sentinel::initialize(&root).unwrap();
+        let control = ControlStorage::open_ready(&root).unwrap();
+        let id = new_login(&control);
+        assert!(DEVICE.settle(&control, id, Err(LoginFailure::Expired)));
+        assert!(!DEVICE.settle(&control, id, Err(LoginFailure::Failed)));
+        assert_eq!(DEVICE.status(&control), "expired");
+        DEVICE.remove(&control).unwrap();
+        crate::test_support::cleanup_tree(root.parent().unwrap());
+    }
 
     #[test]
     fn console_authorization_removal_fences_late_device_approval() {
@@ -226,25 +153,14 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         crate::control_storage::sentinel::initialize(&root).unwrap();
         let control = ControlStorage::open_ready(&root).unwrap();
-        let id = Uuid::new_v4();
-        FLOWS
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .insert(
-                root.clone(),
-                Flow {
-                    id,
-                    status: "pending",
-                    view: None,
-                },
-            );
-        remove(&control).unwrap();
+        let id = new_login(&control);
+        DEVICE.publish(&control, id, json!({}), None).unwrap();
+        DEVICE.remove(&control).unwrap();
         let late = ConsoleCredentialRow {
             blob: "late-device-token".into(),
             ..Default::default()
         };
-        assert!(!settle_flow(&control, id, Ok(late)));
+        assert!(!DEVICE.settle(&control, id, Ok(late)));
         assert!(
             control
                 .read_console_credential("qianwen")
@@ -252,6 +168,13 @@ mod tests {
                 .is_none()
         );
         crate::test_support::cleanup_tree(root.parent().unwrap());
+    }
+
+    fn new_login(control: &ControlStorage) -> Uuid {
+        let Start::New(id) = DEVICE.start(control).unwrap() else {
+            panic!("expected a new device login");
+        };
+        id
     }
 
     #[test]

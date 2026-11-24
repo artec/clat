@@ -16,7 +16,10 @@ impl Run<'_> {
                 state.usage.add_assign(&usage);
             }
             if let Ok(response) = result {
-                if let Some(usage) = &response.usage
+                if !matches!(
+                    response.finish_reason,
+                    FinishReason::Cancelled | FinishReason::Error
+                ) && let Some(usage) = &response.usage
                     && let Some(manager) = &mut self.context_manager
                 {
                     manager.observe(

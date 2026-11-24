@@ -140,6 +140,7 @@ fn estimate_snapshot(
         image_token_safety_factor: crate::media::IMAGE_TOKEN_SAFETY_FACTOR,
         output_reserve_estimate: output_reserve,
         input_estimate: input_total,
+        input_calibrated: measured.calibrated,
         total_estimate: measured.total(),
         tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
         skill_names: run_context

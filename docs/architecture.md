@@ -2066,6 +2066,13 @@ client channel and explicit intent, never an `is_human` field supplied to an Age
 The services do not alter the session permission mode, planning mode or Agent RunOwner.
 Blocking filesystem/model/Git/PTY I/O occurs after releasing the Application mutex.
 
+On Unix, the developer terminal observes shell exit without reaping it, resolves
+the jobs still in the owned terminal session before the final signal, then
+reaps the shell with a deadline. Its lease is released only after cleanup
+succeeds. The DSH connection layer separately obtains an owned non-interactive
+process through `client_ports::local_process`. External DSH hosts discovered by
+probing carry no owned child and are outside this cleanup path.
+
 The editor uses held directory capabilities, parent write locks, content fingerprints
 and conditional atomic publication. Windows no-replace moves use directory-relative
 `NtSetInformationFile`, retaining open-directory boundaries for rename and trash

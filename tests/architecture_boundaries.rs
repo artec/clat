@@ -779,7 +779,7 @@ fn include_bytes_targets_are_line_ending_pinned() {
     let records: Vec<&str> = attributes.split('\0').collect();
     let mut unpinned = Vec::new();
     for target in &targets {
-        let pinned = records.chunks_exact(3).any(|record| {
+        let pinned = records.as_chunks::<3>().0.iter().any(|record| {
             record[0] == target.as_str()
                 && ((record[1] == "text" && record[2] == "unset")
                     || (record[1] == "eol" && record[2] == "lf"))

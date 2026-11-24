@@ -16,7 +16,6 @@ use crate::plugins::services::{
 use crate::session::id::SessionId;
 use crate::session::use_cases::SessionService;
 use serde_json::Value;
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -171,90 +170,9 @@ use title::TitleWorker;
 // name the Application boundary, never the control-storage owner module.
 pub use crate::control_storage::workspace::WorkspaceFile as DshWorkspaceFile;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplicationError {
-    message: String,
-    presentation: Option<Box<crate::i18n::UiMessage>>,
-    receipt: Option<Box<crate::message::AdmissionReceipt>>,
-    selection_changed: bool,
-}
-
-impl ApplicationError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            presentation: None,
-            receipt: None,
-            selection_changed: false,
-        }
-    }
-
-    pub(crate) fn from_message(message: impl Into<String>) -> Self {
-        Self::new(message)
-    }
-    pub(crate) fn presented(message: crate::i18n::UiMessage) -> Self {
-        Self {
-            message: message.english(),
-            presentation: Some(Box::new(message)),
-            receipt: None,
-            selection_changed: false,
-        }
-    }
-    pub fn presentation(&self) -> crate::i18n::UiMessage {
-        self.presentation.as_deref().cloned().unwrap_or_else(|| {
-            crate::i18n::UiMessage::new("common.error").arg("detail", self.message.clone())
-        })
-    }
-
-    fn with_receipt(mut self, receipt: Option<Box<crate::message::AdmissionReceipt>>) -> Self {
-        if receipt.is_some() {
-            self.receipt = receipt;
-        }
-        self
-    }
-
-    fn with_selection_changed(mut self) -> Self {
-        self.selection_changed = true;
-        self
-    }
-
-    /// Whether the requested operation committed a new session selection
-    /// before reporting a later cleanup/persistence error.
-    pub fn selection_changed(&self) -> bool {
-        self.selection_changed
-    }
-
-    fn with_rollback_if_unclassified(
-        mut self,
-        client_message_id: Option<crate::message::ClientMessageId>,
-        phase: &'static str,
-    ) -> Self {
-        if self.receipt.is_none()
-            && let Some(client_message_id) = client_message_id
-        {
-            self.receipt = Some(Box::new(crate::message::AdmissionReceipt::rolled_back(
-                client_message_id,
-                Vec::new(),
-                phase,
-            )));
-        }
-        self
-    }
-
-    /// Authoritative admission state for a client-keyed request, when the
-    /// error occurred inside message admission/run startup.
-    pub fn admission_receipt(&self) -> Option<&crate::message::AdmissionReceipt> {
-        self.receipt.as_deref()
-    }
-}
-
-impl fmt::Display for ApplicationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ApplicationError {}
+mod error;
+pub use error::ApplicationError;
+use error::session_error;
 
 /// 压缩进度事件负载。`Started` 表示压缩已启动；`Finished` 携带结果
 /// 说明与成功标志——成功 = 摘要事件族 + replace 已耐久落盘。失败、
@@ -459,13 +377,6 @@ fn broadcast_to(
 ) {
     if let Ok(mut subscribers) = subscribers.lock() {
         subscribers.retain(|sender| sender.send(event.clone()).is_ok());
-    }
-}
-
-fn session_error(error: crate::session::persistence::SessionError) -> ApplicationError {
-    match error.presentation() {
-        Some(message) => ApplicationError::presented(message),
-        None => ApplicationError::new(error.to_string()),
     }
 }
 

@@ -1200,11 +1200,21 @@ impl TrustedProjectApplication {
         max_messages: Option<usize>,
     ) -> Result<crate::application::HistoryWindow<SessionSnapshot>, ApplicationError> {
         self.reject_next_turn_session_switch()?;
-        if !self.sessions.has_log(&self.session_key(&id)) {
-            return Err(ApplicationError::new(format!(
-                "session {id} does not exist in this project"
-            )));
-        }
+        let staged = self
+            .sessions
+            .stage_resume(&self.session_key(&id))
+            .map_err(|error| {
+                if matches!(
+                    error,
+                    crate::session::persistence::SessionError::NotFound(_)
+                ) {
+                    ApplicationError::not_found(format!(
+                        "session {id} does not exist in this project"
+                    ))
+                } else {
+                    session_error(error)
+                }
+            })?;
         if self.sessions.active_id().as_ref() == Some(&id) {
             let (transcript, replay, replay_has_more, usage) = match max_messages {
                 Some(max_messages) => {
@@ -1241,12 +1251,6 @@ impl TrustedProjectApplication {
                 has_more: replay_has_more,
             });
         }
-        // Phase 1: full prepare. This replaces the old `has_log`-only
-        // precheck — existence proves nothing about resumability.
-        let staged = self
-            .sessions
-            .stage_resume(&self.session_key(&id))
-            .map_err(session_error)?;
         // Finish every fallible storage operation before committing the
         // workspace pointer. A lost CAS closes this empty, unpublished
         // writer and leaves the old active session untouched.

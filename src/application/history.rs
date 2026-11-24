@@ -41,9 +41,37 @@ impl crate::message::PendingMessage {
 /// Archive imports write to their own storage. Heavy queries run without the Application lock.
 #[derive(Clone)]
 pub struct HistoryReader(Option<Arc<crate::session_query::SessionQueryService>>);
+
+/// A preview can read only the share source admitted by the Application.
+pub struct SessionShareReader<'a> {
+    history: HistoryReader,
+    reference: &'a HistoryReference,
+}
+
+impl SessionShareReader<'_> {
+    pub fn preview(
+        &self,
+        recent_turns: Option<usize>,
+        cancel: &CancelToken,
+    ) -> Result<SessionShare, ApplicationError> {
+        self.history.share(self.reference, recent_turns, cancel)
+    }
+}
+
 impl TrustedProjectApplication {
     pub fn history_reader(&self) -> HistoryReader {
         HistoryReader(self.history.clone())
+    }
+
+    pub fn session_share_reader<'a>(
+        &self,
+        reference: &'a HistoryReference,
+    ) -> Result<SessionShareReader<'a>, ApplicationError> {
+        validate_share_source(reference, self.current_session_id().as_ref())?;
+        Ok(SessionShareReader {
+            history: self.history_reader(),
+            reference,
+        })
     }
 
     pub fn freeze_session_share_message(
@@ -83,15 +111,7 @@ impl TrustedProjectApplication {
         selections
             .iter()
             .map(|selection| {
-                if selection.reference.seq.is_some()
-                    || current
-                        .as_ref()
-                        .is_some_and(|id| id.as_str() == selection.reference.session)
-                {
-                    return Err(ApplicationError::presented(
-                        crate::i18n::UiMessage::new("history.scope_changed").arg("detail", ""),
-                    ));
-                }
+                validate_share_source(&selection.reference, current.as_ref())?;
                 reader.share_at_version(
                     &selection.reference,
                     selection.recent_turns,
@@ -102,6 +122,19 @@ impl TrustedProjectApplication {
             .collect()
     }
 }
+
+fn validate_share_source(
+    reference: &HistoryReference,
+    current: Option<&SessionId>,
+) -> Result<(), ApplicationError> {
+    if reference.seq.is_some() || current.is_some_and(|id| id.as_str() == reference.session) {
+        return Err(ApplicationError::presented(
+            crate::i18n::UiMessage::new("history.scope_changed").arg("detail", ""),
+        ));
+    }
+    Ok(())
+}
+
 impl HistoryReader {
     pub(crate) fn import_archive(
         &self,

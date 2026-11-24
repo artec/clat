@@ -15,7 +15,7 @@
 //! 迟到帧/断线不得污染新流，App 按代际过滤）；⑤ `ReconnectFailed`
 //! 独立应答（审计 P1-3：重连失败须可识别，UI 才能重新武装重试）。
 
-use crate::dsh::client::{DshClient, DshEra};
+use crate::dsh::client::{DshApiError, DshClient, DshEra};
 use crate::dsh::connect::{self, ConnectFailure, OwnedDshHost};
 use crate::dsh::files;
 use crate::dsh::frames::{DshFrame, parse_frame};
@@ -617,47 +617,19 @@ pub(crate) fn run_task(
             let Some(session) = session else {
                 return Some(TaskReply::Failed("no active session".to_owned()));
             };
-            // DV-9/S2：Typert 的 modelCatalog 是宿主级目录（无按会话
-            // 参数）；`session` 字段仅 Legacy 使用。
-            let (method, payload, fold) = if client.era == DshEra::Typert {
-                ("session/modelCatalog", json!({}), true)
-            } else {
-                ("session.models", json!({"sessionId": session}), false)
-            };
-            let value = match client.call(method, payload) {
-                Ok(value) => value,
-                Err(error) => return Some(TaskReply::Failed(error.to_string())),
-            };
-            let value = if fold {
-                fold_model_catalog(&value)
-            } else {
-                value
-            };
-            Some(TaskReply::Models(value))
+            Some(match request_model_catalog(client, session) {
+                Ok(value) => TaskReply::Models(value),
+                Err(error) => TaskReply::Failed(error.to_string()),
+            })
         }
         DshTask::ModelNames { session } => {
             // prime 形态：同一调用；失败降 Status（装饰性获取——名字
             // 缺席只是标签回落裸 id，不配触发 Failed 的 fail-soft/装载
             // 中止路径，也不打扰用户）。
-            let (method, payload, fold) = if client.era == DshEra::Typert {
-                ("session/modelCatalog", json!({}), true)
-            } else {
-                ("session.models", json!({"sessionId": session}), false)
-            };
-            let value = match client.call(method, payload) {
-                Ok(value) => value,
-                Err(error) => {
-                    return Some(TaskReply::Status(format!(
-                        "model names unavailable ({error})"
-                    )));
-                }
-            };
-            let value = if fold {
-                fold_model_catalog(&value)
-            } else {
-                value
-            };
-            Some(TaskReply::ModelNames(value))
+            Some(match request_model_catalog(client, session) {
+                Ok(value) => TaskReply::ModelNames(value),
+                Err(error) => TaskReply::Status(format!("model names unavailable ({error})")),
+            })
         }
         DshTask::Select {
             session,
@@ -734,6 +706,16 @@ pub(crate) fn run_task(
         }
         DshTask::AdoptMux { .. } => unreachable!("intercepted by the worker loop"),
         DshTask::Reconnect => unreachable!("handled above"),
+    }
+}
+
+fn request_model_catalog(client: &DshClient, session: &str) -> Result<Value, DshApiError> {
+    match client.era {
+        DshEra::Legacy => client.call("session.models", json!({"sessionId": session})),
+        // Typert's host-level catalog takes no session argument.
+        DshEra::Typert => client
+            .call("session/modelCatalog", json!({}))
+            .map(|catalog| fold_model_catalog(&catalog)),
     }
 }
 
@@ -872,11 +854,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_reconnected_delivery_drops_the_owned_host() {
-        use command_group::CommandGroup as _;
-
-        let child = std::process::Command::new("sleep")
-            .arg("60")
-            .group_spawn()
+        let child = OwnedDshHost::spawn(std::process::Command::new("sleep").arg("60"))
             .expect("sleeper spawns");
         let pid = child.id();
         let (events, receiver) = event_channel();
@@ -887,7 +865,7 @@ mod tests {
             json!({}),
             crate::dsh::client::DshEra::Legacy,
             None,
-            Some(OwnedDshHost::new(child)),
+            Some(child),
         ));
         assert!(
             !process_alive(pid),
@@ -900,7 +878,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn queued_reconnected_event_owns_and_cleans_the_whole_tree() {
-        use command_group::CommandGroup as _;
         use std::os::unix::fs::PermissionsExt as _;
 
         let stamp = std::time::SystemTime::now()
@@ -918,9 +895,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let child = std::process::Command::new(&script)
-            .group_spawn()
-            .expect("tree spawns");
+        let child =
+            OwnedDshHost::spawn(&mut std::process::Command::new(&script)).expect("tree spawns");
         let leader = child.id();
         let mut descendant = None;
         for _ in 0..100 {
@@ -941,7 +917,7 @@ mod tests {
             json!({}),
             crate::dsh::client::DshEra::Legacy,
             None,
-            Some(OwnedDshHost::new(child)),
+            Some(child),
         ));
         drop(receiver);
         assert!(!process_alive(leader), "queued owner cleans the leader");
@@ -1156,6 +1132,11 @@ mod tests {
                                 "groups": [{"id": "p", "name": "P", "models": [{"id": "m", "name": "M"}]}],
                                 "failures": []
                             }),
+                            "session.models" => json!({
+                                "current": {"provider": "p", "model": "legacy"},
+                                "groups": [],
+                                "failures": []
+                            }),
                             "session/create" => json!({"sessionId": "s-new"}),
                             "session/selectModel" => json!({"selected": {
                                 "provider": "p", "model": "m", "reasoningEffort": "max"
@@ -1201,6 +1182,56 @@ mod tests {
                 .find(|(seen, _)| seen == method)
                 .map(|(_, payload)| payload.clone())
                 .expect("method was called")
+        }
+    }
+
+    #[test]
+    fn model_picker_and_name_lookup_share_both_protocol_catalogs() {
+        let host = TypertHost::spawn();
+        let session = "fixture-session";
+        let mut port = host.port;
+        for (mut client, method, payload, model) in [
+            (
+                DshClient::new(port),
+                "session.models",
+                json!({"sessionId": session}),
+                "legacy",
+            ),
+            (
+                host.client(),
+                "session/modelCatalog",
+                json!({"args": {}}),
+                "m",
+            ),
+        ] {
+            let models = run_task(
+                &DshTask::Models {
+                    session: Some(session.into()),
+                },
+                &mut client,
+                &mut port,
+                None,
+            );
+            let names = run_task(
+                &DshTask::ModelNames {
+                    session: session.into(),
+                },
+                &mut client,
+                &mut port,
+                None,
+            );
+            let (Some(TaskReply::Models(models)), Some(TaskReply::ModelNames(names))) =
+                (models, names)
+            else {
+                panic!("both callers must receive the catalog");
+            };
+            assert_eq!(names, models);
+            assert_eq!(names["current"]["model"], model);
+            assert_eq!(host.payload_of(method), payload);
+            assert_eq!(
+                host.methods().iter().filter(|seen| *seen == method).count(),
+                2
+            );
         }
     }
 

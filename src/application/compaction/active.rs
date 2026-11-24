@@ -13,6 +13,7 @@ pub(in crate::application) struct ActiveContext {
     pub(in crate::application) image_offload: Option<Arc<crate::plugins::ImageOffloadPolicy>>,
     pub(in crate::application) protected_floor: u64,
     pub(in crate::application) sessions: Arc<SessionService>,
+    pub(in crate::application) session_id: crate::SessionId,
     pub(in crate::application) journal: Arc<dyn RunJournal>,
     pub(in crate::application) recorder: Arc<Mutex<SessionRecorder>>,
     pub(in crate::application) config: ModelConfig,
@@ -61,8 +62,19 @@ impl RequestContextManager for ActiveContext {
     ) {
         let estimated_input = crate::model::estimate_request_tokens(instructions, items, tools)
             .saturating_add(tail_tokens);
-        self.sessions
-            .observe_request(&self.config, instructions, tools, usage, estimated_input);
+        if let Some(calibration) = crate::model::RequestCalibration::observe(
+            self.session_id.as_str(),
+            &self.config,
+            instructions,
+            tools,
+            usage,
+            estimated_input,
+        ) {
+            self.recorder
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stage_request_calibration(calibration);
+        }
     }
 
     fn failed_capacity_attempt(

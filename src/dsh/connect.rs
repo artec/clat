@@ -3,11 +3,12 @@
 //! `--port 0` + 解析 stdout 就绪行）；无 dsh 且无 `~/.dsh` → 「dsh
 //! 未安装」。掉线由前端横幅 + `/reconnect` 手动重试（INV-D2/D4）。
 
+use crate::client_ports::local_process::SupervisedChild;
 use crate::dsh::client::{DshClient, DshEra, exchange_token, looks_like_dsh, probe_typert};
 use crate::dsh::credentials;
-use command_group::{CommandGroup as _, GroupChild};
 use serde_json::Value;
 use std::path::Path;
+use std::process::{ChildStdout, Command, ExitStatus};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -20,36 +21,44 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// Drop 时仍会执行同一套有界树级清理。
 #[derive(Debug)]
 pub(crate) struct OwnedDshHost {
-    child: Option<GroupChild>,
+    child: SupervisedChild,
 }
 
 impl OwnedDshHost {
-    pub(crate) fn new(child: GroupChild) -> Self {
-        Self { child: Some(child) }
+    const TERM_GRACE: Duration = Duration::from_secs(2);
+    const REAP_LIMIT: Duration = Duration::from_secs(5);
+
+    pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        SupervisedChild::spawn(command, Self::TERM_GRACE, Self::REAP_LIMIT)
+            .map(|child| Self { child })
     }
 
-    #[cfg(all(test, unix, feature = "runtime-tests"))]
+    pub(crate) fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.take_stdout()
+    }
+
+    #[cfg(all(test, unix))]
     pub(crate) fn id(&self) -> u32 {
-        self.child
-            .as_ref()
-            .expect("owned DSH host has not been terminated")
-            .id()
+        self.child.id().expect("owned DSH host is still active")
     }
 
     pub(crate) fn terminate(mut self) -> Result<(), String> {
-        let mut child = self
-            .child
-            .take()
-            .expect("owned DSH host has not been terminated");
-        terminate_dsh_host(&mut child)
+        self.shutdown().map(|_| ())
+    }
+
+    fn shutdown(&mut self) -> Result<Option<ExitStatus>, String> {
+        self.child.shutdown().map_err(|_| {
+            format!(
+                "dsh host cleanup incomplete: the process tree did not fully exit within {}s",
+                Self::REAP_LIMIT.as_secs()
+            )
+        })
     }
 }
 
 impl Drop for OwnedDshHost {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take()
-            && let Err(warning) = terminate_dsh_host(&mut child)
-        {
+        if let Err(warning) = self.shutdown() {
             eprintln!("clat: dsh: {warning}");
         }
     }
@@ -166,7 +175,7 @@ pub(crate) fn ensure_online(
                         describe,
                         era: DshEra::Legacy,
                         cookie: None,
-                        child: Some(OwnedDshHost::new(child)),
+                        child: Some(child),
                     });
                 }
                 if let Some(token) = &token
@@ -180,7 +189,7 @@ pub(crate) fn ensure_online(
                         describe,
                         era: DshEra::Typert,
                         cookie,
-                        child: Some(OwnedDshHost::new(child)),
+                        child: Some(child),
                     });
                 }
                 std::thread::sleep(PROBE_INTERVAL);
@@ -218,7 +227,7 @@ pub(crate) fn ensure_online(
 fn spawn_web(
     dsh_binary: &str,
     preferred_port: u16,
-) -> Result<(u16, Option<String>, GroupChild), String> {
+) -> Result<(u16, Option<String>, OwnedDshHost), String> {
     let mut last_error = String::new();
     for attempt in [Some(preferred_port), Some(0)] {
         let mut command = std::process::Command::new(dsh_binary);
@@ -231,13 +240,13 @@ fn spawn_web(
         if let Some(port) = attempt {
             command.arg("--port").arg(port.to_string());
         }
-        let mut child = match command.group_spawn() {
+        let mut child = match OwnedDshHost::spawn(&mut command) {
             Ok(child) => child,
             Err(error) => {
                 return Err(format!("cannot start `{dsh_binary} web`: {error}"));
             }
         };
-        let stdout = child.inner().stdout.take();
+        let stdout = child.take_stdout();
         let (line_tx, line_rx) = mpsc::sync_channel::<ReadyLine>(128);
         if let Some(stdout) = stdout {
             std::thread::spawn(move || pump_ready_lines(stdout, line_tx));
@@ -261,14 +270,15 @@ fn spawn_web(
                     }
                 }
             }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    // GroupChild::try_wait 等整组：Some = 全组已退场，
-                    // 无需清理，直接试下一档（--port 0）。
+            match child.child.observed_exit() {
+                Ok(true) => {
+                    // An exited leader may still own live descendants. Retire the
+                    // group before trying the next port and preserve its exit status.
+                    let status = child.shutdown()?.expect("owned child was not yet retired");
                     last_error = format!("`{dsh_binary} web` exited early: {status}");
                     break;
                 }
-                Ok(None) => {}
+                Ok(false) => {}
                 Err(error) => {
                     let base = format!("cannot watch `{dsh_binary} web`: {error}");
                     return Err(cleanup_spawn_failure(&mut child, base));
@@ -299,64 +309,14 @@ fn spawn_web(
 
 /// 启动后失败的唯一出口：先带走树，再把清理不完整作为原始失败的附加
 /// 事实返回。调用方不能再用 `let _ = terminate...` 吞掉所有权事故。
-fn cleanup_spawn_failure(child: &mut GroupChild, base: String) -> String {
-    append_cleanup_outcome(base, terminate_dsh_host(child))
+fn cleanup_spawn_failure(child: &mut OwnedDshHost, base: String) -> String {
+    append_cleanup_outcome(base, child.shutdown().map(|_| ()))
 }
 
 fn append_cleanup_outcome(base: String, cleanup: Result<(), String>) -> String {
     match cleanup {
         Ok(()) => base,
         Err(warning) => format!("{base} ({warning})"),
-    }
-}
-
-/// FIX-3/CA-03：**单点**树级终止（启动失败 / 就绪超限 / 就绪输出超限 /
-/// 重连替换 / 退出含 panic unwind 全部经此）。Unix：组 TERM 礼貌窗口
-/// → 无条件组 KILL → 有界收割；Windows：kill 即 Job Object 终止
-///（整树）。收割超限 → Err("cleanup incomplete")——如实上报，不无限
-/// 阻塞，不无条件承诺后代必然消失。
-pub(crate) fn terminate_dsh_host(child: &mut GroupChild) -> Result<(), String> {
-    #[cfg(unix)]
-    const TERM_GRACE: Duration = Duration::from_secs(2);
-    const REAP_LIMIT: Duration = Duration::from_secs(5);
-    #[cfg(unix)]
-    {
-        use command_group::{Signal, UnixChildExt};
-        // 礼貌窗口：良性行主组 TERM 后自行退场则提前返回。leader 先退
-        // 不代表整组已清（忽视 TERM 的后代仍在）——下面的组 KILL 无条件
-        // 兜底（native_tools 同款注释与语义）。
-        let _ = child.signal(Signal::SIGTERM);
-        let _ = wait_bounded(TERM_GRACE, || child.try_wait());
-    }
-    let _ = child.kill();
-    // GroupChild::try_wait 等整组并收割僵尸：有界轮询内完成 → Ok。
-    if wait_bounded(REAP_LIMIT, || child.try_wait()) {
-        Ok(())
-    } else {
-        Err(format!(
-            "dsh host cleanup incomplete: the process tree did not fully exit within {}s",
-            REAP_LIMIT.as_secs()
-        ))
-    }
-}
-
-/// 有界收割轮询：deadline 内反复 `try_wait`；`Ok(Some)` = 已收割，
-/// `Err` = 观察失败（按未收割上报）。
-fn wait_bounded(
-    limit: Duration,
-    mut try_wait: impl FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
-) -> bool {
-    let deadline = Instant::now() + limit;
-    loop {
-        match try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) => {}
-            Err(_) => return false,
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -618,42 +578,6 @@ mod tests {
         assert!(rx.recv().is_err(), "EOF ends the pump");
     }
 
-    /// R3-2 判别腿：有界收割不无限阻塞——恒不收割在时限内返回 false；
-    /// 已收割/观察失败立即返回。
-    #[test]
-    fn bounded_reaping_is_bounded_and_prompt() {
-        let never = || Ok::<_, std::io::Error>(None::<std::process::ExitStatus>);
-        let started = Instant::now();
-        assert!(
-            !wait_bounded(Duration::from_millis(120), never),
-            "a never-reaped tree must give up at the deadline"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "the poll loop must not block past the deadline"
-        );
-
-        // Windows 上 "true" 解析到 Git Bash 的 true.exe——新 runner 冷启动
-        // 加 Defender 首扫可能超预算(2026-11-10 CI 首跑红、重跑绿的签名)。
-        // 改用平台原生瞬时进程,预算放到 5s:"prompt" 语义是轮询在退出后
-        // 一个 50ms 粒度内收割,不是绝对时长。
-        let mut command = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" });
-        if cfg!(windows) {
-            command.args(["/C", "exit", "0"]);
-        }
-        let mut child = command.spawn().unwrap();
-        assert!(
-            wait_bounded(Duration::from_secs(5), || child.try_wait()),
-            "an exiting process is reaped promptly"
-        );
-
-        let failing = || Err::<_, std::io::Error>(std::io::Error::other("watch broken"));
-        assert!(
-            !wait_bounded(Duration::from_secs(2), failing),
-            "a broken watch reports not-reaped immediately"
-        );
-    }
-
     /// FIX-3/CA-03 判别腿：terminate 对真进程树完成「TERM 宽限 → 组
     /// KILL → 收割」且返回 Ok；删组 KILL（只 leader kill）时忽视 TERM
     /// 的后代存活——由 spawned_host_cleanup_takes_the_whole_tree 在
@@ -679,9 +603,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let mut child = std::process::Command::new(&script)
-            .group_spawn()
-            .expect("script spawns");
+        let child = OwnedDshHost::spawn(&mut Command::new(&script)).expect("script spawns");
         let mut descendant = None;
         for _ in 0..100 {
             if let Ok(text) = std::fs::read_to_string(&pidfile)
@@ -693,7 +615,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         let descendant = descendant.expect("descendant pid recorded");
-        terminate_dsh_host(&mut child).expect("bounded tree cleanup");
+        child.terminate().expect("bounded tree cleanup");
         let alive = |pid: u32| {
             std::process::Command::new("ps")
                 .arg("-p")

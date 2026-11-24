@@ -114,6 +114,8 @@ pub(crate) enum SessionError {
     },
     /// Stored content failed validation after a successful read.
     Corruption(String),
+    /// A durable append could not be confirmed or proven rolled back.
+    CommitOutcomeUnknown(String),
     NotFound(String),
     /// Same id already materialized here (never overwrite).
     Conflict(String),
@@ -147,7 +149,9 @@ impl std::fmt::Display for SessionError {
                     .english(),
             ),
             Self::UnsupportedFormat(message) => write!(f, "format unsupported: {message}"),
-            Self::Corruption(message) => write!(f, "corrupt session log: {message}"),
+            Self::Corruption(message) | Self::CommitOutcomeUnknown(message) => {
+                write!(f, "corrupt session log: {message}")
+            }
             Self::NotFound(id) => write!(f, "session \"{id}\" not found"),
             Self::Conflict(message) => write!(f, "conflict: {message}"),
             Self::EncodingMismatch(message) => write!(f, "encoding mismatch: {message}"),
@@ -1044,7 +1048,13 @@ impl JsonlBackend {
     /// Bounded read-only identity admission used by resume staging.
     pub(crate) fn header_snapshot(&self, key: &SessionKey) -> Result<SessionHeader, SessionError> {
         validate_key_witness(key)?;
-        let dir = self.root_dir.open_session(key).map_err(io)?;
+        let dir = self.root_dir.open_session(key).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                SessionError::NotFound(key.id.to_string())
+            } else {
+                io(error)
+            }
+        })?;
         let resolved = self
             .resolve_log_in_dir(key, &dir)?
             .ok_or_else(|| SessionError::NotFound(key.id.to_string()))?;

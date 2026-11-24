@@ -31,7 +31,6 @@ impl SessionService {
             .and_then(|staged| self.arm_session_windowed(staged))
             .map(|armed| self.install_armed_with_seed(armed, false));
         replacement?;
-        *self.meter.lock().expect("request meter") = crate::model::RequestMeter::default();
         view
     }
 }

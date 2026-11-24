@@ -1,65 +1,77 @@
-//! Ephemeral provider anchor, scoped to one session, route and exact effective request prefix.
+//! Provider calibration scoped to one session, route and effective request prefix.
 use super::*;
 use sha2::{Digest, Sha256};
-#[derive(Default)]
-pub(crate) struct RequestMeter {
-    anchor: Option<Anchor>,
-}
-struct Anchor {
-    key: Vec<u8>,
-    items: u64,
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RequestCalibration {
+    key: String,
+    estimate: u64,
     actual: u64,
 }
-impl RequestMeter {
-    pub(crate) fn measure(
-        &self,
-        session: &str,
-        config: &ModelConfig,
-        instructions: Option<&str>,
-        items: &[ModelItem],
-        tools: &[ToolDefinition],
-        tail_tokens: u64,
-    ) -> RequestMeasurement {
-        let mut measured = RequestMeasurement::new(config, instructions, items, tools);
-        measured.input = measured.input.saturating_add(tail_tokens);
-        if let Some(anchor) = &self.anchor
-            && anchor.key == key(session, config, instructions, tools)
-        {
-            let input = if measured.input >= anchor.items {
-                anchor.actual.saturating_add(measured.input - anchor.items)
-            } else {
-                anchor.actual.saturating_sub(anchor.items - measured.input)
-            };
-            measured.input = measured.input.max(input);
-        }
-        measured
-    }
+
+impl RequestCalibration {
+    pub(crate) const FIELD: &str = "clatRequestCalibration";
+
     pub(crate) fn observe(
-        &mut self,
         session: &str,
         config: &ModelConfig,
         instructions: Option<&str>,
         tools: &[ToolDefinition],
         usage: &Usage,
         estimated_input: u64,
-    ) {
-        if usage.input_tokens == 0 {
-            return;
-        }
-        self.anchor = Some(Anchor {
+    ) -> Option<Self> {
+        (usage.input_tokens > 0).then(|| Self {
             key: key(session, config, instructions, tools),
-            items: estimated_input,
+            estimate: estimated_input,
             actual: usage.input_tokens,
-        });
+        })
+    }
+
+    pub(crate) fn from_payload(payload: &Value) -> Option<Self> {
+        let value = payload.get(Self::FIELD)?;
+        let calibration = Self::deserialize(value).ok()?;
+        (calibration.actual > 0).then_some(calibration)
     }
 }
+
+pub(crate) fn measure_request(
+    calibration: Option<&RequestCalibration>,
+    session: &str,
+    config: &ModelConfig,
+    instructions: Option<&str>,
+    items: &[ModelItem],
+    tools: &[ToolDefinition],
+    tail_tokens: u64,
+) -> RequestMeasurement {
+    let mut measured = RequestMeasurement::new(config, instructions, items, tools);
+    measured.input = measured.input.saturating_add(tail_tokens);
+    if let Some(anchor) = calibration
+        && anchor.key == key(session, config, instructions, tools)
+    {
+        let input = if measured.input >= anchor.estimate {
+            anchor
+                .actual
+                .saturating_add(measured.input - anchor.estimate)
+        } else {
+            anchor
+                .actual
+                .saturating_sub(anchor.estimate - measured.input)
+        };
+        measured.input = measured.input.max(input);
+        measured.calibrated = true;
+    }
+    measured
+}
+
 fn key(
     session: &str,
     config: &ModelConfig,
     instructions: Option<&str>,
     tools: &[ToolDefinition],
-) -> Vec<u8> {
+) -> String {
     let mut digest = Sha256::new();
+    // Bump the domain when the estimator or request identity changes incompatibly.
+    digest.update(b"clat-request-calibration-v1");
     for value in [
         session,
         &config.protocol.to_string(),
@@ -71,20 +83,25 @@ fn key(
         digest.update((value.len() as u64).to_le_bytes());
         digest.update(value.as_bytes());
     }
-    digest.update(serde_json::to_vec(&serde_json::json!({"tools":tools.iter().map(|tool|serde_json::json!({"name":tool.name,"description":tool.description,"schema":tool.input_schema})).collect::<Vec<_>>(),"output":config.output_limit,"body":config.extra_body,"headers":config.extra_headers})).expect("plain request prefix"));
-    digest.finalize().to_vec()
+    let tools: Vec<_> = tools.iter().map(|tool| serde_json::json!({
+        "name": tool.name, "description": tool.description, "schema": tool.input_schema, "strict": tool.strict,
+    })).collect();
+    digest.update(serde_json::to_vec(&serde_json::json!({
+        "tools": tools, "output": config.output_limit, "body": config.extra_body, "headers": config.extra_headers,
+        "parallel_tool_calls": config.parallel_tool_calls,
+    })).expect("plain request prefix"));
+    format!("{:x}", digest.finalize())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn phase8_anchor_never_crosses_session_route_or_effective_header() {
-        let mut meter = RequestMeter::default();
         let mut config = ModelConfig::default();
         let items = [ModelItem::user_text("hello")];
         let baseline = RequestMeasurement::new(&config, Some("current"), &items, &[]).input;
         let estimated_tail = 120;
-        meter.observe(
+        let anchor = RequestCalibration::observe(
             "a",
             &config,
             Some("current"),
@@ -95,39 +112,57 @@ mod tests {
             },
             baseline + estimated_tail,
         );
-        assert_eq!(
-            meter
-                .measure("a", &config, Some("current"), &items, &[], 0)
-                .input,
-            baseline + 1000
+        let measured = measure_request(
+            anchor.as_ref(),
+            "a",
+            &config,
+            Some("current"),
+            &items,
+            &[],
+            0,
         );
+        assert_eq!(measured.input, baseline + 1000);
+        assert!(measured.calibrated);
         assert_eq!(
-            meter
-                .measure(
-                    "a",
-                    &config,
-                    Some("current"),
-                    &items,
-                    &[],
-                    estimated_tail + 10
-                )
-                .input,
+            measure_request(
+                anchor.as_ref(),
+                "a",
+                &config,
+                Some("current"),
+                &items,
+                &[],
+                estimated_tail + 10
+            )
+            .input,
             baseline + estimated_tail + 1010
         );
         for (session, header) in [("b", "current"), ("a", "changed")] {
+            let measured = measure_request(
+                anchor.as_ref(),
+                session,
+                &config,
+                Some(header),
+                &items,
+                &[],
+                0,
+            );
             assert_eq!(
-                meter
-                    .measure(session, &config, Some(header), &items, &[], 0)
-                    .input,
+                measured.input,
                 RequestMeasurement::new(&config, Some(header), &items, &[]).input
             );
+            assert!(!measured.calibrated);
         }
         config.endpoint = "https://different.invalid".into();
-        assert_eq!(
-            meter
-                .measure("a", &config, Some("current"), &items, &[], 0)
-                .input,
-            baseline
+        let measured = measure_request(
+            anchor.as_ref(),
+            "a",
+            &config,
+            Some("current"),
+            &items,
+            &[],
+            0,
         );
+        assert_eq!(measured.input, baseline);
+        assert!(!measured.calibrated);
     }
 }

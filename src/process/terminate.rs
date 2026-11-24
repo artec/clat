@@ -26,7 +26,7 @@ pub(super) enum GroupSignal {
 /// One process-group leader together with the group it owns.
 pub(super) trait GroupLeader {
     /// Sends `signal` to the whole process group (leader and descendants).
-    fn signal_group(&mut self, signal: GroupSignal);
+    fn signal_group(&mut self, signal: GroupSignal) -> io::Result<()>;
     /// Whether the leader has exited, observed without reaping it.
     fn leader_exited(&mut self) -> io::Result<bool>;
     /// Reaps the leader. Valid only after the final group signal.
@@ -45,12 +45,22 @@ pub(super) fn terminate(
     grace: GracePeriod,
     fallback: impl FnOnce() -> TerminalStatus,
 ) -> TerminalStatus {
-    leader.signal_group(GroupSignal::Terminate);
+    let _ = signal_termination(leader, grace, KILL_GRACE);
+    leader.reap().unwrap_or_else(|_| fallback())
+}
+
+/// Issue the final group signal before giving the caller permission to reap.
+pub(super) fn signal_termination(
+    leader: &mut dyn GroupLeader,
+    grace: GracePeriod,
+    duration: Duration,
+) -> io::Result<()> {
+    let _ = leader.signal_group(GroupSignal::Terminate);
     match grace {
         // A terminal job can still be shutting down after its shell has exited.
-        GracePeriod::Full => std::thread::sleep(KILL_GRACE),
+        GracePeriod::Full => std::thread::sleep(duration),
         GracePeriod::UntilLeaderExit => {
-            let deadline = Instant::now() + KILL_GRACE;
+            let deadline = Instant::now() + duration;
             while Instant::now() < deadline && matches!(leader.leader_exited(), Ok(false)) {
                 std::thread::sleep(POLL);
             }
@@ -59,13 +69,12 @@ pub(super) fn terminate(
     // Leader exit does not prove the process group is empty: TERM-ignoring
     // descendants may still be running. The leader is still unreaped here, so
     // the group id still names this group.
-    leader.signal_group(GroupSignal::Kill);
-    leader.reap().unwrap_or_else(|_| fallback())
+    leader.signal_group(GroupSignal::Kill)
 }
 
 /// Whether our child `pid` has exited. `WNOWAIT` leaves it a zombie, so its
 /// pid — and, for a group leader, its process-group id — stays reserved.
-pub(super) fn exited_without_reaping(pid: libc::pid_t) -> io::Result<bool> {
+pub(crate) fn exited_without_reaping(pid: libc::pid_t) -> io::Result<bool> {
     // `WNOHANG` keeps the question non-blocking, but the call then succeeds
     // whether or not a child was reported, and POSIX only promises `si_pid`
     // to be 0 for "nothing to report". The `siginfo_t` layout differs per
@@ -109,12 +118,12 @@ fn written(info: &libc::siginfo_t) -> bool {
 pub(super) struct GroupCommand<'a>(pub &'a mut command_group::GroupChild);
 
 impl GroupLeader for GroupCommand<'_> {
-    fn signal_group(&mut self, signal: GroupSignal) {
+    fn signal_group(&mut self, signal: GroupSignal) -> io::Result<()> {
         use command_group::UnixChildExt as _;
-        let _ = self.0.signal(match signal {
+        self.0.signal(match signal {
             GroupSignal::Terminate => command_group::Signal::SIGTERM,
             GroupSignal::Kill => command_group::Signal::SIGKILL,
-        });
+        })
     }
 
     fn leader_exited(&mut self) -> io::Result<bool> {
@@ -133,16 +142,21 @@ pub(super) struct PtySession<'a> {
 }
 
 impl GroupLeader for PtySession<'_> {
-    fn signal_group(&mut self, signal: GroupSignal) {
+    fn signal_group(&mut self, signal: GroupSignal) -> io::Result<()> {
         // SAFETY: `kill` only queues a signal for the process group.
-        unsafe {
+        let result = unsafe {
             libc::kill(
                 -self.group,
                 match signal {
                     GroupSignal::Terminate => libc::SIGTERM,
                     GroupSignal::Kill => libc::SIGKILL,
                 },
-            );
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
         }
     }
 

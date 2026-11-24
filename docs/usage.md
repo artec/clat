@@ -3556,7 +3556,11 @@ focus in place; keyboard opening guides focus to the selected model after loadin
 without stealing focus from a control the user has already entered.
 It shows the estimated next-request input versus **the currently configured
 model context window**, excluding unsent drafts, plus the session's last request
-and the current model route's cumulative input/output/cache usage. Model switches,
+and the current model route's cumulative input/output/cache usage. Reopening a
+session reuses the last recorded provider calibration when the model route,
+request prefix, and model-visible history still support it. When calibration is
+unavailable, the popover and workbench `/context` label the input as a local
+estimate. The recent request remains visible separately as provider usage. Model switches,
 manual window changes, and Kimi Plus/Pro selection refresh this capacity from the
 Host; neither this popover nor the TUI status line infers a tier from provider
 errors. The TUI status line also shows configured windows for custom vendors and

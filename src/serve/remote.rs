@@ -299,7 +299,7 @@ impl RemoteApprover {
                 PermissionDecision::Allow
             }
             Err(error) => {
-                let key = if error.to_string().contains("outcome unknown") {
+                let key = if error.commit_outcome_unknown() {
                     "remote.always_uncertain"
                 } else {
                     "remote.always_failed"

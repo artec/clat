@@ -110,23 +110,14 @@ struct SharePreviewRequest {
 fn share_preview(shared: &Arc<ServeShared>, value: Value) -> Result<Value, RpcError> {
     let request: SharePreviewRequest = decode(value)?;
     let reader = with_app(shared, |app| {
-        if request.expected_selection_generation != shared.selection_generation()
-            || app
-                .current_session_id()
-                .as_ref()
-                .is_some_and(|id| id.as_str() == request.reference.session)
-            || request.reference.seq.is_some()
-        {
+        if request.expected_selection_generation != shared.selection_generation() {
             return Err(share_scope_changed());
         }
-        Ok(app.history_reader())
+        app.session_share_reader(&request.reference)
+            .map_err(|_| share_scope_changed())
     })?;
     let share = reader
-        .share(
-            &request.reference,
-            request.recent_turns,
-            &crate::CancelToken::new(),
-        )
+        .preview(request.recent_turns, &crate::CancelToken::new())
         .map_err(app_error)?;
     if request.expected_selection_generation != shared.selection_generation() {
         return Err(share_scope_changed());

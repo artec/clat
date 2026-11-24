@@ -281,7 +281,6 @@ fn committed_admission_from_projections(
 }
 
 pub(crate) struct SessionService {
-    meter: Mutex<crate::model::RequestMeter>,
     background_lane: Arc<Mutex<()>>,
     writers: Arc<Mutex<std::collections::HashMap<SessionKey, std::sync::Weak<ActiveSession>>>>,
     backend: Arc<JsonlBackend>,
@@ -308,7 +307,6 @@ impl SessionService {
             SessionError::Io(format!("cannot open capability-held session root: {error}"))
         })?;
         Ok(Self {
-            meter: Mutex::new(crate::model::RequestMeter::default()),
             background_lane: Arc::new(Mutex::new(())),
             writers: Arc::new(Mutex::new(std::collections::HashMap::new())),
             backend: Arc::new(JsonlBackend::with_root(
@@ -674,9 +672,15 @@ impl SessionService {
         );
         // The shared session journal (same instance as every producer).
         let journal = active.shared_journal(&self.backend)?;
+        use crate::session::run_journal::DurableAppendError;
         journal
-            .append_atomic_durable(&[event])
-            .map_err(SessionError::Corruption)?;
+            .append_atomic_with_outcome(&[event])
+            .map_err(|error| match error {
+                DurableAppendError::Failed(message) => SessionError::Corruption(message),
+                DurableAppendError::OutcomeUnknown(message) => {
+                    SessionError::CommitOutcomeUnknown(message)
+                }
+            })?;
         #[cfg(test)]
         let checkpoint = if self
             .fail_next_permission_checkpoint

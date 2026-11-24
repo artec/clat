@@ -51,6 +51,70 @@ fn run_request_with_attachments(
     receiver.recv().expect("run result")
 }
 
+struct LargeMeasuredInput;
+
+impl TestModelScript for LargeMeasuredInput {
+    fn stream(
+        &self,
+        _: crate::ModelRequest<'_>,
+        events: &mut dyn crate::model::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        let mut response = crate::test_support::response("done", crate::FinishReason::Completed);
+        let usage = crate::Usage {
+            input_tokens: 680_765,
+            output_tokens: 3,
+            ..Default::default()
+        };
+        events.emit(crate::ModelEvent::Usage(usage.clone()));
+        response.usage = Some(usage);
+        Ok(response)
+    }
+}
+
+#[test]
+fn context_calibration_survives_reopening_the_same_session() {
+    let (storage, root) = roots("context-calibration-reopen");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = Project::new(&root);
+    let mut app = mount(
+        &project,
+        &storage,
+        TestBehavior::Scripted(Arc::new(LargeMeasuredInput)),
+    );
+    crate::test_support::configure_test_model_with_budget(&app, 1_000_000);
+    app.edit_utility_settings(crate::application::UtilitySettingsEdit {
+        naming_enabled: false,
+        summary_enabled: Some(false),
+        suggestions_enabled: false,
+        automatic_followups: false,
+        profile: None,
+    })
+    .unwrap();
+    run_request(&mut app, "Keep the same history across a Host restart.").unwrap();
+    let live = app.context_snapshot().unwrap();
+    assert!(live.input_estimate >= 680_000, "{live:?}");
+    assert!(live.input_calibrated);
+    let session = app.current_session_id().unwrap();
+    app.close().unwrap();
+
+    let app = crate::test_support::reopen_after_close(|| {
+        mount_result(&project, &storage, TestBehavior::Panic)
+    });
+    assert_eq!(app.current_session_id(), Some(session));
+    let restored = app.context_snapshot().unwrap();
+    assert_eq!(restored.input_estimate, live.input_estimate);
+    assert!(restored.input_calibrated);
+
+    let (mut config, credentials) = app.model_state().unwrap();
+    config.endpoint = "https://other-context-calibration-route.invalid".into();
+    app.save_model_state(&config, &credentials).unwrap();
+    let stats = app.conversation_stats().unwrap();
+    assert_eq!(stats["context"]["calibrated"], false);
+    assert_eq!(stats["last_request"]["input_tokens"], 680_765);
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
 #[test]
 fn context_reports_normalized_image_count_bytes_tokens_and_survives_cold_replay() {
     let (storage_root, project_root) = roots("context-images");

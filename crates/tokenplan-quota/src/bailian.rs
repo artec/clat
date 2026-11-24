@@ -41,7 +41,6 @@ const CALLBACK_REQUEST_BUDGET: Duration = Duration::from_secs(5);
 /// Accept polling and the longest blocking read. Both bound how soon a
 /// cancellation is noticed, whether the wait looks idle or is mid-request.
 const CALLBACK_POLL: Duration = Duration::from_millis(50);
-const CALLBACK_TIMEOUT: &str = "console login timed out: no credentials received";
 
 /// The callback payload the console-login page delivers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -135,7 +134,7 @@ impl ConsoleCallbackWait {
             }
             let remaining = expires.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(QuotaError::Transport(CALLBACK_TIMEOUT.into()));
+                return Err(QuotaError::CallbackExpired);
             }
             let accepted = match self.listener.accept() {
                 Ok((stream, _)) => Some(stream),
@@ -523,7 +522,7 @@ mod tests {
         let port = wait.port;
         let worker = std::thread::spawn(move || {
             let result = wait.wait(Duration::from_millis(300));
-            assert!(result.is_err(), "no callback should arrive");
+            assert!(matches!(result, Err(QuotaError::CallbackExpired)));
         });
         let mut preflight = TcpStream::connect(("127.0.0.1", port)).unwrap();
         preflight

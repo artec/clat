@@ -82,7 +82,8 @@ function renderContextUsageReport(content, snapshot) {
   const technical = el('details', 'context-usage-technical');
   technical.append(el('summary', '', () => CLATI18n.msg('view.technical')),
     el('pre', '', () => contextTechnicalLines(snapshot).join('\n')));
-  content.append(el('p', 'context-usage-hint', () => CLATI18n.msg('experience.estimate')),
+  const hint = snapshot.input_calibrated === false ? 'experience.estimate_uncalibrated' : 'experience.estimate';
+  content.append(el('p', 'context-usage-hint', () => CLATI18n.msg(hint)),
     contextMetricList(report.totals, 'context-usage-totals', report.unit), groups, technical);
 }
 

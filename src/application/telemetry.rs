@@ -49,7 +49,8 @@ impl TrustedProjectApplication {
         Ok(serde_json::json!({
             "compaction_recommended":recommended,
             "context":estimate.map(|value|serde_json::json!({"used":value.input_estimate,
-                "capacity":config.max_context_tokens,"output_reserve":value.output_reserve_estimate,"estimated":true})),
+                "capacity":config.max_context_tokens,"output_reserve":value.output_reserve_estimate,
+                "estimated":true,"calibrated":value.input_calibrated})),
             "last_request":snapshot.last_request_usage.as_ref().map(crate::wire::usage_to_json),
             "route":snapshot.route_usage.as_ref().map(crate::wire::usage_to_json),
             "allowance":super::console_quota::console_provider(&config.endpoint)

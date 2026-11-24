@@ -8,6 +8,7 @@
 //!（settings-file/src/index.ts:25 实证 DSH_HOME 覆盖语义）。
 
 use crate::dsh::client::{DshClient, exchange_token, probe_typert};
+use crate::dsh::connect::OwnedDshHost;
 use crate::dsh::mux;
 use serde_json::json;
 use std::io::Read as _;
@@ -45,22 +46,22 @@ fn live_typert_host_round_trip() {
     drop(scratch);
 
     // 起宿主（进程组，Drop 树级清理）。
-    use command_group::CommandGroup as _;
-    let mut child = std::process::Command::new("bunx")
-        .env("DSH_HOME", &home)
-        .args([PINNED_DSH_PACKAGE, "web", "--no-open"])
-        .arg("--port")
-        .arg(port.to_string())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .group_spawn()
-        .expect("spawn the live dsh web host");
+    let mut child = OwnedDshHost::spawn(
+        std::process::Command::new("bunx")
+            .env("DSH_HOME", &home)
+            .args([PINNED_DSH_PACKAGE, "web", "--no-open"])
+            .arg("--port")
+            .arg(port.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null()),
+    )
+    .expect("spawn the live dsh web host");
     // 就绪行：`dsh web: http://127.0.0.1:P/?token=T`（research §2：
     // launch token 只打印一次）。stdout 句柄先取走，守卫后建（借用
     // 分离）。
-    let mut stdout = child.inner().stdout.take().expect("piped stdout");
-    let _guard = DropGuard(&mut child, &home);
+    let mut stdout = child.take_stdout().expect("piped stdout");
+    let _guard = DropGuard(Some(child), &home);
     let mut line = String::new();
     let token = {
         let deadline = Instant::now() + READY_TIMEOUT;
@@ -309,21 +310,21 @@ fn live_minted_cookie_connects_to_a_real_host() {
 
     // 起宿主（读同一 DSH_HOME）；就绪即弃 token——本腿只允许走铸
     // cookie 通路。
-    use command_group::CommandGroup as _;
     let scratch = std::net::TcpListener::bind("127.0.0.1:0").expect("scratch port");
     let port = scratch.local_addr().expect("addr").port();
     drop(scratch);
-    let mut child = std::process::Command::new("bunx")
-        .env("DSH_HOME", &home)
-        .args([PINNED_DSH_PACKAGE, "web", "--no-open"])
-        .arg("--port")
-        .arg(port.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .group_spawn()
-        .expect("spawn the live dsh web host");
-    let _guard = DropGuard(&mut child, &home);
+    let child = OwnedDshHost::spawn(
+        std::process::Command::new("bunx")
+            .env("DSH_HOME", &home)
+            .args([PINNED_DSH_PACKAGE, "web", "--no-open"])
+            .arg("--port")
+            .arg(port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null()),
+    )
+    .expect("spawn the live dsh web host");
+    let _guard = DropGuard(Some(child), &home);
     // 等宿主**以 401 应答 describe**——那是铸 cookie 分支的精确入口
     //（TCP 能连 ≠ HTTP 已就绪：启动窗口内探测得传输错误会误走 spawn
     // 路，research §5 就绪语义）。
@@ -363,11 +364,13 @@ fn live_minted_cookie_connects_to_a_real_host() {
 }
 
 /// 树级清理 + 临时家目录回收（连失败路径也不留孤儿/垃圾）。
-struct DropGuard<'a>(&'a mut command_group::GroupChild, &'a std::path::Path);
+struct DropGuard<'a>(Option<OwnedDshHost>, &'a std::path::Path);
 
 impl Drop for DropGuard<'_> {
     fn drop(&mut self) {
-        let _ = crate::dsh::connect::terminate_dsh_host(self.0);
+        if let Some(child) = self.0.take() {
+            let _ = child.terminate();
+        }
         let _ = std::fs::remove_dir_all(self.1);
     }
 }

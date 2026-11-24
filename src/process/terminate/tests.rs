@@ -101,11 +101,11 @@ struct Observed<'a> {
 }
 
 impl GroupLeader for Observed<'_> {
-    fn signal_group(&mut self, signal: GroupSignal) {
+    fn signal_group(&mut self, signal: GroupSignal) -> std::io::Result<()> {
         if signal == GroupSignal::Kill {
             self.alive_at_kill = Some(self.watched.iter().copied().map(alive).collect());
         }
-        self.leader.signal_group(signal);
+        self.leader.signal_group(signal)
     }
 
     fn leader_exited(&mut self) -> std::io::Result<bool> {
@@ -115,6 +115,22 @@ impl GroupLeader for Observed<'_> {
     fn reap(&mut self) -> std::io::Result<TerminalStatus> {
         self.leader.reap()
     }
+}
+
+#[test]
+fn supervised_early_exit_keeps_leader_until_shutdown() {
+    let mut child = crate::process::SupervisedChild::spawn(
+        std::process::Command::new("sh").args(["-c", "exit 23"]),
+        Duration::from_millis(100),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let pid = child.id().unwrap() as libc::pid_t;
+    assert!(soon(|| child.observed_exit().unwrap()));
+    assert!(exited_without_reaping(pid).unwrap());
+    assert_eq!(child.shutdown().unwrap().unwrap().code(), Some(23));
+    assert!(exited_without_reaping(pid).is_err());
+    assert!(child.shutdown().unwrap().is_none());
 }
 
 /// Spawns `script` with a piped stdout and returns that pipe. A script that

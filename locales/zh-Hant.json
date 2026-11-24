@@ -2644,6 +2644,7 @@
   "experience.unavailable": "暫時無法取得",
   "experience.loading": "讀取中…",
   "experience.estimate": "下一次請求的輸入估算，不含未傳送草稿。",
+  "experience.estimate_uncalibrated": "下一次請求的本機估算，可能與供應商實測有較大差異，不含未傳送草稿。",
   "experience.last_request": "本對話 · 最近一次請求",
   "experience.route": "目前模型路由 · 累計",
   "experience.input": "輸入 token",

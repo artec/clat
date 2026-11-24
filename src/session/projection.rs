@@ -34,6 +34,9 @@ pub(crate) trait ProjectionUnit: Send {
     fn last_system_head(&self) -> Option<(u64, String)> {
         None
     }
+    fn request_calibration(&self) -> Option<crate::model::RequestCalibration> {
+        None
+    }
     fn surface_nodes(&self) -> Option<Result<Vec<(u64, crate::model::ModelItem)>, String>> {
         None
     }
@@ -108,6 +111,12 @@ impl ProjectionRegistry {
     /// empty — text). Feeds the recorder's cross-run head resume.
     pub(crate) fn last_system_head(&self) -> Option<(u64, String)> {
         self.units.iter().find_map(|unit| unit.last_system_head())
+    }
+
+    pub(crate) fn request_calibration(&self) -> Option<crate::model::RequestCalibration> {
+        self.units
+            .iter()
+            .find_map(|unit| unit.request_calibration())
     }
 
     pub(crate) fn fold_all(&mut self, events: &[SessionEvent]) -> Result<(), String> {
@@ -818,6 +827,22 @@ impl ProjectionUnit for SurfaceUnit {
             &self.events,
             &self.surface,
         ))
+    }
+    fn request_calibration(&self) -> Option<crate::model::RequestCalibration> {
+        let last_replace = self.surface.replacements.last().map(|event| event.seq);
+        let event = self
+            .events
+            .iter()
+            .rev()
+            .take_while(|event| last_replace.is_none_or(|seq| event.seq > seq))
+            // Image offload mutates the model-visible content without replacing its seq.
+            .find(|event| {
+                matches!(
+                    event.event_type.as_str(),
+                    "assistant/message" | "image/offload"
+                )
+            })?;
+        crate::model::RequestCalibration::from_payload(&event.data)
     }
     fn validate_maintenance(&self, batch: &[SessionEvent]) -> Result<(), String> {
         let mut surface = self.surface.clone();
@@ -2057,6 +2082,58 @@ mod tests {
             json!({ "compactionId": "c1", "turn": 1 }),
         ));
         events
+    }
+
+    #[test]
+    fn request_calibration_expires_when_projected_history_is_replaced() {
+        let mut events = surface_events();
+        let mut legacy = ProjectionRegistry::clat();
+        legacy.fold_all(&events).unwrap();
+        assert!(legacy.request_calibration().is_none());
+
+        let assistant = events
+            .iter_mut()
+            .find(|event| event.event_type == "assistant/message")
+            .unwrap();
+        assistant.data[crate::model::RequestCalibration::FIELD] =
+            json!({"key": "test", "estimate": 300_000, "actual": 680_765});
+        let mut live = ProjectionRegistry::clat();
+        live.fold_all(&events).unwrap();
+        assert!(live.request_calibration().is_some());
+        let checkpoint = live.checkpoint(dummy_identity(), 1);
+        let mut restored = ProjectionRegistry::clat();
+        restored.restore(&checkpoint, &[], 4).unwrap();
+        assert!(restored.request_calibration().is_some());
+
+        let compacted = compaction_events(&events);
+        live.fold_all(&compacted[events.len()..]).unwrap();
+        assert!(live.request_calibration().is_none());
+        restored
+            .restore(&checkpoint, &compacted[events.len()..], 4)
+            .unwrap();
+        assert!(restored.request_calibration().is_none());
+    }
+
+    #[test]
+    fn request_calibration_expires_when_history_images_are_offloaded_in_place() {
+        let mut events = surface_events();
+        events[1].data["content"] = json!([
+            {"type": "image", "path": "/unused.png", "mediaType": "image/png"}
+        ]);
+        events[2].data[crate::model::RequestCalibration::FIELD] =
+            json!({"key": "test", "estimate": 300_000, "actual": 680_765});
+        let mut registry = ProjectionRegistry::clat();
+        registry.fold_all(&events).unwrap();
+        assert!(registry.request_calibration().is_some());
+        registry
+            .fold_one(&SessionEvent::new(
+                "image/offload",
+                4,
+                5,
+                json!({"targets":[{"seq":1,"imageIndexes":[0]}]}),
+            ))
+            .unwrap();
+        assert!(registry.request_calibration().is_none());
     }
 
     #[test]

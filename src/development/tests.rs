@@ -948,15 +948,25 @@ fn development_terminal_close_reaps_shell_background_jobs() {
         json!({"operationId":"children","clientId":"owner","shell":"/bin/sh"}),
     )
     .unwrap();
-    f.call("terminal.input",json!({"id":"children","clientId":"owner","lease":1,"sequence":0,"data":"(sleep 1; touch orphan-marker) & echo ready > child-ready\n"})).unwrap();
+    f.call(
+        "terminal.input",
+        json!({"id":"children","clientId":"owner","lease":1,"sequence":0,"data": concat!(
+            "sh -c 'trap \"\" TERM; echo ready > background-ready; sleep 2; touch orphan-background' & ",
+            "sh -c 'trap \"\" TERM; echo ready > foreground-ready; sleep 2; touch orphan-foreground'\n"
+        )}),
+    ).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !f.project.join("child-ready").exists() {
+    while !(f.project.join("background-ready").exists()
+        && f.project.join("foreground-ready").exists())
+    {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
     f.call("terminal.close", json!({"id":"children"})).unwrap();
-    std::thread::sleep(Duration::from_millis(1100));
-    assert!(!f.project.join("orphan-marker").exists());
+    f.call("terminal.close", json!({"id":"children"})).unwrap();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(!f.project.join("orphan-background").exists());
+    assert!(!f.project.join("orphan-foreground").exists());
 }
 #[test]
 fn development_large_staged_diff_includes_every_segment() {

@@ -1775,9 +1775,10 @@ fn denied_permission_mode_batch_never_commits_late() {
         fail_batch_write: true,
         ..FaultHooks::default()
     });
-    application
+    let error = application
         .set_permission_mode(PermissionMode::FullAccess)
         .expect_err("injected durable escalation failure");
+    assert!(!error.commit_outcome_unknown());
     assert_eq!(application.permission_mode(), PermissionMode::ProjectWrite);
 
     run(
@@ -1825,6 +1826,7 @@ fn unknown_permission_mode_outcome_stops_future_writes_until_cold_repair() {
     let error = application
         .set_permission_mode(PermissionMode::FullAccess)
         .expect_err("unknown durable outcome must not publish live authority");
+    assert!(error.commit_outcome_unknown());
     assert!(error.to_string().contains("outcome unknown"));
     assert_eq!(application.permission_mode(), PermissionMode::ProjectWrite);
 
@@ -5713,7 +5715,20 @@ fn switching_to_a_missing_session_errors_without_touching_the_pointer() {
     let error = application
         .switch_session(SessionId::new("no-such-session"))
         .expect_err("switching to a missing session must fail");
+    assert!(error.is_not_found());
     assert!(error.to_string().contains("no-such-session"), "{error}");
+    let broken = SessionId::new("invalid-session-log");
+    let key = application.session_key(&broken);
+    let log_path = crate::session::path_layout::log_path(
+        &storage_root.join(crate::control_storage::sentinel::SESSION_ROOT_NAME),
+        key.project.header_cwd.as_deref(),
+        &broken,
+        crate::session::persistence::JsonlCompression::Zstd,
+    );
+    std::fs::create_dir_all(&log_path).unwrap();
+    let error = application.switch_session(broken).unwrap_err();
+    assert!(!error.is_not_found(), "{error}");
+    std::fs::remove_dir_all(log_path.parent().unwrap()).unwrap();
     // 指针未被污染：仍是 anchor。
     assert_eq!(
         persisted_pointer(&storage_root, &project_root).as_deref(),

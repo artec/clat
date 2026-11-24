@@ -2,6 +2,7 @@
 use super::{
     Arc, JsonlBackend, Mutex, ProjectionRegistry, RunJournal, SessionEvent, SessionKey, now_ms,
 };
+use crate::session::run_journal::DurableAppendError;
 
 pub(super) struct ProjectionFoldJournal {
     inner: Arc<dyn RunJournal>,
@@ -153,6 +154,14 @@ impl RunJournal for ProjectionFoldJournal {
         &self,
         events: &[crate::session::run_journal::NewSessionEvent],
     ) -> Result<crate::session::run_journal::SeqRange, String> {
+        self.append_atomic_with_outcome(events)
+            .map_err(DurableAppendError::into_message)
+    }
+
+    fn append_atomic_with_outcome(
+        &self,
+        events: &[crate::session::run_journal::NewSessionEvent],
+    ) -> Result<crate::session::run_journal::SeqRange, DurableAppendError> {
         let _lane = self.lane.lock().expect("projection fold lane");
         let mut built = self.build_events(events)?;
         if events
@@ -176,7 +185,7 @@ impl RunJournal for ProjectionFoldJournal {
                 .validate_maintenance(&built)
                 .map_err(|error| format!("compaction selected span invalidated: {error}"))?;
         }
-        let range = self.inner.append_atomic_durable(events)?;
+        let range = self.inner.append_atomic_with_outcome(events)?;
         for (offset, event) in built.iter_mut().enumerate() {
             event.seq = range.start + offset as u64;
         }

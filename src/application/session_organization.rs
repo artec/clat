@@ -83,7 +83,7 @@ impl TrustedProjectApplication {
                 .confirm_session_directory_removed(&self.session_key(&session))
                 .map_err(session_error)?
         {
-            return Err(ApplicationError::new(
+            return Err(ApplicationError::not_found(
                 "session does not exist in this project",
             ));
         }
@@ -164,7 +164,7 @@ impl TrustedProjectApplication {
             ));
         }
         if !self.list_sessions()?.iter().any(|s| s.id.as_str() == id) {
-            return Err(ApplicationError::new(
+            return Err(ApplicationError::not_found(
                 "session does not exist in this project",
             ));
         }

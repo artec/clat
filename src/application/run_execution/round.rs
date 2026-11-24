@@ -198,6 +198,7 @@ impl RoundExecution {
             image_offload: worker.deps.image_offload.clone(),
             protected_floor: self.maintenance_floor,
             sessions: Arc::clone(&worker.deps.sessions),
+            session_id: worker.input.session_id.clone(),
             journal: Arc::clone(&worker.input.journal),
             recorder: Arc::clone(&self.recorder),
             config: worker.deps.config.clone(),

@@ -1,5 +1,5 @@
 //! Native PID enumeration avoids depending on an external `ps` utility.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use super::io;
 #[cfg(target_os = "macos")]
 pub(super) fn pids() -> Result<Vec<i32>, String> {
@@ -41,15 +41,25 @@ pub(super) fn pids() -> Result<Vec<i32>, String> {
     Err("terminal_isolation".into())
 }
 #[cfg(unix)]
-pub(super) fn groups(session: i32, primary: i32) -> Vec<i32> {
+pub(super) fn groups(session: i32, primary: i32) -> Result<Vec<i32>, String> {
     let own = unsafe { libc::getpgrp() };
     let mut groups = std::collections::BTreeSet::from([primary]);
-    if let Ok(pids) = pids() {
-        for pid in pids {
-            if pid > 1 && unsafe { libc::getsid(pid) } == session {
-                groups.insert(unsafe { libc::getpgid(pid) });
-            }
+    for pid in pids()? {
+        if pid > 1 && unsafe { libc::getsid(pid) } == session {
+            groups.insert(unsafe { libc::getpgid(pid) });
         }
     }
-    groups.into_iter().filter(|g| *g > 1 && *g != own).collect()
+    Ok(groups.into_iter().filter(|g| *g > 1 && *g != own).collect())
+}
+
+pub(super) fn group_has_only_exited_shell(session: i32, group: i32) -> Result<bool, String> {
+    if !cfg!(target_os = "macos")
+        || session != group
+        || !crate::process::exited_without_reaping(session).map_err(io)?
+    {
+        return Ok(false);
+    }
+    Ok(!pids()?
+        .into_iter()
+        .any(|pid| pid > 1 && pid != session && unsafe { libc::getpgid(pid) } == group))
 }

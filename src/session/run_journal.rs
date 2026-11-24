@@ -62,6 +62,26 @@ pub(crate) struct SeqRange {
     pub(crate) end_inclusive: u64,
 }
 
+#[derive(Debug)]
+pub(crate) enum DurableAppendError {
+    Failed(String),
+    OutcomeUnknown(String),
+}
+
+impl From<String> for DurableAppendError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl DurableAppendError {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            Self::Failed(message) | Self::OutcomeUnknown(message) => message,
+        }
+    }
+}
+
 /// UI-independent persistence port for one run (plan §8.5).
 pub(crate) trait RunJournal: Send + Sync {
     fn append_atomic(&self, events: &[NewSessionEvent]) -> Result<SeqRange, String>;
@@ -77,6 +97,12 @@ pub(crate) trait RunJournal: Send + Sync {
         let range = self.append_atomic(events)?;
         self.flush()?;
         Ok(range)
+    }
+    fn append_atomic_with_outcome(
+        &self,
+        events: &[NewSessionEvent],
+    ) -> Result<SeqRange, DurableAppendError> {
+        self.append_atomic_durable(events).map_err(Into::into)
     }
     /// Conditional publication; production implementations serialize this with queue admission.
     fn append_atomic_durable_at(
@@ -353,15 +379,11 @@ impl SessionCoordinator {
         Ok(range)
     }
 
-    fn enqueue_atomic_durable(&self, events: Vec<SessionEvent>) -> Result<SeqRange, String> {
-        self.enqueue_atomic_durable_at(events, None)
-    }
-
     fn enqueue_atomic_durable_at(
         &self,
         events: Vec<SessionEvent>,
         expected: Option<Option<u64>>,
-    ) -> Result<SeqRange, String> {
+    ) -> Result<SeqRange, DurableAppendError> {
         let _transaction = self.transaction.lock().expect("journal transaction");
         if expected.is_some_and(|expected| {
             self.inner
@@ -371,29 +393,38 @@ impl SessionCoordinator {
                 .checked_sub(1)
                 != expected
         }) {
-            return Err("session changed during context maintenance".into());
+            return Err("session changed during context maintenance"
+                .to_owned()
+                .into());
         }
-        let range = self.enqueue_atomic_locked(events)?;
+        let range = self.enqueue_atomic_locked(events).map_err(|error| {
+            if self.inner.lock().expect("coordinator lock").fatal.is_some() {
+                DurableAppendError::OutcomeUnknown(error)
+            } else {
+                DurableAppendError::Failed(error)
+            }
+        })?;
         let writer = self.writer.as_ref().expect("admitted writable transaction");
         if let Err(error) = writer.flush() {
-            let fatal = self.inner.lock().expect("coordinator lock").fatal.clone();
-            if fatal.is_none() {
-                {
-                    let core = self.inner.lock().expect("coordinator lock");
-                    if core.next_seq != range.end_inclusive.saturating_add(1) {
-                        return Err(format!(
-                            "cannot roll back a non-tail session transaction after: {error}"
-                        ));
-                    }
-                }
-                writer.discard_pending_tail(range.start, range.end_inclusive)?;
-                self.inner.lock().expect("coordinator lock").next_seq = range.start;
+            if self.inner.lock().expect("coordinator lock").fatal.is_some() {
+                return Err(DurableAppendError::OutcomeUnknown(error));
             }
-            return Err(error);
+            {
+                let core = self.inner.lock().expect("coordinator lock");
+                if core.next_seq != range.end_inclusive.saturating_add(1) {
+                    return Err(format!(
+                        "cannot roll back a non-tail session transaction after: {error}"
+                    )
+                    .into());
+                }
+            }
+            writer.discard_pending_tail(range.start, range.end_inclusive)?;
+            self.inner.lock().expect("coordinator lock").next_seq = range.start;
+            return Err(error.into());
         }
         let core = self.inner.lock().expect("coordinator lock");
         if let Some(fatal) = &core.fatal {
-            return Err(fatal.clone());
+            return Err(DurableAppendError::OutcomeUnknown(fatal.clone()));
         }
         Ok(range)
     }
@@ -529,8 +560,15 @@ impl RunJournal for JournalAdapter {
     }
 
     fn append_atomic_durable(&self, events: &[NewSessionEvent]) -> Result<SeqRange, String> {
+        self.append_atomic_with_outcome(events)
+            .map_err(DurableAppendError::into_message)
+    }
+    fn append_atomic_with_outcome(
+        &self,
+        events: &[NewSessionEvent],
+    ) -> Result<SeqRange, DurableAppendError> {
         self.coordinator
-            .enqueue_atomic_durable(build_events(events)?)
+            .enqueue_atomic_durable_at(build_events(events)?, None)
     }
     fn append_atomic_durable_at(
         &self,
@@ -539,6 +577,7 @@ impl RunJournal for JournalAdapter {
     ) -> Result<SeqRange, String> {
         self.coordinator
             .enqueue_atomic_durable_at(build_events(events)?, Some(expected))
+            .map_err(DurableAppendError::into_message)
     }
 
     fn committed_seq(&self) -> Option<u64> {

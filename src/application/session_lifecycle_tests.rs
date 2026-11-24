@@ -322,9 +322,8 @@ fn delete_resumes_when_an_earlier_delete_stopped_between_its_stores() {
     );
 
     // Before the fix the retry died on "does not exist" and stranded the id.
-    assert_eq!(
-        app.delete_session(victim.as_str(), true).unwrap(),
-        false,
+    assert!(
+        !app.delete_session(victim.as_str(), true).unwrap(),
         "a resumed delete never moves the selection"
     );
     assert!(
@@ -380,7 +379,7 @@ fn delete_that_fails_after_vacating_the_selection_reports_that_the_selection_mov
     assert!(app.selection_is_archived(&victim).unwrap());
     // The retry finishes the cleanup without moving the selection again.
     let current = app.current_session_id();
-    assert_eq!(app.delete_session(victim.as_str(), true).unwrap(), false);
+    assert!(!app.delete_session(victim.as_str(), true).unwrap());
     assert!(!app.selection_is_archived(&victim).unwrap());
     assert_eq!(app.current_session_id(), current);
     assert!(

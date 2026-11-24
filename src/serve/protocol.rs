@@ -1842,16 +1842,20 @@ pub(super) fn app_error(error: ApplicationError) -> RpcError {
         .with_receipt(receipt)
 }
 
-/// 会话类操作：不存在的会话 id → `not-found`（§3 错误模型）。core 的
-/// ApplicationError 是字符串新类型——这里按已核实的消息约定
-/// （"… does not exist in this project"，trusted.rs switch_session）
-/// 判定；其余落 internal。
+/// Map the Application's classification without interpreting its diagnostic.
 fn session_error(error: ApplicationError) -> RpcError {
-    if error.to_string().contains("does not exist") {
+    if error.is_not_found() {
         RpcError::not_found(error.to_string())
     } else {
         app_error(error)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn session_rpc_does_not_classify_io_diagnostics_as_a_missing_session() {
+    let failure = ApplicationError::from_message("journal directory does not exist on the mount");
+    assert_eq!(session_error(failure).code, ErrorCode::Internal);
 }
 
 fn required_str(params: &Map<String, Value>, field: &str) -> Result<String, RpcError> {
@@ -1996,6 +2000,7 @@ fn context_reply(snapshot: crate::ContextEstimateSnapshot) -> Result<Value, RpcE
             "image_safety_factor": snapshot.image_token_safety_factor,
             "output_reserve": snapshot.output_reserve_estimate,
             "input": snapshot.input_estimate,
+            "input_calibrated": snapshot.input_calibrated,
             "total": snapshot.total_estimate,
             "tools": snapshot.tool_names,
             "skills": snapshot.skill_names,

@@ -196,7 +196,7 @@ function renderUsage(popup,ring) {
   if (value !== null || !ring.hasAttribute('data-percent')) paintUsageRing(ring,percent);
   syncUsageTrigger();
   row('context', value?.context ? `${used.toLocaleString(CLATI18n.locale)} / ${capacity?.toLocaleString(CLATI18n.locale) || experienceText('capacity_unknown')}${percent===null?'':` · ${percent.toFixed(1)}%`}` : experienceText(value===null?'loading':'unavailable'));
-  popup.append(el('small','',()=>experienceText('estimate')));
+  popup.append(el('small','',()=>experienceText(value?.context?.calibrated === false ? 'estimate_uncalibrated' : 'estimate')));
   if (value?.compaction_recommended) {
     const compact = el('button', 'text-action usage-compact', () => experienceText('compact'));
     compact.type = 'button'; compact.disabled = state.runActive || state.compactionActive || usageCompactionRequest || state.switching || state.desktopUpdateLocked;

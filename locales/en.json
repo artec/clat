@@ -2644,6 +2644,7 @@
   "experience.unavailable": "Unavailable",
   "experience.loading": "Loading…",
   "experience.estimate": "Estimated input for the next request; excludes unsent draft.",
+  "experience.estimate_uncalibrated": "Local estimate for the next request. It may differ from provider usage and excludes unsent drafts.",
   "experience.last_request": "This conversation · most recent request",
   "experience.route": "Current model route · cumulative",
   "experience.input": "Input tokens",

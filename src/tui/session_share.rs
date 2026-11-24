@@ -307,8 +307,8 @@ impl App {
             });
         } else if let Some(app) = &self.application {
             let result = app
-                .history_reader()
-                .share(&reference, range, &clat_core::CancelToken::new())
+                .session_share_reader(&reference)
+                .and_then(|reader| reader.preview(range, &clat_core::CancelToken::new()))
                 .map(|share| HostSessionSharePreview {
                     selection: SessionShareSelection {
                         reference,

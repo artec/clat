@@ -27,9 +27,15 @@ mod playwright;
 mod playwright_json;
 mod receipt;
 mod recovery;
+mod supervised_child;
 mod terminal;
 #[cfg(unix)]
 mod terminate;
+pub use supervised_child::SupervisedChild;
+#[cfg(unix)]
+pub(crate) use supervised_child::reap_until;
+#[cfg(unix)]
+pub(crate) use terminate::exited_without_reaping;
 pub(crate) mod verification;
 pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) use receipt::{Format, VerificationSpec, invocation_digest};

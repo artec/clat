@@ -9,7 +9,6 @@ impl SessionService {
         key: &SessionKey,
     ) -> Result<(Arc<Self>, SessionView), SessionError> {
         let target = Arc::new(Self {
-            meter: Mutex::new(crate::model::RequestMeter::default()),
             background_lane: self.background_lane.clone(),
             writers: self.writers.clone(),
             backend: self.backend.clone(),

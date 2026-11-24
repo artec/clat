@@ -44,6 +44,7 @@ impl ContextBudget {
 pub(crate) struct RequestMeasurement {
     pub input: u64,
     pub output: u64,
+    pub calibrated: bool,
 }
 impl RequestMeasurement {
     pub fn new(
@@ -55,6 +56,7 @@ impl RequestMeasurement {
         Self {
             input: super::estimate_request_tokens(instructions, items, tools),
             output: u64::from(config.output_limit.unwrap_or(4096)),
+            calibrated: false,
         }
     }
     pub fn total(&self) -> u64 {

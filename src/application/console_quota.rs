@@ -105,6 +105,7 @@ pub(super) fn console_provider(endpoint: &str) -> Option<&'static str> {
 
 mod callback_flow;
 mod device_flow;
+mod login_flow;
 
 const PROVIDERS: [&str; 3] = ["qianwen", "tencent", "bailian"];
 type CacheKey = (PathBuf, &'static str);
@@ -141,9 +142,9 @@ impl TrustedProjectApplication {
 
     pub fn console_authorization_remove(&self, provider: &str) -> Result<(), ApplicationError> {
         match provider {
-            "qianwen" => device_flow::remove(&self.control)?,
+            "qianwen" => login_flow::DEVICE.remove(&self.control)?,
             "tencent" => remove_credential(&self.control, "tencent")?,
-            "bailian" => callback_flow::remove(&self.control)?,
+            "bailian" => login_flow::CALLBACK.remove(&self.control)?,
             _ => return Err(ApplicationError::new("unknown console credential provider")),
         }
         self.emit_console_authorization_changed();

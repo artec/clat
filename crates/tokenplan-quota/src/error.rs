@@ -17,6 +17,8 @@ pub enum QuotaError {
     Business { code: String, message: String },
     /// The integrator cancelled the operation before it finished.
     Cancelled,
+    /// The local console login wait expired before a credential arrived.
+    CallbackExpired,
 }
 
 impl QuotaError {
@@ -48,6 +50,10 @@ impl fmt::Display for QuotaError {
             }
             Self::Business { code, message } => write!(f, "business error {code}: {message}"),
             Self::Cancelled => write!(f, "cancelled"),
+            Self::CallbackExpired => write!(
+                f,
+                "transport error: console login timed out: no credentials received"
+            ),
         }
     }
 }

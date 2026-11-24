@@ -445,31 +445,32 @@ fn alive(pid: u32) -> bool {
 }
 
 #[cfg(unix)]
-fn sleeper() -> command_group::GroupChild {
-    use command_group::CommandGroup as _;
-    std::process::Command::new("sleep")
-        .arg("30")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .group_spawn()
-        .expect("sleep spawns")
+fn sleeper() -> crate::dsh::connect::OwnedDshHost {
+    crate::dsh::connect::OwnedDshHost::spawn(
+        std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    )
+    .expect("sleep spawns")
 }
 
 #[cfg(unix)]
 #[test]
 fn dropping_the_state_kills_the_host_we_spawned() {
     // 旁观进程：只杀自己持有的句柄，别人的进程不动。
-    let mut witness = sleeper();
+    use command_group::CommandGroup as _;
+    let mut witness = std::process::Command::new("sleep")
+        .arg("30")
+        .group_spawn()
+        .expect("witness spawns");
     assert!(alive(witness.id()));
 
     // 腿 1：Drop 带走自己 spawn 的宿主。
     let (mut app, _task_rx) = dsh_app();
     let host = sleeper();
     let host_pid = host.id();
-    app.dsh
-        .as_mut()
-        .unwrap()
-        .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(host)));
+    app.dsh.as_mut().unwrap().adopt_spawned_host(Some(host));
     assert!(alive(host_pid));
     drop(app);
     assert!(!alive(host_pid), "Drop must take the spawned host down");
@@ -479,16 +480,10 @@ fn dropping_the_state_kills_the_host_we_spawned() {
     let (mut app, _task_rx) = dsh_app();
     let old_host = sleeper();
     let old_pid = old_host.id();
-    app.dsh
-        .as_mut()
-        .unwrap()
-        .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(old_host)));
+    app.dsh.as_mut().unwrap().adopt_spawned_host(Some(old_host));
     let new_host = sleeper();
     let new_pid = new_host.id();
-    app.dsh
-        .as_mut()
-        .unwrap()
-        .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(new_host)));
+    app.dsh.as_mut().unwrap().adopt_spawned_host(Some(new_host));
     assert!(!alive(old_pid), "replacement kills the old spawned host");
     assert!(alive(new_pid));
     drop(app);
@@ -891,10 +886,7 @@ fn a_probe_hit_reconnect_never_kills_the_host_we_own() {
     let (mut app, _task_rx) = dsh_app();
     let host = sleeper();
     let pid = host.id();
-    app.dsh
-        .as_mut()
-        .unwrap()
-        .adopt_spawned_host(Some(crate::dsh::connect::OwnedDshHost::new(host)));
+    app.dsh.as_mut().unwrap().adopt_spawned_host(Some(host));
     assert!(alive(pid));
     // 探测直连的重连成功（child=None，downlink 开在死端口上失败
     // 无妨——断言只关心宿主生死）。

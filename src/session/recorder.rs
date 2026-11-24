@@ -308,6 +308,8 @@ pub(crate) struct SessionRecorder {
     /// The step's final token usage (stream-end `ModelEvent::Usage`), landed
     /// on the assistant/message payload (DSH `usage` field). Reset per step.
     stream_usage: Option<crate::model::Usage>,
+    /// Input usage from the main response paired with the estimate of that same request.
+    request_calibration: Option<crate::model::RequestCalibration>,
     /// 插件 sampling 的记账单元（INV-S6）：`ModelResponded` 落账时归并
     /// 进本条 assistant/message 的 usage——journal 侧的唯一记账点；取
     /// 消/失败路径的余量由 run worker 补进终态总量。None = 本 run 无
@@ -363,6 +365,7 @@ impl SessionRecorder {
             step_open: false,
             message_emitted: false,
             stream_usage: None,
+            request_calibration: None,
             aux_usage: None,
             next_block_index: 0,
             text: String::new(),
@@ -387,6 +390,13 @@ impl SessionRecorder {
     /// 用；单元由 start_run 创建，宿主桥与 recorder 共享）。
     pub(crate) fn attach_aux_usage(&mut self, cell: Arc<Mutex<crate::model::Usage>>) {
         self.aux_usage = Some(cell);
+    }
+
+    pub(crate) fn stage_request_calibration(
+        &mut self,
+        calibration: crate::model::RequestCalibration,
+    ) {
+        self.request_calibration = Some(calibration);
     }
 
     /// Build the recorder and its journaling approver in one step: the
@@ -615,6 +625,7 @@ impl SessionRecorder {
         self.stream_finish = None;
         self.replay_state = None;
         self.stream_usage = None;
+        self.request_calibration = None;
         self.pending_retry_id = None;
         self.next_block_index = 0;
     }
@@ -805,6 +816,9 @@ impl SessionRecorder {
         let replay_state = payload["message"]["source"].get("replayState").cloned();
         self.finish_embedded_stream(usage.as_ref(), replay_state.as_ref(), finish);
         payload["stream"] = self.assistant_stream.take_value();
+        if let Some(calibration) = self.request_calibration.take() {
+            payload[crate::model::RequestCalibration::FIELD] = serde_json::json!(calibration);
+        }
         if interrupted {
             // B2：可选信封级字段（DSH types.ts:277），跨工具读取时取消
             // 前缀可辨。settled 路径永不写入（B2 反向腿测试钉住）。

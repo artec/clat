@@ -23,6 +23,7 @@ function fixture() {
       model: { model: 'k3.1-pro', max_context_tokens: 262144 } },
   };
   let capacity = 262144;
+  let calibrated;
   const ring = {
     dataset: {}, style: { setProperty() {} },
     classList: { toggle() {} },
@@ -51,7 +52,8 @@ function fixture() {
     matchMedia: () => ({matches:true}),
     rpc: async method => {
       assert.equal(method, 'conversation.stats');
-      return { context: { used: 12000, capacity }, compaction_recommended: false };
+      return { context: { used: 12000, capacity, calibrated },
+        last_request: { input_tokens: 680765 }, compaction_recommended: false };
     },
   };
   const source = fs.readFileSync('web/conversation-experience.js', 'utf8');
@@ -67,6 +69,8 @@ function fixture() {
   return { state, updates, firstRow,
     refreshUsage: () => vm.runInContext('refreshUsage()', scope),
     setCapacity(value) { capacity = value; },
+    setCalibrated(value) { calibrated = value; },
+    popup,
   };
 }
 
@@ -97,4 +101,16 @@ test('composer context row follows the current Host model when session and model
   app.setCapacity(131072);
   await app.refreshUsage();
   assert.match(app.firstRow(), /12,000 \/ 131,072/);
+});
+
+test('uncalibrated context estimate explains the fallback and keeps actual request usage', async () => {
+  const app = fixture();
+  app.state.sessionId = 'new-session';
+  for (const [calibrated, hint] of [[false, 'estimate_uncalibrated'], [true, 'estimate']]) {
+    app.setCalibrated(calibrated);
+    await app.refreshUsage();
+    assert.equal(app.popup.children.find(child => child.tag === 'small').text, hint);
+    assert.ok(app.popup.children.some(child => child.children[0]?.text === 'input'
+      && child.children[1]?.text === '680,765'));
+  }
 });

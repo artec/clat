@@ -8,7 +8,7 @@ mod context;
 pub(crate) use context::image_projection_is_over_budget;
 mod context_budget;
 mod request_meter;
-pub(crate) use request_meter::RequestMeter;
+pub(crate) use request_meter::{RequestCalibration, measure_request};
 mod credentials;
 mod errors;
 pub use errors::*;

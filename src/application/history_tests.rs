@@ -52,6 +52,7 @@ fn session_share_freeze_enforces_source_and_version() {
         .reference
         .clone();
     reference.seq = None;
+    assert!(app.session_share_reader(&reference).is_err());
     let preview = app
         .history_reader()
         .share(&reference, None, &crate::CancelToken::new())
@@ -66,6 +67,15 @@ fn session_share_freeze_enforces_source_and_version() {
             .is_err()
     );
     app.new_session().unwrap();
+    let scoped_preview = app
+        .session_share_reader(&selection.reference)
+        .unwrap()
+        .preview(None, &crate::CancelToken::new())
+        .unwrap();
+    assert_eq!(scoped_preview.version, selection.version);
+    let mut event_reference = selection.reference.clone();
+    event_reference.seq = Some(1);
+    assert!(app.session_share_reader(&event_reference).is_err());
     let shares = app
         .freeze_session_shares(std::slice::from_ref(&selection), &crate::CancelToken::new())
         .unwrap();

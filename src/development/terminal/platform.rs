@@ -80,29 +80,44 @@ impl Control for Unix {
             .map_err(|e| format!("pty:{e}"))
     }
     fn ended(&mut self) -> Result<bool, String> {
-        self.child.try_wait().map(|s| s.is_some()).map_err(io)
+        if self.terminated {
+            return Ok(true);
+        }
+        // The shell keeps the session identity reserved until cleanup signals finish.
+        crate::process::exited_without_reaping(self.pid).map_err(io)
     }
     fn terminate(&mut self) -> Result<(), String> {
         if self.terminated {
             return Ok(());
         }
-        let groups = super::processes::groups(self.pid, self.group);
-        for group in &groups {
-            unsafe {
-                libc::kill(-*group, libc::SIGTERM);
-            }
-        }
+        self.signal_groups(libc::SIGTERM)?;
         std::thread::sleep(Duration::from_millis(100));
-        let mut remaining = super::processes::groups(self.pid, self.group);
-        remaining.extend(groups);
-        for group in remaining {
-            unsafe {
-                libc::kill(-group, libc::SIGKILL);
+        // Resolve job groups again while the shell still owns this session.
+        self.signal_groups(libc::SIGKILL)?;
+        crate::process::reap_until(Duration::from_secs(5), || self.child.try_wait()).map_err(io)?;
+        self.terminated = true;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Unix {
+    fn signal_groups(&self, signal: i32) -> Result<(), String> {
+        let groups = super::processes::groups(self.pid, self.group)?;
+        for group in groups {
+            let result = unsafe { libc::kill(-group, signal) };
+            if result < 0 && signal == libc::SIGKILL {
+                let error = std::io::Error::last_os_error();
+                // Allow an already-empty group. Darwin also reports EPERM
+                // when the exited shell is still the sole group member.
+                let absent = error.raw_os_error() == Some(libc::ESRCH);
+                let exited = error.raw_os_error() == Some(libc::EPERM)
+                    && super::processes::group_has_only_exited_shell(self.pid, group)?;
+                if !(absent || exited) {
+                    return Err(io(error));
+                }
             }
         }
-        let _ = self.child.kill();
-        self.child.wait().map_err(io)?;
-        self.terminated = true;
         Ok(())
     }
 }
@@ -146,4 +161,40 @@ fn unix_command(shell: &str, args: &[String], cwd: &Path) -> portable_pty::Comma
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_exit_observation_leaves_the_shell_owned_until_cleanup() {
+        let (_, root) = crate::test_support::roots("terminal-exit-before-cleanup");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_file = root.join("shell.pid");
+        let args = [
+            "-c".into(),
+            "printf '%s' \"$$\" > \"$1\"; exit 23".into(),
+            "fixture".into(),
+            pid_file.to_string_lossy().into_owned(),
+        ];
+        let mut terminal = start("/bin/sh", &args, &root, (24, 80)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !terminal.control.ended().unwrap() {
+            assert!(std::time::Instant::now() < deadline, "shell did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pid: i32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
+        // A live PID lookup still finds the uncollected shell at this point.
+        let alive_before_cleanup = unsafe { libc::kill(pid, 0) } == 0;
+        terminal.control.terminate().unwrap();
+        assert!(
+            alive_before_cleanup,
+            "exit observation must not reap the shell"
+        );
+        assert!(terminal.control.ended().unwrap());
+        terminal.control.terminate().unwrap();
+        drop(terminal);
+        crate::test_support::cleanup_tree(root.parent().unwrap());
+    }
 }

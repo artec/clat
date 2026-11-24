@@ -38,6 +38,7 @@ pub struct ContextEstimateSnapshot {
     pub image_token_safety_factor: u64,
     pub output_reserve_estimate: u64,
     pub input_estimate: u64,
+    pub input_calibrated: bool,
     pub total_estimate: u64,
     pub tool_names: Vec<String>,
     pub skill_names: Vec<String>,
