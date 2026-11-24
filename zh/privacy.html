@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>隐私政策 — 克莱艾特</title>
+  <!-- 语言记忆：与主页同一套约定。?lang=zh|en 显式指定并记录（优先级最高）；
+       记录为英文则跳回英文政策页，否则留在中文页并记录。 -->
+  <script>
+    (function () {
+      try {
+        var pref = null;
+        try { pref = localStorage.getItem('clat-lang'); } catch (e) {}
+        try {
+          var q = new URLSearchParams(location.search).get('lang');
+          if (q === 'zh' || q === 'en') pref = q;
+        } catch (e) {}
+        if (pref === 'en') {
+          try { localStorage.setItem('clat-lang', 'en'); } catch (e) {}
+          location.replace(location.protocol === 'file:' ? '../privacy.html' : '/privacy.html');
+          return;
+        }
+        try { localStorage.setItem('clat-lang', 'zh'); } catch (e) {}
+      } catch (e) { /* 留在中文页 */ }
+    })();
+  </script>
+  <meta name="description" content="CLAT 隐私政策：本地优先——会话、密钥与设置保存在你的设备上；无账户、无遥测、无广告；仅在你配置模型或使用联网功能时才有数据离开设备。">
+  <link rel="alternate" hreflang="en" href="https://cl.at.cn/privacy.html">
+  <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/privacy.html">
+  <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/privacy.html">
+  <link rel="icon" type="image/png" href="../logo.png">
+  <link rel="apple-touch-icon" href="../logo.png">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fafafa;
+      --fg: #1f2328;
+      --muted: #656d76;
+      --border: rgba(127, 127, 127, 0.28);
+      --card: rgba(127, 127, 127, 0.07);
+      --accent: #0969da;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --fg: #e6edf3;
+        --muted: #8b949e;
+        --border: rgba(139, 148, 158, 0.32);
+        --card: rgba(139, 148, 158, 0.09);
+        --accent: #58a6ff;
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.65;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+    /* nav（与主页同构：logo 点击回主页） */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 0;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--fg); }
+    .brand:hover { text-decoration: none; }
+    .brand img { width: 28px; height: 28px; border-radius: 7px; }
+    /* logo 字标：默认收起为 CLAT，悬停展开为 cmd-Line AgenT。
+       无底卡、贴左对齐；slot 预留展开宽度，svg 绝对定位，伸缩不引起导航重排。 */
+    .brand .logo-slot { position: relative; margin-top: 3px; height: 44px; user-select: none; }
+    .brand .logo-slot svg {
+      position: absolute; top: 0; left: 0; display: block;
+      width: 52px; height: 44px;
+      transition: width 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+    }
+    .brand .logo-slot svg:hover { width: 158px; }
+    @media (max-width: 480px) { .brand .logo-slot { width: 56px; } }
+    nav .links { display: flex; gap: 20px; font-size: 0.9rem; }
+
+    /* section scaffolding */
+    section { padding: 56px 0; border-top: 1px solid var(--border); }
+    .kicker {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    h2 { font-size: 1.7rem; margin-bottom: 12px; }
+    .lede { color: var(--muted); margin-bottom: 24px; }
+
+    /* 隐私政策页专属：页头与正文排版（沿用主页卡片样式做摘要框） */
+    header.policy-head { padding: 56px 0 44px; }
+    h1 { font-size: 2.3rem; letter-spacing: 0.06em; margin-bottom: 8px; }
+    .updated { color: var(--muted); font-size: 0.85rem; margin-bottom: 22px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px;
+    }
+    .card p { font-size: 0.95rem; }
+    /* 正文限宽：分隔线仍通栏，文本保持可读行宽 */
+    section.policy p, section.policy ul, section.policy h3 { max-width: 760px; }
+    section.policy ul { list-style: none; margin-bottom: 14px; }
+    section.policy li { position: relative; padding-left: 20px; margin-bottom: 9px; font-size: 0.92rem; }
+    section.policy li::before { content: "—"; position: absolute; left: 0; color: var(--muted); }
+    section.policy p { font-size: 0.92rem; margin-bottom: 14px; }
+    section.policy h3 {
+      font-size: 1rem;
+      margin: 30px 0 10px;
+      color: var(--muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    section.policy code, .card code {
+      color: var(--fg);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 6px;
+      font-size: 0.84em;
+    }
+
+    footer { border-top: 1px solid var(--border); padding: 40px 0 32px; color: var(--muted); font-size: 0.85rem; }
+    footer .footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 32px; margin-bottom: 28px; }
+    footer .footer-grid > div:first-child { color: var(--fg); }
+    footer .footer-tagline { margin-top: 6px; }
+    footer .col-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px; }
+    footer .links { display: flex; flex-direction: column; gap: 8px; margin-top: 0; }
+    footer .footer-bottom {
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    /* 手机：品牌独占一行，项目与文档两列并排成一块 */
+    @media (max-width: 640px) {
+      footer .footer-grid { grid-template-columns: 1fr 1fr; gap: 24px; }
+      footer .footer-grid > div:first-child { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="index.html">
+        <img src="../logo.png" alt="CLAT logo">
+        <span class="logo-slot">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 370 90" preserveAspectRatio="xMinYMid slice" role="img" aria-label="CLAT">
+            <defs>
+              <style>
+                .char {
+                  fill: var(--fg);
+                  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                  font-size: 38px;
+                  font-weight: 800;
+                }
+
+                /* 基础平移动画配置（带弹性回弹） */
+                .movable {
+                  transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+                }
+
+                /* 收起状态：精确对齐成字距均匀的 CLAT */
+                .move-l { transform: translateX(-74px); }
+                .move-a { transform: translateX(-144px); }
+                .move-t { transform: translateX(-212px); }
+
+                /* 中间折叠组 */
+                .collapsible {
+                  opacity: 0;
+                  pointer-events: none;
+                  transition: opacity 0.25s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+                .fold-1 { transform: translateX(-10px) scale(0.6); transform-origin: 30px 50%; }
+                .fold-2 { transform: translateX(-10px) scale(0.6); transform-origin: 126px 50%; }
+                .fold-3 { transform: translateX(-10px) scale(0.6); transform-origin: 221px 50%; }
+
+                /* 悬停展开状态 (Hover) */
+                svg:hover .movable { transform: translateX(0); }
+                svg:hover .collapsible { opacity: 1; transform: translateX(0) scale(1); }
+              </style>
+            </defs>
+
+            <!-- 文字组（x 平移 34→0，字标贴左） -->
+            <g transform="translate(0, 56)">
+              <!-- 1. C (固定基准) -->
+              <text class="char" x="0" y="0">C</text>
+
+              <!-- 2. md-（横杠按字符级 tspan dx 左移 1 单位微调字距） -->
+              <g class="collapsible fold-1">
+                <text class="char" x="28" y="0">md<tspan dx="-2">-</tspan></text>
+              </g>
+
+              <!-- 3. L (保持在 102px) -->
+              <g class="movable move-l">
+                <text class="char" x="102" y="0">L</text>
+              </g>
+
+              <!-- 4. ine  -->
+              <g class="collapsible fold-2">
+                <text class="char" x="126" y="0">ine </text>
+              </g>
+
+              <!-- 5. A -->
+              <g class="movable move-a">
+                <text class="char" x="196" y="0">A</text>
+              </g>
+
+              <!-- 6. gen -->
+              <g class="collapsible fold-3">
+                <text class="char" x="224" y="0">gen</text>
+              </g>
+
+              <!-- 7. T (微调：x 从 288 -> 290，往右 2px) -->
+              <g class="movable move-t">
+                <text class="char" x="290" y="0">T</text>
+              </g>
+            </g>
+          </svg>
+        </span>
+      </a>
+      <div class="links">
+        <a href="https://github.com/artec/clat">GitHub</a>
+        <a href="https://pi.at.cn">Plugin</a>
+        <a href="https://github.com/artec/clat/blob/main/README.md">Docs</a>
+      </div>
+    </nav>
+
+    <header class="policy-head">
+      <p class="kicker">Privacy</p>
+      <h1>隐私政策</h1>
+      <p class="updated">最后更新：2026 年 11 月 · 适用于 CLAT 命令行、桌面版、网页工作台与微软商店版</p>
+      <div class="card">
+        <p><strong>一句话版本。</strong>CLAT 本地优先：会话、项目、密钥与设置都保存在你的设备上。没有账户、没有遥测、没有广告，我们也不运营能收集你数据的云端。只有当你配置模型服务商或主动使用需要联网的功能时，数据才会离开你的设备——本产品完全开源，以上每一条都可以在源码里验证。</p>
+      </div>
+    </header>
+
+    <section class="policy" id="local">
+      <h2>保存在你设备上的数据</h2>
+      <p class="lede">CLAT 记住的关于你的一切，都是 <code>~/.clat</code> 下的本地文件，不同步、不上传。</p>
+      <ul>
+        <li>会话日志：DSH 兼容的 append-only 对话日志、附件与可重建的本地检索缓存</li>
+        <li>凭证：各厂商模型 API 密钥保存在 <code>~/.clat/credentials.json</code>（0600 权限），配额控制台授权在本机加密存储</li>
+        <li>项目知识：记忆、目标、项目信任决策与插件写授权记录</li>
+        <li>扩展：已安装插件包及其签名与回滚记录</li>
+      </ul>
+      <p>退出 CLAT 后删除 <code>~/.clat</code> 即可一次清空。卸载程序不会动这个目录，删不删由你决定。</p>
+    </section>
+
+    <section class="policy" id="never">
+      <h2>CLAT 绝不做的事</h2>
+      <ul>
+        <li>不注册账户，不建立 CLAT 运营的用户画像</li>
+        <li>不内置遥测、统计或崩溃上报</li>
+        <li>不投放广告，不集成任何追踪 SDK</li>
+        <li>不出售、不共享数据——对话内容不经过我们运营的服务器</li>
+      </ul>
+    </section>
+
+    <section class="policy" id="network">
+      <h2>什么数据会离开设备——仅在你使用时</h2>
+      <p class="lede">以下功能默认全部关闭，只有你配置或主动调用时才会发起网络请求。与所有 HTTPS 流量一样，接收方会看到请求的来源 IP。</p>
+
+      <h3>模型服务商</h3>
+      <p>发送提示词时，指令本身、智能体读取的项目文件内容、附带的图片、工具输出与所需上下文，都会发送给你选定的模型服务——直连厂商（DeepSeek、GLM、Qwen、Kimi、腾讯），或 OpenCode Go 这类聚合多家厂商模型的网关渠道。API 密钥只发送给对应服务、仅用于鉴权；内容按该服务自己的隐私政策处理。</p>
+
+      <h3>插件市场</h3>
+      <p>浏览、搜索或安装 pi.at.cn 插件市场里的插件时，搜索词与安装请求会到达本项目运营的市场服务，我们只保留维持服务所需的技术日志。安装包在激活前会先在你的设备上完成签名校验。</p>
+
+      <h3>更新检查</h3>
+      <p><code>clat upgrade --check</code> 与桌面版更新只会向 GitHub Releases 请求签名的版本清单（<code>latest.json</code>）。</p>
+
+      <h3>网页搜索与抓取</h3>
+      <p>内置 <code>web_search</code> / <code>web_fetch</code> 会把搜索词或目标 URL 发给你配置的搜索后端：配置了密钥走 DeepSeek 搜索 API，无密钥配置则走本项目运营的共享搜索服务。直接 HTTP 抓取在你的机器上完成。</p>
+
+      <h3>控制台配额授权</h3>
+      <p>配额指标可以连接你的服务商控制台，展示你自己的用量与余额。每次授权都由你主动发起，凭证保存在本机，且只用于读取用量数字：</p>
+      <ul>
+        <li><strong>通义千问平台</strong>——通过平台设备流登录：在浏览器里确认授权，得到的凭证在本机静态加密存储（内嵌密钥，模型 API 密钥全程不参与）</li>
+        <li><strong>阿里云百炼</strong>——浏览器回调到本机的一个本地监听端口，把控制台访问令牌交给 CLAT；监听只在登录期间存在（取消登录立即关闭），之后到达的回调不会被存储</li>
+        <li><strong>腾讯混元</strong>——保存腾讯云 API 密钥，仅用于对腾讯云接口发起 TC3 签名的配额读取</li>
+      </ul>
+      <p>授权在同一宿主上的各项目间共享，随时可在「设置 → 授权」中查看或删除；删除即清除已保存的凭证。</p>
+
+      <h3>微信远程</h3>
+      <p>仅当你以 <code>clat serve --im wechat</code> 启动时：你通过微信收发的消息、图片与审批会经过腾讯的消息基础设施，受腾讯隐私政策约束。</p>
+
+      <h3>外部智能体与扩展</h3>
+      <p>你委托给 ACP 外部智能体的任务由你自行安装并信任的本机软件执行，任务内容与结果遵循该智能体及其模型服务商自己的政策。你安装的 MCP 服务器与插件同理：它们是你选择运行的第三方软件，其自身的网络行为与隐私政策适用。</p>
+    </section>
+
+    <section class="policy" id="permissions">
+      <h2>CLAT 可能申请的系统权限</h2>
+      <ul>
+        <li>文件访问仅限你打开的项目与明确授权的目录</li>
+        <li>应用操作（macOS 辅助功能、Windows UI 自动化）在本地读取界面树；敏感控件每次单独确认，决策可在 <code>/ui-consents</code> 复查</li>
+        <li>非完全访问模式下，命令运行在系统沙箱约束下（macOS Seatbelt、Windows 受限令牌）</li>
+        <li>本地工作台 <code>clat serve</code> 默认只监听 127.0.0.1；远程访问需要凭证，会话使用 HttpOnly Cookie，凭证绝不出现在 URL 中</li>
+      </ul>
+    </section>
+
+    <section class="policy" id="parties">
+      <h2>第三方服务</h2>
+      <p>模型内容由你选择的服务处理——DeepSeek、GLM（智谱）、Qwen（阿里）、Kimi（月之暗面）、腾讯混元等直连厂商，或 OpenCode Go（opencode.ai）这类聚合多家厂商模型的网关渠道（其工作区另有数据驻留区域设置）——并适用该服务的隐私政策。版本下载与更新清单来自 GitHub；微信消息经腾讯基础设施传输。插件市场（pi.at.cn）与无密钥共享搜索服务由本项目运营，只保留维持服务所需的技术日志。</p>
+    </section>
+
+    <section class="policy" id="about">
+      <h2>关于本政策</h2>
+      <ul>
+        <li><strong>适用范围</strong>——CLAT 命令行、桌面版、网页工作台与微软商店版</li>
+        <li><strong>未成年人</strong>——CLAT 是开发者工具，不面向未成年人</li>
+        <li><strong>政策变更</strong>——随产品演进可能更新本页，以上方日期为准</li>
+        <li><strong>联系方式</strong>——在 <a href="https://github.com/artec/clat/issues">github.com/artec/clat/issues</a> 提交 issue</li>
+      </ul>
+    </section>
+
+    <footer>
+      <div class="footer-grid">
+        <div>
+          <div>CLAT · command-line agent</div>
+          <p class="footer-tagline">cl + at = 稳如磐石的 Agent 底座。<br>DSH 的 TUI 客户端，Rust 单文件。</p>
+        </div>
+        <div>
+          <p class="col-title">项目</p>
+          <div class="links">
+            <a href="https://github.com/artec/clat">GitHub</a>
+            <a href="https://github.com/artec/clat/releases">Releases</a>
+            <a href="https://github.com/artec/clat/tree/main#development">Development</a>
+          </div>
+        </div>
+        <div>
+          <p class="col-title">文档</p>
+          <div class="links">
+            <a href="https://github.com/artec/clat/blob/main/docs/wasm.md">插件</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/architecture.md">架构</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/usage.md">使用</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>© <span data-year>2026</span> CLAT · <a href="https://github.com/artec/clat/blob/main/LICENSE">MIT License</a></span><a href="../privacy.html" data-lang="en">English</a></div>
+    </footer>
+  </div>
+    <script>
+      // 语言切换：记录手动选择，此后英文政策页的自动跳转不再覆盖。
+      document.querySelectorAll('a[data-lang]').forEach(function (a) {
+        a.addEventListener('click', function () {
+          try { localStorage.setItem('clat-lang', a.getAttribute('data-lang')); } catch (e) { /* 忽略 */ }
+        });
+      });
+      // 版权年份：取当前年，无 JS 时保持 HTML 里预置的年份。
+      var yearEl = document.querySelector('[data-year]');
+      if (yearEl) { yearEl.textContent = String(new Date().getFullYear()); }
+    </script>
+  </body>
+</html>

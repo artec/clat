@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy — CLAT</title>
+  <!-- 语言记忆：与主页同一套约定。?lang=zh|en 显式指定并记录（优先级最高）；
+       否则首访（无记录）按浏览器语言判断——简繁中文（zh-*）跳 /zh/privacy.html，
+       其余留英文；此后每次打开记录当前语言，下次按记录跳转。 -->
+  <script>
+    (function () {
+      try {
+        var pref = null;
+        try { pref = localStorage.getItem('clat-lang'); } catch (e) {}
+        try {
+          var q = new URLSearchParams(location.search).get('lang');
+          if (q === 'zh' || q === 'en') pref = q;
+        } catch (e) {}
+        if (!pref) {
+          var langs = (navigator.languages && navigator.languages.length)
+            ? navigator.languages : [navigator.language || ''];
+          for (var i = 0; i < langs.length; i++) {
+            if (/^zh/i.test(langs[i])) { pref = 'zh'; break; }
+          }
+        }
+        if (pref === 'zh') {
+          try { localStorage.setItem('clat-lang', 'zh'); } catch (e) {}
+          location.replace(location.protocol === 'file:' ? 'zh/privacy.html' : '/zh/privacy.html');
+          return;
+        }
+        try { localStorage.setItem('clat-lang', 'en'); } catch (e) {}
+      } catch (e) { /* 出错留在英文页 */ }
+    })();
+  </script>
+  <meta name="description" content="CLAT privacy policy: local-first agent tooling. What stays on your device, what is sent only to the services you configure, and the controls you have.">
+  <link rel="alternate" hreflang="en" href="https://cl.at.cn/privacy.html">
+  <link rel="alternate" hreflang="zh" href="https://cl.at.cn/zh/privacy.html">
+  <link rel="alternate" hreflang="x-default" href="https://cl.at.cn/privacy.html">
+  <link rel="icon" type="image/png" href="logo.png">
+  <link rel="apple-touch-icon" href="logo.png">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fafafa;
+      --fg: #1f2328;
+      --muted: #656d76;
+      --border: rgba(127, 127, 127, 0.28);
+      --card: rgba(127, 127, 127, 0.07);
+      --accent: #0969da;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --fg: #e6edf3;
+        --muted: #8b949e;
+        --border: rgba(139, 148, 158, 0.32);
+        --card: rgba(139, 148, 158, 0.09);
+        --accent: #58a6ff;
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.65;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+    /* nav（与主页同构：logo 点击回主页） */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 0;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--fg); }
+    .brand:hover { text-decoration: none; }
+    .brand img { width: 28px; height: 28px; border-radius: 7px; }
+    /* logo 字标：默认收起为 CLAT，悬停展开为 cmd-Line AgenT。
+       无底卡、贴左对齐；slot 预留展开宽度，svg 绝对定位，伸缩不引起导航重排。 */
+    .brand .logo-slot { position: relative; margin-top: 3px; height: 44px; user-select: none; }
+    .brand .logo-slot svg {
+      position: absolute; top: 0; left: 0; display: block;
+      width: 52px; height: 44px;
+      transition: width 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+    }
+    .brand .logo-slot svg:hover { width: 158px; }
+    @media (max-width: 480px) { .brand .logo-slot { width: 56px; } }
+    nav .links { display: flex; gap: 20px; font-size: 0.9rem; }
+
+    /* section scaffolding */
+    section { padding: 56px 0; border-top: 1px solid var(--border); }
+    .kicker {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    h2 { font-size: 1.7rem; margin-bottom: 12px; }
+    .lede { color: var(--muted); margin-bottom: 24px; }
+
+    /* 隐私政策页专属：页头与正文排版（沿用主页卡片样式做摘要框） */
+    header.policy-head { padding: 56px 0 44px; }
+    h1 { font-size: 2.3rem; letter-spacing: 0.06em; margin-bottom: 8px; }
+    .updated { color: var(--muted); font-size: 0.85rem; margin-bottom: 22px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px;
+    }
+    .card p { font-size: 0.95rem; }
+    /* 正文限宽：分隔线仍通栏，文本保持可读行宽 */
+    section.policy p, section.policy ul, section.policy h3 { max-width: 760px; }
+    section.policy ul { list-style: none; margin-bottom: 14px; }
+    section.policy li { position: relative; padding-left: 20px; margin-bottom: 9px; font-size: 0.92rem; }
+    section.policy li::before { content: "—"; position: absolute; left: 0; color: var(--muted); }
+    section.policy p { font-size: 0.92rem; margin-bottom: 14px; }
+    section.policy h3 {
+      font-size: 1rem;
+      margin: 30px 0 10px;
+      color: var(--muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    section.policy code, .card code {
+      color: var(--fg);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 6px;
+      font-size: 0.84em;
+    }
+
+    footer { border-top: 1px solid var(--border); padding: 40px 0 32px; color: var(--muted); font-size: 0.85rem; }
+    footer .footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 32px; margin-bottom: 28px; }
+    footer .footer-grid > div:first-child { color: var(--fg); }
+    footer .footer-tagline { margin-top: 6px; }
+    footer .col-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px; }
+    footer .links { display: flex; flex-direction: column; gap: 8px; margin-top: 0; }
+    footer .footer-bottom {
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    /* 手机：品牌独占一行，项目与文档两列并排成一块 */
+    @media (max-width: 640px) {
+      footer .footer-grid { grid-template-columns: 1fr 1fr; gap: 24px; }
+      footer .footer-grid > div:first-child { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="index.html">
+        <img src="logo.png" alt="CLAT logo">
+        <span class="logo-slot">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 370 90" preserveAspectRatio="xMinYMid slice" role="img" aria-label="CLAT">
+            <defs>
+              <style>
+                .char {
+                  fill: var(--fg);
+                  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                  font-size: 38px;
+                  font-weight: 800;
+                }
+
+                /* 基础平移动画配置（带弹性回弹） */
+                .movable {
+                  transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+                }
+
+                /* 收起状态：精确对齐成字距均匀的 CLAT */
+                .move-l { transform: translateX(-74px); }
+                .move-a { transform: translateX(-144px); }
+                .move-t { transform: translateX(-212px); }
+
+                /* 中间折叠组 */
+                .collapsible {
+                  opacity: 0;
+                  pointer-events: none;
+                  transition: opacity 0.25s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+                .fold-1 { transform: translateX(-10px) scale(0.6); transform-origin: 30px 50%; }
+                .fold-2 { transform: translateX(-10px) scale(0.6); transform-origin: 126px 50%; }
+                .fold-3 { transform: translateX(-10px) scale(0.6); transform-origin: 221px 50%; }
+
+                /* 悬停展开状态 (Hover) */
+                svg:hover .movable { transform: translateX(0); }
+                svg:hover .collapsible { opacity: 1; transform: translateX(0) scale(1); }
+              </style>
+            </defs>
+
+            <!-- 文字组（x 平移 34→0，字标贴左） -->
+            <g transform="translate(0, 56)">
+              <!-- 1. C (固定基准) -->
+              <text class="char" x="0" y="0">C</text>
+
+              <!-- 2. md-（横杠按字符级 tspan dx 左移 1 单位微调字距） -->
+              <g class="collapsible fold-1">
+                <text class="char" x="28" y="0">md<tspan dx="-2">-</tspan></text>
+              </g>
+
+              <!-- 3. L (保持在 102px) -->
+              <g class="movable move-l">
+                <text class="char" x="102" y="0">L</text>
+              </g>
+
+              <!-- 4. ine  -->
+              <g class="collapsible fold-2">
+                <text class="char" x="126" y="0">ine </text>
+              </g>
+
+              <!-- 5. A -->
+              <g class="movable move-a">
+                <text class="char" x="196" y="0">A</text>
+              </g>
+
+              <!-- 6. gen -->
+              <g class="collapsible fold-3">
+                <text class="char" x="224" y="0">gen</text>
+              </g>
+
+              <!-- 7. T (微调：x 从 288 -> 290，往右 2px) -->
+              <g class="movable move-t">
+                <text class="char" x="290" y="0">T</text>
+              </g>
+            </g>
+          </svg>
+        </span>
+      </a>
+      <div class="links">
+        <a href="https://github.com/artec/clat">GitHub</a>
+        <a href="https://pi.at.cn">Plugin</a>
+        <a href="https://github.com/artec/clat/blob/main/README.md">Docs</a>
+      </div>
+    </nav>
+
+    <header class="policy-head">
+      <p class="kicker">Privacy</p>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: November 2026 · Applies to the CLAT CLI, desktop client, web workbench, and Microsoft Store edition</p>
+      <div class="card">
+        <p><strong>The short version.</strong> CLAT is local-first: conversations, projects, credentials, and settings live on your device. There are no accounts, no telemetry, no ads, and no CLAT cloud that could collect your data. Traffic leaves your machine only when you configure a model provider or explicitly use a feature that needs the network — and the code is open source, so every claim here can be audited.</p>
+      </div>
+    </header>
+
+    <section class="policy" id="local">
+      <h2>What stays on your device</h2>
+      <p class="lede">Everything CLAT remembers about you is a local file under <code>~/.clat</code>. Nothing here is synced or uploaded.</p>
+      <ul>
+        <li>Session journals — append-only, DSH-compatible conversation logs, with attachments and rebuildable history-search caches</li>
+        <li>Credentials — per-vendor model API keys in <code>~/.clat/credentials.json</code> (0600), and quota-console authorizations encrypted at rest</li>
+        <li>Project knowledge — memory, goals, trust decisions, and granted plugin write permissions</li>
+        <li>Extensions — installed plugin packages with their signatures and rollback records</li>
+      </ul>
+      <p>Quit CLAT and delete <code>~/.clat</code> to erase all of it at once. Uninstalling leaves that directory untouched; whether to remove it is your call.</p>
+    </section>
+
+    <section class="policy" id="never">
+      <h2>What CLAT never does</h2>
+      <ul>
+        <li>No accounts, sign-ups, or CLAT-operated user profiles</li>
+        <li>No telemetry, analytics, or crash-report uploads built into the app</li>
+        <li>No advertising and no tracking SDKs</li>
+        <li>No sale or sharing of data — conversations never pass through a server we operate</li>
+      </ul>
+    </section>
+
+    <section class="policy" id="network">
+      <h2>What leaves your device — only when you use it</h2>
+      <p class="lede">Every feature below is off until you configure or invoke it. As with any HTTPS traffic, the receiving service sees the request's origin IP.</p>
+
+      <h3>Model providers</h3>
+      <p>When you send a prompt, the instruction itself, the project file content the agent reads, attached images, tool results, and the conversation context needed are transmitted to the model service you selected — a direct vendor (DeepSeek, GLM, Qwen, Kimi, Tencent) or a gateway channel such as OpenCode Go that serves many vendors' models. Your API key is sent only to that service, for authentication. The service processes the content under its own privacy policy.</p>
+
+      <h3>Plugin market</h3>
+      <p>Browsing, searching, or installing from the plugin market (pi.at.cn) sends your search terms and package requests to the market service, which this project operates; we keep only the technical logs needed to serve it. Packages are signature-verified on your device before activation.</p>
+
+      <h3>Update checks</h3>
+      <p><code>clat upgrade --check</code> and the desktop updater request a signed version manifest (<code>latest.json</code>) from GitHub Releases.</p>
+
+      <h3>Web search and fetch</h3>
+      <p>The built-in <code>web_search</code> / <code>web_fetch</code> tools send your query or target URL to the search backend you configured: DeepSeek's search API when a key is set, or a shared keyless fallback service operated by this project. Direct HTTP fetches are performed from your machine.</p>
+
+      <h3>Console quota authorizations</h3>
+      <p>The quota indicators can connect to your provider consoles to show your own usage and balance. Each authorization is opt-in, its credential is stored locally, and it is used only to read usage numbers:</p>
+      <ul>
+        <li><strong>Qianwen AI Platform</strong> — sign in through the platform's device flow: you approve in the browser, and the resulting credential is stored locally, encrypted at rest with an embedded key; the model API key is never involved</li>
+        <li><strong>Aliyun Bailian</strong> — the browser calls back to a local listener on this machine and hands CLAT the console access token; the listener exists only during sign-in (cancelling closes it at once), and a callback arriving afterwards is never stored</li>
+        <li><strong>Tencent Hunyuan</strong> — you save a Tencent Cloud API key, used only for TC3-signed quota reads against the Tencent Cloud endpoint</li>
+      </ul>
+      <p>Authorizations are shared across projects on the same Host and can be reviewed or removed any time in <strong>Settings → Authorizations</strong>; removing one deletes the stored credential.</p>
+
+      <h3>WeChat remote</h3>
+      <p>Only if you start <code>clat serve --im wechat</code>: the messages, images, and approvals you exchange through WeChat traverse Tencent's messaging infrastructure, under Tencent's privacy policy.</p>
+
+      <h3>External agents and extensions</h3>
+      <p>Tasks you delegate to an ACP external agent run against software you installed and trust on this machine; the task content and results follow that agent's own policies, including its model provider. The same applies to MCP servers and plugins you install: they are third-party software you chose to run, and their own network behavior and privacy policies apply.</p>
+    </section>
+
+    <section class="policy" id="permissions">
+      <h2>System permissions CLAT may request</h2>
+      <ul>
+        <li>File access is limited to the projects you open and the directories you explicitly grant</li>
+        <li>Application control (macOS Accessibility, Windows UI Automation) reads interface trees locally; sensitive controls ask every time, and decisions are reviewable via <code>/ui-consents</code></li>
+        <li>Outside Full Access, commands run under OS sandbox confinement (macOS Seatbelt, Windows restricted token)</li>
+        <li>The local workbench <code>clat serve</code> binds to 127.0.0.1 by default; remote access requires credentials, sessions use HttpOnly cookies, and credentials never appear in URLs</li>
+      </ul>
+    </section>
+
+    <section class="policy" id="parties">
+      <h2>Third-party services</h2>
+      <p>Model content is processed by the service you choose — a direct vendor such as DeepSeek, GLM (Zhipu), Qwen (Alibaba), Kimi (Moonshot), or Tencent Hunyuan, or a gateway channel such as OpenCode Go (opencode.ai), which serves many vendors' models and carries its own workspace data-residency setting — under that service's privacy policy. Release downloads and update manifests come from GitHub; WeChat messages traverse Tencent's infrastructure. The plugin market (pi.at.cn) and the shared keyless search fallback are operated by this project and keep only the technical logs needed to serve them.</p>
+    </section>
+
+    <section class="policy" id="about">
+      <h2>About this policy</h2>
+      <ul>
+        <li><strong>Scope</strong> — the CLAT command-line tool, desktop client, web workbench, and Microsoft Store edition</li>
+        <li><strong>Children</strong> — CLAT is a developer tool and is not directed to children</li>
+        <li><strong>Changes</strong> — this page may change as CLAT evolves; the date above always reflects the current version</li>
+        <li><strong>Contact</strong> — open an issue at <a href="https://github.com/artec/clat/issues">github.com/artec/clat/issues</a></li>
+      </ul>
+    </section>
+
+    <footer>
+      <div class="footer-grid">
+        <div>
+          <div>CLAT · command-line agent</div>
+          <p class="footer-tagline">cl + at = a rock-solid agent foundation.<br>The TUI client for DSH. A single Rust file.</p>
+        </div>
+        <div>
+          <p class="col-title">Project</p>
+          <div class="links">
+            <a href="https://github.com/artec/clat">GitHub</a>
+            <a href="https://github.com/artec/clat/releases">Releases</a>
+            <a href="https://github.com/artec/clat/tree/main#development">Development</a>
+          </div>
+        </div>
+        <div>
+          <p class="col-title">Docs</p>
+          <div class="links">
+            <a href="https://github.com/artec/clat/blob/main/docs/wasm.md">Plugins</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/architecture.md">Architecture</a>
+            <a href="https://github.com/artec/clat/blob/main/docs/usage.md">Usage</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>© <span data-year>2026</span> CLAT · <a href="https://github.com/artec/clat/blob/main/LICENSE">MIT License</a></span><a href="zh/privacy.html" data-lang="zh">中文</a></div>
+    </footer>
+  </div>
+    <script>
+      // 语言切换：记录手动选择，此后页面打开时的自动跳转不再覆盖。
+      document.querySelectorAll('a[data-lang]').forEach(function (a) {
+        a.addEventListener('click', function () {
+          try { localStorage.setItem('clat-lang', a.getAttribute('data-lang')); } catch (e) { /* 忽略 */ }
+        });
+      });
+      // 版权年份：取当前年，无 JS 时保持 HTML 里预置的年份。
+      var yearEl = document.querySelector('[data-year]');
+      if (yearEl) { yearEl.textContent = String(new Date().getFullYear()); }
+    </script>
+  </body>
+</html>
