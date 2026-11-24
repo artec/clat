@@ -2128,6 +2128,7 @@
   "web.model_response_ready": "模型回复已就绪",
   "web.model_response_streaming": "正在接收模型回复",
   "web.model_route": "模型路由",
+  "web.model_route_label": "{provider} · {model}",
   "web.model_unavailable": "模型不可用",
   "web.models": "模型",
   "web.modified_time_unavailable": "修改时间不可用",

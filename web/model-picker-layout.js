@@ -7,29 +7,15 @@ function compactPresetName(preset) {
   return preset.name.replace(/\s+\(OpenCode Go\)$/, '');
 }
 
-// This is a display-brand hint, never the credential/endpoint vendor identity.
-function compactModelBrand(name, fallback) {
-  for (const [prefix, brand] of [
-    ['DeepSeek', 'DeepSeek'], ['GLM', 'GLM'], ['Qwen', 'Qwen'],
-    ['Kimi', 'Kimi'], ['Hy', 'Hy'], ['MiniMax', 'MiniMax'],
-    ['Claude', 'Anthropic'], ['GPT-', 'OpenAI'], ['Gemini', 'Google'],
-    ['Grok', 'xAI'],
-  ]) {
-    if (name.toLowerCase().startsWith(prefix.toLowerCase())) return brand;
-  }
-  return fallback || '';
-}
-
 function compactPickerCurrent(view) {
   const current = view.current;
   const preset = (view.presets || []).find(item => item.id === current.preset);
   const modelName = preset ? compactPresetName(preset) : current.model;
-  const brand = preset ? compactModelBrand(modelName, preset.vendor)
-    : compactModelBrand(modelName, current.vendor || '');
-  const display = [brand, modelName].filter(Boolean).join(' · ')
-    || CLATI18n.msg('web.not_configured');
+  const display = () => current.vendor && modelName
+    ? CLATI18n.msg('web.model_route_label', { provider: current.vendor, model: modelName })
+    : modelName || CLATI18n.msg('web.not_configured');
   const title = dom['model-picker-current'];
-  title.replaceChildren(el('span', 'model-picker-current-name', () => display));
+  title.replaceChildren(el('span', 'model-picker-current-name', display));
   if (current.image_input) {
     const badge = el('span', 'vision-capability');
     CLATI18n.attribute(badge, 'title', () => CLATI18n.msg('web.accepts_images'));
@@ -37,8 +23,8 @@ function compactPickerCurrent(view) {
     badge.append(svgIcon('vision'));
     title.append(badge);
   }
-  if (preset) {
-    CLATI18n.attribute(title, 'title', () => preset.vendor + ' · ' + display);
+  if (modelName) {
+    CLATI18n.attribute(title, 'title', display);
   } else {
     title.removeAttribute('title');
   }

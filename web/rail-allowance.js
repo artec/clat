@@ -170,7 +170,13 @@ function createRailAllowance(){
   function render(){
     const wallet=allowance?.kind==='money';
     popup.replaceChildren(el('strong','',()=>text(wallet?'wallet':'allowance')));
-    const model=state.workbench?.model?.model;if(model)popup.append(el('p','',model));
+    const {model, vendor} = state.workbench?.model || {};
+    if (model) {
+      const provider = vendor === 'Glm' ? 'GLM' : vendor;
+      popup.append(el('p', '', () => provider
+        ? CLATI18n.msg('web.model_route_label', { provider, model })
+        : model));
+    }
     if(!allowance)return;
     if(wallet)for(const item of allowance.items)CLATRailPopover.fact(popup,text('wallet'),moneyExact(item));
     else for(const item of allowance.items){

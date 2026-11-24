@@ -7,7 +7,7 @@ test('picker groups built-ins by route, preserves custom profiles and aligns to 
     const body = await response.json();
     body.value.current.preset = 'glm-5.3-flash';
     body.value.active_profile = null;
-    body.value.current.vendor = 'GLM Coding Plan';
+    body.value.current.vendor = 'GLM';
     body.value.current.model = 'glm-5.3-flash';
     body.value.current.image_input = true;
     await route.fulfill({ response, json: body });
@@ -85,12 +85,13 @@ test('last selected OpenCode Go preset stays scrollable above thinking controls'
     body.value.active_profile = null;
     body.value.current.preset = 'opencode-grok-4.7';
     body.value.current.model = 'grok-4.7';
-    body.value.current.vendor = 'OpenCode Go';
+    body.value.current.vendor = 'OpenCode';
     body.value.current.image_input = true;
     await route.fulfill({ response, json: body });
   });
   await openWorkbench(page, hostInfo('success'));
   await page.click('#model-picker-trigger');
+  await expect(page.locator('#model-picker-current')).toContainText('OpenCode · Grok 4.7');
   const rows = page.locator('#model-picker-list .model-choice');
   await expect(rows).toHaveCount(12);
   await expect(rows.last()).toHaveAttribute('aria-checked', 'true');

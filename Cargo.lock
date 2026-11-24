@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "clat"
-version = "2.3.11"
+version = "2.3.12"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "clat-core"
-version = "2.3.11"
+version = "2.3.12"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "clat-desktop"
-version = "2.3.11"
+version = "2.3.12"
 dependencies = [
  "base64 0.22.1",
  "clat-core",
@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "clat-wasm-net"
-version = "2.3.11"
+version = "2.3.12"
 dependencies = [
  "brotli-decompressor 5.0.0",
  "bytes",
@@ -6534,7 +6534,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokenplan-quota"
-version = "2.3.11"
+version = "2.3.12"
 dependencies = [
  "base64 0.22.1",
  "hmac",

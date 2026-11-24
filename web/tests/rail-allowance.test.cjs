@@ -1,6 +1,37 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const scope={};vm.runInNewContext(fs.readFileSync('web/rail-allowance.js','utf8').replace(/\r\n/g,'\n'),scope);
 const project=scope.projectRailAllowance,compact=scope.compactRailMoney;
+test('the allowance popover distinguishes providers serving the same model',()=>{
+ const state={workbench:{model:{vendor:'OpenCode',model:'deepseek-v4.1-flash'}}};
+ const node=(tag,cls,text)=>({
+  tag,textContent:typeof text==='function'?text():text,children:[],dataset:{},
+  setAttribute(){},append(...children){this.children.push(...children);},
+  replaceChildren(...children){this.children=children;},
+ });
+ let popup;
+ const ui=Object.assign(scope,{
+  state,el:node,
+  document:{createElementNS:(_,tag)=>node(tag),getElementById:()=>({before(){}})},
+  CLATI18n:{locale:'en',attribute(){},onChange(){},t(key,args){
+   const template=require('../../locales/en.json')[key];
+   return template.replace(/\{(\w+)\}/g,(_,name)=>args[name]);
+  },msg(key,args){return this.t(key,args);}},
+  CLATRailPopover:{progressRing:()=>({element:node('span'),set(){}}),fact(){},
+   attach(_,card){popup=card;return {position(){}};},
+  },
+ });
+ const rail=ui.createRailAllowance();
+ const value={allowance:{status:'available',items:[{kind:'quota',unit:'%',value:'96'}]}};
+ const subtitle=()=>popup.children.find(child=>child.tag==='p')?.textContent;
+ rail.update(value);
+ assert.equal(subtitle(),'OpenCode · deepseek-v4.1-flash');
+ state.workbench.model.vendor='DeepSeek';
+ rail.update(value);
+ assert.equal(subtitle(),'DeepSeek · deepseek-v4.1-flash');
+ state.workbench.model.vendor=null;
+ rail.update(value);
+ assert.equal(subtitle(),'deepseek-v4.1-flash');
+});
 function columns(text){let count=0;for(const char of String(text))count+='万萬亿億'.includes(char)?2:1;return count;}
 test('ring uses remaining percentages from the supplied current allowance only',()=>{
  const a={status:'available',items:[{kind:'quota',unit:'%',value:'62',reset_at:123},{kind:'quota',unit:'%',value:'19'}]};

@@ -106,6 +106,14 @@ pub(crate) fn reap_until<T>(
     }
 }
 
+impl Drop for SupervisedChild {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            eprintln!("clat: owned process cleanup incomplete: {error}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,13 +205,5 @@ mod tests {
             Err(io::Error::other("watch broken"))
         });
         assert_eq!(failure.unwrap_err().to_string(), "watch broken");
-    }
-}
-
-impl Drop for SupervisedChild {
-    fn drop(&mut self) {
-        if let Err(error) = self.shutdown() {
-            eprintln!("clat: owned process cleanup incomplete: {error}");
-        }
     }
 }

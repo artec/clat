@@ -30,7 +30,7 @@ impl TrustedProjectApplication {
     /// 返回值 = 是否发生了该腾空跳转。
     ///
     /// INV-SL7：三个存储依次遗忘且每步幂等，停在存储之间的删除可以续做
-    /// （见 [`Self::finish_interrupted_delete`]）。INV-SL8：选择腾空之后
+    /// （见 `finish_interrupted_delete`）。INV-SL8：选择腾空之后
     /// 才有存储失败时，错误带上「选择已变更」——Host 已经切换，各客户端
     /// 据此重同步，即使本次调用报告的是失败。
     pub fn delete_session(&mut self, id: &str, confirmed: bool) -> Result<bool, ApplicationError> {

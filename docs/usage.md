@@ -2163,7 +2163,8 @@ more-actions menu. Phone drawers
 always show session titles, even if this browser last used a collapsed desktop rail.
 If a background snapshot closes a stale session menu, keyboard focus returns
 to that session's current row rather than a detached element.
-The composer model picker exposes the current route's host-reported thinking
+The composer model picker shows the current route's provider beside the model
+when the Host identifies it. It exposes the route's host-reported thinking
 intensities; models without adjustable thinking show a disabled control.
 Its clickable width follows the model/intensity label, bounded on narrow screens
 with an ellipsis so it stays separate from Send and Stop. On phones, the menu
@@ -3570,6 +3571,8 @@ not cumulative spend.
 Provider allowances retain units/currencies and update times. Unsupported,
 loading, failed and zero balances are distinct. The popover reads the existing
 monitor cache; hovering never causes an additional provider balance query.
+The navigation rail's allowance popover shows the current route as
+`Provider · model` when the provider is known.
 The navigation rail shows that same cached balance as at most three
 characters inside a same-size wallet outline open on the left and right, without a currency sign, when the
 provider reports money rather than a percentage; the exact value and currency
