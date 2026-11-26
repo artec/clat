@@ -440,7 +440,7 @@ test('confirm-gated actions use the in-app dialog when native confirm is unavail
   await expect(page.locator('#session-list li.active')).toHaveCount(0, LIVE);
 });
 
-test('model intensity uses host choices and preserves the composer', async ({ page }, testInfo) => {
+test('model intensity can be saved for the next run while the current run waits for approval', async ({ page }) => {
   let intensity = 'high';
   await page.route('**/api/model.settings.get', async (route) => {
     const response = await fetchBrowserRequest(route);
@@ -451,19 +451,34 @@ test('model intensity uses host choices and preserves the composer', async ({ pa
   });
   await page.route('**/api/model.overrides.set', async (route) => {
     expect(route.request().postDataJSON()).toMatchObject({ field: 'thinking_level', state: 'set', value: 'max' });
-    intensity = 'max';
-    await route.fulfill({ json: { ok: true, value: {} } });
+    const response = await fetchBrowserRequest(route);
+    const body = await response.json();
+    if (body.ok) intensity = body.value.override.value;
+    await route.fulfill({ response, json: body });
   });
-  await openWorkbench(page, hostInfo('success'));
+  await openWorkbench(page, hostInfo('run-command'));
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
+  await page.fill('#prompt', 'Start a run');
+  await page.click('#send');
+  const approval = page.locator('.approval-card').last();
+  await expect(approval).toBeVisible(LIVE);
   await page.fill('#prompt', 'Keep this draft');
   await page.click('#model-picker-trigger');
   await expect(page.locator('#model-thinking')).toHaveValue('1', LIVE);
+  await expect(page.locator('#model-thinking')).toBeEnabled();
+  const save = page.waitForResponse('**/api/model.overrides.set');
   await page.locator('#model-thinking').press('End');
+  const result = await (await save).json();
+  expect(result.value?.override).toEqual({state: 'set', value: 'max'});
   await expect(page.locator('#model-thinking')).toBeEnabled(LIVE);
   await expect(page.locator('#model-thinking')).toHaveValue('2');
   await expect(page.locator('#prompt')).toHaveValue('Keep this draft');
-  await page.emulateMedia({ colorScheme: 'dark' });
-
+  await page.keyboard.press('Escape');
+  await expect(approval).toBeVisible();
+  await approval.locator('button.ghost').click();
+  await expect(page.locator('.verdict.completed')).toBeVisible(LIVE);
 });
 
 test('session details show a copyable context report without changing the conversation or draft', async ({ page }) => {
@@ -2171,6 +2186,66 @@ test('multiple image draft preserves ordering through image-only admission', asy
   await expect(page.locator('.attachment-chip')).toHaveCount(0, LIVE);
   const user = page.locator('.msg.user').last();
   await expect(user.locator('.message-attachment-preview')).toHaveCount(2, LIVE);
+  const approval = page.locator('.approval-card').last();
+  await expect(approval).toBeVisible(LIVE);
+  await approval.locator('button.ghost').click();
+  await expect(page.locator('.verdict.completed')).toBeVisible({ timeout: 60_000 });
+});
+
+test('conversation attachments copy PNG and JPEG image pixels from the menu and preview', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.copiedImages = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        async write([item]) {
+          const png = await item.getType('image/png');
+          const bitmap = await createImageBitmap(png);
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          context.drawImage(bitmap, 0, 0);
+          window.copiedImages.push([bitmap.width, bitmap.height, ...context.getImageData(0, 0, 1, 1).data]);
+          bitmap.close();
+        },
+      },
+    });
+  });
+  await openWorkbench(page, hostInfo('run-command'));
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect(page.locator('#send')).toBeEnabled(LIVE);
+  const jpeg = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 24;
+    canvas.height = 16;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#808080';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg').split(',')[1];
+  });
+  await page.setInputFiles('#attachment-input', [
+    { name: 'png-attachment.png', mimeType: 'image/png', buffer: solidPng(16, 24, [32, 64, 96]) },
+    { name: 'jpeg-attachment.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(jpeg, 'base64') },
+  ]);
+  await expect(page.locator('#attachment-rail .is-uploaded')).toHaveCount(2, LIVE);
+  await page.evaluate(() => rpc('permission.set', { mode: 'read-only' }));
+  await page.click('#send');
+  const attachments = page.locator('.msg.user').last().locator('.message-attachment');
+  await expect(attachments.locator('img[src^="blob:"]')).toHaveCount(2, LIVE);
+
+  await attachments.filter({ hasText: 'png-attachment.png' }).click({ button: 'right' });
+  await page.locator('[role="menuitem"][data-action="copy_image"]').click();
+  await expect.poll(() => page.evaluate(() => window.copiedImages), LIVE).toEqual([
+    [16, 24, 32, 64, 96, 255],
+  ]);
+
+  await attachments.filter({ hasText: 'jpeg-attachment.jpg' }).click();
+  const preview = page.locator('#image-lightbox');
+  await expect(preview).toBeVisible();
+  await preview.locator('.image-lightbox-copy').click();
+  await expect.poll(() => page.evaluate(() => window.copiedImages), LIVE).toEqual([
+    [16, 24, 32, 64, 96, 255], [24, 16, 128, 128, 128, 255],
+  ]);
+  await page.keyboard.press('Escape');
   const approval = page.locator('.approval-card').last();
   await expect(approval).toBeVisible(LIVE);
   await approval.locator('button.ghost').click();

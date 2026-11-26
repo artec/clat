@@ -30,7 +30,7 @@ lifecycle as other built-ins. They are independently removable catalog entries,
 not UI special cases. Configurability follows the explicit Application service
 contract below. The current workflow/intelligence set is
 `builtin.plan_mode`, `builtin.skills`, `builtin.language_intelligence`,
-`builtin.context_inspector`, `builtin.memory`, `builtin.goal`, and
+`builtin.context_inspector`, `builtin.memory`, `builtin.goal`,
 `builtin.subagent`, and `builtin.task`. Omitting one removes its commands/tools/service; closing the
 Trusted Project scope revokes its leases and joins owned workers.
 
@@ -691,14 +691,14 @@ methods, independent of session selection, journal events and `RunEvent`.
 built-in row carries `id`, `runtime: "rust-builtin"`, `version`,
 `management: "bundled"`, localized name/summary descriptors and `scope`.
 Its `instances` array carries the canonical `project` path, `phase` (`active` or
-`disabled`), `configurable`, `disabled_by`, `provides`, `requires`, `optional`,
+`disabled`), `configurable`, `disabled_by`, `required_by`, `provides`, `requires`, `optional`,
 `tools` and `commands`. These are read-only startup-plan/manager/registry
 projections; no credential values
 are included. A Host with no mounted projects returns an empty array.
 `plugin.prepare` takes an id and action (`install`, `update`, `enable`,
 `rollback`, `configure`); `plugin.commit` takes the returned ticket,
 `accept_capabilities: true` and optional `configs` keyed by package id.
-`plugin.remove` takes an id and `disable` or `uninstall`. A lost response is
+`plugin.remove` takes an id and an `action` of `disable` or `uninstall`. A lost response is
 reconciled with `plugin.list`, never an optimistic browser installation cache.
 
 See [WASM authoring](wasm.md), [DSH porting](dsh-plugins.md),

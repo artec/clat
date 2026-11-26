@@ -86,9 +86,10 @@ DSH system prompt 通过带 CLAT 标记的 MCP prompt 发布。CLAT 只导入明
 `cwd` 变量，并在首个 run 开始前与 MCP 工具一起冻结 registry。普通 MCP
 prompt 不会未经用户选择自动进入系统指令。
 
-当前 CLAT 的 `PromptRegistry` 只接受 system instruction，因此 adapter
-会在 MCP 元数据中保留 DSH runtime-context snapshot，但 CLAT 暂不把它作为
-独立 user-role snapshot 注入。这是已知的宿主能力缺口，不应把
+CLAT 的 `PromptRegistry` 同时接受 system instruction 与 runtime-context：
+adapter 把 DSH runtime-context snapshot 放进 MCP 元数据
+`io.artec.clat/runtimeContext`，CLAT 在连接期读取它，并作为 user-role
+snapshot 并入请求尾部。它是连接期快照，不是 DSH 每轮的动态求值，因此不应把
 `ctx.systemPrompt.context()` 写成已端到端等价。
 
 ## 仍需原生宿主实现的部分
@@ -100,7 +101,8 @@ prompt 不会未经用户选择自动进入系统指令。
 工具只开放 `list_files`、`read_file`、`search`、`write_file`、`edit_file`
 与 `run_command`，仍依次经过当前 run 的权限策略、项目路径围栏、取消令牌
 和 `ToolExecutionPipeline`。`run_command` 现在还经过同一个 run-owned
-ProcessService：macOS 使用当前 Seatbelt 策略，其他平台如实报告无强制隔离的
+ProcessService：macOS 使用当前 Seatbelt 策略，Windows 使用 restricted-token ACL
+沙盒（部分强制：限制写入，读取与网络开放），Linux 等其他平台如实报告无强制隔离的
 fallback；这不等于 adapter 子进程本身被沙箱化。其中 fs 投影的读写路径都被收紧到当前项目根；
 不继承 CLAT agent 原生读工具“显式绝对路径可读”的宽松能力。
 `ctx.fs.writeText` 表达的是完整文件写入，adapter 显式传递
@@ -115,7 +117,7 @@ fallback；这不等于 adapter 子进程本身被沙箱化。其中 fs 投影�
 - settings、commands、credentials、UI/Web 面板；
 - Cordis scope chain、isolate/intercept、动态依赖重启、插件热更新；
 - tool pre/post waterfall、并发策略、`finalizeContent` 与完整 presentation；
-- agent-scoped prompt shadowing、`toolOrder` 配置和 runtime-context 的角色语义。
+- agent-scoped prompt shadowing、`toolOrder` 配置和 runtime-context 的每轮动态求值。
 
 插件若把这些服务列为静态必需 `inject`，adapter 会在启动时失败并列出缺失
 项；若只通过 `ctx.inject()` 进行可选 UI 接线，缺失时跳过回调并写 stderr。

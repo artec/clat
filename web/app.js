@@ -202,7 +202,7 @@ function setMarkdownLinkActions(node, getItems, primary) {
   const menu = event => {
     const items = getItems();
     if (!items.length) { updateRunState(CLATI18n.msg('web.local_link_unavailable')); return; }
-    node.dispatchEvent(new Event('clat:markdown-link-menu', {bubbles:true}));
+    node.dispatchEvent(new Event('clat:transcript-menu-open', {bubbles:true}));
     if (event?.button === 2) editorMenu(items, node, event.clientX, event.clientY);
     else editorPopup(items, node);
   };
@@ -1993,6 +1993,8 @@ function clearTranscriptAttachmentUrls() {
   state.transcriptAttachmentUrls.clear();
 }
 
+const transcriptImageBlobs = new WeakMap();
+
 async function loadTranscriptImage(img, attachment) {
   try {
     let response;
@@ -2017,6 +2019,7 @@ async function loadTranscriptImage(img, attachment) {
       return;
     }
     state.transcriptAttachmentUrls.add(url);
+    transcriptImageBlobs.set(img, blob);
     img.src = url;
     img.classList.remove('is-loading');
     img.closest('.message-attachment')?.classList.remove('is-unavailable');
@@ -2024,6 +2027,63 @@ async function loadTranscriptImage(img, attachment) {
     img.alt = CLATI18n.msg("web.dynamic_value_unavailable", {value1:(attachment.display_name || 'image')}, "{value1} unavailable");
     img.closest('.message-attachment')?.classList.add('is-unavailable');
   }
+}
+
+async function transcriptImagePng(blob) {
+  if (blob?.type === 'image/png') return blob;
+  if (blob?.type !== 'image/jpeg') throw new Error('Attachment image unavailable');
+
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  try {
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob(png => png ? resolve(png) : reject(new Error('PNG encoding failed')), 'image/png');
+    });
+  } finally {
+    bitmap.close();
+    canvas.width = canvas.height = 1;
+  }
+}
+
+async function copyTranscriptImage(image) {
+  try {
+    const clipboard = navigator.clipboard;
+    if (!clipboard?.write || typeof ClipboardItem !== 'function') throw new Error('Image clipboard unavailable');
+    // WebKit needs write() within the click gesture. Only the image data waits.
+    const png = transcriptImagePng(transcriptImageBlobs.get(image));
+    void png.catch(() => {});
+    await clipboard.write([new ClipboardItem({'image/png': png})]);
+  } catch (_) {
+    throw CLATI18n.error(CLATI18n.msg('web.copy_failed'));
+  }
+}
+
+function bindAttachmentMenu(card, image) {
+  card.setAttribute('aria-haspopup', 'menu');
+  const item = {
+    key: 'copy_image',
+    label: () => CLATI18n.msg('web.copy_image'),
+    icon: 'copy',
+    run: async () => {
+      await copyTranscriptImage(image);
+      updateRunState(CLATI18n.msg('web.copied'));
+    },
+  };
+  card.addEventListener('contextmenu', event => {
+    if (!image.src) return;
+    event.preventDefault();
+    editorMenu([item], card, event.clientX, event.clientY);
+  });
+  card.addEventListener('keydown', event => {
+    if (image.src && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+      event.preventDefault();
+      card.dispatchEvent(new Event('clat:transcript-menu-open', {bubbles: true}));
+      editorPopup([item], card);
+    }
+  });
 }
 
 function addMessageAttachments(attachments) {
@@ -2040,15 +2100,16 @@ function addMessageAttachments(attachments) {
     CLATI18n.bind(label, "textContent", () => `${name} · ${dimensions}`);
     card.append(image, label);
     card.addEventListener('click', () => {
-      if (image.src) openImageLightbox(image.src, image.alt);
+      if (image.src) openImageLightbox(image);
     });
+    bindAttachmentMenu(card, image);
     rail.appendChild(card);
     void loadTranscriptImage(image, attachment);
   }
   return rail;
 }
 
-function openImageLightbox(src, label) {
+function openImageLightbox(source) {
   let dialog = document.getElementById('image-lightbox');
   if (!dialog) {
     dialog = document.createElement('dialog');
@@ -2059,13 +2120,19 @@ function openImageLightbox(src, label) {
     CLATI18n.bind(close, "title", () => CLATI18n.msg("web.close_image_preview", {}, "Close image preview"));
     close.addEventListener('click', () => dialog.close());
     const image = el('img', 'image-lightbox-image');
-    dialog.append(close, image);
+    const copy = copyActionButton(() => CLATI18n.msg('web.copy_image'), () => copyTranscriptImage(image));
+    copy.classList.add('image-lightbox-copy');
+    dialog.append(close, copy, image);
     dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+    dialog.addEventListener('close', () => {
+      if (!dialog.open) transcriptImageBlobs.delete(image);
+    });
     document.body.appendChild(dialog);
   }
   const image = dialog.querySelector('img');
-  image.src = src;
-  image.alt = label;
+  transcriptImageBlobs.set(image, transcriptImageBlobs.get(source));
+  image.src = source.src;
+  image.alt = source.alt;
   if (!dialog.open) dialog.showModal();
 }
 
@@ -3314,7 +3381,7 @@ function syncInteractionControls() {
   dom['attachment-input'].disabled = dom['attachment-open'].disabled;
   dom['model-picker-trigger'].disabled = locked || state.modelSelectionPending;
   const thinking = document.getElementById('model-thinking');
-  thinking.disabled = locked || state.runActive || state.modelSelectionPending
+  thinking.disabled = locked || state.modelSelectionPending
     || thinking.dataset.adjustable !== 'true';
   const fresh = dom['session-list'].closest('.project-group')?.querySelector('[data-action="new-project-session"]');
   if (fresh) fresh.disabled = locked;
@@ -4028,7 +4095,7 @@ document.getElementById('inspector-context').addEventListener('click', async (ev
 document.getElementById('model-thinking').addEventListener('change', async (event) => {
   const slider = event.currentTarget;
   const value = JSON.parse(slider.dataset.levels||'[]')[Number(slider.value)];
-  if (!value || slider.disabled || state.modelSelectionPending || state.runActive || state.switching || state.compactionActive) return;
+  if (!value || slider.disabled || state.modelSelectionPending || state.switching || state.compactionActive) return;
   state.modelSelectionPending = true;
   slider.dataset.saving = '';
   slider.disabled = true;

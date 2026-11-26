@@ -64,11 +64,11 @@ The preset catalog configures the OpenAI-compatible adapter:
 
 Vision capability is hardcoded per preset, never probed at runtime: the
 image-input routes are `deepseek-flash`, `qwen4-max`,
-`qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, and `hy4`, plus
+`qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, `hy4`, and `hy4-flash`, plus
 `glm-5.3-flash` and `glm-5.4` (both verified for image tool results; 5.4
 reuses the Flash vision matrix) — the vendor-declared
 routes follow official vendor documentation (Hy 4 per the 2026-11-07 owner
-ruling), the GLM Flash route is proven by CLAT's own live probe, and the ten
+ruling, Hy 4 Flash per the 2026-11-18 owner confirmation), the GLM Flash route is proven by CLAT's own live probe, and the ten
 OpenCode Go vision routes (`opencode-deepseek-v4.1-flash`,
 `opencode-kimi-k3.1-pro`, `opencode-kimi-k3`, `opencode-glm-5.3-flash`,
 `opencode-qwen4-max`, `opencode-minimax-m3`, `opencode-claude-haiku-5-5`,
@@ -151,9 +151,10 @@ parameters actually sent.
 GLM 5.3 does not accept disabled reasoning. The status monitor reports Coding
 Plan quota when the provider endpoint makes it available.
 
-The GLM 5.3 Flash preset uses the same Coding endpoint with the
-probe-verified text+image route, a 131,072-token output limit, and a 1M context
-window. Its request policy sends at most five PNG/JPEG images of at most
+The GLM 5.3 Flash and GLM 5.4 presets use the same Coding endpoint with the
+probe-verified text+image route (5.4 reuses the Flash vision matrix), a
+131,072-token output limit, and a 1M context
+window. Their request policy sends at most five PNG/JPEG images of at most
 5,000,000 bytes each. A newly submitted message outside that frozen policy is
 rejected before provider I/O rather than partially sending its images. Across
 history, core also limits one request to 12 image blocks and 20,000,000
@@ -163,7 +164,7 @@ latest user turn is never silently degraded. Final adapter projection applies
 the same boundary to storage/integrity failures: an unavailable current image
 or current-turn tool image fails before network I/O with a path-free error,
 while an unavailable historical image remains a visible path-free notice so a
-damaged old session can still continue. Because this route also verified
+damaged old session can still continue. Because these routes also verified
 direct image tool results, visual runs expose CLAT's fenced `view_image` tool;
 text-only presets do not.
 
@@ -194,7 +195,8 @@ shape falls back to the Aliyun default. The settings radio mirrors this
 restored entry (`model.settings.get` reports it as `qwen_entry`), so the
 selected option matches the endpoint actually in effect. Console-credential quota (2026-11-22): on the Qianwen entry the
 quota icon in the left rail can sign in through the platform's device flow —
-click the ring with the key glyph, approve in the browser, and the per-window
+click the ring with the key glyph to open **Settings → Authorizations** for
+that platform, approve in the browser, and the per-window
 usage percentages appear (credentials are stored locally, encrypted at rest
 with an embedded key; the model API key is never involved). The Aliyun
 entry works the same way through its own console sign-in (2026-11-22): the
@@ -217,10 +219,11 @@ other way. The callback page itself is confirmed by a reply that repeats
 `Access-Control-Allow-Origin: *` (2026-11-23: without it the page never saw
 the reply and the browser tab hung open after authorizing, even though the
 token had already reached this machine).
-In Web and Desktop, open **Settings → Authorizations** to manage the Qianwen
-and Tencent quota credentials from any model or project. Start or repeat the
-Qianwen browser authorization, save or replace the Tencent Cloud API key, and
-choose **Refresh all** to refresh the plan quotas. Removing an authorization
+In Web and Desktop, open **Settings → Authorizations** to manage the Qianwen,
+Aliyun Bailian and Tencent quota credentials from any model or project. Start
+or repeat the Qianwen or Aliyun Bailian browser authorization, save or replace
+the Tencent Cloud API key, and choose **Refresh all** to refresh the plan
+quotas. Removing an authorization
 deletes the Host's saved quota credential. Model API keys are managed in
 **Models**. Authorizations are shared across projects on the same Host.
 
@@ -248,12 +251,14 @@ Context caching is implicit. Usage parsing accepts both
 token field. CLAT does not send explicit `cache_control`, whose availability
 and miss pricing differ from this endpoint's documented implicit cache.
 
-There is no public balance endpoint for the plan, so the status surface shows
-cache and context but does not invent a Token segment.
+The model API key itself has no public balance endpoint, so without a console
+authorization the status surface shows cache and context but does not invent a
+Token segment. Authorize in **Settings → Authorizations** (see above) to show
+the per-window quota percentages.
 
 ### Kimi Coding Plan
 
-Settings → Models displays a **Plus (256K) / Pro or higher (1M)** radio
+Settings → Models displays a **Plus / Pro or higher** radio
 selection beside the Kimi Coding Plan heading, matching the Qwen Token Plan
 heading controls. The user-selected subscription tier is saved as a vendor-wide
 preference in `settings.json` (`kimiTier`), independently of the active model
@@ -333,7 +338,8 @@ plans and deduct by model id.
 Console-credential quota (2026-11-22): the model key cannot read quota.
 TokenHub exposes it through the Tencent Cloud OpenAPI
 (`tokenhub.tencentcloudapi.com`, TC3-signed). The rail quota icon offers a
-key-glyph ring on this route: click it and paste a cloud **SecretId /
+key-glyph ring on this route: click it to open **Settings → Authorizations**
+and paste a cloud **SecretId /
 SecretKey** pair (create one in the Tencent Cloud console, ideally on a
 read-only sub-account). The remaining-credits percentage is computed from
 the provider-reported total/used; the hover popover and the authorization
@@ -351,8 +357,9 @@ calling guide documents a `reasoning_effort` parameter (default `high`) on
 the TokenHub platform API, but the plan subscription endpoint has not been
 re-probed, so the preset keeps sending no thinking parameters. Saved
 configurations referencing `hy4-preview` simply stop resolving to a
-preset. The GA vision capability is not enabled: the plan's official model
-list still notes that multimodal input is not supported on this endpoint.
+preset. Image input is enabled for `hy4` (2026-11-07 owner ruling) and
+`hy4-flash` (owner confirmation, 2026-11-18) through the declared vision
+capability, overriding the earlier text-only reading of the plan's model list.
 
 All other parameters are pinned by the TC-0 live probe
 (`docs/research/tc0-probe/`, 2026-09-02) and confirmed unchanged by the GA
@@ -383,10 +390,11 @@ spec table (1024k total window, 960k max input, 64k max output):
   streaming); a single real usage or a partial-zero one still passes through.
 - Tool calling follows the OpenAI shape, including the `index` field on
   streamed `tool_calls`.
-- The model is text-only, and the endpoint **silently drops** image content
-  parts — it answers blind with HTTP 200 instead of rejecting. CLAT's
-  text-only capability gate is therefore the enforcing side; do not bypass it
-  via a custom profile expecting image support.
+- Image input is declared for both presets (`OFFICIAL_VISION_CAPS`: PNG/JPEG,
+  at most eight images per request, at most 4 MiB each). An earlier probe
+  concluded that the endpoint silently drops image parts and answers blind with
+  HTTP 200; the 2026-11-07 and 2026-11-18 owner rulings overturned that
+  reading, and CLAT now routes images to these presets.
 - Error signatures: bad key → `401 not_authorized`; unknown model →
   `400 code 20033`.
 
@@ -411,7 +419,7 @@ GLM-5.3 line, Qwen4, MiniMax M3) plus four overseas closed models added by
 the owner on 2026-11-19 (Claude Haiku 5.5, GPT-6 Luna, Gemini 4 Argon,
 Grok 4.7). The gateway is OpenAI-compatible; preset ids carry an
 `opencode-` prefix because four gateway model ids collide with the direct
-Connection-plan presets (`glm-5.4`, `glm-5.3`, `glm-5.3-flash`, `qwen4-max`,
+Connection-plan presets (`glm-5.3`, `glm-5.3-flash`, `qwen4-max`,
 `deepseek-v4-pro`) — the `model` field still uses the raw gateway id.
 Context and output values are pinned from the gateway's public `/v1/models`
 snapshot (including non-power-of-two originals — GPT-6 Luna's
@@ -580,15 +588,17 @@ token is their outer lifetime. Internal model consumers use explicit budgets:
 |---|---:|---:|
 | automatic session title | 15 s | 1 |
 | manual prompt suggestion (utility) | 15 s | 1 |
-| compaction map/reduce | 60 s | 8 |
+| extension sampling | 120 s | 2 |
+| compaction map/reduce | none | 2 per failed request |
 
 A deadline is attached to a child `CancelToken`, not only to retry sleep. It
 therefore bounds connection setup, response headers, a silent SSE body, and
 backoff together. Provider connect/header/global timeouts are clamped to the
 remaining time.
 
-Map/reduce consumers share one retry wrapper, so the attempt cap covers the
-whole operation instead of resetting for each subrequest.
+Compaction map/reduce adds no total deadline and no job-wide attempt cap: each
+failed summary request is retried once (two attempts, 1 s backoff), and history
+length never limits the job. The caller's cancellation token still ends it.
 
 ## Interactive tool arguments
 

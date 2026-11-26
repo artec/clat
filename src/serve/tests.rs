@@ -2591,6 +2591,57 @@ fn prompt_send_is_busy_while_a_run_is_active() {
 }
 
 #[test]
+fn thinking_override_during_run_applies_only_to_the_next_run() {
+    let gate = Arc::new(SteerGate::default());
+    let (handle, storage, project) = spawn_serve_observed(
+        "serve-next-run-thinking",
+        TestBehavior::Steer(Arc::clone(&gate)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+        |app| {
+            app.update_model_config::<_, crate::ApplicationError>(|config| {
+                config.endpoint = "https://api.deepseek.com".into();
+                Ok(())
+            })
+            .unwrap();
+        },
+    );
+    let update = |level| {
+        post_rpc_json(
+            handle.addr,
+            TEST_TOKEN,
+            "model.overrides.set",
+            &serde_json::json!({"field":"thinking_level","state":"set","value":level}).to_string(),
+        )
+        .1
+    };
+    assert_eq!(update("high")["ok"], true);
+    let mut client = SseClient::connect(handle.addr);
+    prompt_send(handle.addr, "start work");
+    gate.wait_entered();
+    let updated = update("max");
+    let (_, queued) = post(
+        handle.addr,
+        TEST_TOKEN,
+        "steer.send",
+        r#"{"text":"also run the tests"}"#,
+    );
+    gate.release();
+    assert_eq!(updated["ok"], true, "{updated}");
+    assert_eq!(updated["value"]["override"]["value"], "max");
+    assert_eq!(queued.unwrap()["outcome"], "queued");
+    client.wait_settled();
+    prompt_send(handle.addr, "next run");
+    client.wait_settled();
+    let efforts = gate.request_efforts.lock().unwrap();
+    assert_eq!(
+        *efforts,
+        [Some("high".into()), Some("high".into()), Some("max".into())]
+    );
+    drop(efforts);
+    cleanup(handle, &storage, &project);
+}
+
+#[test]
 fn session_compact_rpc_is_durable_replayable_and_releases_the_frontend_slot() {
     let (handle, storage_root, project_root) =
         spawn_serve("serve-session-compact", TestBehavior::Success);
@@ -4715,5 +4766,24 @@ fn selected_next_turn_requires_scope_and_preserves_other_queued_items() {
     .to_string();
     let (_, refused) = post_rpc_json(handle.addr, TEST_TOKEN, "queue.select", &forged);
     assert_eq!(refused["ok"], false, "receipts must remain session-scoped");
+    cleanup(handle, &storage, &project);
+}
+
+/// 不变量：设置页发起的 `model.preset.tier` 必须能经真实 HTTP 路由到达
+/// 分发器——它曾只在 `models::dispatch` 里实现，却漏登 `RPC_METHODS`，
+/// 浏览器收到 `unknown RPC method`。
+#[test]
+fn model_preset_tier_http_route_switches_kimi_tier() {
+    assert!(protocol::RPC_METHODS.contains(&"model.preset.tier"));
+    let (handle, storage, project) =
+        spawn_serve("serve-kimi-tier", TestBehavior::RunCommandPerTurn);
+    for tier in ["pro", "plus"] {
+        let body = serde_json::json!({ "tier": tier }).to_string();
+        let (_, reply) = post_rpc_json(handle.addr, TEST_TOKEN, "model.preset.tier", &body);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["value"]["tier"], tier);
+        let (_, view) = post_rpc_json(handle.addr, TEST_TOKEN, "model.settings.get", "{}");
+        assert_eq!(view["value"]["kimi_tier"], tier, "{view}");
+    }
     cleanup(handle, &storage, &project);
 }

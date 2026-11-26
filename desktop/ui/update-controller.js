@@ -63,7 +63,11 @@
         await refresh().catch(() => {}); if (tracked) request = null; emit();
       }
     }
-    return {snapshot, refresh, act,
+    async function openUpdate() {
+      await refresh();
+      if (!info.updateAvailable && !info.downloaded) await act('check');
+    }
+    return {snapshot, refresh, act, openUpdate,
       subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
       start() { if (timer !== null) return; void refresh().catch(() => {}); timer = setInterval(() => {
         ticks++; if (request || info.updateBusy || visible() || ticks % 10 === 0) void refresh().catch(() => {});

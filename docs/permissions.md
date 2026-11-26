@@ -128,12 +128,14 @@ Each tool declares one `ToolEffect`:
 | `Write` | file or external-state mutation |
 | `Execute` | process or command execution |
 | `Destructive` | mutation with destructive or insufficiently declared semantics |
+| `UIStructureRead` | read-only inspection of an application's accessibility tree, including waits (macOS/Windows) |
+| `UIAction` | dispatching an approved semantic action to an application (macOS/Windows) |
 
 `SessionWrite` is narrow: a tool that also touches project files, processes,
 or the network must not use it.
 
 For `clat exec` and other classic headless clients, `SafeByDefault` allows only
-`Pure`, `Read`, and `SessionWrite`; every other effect asks. This is identical
+`Pure`, `Read`, `SessionWrite`, and `UIStructureRead`; every other effect asks. This is identical
 to the Read Only decision column, but it is not a journaled interactive mode.
 
 ## Interactive approval

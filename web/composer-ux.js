@@ -447,15 +447,14 @@ async function confirmAttachmentSelection() {
   return true;
 }
 
-async function copyMessageText(button, text) {
+async function copyWithFeedback(button, write) {
   if (button.disabled) return;
   const iconOnly = button.classList.contains('message-action-icon');
   const label = button.textContent;
   button.disabled = true;
   let feedback;
   try {
-    if (!navigator.clipboard) throw CLATI18n.error(CLATI18n.msg('web.clipboard_unavailable'));
-    await navigator.clipboard.writeText(text);
+    await write();
     feedback = 'web.copied';
     if (iconOnly) button.replaceChildren(svgIcon('check'));
   } catch (_) { feedback = 'web.copy_failed'; }
@@ -472,7 +471,7 @@ async function copyMessageText(button, text) {
   }, 1600);
 }
 
-function copyTextButton(label, source, iconOnly = false) {
+function copyActionButton(label, write, iconOnly = false) {
   const readLabel=()=>typeof label==='function'?label():label;
   const button = iconOnly ? el('button','message-action-icon message-copy icon-button') : el('button','text-action',readLabel);
   button.type = 'button';
@@ -482,8 +481,12 @@ function copyTextButton(label, source, iconOnly = false) {
     if(!iconOnly)CLATI18n.bind(button,'textContent',readLabel);
   };
   button.restoreCopyLabel();if(iconOnly)button.append(svgIcon('copy'));
-  button.addEventListener('click', () => { void copyMessageText(button, source()); });
+  button.addEventListener('click', () => { void copyWithFeedback(button, write); });
   return button;
+}
+
+function copyTextButton(label, source, iconOnly = false) {
+  return copyActionButton(label, () => navigator.clipboard.writeText(source()), iconOnly);
 }
 
 function addMessageCopyAction(node, source, reply = false) {
@@ -520,7 +523,7 @@ function installSelectionQuote() {
     else if (event.button === 0) awaitingSelectionGesture = false;
   }, true);
   dom.transcript.addEventListener('contextmenu', suppress, true);
-  dom.transcript.addEventListener('clat:markdown-link-menu', suppress);
+  dom.transcript.addEventListener('clat:transcript-menu-open', suppress);
   document.addEventListener('keydown', event => {
     if (!awaitingSelectionGesture || event.target.closest?.('[role="menu"]')) return;
     const extendsSelection = event.shiftKey && /^(Arrow(Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(event.key);

@@ -14,7 +14,6 @@ use tauri::{
 };
 
 const ID: &str = "clat-host";
-const UPDATE: &str = "desktop-check-update";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Runtime {
@@ -59,17 +58,12 @@ impl View {
             Err(_) if !was_visible => return None,
             Err(_) => None,
         };
-        let update = runtime.as_ref().and_then(|runtime| {
-            if !discovery::automatic_checks_enabled(&config.preferences) {
-                return None;
-            }
-            available_update(
-                release?,
-                &runtime.version,
-                installed,
-                &super::super::update::target(),
-            )
-        });
+        let update =
+            if runtime.is_some() && discovery::automatic_checks_enabled(&config.preferences) {
+                available_update(release, installed, &crate::update::target())
+            } else {
+                None
+            };
         Some(Self {
             runtime,
             update,
@@ -101,16 +95,8 @@ impl View {
     }
 }
 
-fn available_update(
-    release: &Value,
-    running: &str,
-    installed: &str,
-    target: &str,
-) -> Option<String> {
-    discovery::newer_formal_version(release, running)
-        .ok()
-        .flatten()?;
-    crate::policy::validate_update(release, installed, target).ok()
+fn available_update(release: Option<&Value>, installed: &str, target: &str) -> Option<String> {
+    crate::policy::validate_update(release?, installed, target).ok()
 }
 
 fn build(
@@ -123,15 +109,15 @@ fn build(
     let item = |id: &str, title: &str, enabled| -> tauri::Result<()> {
         menu.append(&MenuItem::with_id(app, id, title, enabled, None::<&str>)?)
     };
+    item("host-state", locale.text(view.status()), false)?;
+    if let Some(version) = view.version(&locale) {
+        item(tray::OPEN_UPDATE, &version, view.update.is_some())?;
+    }
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
     if let Some(live) = live {
         menu.append(&activity::submenu(app, &locale, live)?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
-    item("host-state", locale.text(view.status()), false)?;
-    if let Some(version) = view.version(&locale) {
-        item(UPDATE, &version, view.update.is_some())?;
-    }
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
     item("tray-open", locale.text("desktop.tray_open"), true)?;
     item("tray-tasks", locale.text("desktop.tray_tasks"), true)?;
     if !view.recent.is_empty() {
@@ -250,8 +236,10 @@ pub(super) fn activate(app: &tauri::AppHandle, config: &Settings, id: &str) {
         }
     } else if let Some(instance) = id.strip_prefix("host-stop:") {
         stop(app, config.clone(), instance.to_owned());
-    } else if matches!(id, "tray-open" | "tray-tasks" | "tray-settings" | UPDATE)
-        || (id.starts_with("tray-recent-") && id != "tray-recent-label")
+    } else if matches!(
+        id,
+        "tray-open" | "tray-tasks" | "tray-settings" | tray::OPEN_UPDATE
+    ) || (id.starts_with("tray-recent-") && id != "tray-recent-label")
     {
         open(app, config.clone(), id.to_owned());
     }
@@ -300,11 +288,11 @@ mod tests {
         let target = "darwin-aarch64";
         let valid = json!({"version":"2.3.0","platforms":{(target):{"url":"https://github.com/artec/clat/releases/download/v2.3.0/clat-desktop-v2.3.0-macos-arm64.app.tar.gz"}}});
         assert_eq!(
-            available_update(&valid, "2.1.0", "2.2.0", target).as_deref(),
+            available_update(Some(&valid), "2.2.0", target).as_deref(),
             Some("2.3.0")
         );
-        assert!(available_update(&valid, "2.1.0", "2.3.0", target).is_none());
-        assert!(available_update(&valid, "2.3.0", "2.2.0", target).is_none());
-        assert!(available_update(&valid, "2.1.0", "2.2.0", "darwin-x86_64").is_none());
+        assert!(available_update(Some(&valid), "2.3.0", target).is_none());
+        assert!(available_update(Some(&valid), "2.2.0", "darwin-x86_64").is_none());
+        assert!(available_update(None, "2.2.0", target).is_none());
     }
 }

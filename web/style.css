@@ -326,6 +326,7 @@ button:disabled { cursor: default; opacity: .45; }
 .image-lightbox::backdrop { background: rgb(0 0 0 / 72%); backdrop-filter: blur(3px); }
 .image-lightbox-image { display: block; max-width: 100%; max-height: calc(100vh - 88px); margin: 0 auto; object-fit: contain; }
 .image-lightbox-close { position: absolute; top: 8px; right: 8px; color: var(--text-soft); font: 22px/1 var(--font-mono); }
+.image-lightbox-copy { position: absolute; top: 8px; right: 46px; }
 .msg.assistant { --reasoning-summary-height: max(24px, calc(2 * var(--text-size-secondary))); }
 .msg.assistant .reasoning { grid-column: 2; margin: 0 0 9px; overflow: hidden; color: var(--text-muted); font: var(--text-size-secondary)/1.7 var(--font-ui); }
 .msg.assistant .reasoning summary { position: relative; display: flex; min-height: var(--reasoning-summary-height); align-items: center; gap: 7px; overflow: hidden; cursor: pointer; list-style: none; }

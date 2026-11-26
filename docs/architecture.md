@@ -93,9 +93,10 @@ The product itself ships two compilation units: `clat` (public facade,
 CLI and TUI/DSH terminal client) depends on `clat-core` (runtime,
 Application and terminal-independent headless/HTTP surfaces); the repo
 workspace additionally contains non-default members: development/example
-plugins and the plugin SDK, plus `sdk/wit-proposals/net-runtime`
-(`clat-wasm-net`), which is a **production dependency of clat-core**, not a
-development-only component. The core
+plugins and the plugin SDK, the optional Tauri client `desktop`, plus two
+members that are **production dependencies of clat-core**, not development-only
+components: `sdk/wit-proposals/net-runtime` (`clat-wasm-net`) and
+`crates/tokenplan-quota`. The core
 manifest has no dependency on `clat`, ratatui, crossterm or arboard;
 the dependency direction is enforced by Cargo, not only source inspection.
 Both packages are default workspace members, so ordinary delivery commands
@@ -538,13 +539,12 @@ remains in Application.
 
 The agent loop delegates request preparation, model response handling and one
 serial tool call to `run/request.rs`, `run/response.rs` and `run/tools.rs`.
-When the same tool, arguments and result occur 41 times in a row, the run
-stops instead of requesting the model again. Shorter identical streaks,
-including the 40-step loop that locks the absence of a turn budget, continue.
-`query_capabilities` and `describe_capability` stop after the same arguments
-occur 3 times in a row. Their replies include a fresh observation time, so
-the stop counts those arguments. A changed argument that returns an error, an
-empty result, or a result that tool already returned stops after 12 in a row.
+Repeated evidence is handled by the bounded `EvidenceTracker` in
+`run/state.rs` (see *Initial context principles* below): the same tool,
+arguments and result get up to two model-facing corrections, then a hard stop;
+long runs of shell read-probes only draw a reminder. `query_capabilities` and
+`describe_capability` replies carry a fresh observation time, which the
+tracker strips before comparing, so they follow the same rule.
 `run/state.rs` keeps history, turn count and usage together when constructing a
 terminal result. These are internal boundaries: tool order, steering seals,
 permission checks, result transforms and event publication retain their order.
@@ -676,7 +676,7 @@ plugin tools follow this same path.
 
 `RESIDENT` in `src/tool/resident.rs` only orders schemas that should stay at
 the front of the tool list. Keep that list in its stable order. Add a
-`RESIDENT_HINTS` line only when the model needs a when-to-use sentence that
+`RESIDENT_HINTS` line (defined in `src/application/workflow/guidance.rs`) only when the model needs a when-to-use sentence that
 the schema does not carry.
 
 The initial request header and `/context` tool list are that allowed set.
@@ -816,7 +816,10 @@ Accepted summary sizes scale down for small windows so two summaries and their
 headings fit the next reduction request.
 
 The visible summary bound is separate from generation tokens, which also leave
-room for reasoning. The eight-section prompt uses a capacity-scaled token target, with the body in
+room for reasoning. The eight-section prompt uses a fixed-constant budget that
+does not scale with the context window (generation 16,384 tokens, acceptance
+limit 8,192, instruction target about 6,000; small windows still clamp it down
+for safety), with the body in
 the conversation language; it has no fixed 2,048-character body limit. Only a completed answer with eight nonempty sections can become a
 replacement. An empty or length-limited answer gets at most one recovery attempt;
 a complete oversized answer can instead be summarized again in full, without
@@ -1569,6 +1572,18 @@ preserves global, trust, selection, modal and composer priority explicitly.
 | `src/dsh/` | crate-private DSH client protocol, host lifecycle, and client-local last-session preference |
 | `src/demo.rs` | deterministic offline composition |
 | `src/upgrade.rs` | authenticated self-update |
+| `src/acp/` | ACP v1 external Agent runtime, presets and callbacks |
+| `src/background_jobs/`, `src/scheduler/` | Host-owned Jobs and authorized schedules |
+| `src/development/` | development workspace: editor, Git, terminals |
+| `src/host_client/` | attached-client port to a running Host |
+| `src/i18n/`, `locales/` | explicit-locale presentation and shared catalogs |
+| `src/input/` | core-owned pending input queue |
+| `src/rust_support/` | scoped Rust-maintenance built-in plugin |
+| `src/session_query/` | history search and DSH timeline archives (rebuildable index) |
+| `src/task/`, `src/goal.rs`, `src/plan_mode.rs`, `src/memory.rs`, `src/skills.rs` | durable workflow services |
+| `src/subagent.rs`, `src/view_image.rs` | read-only delegation and fenced image inspection |
+| `src/web_tools/` | native web search/fetch service |
+| `crates/tokenplan-quota/` | console quota clients shared by the model status surface |
 | `wit/`, `sdk/clat-plugin/` | WASM contract and author SDK |
 | `sdk/dsh-adapter/` | static Cordis/DSH compatibility adapter package |
 
@@ -1598,7 +1613,7 @@ and the root-directory production share may improve, never regress
 (hand-counted production giants: 91 / 24% at worst → 48 / 19.7% at the
 campaign close; the script-measured series — a different口径, not directly
 comparable — kept improving after it: 139 / 19.67% on 2026-09-11 →
-132 / 18.38% on 2026-09-22, v1.4.2).
+132 / 18.38% on 2026-09-22, v1.4.2 → 87 / 9.81% on 2026-11-26, v2.3.12).
 
 - **Seat tables for vocabularies.** Durable journal events and `RunEvent`
   variants are defined exactly once in the `src/session/catalog/` seat

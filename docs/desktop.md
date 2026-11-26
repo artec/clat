@@ -16,7 +16,7 @@ a scrollable region reveals its thumb, which hides after about 1.2 seconds of
 inactivity. Hovering or dragging a custom thumb keeps it visible. High-contrast
 mode keeps scrollbars visible. Visual appearance and interaction are manually reviewed.
 
-The model picker uses a discrete thinking-intensity slider with a capsule track, an oversized round thumb and in-track stop dots aligned to its travel. Track fill follows the active CLAT theme; the current intensity appears above the track. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. The entire slider shows a hand cursor when adjustable, and hovering over a stop enlarges its dot. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Selection is locked during a run and while saving, and the slider keeps its normal colors during the save.
+The model picker uses a discrete thinking-intensity slider with a capsule track, an oversized round thumb and in-track stop dots aligned to its travel. Track fill follows the active CLAT theme; the current intensity appears above the track. Stops and labels come from the selected model’s Host-provided `thinking_levels` list, rather than a fixed three/four-level UI table. The entire slider shows a hand cursor when adjustable, and hovering over a stop enlarges its dot. Dragging previews the selection and releasing saves the existing model override; keyboard arrow keys work as well. Unsupported models show Not adjustable. Changes saved during a run apply from the next run. The slider keeps its normal colors while saving.
 
 The composer toolbar groups add, permission, plan, context usage, model/thinking,
 pending messages and send/stop controls. Toolbar icons share a centered control
@@ -153,7 +153,7 @@ for thinking, tool work and response generation, with explicit approval/answer
 waiting states. The reasoning preview itself stays static. Completion or a lost
 connection clears the live activity; reduced-motion and forced-color settings
 use static, readable status indicators.
-Conversation body text uses 15 px at weight 400 with platform font smoothing.
+Conversation body text uses 14 px (weight 300 for assistant replies, 400 for your messages) with platform font smoothing.
 Emphasis and interface labels retain their separate weights. Thinking uses a
 compact brain icon. In the conversation and history timeline, web searches use a
 globe, file reads use an open book, file writes and edits use a pencil, and
@@ -185,8 +185,8 @@ current tasks and plans/goals replace both columns with their own list and
 details. Workspace changes, operation records, current tasks and the empty
 goal view use the project-file view's centered icon and guidance layout;
 selecting a list item opens its normal details. The right work-area overview is temporarily hidden and restored when
-returning to the conversation. File editing/saving is a separate future feature;
-this file view remains a browser with fixed-snapshot quoting.
+returning to the conversation. File viewing and editing/saving are described
+under Human development tools below.
 
 Git settings holds the generated commit-message language and the commit graph's
 reference scope in one card with a divider between the two rows. The sparkle button inside the commit-message field generates a
@@ -202,11 +202,12 @@ Repository names come from each repository's own path (the project directory
 name for the root repository), so selecting a sub-repository does not rename
 the root entry or mix its name with another repository's branch.
 
-Opening a tool creates one **Conversation / current tool** tab pair. The existing
-Tools menu switches that tool; tabs do not accumulate. Conversation remains
+Opening a tool replaces the conversation area with that tool; there is no tab
+bar. The top breadcrumb shows the actual view hierarchy, and the existing Tools
+menu switches tools without accumulating views. Conversation remains
 mounted with its draft, images, file references, reading position and list state.
-Click Conversation to return, click the tool tab to revisit, or close the tool
-for the original layout. Esc dismisses temporary UI first, then returns from a
+Use the × beside the last breadcrumb level of a tool to return to the
+conversation. Esc dismisses temporary UI first, then returns from a
 tool to Conversation without also stopping a run. Back/forward follow view
 changes. On macOS, **View → Back / Forward** and `⌘[` / `⌘]` use the same bounded
 application history as the toolbar arrows, through a direct native-to-renderer
@@ -281,7 +282,7 @@ one installer/update EXE and its checksum. All signatures live in the shared
 `latest.json`. Users of v2.1.1 or earlier must manually install v2.1.2 once;
 subsequent releases use the new built-in update path.
 
-Choose **打开项目** (Open project), select a directory and explicitly approve
+Choose **Open project**, select a directory and explicitly approve
 project trust when requested. Model configuration, permissions, tools, sessions
 and tasks use the existing workbench and the Host's normal policies.
 Context usage estimation rechecks the full request during image offload only
@@ -415,24 +416,24 @@ From v2.2.0, automatic discovery and subsequent refresh use one core coordinator
   Incompatible protocols, unavailable projects, missing trust and failed takeover
   acknowledgements surface errors instead of forcing a stop or starting a second
   writer. Development backends require explicit startup for mismatched builds.
-- Missing/disconnected Hosts require **打开项目** to start. Switching Hosts can
+- Missing/disconnected Hosts require **Open project** to start. Switching Hosts can
   briefly disconnect other clients; refresh the PWA or reopen a current TUI if
   needed. Existing tasks must finish before automatic takeover is accepted.
 
 The welcome page refreshes connection errors and their recovery. Settings shows
 the verified Host connection separately from installed versions.
-**停止共享后台** suspends automatic discovery in that Desktop process until
-**打开项目** succeeds (or Desktop is restarted), so its own polling does not undo
+**Stop shared background** suspends automatic discovery in that Desktop process until
+**Open project** succeeds (or Desktop is restarted), so its own polling does not undo
 the stop.
 Automatic desktop connections use `127.0.0.1:2691`; use the browser for an
 explicitly configured custom-port `clat serve` instance.
 
 - Closing the window hides it; restore through the tray/Dock or launch again.
-- **退出桌面** quits the GUI. The app menu (including ⌘Q on macOS) and settings
+- **Quit desktop** quits the GUI. The app menu (including ⌘Q on macOS) and settings
   check the shared Host for work across projects and ask for confirmation
   if any work is in progress or the status is unavailable. The Host and its tasks
   continue if you confirm.
-- **停止共享后台** explicitly stops the shared Host and affects all clients.
+- **Stop shared background** explicitly stops the shared Host and affects all clients.
 - Uninstalling the GUI does not delete shared data, the independent CLI or an
   already running backend.
 
@@ -627,7 +628,7 @@ Browser bridge tests are not evidence of the native OS picker or update installe
 ## Reading typography
 
 The workbench uses system sans-serif text with a shared reading scale: conversation
-and historical message bodies use 15px text at weight 400 with a 1.7 line-height ratio. Message
+and historical message bodies use 14px text (weight 300 for assistant replies, 400 for your messages) with a 1.7 line-height ratio. Message
 bodies request grayscale font smoothing on supported macOS browsers and WebViews.
 Other platforms use their native font rendering. Navigation,
 forms and management-page copy use 14px, secondary information 13px, and code
@@ -682,9 +683,11 @@ and disappears after the Host stops. Left-click it to open CLAT. Right-click
 to see whether the Host is idle or has work pending, its running version,
 and shortcuts such as Tasks.
 With automatic update checks enabled, a newer desktop package for this Mac
-from the signed release index appears on the version row. Clicking it opens
-the existing update screen. Download and installation keep
-the desktop updater's normal checks and confirmations. **Quit CLAT** in this menu
+from the signed release index appears on the second row, next to the running
+Host version. The update is based on the installed desktop version. Clicking
+the row opens **About & updates** at the current download or installation
+stage. Download and installation use the desktop updater's normal checks and
+confirmations. **Quit CLAT** in this menu
 stops the displayed Host and closes the desktop window if it is open. It asks for
 confirmation when work is running. Older Hosts use their reported readiness for
 this check. Closing or quitting from the desktop app itself lets the Host keep running.

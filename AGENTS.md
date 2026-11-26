@@ -52,12 +52,14 @@ extended rules in docs/engineering-policy.md before editing.
 ## Documentation map
 
 - **Committed docs** (`docs/`, public): `usage.md` (TUI + headless
-  `clat exec`), `model-editor.md`, `permissions.md`, `mcp.md`,
-  `plugins.md` (runtime/package/market model), `wasm.md` (plugin authoring),
-  `dsh-plugins.md` (DSH adapter porting guide), `dsh-compat.md`
-  (runtime-oracle compatibility matrix), `architecture.md`,
-  `providers.md`, `storage.md`, `testing.md` (verification tiers and
-  standing test rules), `releasing.md`, `live-validation.md`. They are
+  `clat exec`), `desktop.md`, `localization.md`, `model-editor.md`,
+  `permissions.md`, `mcp.md`, `web.md`, `history.md`, `jobs.md`,
+  `schedules.md`, `acp.md`, `plugins.md` (runtime/package/market model),
+  `wasm.md` (plugin authoring), `wasm-net.md`, `dsh-plugins.md` (DSH adapter
+  porting guide), `dsh-compat.md` (runtime-oracle compatibility matrix),
+  `architecture.md`, `engineering-policy.md`, `providers.md`, `storage.md`,
+  `testing.md` (verification tiers and standing test rules), `releasing.md`,
+  `live-validation.md`. They are
   indexed by `README.md` / `README.zh.md` (English/Chinese mirrors —
   update both indexes together); `sdk/dsh-adapter` carries its own
   npm-facing README pair.

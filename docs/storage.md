@@ -15,11 +15,19 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── settings.json                # active model state and named profiles
 ├── credentials.json             # remembered per-vendor API keys (0600)
 ├── web.json                     # secret-free native Web provider/key-reference selection
+├── web-consents.json            # web_search/web_fetch "always allow" private-address hosts
 ├── schedules.json               # authorized rules, budgets and delivery control state
 ├── history-index/               # rebuildable SQLite FTS5 cache; never session authority
+├── history-archives/<bucket>/   # imported DSH timeline archives (read-only history)
+├── library-v1.json              # session organization metadata (pins, archive flags); no message bodies
 ├── memory.json                  # explicit user/project knowledge (0600)
 ├── im.json                      # atomic WeChat binding, authorization and pairing authority (0600)
 ├── trust.json                   # canonical project path -> trusted timestamp
+├── acp.json                     # configured external ACP Agents and per-project trust
+├── console-credentials.json     # encrypted-at-rest quota console credentials (Qianwen/Bailian/Tencent)
+├── ui-consents.json             # macOS/Windows application-control consent decisions
+├── ui/terminal.json             # terminal language preference (own ui/terminal.lock)
+├── development/<canonical-root-hash>/ # per-project developer state (see Development workspace)
 ├── web-token                    # clat serve Bearer credential (0600)
 ├── host-endpoint.json            # private host discovery hint, not proof of liveness
 ├── dsh-last-session             # last session id opened by clat dsh
@@ -199,7 +207,8 @@ and optional `isError`; the V3 `tool-result` content wrapper is retired.
 Producer attribution uses direct source kinds (for example `plugin:clat`)
 instead of V3's `{kind:"plugin",plugin:...}` wrapper. CLAT accepts but does
 not produce V4 `developer/message`, `image/offload`, or `workspace/changes`.
-Sessions containing developer messages or a nonempty `agentPreset` open
+Sessions containing developer messages, a nonempty `agentPreset`, or a seeded
+fork (`isSeeded: true`) open
 read-only: CLAT cannot continue their model/deferred-tool context safely.
 `/update` is only for older generations and is unavailable in those V4 sessions.
 
@@ -231,7 +240,7 @@ to the last durable boundary. If the crash left an open tool/step/turn, recovery
 appends synthetic `tool/result`, `step/end`, and `turn/end` events so later
 folds see a complete state machine.
 
-Legacy v0/v2 sessions are inspected without these recovery writes. Recovery does
+Legacy v0/v2/v3 sessions are inspected without these recovery writes. Recovery does
 not guess through corruption in an earlier committed frame. A
 corrupt or unsupported session fails before the active-session pointer moves.
 
@@ -255,7 +264,8 @@ whole log after every write. The transcript remains complete after compaction,
 while the surface shadows compacted ranges for the next model request.
 
 `request/header` is also the durable model-input witness. Besides provider,
-model, system text and tool schemas, CLAT records
+model and tool schemas (the system prompt lives in the protected
+`system/message` head, never in this header), CLAT records
 `clatInstructionContext` with the active project-instruction digest and bounded
 source path/scope/digest rows. Its `imageProjection` section freezes the model
 route, image policy, and estimator/calibration/encoder versions used for the
@@ -566,11 +576,13 @@ read-only and never append a session event.
 Goal state is session-local. A complete `goal/change` snapshot records each
 revision, transition, budget counter, acceptance result, and terminal/blocked
 reason. The goal projection participates in admission, checkpoint restore, and
-tail replay. A `limits.maxTokens` value of zero denotes no aggregate token limit.
-Positive values retain their original meaning. The armed bit is absent from the durable snapshot:
+tail replay. The `limits` fields are legacy: they stay decodable, default goals
+write zero, and execution no longer applies `limits.maxTokens` as a limit
+(see [Architecture](architecture.md)). The armed bit is absent from the durable snapshot:
 restart and session switch require the user to arm again.
 
-Subagent activation is likewise process-local and defaults off. Each actual
+Subagent activation is process-local and defaults on in trusted projects (a
+session opts out with `/sub off`). Each actual
 child writes a DSH v2 `subagent/descriptor` plus CLAT `clat/subagent` start/end
 facts to the parent journal before/after execution. The latter is ignorable to
 older consumers but still has strict admission and a checkpointed lifecycle
@@ -653,8 +665,8 @@ The user re-enters model configuration and re-approves project trust. Existing
 DSH-format session logs survive and are adopted when each project opens.
 
 An interrupted rename-before-sentinel window is idempotent on the next mount.
-The legacy database file is never opened or interpreted — the SQLite
-dependency is gone entirely — so any pre-cutover variant is preserved
+The legacy database file is never opened or interpreted by the control plane —
+SQLite remains only for the rebuildable `history-index/index.sqlite` cache — so any pre-cutover variant is preserved
 byte-for-byte rather than partially converted or refused on content.
 
 ## Runtime commit ordering

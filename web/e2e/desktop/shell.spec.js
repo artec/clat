@@ -29,6 +29,11 @@ async function welcome(page, busy = false, withSidebar = false, loading = false,
       if (command === 'desktop_locale') return localeInfo();
       if (command === 'desktop_preferences') { if(args?.language)window.desktopLanguage=args.language; return localeInfo(); }
       if (command === 'desktop_info') return {...structuredClone(window.desktopInfo),startupLoading:window.startupLoading ?? loading};
+      if (command === 'desktop_take_tray_intent') {
+        const intent = window.desktopTrayIntent;
+        window.desktopTrayIntent = null;
+        return intent;
+      }
       if (command === 'desktop_open_project' && window.desktopOpenError) throw window.desktopOpenError;
       if (command === 'desktop_check_update') {
         if(window.deferDesktopCheck) await new Promise(resolve=>{window.finishDesktopCheck=resolve;});
@@ -342,6 +347,22 @@ test('native installation disables cancellation and quit without blocking status
   await expect(page.locator('#clat-desktop-update')).toContainText(await localized(page, 'update.installing'));
   await page.locator('#clat-desktop-settings [data-language-select]').selectOption('en');
   await expect(page.locator('#clat-desktop-update')).toContainText(await localized(page, 'update.installing'));
+});
+
+test('tray update opens About with the verified package ready to install', async ({ page }) => {
+  await welcome(page);
+  const dialog = page.locator('#clat-desktop-settings');
+  await dialog.locator('[data-action=close]').click();
+  await page.evaluate(() => {
+    Object.assign(window.desktopInfo, { updateAvailable: true, downloaded: true, updateVersion: '2.2.0' });
+    window.desktopTrayIntent = { settings: true, openUpdate: true };
+    window.desktopEvents['desktop-tray-intent']();
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-action=install]')).toBeEnabled();
+  expect(await page.evaluate(() => window.desktopCalls.filter(call =>
+    ['desktop_check_update', 'desktop_download_update', 'desktop_install_update'].includes(call.command)
+  ))).toEqual([]);
 });
 
 test('verified package remains installable after a native install error',async({page})=>{

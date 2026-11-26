@@ -80,6 +80,12 @@ fields retain the existing rollout-compatibility behavior.
 | Offline core-loop smoke test | `clat demo` | temporary demo state |
 | Check/install a published update | `clat upgrade [--check]` | installed binary |
 | Manage local plugin packages | `clat plugin <COMMAND>` | local CLAT package store |
+| Traditional in-process TUI without the background host | `clat standalone` (or `--standalone`) | this process |
+| Connect the TUI to an already running local host | `clat attach --port PORT [--trust]` | running CLAT host |
+| Start, inspect or stop the background host | `clat host start`, `clat host status`, `clat host stop` | background CLAT host |
+| Read or save the interface language | `clat language [LANG]` | terminal preferences |
+| Bind and pair the WeChat frontend | `clat wechat <COMMAND>` | local CLAT |
+| Web settings, history, jobs and schedules from a script | `clat web`, `clat history`, `clat jobs`, `clat schedule` | local CLAT |
 
 All local interfaces use the same Application core, session journal, tools,
 and permission semantics. They differ only in how input, events, and approval
@@ -306,7 +312,7 @@ The main screen has three surfaces:
 | mouse drag | select text and copy it with OSC 52 on release |
 | `Cmd+C` / `Ctrl+Shift+C` | copy the current selection again |
 | `Cmd+X` / `Ctrl+Shift+X` | cut the input selection |
-| `Esc` | recall the newest queued steering; otherwise cancel the active run; when idle, clear input |
+| `Esc` | while a run is active: cancel it in the default host-attached TUI, or in `clat standalone` first recall the newest queued steering; when idle, clear input |
 | `Ctrl+C` | copy an active selection; otherwise quit |
 
 Input history is the **current session's committed prompts** in both standalone
@@ -385,15 +391,21 @@ model → safety → extensions → experiments → meta):
 | `/share-session [N]` | attach all turns or the most recent N turns from another conversation in this project |
 | `/update` | shown only in a selected legacy local session: retain the original generation, upgrade supported older formats to the current writable format (V4); disappears after success. A current V4 session with unsupported developer context or preset is read-only and cannot use `/update` |
 | `/rename` | replace the current conversation title |
+| `/task ...` | inspect, checkpoint, verify and explicitly resume one durable task |
+| `/history ...` | search committed session history (see [History timeline](history.md)) |
+| `/jobs ...` | list Host-owned background jobs, read output, stop or retry them (see [Background jobs](jobs.md)) |
+| `/schedule ...` | review and control explicitly authorized schedules (see [Scheduled work](schedules.md)) |
 | `/compact` | summarize older context in the background; original history remains on disk |
 | `/context` | inspect a one-shot estimated model-context breakdown |
 | `/model` | choose a provider preset or manage named custom profiles |
 | `/perm`, `/permission` | switch Read Only, Project Write, or Full Access |
-| `/ui-consents` | check Host access and list or revoke app consent. Use `request-accessibility` to request macOS access |
 | `/plan [on|off]` | toggle durable Plan Mode; explicit on/off is idempotent at an idle boundary |
-| `/plugin` | inspect built-in plugins, manage installed packages and browse the signed market in the host TUI; open Extensions in the PWA |
+| `/ui-consents` | check Host access and list or revoke app consent. Use `request-accessibility` to request macOS access. Registered on macOS and Windows only; Linux does not show it |
 | `/mcp` | inspect MCP/WASM connection state, tools, and isolated failures |
 | `/skill`, `/skills` | list cataloged skills, or arm one for your next message |
+| `/plugin` | inspect built-in plugins, manage installed packages and browse the signed market in the host TUI; open Extensions in the PWA |
+| `/capabilities [JSON]` | query registered capabilities with optional JSON filters or a detail id; nothing executes |
+| `/web` | show or configure native web search/fetch settings (see [Native Web tools](web.md)) |
 | `/mem`, `/memory ...` | open a read-only memory dialog; add/edit/delete confirms in the status bar |
 | `/goal ...` | open the current goal dialog, or explicitly control a goal |
 | `/sub`, `/subagents on|off` | inspect or change read-only delegation for the current session |
@@ -403,6 +415,10 @@ model → safety → extensions → experiments → meta):
 
 Renamed primaries keep their old inputs working: `/memory` and `/subagents`
 still dispatch unchanged.
+
+Terminal-local commands are not part of this host catalog: `/language` (see
+[Interface languages](localization.md)), `/acp` (see [ACP](acp.md)) and
+`/suggest` act inside the TUI itself, like `/share-session` above.
 
 `/vision-probe` (VP-1) is the only capability probe CLAT runs, and it never
 runs on its own: built-in presets carry officially-declared capabilities that
@@ -865,9 +881,10 @@ adapter code can be forcibly killed inside the process.
 
 In terminal clients, submitting text while a run is active queues it for the next model-request
 boundary; it does not interrupt the in-flight HTTP request or tool call. The
-queued message appears immediately in the conversation. `Esc` recalls the
-newest queued message into the input. When no steering is queued, `Esc`
-cancels the run and keeps already streamed output.
+queued message appears immediately in the conversation. In `clat standalone`,
+`Esc` recalls the newest queued message into the input, and cancels the run
+when no steering is queued; in the default host-attached TUI, `Esc` during a
+run cancels it directly. Either way, already streamed output is kept.
 
 The Web/Desktop composer uses the pending-message and immediate-interruption
 controls described below; its Enter and Esc behavior differs from terminal steering.
@@ -1101,19 +1118,21 @@ The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
-hardcoded per preset, never probed at runtime: seven presets across four
-vendors open image input — officially-declared for `deepseek-flash`,
-`qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, and `kimi-for-coding`, probe-verified for
-`glm-5.3-flash`, with `glm-5.4` reusing the Flash vision matrix — and, for custom
-configurations, it is unlocked only by a
-passing `/vision-probe`.
+hardcoded per preset, never probed at runtime: 19 of the 23 built-in presets,
+spanning all six vendors, open image input — officially-declared for
+`deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`,
+`hy4`, `hy4-flash` and ten OpenCode Go presets (from the gateway's model
+metadata), probe-verified for `glm-5.3-flash`, with `glm-5.4` reusing the Flash
+vision matrix — and, for custom configurations, it is unlocked only by a
+passing `/vision-probe`. See [Model editor](model-editor.md#built-in-presets)
+for the complete list.
 When switching to a text-only route, the enabled offload policy can durably omit
 eligible historical input images. Current-turn images and model output images
 remain protected. If any images remain, the next run fails before provider I/O
 with actionable guidance to use a vision route or start `/new`. Disabled offload
 keeps all retained images. Image-only prompts
 are valid. Startup/admission failures restore the text and ordered draft, and
-`Esc` recalls queued image steering with its original sources. If cancellation
+in `clat standalone` `Esc` recalls queued image steering with its original sources. If cancellation
 or failure seals the run before a queued steering message is claimed, its exact
 text and ordered images return to the composer; multiple recovered messages
 surface one at a time so their individual image budgets are preserved.
@@ -1169,9 +1188,13 @@ opaque upload IDs. While a run is active, queued images enter the journal when
 the run claims the message.
 
 History thumbnails are fetched on demand through the authenticated local
-attachment endpoint and displayed with temporary `blob:` URLs. Attachment IDs
-must be reachable from the active session; the endpoint never reveals a disk
-path, and the pairing token is never placed in an image URL. The response is
+attachment endpoint and displayed with temporary `blob:` URLs. In Desktop and
+the web workbench, use **Copy image** from the thumbnail context menu or the
+image preview to paste the image into another application. Browsers require
+image clipboard support and may require permission to write to the clipboard.
+
+Attachment IDs must be reachable from the active session. The endpoint never
+reveals a disk path, and the pairing token is never placed in an image URL. The response is
 fixed-length and streams from a verified no-follow file handle in 64KiB chunks;
 at most four attachment downloads may occupy the slow-reader budget at once.
 Each write may idle for at most 15 seconds and the full response is capped at
@@ -1208,6 +1231,8 @@ level for the next run and persists the effective model configuration:
 - Tencent Hy always thinks server-side; the endpoint ignores `reasoning_effort`
   (probe-verified), so no ladder is offered and `Shift+Tab` has no effect —
   the title bar shows `Thinking · Server` instead of a level.
+- OpenCode Go presets use a per-model ladder (see
+  [Providers](providers.md#opencode-go)).
 - Custom profiles on a known vendor domain use that vendor's mapping.
 - Unknown endpoints do not receive an inferred reasoning parameter; configure
   it explicitly in Extra Body.
@@ -2166,6 +2191,8 @@ to that session's current row rather than a detached element.
 The composer model picker shows the current route's provider beside the model
 when the Host identifies it. It exposes the route's host-reported thinking
 intensities; models without adjustable thinking show a disabled control.
+You can adjust thinking intensity during a run. The saved setting applies to
+the next run, and the current run keeps the intensity it started with.
 Its clickable width follows the model/intensity label, bounded on narrow screens
 with an ellipsis so it stays separate from Send and Stop. On phones, the menu
 opens above the composer and scrolls within the available viewport height.
@@ -2210,8 +2237,8 @@ written to browser storage.
 The conversation is the default reading space: details start closed in a new
 browser, while an existing desktop open/closed preference is respected. Phone
 drawers start closed. Neutral controls and a restrained warm-gray light / dark
-palette keep answers prominent; body text is 16 px, tables 15 px, and fenced
-code 14 px. Wide tables and code scroll within their own containers.
+palette keep answers prominent; body text and tables are 14 px, and fenced
+code is 13 px. Wide tables and code scroll within their own containers.
 The permission control remains visible next to the composer tools; Plan, Goal,
 run status, attachments and cancellation retain their existing behavior.
 
@@ -2313,12 +2340,14 @@ page. Guides include steps for sharing conversation content, opening links in
 replies, transferring DSH timelines and setting up Skills, MCP, external
 Agents and Computer Use.
 
-**Workspace changes** opens a read-only file list and loads a selected file's
+**Workspace changes** opens a file list and loads a selected file's
 staged/unstaged diff on demand. It shows current project working-tree facts,
 including pre-existing user edits and changes left after failed/cancelled runs;
 it does not attribute them to this agent or turn. Refresh after further edits.
 Git is optional: missing Git, a non-repository project and a failed query are
-explicit states, not “no changes.” This view has no stage/commit/revert/push.
+explicit states, not “no changes.” Staging, committing and the other Git
+operations come from the Git tool this view hosts (see the development tools
+below); the read-only review queries described here keep their limits.
 The list is capped at 500 files (with a truncation label); Git output is bounded
 to 512 KiB for status and 128 KiB per patch, with a three-second child-process
 deadline and only one review query in progress. Untracked text previews use the
@@ -2491,8 +2520,7 @@ A plan already linked to a different goal cannot be attached through the
 continuation action.
 
 In Web and Desktop, choose **+ → Goal**, enter the objective and send it.
-The bottom work mode control shows **Goal** while drafting. Open that control
-to set an optional token limit. After sending, the goal strip offers pause,
+The bottom work mode control shows **Goal** while drafting. After sending, the goal strip offers pause,
 continue, delete and details. The conversation shows the objective once when
 the goal starts. Continuing the goal adds execution progress to that conversation.
 Deletion clears the current goal while retaining its recorded history. The **Plans and goals** view still shows plan documents
@@ -2545,23 +2573,22 @@ RPC uses `POST /api/<method>` and returns either
 errors for client-keyed messages add `error.receipt`; clients must follow its
 `state` and `retryable` fields instead of guessing whether to resend.
 
-Current methods are:
+`workbench.info` returns the live method catalog (`methods`), which is the
+authority; the families below summarize it and are not exhaustive:
 
-- `workbench.info`
-- `session.list`, `session.info`, `session.new`, `session.switch`,
-  `session.history`, `session.rename`, `session.compact`
-- `model.overrides.set`, `model.settings.get`, `model.utility.get`,
-  `model.utility.set`, `model.profile.get`, `model.profile.save`,
-  `model.profile.activate`, `model.profile.delete`,
-  `model.preset.select`, `model.thinking.cycle`
-- `permission.set`
-- `wechat.binding.status`, `wechat.binding.start`, `wechat.binding.poll`,
-  `wechat.binding.unbind`, `wechat.pairing.create`, `wechat.user.allow`,
-  `wechat.user.remove`
-- `draft.open`
-- `prompt.suggest`, `prompt.followups`, `conversation.stats`, `command.run`, `prompt.send`, `steer.send`, `run.cancel`
-- `approval.respond`
-- `question.respond`
+- workbench and sessions: `workbench.info`, `session.*` (list, info, new,
+  switch, history, rename, organize, delete, compact, rewind),
+  `conversation.stats`, `command.run`, `interaction.catalog`
+- runs and input: `prompt.send`, `prompt.suggest`, `prompt.followups`,
+  `steer.send`, `run.cancel`, `queue.*`, `input.*`, `draft.open`,
+  `approval.respond`, `question.respond`
+- models, quota and permission: `model.*` (settings, setup, profile, utility,
+  preset select/entry/tier, thinking, overrides), `quota.*`, `permission.set`
+- project tools: `workspace.*`, `editor.*`, `git.*`, `terminal.*`, `files.*`,
+  `operations.*`, `turn.*`, `history.*`, `library.*`, `web.settings.*`
+- workflow: `workflow.*`, `tasks.*`, `task.directory`, `jobs.*`, `schedule.*`
+- extensions: `plugin.*`, `mcp.manage.*`, `skill.manage.*`, `acp.*`
+- remote: `wechat.*`
 
 The host-level `host.*` and `workspace.*` methods are listed under
 [Multiple projects in the web workbench](#multiple-projects-in-the-web-workbench)
@@ -2580,9 +2607,10 @@ second compaction, and reports progress through `notice` frames rather than
 holding the RPC request open.
 `model.overrides.set` changes exactly one allowlisted override with
 `{"field":"output_limit","state":"inherit|set|clear","value":...}`;
-`value` is required only for `set`, credentials are never accepted, and an
-active run returns `busy`. Only one run is active at a time; `prompt.send`
-reports `busy` rather than queueing another.
+`value` is required only for `set`, and credentials are never accepted.
+During an active run, `thinking_level` can be saved for the next run. Other
+overrides return `busy`. Only one run is active at a time, so `prompt.send`
+returns `busy` if another run is active.
 
 A client-keyed `prompt.send` acceptance and its `prompt.settled` frame carry a
 Committed receipt. `steer.send` returns Reserved while queued, the live
@@ -2725,8 +2753,8 @@ Switching does not stop a run or transfer a submitted operation to the new
 project. Late replies reconcile with the project that issued them. Each project
 still allows one Agent Run; different projects can run independently.
 Back/forward navigation and project query links select the corresponding view.
-Refreshing reconnects to that route, but does not yet restore unsent text or
-images across a page restart.
+Refreshing reconnects to that route and restores the saved unsent text and
+images for that project's session.
 Closing a browser tab does not stop the host. Up to 16 projects may remain
 mounted at once. When capacity is reached, the host reclaims an idle additional
 project runtime; connected event streams, active operations and live drafts
@@ -2800,9 +2828,9 @@ for the same turn, including after reopening. Each request uses at most 12 recen
 user/assistant messages, 1000 characters per message and 6000 characters total,
 without tools. An unreadable or damaged scheduling file pauses automatic naming,
 but does not disable manual suggestions.
-Built-in DeepSeek, GLM, Qwen, Kimi, and Hy routes use the table-declared
-companion for naming (for example, `k3.1-pro` uses `kimi-for-coding` and
-`hy4` uses `hy4-flash`); other models and customized routes use the primary
+Built-in DeepSeek, GLM, Qwen, Kimi, Hy and OpenCode Go routes use the table-declared
+companion for naming (for example, `k3.1-pro` uses `kimi-for-coding`,
+`hy4` uses `hy4-flash` and `opencode-glm-5.3` uses `opencode-glm-5.3-flash`); other models and customized routes use the primary
 model. Companion requests
 keep the same endpoint and credentials, use the companion's model settings,
 and record the actual model in the title's source. Like suggestions, they
@@ -2861,8 +2889,8 @@ or expired answers return `not-pending`. Custom text must be nonblank and at mos
 serialized question data. Live `notice` payloads use `question_requested` (with
 `rpc_id` and `question`) and `question_resolved` (with `rpc_id`).
 
-Full terminal dialog/command parity is still pending;
-this is not yet a replacement for the traditional TUI. Plain `clat` opens this
+Advanced custom-profile fields are still edited in the Web workbench rather
+than in this terminal. Plain `clat` opens this
 attached mode by default — it discovers or starts the background host before
 showing the TUI — while `clat standalone` keeps the traditional in-process TUI.
 
@@ -3392,7 +3420,8 @@ validation constraints are preserved. A tool whose schema contains a recognized
 secret in a property name or other structural data is refused at registration,
 with a fixed diagnostic. Correct the producer definition and explicitly reload;
 discovery cannot supply an altered schema for such a tool.
-# Native Web, history and background work
+
+## Native Web, history and background work
 
 The workbench offers native Web settings, committed-session full-text search,
 background Job inspection and explicitly authorized schedules. TUI equivalents
@@ -3867,7 +3896,7 @@ preferences apply immediately, while settings with an Apply/Save button require
 that explicit action. Permission confirmation, unsaved form recovery and credential
 clearing continue to apply. This layout does not add new Agent capabilities.
 
-Built-in model settings show the Host catalog grouped by the same five vendors as
+Built-in model settings show the Host catalog grouped by the same vendors as
 the TUI picker. Choose a model, optionally supply its write-only API key, then
 Apply model to activate it across projects. A blank key retains that vendor's
 saved key. Custom profiles remain available below. Leaving Settings clears

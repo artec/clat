@@ -263,8 +263,8 @@ and can return any serializable value.
 Host imports are ordinary generated functions:
 
 ```rust
-clat::plugin::sampling::create_message(request);
-clat::plugin::elicitation::elicit(form);
+clat::plugin::sampling::create_message(&request);
+clat::plugin::elicitation::elicit(&form);
 clat::plugin::host::context();
 clat::plugin::host::call_tool("read_file", r#"{"path":"README.md"}"#);
 ```
@@ -292,15 +292,20 @@ cargo build --release --target wasm32-wasip2
 
 Point the plugin's `path` at
 `target/wasm32-wasip2/release/<name>.wasm`, restart CLAT, and inspect `/mcp`.
+When building a bundled example from the CLAT repository root, name its package
+with `-p` (for example `cargo build --release --target wasm32-wasip2 -p
+clat-greeter-plugin`, producing `clat_greeter_plugin.wasm`): the root
+`default-members` do not include the example plugins.
 
 For distribution, publish the component and `clat-plugin.json`. The manifest
-records:
-
-- tool names and effects;
-- configuration schema;
-- imported host services;
-- files/directories it expects;
-- whether writes require Project Write or Full Access.
+(`schemas/clat-plugin-manifest.schema.json`) records `manifestVersion`, `id`,
+`name`, `version`, the `runtime` (kind, entry, `sha256`), boolean `capabilities`
+flags plus any requested `hostTools`, static `prompts`, an optional
+configuration schema and compatibility bounds. It does not list tool names or
+effects (the component declares those through `list-tools`), nor
+files/directories or write levels: extra directories live in the local
+`plugins.json`, and write access is governed by the permission mode and
+`plugin-grants.json`.
 
 ## Failure behavior
 

@@ -185,6 +185,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "model.profile.delete",
     "model.preset.select",
     "model.preset.entry",
+    "model.preset.tier",
     "model.thinking.cycle",
     "permission.set",
     "wechat.binding.status",
@@ -809,18 +810,19 @@ fn prompt_suggest(
 }
 
 /// W2b's deliberately narrow model mutation surface. It changes one typed
-/// preset override at a time, never accepts or returns credentials, and is
-/// unavailable while a run owns the model snapshot.
+/// preset override at a time and never accepts or returns credentials.
+/// The worker owns its model config, so thinking changes can be saved for
+/// the next run while the current run keeps its original setting.
 fn model_overrides_set(
     params: &Map<String, Value>,
     shared: &Arc<ServeShared>,
 ) -> Result<Value, RpcError> {
-    if !shared.active_run_info().is_null() {
+    let field = required_str(params, "field")?;
+    if field != "thinking_level" && !shared.active_run_info().is_null() {
         return Err(RpcError::busy(
             "model overrides cannot change while a run is active",
         ));
     }
-    let field = required_str(params, "field")?;
     let state = required_str(params, "state")?;
     if !matches!(state.as_str(), "inherit" | "set" | "clear") {
         return Err(RpcError::bad_request(

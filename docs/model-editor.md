@@ -22,7 +22,8 @@ session journal.
 ## Web/Desktop quick switcher
 
 The model button beside the composer opens a compact picker. The top row shows
-the **model maker · model name** (for example, `GLM · GLM 5.3 Flash`) with a
+the **provider · model name** (for example, `GLM · GLM 5.3 Flash`, or
+`OpenCode · GPT-6 Luna` for an OpenCode Go route) with a
 vision icon only when the active route accepts images. Its settings icon opens
 **Settings → Models**.
 
@@ -56,7 +57,7 @@ The shipped catalog is the source used by both the picker and runtime:
 | Qwen4 Max | `qwen4-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Qwen3.8 Flash | `qwen3.8-flash` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Kimi K3.1 Pro | `k3.1-pro` | `https://api.kimi.com/coding/v1` | 256K (Plus) / 1M (Pro+) | 128K |
-| Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 256K (Plus) / 1M (Pro+) | 128K |
+| Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 1M (any tier) | 128K |
 | Hy 4 | `hy4` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | Hy 4 Flash | `hy4-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
@@ -80,6 +81,14 @@ across model changes and restarts and saves an API key for each entry. Use the
 key from the platform you choose. The international entry uses
 `https://api.z.ai/api/coding/paas/v4` for the GLM Coding Plan presets above.
 
+The same page has two more vendor-level controls. The Qwen Token Plan heading
+offers **Aliyun Bailian** (the default) or **Qianwen AI Platform**; the choice
+switches only the endpoint, and each platform needs its own key. The Kimi Coding
+Plan heading offers a **Plus** or **Pro or higher** subscription tier, which
+sets the 256K or 1M window of `k3.1-pro` only; `kimi-for-coding` always uses 1M.
+Quota credentials for Qianwen, Aliyun Bailian and Tencent are managed under
+**Settings → Authorizations**, not in the model editor.
+
 All use the OpenAI-compatible protocol. The catalog also owns request paths,
 reasoning parameters, usage streaming, context-window seeds, and vendor-specific
 headers. For example, GLM preserves thinking, Qwen uses its
@@ -93,7 +102,7 @@ before overriding those fields.
 GLM 5.3 Flash carries probe-verified native image input (including image tool
 results); GLM 5.4 reuses that same vision matrix. The officially-declared vision
 presets — `deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`,
-`kimi-for-coding`, and `hy4` — plus GLM 5.3 Flash and GLM 5.4 all enable
+`kimi-for-coding`, `hy4`, and `hy4-flash` — plus GLM 5.3 Flash and GLM 5.4 all enable
 the image attachments described in
 [Using CLAT](usage.md#image-attachments), as do the ten OpenCode Go vision
 presets (`opencode-deepseek-v4.1-flash`, `opencode-kimi-k3.1-pro`,
@@ -254,8 +263,11 @@ Some providers require hidden state on later turns. The editor does not expose
 or persist that state as configuration:
 
 - OpenAI Responses reasoning items travel as opaque provider replay state;
-- DeepSeek `reasoning_content` is replayed only on assistant turns that made
-  tool calls, which is the wire shape required for multi-turn tool use.
+- DeepSeek `reasoning_content` is replayed from every loaded assistant turn
+  when a request to the official endpoint carries tools (even for turns that
+  made no tool call) and thinking is not disabled; without tools plain-answer
+  reasoning is omitted. GLM does the same while preserved thinking is active.
+  See [Providers](providers.md#deepseek).
 
 This data belongs to the session journal and provider adapter. Switching a
 profile changes future requests but does not rewrite historical events.
@@ -291,8 +303,11 @@ that finishes after model settings changed cannot replace the newer settings.
 
 The additive host methods are `model.settings.get`, `model.profile.get`,
 `model.profile.save`, `model.profile.activate`, `model.profile.delete`, and
-`model.preset.select`, plus `model.thinking.cycle` and `model.utility.get` /
+`model.preset.select`, plus `model.preset.entry` (GLM/Qwen entry),
+`model.preset.tier` (Kimi tier), `model.overrides.set`, `model.thinking.cycle`
+and `model.utility.get` /
 `model.utility.set`; the secret-free notification is `models`.
+
 ## Attached terminal support
 
 `clat attach` supports the existing `/model` picker for preset selection,

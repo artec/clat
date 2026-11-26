@@ -418,7 +418,8 @@ For agent phase 4, keep correctness gates separate from effectiveness claims:
 - with the default subagent configuration, delegate one explorer read, confirm the child sees only
   the three project-confined read tools, cancel the parent once, and verify the
   durable start/end provenance and zero surviving workers; restart and confirm
-  the tool is hidden again.
+  the tool is still available under the default configuration (an explicit
+  `/sub off` is process-local, so a restart returns to the default-on state).
 
 The subagent effectiveness campaign is a separate paid experiment:
 two cross-directory location tasks and two review tasks, single-agent versus

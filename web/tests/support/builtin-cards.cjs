@@ -11,7 +11,7 @@ function fixture(){
  });
  vm.runInContext(fs.readFileSync('web/plugin-market.js','utf8').replace(/\r\n/g,'\n'),context);
  const source=fs.readFileSync('web/composer-ux.js','utf8').replace(/\r\n/g,'\n');
- for(const [name,async] of [['copyMessageText',true],['copyTextButton',false]]){
+ for(const [name,async] of [['copyWithFeedback',true],['copyActionButton',false],['copyTextButton',false]]){
   const start=source.indexOf((async?'async ':'')+'function '+name+'(');
   vm.runInContext(source.slice(start,source.indexOf('\n}',start)+2),context);
  }

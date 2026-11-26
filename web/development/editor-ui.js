@@ -12,7 +12,7 @@ function editorMenu(items,source,x,y){
     button.type = 'button';
     button.setAttribute('role', 'menuitem');
     button.dataset.action = item.key;
-    button.append(svgIcon(item.icon), el('span', '', () => devText(item.key)));
+    button.append(svgIcon(item.icon), el('span', '', item.label || (() => devText(item.key))));
     button.disabled = Boolean(item.disabled);
     button.onclick = async () => {
       close();

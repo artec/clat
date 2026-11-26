@@ -55,18 +55,17 @@ clat upgrade --check
 
 从 v2.1.2 起，发布签名集中到一个 `latest.json`；此前的 CLI/Desktop 用户需手动重装一次，再使用内置升级。
 
+`clat serve` 默认只绑定 `127.0.0.1:2691`，并自动用默认浏览器打开
+响应式 PWA。本地通过 Host/Origin/Fetch Metadata 三查后无感进入；远程
+authority 必须持有效凭据。浏览器只保存私有 HttpOnly 会话，凭据不进入
+URL。使用 `--no-open` 可关闭自动打开浏览器。
+桌面首发起，同一 Release 同时提供 CLI 压缩包和桌面安装包。
 桌面本地调试使用 `bun start`，生成本机测试安装包使用 `bun app:build`。
 桌面开发与发布脚本由 Bun 直接执行 TypeScript，无需 Python。
 桌面启动时恢复上次打开且仍受信任的项目；项目失效时回到欢迎页并显示恢复提示。
 正式发布时，推送签名标签后即可运行 `./publish`，与 CI 构建重叠进行。
 Windows 安装包复用同平台 CLI；macOS 桌面包复用 CI 后端，在本机编译、签名和公证，
 中断后可复用已完成阶段。
-
-`clat serve` 默认只绑定 `127.0.0.1:2691`，并自动用默认浏览器打开
-响应式 PWA。本地通过 Host/Origin/Fetch Metadata 三查后无感进入；远程
-authority 必须持有效凭据。浏览器只保存私有 HttpOnly 会话，凭据不进入
-URL。使用 `--no-open` 可关闭自动打开浏览器。
-桌面首发起，同一 Release 同时提供 CLI 压缩包和桌面安装包。
 桌面与 CLI/PWA 共用 Host 数据，各自独立更新；无需预装 CLI、Node.js 或 Python。
 Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚无 Windows 发布者签名，
 可能出现安全提示或被设备策略阻止。面向普通用户、由商店管理更新的 Microsoft Store
@@ -85,9 +84,9 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
 - **Agent 智能**——不允许模型写入的显式 project/user 本地记忆；
   每会话一个带 CAS 的持久 goal 及仅由用户显式开启的持续续跑；可信项目默认
   可用的只读探索与审查委派，深度为 1，子 Agent 只拥有三个项目相对只读工具。
-- **模型**——DeepSeek、GLM、Qwen、Kimi、腾讯混元内置预设，命名自定义档案，
+- **模型**——DeepSeek、GLM、Qwen、Kimi、腾讯混元、OpenCode Go 内置预设，命名自定义档案，
   OpenAI Responses 与 OpenAI 兼容协议，思考/用量/缓存/上下文/配额遥测；
-  经探针验证的视觉路由支持结构化 TUI 图片草稿、多路径选择、显式剪贴板
+  具备视觉输入能力的路由支持结构化 TUI 图片草稿、多路径选择、显式剪贴板
   导入、纯图片消息与运行中图片插话。
 - **会话内容共享**——从输入框或用 `/share-session` 引用同项目其他活动或归档会话的
   全部或最近若干轮对话。
@@ -157,11 +156,11 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 配置预设或自定义模型 | [模型编辑器](docs/model-editor.md) |
 | 理解审批、权限档位与路径边界 | [权限](docs/permissions.md) |
 | 配置 MCP server | [MCP 集成](docs/mcp.md) |
-| 搜索与抓取公开网页 | [原生联网工具](docs/web.md) |
+| 搜索与抓取公开网页，或使用 DSH 官方 web 搜索与抓取 | [原生联网工具](docs/web.md) |
 | 搜索会话历史，与 DSH 交换轨迹归档 | [历史轨迹](docs/history.md) |
-| [后台任务](docs/jobs.md) | Host 所有的命令、输出、取消与恢复 |
-| [定时与续跑](docs/schedules.md) | 明确授权、有界 Job 续跑、时间规则与恢复 |
-| 使用 DSH 官方 web 搜索与抓取 | [Web 工具](docs/web.md) |
+| 查看 Host 所有的命令、输出、取消与恢复 | [后台任务](docs/jobs.md) |
+| 配置明确授权、有界 Job 续跑、时间规则与恢复 | [定时与续跑](docs/schedules.md) |
+| 使用外部 ACP Agent | [ACP 接入](docs/acp.md) |
 | 在 PWA 或 CLI 安装和管理插件 | [CLAT 插件](docs/plugins.md) |
 | 安装或编写 WASM 组件 | [WASM 插件](docs/wasm.md) |
 | 了解 WASM 网络协议与交付 | [网络协议与交付](docs/wasm-net.md) |
@@ -172,6 +171,7 @@ irm https://raw.githubusercontent.com/artec/clat/main/install.ps1 | iex
 | 理解文件、会话日志与恢复 | [持久化状态](docs/storage.md) |
 | 构建和发布版本 | [发布签名](docs/releasing.md) |
 | 运行带真实凭据的冒烟验证 | [真实模型验证](docs/live-validation.md) |
+| 了解验证分级并运行测试 | [测试分级](docs/testing.md) |
 
 DSH 适配器包另有独立的[英文](sdk/dsh-adapter/README.md)和
 [中文](sdk/dsh-adapter/README.zh.md)包文档。
@@ -196,6 +196,9 @@ cargo build
 | 路径 | 用途 |
 |---|---|
 | `src/` | Rust 核心与各前端 |
+| `crates/` | workspace 成员（`core`、`tokenplan-quota`） |
+| `desktop/` | Tauri 原生桌面客户端 |
+| `locales/` | 英文/简体中文/繁体中文共享语言目录 |
 | `web/` | `clat serve` 内嵌的零构建 Web 资源 |
 | `wit/` | WASM 插件契约 |
 | `schemas/` | 插件/包的机器可读 schema |

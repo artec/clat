@@ -313,6 +313,7 @@ pub struct SteerGate {
     entered: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
     pub saw_steering: std::sync::atomic::AtomicBool,
+    pub request_efforts: Mutex<Vec<Option<String>>>,
 }
 
 impl SteerGate {
@@ -349,11 +350,14 @@ impl ModelFactory for TestFactory {
 
     fn build(
         &self,
-        _config: &ModelConfig,
+        config: &ModelConfig,
         _credentials: &ProviderCredentials,
     ) -> Result<Box<dyn Model>, ModelError> {
         Ok(Box::new(TestModel {
             behavior: self.behavior.clone(),
+            effort: config.extra_body["reasoning_effort"]
+                .as_str()
+                .map(str::to_owned),
         }))
     }
 }
@@ -396,6 +400,7 @@ fn session_summary_response(
 
 struct TestModel {
     behavior: TestBehavior,
+    effort: Option<String>,
 }
 
 impl Model for TestModel {
@@ -560,6 +565,10 @@ impl Model for TestModel {
                 if is_title {
                     return Ok(response("", FinishReason::Cancelled));
                 }
+                gate.request_efforts
+                    .lock()
+                    .unwrap()
+                    .push(self.effort.clone());
                 let has_steering = request.items.iter().any(|item| {
                     matches!(
                         item,

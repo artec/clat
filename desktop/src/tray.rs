@@ -12,6 +12,8 @@ use tauri::{
     menu::{Menu, MenuItem},
 };
 
+pub(super) const OPEN_UPDATE: &str = "tray-update";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Recent {
     pub root: String,
@@ -252,7 +254,7 @@ pub(super) fn activate_launch(app: &tauri::AppHandle, args: impl IntoIterator<It
         }
         if matches!(
             action,
-            "tray-tasks" | "tray-settings" | "desktop-check-update"
+            "tray-tasks" | "tray-settings" | "desktop-check-update" | OPEN_UPDATE
         ) || action.strip_prefix("tray-recent-").is_some_and(|suffix| {
             (1..=16).contains(&suffix.len()) && suffix.bytes().all(|b| b.is_ascii_hexdigit())
         }) {
@@ -309,6 +311,8 @@ pub fn activate(app: &tauri::AppHandle, id: &str) {
     }
     let intent = if matches!(id, "tray-settings" | "desktop-about") {
         serde_json::json!({"settings":true})
+    } else if id == OPEN_UPDATE {
+        serde_json::json!({"settings":true,"openUpdate":true})
     } else if id == "desktop-check-update" {
         serde_json::json!({"settings":true,"checkUpdate":true})
     } else if id == "tray-tasks" {
@@ -340,7 +344,7 @@ fn open(
     let _connection = intent["conversation"]
         .is_object()
         .then(|| state.connection.lock().expect("connection"));
-    if state.updates.lock().expect("updates").preserve_page() {
+    if state.updates.lock().expect("updates").preserve_page() && intent["openUpdate"] != true {
         crate::app::show(app);
         return;
     }
@@ -447,9 +451,13 @@ mod tests {
             assert_eq!(take_for_view(&mut pending, true), None);
         }
 
-        let update = serde_json::json!({"settings":true,"checkUpdate":true});
-        let mut pending = Some(update.clone());
-        assert_eq!(take_for_view(&mut pending, false), Some(update));
+        for update in [
+            serde_json::json!({"settings":true,"checkUpdate":true}),
+            serde_json::json!({"settings":true,"openUpdate":true}),
+        ] {
+            let mut pending = Some(update.clone());
+            assert_eq!(take_for_view(&mut pending, false), Some(update));
+        }
     }
 
     fn row(root: &str, session: &str) -> Recent {

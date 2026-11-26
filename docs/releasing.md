@@ -153,8 +153,9 @@ boundary. Do not upload the key there.
 ### 1. Prepare the tree
 
 - Bump the version once in the root `Cargo.toml` `[workspace.package]`
-  section — both packages inherit it (`version.workspace = true`), so there
-  is no second copy to keep equal; both embed the release version in
+  section — every product workspace crate (`clat`, `clat-core`, `clat-desktop`,
+  `tokenplan-quota`, `clat-wasm-net`) inherits it (`version.workspace = true`), so there
+  is no second copy to keep equal; the CLI and core embed the release version in
   protocol/client strings.
 - Run the full Rust and package test gates appropriate to the release.
 - Perform [live-model validation](live-validation.md) when provider/runtime
@@ -268,10 +269,10 @@ The workflow currently builds:
 
 | Asset target | Runner | Supported baseline |
 |---|---|---|
-| `aarch64-apple-darwin` | `macos-latest` | oldest macOS targeted by the current Rust toolchain |
-| `x86_64-apple-darwin` | `macos-latest` | oldest macOS targeted by the current Rust toolchain |
-| `x86_64-pc-windows-msvc` | `windows-latest` | Windows 10+ |
-| `aarch64-pc-windows-msvc` | `windows-latest` | Windows 10+ |
+| `aarch64-apple-darwin` | `macos-15` | oldest macOS targeted by the current Rust toolchain |
+| `x86_64-apple-darwin` | `macos-15-intel` | oldest macOS targeted by the current Rust toolchain |
+| `x86_64-pc-windows-msvc` | `windows-2022` | Windows 10+ |
+| `aarch64-pc-windows-msvc` | `windows-11-arm` | Windows 10+ |
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.39+ |
 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | glibc 2.39+ |
 
@@ -289,7 +290,9 @@ adapter package may require their own runtimes.
 Before announcing a release, confirm:
 
 - the GitHub release is no longer a draft;
-- every target has archive, checksum, and signature;
+- every published asset is present (archives/installers with their `.sha256`
+  files) together with the shared signed index `latest.json`, which carries the
+  CLI and Desktop signatures;
 - a current installed CLAT reports the expected `clat --version` after
   `clat upgrade`;
 - a tampered archive, manifest, tag binding, or signature is rejected in test;
@@ -439,8 +442,9 @@ their CLI builds and existing checks remain enabled. Ordinary Linux test-job
 caches are separate and retain their existing policy. This reserves the shared
 cache capacity for the four desktop targets.
 
-Only successful default-branch CI runs with native input changes write this
-shared cache. Those jobs run desktop clippy/tests and tooling checks on all four
+Only a successful manual dispatch of CI on the default branch with the `perf`
+input checked writes this shared cache (push/PR runs skip the
+`plugin-performance` jobs). Those jobs run desktop clippy/tests and tooling checks on all four
 native platforms before saving; script-only runs cannot publish an incomplete
 immutable snapshot. On an exact cache miss in those native-input runs, including
 configuration changes restored through a fallback, those jobs build the
@@ -458,7 +462,7 @@ host-default release directory. The cache action retains dependency artifacts,
 not workspace binaries; real release code is still compiled and validated.
 
 The v4 generation replaces v3's incomplete core-only snapshots. A v3 cache hit
-must not skip the corrected warm build. The first successful native-input main
+must not skip the corrected warm build. The first successful manual `perf` run of main
 CI therefore prepares v4 before a tag is pushed; this change does not delete
 remote caches or trigger jobs automatically. Cache restoration and Cargo artifact
 freshness are separate observations: a downloaded cache alone does not establish
@@ -466,7 +470,7 @@ that expensive dependencies were reused.
 
 Tag releases restore the default branch's cache without saving another four
 large copies under each tag. Tags cannot read caches from different tags.
-Initially, let the default-branch CI finish warming before creating the next
+Initially, run the default-branch CI manually with `perf` and let it finish warming before creating the next
 tag. After dependency/toolchain changes, warming may be needed again. If a tag
 starts first, or GitHub evicts the cache, the build still performs an ordinary
 cold compilation; release validation and artifact identity checks are unchanged.
@@ -474,19 +478,20 @@ Source-only pushes with an exact key do not repeatedly warm optimized binaries.
 This reduces repeated dependency work rather than the cost of all linking/LTO;
 actual cache-hit rates and end-to-end savings require remote measurements.
 
-Automatic desktop clippy/tests now run inside CI's existing four macOS/Windows
-platform jobs, using the same explicit target directory and cache as the core
-checks and Release preparation. Desktop no longer starts four duplicate native
-jobs for a push/PR. Its workflow provides web-shell and fast tooling feedback;
-the native entry is manual-only. Both workflows plan from the complete push diff
-or PR base-to-tested-merge diff. Rust/core, native resources/configuration,
-toolchain/workflow and unknown inputs retain all four native checks; webpage-only
-changes select web tests, and script-only changes select tooling (including all
-four native-platform Bun suites in CI). Missing history selects all checks.
-Ordinary Linux and Windows product gates are unchanged; the six-platform
-compile/performance matrix runs only through a manual dispatch of the CI
+Desktop clippy/tests run inside CI's four macOS/Windows `plugin-performance`
+jobs, using the same explicit target directory and cache as the core
+checks and Release preparation, but only through a manual dispatch of the CI
 workflow with the `perf` input checked (2026-11-05: run it once before each
-release). Native checks do not generate installers.
+release); push/PR skip them. The Desktop workflow runs a language-key check
+(`plan`, which installs the locked desktop dependencies) and fast `tooling`
+checks on push/PR; its `native` entry is manual-only, and it has no web-shell or
+browser-test job. Both workflows plan from the complete push diff
+or PR base-to-tested-merge diff (`desktop/scripts/check-plan.ts`). Rust/core,
+native resources/configuration, toolchain/workflow and unknown inputs select all
+four native checks when run; webpage-only changes select nothing, and
+script-only changes select tooling. Missing history selects all checks.
+Ordinary Linux and Windows product gates are unchanged. Native checks do not
+generate installers.
 
 CI native-platform jobs, manual Desktop checks and Release cache readers agree on
 `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`. This reduces debug

@@ -62,12 +62,12 @@ private HttpOnly cookies, and credentials never enter URLs. Use `--no-open`
 to suppress the browser handoff.
 CLAT desktop installers accompany the CLI archives in desktop-enabled releases.
 For local desktop development, use `bun start`; `bun app:build` creates a native
-test installer. Desktop tooling runs directly on Bun/TypeScript.
+test installer. Desktop tooling runs directly on Bun/TypeScript, without Python.
 Desktop reopens its last trusted project on launch; unavailable projects return
 to the welcome page with a recovery message.
 For formal releases, push the signed tag and run `./publish` while CI builds.
 Windows installers reuse their platform's CLI; macOS desktop packages reuse CI
-backends and build/sign locally, preserving completed stages after interruptions.
+backends and build, sign and notarize locally, preserving completed stages after interruptions.
 The desktop app shares Host data with the CLI/PWA and updates independently;
 it requires no preinstalled CLI, Node.js or Python.
 Windows currently ships through GitHub for developers and advanced users; its
@@ -91,10 +91,10 @@ it remains off unless `serve` is started with `--im wechat`.
   model writes; one durable CAS goal per session with user-armed
   continuation; and depth-1 explorer/reviewer delegation confined to three
   project-relative read tools, available by default in trusted projects.
-- **Models** — built-in DeepSeek, GLM, Qwen, Kimi, and Tencent Hy presets;
-  named custom
+- **Models** — built-in DeepSeek, GLM, Qwen, Kimi, Tencent Hy and OpenCode Go
+  presets; named custom
   profiles; OpenAI Responses and OpenAI-compatible protocols; reasoning,
-  usage, cache, context, and quota telemetry. Probe-verified vision routes use
+  usage, cache, context, and quota telemetry. Vision-capable routes use
   a structured TUI image draft with multi-path selection, explicit clipboard
   import, image-only prompts, and in-run image steering.
 - **Conversation sharing** — attach all or recent turns from another active or
@@ -176,11 +176,11 @@ Start with the document that matches your task:
 | Configure a preset or custom model | [Model editor](docs/model-editor.md) |
 | Understand approvals, modes, and path boundaries | [Permissions](docs/permissions.md) |
 | Configure MCP servers | [MCP integration](docs/mcp.md) |
-| Search and retrieve public web pages | [Native Web tools](docs/web.md) |
+| Search and retrieve public web pages, or use official DSH web search and fetch | [Native Web tools](docs/web.md) |
 | Search session history and transfer DSH timeline archives | [History timeline](docs/history.md) |
-| [Background jobs](docs/jobs.md) | Host-owned commands, output, cancellation and recovery |
-| [Scheduled work](docs/schedules.md) | Explicit grants, bounded Job follow-up, time rules and recovery |
-| Use official DSH web search and fetch | [Web tools](docs/web.md) |
+| Inspect Host-owned commands, output, cancellation and recovery | [Background jobs](docs/jobs.md) |
+| Set explicit grants, bounded Job follow-up, time rules and recovery | [Scheduled work](docs/schedules.md) |
+| Run external ACP Agents | [ACP integration](docs/acp.md) |
 | Install and manage plugins from the PWA or CLI | [CLAT plugins](docs/plugins.md) |
 | Install or author a WASM component | [WASM plugins](docs/wasm.md) |
 | Understand the WASM network contract and delivery | [Network protocol and delivery](docs/wasm-net.md) |
@@ -191,6 +191,7 @@ Start with the document that matches your task:
 | Understand files, journals, and recovery | [Persistent state](docs/storage.md) |
 | Build and publish a release | [Release signing](docs/releasing.md) |
 | Run credentialed smoke tests | [Live-model validation](docs/live-validation.md) |
+| Choose verification tiers and run tests | [Testing](docs/testing.md) |
 
 The DSH adapter package also has standalone
 [English](sdk/dsh-adapter/README.md) and
@@ -216,6 +217,9 @@ Useful repository paths:
 | Path | Purpose |
 |---|---|
 | `src/` | Rust core and frontends |
+| `crates/` | Workspace crates (`core`, `tokenplan-quota`) |
+| `desktop/` | Tauri native desktop client |
+| `locales/` | Shared English/Simplified/Traditional Chinese catalogs |
 | `web/` | Zero-build assets embedded by `clat serve` |
 | `wit/` | WASM plugin contract |
 | `schemas/` | Machine-readable plugin/package schemas |

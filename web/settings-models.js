@@ -192,7 +192,7 @@ function renderThinkingSlider(current) {
   slider.dataset.adjustable=String(levels.length>1);
   slider.max=String(Math.max(0,levels.length-1));
   slider.value=String(Math.max(0,levels.indexOf(current.thinking_level)));
-  slider.disabled=levels.length<2||state.modelSelectionPending||state.runActive||state.switching||state.compactionActive;
+  slider.disabled=levels.length<2||state.modelSelectionPending||state.switching||state.compactionActive;
   function paint(preview) {
     const level=levels[Number(slider.value)];
     CLATI18n.bind(output,'textContent',()=>!levels.length?CLATI18n.msg('web.not_adjustable')

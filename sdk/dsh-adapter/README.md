@@ -170,8 +170,9 @@ promised, or sync/async-generator cleanups; the adapter owns all of them.
 System-prompt contributions are exposed through a marked MCP prompt. CLAT
 imports only that marked prompt, passes the real project directory as `cwd`,
 and freezes imported prompts with tools before the first run. Runtime-context
-text remains MCP metadata because CLAT does not yet have DSH's user-role
-context-snapshot registry.
+text travels as MCP metadata (`io.artec.clat/runtimeContext`); CLAT reads it
+when it connects and appends it to the request tail as a user-role snapshot. It
+is a connection-time snapshot, not DSH's per-turn dynamic evaluation.
 
 ## Tool hints
 
@@ -261,6 +262,9 @@ artifact, so end users install no JavaScript environment.
   `639ed015397290b3745d163aafe02ffee4aa3f84` (12 package entrypoints).
   `tool-ask-user` is partial: use `mode: legacy` for MCP elicitation;
   `mode: timed` requires DSH Agent/session late-answer routing and is unsupported.
+  Timed questions are not mapped to blocking elicitation: set `tool-ask-user`
+  config to `{ "mode": "legacy" }`; a direct `ctx.userQuestions.askTimed()` call
+  fails with `TIMED_ASK_UNSUPPORTED` before requesting user input.
   `llm-deepseek` is now a transport library; the cohort inspects the replacement
   `llm-deepseek-api-key` registration plugin, which remains partial (`fiber`).
   Literal prompt sections and prompt-schema `deferLoading` are preserved.
@@ -284,7 +288,3 @@ Repository: [artec/clat](https://github.com/artec/clat) ·
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)
 
 MIT
-
-Timed questions are not mapped to blocking elicitation. Set `tool-ask-user`
-config to `{ "mode": "legacy" }`; direct `ctx.userQuestions.askTimed()` calls
-fail with `TIMED_ASK_UNSUPPORTED` before requesting user input.

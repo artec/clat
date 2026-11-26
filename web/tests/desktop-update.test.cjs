@@ -23,6 +23,26 @@ test('only an available update or verified package exposes an actionable shortcu
  assert.equal(api.project({info:available()}).action,'download');
  assert.equal(api.project({info:{...available(),downloaded:true,updatePresentation:{key:'update.verified'}}}).action,'install');
 });
+test('tray opens the existing update stage and checks only when the desktop has no package',async()=>{
+ const {api}=runtime(),calls=[];
+ let info={...available(),downloaded:true,updatePresentation:{key:'update.verified'}};
+ const controller=api.create({invoke:async command=>{
+  calls.push(command);
+  if(command==='desktop_info')return info;
+  assert.equal(command,'desktop_check_update');
+  info=available();
+ }});
+ await controller.openUpdate();
+ assert.equal(api.project(controller.snapshot()).action,'install');
+ info=available();
+ await controller.openUpdate();
+ assert.equal(api.project(controller.snapshot()).action,'download');
+ assert.deepEqual(calls,['desktop_info','desktop_info']);
+ info={};
+ await controller.openUpdate();
+ assert.equal(calls.filter(command=>command==='desktop_check_update').length,1);
+ assert.equal(api.project(controller.snapshot()).action,'download');
+});
 test('download progress never fabricates a percentage for unknown totals',()=>{
  const {api}=runtime(),info={...available(),updateBusy:true,updatePhase:'downloading',updateReceived:25};
  assert.equal(api.project({info}).ratio,null);assert.equal(api.project({info}).action,null);

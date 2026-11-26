@@ -347,7 +347,7 @@ the container, where documentation remains available for inspection.
 Windows CI still runs native clippy and tests on every
 PR/main push. Superseded CI runs for the same ref are cancelled. CI has no
 path-based omissions; it remains the safety net for quick-selection misses.
-The Linux gate step and each Windows test step have a 15-minute CI timeout.
+The Linux gate step has a 30-minute CI timeout and each Windows test step 15 minutes.
 Windows product and WASM backend tests run in separate steps so a later
 successful native command cannot mask the product suite exit code.
 `scripts/test_ci_windows.py` pins this workflow contract in the shared gates.
@@ -492,7 +492,7 @@ instead of a tax. Each rule was paid for by a real incident.
   Git's tracked and nonignored untracked Rust paths, including new test files;
   tracked paths remain covered even if an ignore rule matches them. Exported
   source copies without Git metadata use the directory walk with `output/`
-  and build/dependency directories excluded. The 96-site registration rule
+  and build/dependency directories excluded. The per-site registration rule
   still rejects new waits and stale entries; historical evidence is preserved.
 - **Do not accumulate duplicated scaffolding.** When two test suites
   share setup/assert sequences (the providers adapters' test sections
@@ -595,8 +595,9 @@ Bun runtime's undici implementation.
 
 ### Plugin startup performance
 
-PERF-1 has a six-target compile matrix in CI and repeated SHA comparisons on
-native macOS, Windows and Linux runners. Run the same CPU comparison locally
+PERF-1 has a six-target compile matrix and repeated SHA comparisons on
+native macOS, Windows and Linux runners; both run only through a manual
+`workflow_dispatch` of CI with the `perf` input checked (push/PR skip them). Run the same CPU comparison locally
 with `cargo test -p clat-wasm-net --lib perf_sha_samples -- --ignored --nocapture`
 (and again with `--release`). It compares five 61 MiB inputs with identical
 SHA-256 results. x86 deliberately retains the existing backend. Compilation
@@ -1015,9 +1016,12 @@ CLI/core gates. Run targeted `scripts/gates.sh serve:: host_client:: upgrade::te
 for shared Host/cache/upgrade changes and the architecture boundary test. Desktop
 native checks are `cargo test -p clat-desktop --locked` and
 `cargo clippy -p clat-desktop --all-targets --locked -- -D warnings` on macOS/Windows.
-Automatic native verification runs in CI's existing four macOS/Windows platform
-jobs with an explicit `--target`; the dedicated Desktop workflow retains manual
+Native verification runs only on manual dispatch: CI's `plugin-performance`
+jobs (the four macOS/Windows targets, with an explicit `--target`) and the
+dedicated Desktop workflow's `native` job, which also keeps manual
 single-target/all-target native checks and optional Windows test installers.
+Push/PR runs only the Linux and Windows product gates plus Desktop's `plan` and
+`tooling` jobs.
 
 The Desktop planning job validates language keys, parameters and references; it
 does not compare wording or appearance. Install the locked desktop development
@@ -1098,20 +1102,20 @@ LF and wrapped CRLF must all sign without changing the source key. Temporary
 key copies use permissions 0600 and must be removed on success or failure;
 passwords remain outside process arguments. The owner's real key is never read.
 
-Desktop push/PR verification covers all four native platforms in CI without a
-second set of native build jobs or installer generation. CI and Desktop use
+Native Desktop verification on all four platforms is manual (see above); push/PR
+does not start native build jobs or installer generation. CI and Desktop use
 `desktop/scripts/check-plan.ts` to classify the complete push or PR merge diff.
 Rust/shared-core, native resources/configuration, toolchain/workflow and unknown
-changes retain native clippy/tests; scripts select tooling. The browser
+changes select native clippy/tests when a manual run asks for them; scripts select tooling. The browser
 web-shell job has been removed. Desktop UI and PWA JavaScript/HTML, CSS, icons,
 manual captures and catalog wording edits do not select Desktop native or tooling
-jobs. Planning validates language keys/parameters once,
-without installing desktop dependencies or computing an installer matrix on
+jobs. Planning installs the locked desktop dependencies and validates language
+keys/parameters once, without computing an installer matrix on
 automatic runs. Language runtime/manifest/checker changes still select all
 Desktop checks. Docs-only changes add no desktop jobs. Multi-commit pushes, deletion,
 rename and NUL-separated paths are covered; missing/invalid history selects all
-checks. Tooling still runs on all four native platforms when relevant; fast
-Linux tooling/type checks and browser tests stay in Desktop, and the ordinary
+checks. Tooling runs on all four native platforms in manual native runs; fast
+Linux tooling/type checks stay in Desktop, and the ordinary
 Linux/container and Windows product gates are retained.
 
 Native CI jobs share one target tree/cache for core, desktop and Release
@@ -1300,11 +1304,6 @@ native verification; mock commands and a temporary test bundle do not establish
 those results. Keep the real shared Host and signing credentials out of local tests.
 
 History query coverage: `scripts/gates.sh history_query` exercises real committed compressed journals, English/Simplified/Traditional text, one-character queries, literal operators, external append/truncate/delete, derived-cache corruption, project and trust fences, current-step cutoff, read continuation and source-byte preservation. `web/e2e/tests/history-query.spec.js` checks search hits and untrusted text snippets through the trajectory list. It verifies rendered message content and the original event through the record inspector, then checks that returning to the overview preserves search, draft and session selection. The replacement/fallback-title regression is expected to fail if old hidden content is restored to title indexing.
-
-`web/e2e/tests/composer-icons.spec.js` checks sidebar tool icons in expanded and
-collapsed layouts, three-language accessible names and tooltips, dialog access,
-and the shared send/stop position through a real isolated mock-model run and
-cancellation. An unsent draft must survive cancellation and language changes.
 
 Session summary body coverage: `web/tests/conversation-summary.test.cjs` drives
 `createConversationSummary` / `renderConversationSummary` with a body whose

@@ -20,9 +20,11 @@ a subprocess or send a network request, so it is never automatic on page open.
 
 Host-owned entries live in private `~/.clat/mcp-managed.json`, not in the
 plugin registry. User-managed entries override installed packages and vendor
-defaults. Existing manual `~/.clat/mcp.json` entries still override managed
-**user-level** entries; an explicitly configured trusted-project entry can
-override or disable any inherited entry. The UI lists legacy entries separately
+defaults. Manual `~/.clat/mcp.json` entries are the highest-priority escape hatch: they
+override a same-named managed user-level entry and also a project-level managed
+entry, including a project-level disable. A managed trusted-project entry can
+override or disable inherited managed user-level entries, installed packages
+and vendor defaults. The UI lists legacy entries separately
 without overwriting them. The Host stores credential values privately; management
 reads show only credential field names, not their values. All mounted projects
 must be idle before a change safely reloads MCP connections and tool leases.
@@ -220,7 +222,8 @@ CLAT advertises experimental capability `io.artec.clat/hostServices` version
   notification carrying the latest snapshot, or `null` when the run ends.
 
 Only `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and
-`run_command` are callable. Each invocation still passes through the current
+`run_command` are callable; on macOS `ui_apps`, `ui_tree`, `ui_wait` and
+`ui_act` are callable too. Each invocation still passes through the current
 run's permission policy, project path fence, cancel token, and tool execution
 pipeline. Credentials, approver objects, registries, and journal writers never
 cross the protocol. `run_command` is the same one-shot ProcessService wrapper

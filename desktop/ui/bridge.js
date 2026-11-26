@@ -178,6 +178,7 @@
     async function trayIntent() {
       const intent=await invoke('desktop_take_tray_intent'); if(!intent)return;
       if(intent.settings)showSettings();
+      if(intent.openUpdate)await controller.openUpdate();
       if(intent.checkUpdate)await controller.act('check');
       if(intent.tasks)(document.getElementById('nav-tasks')||document.getElementById('jobs-open'))?.click();
       if(intent.conversation)window.dispatchEvent(new CustomEvent('clat-desktop-open-conversation',{detail:intent.conversation}));

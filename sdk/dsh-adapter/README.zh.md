@@ -158,8 +158,9 @@ isolate/intercept 过滤或依赖驱动重启。function/object `apply()` 与 Se
 
 system-prompt 贡献通过带标记的 MCP prompt 暴露。CLAT 只自动导入该标记
 prompt，把真实项目目录作为 `cwd` 参数，并在首个 run 前和工具一起冻结。
-runtime-context 文本仍保留在 MCP 元数据中，因为 CLAT 尚无 DSH 的 user-role
-context-snapshot registry。
+runtime-context 文本通过 MCP 元数据（`io.artec.clat/runtimeContext`）传递，
+CLAT 在连接期读取并作为 user-role snapshot 并入请求尾部；它是连接期快照，
+不是 DSH 每轮的动态求值。
 
 ## Tool hints
 
@@ -238,6 +239,9 @@ MCP `command` 指向这个可执行文件。运行时已经打入产物，终端
   `639ed015397290b3745d163aafe02ffee4aa3f84`（12 个包主入口）。
   `tool-ask-user` 为 partial：`mode: legacy` 使用 MCP elicitation；
   `mode: timed` 依赖 DSH Agent/会话及迟到答案路由，不能原样运行。
+  超时问答不会降级成阻塞 elicitation：请把 `tool-ask-user` 配置设为
+  `{ "mode": "legacy" }`；直接调用 `ctx.userQuestions.askTimed()` 会在
+  请求用户输入前抛出 `TIMED_ASK_UNSUPPORTED`。
   `llm-deepseek` 已改为传输库，cohort 改查注册插件
   `llm-deepseek-api-key`，仍为 partial（`fiber`）。
   literal section 与提示词 schema 的 `deferLoading` 均保留。
@@ -260,7 +264,3 @@ Exa fixture 的执行证据只覆盖注册和无 key 错误路径。
 [sdk/dsh-adapter](https://github.com/artec/clat/tree/main/sdk/dsh-adapter)
 
 MIT
-
-超时问答不会降级成阻塞 elicitation。请把 `tool-ask-user` 配置设为
-`{ "mode": "legacy" }`；直接调用 `ctx.userQuestions.askTimed()` 会在
-请求用户输入前抛出 `TIMED_ASK_UNSUPPORTED`。
