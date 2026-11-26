@@ -468,10 +468,13 @@ model's array (Kimi K3 offers only Max, DeepSeek V4 Pro starts at High,
 Grok 4.7 / Gemini 4 Argon / Qwen4 Max stop at High, MiniMax M3 has none),
 and a saved level the model does not accept — for example a Max carried
 over from another model — is neither displayed nor sent; the preset's
-pinned effort goes out instead. The
-gateway has no DeepSeek/GLM-style `thinking` object, and
-`stream_options.include_usage` behavior is unverified there, so the preset
-extra body carries `reasoning_effort` only (nothing at all for MiniMax).
+pinned effort goes out instead. The gateway config uses top-level
+`reasoning_effort` for models that support it. CLAT requests the final
+streaming usage chunk with `stream_options.include_usage`. When the standard
+cache-read fields are absent, CLAT can use the gateway's
+`usage.opencode.tokens` breakdown if it agrees with the reported input.
+Cache writes contribute to total input, while only cache reads contribute to
+the hit rate. See the [OpenCode inference API](https://opencode.ai/docs/console/api/inference/#cost).
 
 The gateway's chat-completions facade also translates tool schemas per
 upstream family and rejects some standard JSON-Schema constructs that

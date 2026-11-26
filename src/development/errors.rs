@@ -7,6 +7,7 @@ pub(super) fn presentation(reason: &str) -> crate::i18n::UiMessage {
         "cancelled" => "dev.cancelled",
         "path_denied" => "dev.path_denied",
         "model_unavailable" => "dev.model_unavailable",
+        "generation_rate_limited" => "dev.generation_rate_limited",
         "generation_empty" | "generation_failed" | "generation_not_reduced" => {
             "dev.generation_failed"
         }

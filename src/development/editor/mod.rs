@@ -1,5 +1,6 @@
 //! Human document snapshots and CAS publication. No Agent recovery attribution.
 use super::*;
+use base64::Engine as _;
 use serde_json::json;
 mod drafts;
 mod mutations;
@@ -14,11 +15,11 @@ impl DevelopmentService {
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("host_closed".into());
         }
-        if method == "editor.inspect" {
-            return self.inspect_document(text(value, "path")?);
-        }
-        if method == "editor.open" {
-            return self.open_document(text(value, "path")?);
+        match method {
+            "editor.inspect" => return self.inspect_document(text(value, "path")?),
+            "editor.open" => return self.open_document(text(value, "path")?),
+            "editor.previewImage" => return self.preview_image(text(value, "path")?),
+            _ => {}
         }
         if method.starts_with("editor.draft") {
             return self.draft_request(method, value);
@@ -89,6 +90,36 @@ impl DevelopmentService {
         self.project
             .read_file_limited(path, FILE_LIMIT + 1)
             .map_err(io)
+    }
+    fn preview_image(&self, path: &str) -> Result<Value, String> {
+        use crate::media;
+        let local = relative(path)?;
+        let svg = local
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"));
+        let media_type = if svg {
+            "image/svg+xml"
+        } else {
+            media::media_type_for_path(local).ok_or("file_encoding")?
+        };
+        let bytes = self.file_bytes(path)?.ok_or("file_missing")?;
+        if bytes.len() > FILE_LIMIT {
+            return Err("file_large".into());
+        }
+        if svg {
+            // The client uses SVG bytes only in an inert image decode.
+            std::str::from_utf8(&bytes).map_err(|_| "file_encoding")?;
+        } else {
+            let (_, dimensions) =
+                media::validate_source_header(local, &bytes).map_err(|_| "file_encoding")?;
+            dimensions
+                .filter(|(width, height)| *width > 0 && *height > 0)
+                .ok_or("file_encoding")?;
+        }
+        Ok(json!({
+            "base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+            "media_type": media_type,
+        }))
     }
     fn check_private(&self, path: &str) -> Result<(), String> {
         let candidate = self.project.root().join(path);

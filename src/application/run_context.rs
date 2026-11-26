@@ -10,6 +10,7 @@ use crate::plugins::services::{FrozenPrompts, RuntimeContext, ServingModel};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub(super) mod short_reply;
 mod start;
 
 /// The system prompt at each additive workflow boundary. The final project
@@ -41,6 +42,7 @@ pub(super) struct RunContextSnapshot {
     memory_header: Value,
     pub(super) memory_bytes: usize,
     goal_header: Value,
+    pub(super) short_replies: bool,
     pub(super) skills: Arc<crate::skills::SkillCatalogSnapshot>,
     /// `/skill <name>` 武装的一次性显式调用，已针对 run 冻结 catalog 解析
     /// （SC-2）。None = 本 run 无显式调用。
@@ -272,6 +274,10 @@ impl ContextSources {
         let invoked_instructions = invoked_skill
             .as_ref()
             .map(crate::skills::InvokedSkill::instructions);
+        let short_replies = plan_header.is_none()
+            && goal.header.is_null()
+            && task.is_none()
+            && invoked_skill.is_none();
         let capabilities = tools.capability_view(Some(&tool_access));
         let tool_definitions: Arc<[crate::tool::ToolDefinition]> =
             capabilities.definitions().into();
@@ -307,6 +313,7 @@ impl ContextSources {
             memory_header: memory.header,
             memory_bytes: memory.bytes,
             goal_header: goal.header,
+            short_replies,
             skills,
             invoked_skill,
         }

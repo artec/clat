@@ -1,6 +1,6 @@
 # Offline development widgets
 
-Pinned CodeMirror 6 and xterm.js packages are bundled into `dist/entry.js` and
+Pinned CodeMirror 6, Marked, and xterm.js packages are bundled into `dist/entry.js` and
 `dist/entry.css`, embedded by the Rust Host. End users need no JavaScript runtime
 or network downloads. `licenses/` retains dependency notices. No font files are
 bundled: terminals use system fonts or fonts selected from the local device library.

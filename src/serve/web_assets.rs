@@ -170,6 +170,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         "application/javascript",
     ),
     (
+        "/development-editor-markdown.js",
+        include_bytes!("../../web/development/editor-markdown.js"),
+        "application/javascript",
+    ),
+    (
         "/development-editor.js",
         include_bytes!("../../web/development/editor.js"),
         "application/javascript",
@@ -569,6 +574,7 @@ const PROJECT_MODULES: &[&str] = &[
     "/development-settings.js",
     "/development-editor-ui.js",
     "/development-editor-tree.js",
+    "/development-editor-markdown.js",
     "/development-editor.js",
     "/development-file-actions.js",
     "/development-git-layout.js",

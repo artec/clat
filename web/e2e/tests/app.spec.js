@@ -2069,6 +2069,49 @@ test('image draft stages, sends image-only, and rebuilds a protected history pre
   await expect(page.locator('#conn-status')).toHaveText('live', LIVE);
   const replayPreview = page.locator('.msg.user .message-attachment-preview').last();
   await expect(replayPreview).toHaveAttribute('src', /^blob:/, LIVE);
+
+  // Sample the actual rendered bounds at the start and halfway through the
+  // flight, then close before it finishes. The return starts at that same box.
+  await replayPreview.scrollIntoViewIfNeeded();
+  const flight = await replayPreview.evaluate(async source => {
+    await source.decode();
+    const rect = node => {
+      const {x,y,width,height} = node.getBoundingClientRect();
+      return {x,y,width,height};
+    };
+    const origin = rect(source);
+    source.click();
+    const dialog = document.querySelector('#image-lightbox');
+    const image = dialog.querySelector('img');
+    const [opening] = image.getAnimations();
+    opening.pause();
+    opening.currentTime = 0;
+    const start = rect(image);
+    opening.currentTime = opening.effect.getTiming().duration / 2;
+    const middle = rect(image);
+    dialog.querySelector('.image-lightbox-close').click();
+    const [closing] = image.getAnimations();
+    closing.pause();
+    closing.currentTime = 0;
+    const reverseStart = rect(image);
+    closing.finish();
+    return {origin, start, middle, reverseStart};
+  });
+  for (const key of ['x','y','width','height']) {
+    expect(Math.abs(flight.start[key] - flight.origin[key])).toBeLessThan(1);
+    expect(Math.abs(flight.reverseStart[key] - flight.middle[key])).toBeLessThan(1);
+  }
+  expect(flight.middle.width).toBeGreaterThan(flight.start.width);
+  await expect(page.locator('#image-lightbox')).toHaveCount(0);
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await replayPreview.click();
+  await expect(page.locator('.image-lightbox-nav')).toHaveCount(0);
+  const expanded = page.locator('#image-lightbox img');
+  expect(await expanded.evaluate(img => img.getAnimations().length)).toBe(0);
+  expect((await expanded.boundingBox()).width).toBeGreaterThan(flight.origin.width);
+  await page.keyboard.press('Escape');
+  await expect(replayPreview).toBeVisible();
+
 });
 
 test('active run accepts an image steering draft without exposing a host path', async ({ page }) => {
@@ -2238,9 +2281,19 @@ test('conversation attachments copy PNG and JPEG image pixels from the menu and 
     [16, 24, 32, 64, 96, 255],
   ]);
 
-  await attachments.filter({ hasText: 'jpeg-attachment.jpg' }).click();
+  await attachments.filter({ hasText: 'png-attachment.png' }).click();
   const preview = page.locator('#image-lightbox');
   await expect(preview).toBeVisible();
+  const enlarged = preview.locator('.image-lightbox-image');
+  const jpegThumbnail = attachments.filter({hasText:'jpeg-attachment.jpg'}).locator('img');
+  const png = attachments.filter({hasText:'png-attachment.png'}).locator('img');
+  await preview.getByRole('button', {name:'Next image'}).click({timeout:3000});
+  await expect(enlarged).toHaveAttribute('src', await jpegThumbnail.getAttribute('src'));
+  await page.keyboard.press('ArrowLeft');
+  await expect(enlarged).toHaveAttribute('src', await png.getAttribute('src'));
+  await preview.getByRole('button', {name:'Previous image'}).click();
+  await expect(enlarged).toHaveAttribute('src', await jpegThumbnail.getAttribute('src'));
+  await expect(jpegThumbnail).toHaveClass(/is-lifted/);
   await preview.locator('.image-lightbox-copy').click();
   await expect.poll(() => page.evaluate(() => window.copiedImages), LIVE).toEqual([
     [16, 24, 32, 64, 96, 255], [24, 16, 128, 128, 128, 255],

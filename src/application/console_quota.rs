@@ -108,21 +108,35 @@ mod device_flow;
 mod login_flow;
 
 const PROVIDERS: [&str; 3] = ["qianwen", "tencent", "bailian"];
+type Subscribers = Arc<Mutex<Vec<mpsc::Sender<ApplicationEvent>>>>;
 type CacheKey = (PathBuf, &'static str);
 
 #[derive(Default)]
 struct CachedAllowance {
     last: Option<(Instant, ProviderAllowance)>,
     request: Option<Uuid>,
+    listeners: Vec<Subscribers>,
 }
 
 static CACHE: Mutex<Option<HashMap<CacheKey, CachedAllowance>>> = Mutex::new(None);
 
+pub(super) struct ConsoleQuota {
+    control: Arc<ControlStorage>,
+    subscribers: Subscribers,
+}
+
 impl TrustedProjectApplication {
+    pub(super) fn console_quota(&self) -> ConsoleQuota {
+        ConsoleQuota {
+            control: self.control.clone(),
+            subscribers: self.subscribers.clone(),
+        }
+    }
+
     /// The rail follows the active model. Settings can read both providers.
     pub fn console_allowance(&self) -> Option<ProviderAllowance> {
         let provider = console_provider(&self.model_state().ok()?.0.endpoint)?;
-        Some(read_allowance(self, provider, false).0)
+        Some(self.console_quota().read_allowance(provider, false).0)
     }
 
     pub fn console_authorizations(
@@ -206,7 +220,7 @@ fn authorization_view(
         .read_console_credential(provider)
         .map_err(ApplicationError::new)?;
     let (allowance, refreshing) = if row.is_some() {
-        read_allowance(app, provider, refresh)
+        app.console_quota().read_allowance(provider, refresh)
     } else {
         (needs_auth(provider), false)
     };
@@ -241,47 +255,55 @@ fn cache_key(control: &ControlStorage, provider: &'static str) -> CacheKey {
     (control.root_path().to_owned(), provider)
 }
 
-fn read_allowance(
-    app: &TrustedProjectApplication,
-    provider: &'static str,
-    force: bool,
-) -> (ProviderAllowance, bool) {
-    let key = cache_key(&app.control, provider);
-    let mut cache = CACHE.lock().expect("console quota cache");
-    let entry = cache
-        .get_or_insert_with(HashMap::new)
-        .entry(key.clone())
-        .or_default();
-    let fresh = entry
-        .last
-        .as_ref()
-        .is_some_and(|(at, value)| at.elapsed() < cache_ttl(value));
-    if entry.request.is_none() && (force || !fresh) {
-        entry.request = spawn_refresh(app, key);
+impl ConsoleQuota {
+    pub(super) fn read_allowance(
+        &self,
+        provider: &'static str,
+        force: bool,
+    ) -> (ProviderAllowance, bool) {
+        let key = cache_key(&self.control, provider);
+        let mut cache = CACHE.lock().expect("console quota cache");
+        let entry = cache
+            .get_or_insert_with(HashMap::new)
+            .entry(key.clone())
+            .or_default();
+        let fresh = entry
+            .last
+            .as_ref()
+            .is_some_and(|(at, value)| at.elapsed() < cache_ttl(value));
+        if entry.request.is_none() && (force || !fresh) {
+            entry.request = spawn_refresh(self.control.clone(), key);
+        }
+        if entry.request.is_some()
+            && !entry
+                .listeners
+                .iter()
+                .any(|other| Arc::ptr_eq(other, &self.subscribers))
+        {
+            entry.listeners.push(self.subscribers.clone());
+        }
+        let value = entry
+            .last
+            .as_ref()
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| {
+                if entry.request.is_some() {
+                    ProviderAllowance::state("loading")
+                } else {
+                    ProviderAllowance::state("failed")
+                }
+            });
+        (value, entry.request.is_some())
     }
-    let value = entry
-        .last
-        .as_ref()
-        .map(|(_, value)| value.clone())
-        .unwrap_or_else(|| {
-            if entry.request.is_some() {
-                ProviderAllowance::state("loading")
-            } else {
-                ProviderAllowance::state("failed")
-            }
-        });
-    (value, entry.request.is_some())
 }
 
-fn spawn_refresh(app: &TrustedProjectApplication, key: CacheKey) -> Option<Uuid> {
+fn spawn_refresh(control: Arc<ControlStorage>, key: CacheKey) -> Option<Uuid> {
     let request = Uuid::new_v4();
-    let control = Arc::clone(&app.control);
-    let subscribers = Arc::clone(&app.subscribers);
     std::thread::Builder::new()
         .name("clat-console-quota".into())
         .spawn(move || {
             let value = fetch_for(&control, key.1);
-            if finish_refresh(&key, request, value) {
+            for subscribers in finish_refresh(&key, request, value) {
                 notify_changed(&subscribers);
             }
         })
@@ -289,16 +311,16 @@ fn spawn_refresh(app: &TrustedProjectApplication, key: CacheKey) -> Option<Uuid>
         .map(|_| request)
 }
 
-fn finish_refresh(key: &CacheKey, request: Uuid, value: ProviderAllowance) -> bool {
+fn finish_refresh(key: &CacheKey, request: Uuid, value: ProviderAllowance) -> Vec<Subscribers> {
     let mut cache = CACHE.lock().expect("console quota cache");
     if let Some(entry) = cache.as_mut().and_then(|map| map.get_mut(key))
         && entry.request == Some(request)
     {
         entry.last = Some((Instant::now(), value));
         entry.request = None;
-        return true;
+        return std::mem::take(&mut entry.listeners);
     }
-    false
+    Vec::new()
 }
 
 fn fetch_for(control: &ControlStorage, provider: &str) -> ProviderAllowance {
@@ -526,6 +548,64 @@ fn now_millis() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_finish_refreshes_fresh_console_allowance_and_joins_inflight() {
+        use crate::application::tests::{mount, run};
+        use crate::test_support::{TestBehavior, roots};
+
+        let (storage, project) = roots("run-console-refresh");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut app = mount(&Project::new(&project), &storage, TestBehavior::Success);
+        app.select_model_preset("qwen4-max", Some("sp-test".into()), Some("qianwen"))
+            .unwrap();
+        let key = cache_key(&app.control, "qianwen");
+        let pending = Uuid::new_v4();
+        for request in [None, Some(pending)] {
+            CACHE
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .insert(
+                    key.clone(),
+                    CachedAllowance {
+                        last: Some((Instant::now(), ProviderAllowance::state("available"))),
+                        request,
+                        ..Default::default()
+                    },
+                );
+            let (sender, events) = mpsc::channel();
+            app.subscribe(sender);
+            run(&mut app, "hello").unwrap();
+            if request.is_some() {
+                let cache = CACHE.lock().unwrap();
+                let entry = &cache.as_ref().unwrap()[&key];
+                assert_eq!(entry.request, Some(pending));
+                assert!(
+                    entry
+                        .listeners
+                        .iter()
+                        .any(|s| Arc::ptr_eq(s, &app.subscribers))
+                );
+                assert_eq!(entry.last.as_ref().unwrap().1.status, "available");
+            } else {
+                // With no saved console credential a fresh fetch returns needs_auth locally.
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    let allowance = app.console_allowance().unwrap();
+                    if allowance.status == "needs_auth" {
+                        break;
+                    }
+                    events
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        .expect("run completion must refresh even a fresh console balance");
+                }
+            }
+        }
+        invalidate_cache(&app.control, "qianwen");
+        drop(app);
+        crate::test_support::cleanup_tree(storage.parent().unwrap());
+    }
 
     #[test]
     fn seal_unseal_round_trips_and_rejects_tampering() {

@@ -71,9 +71,9 @@ const fn opencode_preset(
         // 网关无 DeepSeek/GLM 风格 thinking 对象——思考强度走顶层
         // reasoning_effort，未定义参数不发给严格网关。
         thinking_object: false,
-        // stream_options.include_usage 在该网关的行为未知——预设先不
-        // 发（纪律裁定：实测有需要再补，extra_body 只带 reasoning_effort）。
-        include_usage: false,
+        // OpenCode documents the final streaming usage chunk under
+        // Chat Completions with stream_options.include_usage.
+        include_usage: true,
         // OpenCode 政策要求自有 UA（不用通用 SDK 名）。
         user_agent: Some(CLAT_UA),
     }

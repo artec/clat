@@ -12,6 +12,7 @@ import {FitAddon} from '@xterm/addon-fit';
 import {SearchAddon} from '@xterm/addon-search';
 import {Unicode11Addon} from '@xterm/addon-unicode11';
 import {CanvasAddon} from '@xterm/addon-canvas';
+import {marked} from 'marked';
 import '@xterm/xterm/css/xterm.css';
 const phraseCompartment=new Compartment();
 const accessCompartment=new Compartment(),languageCompartment=new Compartment();
@@ -54,4 +55,4 @@ function terminal(parent,settings={}){
   try{term.loadAddon(renderer);}catch(error){renderer.dispose();console.warn('[CLAT] Canvas terminal renderer unavailable; using DOM rendering',error);}
   return {term,fit:balancedTerminalFit(term,fit),search,destroy:()=>term.dispose()};
 }
-globalThis.CLATDevelopmentWidgets={editor,diff,terminal,formatFor,formats:formatList};
+globalThis.CLATDevelopmentWidgets={editor,diff,terminal,formatFor,formats:formatList,parseMarkdown:text=>marked.parse(text,{gfm:true})};

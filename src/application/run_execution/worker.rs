@@ -288,7 +288,11 @@ impl RunWorker {
             service.unbind();
         }
         let close_result = self.deps.run_scope.close();
-        if let Some(monitor) = &self.deps.monitor {
+        if let Some(provider) =
+            super::super::console_quota::console_provider(&self.deps.config.endpoint)
+        {
+            self.deps.console_quota.read_allowance(provider, true);
+        } else if let Some(monitor) = &self.deps.monitor {
             monitor.refresh();
         }
         let result = match (result, close_result) {

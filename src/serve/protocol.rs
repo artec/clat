@@ -25,6 +25,7 @@ use std::sync::mpsc;
 /// 时必须同时进本表；测试钉住全集，避免 PWA 显示不存在的控制面。
 pub(crate) const RPC_METHODS: &[&str] = &[
     "editor.open",
+    "editor.previewImage",
     "editor.inspect",
     "editor.save",
     "editor.create",

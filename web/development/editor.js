@@ -1,6 +1,6 @@
 /* Project document tabs keep their own CodeMirror states and undo histories. */
 function createDevelopmentEditor(){
-  const docs=new Map();let selected=null,view=null,active=false,openEpoch=0;
+  const docs=new Map();let selected=null,view=null,active=false,openEpoch=0,stopPreview=null;
   const ui=createEditorLayout({create:directory=>createFile(directory),refresh:()=>refresh(),collapse:()=>tree.collapse(),recover:()=>drafts.recover(true),save:()=>save(selected),saveAll,canSave:()=>Boolean(selected?.dirty&&!selected.readonly&&!selected.saving),canSaveAll:()=>[...docs.values()].some(doc=>doc.dirty&&!doc.readonly&&!doc.saving),canFind:()=>Boolean(view),find:()=>view?.search(),menu:()=>fileMenu(selected ? false : tree.directory(),selected?.path)});
   const {node,status,list,toolbar,mount,tabs,breadcrumb,footer}=ui;
   const controller={node,docs,get selected(){return selected;},openFile,save,saveAll,refresh,createFile,selection:()=>view?view.view.state.selection.main:null,flush:()=>drafts.flush()};
@@ -16,11 +16,12 @@ function createDevelopmentEditor(){
     {key:'terminal_here',icon:'terminal',run:terminalHere},
     {key:'copy_path',icon:'copy',disabled:!tree.path(),run:()=>navigator.clipboard.writeText(tree.path())},
   ];}
-  function stash(){if(selected&&view){selected.state=view.state();selected.top=view.view.scrollDOM.scrollTop;selected.left=view.view.scrollDOM.scrollLeft;}view?.destroy();view=null;}
+  function stash(){stopPreview?.();stopPreview=null;if(selected&&view){selected.state=view.state();selected.top=view.view.scrollDOM.scrollTop;selected.left=view.view.scrollDOM.scrollLeft;}view?.destroy();view=null;}
   function previewMarkdown(doc){
     controller.clearConflict?.();stash();mount.replaceChildren();
     const preview=el('div','editor-markdown-preview rich-text'),back=devButton('back_editor',()=>activate(doc));
-    renderMarkdown(preview,doc.text);mount.append(back,preview);footer.replaceChildren();
+    mount.append(back,preview);footer.replaceChildren();
+    stopPreview=renderEditorMarkdown(preview,doc,{openFile:path=>openFile(path,{fixed:true}),reportError:error=>devReport(status,error)});
   }
   function renderTabs(){
     refreshViewContext();

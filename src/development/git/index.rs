@@ -126,7 +126,7 @@ impl GitService {
                 "--cached",
                 "--no-ext-diff",
                 "--no-textconv",
-                "--stat",
+                "--numstat",
                 "--patch",
             ]);
         let result = crate::process::capture_command(

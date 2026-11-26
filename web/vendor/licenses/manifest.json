@@ -256,6 +256,14 @@
     ]
   },
   {
+    "name": "marked",
+    "version": "18.3.0",
+    "license": "MIT",
+    "files": [
+      "marked-LICENSE"
+    ]
+  },
+  {
     "name": "@lezer/common",
     "version": "1.5.4",
     "license": "MIT",

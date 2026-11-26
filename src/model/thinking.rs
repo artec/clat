@@ -29,7 +29,7 @@ impl ThinkingLevel {
     /// （默认 xhigh），CLAT 的三档按阶梯映射 Low→low、High→medium、
     /// Max→xhigh，保证三档各自有效果（官方兼容表里 high/max 都归并
     /// 为 xhigh，直接透传会让 High/Max 两档无差别）。
-    pub(super) fn wire_effort(self, vendor: ModelVendor) -> &'static str {
+    pub(crate) fn wire_effort(self, vendor: ModelVendor) -> &'static str {
         match (self, vendor) {
             (Self::Low, _) => "low",
             (Self::High, ModelVendor::Qwen) => "medium",

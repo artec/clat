@@ -1149,7 +1149,10 @@ mod tests {
         preset_by_id("opencode-minimax-m3")
             .unwrap()
             .apply(&mut config);
-        assert_eq!(config.extra_body, json!({}));
+        assert_eq!(
+            config.extra_body,
+            json!({"stream_options":{"include_usage":true}})
+        );
     }
 
     #[test]
@@ -1629,7 +1632,7 @@ mod tests {
     }
 
     /// OC-Go 金测：OpenCode Go 网关预设的钉值锁定。判别：误改端点 /
-    /// UA / effort / extra_body 形状（多出 thinking 或 stream_options）、
+    /// UA / effort / extra_body 形状（误加 thinking 或漏掉 stream_options）、
     /// 或删掉 `opencode-` id 前缀（与直连预设撞名会让
     /// `preset_by_id` 取错条目），此测试红。
     #[test]
@@ -1649,17 +1652,20 @@ mod tests {
         // 同网关全部预设（八开源 + 四海外）端点/凭据槽一致。
         for other in presets_by_vendor("OpenCode Go") {
             assert_eq!(other.endpoint, preset.endpoint, "{}", other.id);
+            assert_eq!(
+                other.extra_body()["stream_options"]["include_usage"],
+                true,
+                "{}",
+                other.id
+            );
         }
 
         let mut config = ModelConfig::default();
         preset.apply(&mut config);
-        // extra_body 只带该模型数组内的 effort pin（glm-5.3 数组
-        // low,high,max → 中位 high；include_usage 行为未知先不发
-        // stream_options，纪律裁定）。
         assert_eq!(
             config.extra_body,
-            json!({"reasoning_effort": "high"}),
-            "OpenCode presets must not send unverified gateway parameters"
+            json!({"reasoning_effort":"high","stream_options":{"include_usage":true}}),
+            "the preset requests final usage and uses the model's documented effort"
         );
         // 自有 UA（第三方政策要求，随版本演进）。
         assert_eq!(

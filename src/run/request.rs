@@ -4,6 +4,7 @@ pub(super) struct RequestInputs {
     pub instructions: Option<String>,
     pub snapshot: crate::plugins::services::RuntimeSnapshot,
     pub options: ModelOptions,
+    pub thinking_override: Option<crate::ThinkingLevel>,
     pub definitions: Vec<crate::tool::ToolDefinition>,
     pub items: Vec<ModelItem>,
 }
@@ -73,6 +74,7 @@ impl Run<'_> {
     pub(super) fn prepare_request(
         &mut self,
         state: &mut StepState,
+        tune_initial: bool,
     ) -> Result<RequestInputs, String> {
         let snapshot = self
             .dynamic_instructions
@@ -84,6 +86,13 @@ impl Run<'_> {
         let snapshot = self.runtime_context.snapshot(snapshot);
         let mut options = self.model_options.clone();
         options.request_tail = snapshot.request_tail(options.request_tail.as_deref());
+        let thinking_override = if tune_initial {
+            self.context_manager
+                .as_ref()
+                .and_then(|manager| manager.tune_initial_request(&state.items, &mut options))
+        } else {
+            None
+        };
         let instructions = self
             .instructions
             .as_ref()
@@ -116,6 +125,7 @@ impl Run<'_> {
                 instructions,
                 snapshot,
                 options,
+                thinking_override,
                 definitions,
                 items: Vec::new(),
             });
@@ -132,6 +142,7 @@ impl Run<'_> {
             instructions,
             snapshot,
             options,
+            thinking_override,
             definitions,
             items,
         })

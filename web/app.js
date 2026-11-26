@@ -1989,6 +1989,7 @@ function attachmentBlocks(blocks) {
 }
 
 function clearTranscriptAttachmentUrls() {
+  document.getElementById('image-lightbox')?.close();
   for (const url of state.transcriptAttachmentUrls) URL.revokeObjectURL(url);
   state.transcriptAttachmentUrls.clear();
 }
@@ -2020,6 +2021,7 @@ async function loadTranscriptImage(img, attachment) {
     }
     state.transcriptAttachmentUrls.add(url);
     transcriptImageBlobs.set(img, blob);
+    img.alt = attachment.display_name || CLATI18n.msg("web.attached_image");
     img.src = url;
     img.classList.remove('is-loading');
     img.closest('.message-attachment')?.classList.remove('is-unavailable');
@@ -2099,8 +2101,11 @@ function addMessageAttachments(attachments) {
     const dimensions = attachment.width && attachment.height ? `${attachment.width} × ${attachment.height}` : 'image';
     CLATI18n.bind(label, "textContent", () => `${name} · ${dimensions}`);
     card.append(image, label);
-    card.addEventListener('click', () => {
-      if (image.src) openImageLightbox(image);
+    card.addEventListener('click', event => {
+      if (!image.src) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openImageLightbox(image);
     });
     bindAttachmentMenu(card, image);
     rail.appendChild(card);
@@ -2109,31 +2114,118 @@ function addMessageAttachments(attachments) {
   return rail;
 }
 
-function openImageLightbox(source) {
-  let dialog = document.getElementById('image-lightbox');
-  if (!dialog) {
-    dialog = document.createElement('dialog');
-    dialog.id = 'image-lightbox';
-    dialog.className = 'image-lightbox';
-    const close = el('button', 'icon-button image-lightbox-close', () => ('×'));
-    close.type = 'button';
-    CLATI18n.bind(close, "title", () => CLATI18n.msg("web.close_image_preview", {}, "Close image preview"));
-    close.addEventListener('click', () => dialog.close());
-    const image = el('img', 'image-lightbox-image');
-    const copy = copyActionButton(() => CLATI18n.msg('web.copy_image'), () => copyTranscriptImage(image));
-    copy.classList.add('image-lightbox-copy');
-    dialog.append(close, copy, image);
-    dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
-    dialog.addEventListener('close', () => {
-      if (!dialog.open) transcriptImageBlobs.delete(image);
-    });
-    document.body.appendChild(dialog);
+// Both frames use viewport coordinates. Changing the box with object-fit:cover
+// reveals the cropped thumbnail edges as it reaches the full image aspect ratio.
+function lightboxFrame(rect) {
+  return {
+    left: rect.left + rect.width / 2 + 'px', top: rect.top + rect.height / 2 + 'px',
+    width: rect.width + 'px', height: rect.height + 'px',
+  };
+}
+
+function lightboxNavigation(dialog, initial, select) {
+  const rail = initial.closest('.message-attachments');
+  const images = Array.from(rail.querySelectorAll('.message-attachment-preview'));
+  if (images.length < 2) return;
+  let current = initial;
+  const available = () => images.filter(node => node.naturalWidth && node.isConnected);
+  function move(step) {
+    const loaded = available();
+    const index = loaded.indexOf(current);
+    if (index < 0 || loaded.length < 2) return;
+    const next = loaded[(index + step + loaded.length) % loaded.length];
+    if (select(next)) current = next;
   }
-  const image = dialog.querySelector('img');
-  transcriptImageBlobs.set(image, transcriptImageBlobs.get(source));
-  image.src = source.src;
-  image.alt = source.alt;
-  if (!dialog.open) dialog.showModal();
+  function button(side, glyph, key, step) {
+    const node = el('button', 'image-lightbox-nav ' + side, glyph);
+    node.type = 'button';
+    CLATI18n.attribute(node, 'aria-label', () => CLATI18n.msg(key));
+    CLATI18n.attribute(node, 'title', () => CLATI18n.msg(key));
+    node.onclick = () => move(step);
+    dialog.append(node);
+    return node;
+  }
+  const previous = button('previous', '‹', 'web.previous_image', -1);
+  const next = button('next', '›', 'web.next_image', 1);
+  const update = () => { previous.hidden = next.hidden = available().length < 2; };
+  update();
+  rail.addEventListener('load', update, true);
+  dialog.addEventListener('close', () => rail.removeEventListener('load', update, true), {once:true});
+  dialog.addEventListener('keydown', event => {
+    if (event.altKey || event.ctrlKey || event.metaKey || !['ArrowLeft','ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    move(event.key === 'ArrowLeft' ? -1 : 1);
+  });
+}
+
+async function openImageLightbox(source) {
+  if (!source.src) return;
+  if (!source.naturalWidth) {
+    try { await source.decode(); } catch (_) { return; }
+  }
+  if (!source.isConnected || !context.isActive() || document.getElementById('image-lightbox')) return;
+  const dialog = el('dialog', 'image-lightbox');
+  dialog.id = 'image-lightbox';
+  CLATI18n.attribute(dialog, 'aria-label', () => CLATI18n.msg('web.attached_image'));
+  const image = el('img', 'image-lightbox-image');
+  function showSource(node) {
+    source = node;
+    image.src = node.src;
+    image.alt = node.alt;
+    image.style.setProperty('--image-ratio', String(node.naturalWidth / node.naturalHeight));
+    transcriptImageBlobs.set(image, transcriptImageBlobs.get(node));
+  }
+  showSource(source);
+  const close = el('button', 'icon-button image-lightbox-close', '×');
+  close.type = 'button';
+  CLATI18n.attribute(close, 'aria-label', () => CLATI18n.msg('web.close_image_preview'));
+  CLATI18n.attribute(close, 'title', () => CLATI18n.msg('web.close_image_preview'));
+  const copy = copyActionButton(() => CLATI18n.msg('web.copy_image'), () => copyTranscriptImage(image), true);
+  copy.classList.add('image-lightbox-copy');
+  dialog.append(image, copy, close);
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  close.focus({preventScroll:true});
+
+  const motion = source.ownerDocument.defaultView.matchMedia('(prefers-reduced-motion: reduce)');
+  const timing = {duration:300, easing:'cubic-bezier(.22,.7,.2,1)'};
+  const from = source.getBoundingClientRect();
+  source.classList.add('is-lifted');
+  let flight, closing = false;
+  if (!motion.matches && from.width && from.height) {
+    flight = image.animate([lightboxFrame(from), lightboxFrame(image.getBoundingClientRect())], timing);
+  }
+  lightboxNavigation(dialog, source, next => {
+    if (closing) return false;
+    flight?.cancel();
+    source.classList.remove('is-lifted');
+    showSource(next);
+    source.classList.add('is-lifted');
+    return true;
+  });
+  function dismiss() {
+    if (closing) return;
+    closing = true;
+    const current = image.getBoundingClientRect();
+    flight?.cancel();
+    const target = source.getBoundingClientRect();
+    if (motion.matches || !target.width || !target.height) { dialog.close(); return; }
+    flight = image.animate([lightboxFrame(current), lightboxFrame(target)], {...timing, fill:'forwards'});
+    flight.onfinish = () => dialog.close();
+  }
+  close.onclick = dismiss;
+  dialog.onclick = event => { if (event.target === dialog) dismiss(); };
+  dialog.oncancel = event => { event.preventDefault(); dismiss(); };
+  dialog.onkeydown = event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); }
+  };
+  dialog.onclose = () => {
+    flight?.cancel();
+    source.classList.remove('is-lifted');
+    transcriptImageBlobs.delete(image);
+    dialog.remove();
+  };
 }
 
 function addUserMessage(text, blocks, clientMessageId) {
@@ -2144,8 +2236,9 @@ function addUserMessage(text, blocks, clientMessageId) {
   const body = el('div', 'body rich-text' + (text ? '' : ' image-only'));
   userMessageReader.attach(msg, body, text, clientMessageId);
   const attachments = addMessageAttachments(attachmentBlocks(blocks));
-  msg.append(marker, body);
+  msg.append(marker);
   if (attachments) msg.appendChild(attachments);
+  msg.append(body);
   if (text) addMessageCopyAction(msg, () => String(text));
   if (text && !attachments) attachLastTurnEditor(msg, body, text);
   rememberFindMessage(msg, CLATI18n.msg("web.user_short",{},"User"), () => String(text || ''));

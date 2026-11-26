@@ -170,6 +170,76 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
   expect(await page.evaluate(async () => (await rpc('files.search', { query: '.env' })).paths)).toEqual([]);
 });
 
+test('file editor previews GitHub README markup and project images without activating HTML', async ({ page }) => {
+  const root = await open(page);
+  fs.mkdirSync(path.join(root, 'readme-images'));
+  fs.writeFileSync(path.join(root, 'readme-images', 'logo.svg'),
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="blue"/></svg>');
+  fs.writeFileSync(path.join(root, 'linked.txt'), 'linked document');
+  fs.writeFileSync(path.join(root, 'preview-README.md'), [
+    '<div align="center">',
+    '',
+    '<img src="readme-images/logo.svg" alt="Project banner" width="40">',
+    '',
+    '<a href="#-选择理由">Jump to heading</a>',
+    '',
+    '</div>',
+    '',
+    '<table><colgroup><col style="width: 50%"></colgroup><tr><td align="center">',
+    '',
+    '**Formatted cell**<br>Second line',
+    '',
+    '</td></tr></table>',
+    '',
+    '~~Deprecated~~',
+    '',
+    '- [x] Complete',
+    '',
+    '```html',
+    '<div>Code sample</div>',
+    '```',
+    '',
+    '<script>globalThis.previewRan = true</script>',
+    '',
+    '<img src="https://badge.invalid/example" alt="External badge" onerror="globalThis.previewRan = true">',
+    '',
+    '<img src="/workbench-side-effect" alt="Absolute image">',
+    '',
+    '<a href="javascript:void(0)">Unsafe link</a>',
+    '',
+    '## 💡 选择理由',
+    '',
+    '[Linked file](linked.txt)',
+  ].join('\n'));
+  const requests = [];
+  page.on('request', request => {
+    if (/badge\.invalid|workbench-side-effect/.test(request.url())) requests.push(request.url());
+  });
+  await page.click('#nav-resources');
+  const resources = page.locator('#resources-dialog');
+  await resources.getByRole('searchbox').fill('preview-README.md');
+  await resources.getByRole('treeitem', {name:'preview-README.md'}).click();
+  await resources.locator('.dev-editor-toolbar').getByRole('button', {name:'File actions'}).click();
+  await page.locator('[role=menuitem][data-action=markdown_preview]').click();
+  const preview = resources.locator('.editor-markdown-preview');
+  await expect(preview.locator('td strong')).toHaveText('Formatted cell');
+  await expect(preview.locator('td br')).toHaveCount(1);
+  await expect(preview.locator('del')).toHaveText('Deprecated');
+  await expect(preview.getByRole('checkbox')).toBeChecked();
+  await expect(preview.getByRole('checkbox')).toBeDisabled();
+  await expect(preview.locator('pre code')).toHaveText('<div>Code sample</div>');
+  await expect.poll(() => preview.getByRole('img', {name:'Project banner'}).evaluateAll(images =>
+    images[0]?.naturalWidth || 0), LIVE).toBe(40);
+  await expect(preview.getByText('External badge')).toBeVisible();
+  await expect(preview.getByRole('link', {name:'Unsafe link'})).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.previewRan)).toBeUndefined();
+  expect(requests).toEqual([]);
+  await preview.getByRole('link', {name:'Jump to heading'}).click();
+  await expect(preview.getByRole('heading', {name:'💡 选择理由'})).toBeFocused();
+  await preview.getByRole('link', {name:'Linked file'}).click();
+  await expect(resources.locator('.cm-content')).toHaveText('linked document');
+});
+
 test('UX-4 archiving the current conversation jumps to a fresh one; archived restore keeps content', async ({ page }) => {
   await open(page);
   await materializeSession(page, 'organization retained chat');

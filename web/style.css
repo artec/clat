@@ -314,19 +314,24 @@ button:disabled { cursor: default; opacity: .45; }
 .rich-text th, .rich-text td { padding: .48em .75em; border-bottom: 1px solid var(--line); white-space: pre-wrap; }
 .rich-text th { color: var(--text); background: var(--surface-input); font-weight: 500; }
 .rich-text tr:last-child td { border-bottom: 0; }
-.message-attachments { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
-.message-attachment { position: relative; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: center; max-width: min(360px, 100%); padding: 5px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-soft); background: var(--surface-raised); text-align: left; }
+.message-attachments { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; }
+.message-attachment { position: relative; display: block; width: 102px; padding: 4px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-soft); background: var(--surface-raised); text-align: left; }
 .message-attachment:hover { border-color: var(--signal); }
 .message-attachment-preview { display: block; width: 92px; height: 66px; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 2px; background: var(--surface-input); }
 .message-attachment-preview.is-loading { opacity: .38; }
-.message-attachment-label { overflow: hidden; font: var(--text-size-secondary)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.message-attachment-preview.is-lifted { visibility: hidden; }
+.message-attachment-label { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .message-attachment.is-unavailable { border-color: color-mix(in srgb, var(--danger) 58%, var(--line)); }
 .message-attachment.is-unavailable .message-attachment-label::after { content: " · unavailable"; color: var(--danger); }
-.image-lightbox { width: min(960px, calc(100% - 32px)); max-width: none; max-height: calc(100% - 32px); padding: 42px 12px 12px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
-.image-lightbox::backdrop { background: rgb(0 0 0 / 72%); backdrop-filter: blur(3px); }
-.image-lightbox-image { display: block; max-width: 100%; max-height: calc(100vh - 88px); margin: 0 auto; object-fit: contain; }
-.image-lightbox-close { position: absolute; top: 8px; right: 8px; color: var(--text-soft); font: 22px/1 var(--font-mono); }
-.image-lightbox-copy { position: absolute; top: 8px; right: 46px; }
+.image-lightbox { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; overflow: hidden; background: transparent; }
+.image-lightbox::backdrop { background: rgb(0 0 0 / 72%); }
+.image-lightbox-image { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: block; width: min(960px, calc(100% - 48px), calc((100dvh - 88px) * var(--image-ratio))); height: auto; aspect-ratio: var(--image-ratio); object-fit: cover; }
+.image-lightbox-close, .image-lightbox-copy { position: absolute; z-index: 2; top: 16px; color: #fff; }
+.image-lightbox-close { right: 16px; font: 22px/1 var(--font-mono); }
+.image-lightbox-copy { right: 54px; }
+.image-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border: 0; border-radius: 50%; background: rgb(0 0 0 / 65%); color: white; font: 32px/1 var(--font-ui); cursor: pointer; }
+.image-lightbox-nav.previous { left: max(8px, env(safe-area-inset-left)); }
+.image-lightbox-nav.next { right: max(8px, env(safe-area-inset-right)); }
 .msg.assistant { --reasoning-summary-height: max(24px, calc(2 * var(--text-size-secondary))); }
 .msg.assistant .reasoning { grid-column: 2; margin: 0 0 9px; overflow: hidden; color: var(--text-muted); font: var(--text-size-secondary)/1.7 var(--font-ui); }
 .msg.assistant .reasoning summary { position: relative; display: flex; min-height: var(--reasoning-summary-height); align-items: center; gap: 7px; overflow: hidden; cursor: pointer; list-style: none; }

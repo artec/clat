@@ -939,11 +939,16 @@ fn parse_usage(value: &Value) -> Option<Usage> {
         super::clamp_usage_field(value.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
     })
     .or_else(|| super::clamp_usage_field(value.get("cached_tokens").and_then(Value::as_u64)));
+    let reported_input = value.get("prompt_tokens")?.as_u64()?;
+    let (input_tokens, cached_input_tokens) = match cached_input_tokens {
+        Some(cached) => (reported_input, Some(cached)),
+        None => opencode_cache_usage(value, reported_input)
+            .map_or((reported_input, None), |(input, cached)| {
+                (input, Some(cached))
+            }),
+    };
     Some(Usage {
-        input_tokens: value
-            .get("prompt_tokens")?
-            .as_u64()?
-            .min(super::MAX_USAGE_FIELD_TOKENS),
+        input_tokens: input_tokens.min(super::MAX_USAGE_FIELD_TOKENS),
         output_tokens: value
             .get("completion_tokens")?
             .as_u64()?
@@ -955,6 +960,23 @@ fn parse_usage(value: &Value) -> Option<Usage> {
                 .and_then(Value::as_u64),
         ),
     })
+}
+
+fn opencode_cache_usage(usage: &Value, reported_input: u64) -> Option<(u64, u64)> {
+    // OpenCode's billing input excludes cache reads and writes. Use the
+    // breakdown only when its totals reconcile with the API usage, either
+    // via the standard full prompt total or a fresh-input-only value.
+    let tokens = usage.pointer("/opencode/tokens")?;
+    let fresh = tokens.get("input")?.as_u64()?;
+    let cached = tokens.get("cache_read")?.as_u64()?;
+    let mut total = fresh.checked_add(cached)?;
+    for key in ["cache_write_5m", "cache_write_1h"] {
+        if let Some(count) = tokens.get(key) {
+            total = total.checked_add(count.as_u64()?)?;
+        }
+    }
+    (reported_input == total || reported_input == fresh)
+        .then_some((total, cached.min(super::MAX_USAGE_FIELD_TOKENS)))
 }
 
 /// 从错误响应体提取人话消息；B6（INV-K1）：出函数即已脱敏——提取
@@ -2013,6 +2035,39 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(singapore.cached_input_tokens, Some(600));
+    }
+
+    #[test]
+    fn opencode_usage_recovers_missing_cache_reads_without_double_counting_input() {
+        for prompt_tokens in [1200, 9500] {
+            let usage = parse_usage(&json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 300,
+                "opencode": {
+                    "billing_source": "go",
+                    "tokens": {
+                        "input": 1200, "cache_read": 8000,
+                        "cache_write_5m": 100, "cache_write_1h": 200
+                    }
+                }
+            }))
+            .unwrap();
+            assert_eq!(usage.input_tokens, 9500);
+            assert_eq!(usage.cached_input_tokens, Some(8000));
+        }
+
+        let mut reported = json!({
+            "prompt_tokens": 10_000,
+            "completion_tokens": 300,
+            "opencode": {"tokens": {"input": 1200, "cache_read": 8000}}
+        });
+        let usage = parse_usage(&reported).unwrap();
+        assert_eq!(usage.input_tokens, 10_000);
+        assert_eq!(usage.cached_input_tokens, None);
+
+        reported["prompt_tokens"] = json!(9200);
+        reported["prompt_tokens_details"] = json!({"cached_tokens": 0});
+        assert_eq!(parse_usage(&reported).unwrap().cached_input_tokens, Some(0));
     }
 
     /// FIX-1/CA-01（2026-08-24 审计，pre-fix 红）：对端自报 token 必须

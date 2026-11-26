@@ -284,6 +284,39 @@ fn development_editor_rejects_escape_private_and_symlink_targets() {
     );
     assert!(!f.storage.join("secret").exists());
 }
+
+#[test]
+fn development_editor_preview_image_is_bounded_and_project_relative() {
+    let f = Fixture::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"/>"#;
+    fs::write(f.project.join("logo.svg"), svg).unwrap();
+    let image = |path| f.call("editor.previewImage", json!({"path":path}));
+    let result = image("logo.svg").unwrap();
+    assert_eq!(result["media_type"], "image/svg+xml");
+    use base64::Engine as _;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(result["base64"].as_str().unwrap())
+            .unwrap(),
+        svg.as_bytes()
+    );
+    fs::write(f.base.join("outside.svg"), svg).unwrap();
+    assert_eq!(image("../outside.svg").unwrap_err(), "path_denied");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(f.base.join("outside.svg"), f.project.join("escape.svg"))
+            .unwrap();
+        assert!(image("escape.svg").is_err());
+    }
+    fs::write(f.project.join("fake.png"), svg).unwrap();
+    assert_eq!(image("fake.png").unwrap_err(), "file_encoding");
+    fs::File::create(f.project.join("large.svg"))
+        .unwrap()
+        .set_len(2 * 1024 * 1024 + 1)
+        .unwrap();
+    assert_eq!(image("large.svg").unwrap_err(), "file_large");
+}
+
 #[test]
 fn development_git_stage_commit_exact_index_and_duplicate_reopen() {
     let f = Fixture::new();
@@ -620,6 +653,38 @@ fn model(script: Script) -> (GitModel, Box<dyn Send>) {
         Box::new(lease),
     )
 }
+#[test]
+fn development_git_large_staged_patch_uses_one_model_request() {
+    let f = Fixture::new();
+    f.repository();
+    fs::write(f.project.join("bundle.js"), "MINIFIED".repeat(440_000)).unwrap();
+    fs::write(f.project.join("file.txt"), "SOURCE_DETAIL").unwrap();
+    f.git(&["add", "--", "bundle.js", "file.txt"]);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let (provider, _lease) = model(Arc::new(move |request| {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let input = format!("{:?}", request.items);
+        if input.contains("SOURCE_DETAIL")
+            && input.contains("bundle.js")
+            && !input.contains("MINIFIED")
+        {
+            "Update source and bundle".into()
+        } else {
+            "Partial evidence".into()
+        }
+    }));
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+        Some(provider),
+    );
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(row["message"], "Update source and bundle");
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+}
+
 #[test]
 fn development_git_commit_instructions_apply_to_generation_only() {
     let f = Fixture::new();

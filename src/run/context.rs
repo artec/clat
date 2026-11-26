@@ -1,9 +1,22 @@
 //! Request-boundary maintenance; persistence and summarization stay outside the loop.
-use crate::model::{ModelItem, ModelOptions, Usage};
+use crate::model::{ModelItem, ModelOptions, ThinkingLevel, Usage};
 use crate::tool::ToolDefinition;
 
 pub(crate) trait RequestContextManager: Send {
-    fn stage_request(&mut self, _snapshot: &crate::plugins::services::RuntimeSnapshot) {}
+    fn tune_initial_request(
+        &self,
+        _items: &[ModelItem],
+        _options: &mut ModelOptions,
+    ) -> Option<ThinkingLevel> {
+        None
+    }
+
+    fn stage_request(
+        &mut self,
+        _snapshot: &crate::plugins::services::RuntimeSnapshot,
+        _thinking_override: Option<ThinkingLevel>,
+    ) {
+    }
     fn flush_request(&mut self) -> Result<(), String> {
         Ok(())
     }

@@ -1188,7 +1188,11 @@ opaque upload IDs. While a run is active, queued images enter the journal when
 the run claims the message.
 
 History thumbnails are fetched on demand through the authenticated local
-attachment endpoint and displayed with temporary `blob:` URLs. In Desktop and
+attachment endpoint and displayed with temporary `blob:` URLs. Select a thumbnail
+to expand it in place into a centered image preview. Close the preview with Escape,
+the close button or the backdrop. For messages with multiple images, the side arrows
+or Left/Right keys cycle through the available images in that message. Closing returns
+to the currently displayed thumbnail. Reduced-motion settings skip the transition. In Desktop and
 the web workbench, use **Copy image** from the thumbnail context menu or the
 image preview to paste the image into another application. Browsers require
 image clipboard support and may require permission to write to the clipboard.
@@ -1233,6 +1237,13 @@ level for the next run and persists the effective model configuration:
   the title bar shows `Thinking · Server` instead of a level.
 - OpenCode Go presets use a per-model ladder (see
   [Providers](providers.md#opencode-go)).
+
+When a supported built-in preset uses its default thinking level, clearly
+recognizable greetings, short confirmations and simple definition questions
+can use Low for the first model request. The request receives the same
+conversation history and tool definitions. The configured level applies to
+following tool steps and to work such as plan or goal execution. Choosing a
+thinking level explicitly keeps it fixed for the run.
 - Custom profiles on a known vendor domain use that vendor's mapping.
 - Unknown endpoints do not receive an inferred reasoning parameter; configure
   it explicitly in Extra Body.
@@ -3600,6 +3611,10 @@ not cumulative spend.
 Provider allowances retain units/currencies and update times. Unsupported,
 loading, failed and zero balances are distinct. The popover reads the existing
 monitor cache; hovering never causes an additional provider balance query.
+When a run ends on a Qianwen, Bailian or Tencent console-quota route, the Host
+refreshes that provider’s quota in the background, even if its cached value is
+recent. Concurrent refreshes for the same provider and storage root share one
+lookup. Tool calls within a run do not trigger this refresh.
 The navigation rail's allowance popover shows the current route as
 `Provider · model` when the provider is known.
 The navigation rail shows that same cached balance as at most three
@@ -3635,6 +3650,13 @@ when cleared. The overflow menu includes unsaved-file recovery. No Outline or
 Timeline panel is shown. All saving remains manual; this interface does not run a
 formatter or rewrite indentation on open/save.
 
+Use **Markdown preview** in a `.md` file's actions menu to preview GitHub-style
+Markdown with HTML tables, centered sections, and collapsible details. Heading
+links jump within the preview, and relative document links open in the editor.
+The preview displays supported repository images up to 2 MiB each. External
+images and badges display their alternative text. Embedded scripts and arbitrary
+HTML styles are excluded from the preview.
+
 The offline format registry covers common source languages (including Rust, C/C++,
 PHP, Java, Go, C#, Kotlin, Swift, Python, Ruby and Lua), JS/TS/JSX/TSX, Vue/Svelte,
 HTML/CSS/SCSS/Less, Markdown code fences, JSON/JSONC, YAML/TOML/XML, SQL, CSV/TSV,
@@ -3654,7 +3676,7 @@ the field without committing. The message-language selector and Settings → Git
 one project preference: System, English, Simplified Chinese or Traditional Chinese.
 System means the initiating client's OS/browser language, independently of UI language.
 Generation uses the configured utility profile, otherwise the project's current model;
-it reads staged changes, not chat history, and uses no Agent tools. Editing the message,
+it makes one tool-free model request using staged changes. Large diffs are summarized locally into file statistics and bounded patch excerpts before that request. Editing the message,
 changing its language or cancelling generation stops automatic continuation. Changes to
 HEAD/index invalidate approval; the generated description remains available for review.
 Retries reconcile the original operation rather than producing another commit.
