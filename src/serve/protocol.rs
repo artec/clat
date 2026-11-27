@@ -178,6 +178,8 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "model.setup.verify",
     "model.setup.status",
     "model.setup.cancel",
+    "model.handoff.get",
+    "model.handoff.set",
     "model.utility.get",
     "model.utility.set",
     "model.profile.get",

@@ -3,7 +3,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HandoffSettings {
     pub profiles: Vec<String>,
@@ -17,6 +17,8 @@ pub struct HandoffSettings {
 pub struct HandoffRoute {
     pub profile: Option<String>,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub(crate) fingerprint: String,
 }
 
@@ -25,6 +27,7 @@ impl HandoffRoute {
         let encoded = serde_json::to_vec(config).expect("serializable model configuration");
         Self {
             profile,
+            source: None,
             model: config.model.clone(),
             fingerprint: format!("{:x}", Sha256::digest(encoded)),
         }
@@ -40,6 +43,8 @@ impl HandoffRoute {
 pub struct LowAllowance {
     pub window_hours: Option<u64>,
     pub remaining: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -69,7 +74,9 @@ impl GoalHandoff {
             || self.routes.len() < 2
             || self.position >= self.routes.len()
             || self.note.len() > MAX_RESULT_BYTES
-            || self.routes[1..].iter().any(|route| route.profile.is_none())
+            || self.routes[1..]
+                .iter()
+                .any(|route| route.profile.is_none() && route.source.is_none())
             || self.routes.iter().any(|route| {
                 route.model.trim().is_empty()
                     || route.fingerprint.len() != 64
@@ -154,6 +161,7 @@ impl GoalService {
             .ok_or("goal revision exhausted")?;
         state.updated_at = state.updated_at.max(crate::session::event::now_ms());
         self.append_snapshot("progress", &state)?;
+        self.clear_round_clock();
         if let Some(session) = self.sessions.active_id() {
             self.set_armed(session, keep_armed)?;
         } else {

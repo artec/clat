@@ -28,6 +28,8 @@ pub struct MemoryEntryDto {
 pub struct GoalViewDto {
     pub goal: Option<crate::goal::GoalState>,
     pub armed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_elapsed_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -54,8 +56,13 @@ impl TrustedProjectApplication {
     }
 
     pub fn goal_overview(&self) -> Result<GoalViewDto, ApplicationError> {
-        let view = self.goal()?;
+        let (view, running_elapsed_ms) = if let Some(service) = &self.goal {
+            service.timed_current().map_err(ApplicationError::new)?
+        } else {
+            (self.goal()?, None)
+        };
         Ok(GoalViewDto {
+            running_elapsed_ms,
             armed: view.as_ref().is_some_and(|view| view.armed),
             goal: view.map(|view| view.state),
         })
@@ -180,7 +187,8 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&GoalViewDto {
                 goal: None,
-                armed: false
+                armed: false,
+                running_elapsed_ms: None,
             })
             .unwrap(),
             r#"{"goal":null,"armed":false}"#
@@ -198,6 +206,7 @@ mod tests {
         let goal = GoalViewDto {
             goal: Some(state),
             armed: false,
+            running_elapsed_ms: None,
         };
         assert_eq!(
             serde_json::to_string(&goal).unwrap(),

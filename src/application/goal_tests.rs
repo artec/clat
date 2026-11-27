@@ -609,6 +609,7 @@ enum HandoffTrigger {
     Warn,
     Exhausted,
     OrdinaryLimit,
+    Money,
     Chain,
     Stop,
 }
@@ -629,6 +630,18 @@ impl crate::plugins::services::MonitorService for HandoffQuota {
         _: bool,
     ) -> crate::providers::ProviderAllowance {
         use crate::providers::{AllowanceItem, ProviderAllowance};
+        if matches!(self.trigger, HandoffTrigger::Money) && config.model == "backup" {
+            return ProviderAllowance {
+                status: "available".into(),
+                items: vec![AllowanceItem {
+                    kind: "money".into(),
+                    value: "0.25".into(),
+                    unit: Some("CNY".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+        }
         let percent = match config.model.as_str() {
             "deterministic" => {
                 let calls = self.samples.fetch_add(1, Ordering::SeqCst);
@@ -750,10 +763,12 @@ impl TestModelScript for GoalHandoffScript {
                 assert!(!goal_round(request.items, 2));
                 Ok(goal_tool("handoff", 2, "first edit done, run tests next"))
             }
-            (HandoffTrigger::Exhausted, 0) => Err(crate::ModelError::with_kind(
-                ModelErrorKind::QuotaExhausted,
-                "provider quota exhausted",
-            )),
+            (HandoffTrigger::Exhausted | HandoffTrigger::Money, 0) => {
+                Err(crate::ModelError::with_kind(
+                    ModelErrorKind::QuotaExhausted,
+                    "provider quota exhausted",
+                ))
+            }
             (HandoffTrigger::OrdinaryLimit, _) => Err(crate::ModelError::with_kind(
                 ModelErrorKind::RateLimited,
                 "ordinary rate limit",
@@ -933,4 +948,108 @@ fn goal_handoff_advances_from_second_to_third_model() {
 #[test]
 fn goal_handoff_cancellation_during_candidate_check_cannot_start_the_candidate() {
     exercise_goal_handoff(HandoffTrigger::Stop, false);
+}
+
+#[test]
+fn goal_handoff_catalog_includes_configured_presets_without_saved_profiles() {
+    let (storage, root) = roots("goal-handoff-configured-presets");
+    std::fs::create_dir_all(&root).unwrap();
+    let app = BootstrapApplication::open(Project::new(&root), storage.clone())
+        .unwrap()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    assert!(
+        app.handoff_settings_view().unwrap()["models"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let providers = [
+        ("api.deepseek.com", "deepseek"),
+        ("api.kimi.com", "kimi"),
+        ("api.z.ai", "glm"),
+        ("opencode.ai", "opencode"),
+        ("tokenhub.tencentmaas.com", "tencent"),
+        ("token-plan.maas.qianwenaiapi.com", "qianwen"),
+    ];
+    for (host, _) in providers {
+        let endpoint = if host == "api.z.ai" {
+            crate::presets::GlmCodingEntry::Zai.endpoint().to_owned()
+        } else {
+            format!("https://{host}")
+        };
+        let vendor = crate::presets::vendor_credential_slot(&endpoint).unwrap();
+        let mut keys = ProviderCredentials::for_protocol(ModelConfig::default().protocol);
+        let prefix = if host.contains("qianwen") {
+            "sk-sp-"
+        } else {
+            "sk-test-"
+        };
+        keys.set_value(0, format!("{prefix}unused-fixture"));
+        app.config.upsert_vendor_key(vendor, &keys).unwrap();
+    }
+    let before = app.handoff_settings_view().unwrap();
+    for provider in ["qianwen", "tencent"] {
+        assert!(
+            !before["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["provider"] == provider)
+        );
+        app.control
+            .write_console_credential(
+                provider,
+                &crate::control_storage::console::ConsoleCredentialRow {
+                    blob: "fixture".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let catalog = app.handoff_settings_view().unwrap();
+    let models = catalog["models"].as_array().unwrap();
+    for (_, provider) in providers {
+        assert!(
+            models.iter().any(|model| model["provider"] == provider
+                && model["id"].as_str().unwrap().starts_with("preset:")),
+            "{provider}"
+        );
+    }
+    let mut keys = ProviderCredentials::for_protocol(ModelConfig::default().protocol);
+    keys.set_value(0, "sk-fixture-bailian".into());
+    app.config.upsert_vendor_key("Qwen", &keys).unwrap();
+    app.control
+        .write_console_credential(
+            "bailian",
+            &crate::control_storage::console::ConsoleCredentialRow {
+                blob: "fixture".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let switched = app.handoff_settings_view().unwrap();
+    let models = switched["models"].as_array().unwrap();
+    assert!(models.iter().any(|model| model["provider"] == "bailian"));
+    assert!(!models.iter().any(|model| model["provider"] == "qianwen"));
+    let settings = crate::goal::HandoffSettings {
+        profiles: vec!["preset:deepseek-flash".into(), "preset:glm-5.4:zai".into()],
+        threshold: 15,
+        note: "Continue the same objective".into(),
+    };
+    app.save_handoff_settings(Some(settings.clone())).unwrap();
+    assert_eq!(
+        app.handoff_settings_view().unwrap()["settings"],
+        json!(settings)
+    );
+    assert!(!catalog.to_string().contains("unused-fixture"));
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn goal_handoff_accepts_positive_deepseek_balance_without_comparing_it_to_percent() {
+    exercise_goal_handoff(HandoffTrigger::Money, false);
 }

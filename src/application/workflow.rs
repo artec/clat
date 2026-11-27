@@ -78,6 +78,10 @@ pub(crate) fn workflow_error(reason: impl Into<String>) -> ApplicationError {
         "workflow.selection_changed"
     } else if reason.contains("another unfinished goal") {
         "workflow.unfinished_goal"
+    } else if reason == "Invalid or unavailable Goal handoff settings" {
+        "workflow.handoff_invalid"
+    } else if reason == "No handoff models remain after excluding the current model" {
+        "workflow.handoff_current_only"
     } else if reason.contains("already complete") || reason.contains("goal was ended") {
         "workflow.goal_ended"
     } else if reason.contains("projection") || reason.contains("regular file") {

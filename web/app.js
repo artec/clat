@@ -511,6 +511,8 @@ const ICON_PATHS = {
   brain: ['M12 5a3 3 0 0 0-5.8-1A4 4 0 0 0 3 10a4 4 0 0 0 1 7.5A4 4 0 0 0 12 20V5Z', 'M12 5a3 3 0 0 1 5.8-1A4 4 0 0 1 21 10a4 4 0 0 1-1 7.5A4 4 0 0 1 12 20', 'M7 8c-2 1-2 3 0 4m-1 5c2 0 3-1 3-3m8-6c2 1 2 3 0 4m1 5c-2 0-3-1-3-3'],
   globe: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M3 12h18M12 3c-5 5-5 13 0 18 5-5 5-13 0-18Z'],
   loading: ['M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1'],
+  clock: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 7v5l3 2'],
+  handoff: ['M3 5h7l7 7h4m-4-4 4 4-4 4', 'M3 19h7l3-3'],
   'arrow-up': ['M12 20V4m-7 7 7-7 7 7'],
   'arrow-down': ['M12 4v16m-7-7 7 7 7-7'],
   'history-up': ['M12 20V7m-6 6 6-6 6 6M5 3h14'],
@@ -3825,6 +3827,7 @@ function selectSettingsCategory(category) {
   if (category === 'authorizations' && pageIsOpen(dom['settings-dialog'])) {
     dom['settings-dialog'].dispatchEvent(new Event('clat:authorizations-enter'));
   }
+  if (category === 'utility') void refreshGoalHandoffSettings();
   if (category === 'git') dom['settings-dialog'].dispatchEvent(new Event('clat:git-settings-enter'));
   if (category === 'projects') {
     renderWorkspaceDirectory(context.organization.rows());
@@ -3854,6 +3857,8 @@ let utilitySettingsRefresh = 0;
 let utilityFormGeneration = 0;
 let modelProfileGeneration = 0;
 const modelSetup = createModelSetup();
+
+document.getElementById('goal-handoff-settings').addEventListener('click', () => void editGoalHandoffSettings());
 
 modelField('profile-editor').addEventListener('input', () => { modelProfileGeneration++; });
 modelField('profile-editor').addEventListener('change', () => { modelProfileGeneration++; });

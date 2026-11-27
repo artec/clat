@@ -577,7 +577,7 @@ pub(super) fn apply_kimi_tier(
     config.overrides_version = Some(1);
     config.overrides.max_context_tokens = crate::Override::Set(window);
 }
-fn resolve_preset_entry(
+pub(super) fn resolve_preset_entry(
     preset: &ModelPreset,
     entry: &str,
 ) -> Result<&'static str, ApplicationError> {

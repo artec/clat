@@ -475,6 +475,16 @@
       </fieldset>
       <label for="utility-profile" class="settings-row settings-card"><span data-i18n="web.utility_model_profile">Utility model profile</span><select id="utility-profile"><option value="" data-i18n="web.use_primary_model">Use primary model</option></select></label>
       <p class="settings-note" data-i18n="web.cost_guard_naming_waits_five_turns_and_five_minutes_between_successful_attempts_ea">Cost guard: naming waits five turns and five minutes between successful attempts; each utility has a persistent 20-attempt cap per session.</p>
+      <div class="settings-row settings-card goal-handoff-settings-card">
+        <div class="goal-handoff-settings-copy">
+          <strong data-i18n="workflow.handoff_models">Model handoff</strong>
+          <p id="goal-handoff-settings-summary" class="settings-note"></p>
+          <ol id="goal-handoff-settings-order" class="goal-handoff-settings-order" hidden></ol>
+        </div>
+        <button id="goal-handoff-settings" type="button" class="secondary" data-i18n="workflow.handoff_edit">Configure</button>
+      </div>
+      <p id="goal-handoff-settings-error" class="error" role="alert"></p>
+      <p id="goal-handoff-settings-status" class="settings-note" role="status" data-i18n="workflow.handoff_saved" hidden>Model handoff settings saved.</p>
       <p id="utility-settings-error" class="error" role="alert"></p>
       <div class="settings-actions"><button id="utility-settings-save" class="primary" type="button" data-i18n="web.save_utility_policy">Save utility policy</button><span id="utility-settings-saved" role="status"></span></div>
     </section>

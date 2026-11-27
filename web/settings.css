@@ -374,3 +374,11 @@
   .acp-command-picker { grid-template-columns:minmax(0,1fr); }
   .acp-command-picker button { justify-self:end; }
 }
+
+#settings-dialog .goal-handoff-settings-card { align-items: flex-start; }
+.goal-handoff-settings-copy { flex: 1; min-width: 0; }
+.goal-handoff-settings-copy > strong { font-weight: 550; }
+.goal-handoff-settings-copy > .settings-note { margin: 4px 0 0; }
+.goal-handoff-settings-order { padding-inline-start: 20px; margin: 8px 0 0; color: var(--text-soft); }
+.goal-handoff-settings-order > li { overflow-wrap: anywhere; }
+#goal-handoff-settings { flex: none; align-self: flex-start; }

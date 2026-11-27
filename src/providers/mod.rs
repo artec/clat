@@ -10,7 +10,7 @@ mod allowance;
 mod capacity;
 pub use allowance::AllowanceItem;
 pub use allowance::ProviderAllowance;
-pub(crate) use allowance::fetch_provider_allowance;
+pub(crate) use allowance::{fetch_provider_allowance, goal_direct_allowance_provider};
 
 use crate::CancelToken;
 use crate::model::{

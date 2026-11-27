@@ -130,6 +130,11 @@ impl RunWorker {
         }
     }
     fn prepare_round(&mut self) -> Result<(), String> {
+        if self.goal_mode
+            && let Some(service) = &self.deps.goal_service.0
+        {
+            service.start_round_clock(&self.input.session_id, self.round_started);
+        }
         if let Some(service) = &self.deps.subagent_service {
             service.update_turn(self.input.turn);
         }

@@ -120,6 +120,7 @@ struct CachedAllowance {
 
 static CACHE: Mutex<Option<HashMap<CacheKey, CachedAllowance>>> = Mutex::new(None);
 
+#[derive(Clone)]
 pub(super) struct ConsoleQuota {
     control: Arc<ControlStorage>,
     subscribers: Subscribers,
@@ -256,6 +257,25 @@ fn cache_key(control: &ControlStorage, provider: &'static str) -> CacheKey {
 }
 
 impl ConsoleQuota {
+    pub(super) fn wait_for_allowance(
+        &self,
+        provider: &'static str,
+        force: bool,
+        cancel: &crate::CancelToken,
+    ) -> ProviderAllowance {
+        let deadline = Instant::now() + FETCH_TIMEOUT;
+        let (mut allowance, mut pending) = self.read_allowance(provider, force);
+        while pending && !cancel.is_cancelled() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            (allowance, pending) = self.read_allowance(provider, false);
+        }
+        if pending || cancel.is_cancelled() {
+            ProviderAllowance::state("unavailable")
+        } else {
+            allowance
+        }
+    }
+
     pub(super) fn read_allowance(
         &self,
         provider: &'static str,

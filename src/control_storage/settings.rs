@@ -34,6 +34,8 @@ pub(crate) struct SettingsFile {
     pub profiles: BTreeMap<String, ProfileRow>,
     #[serde(default, skip_serializing_if = "UtilitySettingsRow::is_default")]
     pub utility: UtilitySettingsRow,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_handoff: Option<crate::goal::HandoffSettings>,
     /// Kimi Coding Plan account tier. Independent of the currently selected
     /// model; missing legacy settings default conservatively to Plus.
     #[serde(default, rename = "kimiTier")]
@@ -49,6 +51,7 @@ impl SettingsFile {
             model_state: None,
             profiles: BTreeMap::new(),
             utility: UtilitySettingsRow::default(),
+            goal_handoff: None,
             kimi_tier: KimiTier::default(),
             glm_entry: GlmCodingEntry::default(),
         }

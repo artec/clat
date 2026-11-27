@@ -543,8 +543,7 @@ test('approving a plan links it to the existing paused goal instead of creating 
     });
     return {goal:value.goal.goal, doc};
   });
-  await page.click('#composer-plan-toggle');
-  await page.click('#work-mode-details');
+  await openWorkbenchTool(page, 'workflow-open');
   await page.locator('#workflow-details [data-action="approve_for_goal"]').click();
   await expect.poll(async () => {
     const value = await facts();
@@ -557,51 +556,66 @@ test('approving a plan links it to the existing paused goal instead of creating 
   expect(continued.plan_mode).toBe(false);
 });
 
-test('Goal composer saves an ordered model handoff queue with threshold and note', async ({page}) => {
+test('Companion utility saves a handoff queue and the Goal row applies it', async ({page}) => {
   await openWorkbench(page, hostInfo('long-stream'));
   await page.evaluate(async () => {
-    for (const name of ['Handoff B', 'Handoff C']) {
-      await rpc('model.profile.save', {
-        name, model:name, protocol:'open_ai_compatible', endpoint:'https://application-test.invalid',
-        request_path:'/chat/completions',
-      });
+    for (const [name, endpoint] of [['Handoff B', 'https://api.deepseek.com'], ['Handoff C', 'https://api.kimi.com/coding/v1']]) {
+      await rpc('model.profile.save', {name, model:name, protocol:'open_ai_compatible',
+        endpoint, request_path:'/chat/completions', api_key:'fixture-key'});
     }
   });
-  const selection = await page.evaluate(() => state.selectionGeneration);
-  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
-  await expect.poll(() => page.evaluate(() => state.selectionGeneration), LIVE).not.toBe(selection);
-  await page.click('#composer-add');
-  await page.click('#add-goal');
-  await page.click('#composer-plan-toggle');
-  await page.click('#work-mode-handoff');
+  await page.click('#nav-settings');
+  await page.click('[data-settings-category="utility"]');
+  await page.click('#goal-handoff-settings');
   const dialog = page.locator('dialog[data-kind=edit]');
   const add = dialog.getByRole('button', {name:'Add to queue'});
   for (const name of ['Handoff B', 'Handoff C']) {
-    await dialog.locator('select').selectOption(name);
+    await dialog.locator('select').selectOption('profile:' + name);
     await add.click();
   }
   await dialog.locator('li').filter({hasText:'Handoff C'}).getByRole('button', {name:'Move up'}).click();
   await dialog.locator('input[type=number]').fill('15');
   await dialog.locator('textarea').fill('Continue with the targeted test.');
   await dialog.locator('[data-role=accept]').click();
+  await expect(page.locator('#goal-handoff-settings-status')).toBeVisible(LIVE);
+  const savedOrder = page.locator('#goal-handoff-settings-order li');
+  await expect(savedOrder).toHaveCount(2);
+  await expect(savedOrder.first()).toContainText('Handoff C');
+  await expect(page.locator('#goal-handoff-settings-summary')).toContainText('15%');
+  await page.click('#nav-workbench');
+  const selection = await page.evaluate(() => state.selectionGeneration);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.selectionGeneration), LIVE).not.toBe(selection);
+  await page.click('#composer-add');
+  await page.click('#add-goal');
   await page.fill('#prompt', 'Finish the handoff regression');
   await page.locator('#prompt').press('Enter');
-  await expect.poll(
-    () => page.evaluate(async () => (await rpc('workflow.details', {})).goal.goal?.handoff || null),
-    LIVE
-  ).toMatchObject({threshold:15, note:'Continue with the targeted test.',
-    routes:[expect.any(Object), {profile:'Handoff C'}, {profile:'Handoff B'}]});
-  await page.locator('#composer-goal-pause').click();
-  await expect(page.locator('#composer-goal-start')).toBeEnabled(LIVE);
+  const timer = page.locator('#composer-goal-timer');
+  await expect(timer).toHaveAttribute('data-running', 'true', LIVE);
+  const initialDuration = await timer.locator('time').getAttribute('datetime');
+  await expect(timer.locator('time')).not.toHaveAttribute('datetime', initialDuration, LIVE);
   await page.locator('#composer-goal-details').click();
-  await page.locator('#workflow-details').getByRole('button', {name:'Model handoff', exact:true}).click();
-  await expect(dialog.locator('li')).toHaveCount(2);
-  const remove = dialog.getByRole('button', {name:'Remove from queue'});
-  await remove.first().click();
-  await remove.first().click();
+  const handoff = page.locator('#workflow-details [data-action=goal-handoff]');
+  await handoff.click();
+  await expect(dialog.locator('select')).toHaveValue('pause');
   await dialog.locator('[data-role=accept]').click();
   await expect.poll(
-    () => page.evaluate(async () => (await rpc('workflow.details', {})).goal.goal?.handoff || null),
+    () => page.evaluate(async () => (await rpc('workflow.details', {})).busy),
     LIVE
-  ).toBeNull();
+  ).toBe(false);
+  await expect(timer).toHaveAttribute('data-running', 'false', LIVE);
+  await handoff.click();
+  await dialog.locator('select').selectOption('apply');
+  await dialog.locator('[data-role=accept]').click();
+  const goalFacts = () => page.evaluate(async () => (await rpc('workflow.details', {})).goal.goal?.handoff || null);
+  await expect.poll(goalFacts, LIVE).toMatchObject({threshold:15, note:'Continue with the targeted test.',
+    routes:[expect.any(Object), {profile:'Handoff C'}, {profile:'Handoff B'}]});
+  await handoff.click();
+  await dialog.locator('select').selectOption('remove');
+  await dialog.locator('[data-role=accept]').click();
+  await expect.poll(goalFacts, LIVE).toBeNull();
+  await page.click('#nav-settings');
+  await page.click('[data-settings-category="utility"]');
+  await expect(savedOrder.first()).toContainText('Handoff C', LIVE);
+  await expect(page.locator('#goal-handoff-settings-summary')).toContainText('15%');
 });

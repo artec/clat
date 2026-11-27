@@ -15,6 +15,9 @@ pub(crate) fn dispatch(
         .as_object()
         .ok_or_else(|| RpcError::bad_request("params must be an object"))?;
     let app = shared.app.lock().expect("application lock");
+    if method.starts_with("model.handoff.") {
+        return handoff(method, params, &app);
+    }
     match method {
         "model.thinking.cycle" => {
             if !params.is_empty() {
@@ -121,4 +124,25 @@ fn failure(_: crate::ApplicationError) -> RpcError {
     RpcError::bad_request(
         "model operation failed; check the route, profile name, and storage availability",
     )
+}
+
+fn handoff(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    app: &crate::application::TrustedProjectApplication,
+) -> Result<Value, RpcError> {
+    match method {
+        "model.handoff.get" if params.is_empty() => app.handoff_settings_view().map_err(failure),
+        "model.handoff.set" if params.len() == 1 => {
+            let settings = params
+                .get("settings")
+                .ok_or_else(|| RpcError::bad_request("settings required"))?;
+            let settings = serde_json::from_value(settings.clone())
+                .map_err(|_| RpcError::bad_request("invalid handoff settings"))?;
+            app.save_handoff_settings(settings)
+                .map_err(super::protocol::app_error)?;
+            Ok(json!({"saved": true}))
+        }
+        _ => Err(RpcError::bad_request("invalid handoff settings request")),
+    }
 }

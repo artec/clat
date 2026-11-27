@@ -11,41 +11,23 @@ pub(super) fn read(
     force: bool,
 ) -> ProviderAllowance {
     use sha2::{Digest, Sha256};
-    let Some((authority, path)) = config
-        .endpoint
-        .strip_prefix("https://")
-        .and_then(|uri| uri.split_once('/'))
-    else {
+    let Some(provider) = crate::providers::goal_direct_allowance_provider(config) else {
         return ProviderAllowance::state("unsupported");
     };
-    if !matches!(
-        (authority, path),
-        ("api.kimi.com", "coding/v1" | "coding/v1/")
-            | ("opencode.ai", "inference/go/v1" | "inference/go/v1/")
-    ) && !(matches!(authority, "open.bigmodel.cn" | "api.z.ai")
-        && path.starts_with("api/coding/"))
-    {
-        return ProviderAllowance::state("unsupported");
-    }
-    if !config.auth_header.eq_ignore_ascii_case("Authorization")
-        || config.auth_prefix != "Bearer "
-        || config.extra_headers.as_object().is_some_and(|headers| {
-            headers
-                .keys()
-                .any(|name| name.eq_ignore_ascii_case("authorization"))
-        })
-    {
-        return ProviderAllowance::state("unsupported");
-    }
+    let origin = url::Url::parse(&config.endpoint)
+        .expect("validated endpoint")
+        .origin()
+        .ascii_serialization();
     let Some(key) = credentials
         .value(0)
         .filter(|value| !value.trim().is_empty())
     else {
         return ProviderAllowance::state("unavailable");
     };
-    let hash: [u8; 32] =
-        Sha256::digest(serde_json::to_vec(&(authority, key)).expect("serializable identity"))
-            .into();
+    let hash: [u8; 32] = Sha256::digest(
+        serde_json::to_vec(&(provider, origin, key.trim())).expect("serializable identity"),
+    )
+    .into();
     let slot = {
         let mut cache = GOAL_QUOTA.lock().expect("goal allowance cache");
         if let Some((_, slot)) = cache.iter().find(|(id, _)| id == &hash) {

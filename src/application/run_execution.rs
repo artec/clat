@@ -11,6 +11,7 @@ use super::run_context::RunContextSnapshot;
 use super::run_lifecycle::{ApplicationRunDone, ApplicationRunFailure, ApplicationRunResult};
 use super::title::AutotitleJob;
 pub(super) mod goal_handoff;
+mod handoff_models;
 mod preparation;
 mod round;
 mod terminal;
@@ -201,6 +202,7 @@ struct RunHostDeps {
 struct RunWorkerDeps {
     workflow: Arc<WorkflowState>,
     config_store: Arc<dyn crate::plugins::services::ConfigStore>,
+    control: Arc<crate::control_storage::ControlStorage>,
     draft_images: crate::application::DraftImages,
     target: Option<Arc<super::target_services::TargetServices>>,
     run_scope: super::composition::MountedRunScope,
@@ -618,6 +620,7 @@ impl RunWorkerDeps {
         let mut deps = RunWorkerDeps {
             workflow: app.workflow.clone(),
             config_store: app.config.clone(),
+            control: app.control.clone(),
             draft_images: app.draft_images.clone(),
             target: spec.target.clone(),
             run_scope: resources.run_scope,

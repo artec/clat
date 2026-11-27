@@ -510,7 +510,75 @@ function quoteSelection(text, role, seq) {
   dom.prompt.focus();
 }
 
+function contextSelectionEditable(target) {
+  const element = target?.nodeType === 1 ? target : target?.parentElement;
+  return Boolean(element?.closest?.('input, textarea, [contenteditable="true"]'));
+}
+function contextSelectionPrimary() {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return [];
+  return [selection.getRangeAt(0).cloneRange()];
+}
+function contextSelectionUnchanged(ranges) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount !== ranges.length) return false;
+  return ranges.every((range, index) => {
+    const current = selection.getRangeAt(index);
+    return current.startContainer === range.startContainer && current.startOffset === range.startOffset
+      && current.endContainer === range.endContainer && current.endOffset === range.endOffset;
+  });
+}
+// A context click selects the block under the pointer on every surface. Keep the
+// selection from before that gesture, including a change delivered after the menu opens.
+function installContextSelectionGuard() {
+  if (installContextSelectionGuard.installed) return;
+  installContextSelectionGuard.installed = true;
+  let armed = false, snapshot = [], restoring = false;
+  const restore = () => {
+    const selection = window.getSelection();
+    if (!selection || restoring || contextSelectionUnchanged(snapshot)) return;
+    restoring = true;
+    try {
+      selection.removeAllRanges();
+      if (snapshot[0]) selection.addRange(snapshot[0]);
+    } catch (_) { selection.removeAllRanges(); }
+    finally { restoring = false; }
+  };
+  const contextGesture = event => event.button === 2 || (event.button === 0 && event.ctrlKey);
+  document.addEventListener('pointerdown', event => {
+    if (!contextGesture(event)) { if (event.button === 0) armed = false; return; }
+    if (contextSelectionEditable(event.target)) { armed = false; return; }
+    snapshot = contextSelectionPrimary();
+    armed = true;
+  }, true);
+  document.addEventListener('mousedown', event => {
+    if (!contextGesture(event) || contextSelectionEditable(event.target) || armed) return;
+    snapshot = contextSelectionPrimary();
+    armed = true;
+  }, true);
+  document.addEventListener('selectstart', event => {
+    if (armed && !contextSelectionEditable(event.target)) event.preventDefault();
+  }, true);
+  document.addEventListener('contextmenu', event => {
+    if (contextSelectionEditable(event.target)) { armed = false; return; }
+    if (!armed) snapshot = contextSelectionPrimary();
+    armed = true;
+    restore();
+  }, true);
+  document.addEventListener('selectionchange', () => {
+    if (!armed || restoring) return;
+    if (contextSelectionEditable(window.getSelection()?.anchorNode)) { armed = false; return; }
+    restore();
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (!armed || event.target?.closest?.('[role="menu"]')) return;
+    const extendsSelection = event.shiftKey && /^(Arrow(Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(event.key);
+    const selectsAll = (event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 'a';
+    if (extendsSelection || selectsAll) armed = false;
+  }, true);
+}
 function installSelectionQuote() {
+  installContextSelectionGuard();
   const button = el('button', 'selection-quote hidden', () => (CLATI18n.msg("web.quote_selection", {}, "Quote selection")));
   button.type = 'button';
   let chosen = null;

@@ -139,10 +139,12 @@ pub(crate) enum GoalContinuation {
 struct LiveState {
     pending: Option<GoalState>,
     armed_session: Option<SessionId>,
+    round_started: Option<Instant>,
     low_allowance: Option<handoff::LowAllowance>,
     requested_handoff: Option<String>,
 }
 
+mod clock;
 mod facts;
 mod handoff;
 pub(crate) use facts::historical;
@@ -531,6 +533,7 @@ impl GoalService {
     pub(crate) fn disarm(&self) {
         if let Ok(mut live) = self.live.lock() {
             live.armed_session = None;
+            live.round_started = None;
             live.low_allowance = None;
             live.requested_handoff = None;
         }
@@ -540,6 +543,7 @@ impl GoalService {
         let mut live = self.live.lock().map_err(|_| "goal lock poisoned")?;
         live.armed_session = armed.then_some(session);
         if !armed {
+            live.round_started = None;
             live.low_allowance = None;
             live.requested_handoff = None;
         }

@@ -5,7 +5,7 @@ use crate::model::ModelErrorKind;
 use crate::providers::{AllowanceItem, ProviderAllowance};
 use std::fmt::Write;
 
-type Route = (ModelConfig, ProviderCredentials);
+pub(super) type Route = (ModelConfig, ProviderCredentials);
 
 impl TrustedProjectApplication {
     pub(in crate::application) fn goal_execution_route(&self) -> Result<Route, ApplicationError> {
@@ -15,6 +15,7 @@ impl TrustedProjectApplication {
         };
         resolve_route(
             self.config.as_ref(),
+            &self.control,
             &queue.routes[queue.position],
             &selected,
         )
@@ -30,7 +31,7 @@ impl TrustedProjectApplication {
         settings: &HandoffSettings,
         existing: Option<&GoalHandoff>,
     ) -> Result<GoalHandoff, String> {
-        let (config, _) = if existing.is_some() {
+        let (config, current_credentials) = if existing.is_some() {
             self.goal_execution_route()
                 .map_err(|error| error.to_string())?
         } else {
@@ -51,23 +52,40 @@ impl TrustedProjectApplication {
         );
         let mut routes = vec![first];
         for profile in &settings.profiles {
-            let (config, credentials) = self
-                .config
-                .load_profile(profile)
-                .map_err(|e| e.to_string())?
-                .ok_or("handoff profile no longer exists")?;
-            let route = HandoffRoute::new(Some(profile.clone()), &config);
-            if !config.is_configured()
+            let (candidate_config, credentials) =
+                handoff_models::load_route(self.config.as_ref(), &self.control, profile)
+                    .ok_or("handoff profile no longer exists")?;
+            let mut route = HandoffRoute::new(
+                (!profile.starts_with("preset:")).then(|| {
+                    profile
+                        .strip_prefix("profile:")
+                        .unwrap_or(profile)
+                        .to_owned()
+                }),
+                &candidate_config,
+            );
+            route.source = Some(profile.clone());
+            if candidate_config.model == config.model
+                && candidate_config.endpoint == config.endpoint
+                && candidate_config.protocol == config.protocol
+                && credentials == current_credentials
+            {
+                continue;
+            }
+            if !candidate_config.is_configured()
                 || routes
                     .iter()
-                    .any(|prior| prior.profile.as_ref() == Some(profile))
+                    .any(|prior| prior.source.as_ref() == Some(profile))
             {
                 return Err("handoff requires distinct configured model profiles".into());
             }
             self.providers
-                .build(&config, &credentials)
+                .build(&candidate_config, &credentials)
                 .map_err(|_| "handoff model is not configured")?;
             routes.push(route);
+        }
+        if routes.len() < 2 {
+            return Err("No handoff models remain after excluding the current model".into());
         }
         Ok(GoalHandoff {
             routes,
@@ -104,7 +122,10 @@ impl TrustedProjectApplication {
             return Err("pause the Goal and refresh before editing handoff".into());
         }
         let handoff = settings
-            .map(|settings| self.prepare_goal_handoff(settings, goal.state.handoff.as_ref()))
+            .map(|settings| {
+                self.validate_handoff_settings(settings)?;
+                self.prepare_goal_handoff(settings, goal.state.handoff.as_ref())
+            })
             .transpose()?;
         self.goal_service()
             .map_err(|e| e.to_string())?
@@ -115,12 +136,17 @@ impl TrustedProjectApplication {
 
 fn resolve_route(
     store: &dyn crate::plugins::services::ConfigStore,
+    control: &crate::control_storage::ControlStorage,
     route: &HandoffRoute,
     selected: &Route,
 ) -> Option<Route> {
-    let found = match &route.profile {
-        Some(name) => store.load_profile(name).ok().flatten()?,
-        None => selected.clone(),
+    let found = if let Some(source) = &route.source {
+        handoff_models::load_route(store, control, source)?
+    } else {
+        match &route.profile {
+            Some(name) => store.load_profile(name).ok().flatten()?,
+            None => selected.clone(),
+        }
     };
     route.matches(&found.0).then_some(found)
 }
@@ -138,11 +164,11 @@ impl RunWorker {
         }
         let goal = self.deps.goal_service.0.clone()?;
         let queue = goal.current().ok().flatten()?.state.handoff?;
-        let monitor = self.deps.monitor.clone()?;
+        let quota = self.goal_quota_source();
         let config = self.deps.config.clone();
         let credentials = self.deps.credentials.clone();
         Some(Box::new(move || {
-            let allowance = monitor.goal_allowance(&config, &credentials, false);
+            let allowance = quota.read(&config, &credentials, false);
             let (reason, window) = low_notice(&allowance, queue.threshold)?;
             goal.notify_low_allowance(window).then(|| {
                 format!("Your Goal model allowance is low. {reason}\nFinish the current safe step, then promptly call update_goal with operation=handoff, the current expected_revision, and a short progress summary (or an empty string). The user has authorized the next model to continue this same Goal.")
@@ -210,11 +236,11 @@ impl RunWorker {
         match kind {
             Some(ModelErrorKind::QuotaExhausted) => true,
             Some(ModelErrorKind::RateLimited) => {
-                self.deps.monitor.as_ref().is_some_and(|monitor| {
-                    let value =
-                        monitor.goal_allowance(&self.deps.config, &self.deps.credentials, true);
-                    percentages(&value).any(|(_, remaining)| remaining == 0.0)
-                })
+                let value =
+                    self.goal_quota_source()
+                        .read(&self.deps.config, &self.deps.credentials, true);
+                percentages(&value).any(|(_, remaining)| remaining == 0.0)
+                    || balance(&value).is_some_and(|(_, amount)| amount <= 0.0)
             }
             _ => false,
         }
@@ -226,8 +252,13 @@ impl RunWorker {
         selected: &Route,
         threshold: u8,
     ) -> Result<Route, &'static str> {
-        let route = resolve_route(self.deps.config_store.as_ref(), candidate, selected)
-            .ok_or("profile-changed")?;
+        let route = resolve_route(
+            self.deps.config_store.as_ref(),
+            &self.deps.control,
+            candidate,
+            selected,
+        )
+        .ok_or("profile-changed")?;
         self.deps
             .providers
             .build(&route.0, &route.1)
@@ -235,8 +266,14 @@ impl RunWorker {
         if same_goal_account(&route, selected) {
             return Err("same-account");
         }
-        let monitor = self.deps.monitor.as_ref().ok_or("quota-unknown")?;
-        let sample = monitor.goal_allowance(&route.0, &route.1, false);
+        let sample = self.goal_quota_source().read(&route.0, &route.1, false);
+        if let Some((_, amount)) = balance(&sample) {
+            return if amount > 0.0 {
+                Ok(route)
+            } else {
+                Err("quota-low")
+            };
+        }
         let mut items = percentages(&sample).peekable();
         if items.peek().is_none() {
             return Err("quota-unknown");
@@ -245,6 +282,15 @@ impl RunWorker {
             return Err("quota-low");
         }
         Ok(route)
+    }
+
+    fn goal_quota_source(&self) -> GoalQuotaSource {
+        GoalQuotaSource {
+            monitor: self.deps.monitor.clone(),
+            console: self.deps.console_quota.clone(),
+            control: self.deps.control.clone(),
+            cancel: self.deps.cancel.clone(),
+        }
     }
 
     pub(super) fn apply_goal_route(&mut self, route: Route) {
@@ -292,7 +338,62 @@ impl RunWorker {
     }
 }
 
+struct GoalQuotaSource {
+    monitor: Option<Arc<dyn crate::plugins::services::MonitorService>>,
+    console: super::super::console_quota::ConsoleQuota,
+    control: Arc<crate::control_storage::ControlStorage>,
+    cancel: CancelToken,
+}
+impl GoalQuotaSource {
+    fn read(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+        force: bool,
+    ) -> ProviderAllowance {
+        if let Some(provider) = super::super::console_quota::console_provider(&config.endpoint) {
+            if handoff_models::allowance_provider(config, credentials, &self.control)
+                != Some(provider)
+            {
+                return ProviderAllowance::state("unavailable");
+            }
+            return self
+                .console
+                .wait_for_allowance(provider, force, &self.cancel);
+        }
+        self.monitor.as_ref().map_or_else(
+            || ProviderAllowance::state("unavailable"),
+            |monitor| monitor.goal_allowance(config, credentials, force),
+        )
+    }
+}
+
+fn balance(allowance: &ProviderAllowance) -> Option<(&AllowanceItem, f64)> {
+    if allowance.status != "available" {
+        return None;
+    }
+    let mut balances = allowance.items.iter().filter_map(|item| {
+        if item.kind != "money" || item.unit.as_deref().is_none_or(str::is_empty) {
+            return None;
+        }
+        let amount: f64 = item.value.parse().ok()?;
+        amount.is_finite().then_some((item, amount))
+    });
+    let first = balances.next()?;
+    // A positive balance is sufficient in any reported currency; never sum currencies.
+    if first.1 > 0.0 {
+        Some(first)
+    } else {
+        balances.find(|(_, amount)| *amount > 0.0).or(Some(first))
+    }
+}
+
 fn same_goal_account(candidate: &Route, current: &Route) -> bool {
+    use super::super::console_quota::console_provider;
+    let provider = console_provider(&candidate.0.endpoint);
+    if provider.is_some() && provider == console_provider(&current.0.endpoint) {
+        return true;
+    }
     let authority = |endpoint: &str| {
         endpoint
             .split_once("://")
@@ -324,12 +425,24 @@ fn percentages(allowance: &ProviderAllowance) -> impl Iterator<Item = (&Allowanc
 }
 
 fn low_notice(allowance: &ProviderAllowance, threshold: u8) -> Option<(String, LowAllowance)> {
+    if let Some((item, amount)) = balance(allowance).filter(|(_, amount)| *amount <= 0.0) {
+        let currency = item.unit.clone()?;
+        return Some((
+            format!("Balance: {amount} {currency}; no reset time reported."),
+            LowAllowance {
+                window_hours: None,
+                remaining: item.value.clone(),
+                currency: Some(currency),
+            },
+        ));
+    }
     let (tightest, percent) = percentages(allowance)
         .filter(|(_, percent)| *percent <= f64::from(threshold))
         .min_by(|(_, a), (_, b)| a.total_cmp(b))?;
     let window = LowAllowance {
         window_hours: tightest.window_hours,
         remaining: percent.to_string(),
+        currency: None,
     };
     let mut lines = String::new();
     for (item, percent) in

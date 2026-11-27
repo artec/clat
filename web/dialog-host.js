@@ -97,7 +97,7 @@
     });
   }
 
-  function edit(title, body, read) {
+  function edit(title, body, read, acceptText = () => CLATI18n.msg('common.apply')) {
     return new Promise(resolve => {
       const { dialog, actions, cancel, accept } = seat('edit');
       const header = document.createElement('header');
@@ -105,7 +105,11 @@
       const heading = document.createElement('h2');
       CLATI18n.bind(heading, 'textContent', title);
       header.append(heading);
-      CLATI18n.bind(accept, 'textContent', () => CLATI18n.msg('common.apply'));
+      const updateAccept = () => CLATI18n.bind(accept, 'textContent', acceptText);
+      updateAccept();
+      body.addEventListener('change', () => {
+        if (accept.textContent !== String(acceptText())) updateAccept();
+      });
       dialog.append(header, body, actions);
       let value;
       const events = new AbortController();

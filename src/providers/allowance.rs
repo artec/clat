@@ -43,47 +43,60 @@ impl ProviderAllowance {
         })
     }
 }
+pub(crate) fn direct_allowance_provider(config: &ModelConfig) -> Option<&'static str> {
+    let url = url::Url::parse(&config.endpoint).ok()?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.port().is_some()
+    {
+        return None;
+    }
+    let path = url.path().trim_end_matches('/');
+    match url.host_str()? {
+        "api.deepseek.com" => Some("deepseek"),
+        "open.bigmodel.cn" | "api.z.ai" => Some("glm"),
+        "api.kimi.com" if path == "/coding/v1" => Some("kimi"),
+        "opencode.ai" if path.starts_with("/inference/go/") => Some("opencode"),
+        _ => None,
+    }
+}
+
+pub(crate) fn goal_direct_allowance_provider(config: &ModelConfig) -> Option<&'static str> {
+    if !config.auth_header.eq_ignore_ascii_case("Authorization")
+        || config.auth_prefix != "Bearer "
+        || config.extra_headers.as_object().is_some_and(|headers| {
+            headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("authorization"))
+        })
+    {
+        return None;
+    }
+    direct_allowance_provider(config)
+}
+
 pub(crate) fn fetch_provider_allowance(config: &ModelConfig, key: &str) -> ProviderAllowance {
-    let endpoint = &config.endpoint;
-    let lower = endpoint.to_ascii_lowercase();
-    let (kind, url, bearer) = if lower.contains("deepseek.com") {
-        (
-            "deepseek",
-            format!("{}/user/balance", endpoint.trim_end_matches('/')),
-            true,
-        )
-    } else if lower.contains("bigmodel.cn") || lower.contains("z.ai") {
-        let Some(domain) = endpoint_domain(endpoint) else {
-            return ProviderAllowance::state("failed");
-        };
-        (
-            "glm",
-            format!("{domain}/api/monitor/usage/quota/limit"),
-            false,
-        )
-    } else if lower.contains("kimi.com/coding") {
-        (
-            "kimi",
-            format!("{}/usages", endpoint.trim_end_matches('/')),
-            true,
-        )
-    } else if lower.contains("opencode.ai") {
-        // OC-Go：合规网关的额度查询（负责人令 2026-11-18 接入）。预设
-        // 端点是 .../v1（request_path 另行拼 chat/completions）；自定义
-        // 配置可能把整段 chat/completions 粘进 endpoint——两种形状都
-        // 归一到网关 base 再接 /usage（GET /v1/usage，Bearer）。
-        (
-            "opencode",
-            format!(
-                "{}/usage",
-                endpoint
-                    .trim_end_matches('/')
-                    .trim_end_matches("/chat/completions")
-            ),
-            true,
-        )
-    } else {
+    let Some(kind) = direct_allowance_provider(config) else {
         return ProviderAllowance::state("unsupported");
+    };
+    let endpoint = config.endpoint.trim_end_matches('/');
+    let (url, bearer) = match kind {
+        "deepseek" => ("https://api.deepseek.com/user/balance".into(), true),
+        "glm" => {
+            let Some(domain) = endpoint_domain(endpoint) else {
+                return ProviderAllowance::state("failed");
+            };
+            (format!("{domain}/api/monitor/usage/quota/limit"), false)
+        }
+        "kimi" => (format!("{endpoint}/usages"), true),
+        "opencode" => (
+            format!("{}/usage", endpoint.trim_end_matches("/chat/completions")),
+            true,
+        ),
+        _ => unreachable!("known direct allowance provider"),
     };
     let result = fetch_allowance_body(
         &url,

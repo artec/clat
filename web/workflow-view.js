@@ -8,7 +8,7 @@ function renderWorkflowView(view) {
     const key='plan:'+doc.id+':'+doc.revision;list.append(navigationRow({title:doc.title,meta:()=>CLATI18n.msg('workflow.plan_revision',{revision:doc.revision,status:workflowText(doc.approved?'approved':'draft')}),icon:'plan',selected:view.selection===key,action:()=>view.select(key)}));
   }
   if(!value.documents.length)list.append(el('p','picker-hint',()=>workflowText('no_plans')));
-  list.append(el('h3','',()=>workflowText('goals')),navigationRow({title:()=>value.goal?.goal?.objective||workflowText('no_goal'),meta:()=>workflowText(workflowGoalStatus(value)),icon:'check',selected:view.selection==='goal',action:()=>view.select('goal')}));
+  list.append(el('h3','',()=>workflowText('goals')), workflowGoalRow(view, value));
   list.append(el('h3','',()=>workflowText('todos')));
   for(const [index,todo]of value.todos.entries()){
     list.append(navigationRow({title:todo.content,meta:()=>workflowText('todo_'+todo.status),icon:'task-list',selected:view.selection==='todo:'+index,action:()=>view.select('todo:'+index)}));
@@ -111,13 +111,76 @@ function renderWorkflowGoalFeedback(view,goal){
   };
 }
 
-async function configureGoalHandoff(goal, acceptSettings, draft = null) {
-  const modelSettings = await rpc('model.settings.get', {});
-  const queue = goal?.handoff;
-  const current = queue?.routes[queue.position];
-  const available = modelSettings.profiles.filter(name => name !== (current?.profile || modelSettings.active_profile));
-  const profiles = queue?.routes.slice(queue.position + 1).map(route => route.profile) || [...(draft?.profiles || [])];
-  const form = el('div', 'workflow-goal-form');
+const goalAllowanceVendor = {
+  deepseek:'DeepSeek', glm:'GLM Coding Plan', kimi:'Kimi Coding Plan',
+  opencode:'OpenCode Go', qianwen:'Qwen Token Plan', bailian:'Alibaba Cloud', tencent:'Tencent TokenHub',
+};
+function handoffModelProvider(model) {
+  return model.entry === 'zai' ? 'Z.ai' : model.entry === 'bigmodel' ? 'BigModel' : goalAllowanceVendor[model.provider];
+}
+function handoffModelLabel(model) {
+  return [model.name, handoffModelProvider(model)].filter(Boolean).join(' · ');
+}
+
+let handoffSettingsGeneration = 0;
+function renderGoalHandoffSettings({models, settings}) {
+  const summary = document.getElementById('goal-handoff-settings-summary');
+  const order = document.getElementById('goal-handoff-settings-order');
+  const label = id => {
+    const model = models.find(model => model.id === id);
+    return model ? handoffModelLabel(model) : id.replace(/^(profile|preset):/, '');
+  };
+  const profiles = settings?.profiles || [];
+  CLATI18n.bind(summary, 'textContent', () => profiles.length
+    ? CLATI18n.msg('workflow.handoff_settings_summary', {count:profiles.length, percent:settings.threshold})
+    : workflowText('handoff_settings_empty'));
+  order.replaceChildren(...profiles.map(id => el('li', '', label(id))));
+  order.hidden = profiles.length === 0;
+  const button = document.getElementById('goal-handoff-settings');
+  CLATI18n.bind(button, 'textContent', () => workflowText(profiles.length ? 'handoff_edit_saved' : 'handoff_edit'));
+}
+
+async function refreshGoalHandoffSettings() {
+  const generation = ++handoffSettingsGeneration;
+  const errorLine = document.getElementById('goal-handoff-settings-error');
+  try {
+    const value = await rpc('model.handoff.get', {});
+    if (generation === handoffSettingsGeneration) renderGoalHandoffSettings(value);
+  } catch (error) {
+    if (generation === handoffSettingsGeneration) CLATI18n.bind(errorLine, 'textContent', () => error.message);
+  }
+}
+
+async function editGoalHandoffSettings() {
+  const button = document.getElementById('goal-handoff-settings');
+  const errorLine = document.getElementById('goal-handoff-settings-error');
+  button.disabled = true;
+  document.getElementById('goal-handoff-settings-status').hidden = true;
+  CLATI18n.bind(errorLine, 'textContent', () => '');
+  try {
+    const value = await rpc('model.handoff.get', {});
+    if (!pageIsOpen(dom['settings-dialog']) || !button.getClientRects().length) return;
+    const result = await configureGoalHandoff(value);
+    if (result === undefined) return;
+    await rpc('model.handoff.set', {settings:result});
+    ++handoffSettingsGeneration;
+    renderGoalHandoffSettings({...value, settings:result});
+    document.getElementById('goal-handoff-settings-status').hidden = false;
+  } catch (error) {
+    CLATI18n.bind(errorLine, 'textContent', () => error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function configureGoalHandoff({models, settings}) {
+  const available = new Map(models.map(model => [model.id, model]));
+  const profiles = [...(settings?.profiles || [])];
+  const label = id => {
+    const model = available.get(id);
+    return model ? handoffModelLabel(model) : CLATI18n.msg('workflow.handoff_missing_model', {model:id.replace(/^(profile|preset):/, '')});
+  };
+  const form = el('div', 'workflow-goal-form handoff-editor');
   const makeLabel = (key, control) => {
     const label = el('label', '', () => workflowText(key));
     label.append(control);
@@ -128,15 +191,17 @@ async function configureGoalHandoff(goal, acceptSettings, draft = null) {
   threshold.min = 1;
   threshold.max = 99;
   threshold.required = true;
-  threshold.value = queue?.threshold ?? draft?.threshold ?? 10;
+  threshold.value = settings?.threshold ?? 10;
   const note = el('textarea');
   note.rows = 2;
   note.maxLength = 4000;
-  note.value = queue?.note || draft?.note || '';
+  note.value = settings?.note || '';
   const list = el('ol', 'workflow-handoff-queue');
   const picker = el('select');
-  const add = el('button', 'secondary', () => workflowText('handoff_add'));
+  const add = el('button', 'secondary handoff-add');
   add.type = 'button';
+  add.append(svgIcon('plus'), el('span', '', () => workflowText('handoff_add')));
+  const empty = el('p', 'handoff-queue-empty', () => workflowText('handoff_empty_queue'));
   add.onclick = () => {
     if (!picker.value) return;
     profiles.push(picker.value);
@@ -144,13 +209,22 @@ async function configureGoalHandoff(goal, acceptSettings, draft = null) {
   };
   function renderQueue() {
     list.replaceChildren();
+    empty.hidden = profiles.length > 0;
+    list.hidden = profiles.length === 0;
     profiles.forEach((name, index) => {
       const row = el('li');
+      const model = available.get(name);
+      const copy = el('div', 'handoff-queue-copy');
+      copy.append(el('strong', '', () => model?.name ?? label(name)));
+      if (model) copy.append(el('small', '', () => handoffModelProvider(model)));
       const move = (offset) => {
         const target = index + offset;
         [profiles[index], profiles[target]] = [profiles[target], profiles[index]];
         renderQueue();
-        list.children[target]?.querySelector('button:not(:disabled)')?.focus();
+        const buttons = list.children[target]?.querySelectorAll('button');
+        const preferred = buttons?.[offset < 0 ? 0 : 1];
+        if (preferred && !preferred.disabled) preferred.focus();
+        else list.children[target]?.querySelector('button:not(:disabled)')?.focus();
       };
       const up = navigationIcon(() => workflowText('handoff_up'), 'arrow-up', () => move(-1));
       const down = navigationIcon(() => workflowText('handoff_down'), 'arrow-down', () => move(1));
@@ -161,57 +235,119 @@ async function configureGoalHandoff(goal, acceptSettings, draft = null) {
       });
       up.disabled = index === 0;
       down.disabled = index === profiles.length - 1;
-      row.append(el('span', '', name), up, down, remove);
+      const actions = el('div', 'handoff-queue-actions');
+      actions.append(up, down, remove);
+      row.append(el('span', 'handoff-queue-number', String(index + 1)), copy, actions);
       list.append(row);
     });
     picker.replaceChildren();
-    for (const name of available.filter(name => !profiles.includes(name))) {
-      const option = el('option', '', name);
-      option.value = name;
+    for (const model of models.filter(model => !profiles.includes(model.id))) {
+      const option = el('option', '', () => handoffModelLabel(model));
+      option.value = model.id;
       picker.append(option);
     }
     picker.disabled = add.disabled = picker.options.length === 0;
   }
   renderQueue();
-  const modelName = current?.model || modelSettings.current.model;
-  form.append(
-    el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_current', {model:modelName})),
-    el('p', 'picker-hint', () => workflowText('handoff_consent')),
-    makeLabel('handoff_candidates', picker), add, list,
-    makeLabel('handoff_threshold', threshold), makeLabel('handoff_note', note)
-  );
-  const result = await CLATDialog.edit(() => workflowText('handoff_models'), form, () => {
+  const controls = el('div', 'handoff-picker-row');
+  controls.append(makeLabel('handoff_candidates', picker), add);
+  const queue = el('div', 'handoff-queue');
+  queue.append(el('h3', '', () => workflowText('handoff_order')), list, empty);
+  form.append(el('p', 'picker-hint', () => workflowText(models.length ? 'handoff_settings_help' : 'handoff_no_models')),
+    controls, queue, makeLabel('handoff_threshold', threshold), makeLabel('handoff_note', note));
+  return CLATDialog.edit(() => workflowText('handoff_models'), form, () => {
     if (!threshold.reportValidity()) return undefined;
     return profiles.length ? {profiles:[...profiles], threshold:threshold.valueAsNumber, note:note.value} : null;
   });
-  if (result !== undefined) await acceptSettings(result);
+}
+
+function workflowGoalRow(view, value) {
+  const goal = value.goal?.goal;
+  const row = el('div', 'workflow-goal-list-row');
+  row.dataset.selected = String(view.selection === 'goal');
+  row.append(navigationRow({
+    title:() => goal?.objective || workflowText('no_goal'),
+    meta:() => workflowText(workflowGoalStatus(value)), icon:'check',
+    selected:view.selection === 'goal', action:() => view.select('goal'),
+  }));
+  if (goal && goal.phase !== 'complete' && builtinEnabled(value, 'builtin.goal')) {
+    const button = navigationIcon(() => workflowText(goal.handoff ? 'handoff_manage_active' : 'handoff_manage'), 'handoff',
+      () => void chooseGoalHandoff(view, goal.id));
+    button.dataset.action = 'goal-handoff';
+    button.dataset.configured = String(Boolean(goal.handoff));
+    button.setAttribute('aria-haspopup', 'dialog');
+    row.append(button);
+  }
+  return row;
+}
+
+async function chooseGoalHandoff(view, goalId) {
+  const owner = [state.sessionId, state.selectionGeneration, state.stream];
+  const current = () => owner[0] === state.sessionId && owner[1] === state.selectionGeneration &&
+    owner[2] === state.stream && toolViewIsOpen(view.page);
+  try {
+    const [{models, settings}, value] = await Promise.all([
+      rpc('model.handoff.get', {}), rpc('workflow.details', {}),
+    ]);
+    const goal = value.goal?.goal;
+    if (!current() || goal?.id !== goalId || goal.phase === 'complete') return;
+    const locked = value.busy || value.goal.armed || value.handoff;
+    const canPause = goal.phase === 'active' && value.goal.armed;
+    const dialog = el('div', 'workflow-goal-form');
+    const labels = new Map(models.map(model => [model.id, handoffModelLabel(model)]));
+    const order = settings?.profiles.map(id => labels.get(id) || id.replace(/^(profile|preset):/, '')) || [];
+    const select = el('select');
+    const addChoice = (id, key) => { const option = el('option', '', () => workflowText(key)); option.value = id; select.append(option); };
+    if (locked && canPause) addChoice('pause', 'pause_goal');
+    if (!locked && settings) addChoice('apply', 'handoff_use_settings');
+    if (!locked && goal.handoff) addChoice('remove', 'handoff_disable_goal');
+    addChoice('settings', 'handoff_open_settings');
+    const label = el('label', '', () => workflowText('handoff_action'));
+    label.append(select);
+    const hint = el('p', 'picker-hint');
+    const renderHint = () => CLATI18n.bind(hint, 'textContent', () => workflowText(locked
+      ? (canPause ? 'handoff_pause_required' : 'handoff_wait_required')
+      : select.value === 'apply' ? 'handoff_consent'
+      : select.value === 'remove' ? 'handoff_disable_help' : 'handoff_settings_help'));
+    select.onchange = renderHint;
+    renderHint();
+    dialog.append(label, hint);
+    if (order.length) dialog.append(el('p', '', order.join(' → ')),
+      el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_saved_threshold', {percent:settings.threshold})));
+    if (goal.handoff) {
+      const queue = goal.handoff;
+      const active = queue.routes[queue.position].model;
+      dialog.prepend(el('p', 'handoff-active-model', () => CLATI18n.msg('workflow.handoff_current', {model:active})));
+    }
+    const result = await CLATDialog.edit(() => workflowText('handoff_models'), dialog, () => select.value,
+      () => select.value === 'pause' ? workflowText('pause_goal') :
+        select.value === 'settings' ? workflowText('handoff_open_settings') : CLATI18n.msg('common.apply'));
+    if (!result || !current()) return;
+    if (result === 'settings') { openSettings('utility'); return; }
+    const target = {id:goal.id, revision:goal.revision};
+    if (result === 'pause') {
+      await sendWorkflowIntent({...target,action:'goal',verb:'pause',summary:null}, value);
+      return;
+    }
+    const handoff = result === 'apply' ? settings : null;
+    await sendWorkflowIntent({...target,action:'configure_goal_handoff',handoff}, value);
+  } catch (error) {
+    if (current()) CLATI18n.bind(view.status, 'textContent', () => error.message);
+  }
 }
 
 function renderGoalHandoff(view, goal) {
   const queue = goal.handoff;
   if (queue) {
     const current = queue.routes[queue.position].model;
-    const remaining = queue.routes.slice(queue.position + 1).map(route => route.profile).join(' → ');
+    const remaining = queue.routes.slice(queue.position + 1).map(route => route.profile || route.model).join(' → ');
     view.detail.append(el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_current', {model:current})));
     if (remaining) view.detail.append(el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_remaining', {models:remaining})));
   }
   for (const entry of goal.handoffRecords || []) {
     view.detail.append(goalHandoffRecord(entry));
   }
-  if (goal.phase !== 'complete' && builtinEnabled(view.value, 'builtin.goal')) {
-    const owner = [state.sessionId, state.selectionGeneration, state.stream];
-    const current = () => owner[0] === state.sessionId && owner[1] === state.selectionGeneration &&
-      owner[2] === state.stream && toolViewIsOpen(view.page);
-    view.detail.append(workflowViewButton(view, 'handoff_models', async () => {
-      try {
-        await configureGoalHandoff(goal, handoff => current() && view.act({
-          action:'configure_goal_handoff', id:goal.id, revision:goal.revision, handoff
-        }));
-      } catch (error) {
-        if (current()) CLATI18n.bind(view.status, 'textContent', () => error.message);
-      }
-    }, view.value.busy || view.value.goal.armed || Boolean(view.value.handoff)));
-  }
+
 }
 
 function goalHandoffRecord(entry) {
@@ -220,8 +356,8 @@ function goalHandoffRecord(entry) {
     ? CLATI18n.msg('workflow.handoff_transferred', {from:entry.from, to:entry.to})
     : CLATI18n.msg('workflow.handoff_paused', {from:entry.from})));
   result.append(el('p', '', () => entry.allowance
-    ? CLATI18n.msg(entry.allowance.windowHours ? 'workflow.handoff_window_low' : 'workflow.handoff_low', {
-      percent:entry.allowance.remaining, hours:entry.allowance.windowHours
+    ? CLATI18n.msg(entry.allowance.currency ? 'workflow.handoff_balance' : entry.allowance.windowHours ? 'workflow.handoff_window_low' : 'workflow.handoff_low', {
+      percent:entry.allowance.remaining, hours:entry.allowance.windowHours, currency:entry.allowance.currency
     })
     : workflowText('handoff_exhausted')));
   if (entry.summary) result.append(el('p', '', entry.summary));

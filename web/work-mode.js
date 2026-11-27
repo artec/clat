@@ -53,7 +53,7 @@ async function submitComposerGoal() {
   try {
     if (!await modelSetup.ensure() || !composerOwns(owner) || draft !== composerGoalDraft ||
         generation !== state.composerGeneration || value.session !== state.sessionId) return;
-    const intent = {action:'create_goal', objective, handoff:draft.handoff || null};
+    const intent = {action:'create_goal', objective};
     const result = await sendWorkflowIntent(intent, value);
     if (result !== undefined) settleComposerGoalDraft(owner, generation, draft);
   } catch (error) {
@@ -77,7 +77,8 @@ function installComposerGoalBar() {
   const feedback = shellButton('composer-goal-feedback','chat',()=>workflowText('feedback_continue'),()=>workflowController.feedback(composerWorkflow()?.goal?.goal?.id));
   const remove = shellButton('composer-goal-remove','trash',()=>workflowText('delete_goal'),()=>act('clear'));
   const expand = shellButton('composer-goal-details','open',()=>CLATI18n.msg('web.goal_details'),()=>workflowController.goal());
-  bar.append(details,remove,pause,start,accept,feedback,expand);
+  const timer = createGoalTimer();
+  bar.append(details,timer.element,remove,pause,start,accept,feedback,expand);
   dom['composer-shell'].before(bar);
   let acting = false;
   async function act(verb) {
@@ -99,6 +100,7 @@ function installComposerGoalBar() {
   function render() {
     const value = composerWorkflow(), goal = value?.goal?.goal;
     bar.hidden = !goal || goal.phase === 'complete';
+    timer.update(bar.hidden ? null : value.goal);
     if (bar.hidden) return;
     const blocked = acting || goalComposerLocked() || !builtinReady(goalPlugin);
     const armed = value.goal.armed;
@@ -122,6 +124,36 @@ function installComposerGoalBar() {
     }
   }
   composerGoalBar = {render};
+}
+
+function createGoalTimer() {
+  const element = el('span', 'composer-goal-timer');
+  element.id = 'composer-goal-timer';
+  const time = el('time');
+  element.append(svgIcon('clock'), time);
+  CLATI18n.attribute(element, 'title', () => workflowText('elapsed_execution'));
+  let snapshot, sampledAt = 0, interval;
+  function tick() {
+    const running = snapshot?.running_elapsed_ms;
+    const milliseconds = running == null
+      ? (snapshot?.goal?.elapsedMs || 0)
+      : running + performance.now() - sampledAt;
+    const seconds = Math.floor(milliseconds / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor(seconds / 60) % 60;
+    const pad = value => String(value).padStart(2, '0');
+    time.textContent = (hours ? pad(hours) + ':' : '') + pad(minutes) + ':' + pad(seconds % 60);
+    time.dateTime = 'PT' + seconds + 'S';
+    element.dataset.running = String(running != null);
+  }
+  return {element, update(value) {
+    if (snapshot === value) return;
+    snapshot = value;
+    sampledAt = performance.now();
+    clearInterval(interval);
+    tick();
+    if (value?.running_elapsed_ms != null) interval = setInterval(tick, 250);
+  }};
 }
 
 function syncComposerGoal() {
@@ -206,27 +238,7 @@ function installWorkModeMenu(trigger) {
     }
     syncWorkModeRows(popup, value);
     if(retainedPlan(value))popup.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));
-    if (composerGoalDraft) {
-      const draft = composerGoalDraft, owner = composerScope;
-      const count = draft.handoff?.profiles.length || 0;
-      popup.append(shellButton('work-mode-handoff','settings',() => count
-        ? CLATI18n.msg('workflow.handoff_configured', {count}) : workflowText('handoff_models'), async () => {
-        controller.close();
-        try {
-          await configureGoalHandoff(null, settings => {
-            if (composerOwns(owner) && composerGoalDraft === draft) {
-              draft.handoff = settings;
-              state.composerGeneration++;
-              syncInteractionControls();
-              dom.prompt.focus();
-            }
-          }, draft.handoff);
-        } catch (error) {
-          if (composerOwns(owner)) updateRunState(error.message);
-        }
-      },false));
-    }
-    popup.append(shellButton('work-mode-details','tools',()=>workflowText('open_workflow'),()=>{controller.close();workflowController.open();},false));
+
   }
   controller=attachComposerPopup(trigger,trigger,popup,render,'left');trigger.addEventListener('click',()=>controller.toggle());
   return controller;

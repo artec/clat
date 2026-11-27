@@ -113,6 +113,21 @@ impl ControlStorage {
         )
     }
 
+    pub(crate) fn goal_handoff(&self) -> Option<crate::goal::HandoffSettings> {
+        self.lock().settings.goal_handoff.clone()
+    }
+
+    pub(crate) fn set_goal_handoff(
+        &self,
+        value: Option<crate::goal::HandoffSettings>,
+    ) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| settings::save_settings(&self.dir, &self.root, &state.settings),
+            |state| state.settings.goal_handoff = value,
+        )
+    }
+
     pub(crate) fn utility_settings(&self) -> Result<settings::UtilitySettingsRow, ControlError> {
         let state = self.lock();
         let utility = state.settings.utility.clone();

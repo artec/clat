@@ -845,14 +845,22 @@ removed. Stored limits in older goals are historical metadata and do not
 prevent continuation. Goal execution also bypasses a model profile's aggregate
 run-token cap. Token, elapsed-time, round and failure counters remain visible
 for accounting. A manual stop records usage without counting a failed round.
-Use **Model handoff** in the Web/Desktop Goal composer to authorize an ordered
-queue of saved models for that Goal. Set the remaining allowance threshold
-(default 10%) and optionally add a note. Each authorized candidate can receive
-the existing conversation context. Pause the Goal to edit or remove the queue.
+In Web/Desktop, save an ordered backup-model queue under **Settings →
+Companion utility → Model handoff**. The list includes configured built-in models
+and saved profiles with an allowance source. Set the percentage threshold
+(default 10%) and optionally add a note. In **Plans and goals**, use the handoff
+button beside the Goal to apply a copy of the saved configuration. Each authorized
+candidate can receive the existing conversation context. Pause the Goal to apply
+an updated configuration or turn off handoff for that Goal. The handoff button
+can open during execution and offers a pause action. The timer above the
+composer shows cumulative Goal execution time and stops when the Goal pauses.
+The Companion utility page shows the saved queue and percentage threshold.
 
-CLAT checks percentage-based allowances between model requests for Kimi Coding,
-GLM Coding and OpenCode Go. It tells the running model when any reported window
-reaches the threshold, including the provider's reset time when available.
+CLAT checks the same allowance sources used by the sidebar, including linked
+Qwen, Bailian and Tencent consoles. For percentage-based plans it tells the
+running model when any reported window reaches the threshold, with the provider's
+reset time when available. DeepSeek supplies monetary balances, so a positive
+balance is eligible and a depleted balance triggers a warning.
 The model can finish its current step and call `update_goal` with the handoff
 operation and an optional progress note. CLAT also hands off on a structured
 provider quota exhaustion error or a rate limit confirmed by a fresh zero
