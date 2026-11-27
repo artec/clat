@@ -125,7 +125,7 @@ impl GitService {
         settings: GitSettings,
     ) {
         let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.execute(op, request, model, &settings)
+            self.execute(op, request, model.as_ref(), &settings)
         }))
         .unwrap_or_else(|_| Err("operation_failed".into()));
         if result.is_err() {
@@ -133,6 +133,13 @@ impl GitService {
             if saved.view.phase == "committing" && self.commit_was_written(&saved) {
                 result = Ok(reconciled_commit(&saved));
             }
+        }
+        if result.is_ok()
+            && request["action"] == "commit"
+            && !GitModel::generates_message(request)
+            && let Some(model) = &model
+        {
+            model.refresh_allowance();
         }
         {
             let mut saved = op.saved.lock().expect("git operation");

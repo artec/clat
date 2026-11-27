@@ -26,7 +26,8 @@ const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 enum Command {
-    Configure(Box<(ModelConfig, ProviderCredentials)>),
+    Configure(Box<MonitorRoute>),
+    RefreshAccount(Box<MonitorRoute>),
     Subscribe(Sender<ApplicationEvent>),
     Refresh,
     Stop,
@@ -54,16 +55,43 @@ struct CoreMonitor {
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
-type MonitorSnapshot = Arc<Mutex<Option<(ModelConfig, ProviderCredentials, ProviderAllowance)>>>;
+type MonitorRoute = (ModelConfig, ProviderCredentials);
+type MonitorEntry = (MonitorRoute, ProviderAllowance);
+type MonitorSnapshot = Arc<Mutex<MonitorCache>>;
+
+#[derive(Default)]
+struct MonitorCache {
+    current: Option<MonitorEntry>,
+    // Keep the most recent utility account separate from the foreground account.
+    utility: Option<MonitorEntry>,
+}
+
+impl MonitorCache {
+    fn allowance(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+    ) -> Option<&ProviderAllowance> {
+        self.current
+            .iter()
+            .chain(&self.utility)
+            .find(|((old, keys), _)| old.endpoint == config.endpoint && keys == credentials)
+            .map(|(_, value)| value)
+    }
+}
 
 impl CoreMonitor {
     fn start() -> Result<Self, PluginError> {
+        Self::start_with(fetch_value)
+    }
+
+    fn start_with(fetch: fn(&MonitorRoute) -> ProviderAllowance) -> Result<Self, PluginError> {
         let (commands, receiver) = mpsc::channel();
-        let latest = Arc::new(Mutex::new(None));
+        let latest = Arc::new(Mutex::new(MonitorCache::default()));
         let worker_latest = Arc::clone(&latest);
         let handle = std::thread::Builder::new()
             .name("clat-provider-monitor".into())
-            .spawn(move || monitor_loop(receiver, worker_latest))
+            .spawn(move || monitor_loop(receiver, worker_latest, fetch))
             .map_err(|error| PluginError::new(format!("spawn provider monitor: {error}")))?;
         Ok(Self {
             latest,
@@ -101,21 +129,19 @@ impl MonitorService for CoreMonitor {
         self.latest
             .lock()
             .expect("monitor snapshot")
-            .as_ref()
-            .filter(|(old, keys, _)| old.endpoint == config.endpoint && keys == credentials)
-            .map(|(_, _, value)| value.clone())
+            .allowance(config, credentials)
+            .cloned()
             .unwrap_or_else(|| ProviderAllowance::state("loading"))
     }
+
     fn snapshot(&self, config: &ModelConfig, credentials: &ProviderCredentials) -> Option<String> {
         self.latest
             .lock()
             .expect("monitor snapshot")
-            .as_ref()
-            .filter(|(previous, keys, _)| {
-                previous.endpoint == config.endpoint && keys == credentials
-            })
-            .and_then(|(_, _, value)| value.legacy())
+            .allowance(config, credentials)
+            .and_then(ProviderAllowance::legacy)
     }
+
     fn configure(&self, config: ModelConfig, credentials: ProviderCredentials) {
         let _ = self
             .commands
@@ -129,10 +155,20 @@ impl MonitorService for CoreMonitor {
     fn refresh(&self) {
         let _ = self.commands.send(Command::Refresh);
     }
+    fn refresh_account(&self, config: &ModelConfig, credentials: &ProviderCredentials) {
+        let _ = self.commands.send(Command::RefreshAccount(Box::new((
+            config.clone(),
+            credentials.clone(),
+        ))));
+    }
 }
 
-fn monitor_loop(receiver: Receiver<Command>, latest: MonitorSnapshot) {
-    let mut state: Option<(ModelConfig, ProviderCredentials)> = None;
+fn monitor_loop(
+    receiver: Receiver<Command>,
+    latest: MonitorSnapshot,
+    fetch: fn(&MonitorRoute) -> ProviderAllowance,
+) {
+    let mut state: Option<MonitorRoute> = None;
     let mut subscribers: Vec<Sender<ApplicationEvent>> = Vec::new();
     let mut next_sweep = Instant::now() + REFRESH_INTERVAL;
     loop {
@@ -147,6 +183,15 @@ fn monitor_loop(receiver: Receiver<Command>, latest: MonitorSnapshot) {
                 subscribers.push(sender);
                 false
             }
+            Ok(Command::RefreshAccount(route)) => {
+                if !configure_triggers_fetch(state.as_ref(), &route) {
+                    true
+                } else {
+                    let value = fetch(&route);
+                    latest.lock().expect("monitor snapshot").utility = Some((*route, value));
+                    false
+                }
+            }
             Ok(Command::Refresh) => true,
             Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => true,
@@ -155,10 +200,9 @@ fn monitor_loop(receiver: Receiver<Command>, latest: MonitorSnapshot) {
             continue;
         }
         next_sweep = Instant::now() + REFRESH_INTERVAL;
-        let value = state.as_ref().map(fetch_value).unwrap_or_default();
-        *latest.lock().expect("monitor snapshot") = state
-            .as_ref()
-            .map(|(config, credentials)| (config.clone(), credentials.clone(), value.clone()));
+        let value = state.as_ref().map(fetch).unwrap_or_default();
+        latest.lock().expect("monitor snapshot").current =
+            state.as_ref().map(|route| (route.clone(), value.clone()));
         subscribers.retain(|sender| {
             sender
                 .send(ApplicationEvent::MonitorUpdated(value.legacy()))
@@ -171,10 +215,7 @@ fn monitor_loop(receiver: Receiver<Command>, latest: MonitorSnapshot) {
 /// 端点与 API key 决定（见 `fetch_value`），模型名、思考档位等其余
 /// 配置变化不值得多打一次厂商接口——Shift+Tab 切档与编辑器重复
 /// 保存都汇入同一条 Configure 路径，连按不应连打额度 API。
-fn configure_triggers_fetch(
-    previous: Option<&(ModelConfig, ProviderCredentials)>,
-    incoming: &(ModelConfig, ProviderCredentials),
-) -> bool {
+fn configure_triggers_fetch(previous: Option<&MonitorRoute>, incoming: &MonitorRoute) -> bool {
     match previous {
         None => true,
         Some((config, credentials)) => {
@@ -183,7 +224,7 @@ fn configure_triggers_fetch(
     }
 }
 
-fn fetch_value((config, credentials): &(ModelConfig, ProviderCredentials)) -> ProviderAllowance {
+fn fetch_value((config, credentials): &MonitorRoute) -> ProviderAllowance {
     let Some(key) = credentials.value(0).filter(|key| !key.trim().is_empty()) else {
         return ProviderAllowance::state("unavailable");
     };
@@ -200,9 +241,8 @@ mod tests {
         let mut config = ModelConfig::default();
         let mut credentials = ProviderCredentials::for_protocol(config.protocol);
         credentials.set_value(0, "first-key".into());
-        *monitor.latest.lock().unwrap() = Some((
-            config.clone(),
-            credentials.clone(),
+        monitor.latest.lock().unwrap().current = Some((
+            (config.clone(), credentials.clone()),
             ProviderAllowance {
                 status: "available".into(),
                 updated_at: Some(1),
@@ -235,6 +275,41 @@ mod tests {
         config.endpoint = "https://other.invalid".into();
         assert!(monitor.snapshot(&config, &credentials).is_none());
         assert!(monitor.allowance(&config, &credentials).items.is_empty());
+        monitor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn refresh_account_preserves_foreground_allowance_and_uses_utility_credentials() {
+        let monitor = CoreMonitor::start_with(|(_, credentials)| ProviderAllowance {
+            status: "available".into(),
+            items: vec![crate::providers::AllowanceItem {
+                value: credentials.value(0).unwrap_or_default().into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let config = ModelConfig::default();
+        let mut selected = ProviderCredentials::for_protocol(config.protocol);
+        selected.set_value(0, "41".into());
+        let mut utility = selected.clone();
+        utility.set_value(0, "72".into());
+        let (sender, updates) = mpsc::channel();
+        monitor.subscribe(sender);
+        monitor.configure(config.clone(), selected.clone());
+        assert!(matches!(
+            updates.recv_timeout(Duration::from_secs(3)).unwrap(),
+            ApplicationEvent::MonitorUpdated(Some(value)) if value == "41"
+        ));
+        monitor.refresh_account(&config, &utility);
+        // Both refreshes share the command queue. Only the foreground update is published.
+        monitor.refresh_account(&config, &selected);
+        assert!(matches!(
+            updates.recv_timeout(Duration::from_secs(3)).unwrap(),
+            ApplicationEvent::MonitorUpdated(Some(value)) if value == "41"
+        ));
+        assert_eq!(monitor.snapshot(&config, &utility).as_deref(), Some("72"));
+        assert_eq!(monitor.snapshot(&config, &selected).as_deref(), Some("41"));
         monitor.shutdown().unwrap();
     }
 

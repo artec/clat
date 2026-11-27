@@ -3686,6 +3686,10 @@ inventory of changed files and sends binary files, recognized dependency lockfil
 and minified JavaScript and CSS as statistics. When text patches exceed the
 model window, it keeps small patches and selects changed lines from larger patches
 across files. Handwritten messages use a staged-change check without building patches.
+When a commit-message request ends, CLAT refreshes the allowance for the
+account that generated it, including when generation fails. A successful
+handwritten commit refreshes the active model’s allowance. These lookups run
+in the background and use the provider’s balance or quota endpoint.
 Editing the message, changing its language or cancelling generation
 stops automatic continuation. Changes to
 HEAD/index invalidate approval; the generated description remains available for review.

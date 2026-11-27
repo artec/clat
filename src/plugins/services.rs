@@ -663,6 +663,7 @@ pub(crate) trait MonitorService: Send + Sync {
     fn configure(&self, config: ModelConfig, credentials: ProviderCredentials);
     fn subscribe(&self, sender: std::sync::mpsc::Sender<crate::application::ApplicationEvent>);
     fn refresh(&self);
+    fn refresh_account(&self, config: &ModelConfig, credentials: &ProviderCredentials);
 }
 
 /// One surface node offered to the compactor: the durable seq plus the

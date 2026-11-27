@@ -608,6 +608,105 @@ mod tests {
     }
 
     #[test]
+    fn git_generation_requests_a_refresh_on_its_console_account() {
+        use crate::application::tests::mount;
+        use crate::test_support::{TestBehavior, TestModelScript, roots};
+
+        struct Throttled;
+        impl TestModelScript for Throttled {
+            fn stream(
+                &self,
+                _: crate::ModelRequest<'_>,
+                _: &mut dyn crate::ModelEventSink,
+            ) -> Result<crate::ModelResponse, crate::ModelError> {
+                Err(crate::ModelError::with_kind(
+                    crate::ModelErrorKind::RateLimited,
+                    "quota exhausted in test request",
+                ))
+            }
+        }
+
+        let (storage, project) = roots("git-console-refresh");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("staged.txt"), "Git evidence\n").unwrap();
+        for arguments in [
+            &["init", "-q", "--template="][..],
+            &["add", "--", "staged.txt"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(&project)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let app = mount(
+            &Project::new(&project),
+            &storage,
+            TestBehavior::Scripted(Arc::new(Throttled)),
+        );
+        app.select_model_preset("qwen4-max", Some("sp-test".into()), Some("qianwen"))
+            .unwrap();
+        let model = app.development_model().unwrap();
+        let key = cache_key(&app.control, "qianwen");
+        let pending = Uuid::new_v4();
+        CACHE
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(
+                key.clone(),
+                CachedAllowance {
+                    request: Some(pending),
+                    ..Default::default()
+                },
+            );
+        let service = app.development().unwrap();
+        let snapshot = service
+            .request("git.snapshot", serde_json::json!({}), None)
+            .unwrap();
+        let id = Uuid::new_v4().to_string();
+        let mut view = service
+            .request(
+                "git.start",
+                serde_json::json!({"operationId":id,"action":"generate","expected":snapshot}),
+                Some(model),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while matches!(
+            view["phase"].as_str(),
+            Some("pending" | "running" | "generating")
+        ) {
+            assert!(Instant::now() < deadline, "{view}");
+            std::thread::sleep(Duration::from_millis(10));
+            view = service
+                .request("git.operation", serde_json::json!({"operationId":id}), None)
+                .unwrap();
+        }
+        assert_eq!(view["phase"], "failed", "{view}");
+        assert_eq!(view["error"], "generation_rate_limited");
+        let entry = CACHE
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .remove(&key)
+            .unwrap();
+        assert_eq!(entry.request, Some(pending));
+        assert_eq!(
+            entry.listeners.len(),
+            1,
+            "Git should join the in-flight quota lookup"
+        );
+        assert!(Arc::ptr_eq(&entry.listeners[0], &app.subscribers));
+        drop(app);
+        crate::test_support::cleanup_tree(storage.parent().unwrap());
+    }
+
+    #[test]
     fn seal_unseal_round_trips_and_rejects_tampering() {
         let blob = seal("secret-payload").unwrap();
         assert_ne!(blob, "secret-payload");

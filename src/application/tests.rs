@@ -4395,6 +4395,7 @@ fn subscribing_a_host_client_configures_monitor_without_terminal_snapshot() {
         }
         fn subscribe(&self, _: std::sync::mpsc::Sender<ApplicationEvent>) {}
         fn refresh(&self) {}
+        fn refresh_account(&self, _: &ModelConfig, _: &crate::ProviderCredentials) {}
     }
     let (storage_root, project_root) = roots("host-monitor-subscribe");
     std::fs::create_dir_all(&project_root).unwrap();

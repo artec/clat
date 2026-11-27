@@ -18,13 +18,21 @@ impl TrustedProjectApplication {
             .is_some_and(|service| service.has_live_work())
     }
     pub fn development_model(&self) -> Result<GitModel, ApplicationError> {
+        self.development_commit_model(true)
+    }
+
+    pub(crate) fn development_commit_model(
+        &self,
+        generate: bool,
+    ) -> Result<GitModel, ApplicationError> {
         self.development()?;
         let (mut config, mut credentials) = self.model_state()?;
-        if let Some(profile) = self
-            .config
-            .load_utility_settings()
-            .map_err(store_error)?
-            .profile
+        if generate
+            && let Some(profile) = self
+                .config
+                .load_utility_settings()
+                .map_err(store_error)?
+                .profile
         {
             (config, credentials) = self
                 .config
@@ -32,10 +40,19 @@ impl TrustedProjectApplication {
                 .map_err(store_error)?
                 .ok_or_else(|| ApplicationError::from_message("model_unavailable"))?;
         }
+        let console = self.console_quota();
+        let monitor = self.monitor.clone();
         Ok(GitModel {
             providers: self.providers.clone(),
             config,
             credentials,
+            on_allowance_refresh: Arc::new(move |config, credentials| {
+                if let Some(provider) = super::console_quota::console_provider(&config.endpoint) {
+                    console.read_allowance(provider, true);
+                } else if let Some(monitor) = &monitor {
+                    monitor.refresh_account(config, credentials);
+                }
+            }),
         })
     }
 }

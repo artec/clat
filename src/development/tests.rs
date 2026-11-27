@@ -649,10 +649,46 @@ fn model(script: Script) -> (GitModel, Box<dyn Send>) {
             providers,
             config: crate::ModelConfig::default(),
             credentials: crate::ProviderCredentials::default(),
+            on_allowance_refresh: Arc::new(|_, _| {}),
         },
         Box::new(lease),
     )
 }
+#[test]
+fn development_git_refreshes_allowance_once_even_when_generation_fails() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for (message, answer, phase, calls) in [
+        ("Use a handwritten message", "", "completed", 0),
+        ("", "Generated message", "completed", 1),
+        ("", "", "failed", 1),
+    ] {
+        let f = Fixture::new();
+        f.repository();
+        fs::write(f.project.join("file.txt"), "staged change\n").unwrap();
+        f.git(&["add", "--", "file.txt"]);
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let seen = model_calls.clone();
+        let (mut model, _lease) = model(Arc::new(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            answer.into()
+        }));
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let seen = refreshes.clone();
+        model.on_allowance_refresh = Arc::new(move |_, _| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        let request = json!({
+            "operationId":dev_id(), "action":"commit", "message":message, "expected":f.snapshot()
+        });
+        for _ in 0..2 {
+            let row = f.run(request.clone(), Some(model.clone()));
+            assert_eq!(row["phase"], phase, "{row}");
+            assert_eq!(model_calls.load(Ordering::SeqCst), calls);
+            assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        }
+    }
+}
+
 #[test]
 fn development_git_keeps_middle_of_staged_patch_that_fits_model() {
     let f = Fixture::new();

@@ -4,13 +4,28 @@ use crate::{
     ModelConfig, ProviderCredentials,
     model::{FinishReason, ModelItem, ModelOptions, ModelRequest},
 };
+pub(crate) type RefreshAllowance = dyn Fn(&ModelConfig, &ProviderCredentials) + Send + Sync;
+
 #[derive(Clone)]
 pub struct GitModel {
     pub(crate) providers: Arc<crate::plugins::services::ProviderRegistry>,
     pub(crate) config: ModelConfig,
     pub(crate) credentials: ProviderCredentials,
+    pub(crate) on_allowance_refresh: Arc<RefreshAllowance>,
 }
 impl GitModel {
+    pub(crate) fn generates_message(request: &Value) -> bool {
+        match request["action"].as_str() {
+            Some("generate") => true,
+            Some("commit") => request["message"].as_str().unwrap_or("").trim().is_empty(),
+            _ => false,
+        }
+    }
+
+    pub(super) fn refresh_allowance(&self) {
+        (self.on_allowance_refresh)(&self.config, &self.credentials);
+    }
+
     fn ask(
         &self,
         body: &str,
@@ -32,24 +47,24 @@ impl GitModel {
             output_limit: Some(output_limit),
             ..Default::default()
         };
-        let response = model
-            .stream(
-                ModelRequest {
-                    instructions: Some(instructions),
-                    items: &items,
-                    tools: &tools,
-                    options: &options,
-                    cancel,
-
-                    session_id: None,
-                },
-                &mut Vec::new(),
-            )
-            .map_err(|error| match error.kind() {
-                crate::ModelErrorKind::RateLimited => "generation_rate_limited",
-                crate::ModelErrorKind::Cancelled => "cancelled",
-                _ => "generation_failed",
-            })?;
+        let response = model.stream(
+            ModelRequest {
+                instructions: Some(instructions),
+                items: &items,
+                tools: &tools,
+                options: &options,
+                cancel,
+                session_id: None,
+            },
+            &mut Vec::new(),
+        );
+        // A failed or cancelled request can still have consumed provider quota.
+        self.refresh_allowance();
+        let response = response.map_err(|error| match error.kind() {
+            crate::ModelErrorKind::RateLimited => "generation_rate_limited",
+            crate::ModelErrorKind::Cancelled => "cancelled",
+            _ => "generation_failed",
+        })?;
         if cancel.is_cancelled() || response.finish_reason == FinishReason::Cancelled {
             return Err("cancelled".into());
         }
@@ -115,11 +130,11 @@ impl GitService {
         &self,
         op: &Operation,
         value: &Value,
-        model: Option<GitModel>,
+        model: Option<&GitModel>,
         settings: &GitSettings,
     ) -> Result<Value, String> {
         let raw = value["message"].as_str().unwrap_or("");
-        let generate = raw.trim().is_empty() || value["action"] == "generate";
+        let generate = GitModel::generates_message(value);
         let lock = command::repo_lock(&self.project)?;
         let (request, index) = {
             let _guard = lock.lock().map_err(|_| "git_busy")?;
@@ -174,7 +189,7 @@ impl GitService {
         value: &Value,
         settings: &GitSettings,
         diff: &super::index::StagedDiff<'_>,
-        model: Option<GitModel>,
+        model: Option<&GitModel>,
     ) -> Result<String, String> {
         self.phase(op, "generating", None)?;
         let staged = super::staged::collect(diff, &op.cancel)?;

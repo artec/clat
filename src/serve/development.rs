@@ -15,10 +15,9 @@ pub(super) fn dispatch(
         let service = app.development()?;
         let model = if method == "git.start"
             && matches!(value["action"].as_str(), Some("commit" | "generate"))
-            && (value["action"] == "generate"
-                || value["message"].as_str().unwrap_or("").trim().is_empty())
         {
-            app.development_model().ok()
+            app.development_commit_model(crate::application::GitModel::generates_message(value))
+                .ok()
         } else {
             None
         };

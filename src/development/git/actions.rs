@@ -5,7 +5,7 @@ impl GitService {
         &self,
         op: &Operation,
         request: &Value,
-        model: Option<GitModel>,
+        model: Option<&GitModel>,
         settings: &GitSettings,
     ) -> Result<Value, String> {
         let action = text(request, "action")?;

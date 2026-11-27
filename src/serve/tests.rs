@@ -3360,6 +3360,9 @@ const PUBLIC_WEB_DESTINATIONS: &[&str] = &[
     // vendor README 的文档引证（canvas 字体查证的 WebKit 缺陷说明），
     // 非运行时目的地；离线 bundle 不发任何网络请求。
     "https://bugs.webkit.org/show_bug.cgi?id=316777",
+    // marked bundle 的报错模板文案（"Please report this to …."），错误
+    // 消息字符串，非运行时目的地；句号属于模板文案的一部分。
+    "https://github.com/markedjs/marked.",
     // web/tests 夹具里"远程 URL 必须被拒"的反例；RFC 2606 保留域
     // 永不解析，仅存在于测试源码，非运行时目的地。
     "https://example.com",
@@ -3440,7 +3443,10 @@ fn scan_web_for_urls(dir: &Path, seen: &mut BTreeSet<String>, offenders: &mut Ve
         } else if let Ok(text) = std::fs::read_to_string(&path) {
             for line in text.lines() {
                 for url in urls_in_line(line) {
-                    if url == "http://www.w3.org/2000/svg" {
+                    // W3C 命名空间标识符不是网络目的地（xhtml 用于
+                    // markdown 预览的 DOMParser 元素校验比较）。
+                    if url == "http://www.w3.org/2000/svg" || url == "http://www.w3.org/1999/xhtml"
+                    {
                         continue;
                     }
                     seen.insert(url.clone());
