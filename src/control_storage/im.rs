@@ -44,6 +44,8 @@ const MAX_PENDING_CHAT_MAPPINGS: usize = 256;
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ImFile {
     unit: UnitTag,
+    /// WeChat v1 section. A future Feishu section is a sibling with its own
+    /// credentials and its own flattened `RemoteState`, never fields in here.
     #[serde(default)]
     wechat: WechatState,
     #[cfg(test)]

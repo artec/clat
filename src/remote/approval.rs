@@ -41,6 +41,8 @@ pub(crate) enum RemoteChannel {
     Wechat,
     #[cfg(test)]
     Test,
+    // Feishu is reserved and intentionally absent. When it becomes a real
+    // channel its `delivery_key` is prefixed. Do not reuse WeChat's raw wire id.
 }
 
 impl RemoteChannel {

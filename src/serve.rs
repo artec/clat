@@ -81,9 +81,15 @@ where
     terminal::run_wechat_command_with_locale(project, args, crate::i18n::LocaleContext::default())
 }
 
-/// Optional IM frontend hosted by the serve process. The enum is deliberately
-/// closed while WeChat is the only concrete dogfood backend; a second real
-/// backend is the trigger for a more general configuration surface.
+/// Optional IM frontend hosted by the serve process. The enum stays closed
+/// while WeChat is the only production backend.
+///
+/// Feishu is the reserved next backend and must not be added here until its
+/// adapter can bind, receive, and reply. It is a self-built-app long
+/// connection (`app_id` / `app_secret`, endpoint discovery, protobuf frames),
+/// not an iLink poll and not a public webhook. Inbound frames are acknowledged
+/// within three seconds and deduplicated by `message_id`. The local decision
+/// record is `docs/research/feishu-remote.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImBackend {
     Wechat,
