@@ -99,6 +99,10 @@ pub struct GoalState {
     pub blocked_reason: Option<GoalBlockReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_result: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<GoalHandoff>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoff_records: Vec<HandoffRecord>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,10 +139,14 @@ pub(crate) enum GoalContinuation {
 struct LiveState {
     pending: Option<GoalState>,
     armed_session: Option<SessionId>,
+    low_allowance: Option<handoff::LowAllowance>,
+    requested_handoff: Option<String>,
 }
 
 mod facts;
+mod handoff;
 pub(crate) use facts::historical;
+pub use handoff::{GoalHandoff, HandoffRecord, HandoffRoute, HandoffSettings, LowAllowance};
 
 pub(crate) struct GoalService {
     sessions: Arc<SessionService>,
@@ -195,7 +203,7 @@ impl GoalService {
         limits: GoalLimits,
         arm: bool,
     ) -> Result<GoalView, String> {
-        self.create_named(objective, acceptance, limits, arm, None)
+        self.create_named(objective, acceptance, limits, arm, None, None)
     }
 
     pub(crate) fn create_for_plan(
@@ -213,6 +221,7 @@ impl GoalService {
             GoalLimits::default(),
             false,
             Some((id, tail)),
+            None,
         )
     }
 
@@ -223,6 +232,7 @@ impl GoalService {
         limits: GoalLimits,
         arm: bool,
         binding: Option<(&str, &[NewSessionEvent])>,
+        handoff: Option<GoalHandoff>,
     ) -> Result<GoalView, String> {
         validate_objective(objective)?;
         validate_acceptance(&acceptance)?;
@@ -258,6 +268,8 @@ impl GoalService {
             updated_at: now,
             blocked_reason: None,
             last_result: None,
+            handoff,
+            handoff_records: Vec::new(),
         };
         if let Some(session) = self.sessions.active_id() {
             self.sessions
@@ -508,8 +520,7 @@ impl GoalService {
 
     pub(crate) fn session_boundary(&self) {
         if let Ok(mut live) = self.live.lock() {
-            live.pending = None;
-            live.armed_session = None;
+            *live = LiveState::default();
         }
     }
 
@@ -520,12 +531,18 @@ impl GoalService {
     pub(crate) fn disarm(&self) {
         if let Ok(mut live) = self.live.lock() {
             live.armed_session = None;
+            live.low_allowance = None;
+            live.requested_handoff = None;
         }
     }
 
     fn set_armed(&self, session: SessionId, armed: bool) -> Result<(), String> {
         let mut live = self.live.lock().map_err(|_| "goal lock poisoned")?;
         live.armed_session = armed.then_some(session);
+        if !armed {
+            live.low_allowance = None;
+            live.requested_handoff = None;
+        }
         Ok(())
     }
 
@@ -542,7 +559,21 @@ impl GoalService {
             .rounds_started
             .checked_add(1)
             .ok_or("goal round counter overflow")?;
-        let prompt = render_round_prompt(&view.state, round);
+        let mut prompt = render_round_prompt(&view.state, round);
+        if let Some(handoff) = &view.state.handoff
+            && let Some(record) = view
+                .state
+                .handoff_records
+                .last()
+                .filter(|entry| entry.to.is_some() && entry.round.checked_add(1) == Some(round))
+        {
+            use std::fmt::Write;
+            let _ = write!(
+                prompt,
+                "\nModel handoff from {}. Continue the existing Goal from the recorded results.\nProgress note: {}\nUser handoff note: {}",
+                record.from, record.summary, handoff.note
+            );
+        }
         let mut message = payloads::user_message(&prompt);
         message["source"] = json!({
             "kind": "goal",
@@ -558,6 +589,7 @@ impl GoalService {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_round(
         &self,
         tokens_spent: u64,
@@ -566,42 +598,7 @@ impl GoalService {
         cancelled: bool,
         result: &str,
     ) -> Result<GoalContinuation, String> {
-        let _lane = self
-            .write_lane
-            .lock()
-            .map_err(|_| "goal write lock poisoned")?;
-        let Some(view) = self.current()? else {
-            self.disarm();
-            return Ok(GoalContinuation::Stop);
-        };
-        let mut state = view.state;
-        state.tokens_used = state.tokens_used.saturating_add(tokens_spent);
-        state.elapsed_ms = state
-            .elapsed_ms
-            .saturating_add(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
-        if !succeeded && !cancelled {
-            state.failures = state.failures.saturating_add(1);
-        }
-        if !result.trim().is_empty() {
-            state.last_result = Some(truncate_utf8(result.trim(), MAX_RESULT_BYTES));
-        }
-        let keep_armed = view.armed && succeeded && !cancelled && state.phase == GoalPhase::Active;
-        state.revision = state
-            .revision
-            .checked_add(1)
-            .ok_or("goal revision exhausted")?;
-        state.updated_at = state.updated_at.max(crate::session::event::now_ms());
-        self.append_snapshot("progress", &state)?;
-        if let Some(session) = self.sessions.active_id() {
-            self.set_armed(session, keep_armed)?;
-        } else {
-            self.disarm();
-        }
-        Ok(if keep_armed && state.phase == GoalPhase::Active {
-            GoalContinuation::Continue
-        } else {
-            GoalContinuation::Stop
-        })
+        self.settle_round(tokens_spent, elapsed, succeeded, cancelled, result, None)
     }
 
     pub(crate) fn injection(&self) -> Result<GoalInjection, String> {
@@ -762,7 +759,7 @@ pub(crate) fn validate_change_payload(data: &Value) -> Result<(), String> {
     }
     if !matches!(
         operation,
-        "create" | "pause" | "resume" | "complete" | "block" | "progress"
+        "create" | "pause" | "resume" | "complete" | "block" | "progress" | "handoff-configure"
     ) {
         return Err("goal/change operation is invalid".into());
     }
@@ -831,7 +828,15 @@ fn validate_transition(
     operation: &str,
 ) -> Result<(), String> {
     if operation == "create" {
-        if next.revision != 1 || next.phase != GoalPhase::Active || next.rounds_started != 0 {
+        if next.revision != 1
+            || next.phase != GoalPhase::Active
+            || next.rounds_started != 0
+            || !next.handoff_records.is_empty()
+            || next
+                .handoff
+                .as_ref()
+                .is_some_and(|queue| queue.position != 0)
+        {
             return Err("goal create requires an active revision-one goal with zero rounds".into());
         }
         if previous.is_some_and(|state| state.phase != GoalPhase::Complete) {
@@ -869,7 +874,26 @@ fn validate_transition(
     {
         return Err("only goal progress may advance resource counters".into());
     }
+    if !handoff::valid_progress(previous, next, operation) {
+        return Err("invalid goal handoff progress".into());
+    }
+    validate_phase_transition(previous, next, operation)
+}
+
+fn validate_phase_transition(
+    previous: &GoalState,
+    next: &GoalState,
+    operation: &str,
+) -> Result<(), String> {
     let valid_phase = match operation {
+        "handoff-configure" => {
+            previous.phase != GoalPhase::Complete
+                && next.phase == previous.phase
+                && next
+                    .handoff
+                    .as_ref()
+                    .is_none_or(|queue| queue.position == 0)
+        }
         "pause" => previous.phase == GoalPhase::Active && next.phase == GoalPhase::Paused,
         "resume" => {
             matches!(
@@ -895,6 +919,9 @@ fn validate_transition(
 fn validate_state(state: &GoalState) -> Result<(), String> {
     if !valid_goal_id(&state.id) || state.revision == 0 {
         return Err("goal id/revision is invalid".into());
+    }
+    if let Some(handoff) = &state.handoff {
+        handoff.validate()?;
     }
     validate_objective(&state.objective)?;
     validate_acceptance(&state.acceptance)?;
@@ -1030,6 +1057,8 @@ mod tests {
             updated_at: 1,
             blocked_reason: None,
             last_result: None,
+            handoff: None,
+            handoff_records: Vec::new(),
         }
     }
 

@@ -97,5 +97,35 @@
     });
   }
 
-  globalThis.CLATDialog = Object.freeze({ confirm, prompt });
+  function edit(title, body, read) {
+    return new Promise(resolve => {
+      const { dialog, actions, cancel, accept } = seat('edit');
+      const header = document.createElement('header');
+      header.className = 'workbench-dialog-header';
+      const heading = document.createElement('h2');
+      CLATI18n.bind(heading, 'textContent', title);
+      header.append(heading);
+      CLATI18n.bind(accept, 'textContent', () => CLATI18n.msg('common.apply'));
+      dialog.append(header, body, actions);
+      let value;
+      const events = new AbortController();
+      const close = () => dialog.close();
+      accept.onclick = () => {
+        value = read();
+        if (value !== undefined) close();
+      };
+      cancel.onclick = close;
+      dialog.onclose = () => {
+        events.abort();
+        if (active === dialog) active = null;
+        dialog.remove();
+        resolve(value);
+      };
+      window.addEventListener('popstate', close, { once:true, signal:events.signal });
+      window.addEventListener('clat:project-activated', close, { once:true, signal:events.signal });
+      dialog.showModal();
+    });
+  }
+
+  globalThis.CLATDialog = Object.freeze({ confirm, prompt, edit });
 })();

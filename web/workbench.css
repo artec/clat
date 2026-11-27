@@ -1020,3 +1020,10 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 }
 .global-rail .shell-button:focus-visible > .shell-label { display: block; }
 @media(hover:hover){ .global-rail .shell-button:hover > .shell-label { display: block; } }
+
+.workflow-handoff-queue { margin: 0; padding-inline-start: 24px; }
+.workflow-handoff-queue li { padding-block: 4px; }
+.workflow-handoff-queue li > span { margin-inline-end: 8px; overflow-wrap: anywhere; }
+.workflow-handoff-record { margin-block: 10px; }
+.clat-dialog[data-kind="edit"] .workflow-goal-form { margin-block: 12px; }
+.clat-dialog[data-kind="edit"] .workflow-goal-form label { display: grid; gap: 6px; }

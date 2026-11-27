@@ -185,6 +185,7 @@ fn disabled_goal_allows_approval_only_and_rejects_execution_before_writes() {
             WorkflowIntent::CreateGoal {
                 objective: "escape".into(),
                 max_tokens: None,
+                handoff: None,
             },
             WorkflowIntent::Goal {
                 verb: "pause".into(),

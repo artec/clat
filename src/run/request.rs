@@ -84,6 +84,13 @@ impl Run<'_> {
         let snapshot = self.runtime_context.snapshot(snapshot);
         let mut options = self.model_options.clone();
         options.request_tail = snapshot.request_tail(options.request_tail.as_deref());
+        if !self.cancel.is_cancelled()
+            && let Some(notice) = self.request_notice.as_mut().and_then(|notice| notice())
+        {
+            let tail = options.request_tail.get_or_insert_with(String::new);
+            tail.push_str("\n");
+            tail.push_str(&notice);
+        }
         let instructions = self
             .instructions
             .as_ref()

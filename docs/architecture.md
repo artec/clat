@@ -2415,5 +2415,11 @@ Goal continuation has no local aggregate token, round, elapsed-time or failure
 cap. Usage is recorded durably. Legacy Goal limit fields remain decodable but
 do not participate in eligibility, request ledgers, cancellation deadlines or
 Plan-to-Goal binding. Goal requests use a ledger without an aggregate run-token
-cap. Actual provider failures end the current attempt and disarm continuation.
+cap. Actual provider failures normally end the current attempt and disarm
+continuation. A user-authorized Goal handoff reuses the settled round boundary.
+Only a low-allowance model request or typed provider quota exhaustion can
+advance the durable route cursor. The same Goal snapshot commits accounting
+and the route transition after journal and process settlement; admission of
+the next synthetic round follows that commit. Credentials remain in the
+control store, and the new route keeps the frozen execution permission policy.
 Human stop, verification and durable permission facts retain their lifecycle roles.

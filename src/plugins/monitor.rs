@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+mod goal_allowance;
+
 const ID: PluginId = PluginId::new("builtin.provider_monitor");
 const PROVIDES: &[ServiceId] = &[MONITOR_SERVICE_ID];
 const DESCRIPTOR: PluginDescriptor = PluginDescriptor {
@@ -121,6 +123,15 @@ impl CoreMonitor {
 }
 
 impl MonitorService for CoreMonitor {
+    fn goal_allowance(
+        &self,
+        config: &ModelConfig,
+        credentials: &ProviderCredentials,
+        force: bool,
+    ) -> ProviderAllowance {
+        goal_allowance::read(config, credentials, force)
+    }
+
     fn allowance(
         &self,
         config: &ModelConfig,

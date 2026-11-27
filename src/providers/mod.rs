@@ -526,6 +526,23 @@ fn parse_kimi_quota(value: &serde_json::Value) -> Option<String> {
 // `FinishReason::Cancelled` 的正常响应，绝不降格为 ModelError。
 
 /// HTTP status → 领域错误分类。401/403 先于其余 4xx 判定。
+fn quota_error_kind(body: &str, kind: ModelErrorKind) -> ModelErrorKind {
+    if matches!(kind, ModelErrorKind::RateLimited | ModelErrorKind::Client)
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value["error"]["code"].as_str(),
+                    Some("insufficient_quota" | "quota_exhausted")
+                )
+            })
+    {
+        ModelErrorKind::QuotaExhausted
+    } else {
+        kind
+    }
+}
+
 pub(crate) fn error_kind_from_status(status: u16) -> ModelErrorKind {
     match status {
         429 => ModelErrorKind::RateLimited,
@@ -905,6 +922,7 @@ fn error_code(kind: ModelErrorKind) -> String {
         ModelErrorKind::ImageCapacity => "image_capacity",
         ModelErrorKind::Transport => "transport",
         ModelErrorKind::RateLimited => "rate_limited",
+        ModelErrorKind::QuotaExhausted => "quota_exhausted",
         ModelErrorKind::Server => "server",
         ModelErrorKind::Client => "client",
         ModelErrorKind::Authentication => "authentication",
@@ -1263,6 +1281,21 @@ mod tests {
         assert_eq!(parse_retry_after("soon", 1_000_000), None);
         assert_eq!(parse_retry_after("", 1_000_000), None);
         assert_eq!(parse_http_date("not a date"), None);
+    }
+
+    #[test]
+    fn goal_handoff_recognizes_structured_quota_errors() {
+        use ModelErrorKind::{QuotaExhausted, RateLimited};
+        assert_eq!(
+            quota_error_kind(r#"{"error":{"code":"insufficient_quota"}}"#, RateLimited),
+            QuotaExhausted,
+        );
+        for body in [
+            r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+            r#"{"error":{"message":"quota_exhausted"}}"#,
+        ] {
+            assert_eq!(quota_error_kind(body, RateLimited), RateLimited);
+        }
     }
 
     #[test]

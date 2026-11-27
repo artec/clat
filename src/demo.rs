@@ -74,6 +74,7 @@ pub fn run_demo(
         .execute(AgentRequest {
             runtime: None,
             context_manager: None,
+            request_notice: None,
             credentials: ProviderCredentials::for_protocol(config.protocol),
             spend_ledger: None,
             config,

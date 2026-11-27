@@ -274,6 +274,7 @@ async function refreshShellContext() {
     status.hidden = !value.busy;
     CLATI18n.bind(status, 'textContent', () => CLATI18n.msg(value.busy ? 'web.running_short' : 'web.idle'));
     renderShellWorkSummary(value);
+    syncGoalHandoffTranscript();
     const badge = document.getElementById('composer-plan-toggle');
     if (badge) badge.disabled = false;
     disableBuiltin(document.getElementById('add-skills'),value,'builtin.skills');

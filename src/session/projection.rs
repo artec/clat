@@ -2418,6 +2418,8 @@ mod phase4_projection_tests {
             updated_at: 1,
             blocked_reason: None,
             last_result: None,
+            handoff: None,
+            handoff_records: Vec::new(),
         };
         let mut round = payloads::user_message("continue");
         round["source"] = json!({

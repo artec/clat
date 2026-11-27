@@ -845,8 +845,27 @@ removed. Stored limits in older goals are historical metadata and do not
 prevent continuation. Goal execution also bypasses a model profile's aggregate
 run-token cap. Token, elapsed-time, round and failure counters remain visible
 for accounting. A manual stop records usage without counting a failed round.
-Provider quota exhaustion or an execution error ends the current attempt;
-the user can continue that same goal after resolving it. Legacy limit arguments
+Use **Model handoff** in the Web/Desktop Goal composer to authorize an ordered
+queue of saved models for that Goal. Set the remaining allowance threshold
+(default 10%) and optionally add a note. Each authorized candidate can receive
+the existing conversation context. Pause the Goal to edit or remove the queue.
+
+CLAT checks percentage-based allowances between model requests for Kimi Coding,
+GLM Coding and OpenCode Go. It tells the running model when any reported window
+reaches the threshold, including the provider's reset time when available.
+The model can finish its current step and call `update_goal` with the handoff
+operation and an optional progress note. CLAT also hands off on a structured
+provider quota exhaustion error or a rate limit confirmed by a fresh zero
+allowance sample. Other provider errors end the current attempt.
+
+CLAT skips changed profiles and candidates whose allowance is unknown or at
+or below the threshold. The next eligible model continues the same Goal in
+the original conversation. If the queue has no eligible candidate, the Goal
+pauses. Goal details show the active route, remaining queue and handoff
+history. After restart, an explicit continue action resumes from the recorded
+route. Keep the CLAT host running for unattended execution.
+
+Legacy limit arguments
 in older commands and clients are accepted for compatibility and have no effect.
 Goals with `user` acceptance can only
 be completed by `/goal complete` or the explicit Web/Desktop **Accept result**

@@ -58,7 +58,9 @@ impl Run<'_> {
                     }
                 }
             }
-            return Err(state.fail(events, &self.steering, format!("model error: {error}")));
+            let mut failure = state.fail(events, &self.steering, format!("model error: {error}"));
+            failure.model_kind = Some(error.kind());
+            return Err(failure);
         }
     }
     fn capacity_attempt(

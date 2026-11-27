@@ -582,6 +582,7 @@ pub(crate) struct RuntimeBindings {
 pub(crate) struct AgentRequest {
     pub runtime: Option<RuntimeBindings>,
     pub context_manager: Option<Box<dyn crate::run::RequestContextManager>>,
+    pub request_notice: Option<crate::run::RequestNotice>,
     pub config: ModelConfig,
     /// B1/F-1：花费护栏共享账本（None = 无护栏——demo/测试）。
     pub spend_ledger: Option<Arc<crate::model::RunSpendLedger>>,
@@ -646,6 +647,14 @@ pub(crate) struct McpServerStatus {
 }
 
 pub(crate) trait MonitorService: Send + Sync {
+    fn goal_allowance(
+        &self,
+        _config: &ModelConfig,
+        _credentials: &ProviderCredentials,
+        _force: bool,
+    ) -> crate::providers::ProviderAllowance {
+        crate::providers::ProviderAllowance::state("unsupported")
+    }
     fn allowance(
         &self,
         _config: &ModelConfig,

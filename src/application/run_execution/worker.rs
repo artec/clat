@@ -20,12 +20,12 @@ pub(super) struct RunWorker {
     /// INV-CP2：连续自动摘要失败计数（阈值见 compaction::SUMMARY_FAILURE_LIMIT）。
     pub(super) automatic_summary_failures: Arc<std::sync::atomic::AtomicU32>,
 }
-struct RoundAccounting {
+pub(super) struct RoundAccounting {
     usage: Usage,
     turns: usize,
     text: String,
-    succeeded: bool,
-    cancelled: bool,
+    pub(super) succeeded: bool,
+    pub(super) cancelled: bool,
 }
 impl RunWorker {
     pub(super) fn new(
@@ -112,7 +112,7 @@ impl RunWorker {
             let mut round = self.execute_round(preparation);
             let accounting = self.account_round(&round.result, round.cancelled);
             let tokens = round.spent_tokens();
-            if self.goal_mode && self.continue_goal(&mut round.result, accounting, tokens)? {
+            if self.goal_mode && self.continue_goal(&mut round, accounting, tokens)? {
                 continue;
             }
             return round
@@ -189,25 +189,35 @@ impl RunWorker {
     }
     fn continue_goal(
         &mut self,
-        result: &mut ApplicationRunResult,
+        round: &mut round::SettledRound,
         accounting: RoundAccounting,
         tokens: u64,
     ) -> Result<bool, ApplicationRunFailure> {
-        match self.deps.goal_service.finish_round(
+        let switch = self.choose_goal_handoff(round, &accounting);
+        match self.deps.goal_service.settle_handoff_round(
             tokens,
             self.round_started.elapsed(),
             accounting.succeeded,
-            accounting.cancelled,
+            accounting.cancelled || self.deps.cancel.is_cancelled(),
             &accounting.text,
+            switch
+                .as_ref()
+                .map(|choice| (choice.position, choice.record.clone())),
         ) {
             Ok(crate::goal::GoalContinuation::Continue) if !accounting.cancelled => {
+                if self.deps.cancel.is_cancelled() {
+                    return Ok(false);
+                }
                 self.advance_goal(accounting)?;
+                if let Some(route) = switch.and_then(|choice| choice.route) {
+                    self.apply_goal_route(route);
+                }
                 Ok(true)
             }
             Ok(_) => Ok(false),
             Err(error) => {
                 self.deps.goal_service.disarm();
-                *result = Err(ApplicationRunFailure {
+                round.result = Err(ApplicationRunFailure {
                     receipt: None,
                     error: format!("goal progress could not commit after the round: {error}"),
                     turns: accounting.turns,

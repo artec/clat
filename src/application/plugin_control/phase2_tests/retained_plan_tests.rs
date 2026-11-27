@@ -246,6 +246,7 @@ fn retained_plan_check(disabled: &[&str]) {
         WorkflowIntent::CreateGoal {
             objective: "escape plan mode".into(),
             max_tokens: None,
+            handoff: None,
         },
     ] {
         let req = intent(&app, action);

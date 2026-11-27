@@ -12,6 +12,8 @@ pub enum ModelErrorKind {
     Transport,
     /// HTTP 429 — retryable, may carry a `Retry-After` hint.
     RateLimited,
+    /// Provider explicitly reported exhausted account quota.
+    QuotaExhausted,
     /// HTTP 5xx — retryable server failure.
     Server,
     /// Any other HTTP 4xx — not retryable.

@@ -240,6 +240,15 @@ impl SubagentService {
             .unwrap_or_default()
     }
 
+    pub(crate) fn update_model(&self, config: ModelConfig, credentials: ProviderCredentials) {
+        if let Ok(mut inner) = self.inner.lock()
+            && let Some(binding) = &mut inner.binding
+        {
+            binding.config = config;
+            binding.credentials = credentials;
+        }
+    }
+
     pub(crate) fn update_turn(&self, turn: u64) {
         if let Ok(mut inner) = self.inner.lock()
             && let Some(binding) = &mut inner.binding

@@ -81,7 +81,11 @@ impl TrustedProjectApplication {
         self.ensure_execution_allowed()?;
         self.prepare_execution_slot()?;
         // 模型配置检查在前：无模型时立即失败，不为 MCP 白等。
-        let (config, credentials) = self.model_state()?;
+        let (config, credentials) = if goal_round.is_some() {
+            self.goal_execution_route()?
+        } else {
+            self.model_state()?
+        };
         if !config.is_configured() {
             return Err(ApplicationError::new(
                 "model is not configured; configure a model and endpoint first",

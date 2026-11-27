@@ -300,6 +300,7 @@ impl TrustedProjectApplication {
         &mut self,
         objective: &str,
         _max_tokens: Option<u64>,
+        handoff: Option<&crate::goal::HandoffSettings>,
     ) -> Result<Value, String> {
         self.reject_session_switch_while_busy()
             .map_err(|e| e.to_string())?;
@@ -325,16 +326,25 @@ impl TrustedProjectApplication {
         {
             return Err("a workflow handoff is already pending".into());
         }
+        let handoff = handoff
+            .map(|settings| self.prepare_goal_handoff(settings, None))
+            .transpose()?;
         if self.plan_mode_active() {
             self.set_plan_mode(false).map_err(|e| e.to_string())?;
         }
-        self.goal_create(
-            objective,
-            crate::goal::GoalAcceptance::User,
-            Default::default(),
-            false,
-        )
-        .map_err(|e| e.to_string())?;
+        if let Some(handoff) = handoff {
+            self.goal_service()
+                .map_err(|e| e.to_string())?
+                .create_with_handoff(objective, handoff)?;
+        } else {
+            self.goal_create(
+                objective,
+                crate::goal::GoalAcceptance::User,
+                Default::default(),
+                false,
+            )
+            .map_err(|e| e.to_string())?;
+        }
         self.request_workflow_goal(None)?;
         Ok(json!({"pending":true}))
     }

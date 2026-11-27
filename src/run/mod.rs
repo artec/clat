@@ -24,6 +24,8 @@ use state::{EvidenceTracker, StepState};
 use steering::SteeringSealGuard;
 pub(crate) use steering::{PushOutcome, SteeringQueue};
 
+pub(crate) type RequestNotice = Box<dyn FnMut() -> Option<String> + Send>;
+
 pub(crate) struct Run<'a> {
     model: &'a mut dyn Model,
     tools: &'a ToolRegistry,
@@ -33,6 +35,7 @@ pub(crate) struct Run<'a> {
     runtime_context: crate::plugins::services::RuntimeContext,
     dynamic_instructions: Option<std::sync::Arc<dyn crate::plugins::services::DynamicInstructions>>,
     context_manager: Option<Box<dyn RequestContextManager>>,
+    request_notice: Option<RequestNotice>,
     model_options: ModelOptions,
     cancel: CancelToken,
     steering: SteeringQueue,
@@ -72,6 +75,7 @@ impl<'a> Run<'a> {
             runtime_context: Default::default(),
             dynamic_instructions: None,
             context_manager: None,
+            request_notice: None,
             model_options: ModelOptions::default(),
             cancel: CancelToken::new(),
             steering: SteeringQueue::new(),
@@ -82,6 +86,11 @@ impl<'a> Run<'a> {
             capabilities: ModelCapabilities::default(),
             session_id: None,
         }
+    }
+
+    pub(crate) fn with_request_notice(mut self, notice: Option<RequestNotice>) -> Self {
+        self.request_notice = notice;
+        self
     }
 
     pub(crate) fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
@@ -389,6 +398,7 @@ pub struct RunOutput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunError {
+    pub(crate) model_kind: Option<crate::model::ModelErrorKind>,
     message: String,
     turns: usize,
     usage: Usage,
@@ -398,6 +408,7 @@ pub struct RunError {
 impl RunError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            model_kind: None,
             message: message.into(),
             turns: 0,
             usage: Usage::default(),
@@ -412,6 +423,7 @@ impl RunError {
         items: Vec<ModelItem>,
     ) -> Self {
         Self {
+            model_kind: None,
             message: message.into(),
             turns,
             usage,

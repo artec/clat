@@ -628,6 +628,16 @@ impl PluginHostBridge {
         self.notify_context_subscribers(self.host_context().ok());
     }
 
+    pub(crate) fn update_run_model(&self, config: ModelConfig, credentials: ProviderCredentials) {
+        if let Ok(mut slot) = self.context.write()
+            && let Some((_, context)) = slot.as_mut()
+        {
+            context.model_config = config;
+            context.credentials = credentials;
+        }
+        self.notify_context_subscribers(self.host_context().ok());
+    }
+
     /// Publishes the durable session identity and the post-compaction model
     /// surface. The snapshot is detached and bounded before it crosses a
     /// plugin boundary.

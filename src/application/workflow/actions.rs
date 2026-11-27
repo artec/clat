@@ -39,6 +39,13 @@ pub enum WorkflowIntent {
         objective: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handoff: Option<crate::goal::HandoffSettings>,
+    },
+    ConfigureGoalHandoff {
+        id: String,
+        revision: u64,
+        handoff: Option<crate::goal::HandoffSettings>,
     },
     Goal {
         verb: String,
@@ -55,6 +62,7 @@ impl TrustedProjectApplication {
                 | WorkflowIntent::ApproveForGoal { .. }
                 | WorkflowIntent::CreateGoal { .. }
                 | WorkflowIntent::Goal { .. }
+                | WorkflowIntent::ConfigureGoalHandoff { .. }
         ) {
             self.goal_service()?;
         }
@@ -152,7 +160,13 @@ impl TrustedProjectApplication {
             WorkflowIntent::CreateGoal {
                 objective,
                 max_tokens,
-            } => self.workflow_create_goal(objective, *max_tokens),
+                handoff,
+            } => self.workflow_create_goal(objective, *max_tokens, handoff.as_ref()),
+            WorkflowIntent::ConfigureGoalHandoff {
+                id,
+                revision,
+                handoff,
+            } => self.workflow_configure_goal_handoff(id, *revision, handoff.as_ref()),
             WorkflowIntent::Goal {
                 verb,
                 id,

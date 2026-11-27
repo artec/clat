@@ -556,3 +556,52 @@ test('approving a plan links it to the existing paused goal instead of creating 
   expect(continued.goal.goal.limits).toEqual(goal.limits);
   expect(continued.plan_mode).toBe(false);
 });
+
+test('Goal composer saves an ordered model handoff queue with threshold and note', async ({page}) => {
+  await openWorkbench(page, hostInfo('long-stream'));
+  await page.evaluate(async () => {
+    for (const name of ['Handoff B', 'Handoff C']) {
+      await rpc('model.profile.save', {
+        name, model:name, protocol:'open_ai_compatible', endpoint:'https://application-test.invalid',
+        request_path:'/chat/completions',
+      });
+    }
+  });
+  const selection = await page.evaluate(() => state.selectionGeneration);
+  await page.click('.project-group:has(#session-list) [data-action=new-project-session]');
+  await expect.poll(() => page.evaluate(() => state.selectionGeneration), LIVE).not.toBe(selection);
+  await page.click('#composer-add');
+  await page.click('#add-goal');
+  await page.click('#composer-plan-toggle');
+  await page.click('#work-mode-handoff');
+  const dialog = page.locator('dialog[data-kind=edit]');
+  const add = dialog.getByRole('button', {name:'Add to queue'});
+  for (const name of ['Handoff B', 'Handoff C']) {
+    await dialog.locator('select').selectOption(name);
+    await add.click();
+  }
+  await dialog.locator('li').filter({hasText:'Handoff C'}).getByRole('button', {name:'Move up'}).click();
+  await dialog.locator('input[type=number]').fill('15');
+  await dialog.locator('textarea').fill('Continue with the targeted test.');
+  await dialog.locator('[data-role=accept]').click();
+  await page.fill('#prompt', 'Finish the handoff regression');
+  await page.locator('#prompt').press('Enter');
+  await expect.poll(
+    () => page.evaluate(async () => (await rpc('workflow.details', {})).goal.goal?.handoff || null),
+    LIVE
+  ).toMatchObject({threshold:15, note:'Continue with the targeted test.',
+    routes:[expect.any(Object), {profile:'Handoff C'}, {profile:'Handoff B'}]});
+  await page.locator('#composer-goal-pause').click();
+  await expect(page.locator('#composer-goal-start')).toBeEnabled(LIVE);
+  await page.locator('#composer-goal-details').click();
+  await page.locator('#workflow-details').getByRole('button', {name:'Model handoff', exact:true}).click();
+  await expect(dialog.locator('li')).toHaveCount(2);
+  const remove = dialog.getByRole('button', {name:'Remove from queue'});
+  await remove.first().click();
+  await remove.first().click();
+  await dialog.locator('[data-role=accept]').click();
+  await expect.poll(
+    () => page.evaluate(async () => (await rpc('workflow.details', {})).goal.goal?.handoff || null),
+    LIVE
+  ).toBeNull();
+});

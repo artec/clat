@@ -82,6 +82,7 @@ function renderWorkflowGoal(view,goal){
     detail.append(el('p','picker-hint',()=>builtinReason(value,'builtin.goal')));
   }
   detail.append(actions);
+  renderGoalHandoff(view, goal);
   if(goal.lastResult){
     const result=el('div','rich-text workflow-result');
     renderMarkdown(result,goal.lastResult);
@@ -108,4 +109,142 @@ function renderWorkflowGoalFeedback(view,goal){
     if(token!==view.intent||session!==state.sessionId||!view.detail.contains(form))return;
     if(done){view.editing=false;renderWorkflowView(view);}else submit.disabled=retainedPlan(view.value)||!builtinEnabled(view.value,'builtin.goal');
   };
+}
+
+async function configureGoalHandoff(goal, acceptSettings, draft = null) {
+  const modelSettings = await rpc('model.settings.get', {});
+  const queue = goal?.handoff;
+  const current = queue?.routes[queue.position];
+  const available = modelSettings.profiles.filter(name => name !== (current?.profile || modelSettings.active_profile));
+  const profiles = queue?.routes.slice(queue.position + 1).map(route => route.profile) || [...(draft?.profiles || [])];
+  const form = el('div', 'workflow-goal-form');
+  const makeLabel = (key, control) => {
+    const label = el('label', '', () => workflowText(key));
+    label.append(control);
+    return label;
+  };
+  const threshold = el('input');
+  threshold.type = 'number';
+  threshold.min = 1;
+  threshold.max = 99;
+  threshold.required = true;
+  threshold.value = queue?.threshold ?? draft?.threshold ?? 10;
+  const note = el('textarea');
+  note.rows = 2;
+  note.maxLength = 4000;
+  note.value = queue?.note || draft?.note || '';
+  const list = el('ol', 'workflow-handoff-queue');
+  const picker = el('select');
+  const add = el('button', 'secondary', () => workflowText('handoff_add'));
+  add.type = 'button';
+  add.onclick = () => {
+    if (!picker.value) return;
+    profiles.push(picker.value);
+    renderQueue();
+  };
+  function renderQueue() {
+    list.replaceChildren();
+    profiles.forEach((name, index) => {
+      const row = el('li');
+      const move = (offset) => {
+        const target = index + offset;
+        [profiles[index], profiles[target]] = [profiles[target], profiles[index]];
+        renderQueue();
+        list.children[target]?.querySelector('button:not(:disabled)')?.focus();
+      };
+      const up = navigationIcon(() => workflowText('handoff_up'), 'arrow-up', () => move(-1));
+      const down = navigationIcon(() => workflowText('handoff_down'), 'arrow-down', () => move(1));
+      const remove = navigationIcon(() => workflowText('handoff_remove'), 'close', () => {
+        profiles.splice(index, 1);
+        renderQueue();
+        picker.focus();
+      });
+      up.disabled = index === 0;
+      down.disabled = index === profiles.length - 1;
+      row.append(el('span', '', name), up, down, remove);
+      list.append(row);
+    });
+    picker.replaceChildren();
+    for (const name of available.filter(name => !profiles.includes(name))) {
+      const option = el('option', '', name);
+      option.value = name;
+      picker.append(option);
+    }
+    picker.disabled = add.disabled = picker.options.length === 0;
+  }
+  renderQueue();
+  const modelName = current?.model || modelSettings.current.model;
+  form.append(
+    el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_current', {model:modelName})),
+    el('p', 'picker-hint', () => workflowText('handoff_consent')),
+    makeLabel('handoff_candidates', picker), add, list,
+    makeLabel('handoff_threshold', threshold), makeLabel('handoff_note', note)
+  );
+  const result = await CLATDialog.edit(() => workflowText('handoff_models'), form, () => {
+    if (!threshold.reportValidity()) return undefined;
+    return profiles.length ? {profiles:[...profiles], threshold:threshold.valueAsNumber, note:note.value} : null;
+  });
+  if (result !== undefined) await acceptSettings(result);
+}
+
+function renderGoalHandoff(view, goal) {
+  const queue = goal.handoff;
+  if (queue) {
+    const current = queue.routes[queue.position].model;
+    const remaining = queue.routes.slice(queue.position + 1).map(route => route.profile).join(' → ');
+    view.detail.append(el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_current', {model:current})));
+    if (remaining) view.detail.append(el('p', 'picker-hint', () => CLATI18n.msg('workflow.handoff_remaining', {models:remaining})));
+  }
+  for (const entry of goal.handoffRecords || []) {
+    view.detail.append(goalHandoffRecord(entry));
+  }
+  if (goal.phase !== 'complete' && builtinEnabled(view.value, 'builtin.goal')) {
+    const owner = [state.sessionId, state.selectionGeneration, state.stream];
+    const current = () => owner[0] === state.sessionId && owner[1] === state.selectionGeneration &&
+      owner[2] === state.stream && toolViewIsOpen(view.page);
+    view.detail.append(workflowViewButton(view, 'handoff_models', async () => {
+      try {
+        await configureGoalHandoff(goal, handoff => current() && view.act({
+          action:'configure_goal_handoff', id:goal.id, revision:goal.revision, handoff
+        }));
+      } catch (error) {
+        if (current()) CLATI18n.bind(view.status, 'textContent', () => error.message);
+      }
+    }, view.value.busy || view.value.goal.armed || Boolean(view.value.handoff)));
+  }
+}
+
+function goalHandoffRecord(entry) {
+  const result = el('details', 'workflow-handoff-record');
+  result.append(el('summary', '', () => entry.to
+    ? CLATI18n.msg('workflow.handoff_transferred', {from:entry.from, to:entry.to})
+    : CLATI18n.msg('workflow.handoff_paused', {from:entry.from})));
+  result.append(el('p', '', () => entry.allowance
+    ? CLATI18n.msg(entry.allowance.windowHours ? 'workflow.handoff_window_low' : 'workflow.handoff_low', {
+      percent:entry.allowance.remaining, hours:entry.allowance.windowHours
+    })
+    : workflowText('handoff_exhausted')));
+  if (entry.summary) result.append(el('p', '', entry.summary));
+  for (const [model, code] of entry.skipped) {
+    result.append(el('p', '', () => CLATI18n.msg('workflow.handoff_skipped', {model,reason:workflowText('handoff_' + code.replaceAll('-', '_'))})));
+  }
+  return result;
+}
+
+function syncGoalHandoffTranscript() {
+  const goal = composerWorkflow()?.goal?.goal;
+  const records = goal?.handoffRecords || [];
+  const displayed = new Map([...dom.transcript.querySelectorAll('[data-goal-handoff]')]
+    .map(node => [node.dataset.goalHandoff, node]));
+  for (const entry of records) {
+    const id = goal.id + ':' + entry.turn;
+    if (displayed.delete(id)) continue;
+    const node = goalHandoffRecord(entry);
+    node.dataset.goalHandoff = id;
+    const turnEnd = [...dom.transcript.querySelectorAll('[data-event="turn_ended"][data-turn]')]
+      .find(row => Number(row.dataset.turn) === entry.turn);
+    if (turnEnd) turnEnd.after(node);
+    else appendTranscript(node);
+  }
+  for (const node of displayed.values()) node.remove();
 }

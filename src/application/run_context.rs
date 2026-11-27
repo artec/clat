@@ -196,7 +196,7 @@ impl TrustedProjectApplication {
     }
 }
 
-fn route_header(config: &ModelConfig) -> serde_json::Map<String, Value> {
+pub(super) fn route_header(config: &ModelConfig) -> serde_json::Map<String, Value> {
     let mut header = serde_json::Map::new();
     let mut config_json = serde_json::Map::new();
     config_json.insert("provider".into(), json!(config.protocol.to_string()));
@@ -338,7 +338,7 @@ impl InstructionLayers {
     }
 }
 
-fn serving_model(config: &ModelConfig) -> ServingModel {
+pub(super) fn serving_model(config: &ModelConfig) -> ServingModel {
     super::dto::matching_preset(config).map_or_else(
         || ServingModel {
             name: config.model.clone(),

@@ -114,17 +114,18 @@ impl GoalRunPort {
             .ok_or("goal execution binding is absent")?
             .next_round()
     }
-    pub(super) fn finish_round(
+    pub(super) fn settle_handoff_round(
         &self,
         tokens: u64,
         elapsed: std::time::Duration,
         succeeded: bool,
         cancelled: bool,
         text: &str,
+        handoff: Option<(usize, crate::goal::HandoffRecord)>,
     ) -> Result<crate::goal::GoalContinuation, String> {
         self.0
             .as_ref()
             .ok_or("goal execution binding is absent")?
-            .finish_round(tokens, elapsed, succeeded, cancelled, text)
+            .settle_round(tokens, elapsed, succeeded, cancelled, text, handoff)
     }
 }

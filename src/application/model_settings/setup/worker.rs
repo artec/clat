@@ -72,7 +72,7 @@ pub(super) fn check(
         )
         .map_err(|error| match error.kind() {
             ModelErrorKind::Authentication => "setup.authentication",
-            ModelErrorKind::RateLimited => "setup.rate_limited",
+            ModelErrorKind::RateLimited | ModelErrorKind::QuotaExhausted => "setup.rate_limited",
             ModelErrorKind::Transport => "setup.network",
             ModelErrorKind::Client => "setup.request_rejected",
             ModelErrorKind::Request => "setup.invalid",

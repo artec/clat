@@ -6,6 +6,7 @@ use crate::test_support::{
     CountingApprover, SharedEvents, TestBehavior, TestModelScript, TestProviderPlugin,
     configure_test_model, roots,
 };
+use crate::{ModelConfig, ProviderCredentials};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -601,4 +602,335 @@ fn provider_cancelled_round_disarms_without_starting_another_round() {
     assert!(!restored.armed);
     reopened.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
+}
+
+#[derive(Clone, Copy)]
+enum HandoffTrigger {
+    Warn,
+    Exhausted,
+    OrdinaryLimit,
+    Chain,
+    Stop,
+}
+
+struct HandoffQuota {
+    samples: AtomicUsize,
+    second_samples: AtomicUsize,
+    stop: Arc<Mutex<Option<crate::CancelToken>>>,
+    trigger: HandoffTrigger,
+    all_unavailable: bool,
+}
+
+impl crate::plugins::services::MonitorService for HandoffQuota {
+    fn goal_allowance(
+        &self,
+        config: &ModelConfig,
+        _: &ProviderCredentials,
+        _: bool,
+    ) -> crate::providers::ProviderAllowance {
+        use crate::providers::{AllowanceItem, ProviderAllowance};
+        let percent = match config.model.as_str() {
+            "deterministic" => {
+                let calls = self.samples.fetch_add(1, Ordering::SeqCst);
+                if matches!(
+                    self.trigger,
+                    HandoffTrigger::Warn | HandoffTrigger::Chain | HandoffTrigger::Stop
+                ) && calls > 0
+                {
+                    "12"
+                } else {
+                    "18"
+                }
+            }
+            "unknown" if matches!(self.trigger, HandoffTrigger::Chain) => {
+                if self.second_samples.fetch_add(1, Ordering::SeqCst) == 0 {
+                    "98"
+                } else {
+                    "11"
+                }
+            }
+            "unknown" if matches!(self.trigger, HandoffTrigger::Stop) => {
+                self.stop.lock().unwrap().take().unwrap().cancel();
+                "98"
+            }
+            "unknown" => return ProviderAllowance::state("failed"),
+            "backup" if self.all_unavailable => "10",
+            "backup" => "98",
+            _ => panic!("unexpected model"),
+        };
+        ProviderAllowance {
+            status: "available".into(),
+            updated_at: Some(1_790_000_000_000),
+            items: vec![AllowanceItem {
+                kind: "quota".into(),
+                value: percent.into(),
+                unit: Some("%".into()),
+                window_hours: Some(5),
+                reset_at: Some(1_790_000_100_000),
+            }],
+            auth: None,
+        }
+    }
+    fn configure(&self, _: ModelConfig, _: ProviderCredentials) {}
+    fn subscribe(&self, _: mpsc::Sender<ApplicationEvent>) {}
+    fn refresh(&self) {}
+    fn refresh_account(&self, _: &ModelConfig, _: &ProviderCredentials) {}
+}
+
+struct GoalHandoffScript {
+    stop: Arc<Mutex<Option<crate::CancelToken>>>,
+    step: AtomicUsize,
+    trigger: HandoffTrigger,
+    all_unavailable: bool,
+}
+impl TestModelScript for GoalHandoffScript {
+    fn stream(
+        &self,
+        request: crate::ModelRequest<'_>,
+        _: &mut dyn crate::ModelEventSink,
+    ) -> Result<crate::ModelResponse, crate::ModelError> {
+        use crate::model::ModelErrorKind;
+        if request.tools.is_empty() {
+            return Ok(response("Summary", crate::FinishReason::Completed, 1, 1));
+        }
+        let step = self.step.fetch_add(1, Ordering::SeqCst);
+        let tail = request.options.request_tail.as_deref().unwrap_or("");
+        let source = request.items.iter().any(|item| {
+            matches!(item, crate::ModelItem::User { content } if content.iter().any(
+                |part| matches!(part, crate::ContentPart::Text(text) if text.contains("User handoff note: keep the test narrow"))
+            ))
+        });
+        if source {
+            if matches!(self.trigger, HandoffTrigger::Chain) {
+                if goal_round(request.items, 3) {
+                    assert!(tail.contains(r#""id":"backup""#));
+                    assert!(format!("{:?}", request.items).contains("second stage done"));
+                    return Err(crate::ModelError::request("stop chain test"));
+                }
+                assert!(tail.contains(r#""id":"unknown""#));
+                assert!(tail.contains("11% remaining"));
+                return Ok(goal_tool("handoff", 3, "second stage done"));
+            }
+            if request.items.iter().any(|item| {
+                matches!(item, crate::ModelItem::ToolResult(result)
+                if result.call_id.starts_with("blocked-"))
+            }) {
+                return Ok(response(
+                    "paused for review",
+                    crate::FinishReason::Completed,
+                    4,
+                    1,
+                ));
+            }
+            assert!(!self.all_unavailable);
+            assert!(goal_round(request.items, 2));
+            assert!(tail.contains(r#""id":"backup""#));
+            if matches!(self.trigger, HandoffTrigger::Warn) {
+                assert!(!request.tools.iter().any(|tool| tool.name == "view_image"));
+                assert!(format!("{:?}", request.items).contains("first edit done"));
+            }
+            return Ok(goal_tool(
+                "blocked",
+                2 + u64::from(matches!(self.trigger, HandoffTrigger::Warn)),
+                "ready for review",
+            ));
+        }
+        match (self.trigger, step) {
+            (HandoffTrigger::Warn | HandoffTrigger::Chain | HandoffTrigger::Stop, 0) => {
+                assert!(!tail.contains("allowance is low"));
+                assert!(goal_round(request.items, 1));
+                Ok(goal_tool("progress", 1, "first edit done"))
+            }
+            (HandoffTrigger::Warn | HandoffTrigger::Chain | HandoffTrigger::Stop, 1) => {
+                if matches!(self.trigger, HandoffTrigger::Stop) {
+                    *self.stop.lock().unwrap() = Some(request.cancel.clone());
+                }
+                assert!(tail.contains("5 h: 12% remaining"));
+                assert!(tail.contains("resets at 2026-"));
+                assert!(!goal_round(request.items, 2));
+                Ok(goal_tool("handoff", 2, "first edit done, run tests next"))
+            }
+            (HandoffTrigger::Exhausted, 0) => Err(crate::ModelError::with_kind(
+                ModelErrorKind::QuotaExhausted,
+                "provider quota exhausted",
+            )),
+            (HandoffTrigger::OrdinaryLimit, _) => Err(crate::ModelError::with_kind(
+                ModelErrorKind::RateLimited,
+                "ordinary rate limit",
+            )
+            .with_retry_hint(crate::model::RetryHint {
+                retry_after: std::time::Duration::ZERO,
+            })),
+            _ => panic!("unexpected extra model request {step}"),
+        }
+    }
+}
+
+fn goal_tool(operation: &str, revision: u64, summary: &str) -> crate::ModelResponse {
+    let mut result = response("", crate::FinishReason::ToolCalls, 7, 2);
+    result.tool_calls.push(crate::ToolCall {
+        id: format!("{operation}-{revision}"),
+        name: "update_goal".into(),
+        arguments: json!({"operation":operation, "expected_revision":revision, "summary":summary}),
+    });
+    result
+}
+
+fn exercise_goal_handoff(trigger: HandoffTrigger, all_unavailable: bool) {
+    let (storage, root) = roots("goal-handoff");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = Project::new(&root);
+    let stop = Arc::new(Mutex::new(None));
+    let script = Arc::new(GoalHandoffScript {
+        stop: stop.clone(),
+        step: AtomicUsize::new(0),
+        trigger,
+        all_unavailable,
+    });
+    let mut app = BootstrapApplication::open(project.clone(), storage.clone())
+        .unwrap()
+        .with_permission_modes()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Scripted(script.clone()),
+        }))
+        .unwrap();
+    configure_test_model(&app);
+    app.monitor = Some(Arc::new(HandoffQuota {
+        samples: AtomicUsize::new(0),
+        second_samples: AtomicUsize::new(0),
+        stop,
+        trigger,
+        all_unavailable,
+    }));
+    let (config, keys) = app.model_state().unwrap();
+    for profile in ["unknown", "backup"] {
+        let mut candidate = ModelConfig {
+            model: profile.into(),
+            ..config.clone()
+        };
+        if matches!(trigger, HandoffTrigger::Warn) && profile == "backup" {
+            candidate.capabilities = Default::default();
+        }
+        app.save_model_profile(profile, &candidate, &keys).unwrap();
+    }
+    let settings = crate::goal::HandoffSettings {
+        profiles: vec!["unknown".into(), "backup".into()],
+        threshold: 15,
+        note: "keep the test narrow".into(),
+    };
+    let queue = app.prepare_goal_handoff(&settings, None).unwrap();
+    let created = app
+        .goal_service()
+        .unwrap()
+        .create_with_handoff("Finish the work", queue)
+        .unwrap();
+    app.goal_arm(created.state.revision).unwrap();
+    let (completion, result) = mpsc::channel();
+    let (handle, _) = app
+        .start_goal_run(ApplicationRunRequest {
+            message: crate::message::PendingMessage::text(""),
+            approver: Arc::new(CountingApprover(Arc::new(AtomicUsize::new(0)))),
+            asker: None,
+            events: Box::new(Vec::<crate::RunEvent>::new()),
+            completion,
+        })
+        .unwrap();
+    handle.join().unwrap();
+    let done = result.recv_timeout(crate::test_support::HANG).unwrap();
+    let view = app.goal().unwrap().unwrap();
+    let records = &view.state.handoff_records;
+    assert_eq!(view.state.id, created.state.id);
+    assert!(!view.armed);
+    assert_eq!(app.model_state().unwrap().0.model, "deterministic");
+    if matches!(trigger, HandoffTrigger::OrdinaryLimit) {
+        assert!(done.is_err());
+        assert!(records.is_empty());
+        assert_eq!(view.state.rounds_started, 1);
+    } else if matches!(trigger, HandoffTrigger::Chain) {
+        assert!(done.unwrap_err().error.contains("stop chain test"));
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.to.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("unknown"), Some("backup")]
+        );
+        assert_eq!(view.state.rounds_started, 3);
+        assert_eq!(script.step.load(Ordering::SeqCst), 4);
+    } else if matches!(trigger, HandoffTrigger::Stop) {
+        assert!(records.is_empty());
+        assert_eq!(view.state.rounds_started, 1);
+        assert_eq!(script.step.load(Ordering::SeqCst), 2);
+    } else {
+        assert!(done.is_ok(), "{done:?}");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].skipped[0],
+            ("unknown".into(), "quota-unknown".into())
+        );
+        if all_unavailable {
+            assert_eq!(view.state.phase, GoalPhase::Paused);
+            assert!(records[0].to.is_none());
+            assert_eq!(script.step.load(Ordering::SeqCst), 2);
+        } else {
+            assert_eq!(view.state.phase, GoalPhase::Blocked);
+            assert_eq!(records[0].to.as_deref(), Some("backup"));
+            assert_eq!(view.state.handoff.as_ref().unwrap().position, 2);
+            assert_eq!(
+                script.step.load(Ordering::SeqCst),
+                if matches!(trigger, HandoffTrigger::Warn) {
+                    4
+                } else {
+                    3
+                }
+            );
+        }
+    }
+    app.close().unwrap();
+    let reopened = crate::test_support::reopen_after_close(|| {
+        BootstrapApplication::open(project.clone(), storage.clone())
+            .unwrap()
+            .with_permission_modes()
+            .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                behavior: TestBehavior::Success,
+            }))
+    });
+    let restored = reopened.goal().unwrap().unwrap();
+    assert_eq!(restored.state, view.state);
+    assert!(!restored.armed);
+    if records.last().is_some_and(|record| record.to.is_some()) {
+        assert_eq!(reopened.goal_execution_route().unwrap().0.model, "backup");
+    }
+    reopened.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
+#[test]
+fn goal_handoff_warns_between_tools_and_skips_unknown_candidate() {
+    exercise_goal_handoff(HandoffTrigger::Warn, false);
+}
+
+#[test]
+fn goal_handoff_pauses_when_no_candidate_has_enough_quota() {
+    exercise_goal_handoff(HandoffTrigger::Warn, true);
+}
+
+#[test]
+fn goal_handoff_handles_typed_quota_exhaustion_without_last_model_turn() {
+    exercise_goal_handoff(HandoffTrigger::Exhausted, false);
+}
+
+#[test]
+fn goal_handoff_leaves_ordinary_rate_limit_as_failure() {
+    exercise_goal_handoff(HandoffTrigger::OrdinaryLimit, false);
+}
+
+#[test]
+fn goal_handoff_advances_from_second_to_third_model() {
+    exercise_goal_handoff(HandoffTrigger::Chain, false);
+}
+
+#[test]
+fn goal_handoff_cancellation_during_candidate_check_cannot_start_the_candidate() {
+    exercise_goal_handoff(HandoffTrigger::Stop, false);
 }

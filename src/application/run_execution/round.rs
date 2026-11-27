@@ -21,6 +21,7 @@ struct ExecutionOutcome {
 pub(super) struct SettledRound {
     pub(super) result: ApplicationRunResult,
     pub(super) cancelled: bool,
+    pub(super) model_kind: Option<crate::model::ModelErrorKind>,
     execution: RoundExecution,
 }
 impl SettledRound {
@@ -43,10 +44,22 @@ impl RoundExecution {
             );
         }
         let cancelled = outcome.cancelled;
-        let result = execution.finish(worker, outcome);
+        let model_kind =
+            if outcome.process_bind_error.is_none() && outcome.process_cleanup_error.is_none() {
+                outcome
+                    .outcome
+                    .as_ref()
+                    .and_then(|result| result.as_ref().err())
+                    .and_then(|failure| failure.error.model_kind)
+            } else {
+                None
+            };
+        let (result, durable) = execution.finish(worker, outcome);
+        let model_kind = model_kind.filter(|_| durable);
         SettledRound {
             result,
             cancelled,
+            model_kind,
             execution,
         }
     }
@@ -169,6 +182,7 @@ impl RoundExecution {
             worker.deps.agent.execute(AgentRequest {
                 runtime: worker.deps.target.as_ref().map(|t| t.runtime.clone()),
                 context_manager: self.context_manager(worker),
+                request_notice: worker.goal_request_notice(),
                 config: worker.deps.config.clone(),
                 spend_ledger: Some(Arc::clone(&self.spend_ledger)),
                 credentials: worker.deps.credentials.clone(),
@@ -212,7 +226,11 @@ impl RoundExecution {
             history_changed: false,
         }))
     }
-    fn finish(&self, worker: &mut RunWorker, outcome: ExecutionOutcome) -> ApplicationRunResult {
+    fn finish(
+        &self,
+        worker: &mut RunWorker,
+        outcome: ExecutionOutcome,
+    ) -> (ApplicationRunResult, bool) {
         let task_error = worker
             .deps
             .task_service
@@ -232,10 +250,13 @@ impl RoundExecution {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .prepare_terminal(outcome.cancelled);
             worker.task_terminal = Some(Arc::clone(&self.recorder));
-            return outcome.into_result(
-                error
-                    .map(|e| format!("session journal failed: {e}"))
-                    .or(task_error),
+            return (
+                outcome.into_result(
+                    error
+                        .map(|e| format!("session journal failed: {e}"))
+                        .or(task_error),
+                ),
+                false,
             );
         }
         let (finish_error, published) = self
@@ -260,7 +281,8 @@ impl RoundExecution {
         if let Some(header) = worker.deps.sessions.last_request_header() {
             worker.durable_request_header.header = header;
         }
-        outcome.into_result(journal_error.or(task_error))
+        let durable = journal_error.is_none() && task_error.is_none();
+        (outcome.into_result(journal_error.or(task_error)), durable)
     }
 }
 impl ExecutionOutcome {

@@ -44,6 +44,20 @@ impl CapabilityView {
             model: access.is_some(),
         }
     }
+    pub(crate) fn restricted_to(&self, access: &ToolAccessPolicy) -> Self {
+        Self {
+            revision: self.revision,
+            id: uuid::Uuid::new_v4().to_string(),
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| access.allows(&entry.definition))
+                .cloned()
+                .collect(),
+            model: self.model,
+        }
+    }
+
     pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = self
             .entries

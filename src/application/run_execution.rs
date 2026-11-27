@@ -10,6 +10,7 @@ use super::run_admission::{PreparedRun, committed_error};
 use super::run_context::RunContextSnapshot;
 use super::run_lifecycle::{ApplicationRunDone, ApplicationRunFailure, ApplicationRunResult};
 use super::title::AutotitleJob;
+pub(super) mod goal_handoff;
 mod preparation;
 mod round;
 mod terminal;
@@ -205,6 +206,7 @@ struct RunWorkerDeps {
     run_scope: super::composition::MountedRunScope,
     sessions: Arc<crate::session::use_cases::SessionService>,
     agent: Arc<dyn crate::plugins::services::AgentRuntime>,
+    providers: Arc<crate::plugins::services::ProviderRegistry>,
     process_service: Arc<crate::process::ProcessService>,
     jobs: Option<Arc<crate::background_jobs::JobRegistry>>,
     monitor: Option<Arc<dyn crate::plugins::services::MonitorService>>,
@@ -621,6 +623,7 @@ impl RunWorkerDeps {
             run_scope: resources.run_scope,
             sessions: Arc::clone(&app.sessions),
             agent: Arc::clone(&app.agent),
+            providers: Arc::clone(&app.providers),
             process_service: Arc::clone(&app.process_service),
             jobs: app.jobs.clone(),
             monitor: app.monitor.clone(),

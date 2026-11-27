@@ -122,17 +122,21 @@ struct UpdateGoalTool {
 }
 
 impl Tool for UpdateGoalTool {
+    fn ends_run(&self, output: &Value) -> bool {
+        output["handoff_requested"] == true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "update_goal".into(),
-            description: "Update the current durable goal using revision/CAS. The model may record progress, report a blocker, or submit a completion candidate. Completion succeeds only when the pre-registered read-only verifier passes; user-only goals stop at a completion candidate and await explicit human acceptance."
+            description: "Update the current durable goal using revision/CAS. The model may record progress, report a blocker, or submit a completion candidate. When CLAT reports low allowance and the user has authorized model handoff, use handoff to pass the Goal to the next candidate. For handoff, summary may be empty. Completion succeeds only when the pre-registered read-only verifier passes; user-only goals stop at a completion candidate and await explicit human acceptance."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "operation": {"type": "string", "enum": ["progress", "blocked", "complete"]},
+                    "operation": {"type": "string", "enum": ["progress", "blocked", "complete", "handoff"]},
                     "expected_revision": {"type": "integer", "minimum": 1},
-                    "summary": {"type": "string", "minLength": 1, "maxLength": 16384},
+                    "summary": {"type": "string", "maxLength": 16384},
                     "code": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"}
                 },
                 "required": ["operation", "expected_revision", "summary"],
@@ -161,6 +165,12 @@ impl Tool for UpdateGoalTool {
             .get("summary")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::new("update_goal requires summary"))?;
+        if operation == "handoff" {
+            self.service
+                .request_handoff(revision, summary)
+                .map_err(ToolError::new)?;
+            return Ok(json!({"handoff_requested": true}));
+        }
         let view = match operation {
             "progress" => self.service.update_progress(revision, summary),
             "blocked" => self.service.block(

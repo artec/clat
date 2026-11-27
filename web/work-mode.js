@@ -53,7 +53,7 @@ async function submitComposerGoal() {
   try {
     if (!await modelSetup.ensure() || !composerOwns(owner) || draft !== composerGoalDraft ||
         generation !== state.composerGeneration || value.session !== state.sessionId) return;
-    const intent = {action:'create_goal', objective};
+    const intent = {action:'create_goal', objective, handoff:draft.handoff || null};
     const result = await sendWorkflowIntent(intent, value);
     if (result !== undefined) settleComposerGoalDraft(owner, generation, draft);
   } catch (error) {
@@ -206,6 +206,26 @@ function installWorkModeMenu(trigger) {
     }
     syncWorkModeRows(popup, value);
     if(retainedPlan(value))popup.append(el('p','picker-hint',()=>CLATI18n.msg('extension.retained_plan')));
+    if (composerGoalDraft) {
+      const draft = composerGoalDraft, owner = composerScope;
+      const count = draft.handoff?.profiles.length || 0;
+      popup.append(shellButton('work-mode-handoff','settings',() => count
+        ? CLATI18n.msg('workflow.handoff_configured', {count}) : workflowText('handoff_models'), async () => {
+        controller.close();
+        try {
+          await configureGoalHandoff(null, settings => {
+            if (composerOwns(owner) && composerGoalDraft === draft) {
+              draft.handoff = settings;
+              state.composerGeneration++;
+              syncInteractionControls();
+              dom.prompt.focus();
+            }
+          }, draft.handoff);
+        } catch (error) {
+          if (composerOwns(owner)) updateRunState(error.message);
+        }
+      },false));
+    }
     popup.append(shellButton('work-mode-details','tools',()=>workflowText('open_workflow'),()=>{controller.close();workflowController.open();},false));
   }
   controller=attachComposerPopup(trigger,trigger,popup,render,'left');trigger.addEventListener('click',()=>controller.toggle());

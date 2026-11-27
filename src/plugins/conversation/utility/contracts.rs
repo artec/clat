@@ -99,7 +99,8 @@ pub(crate) fn request_failure_kind(kind: crate::model::ModelErrorKind) -> &'stat
         crate::model::ModelErrorKind::ContextCapacity => "context_capacity",
         crate::model::ModelErrorKind::ImageCapacity => "image_capacity",
         crate::model::ModelErrorKind::Transport => "transport",
-        crate::model::ModelErrorKind::RateLimited => "rate-limited",
+        crate::model::ModelErrorKind::RateLimited
+        | crate::model::ModelErrorKind::QuotaExhausted => "rate-limited",
         crate::model::ModelErrorKind::Server => "server",
         crate::model::ModelErrorKind::Client => "client",
         crate::model::ModelErrorKind::Authentication => "authentication",

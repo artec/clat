@@ -210,7 +210,7 @@ impl OpenAiModel {
             // 短路为 Cancelled 响应，不把半截诊断当 429 上抛。
             super::CancellingBodyRead::Cancelled => return Ok(None),
         };
-        let kind = super::capacity::from_body(&body, kind);
+        let kind = super::capacity::from_body(&body, super::quota_error_kind(&body, kind));
         let mut error = ModelError::with_kind(
             kind,
             format!(

@@ -155,6 +155,7 @@ pub(in crate::application::plugin_control) fn ordinary_goal(app: &mut TrustedPro
         WorkflowIntent::CreateGoal {
             objective: "bounded offline work".into(),
             max_tokens: None,
+            handoff: None,
         },
     );
     let result = app.workflow_action(req.clone()).unwrap();
