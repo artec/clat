@@ -41,39 +41,79 @@ impl SummaryRun<'_> {
         system: &str,
     ) -> Result<String, crate::i18n::PresentedText> {
         let mut summaries = Vec::new();
+        let mut batch = Vec::new();
+        let mut tokens = 0;
+        let mut batch_images = 0u64;
+        let mut batch_bytes = 0u64;
+        let tools = self.tools.clone();
+        let system = (!system.is_empty()).then_some(system);
         for item in region {
-            let images = crate::model::model_item_image_parts(item)
-                .cloned()
-                .collect::<Vec<_>>();
-            let rendered = render_group(&[std::slice::from_ref(item)]);
-            let image_items = [ModelItem::User {
-                content: images.clone(),
-            }];
-            let visual_cost =
-                crate::model::estimate_request_tokens(None, &image_items, &[]) as usize;
-            let budget = self
-                .input_budget()
-                .checked_sub(visual_cost)
-                .filter(|n| *n >= 64)
-                .ok_or("summary images exceed model capacity")?;
-            let units = chunks::text_units(&rendered, budget);
-            for (index, text) in units.into_iter().enumerate() {
-                let mut content = vec![crate::model::ContentPart::Text(text)];
-                if index == 0 {
-                    content.extend(images.clone());
-                }
-                summaries.push(self.request_items(
-                    vec![ModelItem::User { content }],
-                    (!system.is_empty()).then_some(system),
-                    &self.tools.clone(),
-                )?);
+            if self.cancelled() {
+                return Err(crate::i18n::UiMessage::new("compaction.cancelled").into());
             }
+            for part in self.multimodal_parts(item)? {
+                let (images, bytes, _) =
+                    crate::model::image_projection_totals(std::slice::from_ref(&part));
+                let cost = estimate_item(&part);
+                let exceeds_images = images > 0
+                    && batch_images > 0
+                    && (batch_images.saturating_add(images)
+                        > crate::model::ImageProjectionBudget::MAX_REQUEST_IMAGES as u64
+                        || batch_bytes.saturating_add(bytes)
+                            > crate::model::ImageProjectionBudget::MAX_REQUEST_IMAGE_BYTES);
+                if !batch.is_empty() && (tokens + cost > self.input_budget() || exceeds_images) {
+                    summaries.push(self.request_items(
+                        std::mem::take(&mut batch),
+                        system,
+                        &tools,
+                    )?);
+                    tokens = 0;
+                    batch_images = 0;
+                    batch_bytes = 0;
+                }
+                batch.push(part);
+                tokens += cost;
+                batch_images += images;
+                batch_bytes = batch_bytes.saturating_add(bytes);
+            }
+        }
+        if !batch.is_empty() {
+            summaries.push(self.request_items(batch, system, &tools)?);
+        }
+        if summaries.len() == 1 {
+            return Ok(summaries.remove(0));
         }
         let merged = summaries
             .into_iter()
             .map(ModelItem::user_text)
             .collect::<Vec<_>>();
         self.summarize(&merged, true)
+    }
+    fn multimodal_parts(
+        &self,
+        item: &ModelItem,
+    ) -> Result<Vec<ModelItem>, crate::i18n::PresentedText> {
+        let mut images: Vec<_> = crate::model::model_item_image_parts(item)
+            .cloned()
+            .collect();
+        let visual_cost = estimate_item(&ModelItem::User {
+            content: images.clone(),
+        });
+        let budget = self
+            .input_budget()
+            .checked_sub(visual_cost)
+            .filter(|n| *n >= 64)
+            .ok_or("summary images exceed model capacity")?;
+        let rendered = render_group(&[std::slice::from_ref(item)]);
+        Ok(chunks::text_units(&rendered, budget)
+            .into_iter()
+            .map(|text| {
+                let mut content = vec![crate::model::ContentPart::Text(text)];
+                // Retain the original images once, with the first fragment of their message.
+                content.append(&mut images);
+                ModelItem::User { content }
+            })
+            .collect())
     }
     pub(super) fn request_items(
         &mut self,

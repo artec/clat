@@ -202,10 +202,6 @@ impl RoundExecution {
             journal: Arc::clone(&worker.input.journal),
             recorder: Arc::clone(&self.recorder),
             config: worker.deps.config.clone(),
-            short_replies: worker.deps.target.is_none()
-                && !worker.goal_mode
-                && worker.task_run.is_none()
-                && worker.context.short_replies,
             credentials: worker.deps.credentials.clone(),
             cancel: worker.deps.cancel.clone(),
             turn: worker.input.turn,

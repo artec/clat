@@ -255,10 +255,8 @@ impl<'a> Run<'a> {
             if self.cancel.is_cancelled() {
                 return Ok(state.cancel(events, &self.steering, String::new()));
             }
-            let item_count = state.items.len();
             self.claim_steering(&mut state, events)?;
-            let tune_initial = state.turn == 1 && item_count == state.items.len();
-            let request = match self.prepare_request(&mut state, tune_initial) {
+            let request = match self.prepare_request(&mut state) {
                 Ok(request) => request,
                 Err(error) => return Err(state.fail(events, &self.steering, error)),
             };

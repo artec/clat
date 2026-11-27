@@ -654,6 +654,32 @@ fn model(script: Script) -> (GitModel, Box<dyn Send>) {
     )
 }
 #[test]
+fn development_git_keeps_middle_of_staged_patch_that_fits_model() {
+    let f = Fixture::new();
+    f.repository();
+    let half = "ordinary source line\n".repeat(1800);
+    fs::write(
+        f.project.join("file.txt"),
+        format!("{half}MIDDLE_CHANGE\n{half}"),
+    )
+    .unwrap();
+    f.git(&["add", "--", "file.txt"]);
+    let (mut provider, _lease) = model(Arc::new(|request| {
+        if format!("{:?}", request.items).contains("MIDDLE_CHANGE") {
+            "Complete evidence".into()
+        } else {
+            "Missing middle".into()
+        }
+    }));
+    provider.config.max_context_tokens = Some(32_768);
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+        Some(provider),
+    );
+    assert_eq!(row["message"], "Complete evidence", "{row}");
+}
+
+#[test]
 fn development_git_large_staged_patch_uses_one_model_request() {
     let f = Fixture::new();
     f.repository();

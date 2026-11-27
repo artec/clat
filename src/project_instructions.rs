@@ -2,6 +2,7 @@
 
 use crate::Project;
 use crate::plugins::services::{DynamicInstructions, InstructionSnapshot, InstructionSourceInfo};
+use crate::providers::MAX_PROVIDER_REQUEST_BODY_BYTES;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -9,8 +10,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 const CANDIDATES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
-const MAX_SOURCE_BYTES: usize = 64 * 1024;
-const MAX_TOTAL_BYTES: usize = 128 * 1024;
 const MAX_OBSERVED_PATHS_PER_TOOL: usize = 256;
 const MAX_TRACKED_SCOPES: usize = 1024;
 const MAX_DISCOVERED_DIRECTORIES: usize = 4096;
@@ -135,37 +134,29 @@ impl ProjectInstructionService {
         target_scopes: &BTreeSet<PathBuf>,
     ) -> Result<Option<InstructionSnapshot>, String> {
         let directories = ancestor_directories(target_scopes)?;
-        // Budget from the most-specific end, then restore root→child order.
         let mut selected = Vec::new();
-        let mut used = 0usize;
-        for directory in directories.iter().rev() {
-            let Some(source) = self.read_scope(directory)? else {
-                continue;
-            };
-            let cost = source
-                .text
-                .len()
-                .saturating_add(source.path.len())
-                .saturating_add(source.scope.len())
-                .saturating_add(256);
-            if used.saturating_add(cost) > MAX_TOTAL_BYTES {
-                continue;
+        let mut remaining = MAX_PROVIDER_REQUEST_BODY_BYTES;
+        for directory in &directories {
+            if let Some(source) = self.read_scope(directory, remaining)? {
+                remaining -= source.text.len();
+                selected.push(source);
             }
-            used += cost;
-            selected.push(source);
         }
-        selected.reverse();
         Ok(render_snapshot(&selected))
     }
 
-    fn read_scope(&self, directory: &Path) -> Result<Option<SourceDocument>, String> {
+    fn read_scope(
+        &self,
+        directory: &Path,
+        remaining: usize,
+    ) -> Result<Option<SourceDocument>, String> {
         #[cfg(test)]
         crate::test_support::execution_observation::record("instructions.read");
         for candidate in CANDIDATES {
             let relative = directory.join(candidate);
             let bytes = self
                 .project
-                .read_file_limited(&relative, MAX_SOURCE_BYTES + 1)
+                .read_file_limited(&relative, remaining + 1)
                 .map_err(|error| {
                     format!(
                         "project instructions: `{}`: {error}",
@@ -175,7 +166,18 @@ impl ProjectInstructionService {
             let Some(bytes) = bytes else {
                 continue;
             };
-            let text = decode_limited(&bytes, &relative)?;
+            if bytes.len() > remaining {
+                return Err(format!(
+                    "project instructions including `{}` exceed the provider request body limit",
+                    display_relative(&relative)
+                ));
+            }
+            let text = String::from_utf8(bytes).map_err(|_| {
+                format!(
+                    "project instructions: `{}` is not valid UTF-8",
+                    display_relative(&relative)
+                )
+            })?;
             // First existing candidate wins even when empty, preserving the
             // previous AGENTS.md → CLAUDE.md fallback contract.
             if text.trim().is_empty() {
@@ -291,35 +293,6 @@ fn ancestor_directories(scopes: &BTreeSet<PathBuf>) -> Result<Vec<PathBuf>, Stri
             .then_with(|| left.cmp(right))
     });
     Ok(directories)
-}
-
-fn decode_limited(bytes: &[u8], path: &Path) -> Result<String, String> {
-    let truncated = bytes.len() > MAX_SOURCE_BYTES;
-    let limit = bytes.len().min(MAX_SOURCE_BYTES);
-    let text = match std::str::from_utf8(&bytes[..limit]) {
-        Ok(text) => text.to_owned(),
-        Err(error) if truncated && error.error_len().is_none() => {
-            std::str::from_utf8(&bytes[..error.valid_up_to()])
-                .map_err(|_| {
-                    format!(
-                        "project instructions: `{}` is not valid UTF-8",
-                        display_relative(path)
-                    )
-                })?
-                .to_owned()
-        }
-        Err(_) => {
-            return Err(format!(
-                "project instructions: `{}` is not valid UTF-8 within the first 64 KiB",
-                display_relative(path)
-            ));
-        }
-    };
-    if truncated {
-        Ok(format!("{text}\n\n(truncated at 64 KiB)"))
-    } else {
-        Ok(text)
-    }
 }
 
 fn render_snapshot(sources: &[SourceDocument]) -> Option<InstructionSnapshot> {
@@ -458,7 +431,13 @@ mod tests {
         std::fs::write(root.join("AGENTS.md"), "中".repeat(30_000)).unwrap();
         let service = ProjectInstructionService::open(project.clone()).unwrap();
         let snapshot = service.snapshot().unwrap().unwrap();
-        assert!(snapshot.text.contains("truncated at 64 KiB"));
+        assert!(snapshot.text.contains(&"中".repeat(30_000)));
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/AGENTS.md"), "a".repeat(80_000)).unwrap();
+        service.observe_tool_result("read_file", &serde_json::json!({"path":"src/AGENTS.md"}));
+        let both = service.snapshot().unwrap().unwrap();
+        assert!(both.text.contains(&"中".repeat(30_000)));
+        assert!(both.text.contains(&"a".repeat(80_000)));
         assert!(std::str::from_utf8(snapshot.text.as_bytes()).is_ok());
 
         std::fs::write(root.join("AGENTS.md"), "   \n").unwrap();

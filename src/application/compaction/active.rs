@@ -1,8 +1,7 @@
 //! Application-owned compaction at complete model/tool request boundaries.
-use super::super::run_context::short_reply;
 use super::*;
 use crate::i18n::{PresentedText, UiMessage};
-use crate::model::{ModelItem, ModelOptions, RunSpendLedger, ThinkingLevel, Usage};
+use crate::model::{ModelItem, ModelOptions, RunSpendLedger, Usage};
 use crate::run::RequestContextManager;
 use crate::tool::ToolDefinition;
 use std::collections::BTreeMap;
@@ -18,7 +17,6 @@ pub(in crate::application) struct ActiveContext {
     pub(in crate::application) journal: Arc<dyn RunJournal>,
     pub(in crate::application) recorder: Arc<Mutex<SessionRecorder>>,
     pub(in crate::application) config: ModelConfig,
-    pub(in crate::application) short_replies: bool,
     pub(in crate::application) credentials: ProviderCredentials,
     pub(in crate::application) cancel: CancelToken,
     pub(in crate::application) turn: u64,
@@ -40,34 +38,11 @@ impl RequestContextManager for ActiveContext {
         std::mem::take(&mut self.history_changed)
     }
 
-    fn tune_initial_request(
-        &self,
-        items: &[ModelItem],
-        options: &mut ModelOptions,
-    ) -> Option<ThinkingLevel> {
-        if !self.short_replies {
-            return None;
-        }
-        short_reply::tune(&self.config, items.last()?, options)
-    }
-
-    fn stage_request(
-        &mut self,
-        snapshot: &crate::plugins::services::RuntimeSnapshot,
-        thinking_override: Option<ThinkingLevel>,
-    ) {
-        let previous = thinking_override.and_then(|_| self.sessions.last_request_header());
-        let mut recorder = self
-            .recorder
+    fn stage_request(&mut self, snapshot: &crate::plugins::services::RuntimeSnapshot) {
+        self.recorder
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        recorder.stage_model_request(snapshot);
-        if self.short_replies {
-            recorder.stage_thinking_level(
-                thinking_override.or(self.config.thinking_level),
-                previous.as_ref(),
-            );
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stage_model_request(snapshot);
     }
 
     fn flush_request(&mut self) -> Result<(), String> {

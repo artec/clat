@@ -664,7 +664,7 @@ mod tests {
         source.push_str(&format!("\n{giant}"));
         fs::write(&path, source.as_bytes()).expect("write long doc");
 
-        let segments = read_until_eof(&project, "long-doc.md", json!({}));
+        let segments = read_until_eof(&project, "long-doc.md", json!({"max_bytes":4096}));
         assert!(
             segments.len() >= 3,
             "a long file must arrive as multiple bounded segments"
@@ -804,11 +804,9 @@ mod tests {
         crate::test_support::cleanup_tree(&root);
     }
 
-    /// R1 主证据：真实 ResultPruner（生产二级裁剪）对每个 read_file 段
-    /// 必须是 no-op——结果构造上就低于阈值。对抗输入：引号/反斜杠/
-    /// 制表符密集、超长路径、恰好边界尺寸。
+    /// A caller can still request short pages for escape-heavy files.
     #[test]
-    fn read_file_results_survive_the_production_result_pruner() {
+    fn read_file_explicit_small_pages_fit_the_generic_pruner() {
         let (root, project) = fixture();
         let dir = root.join("a-very-long-directory-name-for-envelope-pressure");
         fs::create_dir_all(&dir).expect("dir");
@@ -819,7 +817,7 @@ mod tests {
         }
         fs::write(&path, source.as_bytes()).expect("write escape-heavy doc");
 
-        let segments = read_until_eof(&project, path.to_str().unwrap(), json!({}));
+        let segments = read_until_eof(&project, path.to_str().unwrap(), json!({"max_bytes":4096}));
         assert!(segments.len() >= 3);
         let pruner = crate::plugins::ResultPruner;
         for segment in &segments {
@@ -841,7 +839,7 @@ mod tests {
     // ===== 审计返工判别（乙方反例 CF1–CF3，2026-10-15 r2）=====
 
     /// CF1（乙方公开输入）：转义密集超长单行（`"` `\` `\t` ×8000 +
-    /// `\n`，24001 字节），默认参数。修复前：首片按裸字符数取片、
+    /// `\n`，24001 字节），小页续读。修复前：首片按裸字符数取片、
     /// 序列化后超帽、最终收缩整片弹出 → **成功返回零进度空段**
     /// （content=""、has_more=true、cursor 不动）。修复后：取片转义
     /// 感知，每个成功且非 EOF 的段有真实内容与前进游标。
@@ -856,7 +854,7 @@ mod tests {
         source.push('\n');
         fs::write(&path, source.as_bytes()).expect("write");
 
-        let segments = read_until_eof(&project, "escape-heavy.txt", json!({}));
+        let segments = read_until_eof(&project, "escape-heavy.txt", json!({"max_bytes":4096}));
         assert!(
             segments.len() >= 3,
             "escape-dense giant line must arrive as multiple segments"
@@ -975,7 +973,7 @@ mod tests {
                 >= requested.chars().count() + 640
         );
 
-        let segments = read_until_eof(&project, &requested, json!({}));
+        let segments = read_until_eof(&project, &requested, json!({"max_bytes":4096}));
         assert!(
             segments.len() >= 3,
             "the escaped-path file must still arrive as multiple segments"
@@ -1177,10 +1175,9 @@ mod tests {
         crate::test_support::cleanup_tree(&root);
     }
 
-    /// R4：显式超大 max_bytes 被分段帽压回（content_budget_chars 回报
-    /// 实际生效值），续读仍完整覆盖；小 max_bytes 原样尊重。
+    /// A larger requested page carries the complete source in one result.
     #[test]
-    fn read_file_large_max_bytes_is_capped_but_still_resumable() {
+    fn read_file_large_max_bytes_uses_requested_page() {
         let (root, project) = fixture();
         let path = root.join("cap-me.md");
         let mut source = String::new();
@@ -1190,16 +1187,7 @@ mod tests {
         fs::write(&path, source.as_bytes()).expect("write");
 
         let segments = read_until_eof(&project, "cap-me.md", json!({"max_bytes": 65536}));
-        assert!(segments.len() >= 2, "the segment cap must split the file");
-        for segment in &segments {
-            let budget = segment["content_budget_chars"].as_u64().expect("budget");
-            assert!(
-                budget <= crate::plugins::THRESHOLD_CHARS as u64,
-                "the applied budget must stay under the pruner threshold"
-            );
-            let content = segment["content"].as_str().expect("content");
-            assert!(content.chars().count() <= budget as usize);
-        }
+        assert_eq!(segments.len(), 1, "the selected byte budget fits this file");
         let reconstructed = reconstruct_text(&segments);
         if reconstructed != source.replace("\r\n", "\n") {
             panic!(

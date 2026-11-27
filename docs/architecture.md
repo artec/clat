@@ -809,8 +809,9 @@ result validation and recovery for manual, startup and in-run compaction.
 Callers supply history and its protection semantics; they do not assemble
 summary requests. `chunks.rs` splits rendered text at UTF-8 boundaries, using the
 model's configured input capacity after reserving instructions and generation.
-History that fits is summarized in one request. Longer histories use as many map
-and reduction requests as needed. Unknown model capacity uses a conservative
+Image-bearing fallback batches also pack adjacent rendered items in order,
+carrying each image once in the map inputs. History that fits is summarized in
+one request. Longer histories use as many map and reduction requests as needed. Unknown model capacity uses a conservative
 24,000-token per-request size; it does not cap history size.
 Accepted summary sizes scale down for small windows so two summaries and their
 headings fit the next reduction request.
@@ -899,9 +900,9 @@ It does not guarantee lossless model-written summaries or image understanding.
 Compatible summary models receive retained image parts; already offloaded images
 remain truthful notices and cannot be reconstructed from the summary.
 
-`read_file` results are constructed to stay under the shared pruner threshold,
-so the generic head/tail replacement never fires on them: every segment keeps
-its cursor and status fields intact in the model's view (READ-1, 2026-10-15).
+`read_file` pages use the requested byte limit (64 KiB by default, up to 1 MiB).
+Pressure-triggered head/tail pruning skips file pages to preserve their structured
+content and cursor. Older tool exchanges remain eligible for group compaction.
 Long files arrive as ordered bounded segments with `has_more`, an opaque
 `next_cursor` (absolute byte offset + line number + in-line flag), and a
 `file_version` identity (`size` + `mtime`); passing `expected_file_version`
@@ -909,8 +910,8 @@ back fails explicitly when the file changed between segments instead of
 silently stitching two versions. Lines longer than the segment budget are
 split at character boundaries and marked `partial_line` — byte-cursor
 continuation always progresses, so no input loops forever on the same
-truncated piece. `max_bytes` stays an upper bound; the applied context-safe
-budget is reported as `content_budget_chars`.
+truncated piece. `max_bytes` stays an upper bound; the escaped-text budget
+is reported as `content_budget_chars`.
 
 Immediately before each agent request, core validates the durable image view.
 User, assistant and typed tool-result images count in provider order toward the

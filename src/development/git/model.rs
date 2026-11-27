@@ -72,20 +72,30 @@ impl GitModel {
             .unwrap_or(1024)
             .min(1024)
             .min(window as u32 / 2);
-        let cap = window
-            .saturating_sub(output as usize + 512 + instructions.len())
-            .min(24_000);
-        if cap < 256 {
+        let prefix = if style.trim().is_empty() {
+            String::from("Staged changes:\n")
+        } else {
+            format!(
+                "Recent subject style:\n{}\nStaged changes:\n",
+                &style[..style.floor_char_boundary(style.len().min(512))]
+            )
+        };
+        let overhead = crate::model::estimate_request_tokens(
+            Some(&instructions),
+            &[ModelItem::user_text(&prefix)],
+            &[],
+        ) as usize;
+        let available = window.saturating_sub(output as usize + 512 + overhead);
+        if available < 256 {
             return Err("generation_failed".into());
         }
-        let mut input = String::new();
-        if !style.trim().is_empty() {
-            input.push_str("Recent subject style:\n");
-            input.push_str(&style[..style.floor_char_boundary(style.len().min(512).min(cap / 8))]);
+        let mut input = prefix;
+        if crate::model::estimate_tokens_conservative(staged) <= available {
+            input.push_str(staged);
+        } else {
+            // Byte-bounded excerpts fit even when the patch is mostly non-ASCII.
+            input.push_str(&staged_evidence(staged, available));
         }
-        input.push_str("\nStaged changes:\n");
-        let remaining = cap - input.len();
-        input.push_str(&staged_evidence(staged, remaining));
         self.ask(&input, &instructions, output, cancel)
     }
 }

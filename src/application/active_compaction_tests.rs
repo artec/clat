@@ -310,13 +310,20 @@ impl TestModelScript for LongTask {
         if n < 7 {
             reply.text.clear();
             reply.finish_reason = FinishReason::ToolCalls;
+            // The failure fixture needs one more main step between the pressure
+            // threshold and hard capacity to exercise both summary attempts.
+            let page_bytes = if matches!(self.mode, SummaryMode::Failure) {
+                7600
+            } else {
+                16000
+            };
             reply.tool_calls = (0..2)
                 .map(|index| crate::ToolCall {
                     id: format!("read-{n}-{index}"),
                     name: "read_file".into(),
                     arguments: json!({
                         "path": format!("observations-{n}-{index}.txt"),
-                        "max_bytes": 16000
+                        "max_bytes": page_bytes
                     }),
                 })
                 .collect();

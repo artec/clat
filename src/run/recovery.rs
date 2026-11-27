@@ -76,7 +76,7 @@ impl Run<'_> {
             return (Err(ModelError::request(error)), String::new(), false, None);
         }
         if let Some(manager) = &mut self.context_manager {
-            manager.stage_request(&input.snapshot, input.thinking_override);
+            manager.stage_request(&input.snapshot);
         }
         events.emit(RunEvent::ModelRequested {
             turn,
@@ -150,7 +150,7 @@ impl Run<'_> {
         // A capacity-recovery rewrite also invalidates remembered read
         // evidence. The model may need to revisit a pruned source.
         state.repeat.clear();
-        let next = self.prepare_request(state, false)?;
+        let next = self.prepare_request(state)?;
         let smaller = match error.kind() {
             ModelErrorKind::ImageCapacity => {
                 let images = |input: &RequestInputs| {

@@ -1,13 +1,11 @@
-//! READ-1（2026-10-15）read_file 的有界分段实现：与通用 ToolResultPruner
-//! 阈值同源的分段帽、不透明字节游标、文件身份与显式失败语义。
-//! 契约细节见 `ReadFileTool` 上方不变量注释与 docs/architecture.md。
+//! Versioned file pages with byte bounds, opaque cursors and explicit read errors.
 
 use crate::CancelToken;
 use crate::project::Project;
 use crate::tool::{Tool, ToolDefinition, ToolEffect, ToolError};
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{BufReader, Seek};
+use std::io::{BufRead, BufReader, Read, Seek};
 
 use super::{check_cancelled, required_string_arg, string_arg, tool_io_error, usize_arg};
 
@@ -17,30 +15,14 @@ const MAX_READ_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReadFileTool;
 
-/// READ-1（2026-10-15，第一用户真实症状）——有界、可续、完整、可判别
-/// 的长文件阅读。四条不变量（验收 R1–R4）：
-///
-/// 1. **结构永不被二次裁剪**：单段结果的序列化长度恒 ≤ 通用
-///    ToolResultPruner 阈值（构造预算 + 真实序列化精确校验双保险），
-///    pruner 的 head/tail 替换对 read_file 永不触发——模型总能看到
-///    完整的游标与状态字段。
-/// 2. **可续且单调前进**：每段携带 `has_more` + `next_cursor`（字节
-///    偏移 + 行号 + 行内标志），按游标续读不重叠、不遗漏、不循环，
-///    直到 EOF。超长单行按字符边界切段并标记 `partial_line`；续读
-///    必须用 `next_cursor`（跳行号会漏掉行内剩余内容）。
-/// 3. **身份可判别**：每段携带 `file_bytes` + `file_version`（长度+
-///    mtime 纳秒）；`expected_file_version` 不匹配时显式失败并指导
-///    重读，拒绝把不同版本默默拼成“完整文件”。
-/// 4. **有界成本**：`max_bytes` 是请求上限；分段还受与 pruner 同源的
-///    上下文安全帽约束（`content_budget_chars` 回报实际生效值），
-///    不放大结果体、不影响其他工具的裁剪契约。
+/// Byte-bounded, versioned file pages. The cursor also covers partial lines.
 struct ReadRequest {
     start_line: u64,
     end_line: Option<u64>,
     start_byte: Option<u64>,
     cursor: Option<ReadCursor>,
     expected_version: Option<String>,
-    /// 序列化字符预算（pruner 阈值减信封预留后的内容帽）。
+    /// Budget for escaped text, including the line-number prefixes.
     serialized_budget: usize,
     /// CF3（审计返工）：`max_bytes` 恢复为 content 的 **UTF-8 字节** 上限
     /// （schema 承诺 upper bound on returned content bytes），与序列化
@@ -313,7 +295,7 @@ fn file_identity(metadata: &fs::Metadata) -> String {
     format!("{}:{}", metadata.len(), mtime)
 }
 
-fn parse_read_request(arguments: &Value, requested: &str) -> Result<ReadRequest, ToolError> {
+fn parse_read_request(arguments: &Value) -> Result<ReadRequest, ToolError> {
     let start_line =
         u64::try_from(usize_arg(arguments, "start_line").unwrap_or(1).max(1)).unwrap_or(u64::MAX);
     let end_line =
@@ -335,21 +317,13 @@ fn parse_read_request(arguments: &Value, requested: &str) -> Result<ReadRequest,
     let max_bytes = usize_arg(arguments, "max_bytes")
         .unwrap_or(DEFAULT_READ_BYTES)
         .clamp(1, MAX_READ_BYTES);
-    // 分段帽：pruner 阈值减信封预留（路径回显的**转义后**长度 + 键/
-    // 数字 + 数值波动），与最终真实序列化校验（见 invoke）双保险。
-    // CF5（审计返工）：路径里的引号/反斜杠会成倍膨胀序列化信封，
-    // 预留必须按 escape_len 计，否则构造预算虚高、首片被收缩弹空。
-    let envelope_reserve = 512 + escape_len(requested);
-    let segment_cap = crate::plugins::THRESHOLD_CHARS
-        .saturating_sub(envelope_reserve)
-        .max(64);
     Ok(ReadRequest {
         start_line,
         end_line,
         start_byte,
         cursor,
         expected_version: string_arg(arguments, "expected_file_version").map(str::to_owned),
-        serialized_budget: max_bytes.min(segment_cap),
+        serialized_budget: max_bytes,
         byte_budget: max_bytes,
     })
 }
@@ -593,7 +567,11 @@ fn take_piece(
         .saturating_mul(6)
         .saturating_add(scan_bytes)
         .saturating_add(16);
-    let window = read_window(reader, limit)
+    // A piece ends at the first newline. Reading past it copies the same tail for every line.
+    let mut window = Vec::new();
+    reader
+        .take(limit as u64)
+        .read_until(b'\n', &mut window)
         .map_err(|error| ToolError::new(format!("read_file: read failed: {error}")))?;
     if window.is_empty() {
         return Ok(PieceStep::EndOfFile);
@@ -744,55 +722,6 @@ fn build_read_output(
     output
 }
 
-/// R1 兜底：以真实序列化长度校验；超出则从尾部整片收缩。取片已
-/// 转义/字节双感知，正常路径构造即命中；一旦收缩会让段变空（只剩
-/// 一片仍超）就显式失败——绝不返回成功零进度段（CF5：弹空后的空
-/// 信封低于阈值时循环会以成功空段退出，必须在此拦截，不能依赖
-/// while 条件自然退出）。
-fn shrink_to_pruner_threshold(
-    segment: &mut ReadSegment,
-    requested: &str,
-    start: ReadStart,
-    file_bytes: u64,
-    file_version: &str,
-    request: &ReadRequest,
-) -> Result<Value, ToolError> {
-    let mut output =
-        build_read_output(segment, requested, start, file_bytes, file_version, request);
-    while exceeds_pruner_threshold(&output) {
-        if segment.pieces.len() <= 1 {
-            return Err(ToolError::new(format!(
-                "read_file: the serialized segment for `{requested}` cannot fit \
-                 the context budget (path or envelope too large); reduce the \
-                 path length or report this input"
-            )));
-        }
-        segment.pieces.pop();
-        segment.truncated = true;
-        segment.at_line_start = segment.pieces.last().is_some_and(|piece| piece.ends_line);
-        segment.line = segment
-            .pieces
-            .last()
-            .map(|piece| {
-                if piece.ends_line {
-                    piece.line + 1
-                } else {
-                    piece.line
-                }
-            })
-            .unwrap_or(start.cursor.line);
-        output = build_read_output(segment, requested, start, file_bytes, file_version, request);
-    }
-    Ok(output)
-}
-
-/// 真实序列化长度是否超过通用 pruner 阈值（R1 兜底校验）。
-fn exceeds_pruner_threshold(output: &Value) -> bool {
-    serde_json::to_string(output)
-        .map(|text| text.chars().count() > crate::plugins::THRESHOLD_CHARS)
-        .unwrap_or(false)
-}
-
 impl Tool for ReadFileTool {
     fn capability_metadata(&self) -> crate::ToolCapability {
         crate::ToolCapability::native(
@@ -837,7 +766,7 @@ impl Tool for ReadFileTool {
         cancel: &CancelToken,
     ) -> Result<Value, ToolError> {
         let requested = required_string_arg(arguments, "path", "read_file")?;
-        let request = parse_read_request(arguments, requested)?;
+        let request = parse_read_request(arguments)?;
         let path = project
             .resolve_existing(requested)
             .map_err(|error| tool_io_error("read_file", requested, error))?;
@@ -864,14 +793,14 @@ impl Tool for ReadFileTool {
         let mut file =
             fs::File::open(&path).map_err(|error| tool_io_error("read_file", requested, error))?;
         let start = resolve_read_start(&request, &mut file, file_bytes)?;
-        let mut segment = read_segment(&mut file, &request, start, file_bytes, cancel)?;
-        shrink_to_pruner_threshold(
-            &mut segment,
+        let segment = read_segment(&mut file, &request, start, file_bytes, cancel)?;
+        Ok(build_read_output(
+            &segment,
             requested,
             start,
             file_bytes,
             &file_version,
             &request,
-        )
+        ))
     }
 }

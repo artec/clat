@@ -3,7 +3,7 @@ use super::*;
 
 /// 保守 token 估算（INV-C8 同规：ASCII ~4 chars/token，非 ASCII
 /// ≥1 token/char，每串 +8 常数）。
-fn estimate_tokens_conservative(text: &str) -> usize {
+pub(crate) fn estimate_tokens_conservative(text: &str) -> usize {
     let ascii = text.chars().filter(char::is_ascii).count();
     let other = text.chars().count() - ascii;
     ascii / 4 + other + 8
@@ -126,7 +126,7 @@ pub fn estimate_request_tokens(
     tokens as u64
 }
 
-fn image_projection_totals(items: &[ModelItem]) -> (u64, u64, u64) {
+pub(crate) fn image_projection_totals(items: &[ModelItem]) -> (u64, u64, u64) {
     let mut images = 0u64;
     let mut bytes = 0u64;
     let mut tokens = 0u64;

@@ -264,6 +264,47 @@ fn allow_all_approver() -> Arc<dyn PermissionApprover> {
     Arc::new(allow_all)
 }
 
+#[test]
+fn short_question_uses_the_configured_preset_effort() {
+    struct Effort;
+    impl TestModelScript for Effort {
+        fn stream(
+            &self,
+            request: crate::ModelRequest<'_>,
+            _: &mut dyn crate::ModelEventSink,
+        ) -> Result<crate::ModelResponse, crate::ModelError> {
+            let effort = request.options.provider_options["reasoning_effort"]
+                .as_str()
+                .unwrap_or("inherited");
+            Ok(crate::test_support::response(
+                effort,
+                crate::FinishReason::Completed,
+            ))
+        }
+    }
+    let (storage, root) = roots("short-question-effort");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = mount(
+        &Project::new(root),
+        &storage,
+        TestBehavior::Scripted(Arc::new(Effort)),
+    );
+    let mut config = crate::ModelConfig::default();
+    crate::presets::preset_by_id("glm-5.3-flash")
+        .unwrap()
+        .apply(&mut config);
+    assert_eq!(config.extra_body["reasoning_effort"], "high");
+    app.save_model_state(
+        &config,
+        &crate::ProviderCredentials::for_protocol(config.protocol),
+    )
+    .unwrap();
+    let result = run(&mut app, "GFM 是什么意思？").unwrap();
+    assert_eq!(result.output, "inherited");
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}
+
 /// 具名 allow-all 审批人（闭包对带引用参数的 trait blanket impl 有
 /// HRTB 推断限制，A1 起 decide 携带 `&CancelToken`）。
 fn allow_all(
@@ -3749,7 +3790,7 @@ impl TestModelScript for ReadToEofScript {
     fn stream(
         &self,
         request: crate::ModelRequest<'_>,
-        _events: &mut dyn crate::ModelEventSink,
+        events: &mut dyn crate::ModelEventSink,
     ) -> Result<crate::ModelResponse, crate::ModelError> {
         let calls = self.calls.fetch_add(1, Ordering::SeqCst);
         if calls > 300 {
@@ -3763,21 +3804,48 @@ impl TestModelScript for ReadToEofScript {
             }
             _ => None,
         });
-        let Some(output) = last_output else {
-            return Ok(self.read_call(serde_json::json!({"path": self.path})));
-        };
-        self.segments.lock().expect("segments").push(output.clone());
-        if output["has_more"].as_bool().unwrap_or(false) {
-            let arguments = serde_json::json!({
-                "path": self.path,
-                "cursor": output["next_cursor"],
-                "expected_file_version": output["file_version"],
-            });
-            Ok(self.read_call(arguments))
+        let response = if let Some(output) = last_output {
+            self.segments.lock().expect("segments").push(output.clone());
+            if output["has_more"].as_bool().unwrap_or(false) {
+                self.read_call(serde_json::json!({
+                    "path": self.path,
+                    "cursor": output["next_cursor"],
+                    "expected_file_version": output["file_version"],
+                }))
+            } else {
+                self.done()
+            }
         } else {
-            Ok(self.done())
+            self.read_call(serde_json::json!({"path": self.path}))
+        };
+        for call in &response.tool_calls {
+            events.emit(crate::ModelEvent::ToolCallCompleted { call: call.clone() });
         }
+        Ok(response)
     }
+}
+
+fn assert_replayed_file_pages_survive_pruning(app: &TrustedProjectApplication) {
+    let journal = app.sessions.journal().unwrap();
+    let mut history: Vec<_> = app
+        .sessions
+        .surface_nodes()
+        .unwrap()
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect();
+    let before = history.clone();
+    let maintenance = super::compaction::maintenance::DurableMaintenance {
+        sessions: &app.sessions,
+        journal: journal.as_ref(),
+        cancel: &crate::CancelToken::new(),
+        config: &app.model_state().unwrap().0,
+        pruner: Some(app.pruner.as_deref().unwrap()),
+        image_offload: None,
+        protected_floor: 0,
+    };
+    assert_eq!(maintenance.prune_results(&mut history).unwrap(), 0);
+    assert_eq!(history, before);
 }
 
 /// J1（B1+R5 联合）：无预算模型在跨旧 10M 阈值的长 run 中把长文件
@@ -3829,12 +3897,14 @@ fn long_run_without_a_default_budget_reads_a_long_file_to_eof() {
         done.output
     );
 
+    assert_replayed_file_pages_survive_pruning(&application);
     let segments = script.segments.lock().unwrap().clone();
     application.close().unwrap();
     assert!(
-        segments.len() >= 3,
-        "the long file must arrive as multiple bounded segments"
+        segments.len() >= 2,
+        "the long file must exercise cursor continuation"
     );
+    assert!(segments[0]["content"].as_str().unwrap().len() > crate::plugins::THRESHOLD_CHARS);
     // B1 证据：usage 跨过旧 10M 硬顶而 run 完成。
     assert!(
         done.usage.input_tokens >= 10_500_000 * segments.len() as u64,
@@ -3981,7 +4051,7 @@ fn escaped_path_file_reads_to_eof_in_the_real_agent_loop() {
     std::fs::create_dir_all(&project_root).unwrap();
     let project = Project::new(&project_root);
     let (target, requested) = crate::test_support::escaped_read_fixture(&project_root);
-    let source = format!("{}\n", "x".repeat(16_000));
+    let source = format!("{}\n", "x".repeat(160_000));
     std::fs::write(&target, source.as_bytes()).unwrap();
     assert_eq!(
         project.resolve_existing(&requested).unwrap(),

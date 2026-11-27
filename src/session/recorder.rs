@@ -683,38 +683,6 @@ impl SessionRecorder {
         }
     }
 
-    /// Witness the one-request effort override, and restore the configured
-    /// value before any following tool step is journaled.
-    pub(crate) fn stage_thinking_level(
-        &mut self,
-        level: Option<crate::ThinkingLevel>,
-        previous: Option<&Value>,
-    ) {
-        let Some(config) = self
-            .request_header
-            .get_mut("config")
-            .and_then(Value::as_object_mut)
-        else {
-            return;
-        };
-        let desired = level.map(|level| serde_json::json!(level));
-        if config.get("thinking") == desired.as_ref() {
-            return;
-        }
-        if let Some(value) = desired {
-            config.insert("thinking".into(), value);
-        } else {
-            config.remove("thinking");
-        }
-        self.header_reason.get_or_insert("change");
-        if self.header_reason == Some("change")
-            && previous
-                .is_some_and(|header| header == &persisted_request_header(&self.request_header))
-        {
-            self.header_reason = None;
-        }
-    }
-
     pub(crate) fn flush_model_request(&mut self) -> Result<(), String> {
         if self.request_witness_pending {
             self.flush_quietly();
@@ -1223,52 +1191,6 @@ mod tests {
             Some("initial"),
         );
         (recorder, journal, seen)
-    }
-
-    #[test]
-    fn short_reply_header_records_each_effective_thinking_change() {
-        use crate::ThinkingLevel::{High, Low};
-        let (mut recorder, journal, _) = recorder();
-        let request = |turn| RunEvent::ModelRequested {
-            turn,
-            provider: "p".into(),
-            model: "m".into(),
-        };
-        recorder.stage_thinking_level(Some(Low), None);
-        recorder.emit(request(1));
-        recorder.stage_thinking_level(Some(High), None);
-        recorder.emit(request(2));
-        recorder.emit(request(3));
-        let headers: Vec<_> = journal
-            .events()
-            .into_iter()
-            .filter(|(kind, _)| kind == "request/header")
-            .map(|(_, data)| data)
-            .collect();
-        assert_eq!(headers.len(), 2);
-        assert_eq!(headers[0]["header"]["config"]["thinking"], "low");
-        assert_eq!(headers[1]["header"]["config"]["thinking"], "high");
-
-        let previous = &headers[0]["header"];
-        let mut next = SessionRecorder::new(
-            Arc::clone(&journal) as Arc<dyn RunJournal>,
-            header_data(),
-            "prov",
-            "mdl",
-            2,
-            Some("change"),
-        );
-        next.stage_thinking_level(Some(Low), Some(previous));
-        next.emit(request(1));
-        assert_eq!(
-            journal
-                .events()
-                .iter()
-                .filter(|(kind, _)| kind == "request/header")
-                .count(),
-            2,
-            "an unchanged effective header in a following short turn needs no new event"
-        );
     }
 
     /// S2：steering claim 落 mid-turn `user/message`——surface Append、

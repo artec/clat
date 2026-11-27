@@ -34,6 +34,7 @@ struct Factory {
     calls: Arc<AtomicUsize>,
     inputs: Arc<Mutex<Vec<String>>>,
     tools_seen: Arc<Mutex<Vec<usize>>>,
+    image_counts: Arc<Mutex<Vec<usize>>>,
     directives: Arc<Mutex<Vec<String>>>,
     time_limits: Arc<Mutex<Vec<Option<std::time::Duration>>>>,
     ledger: Arc<crate::model::RunSpendLedger>,
@@ -98,6 +99,12 @@ impl Model for Attempt {
             .unwrap()
             .push(format!("{:?}", request.items.last()));
         let evidence = &request.items[..request.items.len() - 1];
+        self.factory.image_counts.lock().unwrap().push(
+            evidence
+                .iter()
+                .flat_map(crate::model::model_item_image_parts)
+                .count(),
+        );
         let input = match evidence {
             [ModelItem::User { content }] => content_text(content),
             _ => chunks::rendered_units(evidence, true).join("\n"),
@@ -200,6 +207,7 @@ fn factory(reply: Reply) -> Factory {
         calls: Default::default(),
         inputs: Default::default(),
         tools_seen: Default::default(),
+        image_counts: Default::default(),
         directives: Default::default(),
         time_limits: Default::default(),
         ledger: Arc::new(crate::model::RunSpendLedger::new(None)),
@@ -746,4 +754,48 @@ fn cp3_persistent_tool_hallucination_degrades_after_one_retry() {
         );
         assert_eq!(outcome.usage.output_tokens, 100, "both attempts accounted");
     }
+}
+
+#[test]
+fn summary_job_batches_neighboring_text_around_an_image() {
+    let config = ModelConfig {
+        max_context_tokens: None,
+        ..Default::default()
+    };
+    let factory = factory(Reply::Thinking);
+    let mut model = Attempt {
+        factory: factory.clone(),
+        config: config.clone(),
+    };
+    let cancel = CancelToken::new();
+    let mut run =
+        summary::SummaryRun::new(&mut model, &cancel, summary::Policy::new(&config).unwrap());
+    let mut items = (0..96)
+        .map(|i| ModelItem::user_text(format!("record-{i}: {}", "x".repeat(1200))))
+        .collect::<Vec<_>>();
+    let image_dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&image_dir).unwrap();
+    let path = image_dir.join("summary.png");
+    std::fs::write(&path, crate::test_support::png_bytes(2, 2, [0, 0, 0])).unwrap();
+    for item in &mut items[46..48] {
+        let ModelItem::User { content } = item else {
+            unreachable!()
+        };
+        content.push(crate::model::ContentPart::Image {
+            path: path.to_string_lossy().into_owned(),
+            media_type: "image/png".into(),
+        });
+    }
+    run.summarize_context(&items, true, "", &[]).unwrap();
+    let calls = factory.calls.load(Ordering::SeqCst);
+    assert!(calls < 10, "summary requests: {calls}");
+    let counts = factory.image_counts.lock().unwrap();
+    assert_eq!(counts.iter().sum::<usize>(), 2);
+    assert!(counts.contains(&2), "neighboring images fit together");
+    let seen = factory.inputs.lock().unwrap().join("\n");
+    let offsets: Vec<_> = (0..96)
+        .map(|i| seen.find(&format!("record-{i}:")).unwrap())
+        .collect();
+    assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
+    crate::test_support::cleanup_tree(&image_dir);
 }

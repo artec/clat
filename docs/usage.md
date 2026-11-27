@@ -131,10 +131,16 @@ CLAT loads the root `AGENTS.md`, falling back to `CLAUDE.md`. When an approved
 successful file tool reaches a nested path, the next model request also sees
 the first instruction file found in each directory from the root to that
 path. More-specific scopes appear later and apply only below their directory.
-CLAT reads those files before each model request. An empty `AGENTS.md` stops
-fallback in its directory, and a read error stops the request. The journal
+CLAT reads the complete files before each model request. If their combined text
+exceeds the provider request-body limit, loading fails with the offending path.
+An empty `AGENTS.md` stops fallback in its directory, and a read error stops the
+request. The journal
 records the selected paths and digests so a resumed session can rebuild the
 scope set from current files.
+
+The native `read_file` tool defaults to 64 KiB per page. Set `max_bytes` up to
+1 MiB, or follow the returned cursor for more. Line numbers and JSON escaping
+can reduce how much source fits on a page.
 
 The native `search` tool defaults to case-insensitive literal matching and can
 also use bounded regex, globs, extension filters, gitignore/hidden policy and
@@ -957,11 +963,11 @@ missing provider usage uses the conservative request estimate and output reserve
 A run's token cap does not interrupt compaction, but normal agent requests still
 honor an explicitly configured cap after maintenance. Each applied checkpoint
 must shrink the actual request. Maintenance stops when the request fits, the
-caller cancels, or no safe progress is possible. If summary generation fails,
-CLAT retains the selected history and pauses automatic summarization for the
-rest of that run, including capacity recovery and subsequent Goal rounds.
-Requests that fit can continue. A new run or an explicit `/compact` can try
-summarizing again. A persistence failure stops execution without repeating tools
+caller cancels, or no safe progress is possible. Failed summaries leave the
+selected history available. Three consecutive failures pause automatic summary
+attempts for the rest of the run, including subsequent Goal rounds. Successful
+compaction resets the failure count. Requests that fit can continue. A new run
+or an explicit `/compact` can try summarizing again. A persistence failure stops execution without repeating tools
 already executed.
 
 `/compact` manually selects the largest safe balanced history span with zero
@@ -997,7 +1003,9 @@ compaction attempt instead of failing the run.
 Only each model request must fit the model's input and output capacity. History
 that fits this capacity is summarized in one request; larger history is split
 at UTF-8 boundaries. An unknown model window uses 24,000-token chunks as a
-conservative fallback. Long histories use as many chunks and reduction requests
+conservative fallback. For mixed image and text history, consecutive messages
+share a request when they fit. Each original image travels with its first text
+fragment. Long histories use as many chunks and reduction requests
 as needed. Smaller windows also use shorter summaries so reduction continues
 to make progress. Splitting text does not split
 the journal's atomic replacement range.
@@ -1237,16 +1245,11 @@ level for the next run and persists the effective model configuration:
   the title bar shows `Thinking · Server` instead of a level.
 - OpenCode Go presets use a per-model ladder (see
   [Providers](providers.md#opencode-go)).
-
-When a supported built-in preset uses its default thinking level, clearly
-recognizable greetings, short confirmations and simple definition questions
-can use Low for the first model request. The request receives the same
-conversation history and tool definitions. The configured level applies to
-following tool steps and to work such as plan or goal execution. Choosing a
-thinking level explicitly keeps it fixed for the run.
 - Custom profiles on a known vendor domain use that vendor's mapping.
 - Unknown endpoints do not receive an inferred reasoning parameter; configure
   it explicitly in Extra Body.
+
+Conversation requests use the configured thinking effort, including short questions and confirmations.
 
 Cache and context values are session facts restored from journal usage events.
 Where supported, DeepSeek shows wallet balance and GLM/Kimi show remaining
@@ -3676,8 +3679,11 @@ the field without committing. The message-language selector and Settings → Git
 one project preference: System, English, Simplified Chinese or Traditional Chinese.
 System means the initiating client's OS/browser language, independently of UI language.
 Generation uses the configured utility profile, otherwise the project's current model;
-it makes one tool-free model request using staged changes. Large diffs are summarized locally into file statistics and bounded patch excerpts before that request. Editing the message,
-changing its language or cancelling generation stops automatic continuation. Changes to
+it makes one tool-free model request using staged changes. When the staged diff
+fits the estimated input capacity, the request includes it in full. For larger
+diffs CLAT selects file statistics and patch excerpts locally, reserving room for
+the reply. Editing the message, changing its language or cancelling generation
+stops automatic continuation. Changes to
 HEAD/index invalidate approval; the generated description remains available for review.
 Retries reconcile the original operation rather than producing another commit.
 

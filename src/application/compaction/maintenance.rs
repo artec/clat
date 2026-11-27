@@ -105,6 +105,11 @@ impl DurableMaintenance<'_> {
             };
             let before = self.sessions.surface_nodes().map_err(|e| e.to_string())?;
             let index = live_index(items, &before, event.seq)?;
+            // File pages carry a continuation cursor and version. Slicing their
+            // JSON as prose would corrupt that contract.
+            if is_file_page(items, index) {
+                continue;
+            }
             if let Some((_, evidence)) = self.source_note(event.seq) {
                 pruned.insert(0, json!({"type":"text","text":evidence}));
             }
@@ -391,6 +396,23 @@ fn sweep_pointer(data: &Value) -> &'static str {
     } else {
         "/message/content/0/content"
     }
+}
+
+fn is_file_page(items: &[ModelItem], index: usize) -> bool {
+    let ModelItem::ToolResult(result) = &items[index] else {
+        return false;
+    };
+    if result.is_error {
+        return false;
+    }
+    if !result.tool_name.is_empty() {
+        return result.tool_name == "read_file";
+    }
+    // Replayed tool results carry only the call ID. Use its nearest preceding call.
+    items[..index].iter().rev().find_map(|item| match item {
+        ModelItem::ToolCall(call) if call.id == result.call_id => Some(call.name.as_str()),
+        _ => None,
+    }) == Some("read_file")
 }
 
 fn live_index(
