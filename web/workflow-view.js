@@ -83,15 +83,19 @@ function renderWorkflowGoal(view,goal){
   }
   detail.append(actions);
   renderGoalHandoff(view, goal);
-  if(goal.lastResult){
-    const result=el('div','rich-text workflow-result');
-    renderMarkdown(result,goal.lastResult);
-    detail.append(el('h3','workflow-result-heading',()=>workflowText('latest_result')),result);
-  }
+  if(goal.lastResult) renderWorkflowGoalResult(detail, goal.lastResult);
   if(goal.blockedReason)detail.append(el('p','picker-hint',()=>goal.blockedReason.code==='awaiting-user-acceptance'?workflowText('acceptance_help'):goal.blockedReason.message));
   const linked=value.documents.findLast(doc=>doc.goal_id===goal.id);
   if(linked)detail.append(workflowViewButton(view,'view_plan',()=>view.select('plan:'+linked.id+':'+linked.revision)));
   detail.append(el('p','picker-hint',()=>CLATI18n.msg('workflow.goal_progress',{rounds:goal.roundsStarted,tokens:goal.tokensUsed})));
+}
+// Persisted when acceptance has no typed summary. Translate this sentence only.
+const WORKFLOW_ACCEPTED_RESULT = 'Accepted by user';
+function renderWorkflowGoalResult(detail, text) {
+  const result = el('div', 'rich-text workflow-result');
+  if (text === WORKFLOW_ACCEPTED_RESULT) result.append(el('p', '', () => workflowText('accepted_by_user')));
+  else renderMarkdown(result, text);
+  detail.append(el('h3', 'workflow-result-heading', () => workflowText('latest_result')), result);
 }
 function renderWorkflowGoalFeedback(view,goal){
   view.editing=true;const form=el('form','workflow-goal-form'),input=el('textarea','');input.rows=4;
@@ -271,8 +275,11 @@ function workflowGoalRow(view, value) {
     selected:view.selection === 'goal', action:() => view.select('goal'),
   }));
   if (goal && goal.phase !== 'complete' && builtinEnabled(value, 'builtin.goal')) {
-    const button = navigationIcon(() => workflowText(goal.handoff ? 'handoff_manage_active' : 'handoff_manage'), 'handoff',
-      () => void chooseGoalHandoff(view, goal.id));
+    const button = navigationIcon(() => workflowText(goal.handoff ? 'handoff_status_on' : 'handoff_status_off'), 'handoff',
+      () => void chooseGoalHandoff(goal.id, {
+        visible: () => toolViewIsOpen(view.page),
+        report: error => CLATI18n.bind(view.status, 'textContent', () => error.message),
+      }));
     button.dataset.action = 'goal-handoff';
     button.dataset.configured = String(Boolean(goal.handoff));
     button.setAttribute('aria-haspopup', 'dialog');
@@ -281,10 +288,10 @@ function workflowGoalRow(view, value) {
   return row;
 }
 
-async function chooseGoalHandoff(view, goalId) {
+async function chooseGoalHandoff(goalId, {visible, report}) {
   const owner = [state.sessionId, state.selectionGeneration, state.stream];
   const current = () => owner[0] === state.sessionId && owner[1] === state.selectionGeneration &&
-    owner[2] === state.stream && toolViewIsOpen(view.page);
+    owner[2] === state.stream && visible();
   try {
     const [{models, settings}, value] = await Promise.all([
       rpc('model.handoff.get', {}), rpc('workflow.details', {}),
@@ -332,7 +339,7 @@ async function chooseGoalHandoff(view, goalId) {
     const handoff = result === 'apply' ? settings : null;
     await sendWorkflowIntent({...target,action:'configure_goal_handoff',handoff}, value);
   } catch (error) {
-    if (current()) CLATI18n.bind(view.status, 'textContent', () => error.message);
+    if (current()) report(error);
   }
 }
 

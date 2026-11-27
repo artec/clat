@@ -591,12 +591,15 @@ test('Companion utility saves a handoff queue and the Goal row applies it', asyn
   await page.fill('#prompt', 'Finish the handoff regression');
   await page.locator('#prompt').press('Enter');
   const timer = page.locator('#composer-goal-timer');
+  const handoffStatus = page.locator('#composer-goal-handoff-status');
+  await expect(handoffStatus).toBeHidden();
   await expect(timer).toHaveAttribute('data-running', 'true', LIVE);
   const initialDuration = await timer.locator('time').getAttribute('datetime');
   await expect(timer.locator('time')).not.toHaveAttribute('datetime', initialDuration, LIVE);
   await page.locator('#composer-goal-details').click();
-  const handoff = page.locator('#workflow-details [data-action=goal-handoff]');
-  await handoff.click();
+  const goalHandoff = page.locator('#workflow-details [data-action=goal-handoff]');
+  await expect(goalHandoff).toHaveAttribute('data-configured', 'false');
+  await goalHandoff.click();
   await expect(dialog.locator('select')).toHaveValue('pause');
   await dialog.locator('[data-role=accept]').click();
   await expect.poll(
@@ -604,16 +607,22 @@ test('Companion utility saves a handoff queue and the Goal row applies it', asyn
     LIVE
   ).toBe(false);
   await expect(timer).toHaveAttribute('data-running', 'false', LIVE);
-  await handoff.click();
+  await goalHandoff.click();
   await dialog.locator('select').selectOption('apply');
   await dialog.locator('[data-role=accept]').click();
   const goalFacts = () => page.evaluate(async () => (await rpc('workflow.details', {})).goal.goal?.handoff || null);
   await expect.poll(goalFacts, LIVE).toMatchObject({threshold:15, note:'Continue with the targeted test.',
     routes:[expect.any(Object), {profile:'Handoff C'}, {profile:'Handoff B'}]});
-  await handoff.click();
+  await expect(goalHandoff).toHaveAttribute('data-configured', 'true', LIVE);
+  await page.click('#nav-workbench');
+  await expect(handoffStatus).toBeVisible(LIVE);
+  await handoffStatus.click();
   await dialog.locator('select').selectOption('remove');
   await dialog.locator('[data-role=accept]').click();
   await expect.poll(goalFacts, LIVE).toBeNull();
+  await expect(handoffStatus).toBeHidden(LIVE);
+  await page.locator('#composer-goal-details').click();
+  await expect(goalHandoff).toHaveAttribute('data-configured', 'false', LIVE);
   await page.click('#nav-settings');
   await page.click('[data-settings-category="utility"]');
   await expect(savedOrder.first()).toContainText('Handoff C', LIVE);

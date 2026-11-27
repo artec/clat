@@ -72,7 +72,12 @@ impl GoalViewDto {
             );
         }
         if let Some(result) = &state.last_result {
-            parts.push(UiMessage::new("command.goal_result").arg("result", result.clone()));
+            let message = UiMessage::new("command.goal_result");
+            parts.push(if result == crate::goal::ACCEPTED_BY_USER_RESULT {
+                message.arg_message("result", UiMessage::new("workflow.accepted_by_user"))
+            } else {
+                message.arg("result", result.clone())
+            });
         }
         parts.push(
             UiMessage::new("command.goal_actions")

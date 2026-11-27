@@ -384,7 +384,7 @@ impl TrustedProjectApplication {
                 self.goal_complete(
                     revision,
                     if summary.is_empty() {
-                        "Accepted by user"
+                        crate::goal::ACCEPTED_BY_USER_RESULT
                     } else {
                         summary
                     },

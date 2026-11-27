@@ -854,6 +854,8 @@ candidate can receive the existing conversation context. Pause the Goal to apply
 an updated configuration or turn off handoff for that Goal. The handoff button
 can open during execution and offers a pause action. The timer above the
 composer shows cumulative Goal execution time and stops when the Goal pauses.
+The goal row in Plans and goals shows whether handoff is enabled. When enabled,
+the composer also shows a shortcut beside the timer to open handoff controls.
 The Companion utility page shows the saved queue and percentage threshold.
 
 CLAT checks the same allowance sources used by the sidebar, including linked

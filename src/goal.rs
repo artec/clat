@@ -21,6 +21,9 @@ pub(crate) use prompt::{GoalRoundDisplay, LEGACY_GOAL_TITLE, goal_round_display}
 
 const MAX_OBJECTIVE_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 16 * 1024;
+/// Stored when a person accepts a goal without typing a summary.
+/// Presentation translates this exact sentence; persisted goals keep it.
+pub const ACCEPTED_BY_USER_RESULT: &str = "Accepted by user";
 const MAX_ACCEPTANCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

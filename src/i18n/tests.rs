@@ -248,3 +248,31 @@ fn background_result_presentations_keep_english_facts_and_diagnostics() {
         assert_ne!(text, message.english());
     }
 }
+
+#[test]
+fn an_accepted_goal_result_is_translated_without_replacing_authored_text() {
+    fn overview(result: &str) -> crate::application::GoalViewDto {
+        serde_json::from_value(serde_json::json!({
+            "armed": false,
+            "goal": {
+                "id": "g1", "objective": "deliver", "acceptance": {"kind": "user"},
+                "phase": "complete", "revision": 3, "roundsStarted": 1, "failures": 0,
+                "tokensUsed": 20, "elapsedMs": 100,
+                "limits": {"maxRounds": 0, "maxTokens": 0, "maxTimeSecs": 0, "maxFailures": 0},
+                "createdAt": 1, "updatedAt": 2, "lastResult": result
+            }
+        }))
+        .expect("goal overview")
+    }
+    let accepted = overview(crate::goal::ACCEPTED_BY_USER_RESULT);
+    let authored = overview("partial");
+    for locale in [Locale::Simplified, Locale::Traditional] {
+        let context = LocaleContext::new(locale);
+        let text = accepted.localized_text(context);
+        assert!(text.contains(context.text("workflow.accepted_by_user")));
+        assert!(!text.contains(crate::goal::ACCEPTED_BY_USER_RESULT));
+        let authored_text = authored.localized_text(context);
+        assert!(authored_text.contains("partial"));
+        assert!(!authored_text.contains(context.text("workflow.accepted_by_user")));
+    }
+}

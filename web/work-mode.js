@@ -77,8 +77,24 @@ function installComposerGoalBar() {
   const feedback = shellButton('composer-goal-feedback','chat',()=>workflowText('feedback_continue'),()=>workflowController.feedback(composerWorkflow()?.goal?.goal?.id));
   const remove = shellButton('composer-goal-remove','trash',()=>workflowText('delete_goal'),()=>act('clear'));
   const expand = shellButton('composer-goal-details','open',()=>CLATI18n.msg('web.goal_details'),()=>workflowController.goal());
+  const handoffStatus = el('button', 'composer-goal-handoff-status');
+  handoffStatus.id = 'composer-goal-handoff-status';
+  handoffStatus.type = 'button';
+  handoffStatus.setAttribute('aria-haspopup', 'dialog');
+  handoffStatus.append(svgIcon('handoff'));
+  handoffStatus.onclick = () => {
+    const goalId = composerWorkflow()?.goal?.goal?.id;
+    if (goalId) void chooseGoalHandoff(goalId, {
+      visible: () => Boolean(handoffStatus.getClientRects().length),
+      report: error => updateRunState(error.message),
+    });
+  };
+  const handoffLabel = () => workflowText('handoff_manage_active');
+  CLATI18n.attribute(handoffStatus, 'title', handoffLabel);
+  CLATI18n.attribute(handoffStatus, 'aria-label', handoffLabel);
+  handoffStatus.hidden = true;
   const timer = createGoalTimer();
-  bar.append(details,timer.element,remove,pause,start,accept,feedback,expand);
+  bar.append(details,handoffStatus,timer.element,remove,pause,start,accept,feedback,expand);
   dom['composer-shell'].before(bar);
   let acting = false;
   async function act(verb) {
@@ -108,6 +124,8 @@ function installComposerGoalBar() {
     const pausing = goal.phase === 'active' && armed;
     const awaiting = goal.blockedReason?.code === 'awaiting-user-acceptance';
     bar.dataset.goalId = goal.id;
+    handoffStatus.hidden = !goal.handoff;
+    handoffStatus.disabled = blocked;
     CLATI18n.bind(status,'textContent',()=>workflowText(workflowGoalStatus(value)));
     objective.textContent = goal.objective;
     details.title = goal.objective;

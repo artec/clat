@@ -192,8 +192,13 @@ fn goal_entry(value: &Value, locale: LocaleContext) -> Option<WorkflowEntry> {
         text.push_str(&format!("\n{}", locale.render(&progress)));
     }
     if let Some(result) = state["lastResult"].as_str().filter(|s| !s.is_empty()) {
+        let rendered = if result == crate::goal::ACCEPTED_BY_USER_RESULT {
+            locale.text("workflow.accepted_by_user")
+        } else {
+            result
+        };
         text.push_str(&format!(
-            "\n\n{}\n{result}",
+            "\n\n{}\n{rendered}",
             locale.text("workflow.latest_result")
         ));
     }
@@ -233,6 +238,7 @@ fn goal_status(value: &Value) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clat_core::client_ports::presentation::Locale;
 
     #[test]
     fn workflow_view_keeps_each_plan_revision_and_full_content() {
@@ -272,5 +278,27 @@ mod tests {
         assert!(entries[0].text.contains(&progress));
         assert!(entries[0].text.contains("diagnostic"));
         assert!(entries[0].text.contains("partial"));
+    }
+
+    #[test]
+    fn accepted_goal_result_is_translated_and_authored_text_stays_verbatim() {
+        let accepted = serde_json::json!({"goal":{"armed":false,"goal":{
+            "objective":"deliver", "phase":"complete",
+            "lastResult": crate::goal::ACCEPTED_BY_USER_RESULT
+        }}});
+        let authored = serde_json::json!({"goal":{"armed":false,"goal":{
+            "objective":"deliver", "phase":"complete", "lastResult":"partial"
+        }}});
+        for locale in [Locale::English, Locale::Simplified, Locale::Traditional] {
+            let context = LocaleContext::new(locale);
+            let text = &workflow_entries(&accepted, context)[0].text;
+            assert!(text.contains(context.text("workflow.accepted_by_user")));
+            if locale != Locale::English {
+                assert!(!text.contains(crate::goal::ACCEPTED_BY_USER_RESULT));
+            }
+            let authored_text = &workflow_entries(&authored, context)[0].text;
+            assert!(authored_text.contains("partial"));
+            assert!(!authored_text.contains(context.text("workflow.accepted_by_user")));
+        }
     }
 }
