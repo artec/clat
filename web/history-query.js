@@ -6,16 +6,19 @@ function installHistoryQuery() {
   document.querySelector('.sidebar-footer').prepend(trigger);
   const dialog = el('section', 'history-dialog'); dialog.id = 'history-dialog';
   const query = el('input', ''); query.type = 'search'; query.maxLength = 512;
-  const {element: scope, input: all, text: trustedProjects} = navigationTrustedProjects('history-all-projects');
+  const scope = navigationProjectScope({
+    id: 'history-project-scope',
+    onChange: () => void search(false),
+  });
   const upload = el('input'); upload.type = 'file'; upload.accept = '.zip,application/zip'; upload.hidden = true;
   const status = el('p', 'settings-note'); status.setAttribute('role', 'status');
   const results = el('div', 'history-results');
   const more = el('button', '', () => msg('more')); more.type = 'button'; more.hidden = true;
   const view=createNavigationPage(dialog,{title:()=>shellText('history'),query,searchLabel:()=>msg(source==='imported'?'archive_query':'query'),onOverview:clearReader});
   const detail=view.body;detail.classList.add('history-detail');
-  view.filters.append(scope);view.list.append(results,more);status.className='navigation-status';view.sidebar.insertBefore(status,view.list);document.body.append(dialog);
-  let generation=0,detailGeneration=0,cursor=null,activeQuery={trusted_projects:false},reader=null,selected=null,searching=false;
-  let transferring=false, overviewHits=[];
+  view.list.append(results,more);status.className='navigation-status';view.sidebar.insertBefore(status,view.list);document.body.append(dialog);
+  let generation=0,detailGeneration=0,cursor=null,activeQuery={trusted_projects:true},reader=null,selected=null,searching=false;
+  let transferring=false, overviewHits=[], filterProject=null;
   const tabs = navigationTabs([
     ['local', () => msg('archive_local')],
     ['imported', () => msg('archive_imported')],
@@ -25,6 +28,7 @@ function installHistoryQuery() {
   });
   selectSource(source);
   view.filters.append(tabs.element, upload);
+  view.filters.before(scope.element);
   view.actions([
     viewAction('search','search',()=>msg('search'),()=>search(false),true,()=>!searching),
     viewAction('archive-import','upload',()=>msg('archive_import'),()=>upload.click(),true,()=>!transferring),
@@ -32,8 +36,8 @@ function installHistoryQuery() {
   ]);
   view.context({crumbs:()=>[
     {label:()=>shellText('history'),run:clearReader},
-    {label:()=>activeQuery.trusted_projects?trustedProjects():projectDisplayName(selected?.project||state.workbench?.project?.root,state.workbench?.project?.name)},
-    ...(selected&&activeQuery.trusted_projects?[{label:()=>projectDisplayName(selected.project)}]:[]),
+    {label:()=>scope.label()},
+    ...(selected&&scope.trusted?[{label:()=>projectDisplayName(selected.project)}]:[]),
     ...(selected?[{label:()=>historyTitle||selected.session}]:[]),
   ]});let historyTitle='';
   function overview(){
@@ -81,16 +85,30 @@ function installHistoryQuery() {
     return item;
   }
 
+  function queryScope() {
+    if (scope.trusted) return {trusted_projects: true, project: null};
+    const root = scope.value;
+    if (root === state.workbench?.project?.root) return {trusted_projects: false, project: root};
+    return {trusted_projects: true, project: root};
+  }
   async function search(append) {
-    if (!append) { activeQuery = { query: query.value, trusted_projects: all.checked }; overviewHits=[];clearReader(); }
+    if (!append) {
+      const next = queryScope();
+      activeQuery = { query: query.value, trusted_projects: next.trusted_projects };
+      filterProject = next.project;
+      overviewHits=[];clearReader();
+    }
     await attempt(async (ticket) => {
       const page = source === 'imported'
         ? {hits: await rpc('history.archive.list', activeQuery)}
         : await rpc('history.search', { ...activeQuery, cursor: append ? cursor : null });
       if (ticket !== generation) return;
+      const hits = filterProject
+        ? page.hits.filter(hit => hit.reference.project === filterProject)
+        : page.hits;
       if (!append) { results.replaceChildren(); }
-      results.append(...page.hits.map(hitNode)); cursor = page.next_cursor ?? null; more.hidden = !cursor;
-      if(!append){overviewHits=page.hits.slice(0,6);overview();}
+      results.append(...hits.map(hitNode)); cursor = page.next_cursor ?? null; more.hidden = !cursor;
+      if(!append){overviewHits=hits.slice(0,6);overview();}
       CLATI18n.bind(status, 'textContent', () => page.truncated ? msg('bounded') : (!results.children.length ? msg(source==='imported'?'archive_empty':'empty') : ''));
     });
   }
@@ -161,7 +179,6 @@ function installHistoryQuery() {
     });
   };
 
-  all.onchange = () => void search(false);
   query.addEventListener('input', () => { if (!query.value.trim()) void search(false); });
   query.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();void search(false);}};
   more.onclick = () => void search(true);

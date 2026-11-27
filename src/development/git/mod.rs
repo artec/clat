@@ -7,6 +7,7 @@ mod actions;
 mod backups;
 mod command;
 mod commit_workflow;
+mod evidence;
 mod history;
 mod index;
 mod model;
@@ -16,6 +17,7 @@ mod reconcile;
 mod recovery;
 mod repositories;
 mod settings;
+mod staged;
 use settings::GitSettings;
 #[cfg(test)]
 pub(super) fn test_repository_lock(project: &Project) -> Result<Arc<Mutex<()>>, String> {

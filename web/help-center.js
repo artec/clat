@@ -61,6 +61,7 @@ function createHelpArticle(topic, select) {
 function createHelpCenter() {
   const page=el('section','help-page');page.id='help-dialog';
   const view=createNavigationPage(page,{title:()=>shellText('help'),searchLabel:()=>helpText('search')});
+  view.list.classList.add('sidebar-grouped-list');
   let selected='chat',source=null,requested=null,selection=0;const positions=new Map();
   function select(id) {
     const topic=HELP_TOPICS.find(row=>row.id===id);if(!topic)return;
@@ -80,8 +81,11 @@ function createHelpCenter() {
     view.list.replaceChildren();
     for(const group of ['conversation','tools','pages','settings']){
       const rows=matches.filter(topic=>topic.group===group);if(!rows.length)continue;
-      const section=el('section','help-topic-group');section.append(el('h3','',()=>helpText(group)));
-      for(const topic of rows)section.append(navigationRow({title:()=>helpText(topic.id+'_title'),icon:topic.icon,selected:topic.id===selected,action:()=>select(topic.id)}));
+      const section=sidebarNavigationGroup(()=>helpText(group));
+      for(const topic of rows)section.append(navigationRow({
+        title:()=>helpText(topic.id+'_title'), icon:topic.icon, selected:topic.id===selected,
+        action:()=>select(topic.id), className:'sidebar-nav-row',
+      }));
       view.list.append(section);
     }
     if(!matches.length){

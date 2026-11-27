@@ -6,7 +6,16 @@ function developmentFileIcon(path){
 }
 function editorMenu(items,source,x,y){
   const menu=el('div','session-context-menu'),listeners=new AbortController();menu.setAttribute('role','menu');
-  let closed=false;const close=()=>{if(closed)return;closed=true;listeners.abort();menu.remove();};
+  const reportsExpanded = source.getAttribute('aria-haspopup') === 'menu';
+  if (reportsExpanded) source.setAttribute('aria-expanded', 'true');
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (reportsExpanded) source.setAttribute('aria-expanded', 'false');
+    listeners.abort();
+    menu.remove();
+  };
   for (const item of items) {
     const button = el('button');
     button.type = 'button';
@@ -39,8 +48,19 @@ function createEditorLayout(actions){
   const sidebar=el('aside','sidebar editor-sidebar navigation-sidebar'),head=el('header','sidebar-head navigation-head');
   head.append(el('strong','',()=>devText('files')));
   const icons=el('div','editor-head-actions');
-  for(const [key,icon,run]of [['new_file','file-plus',()=>actions.create(false)],['new_folder','folder-plus',()=>actions.create(true)],['refresh','refresh',()=>actions.refresh()],['collapse_all','collapse-all',()=>actions.collapse()]])icons.append(navigationIcon(()=>devText(key),icon,run));
-  const more=navigationIcon(()=>devText('file_actions'),'more',()=>editorPopup([{key:'recover_drafts',icon:'restore',run:()=>actions.recover()}],more));icons.append(more);
+  const quickActions = [
+    ['new_file', 'file-plus', () => actions.create(false)],
+    ['new_folder', 'folder-plus', () => actions.create(true)],
+    ['refresh', 'refresh', () => actions.refresh()],
+  ];
+  for (const [key, icon, run] of quickActions) icons.append(navigationIcon(() => devText(key), icon, run));
+  const more = navigationIcon(() => devText('file_actions'), 'more', () => editorPopup([
+    { key: 'collapse_all', icon: 'collapse-all', run: () => actions.collapse() },
+    { key: 'recover_drafts', icon: 'restore', run: () => actions.recover() },
+  ], more));
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  icons.append(more);
   const {element:search,input:query}=navigationSearch(null,()=>devText('find_file'));
   const root=el('button','editor-project');root.type='button';root.append(svgIcon('chevron-down'),svgIcon('folder'),el('strong','',editorProjectName));root.setAttribute('aria-expanded','true');
   const list=el('nav','review-files editor-tree');CLATI18n.attribute(list,'aria-label',()=>devText('files'));list.setAttribute('role','tree');

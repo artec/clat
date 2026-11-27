@@ -104,41 +104,113 @@ impl GitService {
         }
         Ok(())
     }
-    pub(super) fn staged_diff(&self, index: &FrozenIndex) -> Result<String, String> {
+    pub(super) fn staged_diff<'a>(
+        &'a self,
+        index: &'a FrozenIndex,
+        head: &str,
+        cancel: &CancelToken,
+    ) -> Result<StagedDiff<'a>, String> {
         let worktree = DiffWorktree::new(&self.store)?;
-        let mut command = command::base(&self.project, false)?;
-        let git_dir = String::from_utf8(command::query(
-            &self.project,
-            &["rev-parse", "--absolute-git-dir"],
-        )?)
-        .map_err(|_| "git_encoding")?;
-        // --cached and even --bare can reuse stat-matching live files.
-        // Both cwd and worktree must be empty so Git reads staged blobs.
-        command
-            .current_dir(&worktree.path)
-            .arg(format!("--git-dir={}", git_dir.trim()))
+        let mut cmd = command::base(&self.project, false)?;
+        cmd.args(["rev-parse", "--absolute-git-dir"]);
+        let git_dir = captured_text(capture_diff(cmd, 64 * 1024, cancel)?)?;
+        // Explicitly pin the old side of both metadata and patch queries.
+        let base = if head.is_empty() {
+            let mut cmd = command::base(&self.project, false)?;
+            cmd.args(["hash-object", "-t", "tree", "--stdin"]);
+            captured_text(capture_diff(cmd, 256, cancel)?)?
+                .trim()
+                .to_owned()
+        } else {
+            head.to_owned()
+        };
+        Ok(StagedDiff {
+            project: &self.project,
+            worktree,
+            git_dir: git_dir.trim_end_matches(['\r', '\n']).to_owned(),
+            index: index.path(),
+            base,
+        })
+    }
+}
+
+pub(super) struct StagedDiff<'a> {
+    project: &'a Project,
+    worktree: DiffWorktree,
+    git_dir: String,
+    index: &'a Path,
+    base: String,
+}
+
+impl StagedDiff<'_> {
+    pub(super) fn capture(
+        &self,
+        options: &[&str],
+        paths: &[std::ffi::OsString],
+        cap: usize,
+        cancel: &CancelToken,
+    ) -> Result<crate::process::Captured, String> {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let mut cmd = command::base(self.project, false)?;
+        // An empty cwd and worktree prevent Git from reusing stat-matching live files.
+        cmd.current_dir(&self.worktree.path)
+            .arg(format!("--git-dir={}", self.git_dir))
             .arg("--work-tree")
-            .arg(command::path_argument(&worktree.path));
-        command
-            .env("GIT_INDEX_FILE", command::path_argument(index.path()))
+            .arg(command::path_argument(&self.worktree.path))
+            .env("GIT_INDEX_FILE", command::path_argument(self.index))
             .args([
                 "diff",
                 "--cached",
                 "--no-ext-diff",
                 "--no-textconv",
-                "--numstat",
-                "--patch",
-            ]);
-        let result = crate::process::capture_command(
-            command,
-            16 * 1024 * 1024,
-            std::time::Duration::from_secs(10),
-        )?;
-        if !result.status.success() {
-            return Err("git_failed".into());
-        }
-        String::from_utf8(result.stdout).map_err(|_| "git_encoding".into())
+                "--no-color",
+                "--ignore-submodules=none",
+                "--submodule=short",
+            ])
+            .args(options)
+            .arg(&self.base)
+            .arg("--")
+            .args(paths);
+        capture_diff(cmd, cap, cancel)
     }
+
+    pub(super) fn has_changes(&self, cancel: &CancelToken) -> Result<bool, String> {
+        match self.capture(&["--quiet"], &[], 4096, cancel)?.status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => Err("git_failed".into()),
+        }
+    }
+}
+
+fn captured_text(result: crate::process::Captured) -> Result<String, String> {
+    if !result.status.success() {
+        return Err("git_failed".into());
+    }
+    String::from_utf8(result.stdout).map_err(|_| "git_encoding".into())
+}
+
+fn capture_diff(
+    cmd: std::process::Command,
+    cap: usize,
+    cancel: &CancelToken,
+) -> Result<crate::process::Captured, String> {
+    crate::process::capture_command_cancellable(
+        cmd,
+        cap,
+        std::time::Duration::from_secs(10),
+        cancel,
+        false,
+    )
+    .map_err(|error| {
+        if cancel.is_cancelled() {
+            "cancelled".into()
+        } else {
+            error
+        }
+    })
 }
 
 struct DiffWorktree {

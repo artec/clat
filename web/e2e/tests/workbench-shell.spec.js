@@ -67,10 +67,12 @@ test('resources and the conversation files tool share the open editor and unsave
     await content.fill('Unsaved in the shared editor');
     const section=resources.locator('#resource-section');
     for(const value of ['materials','bookmarks']){
-      await section.selectOption(value);
+      await section.click();
+      await page.locator(`[role=menuitem][data-action=${value}]`).click();
       await expect(editor).toBeHidden();
     }
-    await section.selectOption('files');
+    await section.click();
+    await page.locator('[role=menuitem][data-action=files]').click();
     await expect(content).toHaveText('Unsaved in the shared editor');
 
     await page.click('#nav-workbench');
@@ -88,6 +90,36 @@ test('resources and the conversation files tool share the open editor and unsave
     await page.click('#nav-workbench');
     await expect(page.locator('#prompt')).toHaveValue('Unsent conversation draft');
   } finally { fs.rmSync(file, { force: true }); }
+});
+
+test('resources collapses expanded directories from the file actions menu', async ({ page }) => {
+  const fs = require('node:fs'), path = require('node:path');
+  await openWorkbench(page, hostInfo('workbench'));
+  await page.evaluate(() => CLATI18n.setLanguage('en'));
+  const root = await page.evaluate(async () => (await rpc('workbench.info', {})).project.root);
+  const folder = path.join(root, 'resources-collapse-fixture');
+  fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(folder, 'nested.md'), 'Nested file');
+  try {
+    await page.click('#nav-resources');
+    const resources = page.locator('#resources-dialog');
+    const directory = resources.getByRole('treeitem', { name: 'resources-collapse-fixture' });
+    await directory.click();
+    const nested = resources.getByRole('treeitem', { name: 'nested.md' });
+    await expect(nested).toBeVisible(LIVE);
+    await resources.locator('.resource-section-row').hover();
+    const actions = resources.locator('.resource-section-actions');
+    await expect(actions.getByRole('button', { name: 'Collapse all folders' })).toHaveCount(0);
+    const more = actions.getByRole('button', { name: 'File actions' });
+    await more.click();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('menuitem', { name: 'Collapse all folders' }).click();
+    await expect(more).toBeFocused();
+    await expect(directory).toHaveAttribute('aria-expanded', 'false');
+    await expect(nested).toBeHidden();
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
 });
 
 test('completed replies open project files and let users copy paths and preview URLs', async ({ page }) => {

@@ -41,7 +41,7 @@ pub(crate) use outcome::{CommandOutcome, classify_tool_error};
 pub(crate) use receipt::{Format, VerificationSpec, invocation_digest};
 pub(crate) mod review;
 pub(crate) use capture::capture_command;
-pub(crate) use capture::capture_command_cancellable;
+pub(crate) use capture::{Captured, capture_command_cancellable};
 
 /// Non-interactive process group. A windowless Windows host must not let a
 /// console-subsystem child such as `git.exe` allocate its own terminal.

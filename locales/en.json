@@ -3120,7 +3120,7 @@
   "help.terminal_answer": "Switching pages keeps running shells connected to the Host. Ended terminals stay listed while their output is available. Restarting the Host clears those entries and their output.",
   "help.resources_title": "Files, conversation material and bookmarks",
   "help.resources_summary": "Find project files or return to a referenced conversation source.",
-  "help.resources_step_1": "Choose Project Files, Conversation Materials or Bookmarks from the drop-down. Project Files shares the editor and its drafts with the conversation Files tool.",
+  "help.resources_step_1": "Use the arrow beside Project Files to switch among Project Files, Conversation Materials and Bookmarks. Project Files shares the editor and its drafts with the conversation Files tool.",
   "help.resources_step_2": "Conversation Material lets you choose a conversation and inspect its available references and attachments. Use the source action to read the originating message.",
   "help.resources_step_3": "Bookmark message content from a conversation, then find it under Bookmarks. Removing a bookmark does not delete the source message.",
   "help.resources_question": "Why is a file or attachment absent?",

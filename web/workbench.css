@@ -418,9 +418,6 @@ article.plan-artifact > h3 { font-size: 16px; margin: 0 0 12px; }
 .message-bookmark { grid-column: 2; justify-self: start; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; padding: 4px 8px; font-size: 11px; }
 
 /* Task directory, schedule summary and empty state. */
-.task-center .task-create { display:flex; justify-content:flex-start; width:calc(100% - 28px); min-height:36px; margin:0 14px 14px; padding:7px 10px; gap:8px; border-radius:8px; text-align:start; color:var(--accent); }
-.task-center .task-create:hover:not(:disabled), .task-center .task-create:focus-visible { background:var(--surface-input); }
-.task-create svg { width:16px; height:16px; flex:none; }
 .task-directory-group + .task-directory-group { margin-top:14px; }
 .task-directory-group > h3 { margin:5px 10px 6px; color:var(--text-muted); font-size:var(--text-size-secondary); font-weight:500; }
 .task-directory-item { position:relative; }

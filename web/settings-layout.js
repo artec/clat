@@ -53,6 +53,7 @@ function installSettingsLayout() {
   const page = dom['settings-dialog'], nav = page.querySelector('.settings-nav');
   const content = page.querySelector('.settings-content'), header = page.querySelector('.settings-panel > header');
   header.firstElementChild.classList.add('sidebar-head','navigation-head');
+  nav.classList.add('sidebar-grouped-list');
   const search = navigationSearch(null, () => settingsUi('search_categories'));
   header.append(search.element);
   const empty = el('p', 'settings-search-empty', () => settingsUi('no_categories')); empty.hidden = true; nav.append(empty);
@@ -78,10 +79,16 @@ function installSettingsLayout() {
     nav.querySelectorAll(':scope > .settings-group').forEach(node => node.remove());
     for (const [key, items] of groups) {
       let group = nav.querySelector(`[data-settings-group="${key}"]`);
-      if (!group) { group = el('div','settings-nav-group'); group.dataset.settingsGroup=key; group.append(el('small','settings-group',()=>pageText(key))); nav.insertBefore(group,empty); }
+      if (!group) {
+        group = sidebarNavigationGroup(() => pageText(key));
+        group.classList.add('settings-nav-group');
+        group.dataset.settingsGroup = key;
+        nav.insertBefore(group, empty);
+      }
       for (const [category, icon] of items) {
         const button = nav.querySelector(`[data-settings-category="${category}"]`);
         if (!button || button.parentElement.classList.contains('settings-nav-item')) continue;
+        button.classList.add('sidebar-nav-row');
         const row = el('div', 'settings-nav-item'); row.append(svgIcon(icon), button); group.append(row);
       }
     }

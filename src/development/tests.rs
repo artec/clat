@@ -680,19 +680,57 @@ fn development_git_keeps_middle_of_staged_patch_that_fits_model() {
 }
 
 #[test]
+fn development_git_manual_message_skips_oversized_patch() {
+    let f = Fixture::new();
+    f.repository();
+    // A textual diff exceeds the local capture limit. A hand-written
+    // commit needs an index check, regardless of patch size.
+    fs::write(
+        f.project.join("large.txt"),
+        "ordinary text\n".repeat(1_350_000),
+    )
+    .unwrap();
+    f.git(&["add", "--", "large.txt"]);
+    let (provider, _lease) = model(Arc::new(|_| panic!("manual commit must not use a model")));
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"commit","expected":f.snapshot(),"message":"Add large text file"}),
+        Some(provider),
+    );
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(row["message"], "Add large text file");
+}
+
+#[test]
 fn development_git_large_staged_patch_uses_one_model_request() {
     let f = Fixture::new();
     f.repository();
-    fs::write(f.project.join("bundle.js"), "MINIFIED".repeat(440_000)).unwrap();
+    fs::write(f.project.join("bundle.min.js"), "MINIFIED".repeat(440_000)).unwrap();
     fs::write(f.project.join("file.txt"), "SOURCE_DETAIL").unwrap();
-    f.git(&["add", "--", "bundle.js", "file.txt"]);
+    f.git(&["add", "--", "bundle.min.js", "file.txt"]);
+    fs::write(f.project.join("package-lock.json"), "LOCKFILE_CONTENT\n").unwrap();
+    f.git(&["add", "--", "package-lock.json"]);
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let expected = f.snapshot();
+    let start = Instant::now();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
     let (provider, _lease) = model(Arc::new(move |request| {
         observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let input = format!("{:?}", request.items);
+        let crate::model::ModelItem::User { content } = &request.items[0] else {
+            panic!("expected staged evidence");
+        };
+        let crate::model::ContentPart::Text(input) = &content[0] else {
+            panic!("expected text");
+        };
+        eprintln!(
+            "large bundle sample: {} evidence bytes, one request, {:?} local preparation",
+            input.len(),
+            start.elapsed(),
+        );
         if input.contains("SOURCE_DETAIL")
-            && input.contains("bundle.js")
+            && input.contains("bundle.min.js")
+            && input.contains("package-lock.json")
+            && !input.contains("LOCKFILE_CONTENT")
             && !input.contains("MINIFIED")
         {
             "Update source and bundle".into()
@@ -700,15 +738,217 @@ fn development_git_large_staged_patch_uses_one_model_request() {
             "Partial evidence".into()
         }
     }));
-    let head = f.git(&["rev-parse", "HEAD"]);
     let row = f.run(
-        json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+        json!({"operationId":dev_id(),"action":"generate","expected":expected}),
         Some(provider),
     );
     assert_eq!(row["phase"], "completed", "{row}");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(row["message"], "Update source and bundle");
     assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn development_git_excerpt_keeps_unique_middle_changes_and_samples_multiple_files() {
+    let f = Fixture::new();
+    f.repository();
+    let padding = "unchanged context\n".repeat(20);
+    for file in ["first.txt", "second.txt"] {
+        let before = format!(
+            "FIRST_OLD\n{padding}{}CENTER_OLD\n{}{padding}LAST_OLD\n",
+            "repeat old\n".repeat(400),
+            "repeat old\n".repeat(400)
+        );
+        fs::write(f.project.join(file), before).unwrap();
+    }
+    f.git(&["add", "--", "first.txt", "second.txt"]);
+    f.git(&["commit", "-qm", "Baseline"]);
+    for file in ["first.txt", "second.txt"] {
+        let after = format!(
+            "FIRST_NEW\n{padding}{}CENTER_{file}\n{}{padding}LAST_NEW\n",
+            "repeat new\n".repeat(400),
+            "repeat new\n".repeat(400)
+        );
+        fs::write(f.project.join(file), after).unwrap();
+    }
+    fs::write(f.project.join("tiny.md"), "DOCUMENTED_BEHAVIOR\n").unwrap();
+    fs::write(
+        f.project.join("line.txt"),
+        format!("START{}END\n", "é".repeat(2000)),
+    )
+    .unwrap();
+    f.git(&[
+        "add",
+        "--",
+        "first.txt",
+        "second.txt",
+        "tiny.md",
+        "line.txt",
+    ]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let (mut provider, _lease) = model(Arc::new(move |request| {
+        let crate::model::ModelItem::User { content } = &request.items[0] else {
+            panic!("expected user evidence")
+        };
+        let crate::model::ContentPart::Text(text) = &content[0] else {
+            panic!("expected textual evidence")
+        };
+        observed.lock().unwrap().push(text.clone());
+        "Describe behavior changes".into()
+    }));
+    provider.config.max_context_tokens = Some(3000);
+    for _ in 0..2 {
+        let row = f.run(
+            json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+            Some(provider.clone()),
+        );
+        assert_eq!(row["phase"], "completed", "{row}");
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one request per generation");
+    assert_eq!(
+        seen[0], seen[1],
+        "same staged input must yield the same evidence"
+    );
+    let input = &seen[0];
+    for evidence in [
+        "CENTER_first.txt",
+        "CENTER_second.txt",
+        "FIRST_NEW",
+        "LAST_NEW",
+        "occurs 800 times",
+        "DOCUMENTED_BEHAVIOR",
+        "bytes total",
+    ] {
+        assert!(input.contains(evidence), "missing {evidence} from {input}");
+    }
+    assert!(!input.contains("\n unchanged context"));
+}
+
+#[test]
+fn development_git_manifest_keeps_renames_binary_modes_and_literal_paths() {
+    let f = Fixture::new();
+    f.repository();
+    let unusual = "- 中 文.md";
+    fs::write(f.project.join(unusual), "STAGED_DOC_DETAIL\n").unwrap();
+    fs::write(f.project.join("opaque.bin"), b"\0BINARY_DETAIL").unwrap();
+    fs::write(f.project.join("yarn.lock"), "DO_NOT_SEND_LOCK_BODY\n").unwrap();
+    fs::write(
+        f.project.join("package.json"),
+        r#"{"dependencies":{"a":"12.3.4"}}"#,
+    )
+    .unwrap();
+    f.git(&["mv", "--", "file.txt", "renamed.txt"]);
+    f.git(&[
+        "add",
+        "--",
+        unusual,
+        "opaque.bin",
+        "yarn.lock",
+        "package.json",
+    ]);
+    f.git(&["update-index", "--chmod=+x", "renamed.txt"]);
+    fs::write(f.project.join(unusual), "UNSTAGED_DOC_DETAIL\n").unwrap();
+    let (provider, _lease) = model(Arc::new(move |request| {
+        let crate::model::ModelItem::User { content } = &request.items[0] else {
+            panic!("expected user evidence")
+        };
+        let crate::model::ContentPart::Text(text) = &content[0] else {
+            panic!("expected textual evidence")
+        };
+        for value in [
+            unusual,
+            "STAGED_DOC_DETAIL",
+            "renamed",
+            "file.txt",
+            "renamed.txt",
+            "opaque.bin",
+            " binary",
+            "100644 -> 100755",
+            "yarn.lock",
+            "12.3.4",
+        ] {
+            assert!(text.contains(value), "missing {value} from {text}");
+        }
+        for value in [
+            "BINARY_DETAIL",
+            "DO_NOT_SEND_LOCK_BODY",
+            "UNSTAGED_DOC_DETAIL",
+        ] {
+            assert!(!text.contains(value), "unexpected {value} from {text}");
+        }
+        "Describe staged changes".into()
+    }));
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+        Some(provider),
+    );
+    assert_eq!(row["phase"], "completed", "{row}");
+}
+
+#[test]
+fn development_git_cancel_before_collection_skips_model() {
+    let f = Fixture::new();
+    f.repository();
+    fs::write(f.project.join("file.txt"), "staged content\n").unwrap();
+    f.git(&["add", "--", "file.txt"]);
+    let expected = f.snapshot();
+    let request = json!({"operationId":dev_id(),"action":"generate","expected":expected});
+    let lock = super::git::test_repository_lock(&Project::new(&f.project)).unwrap();
+    let guard = lock.lock().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let (provider, _lease) = model(Arc::new(move |_| {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        "Unexpected request".into()
+    }));
+    f.service
+        .request("git.start", request.clone(), Some(provider))
+        .unwrap();
+    f.call("git.cancel", json!({"operationId":request["operationId"]}))
+        .unwrap();
+    drop(guard);
+    let row = f.run(request, None);
+    assert_eq!(row["phase"], "cancelled", "{row}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn development_git_generates_with_an_unborn_head() {
+    let f = Fixture::new();
+    f.git(&["init", "-q", "--template="]);
+    fs::write(f.project.join("README.md"), "INITIAL_DOCUMENTATION\n").unwrap();
+    f.git(&["add", "--", "README.md"]);
+    let (provider, _lease) = model(Arc::new(|request| {
+        assert!(format!("{:?}", request.items).contains("INITIAL_DOCUMENTATION"));
+        "Add initial documentation".into()
+    }));
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+        Some(provider),
+    );
+    assert_eq!(row["phase"], "completed", "{row}");
+    assert_eq!(f.snapshot()["head"], "");
+}
+
+#[test]
+fn development_git_lockfile_only_uses_statistics() {
+    let f = Fixture::new();
+    f.repository();
+    fs::write(f.project.join("yarn.lock"), "DO_NOT_SEND_LOCK_BODY\n").unwrap();
+    f.git(&["add", "--", "yarn.lock"]);
+    let (provider, _lease) = model(Arc::new(|request| {
+        let input = format!("{:?}", request.items);
+        assert!(input.contains("yarn.lock") && input.contains("+1 -0"));
+        assert!(!input.contains("DO_NOT_SEND_LOCK_BODY"));
+        "Update Yarn lockfile".into()
+    }));
+    let row = f.run(
+        json!({"operationId":dev_id(),"action":"generate","expected":f.snapshot()}),
+        Some(provider),
+    );
+    assert_eq!(row["phase"], "completed", "{row}");
 }
 
 #[test]

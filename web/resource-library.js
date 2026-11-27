@@ -249,17 +249,58 @@ function createResourceLibrary(shell) {
   const view=createNavigationPage(page,{title:()=>shellText('resources'),searchLabel:()=>pageText('search_resources')});
   const seats=new Map();let tab='files';
   const editorHost=el('div','resource-editor-host');editorHost.hidden=true;page.append(editorHost);
-  const sectionSelect=el('select','resource-section-select');
-  sectionSelect.id='resource-section';
-  CLATI18n.attribute(sectionSelect,'aria-label',()=>shellText('resources'));
-  for(const key of ['files','materials','bookmarks']){
-    const option=el('option','',()=>pageText(key));option.value=key;sectionSelect.append(option);
-  }
-  sectionSelect.onchange=()=>select(sectionSelect.value);
-  view.head.append(sectionSelect);
+  const sectionTitle=el('span','',()=>pageText(tab));
+  const sectionControl=el('button','resource-section-select');
+  sectionControl.type='button';
+  sectionControl.id='resource-section';
+  sectionControl.setAttribute('aria-haspopup','menu');
+  CLATI18n.attribute(sectionControl,'aria-label',()=>shellText('resources'));
+  sectionControl.append(sectionTitle,svgIcon('chevron-down'));
+  sectionControl.onclick=()=>{
+    const icons={files:'folder',materials:'file',bookmarks:'bookmark'};
+    editorPopup(['files','materials','bookmarks'].map(key=>({
+      key,
+      icon:icons[key],
+      label:()=>pageText(key),
+      run:()=>select(key),
+    })),sectionControl);
+  };
+  const sectionActions=el('div','project-list-actions resource-section-actions');
+  const sectionRow=el('div','section-row resource-section-row');
+  sectionRow.append(sectionControl,sectionActions);
+  const sectionNav=el('nav','session-nav resource-section-nav');
+  sectionNav.append(sectionRow);
+  view.query.closest('.session-search').after(sectionNav);
   const introduction=key=>navigationOverview({title:()=>pageText(key),description:()=>pageText('resource_'+key+'_intro'),icon:key==='bookmarks'?'bookmark':'file'});
   const status=el('div','navigation-status');view.sidebar.insertBefore(status,view.list);
   const refresh=()=>{const seat=seats.get(tab);seat?.dispose?.();seats.delete(tab);select(tab);};
+  const refreshAction=navigationIcon(()=>pageText('refresh'),'refresh',refresh);
+  let owningEditorActions=false;
+  function fileBrowser(){return viewContexts.get('file-browser');}
+  function returnEditorActions(){
+    if(!owningEditorActions)return;
+    const icons=fileBrowser()?.sidebar.querySelector('.editor-head-actions');
+    if(icons){icons.replaceChildren(...sectionActions.childNodes);icons.hidden=false;}
+    const title=fileBrowser()?.sidebar.querySelector('.navigation-head > strong');
+    if(title)CLATI18n.bind(title,'textContent',()=>devText('files'));
+    owningEditorActions=false;
+  }
+  function adoptEditorChrome(editor){
+    const title=editor.sidebar.querySelector('.navigation-head > strong');
+    if(title)CLATI18n.bind(title,'textContent',()=>shellText('resources'));
+    const icons=editor.sidebar.querySelector('.editor-head-actions');
+    if(icons&&!owningEditorActions){
+      icons.hidden=true;
+      sectionActions.replaceChildren(...icons.childNodes);
+      owningEditorActions=true;
+    }
+    editor.sidebar.querySelector(':scope > .session-search').after(sectionNav);
+  }
+  function showLibraryChrome(){
+    returnEditorActions();
+    sectionActions.replaceChildren(refreshAction);
+    view.query.closest('.session-search').after(sectionNav);
+  }
   function crumbs(){
     const editor=tab==='files'?developmentEditor?.selected:null;
     const layout=editorHost.firstElementChild||page;
@@ -278,31 +319,30 @@ function createResourceLibrary(shell) {
     else seat.resume?.();
   }
   function select(key){
-    const changing=tab!==key,focused=document.activeElement===sectionSelect;
+    const changing=tab!==key,focused=document.activeElement===sectionControl;
     const prior=seats.get(tab);if(prior){prior.scroll=[view.list.scrollTop,view.body.scrollTop];prior.query=view.query.value;}
-    tab=key;sectionSelect.value=key;
+    tab=key;CLATI18n.bind(sectionTitle,'textContent',()=>pageText(key));
     const files=key==='files';page.dataset.tab=key;
     editorHost.hidden=!files;
     view.sidebar.hidden=view.detail.hidden=files;
     if(files){
       shell.tools.embed('file-browser',editorHost);
-      const editor=viewContexts.get('file-browser');
-      const head=editor.sidebar.querySelector('.navigation-head');
+      const editor=fileBrowser();
       if(changing)delete editor.node.dataset.detail;
-      if(sectionControl.parentElement!==head)head.append(sectionControl);
+      adoptEditorChrome(editor);
       view.context({sidebar:editor.sidebar,layoutNode:editor.node,actions:editor.actions,crumbs});
     }else{
       if(changing)delete page.dataset.detail;
-      if(sectionControl.parentElement!==view.head)view.head.append(sectionControl);
+      showLibraryChrome();
       shell.tools.release('file-browser');
       view.context({sidebar:view.sidebar,layoutNode:null,actions:()=>[viewAction('refresh','refresh',()=>pageText('refresh'),refresh)],crumbs});
       showMetadata(key);
     }
-    if(focused)sectionSelect.focus({preventScroll:true});
+    if(focused)sectionControl.focus({preventScroll:true});
   }
   view.query.addEventListener('input',()=>seats.get(tab)?.filter?.());
   page.addEventListener('clat:page-enter',()=>select(tab));
-  page.addEventListener('clat:page-leave',()=>{view.head.append(sectionControl);shell.tools.release('file-browser');});
+  page.addEventListener('clat:page-leave',()=>{showLibraryChrome();shell.tools.release('file-browser');});
   const trigger=shellButton('resources-open','folder',()=>shellText('resources'),()=>presentPage(page));
   trigger.hidden=true;document.body.append(trigger,page);
   window.addEventListener('clat:workbench-updated',()=>void reconcileFileReferences());

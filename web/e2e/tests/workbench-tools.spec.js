@@ -151,7 +151,8 @@ test('FS-1 bounded real file preview, stale refusal and fixed range quote preser
   }, snapshot.version);
   expect(stale).toContain('File changed since preview');
   await expect(page.locator('#prompt')).toHaveValue('existing draft');
-  await resources.locator('.editor-head-actions').getByRole('button',{name:'Refresh',exact:true}).click();
+  await resources.locator('.resource-section-row').hover();
+  await resources.locator('.resource-section-actions').getByRole('button',{name:'Refresh',exact:true}).click();
   await expect(resources.locator('.cm-content')).toContainText('new second', LIVE);
 
   await page.setViewportSize({ width: 390, height: 844 });

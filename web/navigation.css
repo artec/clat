@@ -10,7 +10,6 @@
 .navigation-filters{display:flex;flex-direction:column;gap:10px;padding:0 14px 12px;flex:none;min-width:0}
 .navigation-filters:empty{display:none}
 .navigation-tabs{gap:4px;flex-wrap:wrap;padding:0;border:0}
-.navigation-project-scope{min-height:28px;width:fit-content;cursor:pointer}
 .navigation-filters > .navigation-tabs{display:flex;gap:6px}
 .shell-pages .navigation-filters > .navigation-tabs > button[role=tab]{flex:1 0 auto;white-space:nowrap;padding:5px 8px;border:1px solid transparent;color:var(--text-soft)}
 .shell-pages .navigation-filters > .navigation-tabs > button[role=tab]:hover:where(:not(:disabled)){background:var(--surface-raised);color:var(--text)}
@@ -84,9 +83,56 @@
 .navigation-detail>.schedule-interactions{flex:none;max-height:40%;overflow:auto;padding:12px 16px}
 .navigation-detail>.schedule-interactions:empty{display:none}
 
-/* Help uses the same searchable sidebar and full-width scroll owner as other pages. */
-.help-topic-group>h3{margin:18px 12px 8px;color:var(--text-muted);font-size:var(--text-size-secondary);font-weight:500}
-.help-topic-group:first-child>h3{margin-top:8px}
+/* Settings and Help share the grouped sidebar list. */
+.sidebar-grouped-list {
+  --sidebar-row-inset: 12px;
+  --sidebar-row-icon-size: 18px;
+  --sidebar-row-gap: 10px;
+  padding: 0 8px 24px;
+}
+.sidebar-nav-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+.sidebar-section-heading {
+  min-height: 37px;
+  margin: 0;
+  padding-block-end: 4px;
+}
+.sidebar-nav-group:not([hidden]) ~ .sidebar-nav-group:not([hidden]) {
+  margin-block-start: 12px;
+}
+.shell-pages .sidebar-grouped-list button.sidebar-nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sidebar-row-gap);
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px var(--sidebar-row-inset);
+  border-radius: 8px;
+  color: var(--text-soft);
+  font: 400 var(--text-size-ui)/1.5 var(--font-ui);
+  text-align: start;
+}
+.shell-pages .sidebar-grouped-list .sidebar-nav-row:hover {
+  color: var(--text);
+  background: var(--ink-3);
+}
+.shell-pages .sidebar-grouped-list .sidebar-nav-row:is([aria-current="page"], [aria-current="true"]) {
+  color: var(--text);
+  background: var(--surface-input);
+}
+.sidebar-grouped-list :is(.sidebar-nav-row, .settings-nav-item) > svg {
+  width: var(--sidebar-row-icon-size);
+  height: var(--sidebar-row-icon-size);
+  flex: none;
+  color: var(--text-muted);
+}
+.sidebar-grouped-list :is(.sidebar-nav-row[aria-current="true"], .settings-nav-item:has([aria-current="page"])) > svg {
+  color: var(--text);
+}
 .help-no-results{margin:16px 12px;color:var(--text-muted);font-size:var(--text-size-ui);line-height:1.8}
 .help-article{max-width:820px;overflow-wrap:anywhere}
 .help-intro>svg{width:28px;height:28px;color:var(--accent);margin-bottom:16px}
@@ -104,5 +150,71 @@
 
 .resources-page > [hidden] { display: none; }
 .resource-editor-host { grid-area: 1 / 1 / -1 / -1; min-width: 0; min-height: 0; overflow: hidden; }
-.resources-page .navigation-head:has(> .resource-section-select) > strong { display: none; }
-.resource-section-select { min-width: 0; }
+/* Lock conversation geometry: head 20px, search 14/16, section-nav 8 + row 10. */
+.resources-page > .navigation-sidebar > .sidebar-head.navigation-head,
+.resource-editor-host .editor-sidebar > .sidebar-head.navigation-head {
+  padding: 16px 20px;
+}
+.resources-page > .navigation-sidebar > .session-search,
+.resource-editor-host .editor-sidebar > .session-search {
+  margin: 0 14px 16px;
+  min-height: 36px;
+  background: transparent;
+  width: auto;
+}
+.session-nav:is(.resource-section-nav, .navigation-project-nav) {
+  flex: none;
+  overflow: visible;
+  padding-block-end: 0;
+}
+.shell-pages .resource-section-row > button.resource-section-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+.resource-section-select > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+}
+.resource-section-select > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--text-muted);
+  transform: translateY(2px);
+}
+.resource-section-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.resource-section-actions {
+  flex: none;
+}
+.resource-section-actions > .icon-button {
+  display: grid;
+  min-height: 0;
+  padding: 0;
+}
+.resource-section-actions:has(> [aria-expanded="true"]) {
+  opacity: 1;
+}
+@media (hover: hover) {
+  .resource-section-row:not(:hover, :focus-within) > .resource-section-actions:not(:has(> [aria-expanded="true"])) {
+    inline-size: 0;
+    overflow: hidden;
+  }
+}
+.editor-sidebar .editor-head-actions[hidden] {
+  display: none !important;
+}

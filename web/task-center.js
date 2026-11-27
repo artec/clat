@@ -129,14 +129,19 @@ function createTaskCenter() {
   const page = el('section', 'task-center'); page.id = 'jobs-dialog';
   const type = taskFilterControl('task-type', 'task_type', TASK_TYPES, 'all_types');
   const phase = taskFilterControl('task-status', 'task_status', TASK_STATUSES, 'all_statuses');
-  const {element: scope, input: all, text: trustedProjects} = navigationTrustedProjects('task-all-projects');
   const fields = el('div', 'task-filter-row'); fields.append(type, phase);
   const status = el('p', 'navigation-status'); status.setAttribute('role', 'status');
   const view = createNavigationPage(page, {title: () => shellText('tasks'), searchLabel: () => pageText('search_tasks'), onOverview:returnToOverview});
   const {list, body: detail, query} = view;
-  const create = shellButton('task-create', 'plus', () => pageText('create_task'), () => scheduleActions?.create(), false);
-  create.dataset.action = 'create_task'; create.classList.add('task-create');
-  view.head.after(create); view.filters.append(scope, fields);
+  const create = navigationIcon(() => pageText('create_task'), 'plus', () => scheduleActions?.create());
+  create.id = 'task-create'; create.dataset.action = 'create_task';
+  const scope = navigationProjectScope({
+    id: 'task-project-scope',
+    onChange: updateScope,
+  });
+  scope.actions.append(create);
+  view.filters.before(scope.element);
+  view.filters.append(fields);
   view.sidebar.insertBefore(status, list); document.body.append(page);
   const menus = createTaskMenu();
   let generation = 0, selection = 0, selected = null, restoreId = null;
@@ -147,8 +152,8 @@ function createTaskCenter() {
     actions: () => [viewAction('refresh', 'refresh', () => pageText('refresh'), () => refresh())],
     crumbs: () => [
       {label: () => shellText('tasks'), run: returnToOverview},
-      {label: () => all.checked ? trustedProjects() : projectDisplayName(projectRoot(), state.workbench?.project?.name)},
-      ...(selected && all.checked ? [{label: () => selected.project.title}] : []),
+      {label: () => scope.label()},
+      ...(selected && scope.trusted ? [{label: () => selected.project.title}] : []),
       ...(selected ? [{label: () => selected.name}] : []),
     ],
   });
@@ -160,7 +165,8 @@ function createTaskCenter() {
     const params = new URLSearchParams();
     if (type.value !== 'all') params.set('type', type.value);
     if (phase.value !== 'all') params.set('status', phase.value);
-    if (all.checked) params.set('scope', 'trusted');
+    if (scope.trusted) params.set('scope', 'trusted');
+    else { params.set('scope', 'project'); params.set('project', scope.value); }
     if (id) params.set('task', id);
     const search = params.toString();
     return search ? 'tasks?' + search : 'tasks';
@@ -174,9 +180,9 @@ function createTaskCenter() {
     menus.close();
     const term = query.value.trim().toLocaleLowerCase();
     const matches = items.filter(row => filtered(row) && (row.name.toLocaleLowerCase().includes(term)
-      || all.checked && row.project.title.toLocaleLowerCase().includes(term)));
+      || scope.trusted && row.project.title.toLocaleLowerCase().includes(term)));
     renderTaskList(list, matches, {
-      isSelected:row => same(selected, row), choose, showProject:all.checked,
+      isSelected:row => same(selected, row), choose, showProject:scope.trusted,
       canManage:row => Boolean(scheduleActions) && row.project.root === projectRoot(),
       onMenu:(source, rule) => menus.open(source, scheduleMenuActions(rule, scheduleActions)),
     });
@@ -219,9 +225,17 @@ function createTaskCenter() {
     return {...values, root: projectRoot(), title: projectDisplayName(projectRoot(), state.workbench?.project?.name)};
   }
   async function load() {
-    if (all.checked) return rpc('task.directory', {});
-    const local = await loadTaskCenterContent(state.workbench);
-    return {projects: [currentProject(local)], errors: local.errors};
+    if (scope.trusted) return rpc('task.directory', {});
+    const root = scope.value;
+    if (root === projectRoot()) {
+      const local = await loadTaskCenterContent(state.workbench);
+      return {projects: [currentProject(local)], errors: local.errors};
+    }
+    const directory = await rpc('task.directory', {});
+    return {
+      projects: directory.projects.filter(project => project.root === root),
+      errors: directory.errors,
+    };
   }
   async function refresh() {
     if (!pageIsOpen(page) || !context.isActive()) return;
@@ -246,12 +260,12 @@ function createTaskCenter() {
     rows(); navigate();
   }
   function updateScope() {
-    projects = []; items = []; list.replaceChildren(); restoreId = null; clearSelection();
+    projects = []; items = []; restoreId = null; clearSelection();
     CLATI18n.bind(status, 'textContent', () => pageText('loading'));
-    navigate(); overview(); void refresh();
+    rows(); navigate(); overview(); void refresh();
   }
   type.onchange = phase.onchange = filtersChanged;
-  all.onchange = updateScope; query.oninput = rows;
+  query.oninput = rows;
   page.addEventListener('clat:page-capture', () => { reading = detail.scrollTop; });
   page.addEventListener('clat:page-enter', () => { if (selected) show(selected, true); refreshViewContext(); });
   page.addEventListener('clat:page-leave', () => { generation++; selection++; menus.close(); reader?.dispose(); returnConversationPane(); });
@@ -269,10 +283,13 @@ function createTaskCenter() {
       const nextType = params.get('type'), nextStatus = params.get('status') || nextType;
       type.value = TASK_TYPES.includes(nextType) ? nextType : 'all';
       phase.value = TASK_STATUSES.includes(nextStatus) ? nextStatus : 'all';
-      const scopeChanged = all.checked !== (params.get('scope') === 'trusted');
-      all.checked = params.get('scope') === 'trusted'; restoreId = params.get('task');
-      if (scopeChanged) { projects = []; items = []; list.replaceChildren(); }
+      const nextScope = params.get('scope') === 'project' && params.get('project')
+        ? params.get('project') : 'trusted';
+      const scopeChanged = scope.value !== nextScope;
+      scope.value = nextScope; restoreId = params.get('task');
+      if (scopeChanged) { projects = []; items = []; }
       if (scopeChanged || selected?.id !== restoreId) clearSelection();
+      if (scopeChanged) rows();
       if (!restoreId) overview();
     },
     register(actions) { scheduleActions = actions; refreshViewContext(); },

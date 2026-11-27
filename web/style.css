@@ -180,8 +180,7 @@ button:disabled { cursor: default; opacity: .45; }
 .session-search kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; }
 .session-nav { min-height: 0; flex: 1; overflow-y: auto; padding: 0 8px 12px; }
 .section-row { display: flex; justify-content: space-between; padding: 5px 10px 8px; color: var(--text-muted); font: 11px var(--font-mono); }
-.session-nav > .section-row { align-items: center; }
-.session-nav > .section-row { min-height: 38px; font: 600 var(--text-size-secondary) var(--font-ui); }
+.session-nav > .section-row, .sidebar-section-heading { align-items: center; min-height: 41px; font: 600 var(--text-size-secondary) var(--font-ui); }
 .project-list-actions { display: flex; align-items: center; gap: 2px; opacity: 0; }
 .section-row:hover .project-list-actions, .section-row:focus-within .project-list-actions, .project-list-actions:has([aria-pressed="true"]) { opacity: 1; }
 .project-list-actions .icon-button { width: 28px; height: 28px; color: var(--text-muted); }

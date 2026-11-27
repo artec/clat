@@ -3472,9 +3472,10 @@ without selecting an execution target; raw event inspection remains under Advanc
 Continuing a conversation explicitly selects the target, while obeying the single
 Run constraint. Cross-project reading does not imply permission to send there.
 
-Tasks opens on the current project. Select **All trusted projects** to expand
-the list without opening other projects. **Type** distinguishes scheduled work
-(including job-triggered continuations) from background jobs. **Status** filters
+Tasks and History place the project selector directly below search. Choose one
+project or **All trusted projects** to filter the list. In Tasks, **Type**
+distinguishes scheduled work (including job-triggered continuations) from
+background jobs. **Status** filters
 for running, next executions or tasks that need attention, and combines with Type.
 The all-project list names each task's project. Selecting a task in another project
 opens its project and task details. Selecting a scheduled task retains its list and shows its fixed conversation;
@@ -3649,7 +3650,8 @@ The project file workspace uses a compact directory tree, preview/pinned tabs,
 clickable path breadcrumbs and a cursor/encoding/language status bar. Single-click
 previews a file; double-clicking or editing pins it. Folder and file menus contain
 file management, quoting and terminal actions. Search preserves the expanded tree
-when cleared. The overflow menu includes unsaved-file recovery. No Outline or
+when cleared. The file tree’s more menu includes **Collapse all folders** and
+unsaved-file recovery. No Outline or
 Timeline panel is shown. All saving remains manual; this interface does not run a
 formatter or rewrite indentation on open/save.
 
@@ -3679,10 +3681,12 @@ the field without committing. The message-language selector and Settings → Git
 one project preference: System, English, Simplified Chinese or Traditional Chinese.
 System means the initiating client's OS/browser language, independently of UI language.
 Generation uses the configured utility profile, otherwise the project's current model;
-it makes one tool-free model request using staged changes. When the staged diff
-fits the estimated input capacity, the request includes it in full. For larger
-diffs CLAT selects file statistics and patch excerpts locally, reserving room for
-the reply. Editing the message, changing its language or cancelling generation
+it makes one tool-free model request using staged changes. CLAT builds a local
+inventory of changed files and sends binary files, recognized dependency lockfiles,
+and minified JavaScript and CSS as statistics. When text patches exceed the
+model window, it keeps small patches and selects changed lines from larger patches
+across files. Handwritten messages use a staged-change check without building patches.
+Editing the message, changing its language or cancelling generation
 stops automatic continuation. Changes to
 HEAD/index invalidate approval; the generated description remains available for review.
 Retries reconcile the original operation rather than producing another commit.

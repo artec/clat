@@ -18,6 +18,9 @@ impl GitModel {
         output_limit: u32,
         cancel: &CancelToken,
     ) -> Result<String, String> {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
         let config = crate::model::internal_text_config(&self.config);
         let mut model = self
             .providers
@@ -57,7 +60,7 @@ impl GitModel {
     }
     fn generate(
         &self,
-        staged: &str,
+        staged: &[super::staged::StagedFile],
         style: &str,
         language: &str,
         preferences: &str,
@@ -90,53 +93,9 @@ impl GitModel {
             return Err("generation_failed".into());
         }
         let mut input = prefix;
-        if crate::model::estimate_tokens_conservative(staged) <= available {
-            input.push_str(staged);
-        } else {
-            // Byte-bounded excerpts fit even when the patch is mostly non-ASCII.
-            input.push_str(&staged_evidence(staged, available));
-        }
+        input.push_str(&super::evidence::render(staged, available, cancel)?);
         self.ask(&input, &instructions, output, cancel)
     }
-}
-
-// Keep file names and change counts first. Sample both ends of each patch so
-// a bundled file cannot consume the evidence budget of later source files.
-fn staged_evidence(staged: &str, budget: usize) -> String {
-    if staged.len() <= budget {
-        return staged.to_owned();
-    }
-    let mut sections = staged.split("\ndiff --git ");
-    let stats = sections.next().unwrap_or_default();
-    let mut result = excerpt(stats, budget);
-    let count = sections.clone().count();
-    let share = budget.saturating_sub(result.len()) / count.max(1);
-    for patch in sections {
-        if share < 32 {
-            break;
-        }
-        result.push_str("\ndiff --git ");
-        result.push_str(&excerpt(patch, share - 12));
-    }
-    result
-}
-
-fn excerpt(text: &str, limit: usize) -> String {
-    if text.len() <= limit {
-        return text.to_owned();
-    }
-    const GAP: &str = "\n[...]\n";
-    if limit < GAP.len() {
-        return String::new();
-    }
-    let half = (limit - GAP.len()) / 2;
-    let start = &text[..text.floor_char_boundary(half)];
-    let end = &text[text.ceil_char_boundary(text.len() - half)..];
-    format!(
-        "{}{GAP}{}",
-        start.rsplit_once('\n').map_or("", |(s, _)| s),
-        end.split_once('\n').map_or("", |(_, s)| s)
-    )
 }
 
 fn commit_instructions(language: &str, preferences: &str) -> String {
@@ -159,38 +118,35 @@ impl GitService {
         model: Option<GitModel>,
         settings: &GitSettings,
     ) -> Result<Value, String> {
+        let raw = value["message"].as_str().unwrap_or("");
+        let generate = raw.trim().is_empty() || value["action"] == "generate";
         let lock = command::repo_lock(&self.project)?;
-        let (request, index, staged) = {
+        let (request, index) = {
             let _guard = lock.lock().map_err(|_| "git_busy")?;
+            if op.cancel.is_cancelled() {
+                return Err("cancelled".into());
+            }
             let mut request = value.clone();
             if value["action"] == "commit" && settings.auto_stage {
                 self.stage_for_commit(op, &mut request)?;
             }
             let index = self.freeze_index(&request)?;
-            let staged = self.staged_diff(&index)?;
-            (request, index, staged)
+            (request, index)
         };
-        if staged.is_empty() {
-            return Err("nothing_staged".into());
-        }
         let value = &request;
-        let raw = value["message"].as_str().unwrap_or("");
-        let generate = raw.trim().is_empty() || value["action"] == "generate";
+        let diff = self.staged_diff(
+            &index,
+            value["expected"]["head"].as_str().ok_or("git_changed")?,
+            &op.cancel,
+        )?;
         let message = if generate {
-            self.phase(op, "generating", None)?;
-            let language = language(value)?;
-            let style =
-                command::query(&self.project, &["log", "-5", "--format=%s"]).unwrap_or_default();
-            model.ok_or("model_unavailable")?.generate(
-                &staged,
-                &String::from_utf8_lossy(&style),
-                language,
-                &settings.commit_instructions,
-                &op.cancel,
-            )?
-        } else {
+            self.generate_message(op, value, settings, &diff, model)?
+        } else if diff.has_changes(&op.cancel)? {
             raw.to_owned()
+        } else {
+            return Err("nothing_staged".into());
         };
+        drop(diff);
         self.phase(op, "running", Some(message.clone()))?;
         if value["action"] == "generate" {
             return Ok(json!({"message":message,"expected":value["expected"]}));
@@ -212,6 +168,36 @@ impl GitService {
         }
         Ok(result)
     }
+    fn generate_message(
+        &self,
+        op: &Operation,
+        value: &Value,
+        settings: &GitSettings,
+        diff: &super::index::StagedDiff<'_>,
+        model: Option<GitModel>,
+    ) -> Result<String, String> {
+        self.phase(op, "generating", None)?;
+        let staged = super::staged::collect(diff, &op.cancel)?;
+        if staged.is_empty() {
+            return Err("nothing_staged".into());
+        }
+        let language = language(value)?;
+        let head = value["expected"]["head"].as_str().ok_or("git_changed")?;
+        let style = if head.is_empty() {
+            Vec::new()
+        } else {
+            command::query(&self.project, &["log", "-5", "--format=%s", head, "--"])
+                .unwrap_or_default()
+        };
+        model.ok_or("model_unavailable")?.generate(
+            &staged,
+            &String::from_utf8_lossy(&style),
+            language,
+            &settings.commit_instructions,
+            &op.cancel,
+        )
+    }
+
     fn write_commit(
         &self,
         op: &Operation,

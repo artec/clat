@@ -89,7 +89,7 @@ test('a first-message file snapshot is linked to its committed message and bookm
   await page.reload();await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
   const entries=await page.evaluate(async()=>(await rpc('library.list',{})).entries);
   expect(entries).toContainEqual(expect.objectContaining({kind:'bookmark',reference:expect.objectContaining(reference)}));
-  await page.click('#nav-resources');await resources.locator('#resource-section').selectOption('bookmarks');
+  await page.click('#nav-resources');await resources.locator('#resource-section').click();await page.locator('[role=menuitem][data-action=bookmarks]').click();
   await resources.getByRole('button').filter({hasText:reference.session+' · #'+reference.seq}).click();
   await expect(resources.locator('.reader-messages')).toContainText('Exact navigation snapshot',LIVE);
  }finally{fs.rmSync(file,{force:true});}
@@ -106,10 +106,18 @@ test('a task retains its conversation and draft across feature and project navig
    const currentRoute=await addWorkbenchProject(page,root);
    await page.click('#nav-tasks');
    const task=page.locator('[data-task-id="'+rule.id+'"]');
-   const scope=page.locator('#task-all-projects');
-   await expect(scope).not.toBeChecked();
+   const scope=page.locator('#task-project-scope');
+   await expect(task).toBeVisible(LIVE);
+   await scope.click();
+   const currentRoot=await page.evaluate(()=>state.workbench.project.root);
+   await page.locator('[role=menuitem]').evaluateAll((items,root)=>{
+     const match=items.find(item=>item.dataset.action===root);
+     if(!match)throw new Error('missing project scope: '+root);
+     match.click();
+   },currentRoot);
    await expect(task).toHaveCount(0);
-   await scope.check();
+   await scope.click();
+   await page.locator('[role=menuitem][data-action=trusted]').click();
    await expect(task).toBeVisible(LIVE);
    expect(new URL(page.url()).searchParams.get('workspace')).toBe(currentRoute);
    await page.selectOption('#task-status','running');
@@ -122,7 +130,7 @@ test('a task retains its conversation and draft across feature and project navig
    await expect(task).toBeVisible();
    await task.click();
    await expect(page.locator('#conn-status')).toHaveAttribute('data-state','live',LIVE);
-   await expect(scope).toBeChecked();
+   await expect(scope).toContainText(/All trusted projects|全部已信任项目|全部已信任專案/);
    await expect(page.locator('#prompt')).toBeVisible(LIVE);
    await expect(page.locator('#prompt')).toHaveValue('Retained task draft');
  }
