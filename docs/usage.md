@@ -2183,7 +2183,9 @@ owner.
 - Local access is automatic when Host is exactly `127.0.0.1:<bound-port>` or
   `localhost:<bound-port>`, Origin is absent or equals `http://<Host>`, and
   Sec-Fetch-Site is `same-origin`, `same-site`, or `none`. Missing Fetch Metadata
-  is accepted only when Origin is absent (local command-line clients).
+  is accepted only when Origin is absent (local command-line clients), except a
+  WebSocket upgrade whose Origin equals `http://<Host>`. Browsers send that
+  Origin and omit Sec-Fetch-Site on the handshake.
   Cross-site requests and mismatched Origins are rejected even with credentials.
 - Other authorities require a valid Bearer credential or an unexpired signed
   browser session bound to that exact authority. This reserves a remote access
@@ -3859,7 +3861,10 @@ CLAT shows localized operation notices in the toolbar and keeps raw errors in
 expandable technical details. Shell and command output is shown as written.
 It supports up to eight running shells per project, resizing, interactive TUI applications,
 search, copying, clear, rename and explicit input takeover. Only one client controls a
-terminal; other clients observe it. Ctrl+C belongs to the foreground shell program, and
+terminal; other clients observe it. In the desktop app, the window that is allowed to
+type keeps one local connection open for keystrokes and shell output, so a key is not
+a separate request. Other windows still only watch. The screen shows what the shell
+returns. Ctrl+C belongs to the foreground shell program, and
 Esc does not cancel an Agent run. Page/conversation switches detach the view, not the shell.
 Host restart clears the previous terminals and their in-memory output from the
 directory. It never re-executes their commands.

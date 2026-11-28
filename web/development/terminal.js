@@ -17,7 +17,7 @@ function installDevelopmentTerminal(){
       if(!selected&&visible()&&!creating){const row=local.terminals[Math.min(Math.max(previousIndex,0),local.terminals.length-1)];if(row)await select(row);else{const other=projects.find(p=>p.terminals.length);if(other)await choose(other,other.terminals.at(-1));}}
     }catch(error){if(request===refreshEpoch){directoryError=error;report(error);}}
   }
-  function dispose(seat){seat.stream?.abort();seat.unsubscribe?.();seat.widget.destroy();seat.element.remove();}
+  function dispose(seat){seat.disposed=true;seat.stream?.abort();seat.drive?.close();seat.unsubscribe?.();seat.widget.destroy();seat.element.remove();}
   function makeSeat(id,row){const element=el('div','dev-terminal-screen');mount.append(element);const widget=globalThis.CLATDevelopmentWidgets.terminal(element,{...devTerminalOptions(),disableStdin:true});const seat={id,root:currentProject().root,row,element,widget,offset:0,sequence:0,lease:0,controlled:false,pendingInput:'',inputLane:Promise.resolve(),sizeLane:Promise.resolve(),sizeVersion:0};wireTerminalSeat(seat,{report,fit,notice,isVisible:()=>selected===seat&&visible()});return seat;}
   async function choose(project,row){
     if(project.root!==currentProject().root){const target=await context.openProject(project,{hash:'#/terminal'});if(target)await target.view.openTerminal(row.id);return;}
@@ -26,7 +26,7 @@ function installDevelopmentTerminal(){
   async function select(row,focus=false){
     if(!devAvailable()){notice.unavailable();return;}
     const request=++epoch;await devLoadTerminalFonts();if(request!==epoch)return;
-    selected?.stream?.abort();if(selected)selected.element.hidden=true;
+    selected?.stream?.abort();selected?.drive?.close();if(selected)selected.element.hidden=true;
     let seat=terminals.get(row.id);if(!seat){seat=makeSeat(row.id,row);terminals.set(row.id,seat);}seat.row=row;selected=seat;seat.element.hidden=false;node.dataset.detail='true';render();
     await resumeSelected(focus);
   }
@@ -40,7 +40,7 @@ function installDevelopmentTerminal(){
   }
   async function claim(takeover){
     if(!selected||selected.row.phase!=='running')return;const seat=selected;
-    try{Object.assign(seat,await rpc('terminal.claim',{id:seat.id,clientId:developmentClient,takeover}));seat.widget.term.options.disableStdin=!seat.controlled;notice.show(seat.controlled?'controlling':'observer');if(takeover&&seat.controlled){await fit();seat.widget.term.focus();}}catch(error){seat.controlled=false;seat.widget.term.options.disableStdin=true;report(error);}
+    try{Object.assign(seat,await rpc('terminal.claim',{id:seat.id,clientId:developmentClient,takeover}));seat.widget.term.options.disableStdin=!seat.controlled;notice.show(seat.controlled?'controlling':'observer');if(takeover&&seat.controlled){await fit();seat.widget.term.focus();if(desktopTerminalHost())void attach(seat);}}catch(error){seat.controlled=false;seat.widget.term.options.disableStdin=true;report(error);}
   }
   async function fit(){
     const seat=selected;if(!seat||!visible()||!mount.clientWidth||!mount.clientHeight)return;
@@ -53,7 +53,7 @@ function installDevelopmentTerminal(){
     if(project.root!==currentProject().root){const target=await context.openProject(project,{hash:'#/terminal'});if(target)await target.view.createTerminal(directory,preferredShell);return;}
     if(creating)return;creating=true;let seat;
     try{await devLoadTerminalFonts();if(!visible())throw {presentation:{key:'dev.terminal_measure_failed'}};
-      selected?.stream?.abort();if(selected)selected.element.hidden=true;seat=makeSeat(devId(),{phase:'starting'});selected=seat;node.dataset.detail='true';render();await new Promise(resolve=>requestAnimationFrame(resolve));
+      selected?.stream?.abort();selected?.drive?.close();if(selected)selected.element.hidden=true;seat=makeSeat(devId(),{phase:'starting'});selected=seat;node.dataset.detail='true';render();await new Promise(resolve=>requestAnimationFrame(resolve));
       const dimensions=seat.widget.fit.proposeDimensions();if(!mount.clientWidth||!mount.clientHeight||!dimensions||dimensions.rows<1||dimensions.cols<1)throw {presentation:{key:'dev.terminal_measure_failed'}};seat.widget.fit.fit();
       const row=await rpc('terminal.create',{operationId:seat.id,clientId:developmentClient,directory,shell:preferredShell||undefined,...dimensions});seat.row=row;terminals.set(row.id,seat);await claim(false);await fit();if(visible()){void attach(seat);seat.widget.term.focus();}await refresh();
     }catch(error){if(seat&&!terminals.has(seat.id)){dispose(seat);if(selected===seat)selected=null;}report(error);}finally{creating=false;render();}
@@ -71,13 +71,13 @@ function installDevelopmentTerminal(){
   async function shellMenu(source){try{const data=await rpc('terminal.shells',{});menuClose=terminalMenu(source,data.shells.map(path=>[()=>devText('shell_for_project',{project:currentProject().title,shell:path.split(/[\\/]/).pop()}),'terminal',()=>{preferredShell=path;void createTerminal();}]));}catch(error){report(error);}}
   const attach=seat=>startTerminalStream(seat,{visible,isSelected:()=>selected===seat,refresh,has:()=>terminals.has(seat.id),attach,notice});
   new ResizeObserver(()=>{if(visible())requestAnimationFrame(()=>void fit());}).observe(mount);
-  window.addEventListener('clat:workbench-updated',()=>{if(active){if(devAvailable())void refresh();else{selected?.stream?.abort();notice.unavailable();}}});
+  window.addEventListener('clat:workbench-updated',()=>{if(active){if(devAvailable())void refresh();else{selected?.stream?.abort();selected?.drive?.close();notice.unavailable();}}});
   window.addEventListener('clat:projects-updated',()=>{if(visible())void refresh();});
   node.addEventListener('clat:page-enter',async()=>{active=true;await refresh();if(visible())await resumeSelected();});
-  const leave=()=>{active=false;epoch++;menuClose?.();globalThis.CLATTerminalMenuClose?.();selected?.stream?.abort();};node.addEventListener('clat:page-leave',leave);window.addEventListener('clat:development-deactivated',leave);
+  const leave=()=>{active=false;epoch++;menuClose?.();globalThis.CLATTerminalMenuClose?.();selected?.stream?.abort();selected?.drive?.close();};node.addEventListener('clat:page-leave',leave);window.addEventListener('clat:development-deactivated',leave);
   window.addEventListener('clat:activated',()=>{if(pageIsOpen(node)){active=true;void refresh();}});
   node.addEventListener('keydown',event=>{if(event.key==='Escape'||mount.contains(event.target))event.stopPropagation();});
-  setInterval(()=>{if(!visible())return;directoryTick++;const attached=Boolean(selected&&selected.row.phase==='running'&&selected.stream&&!selected.stream.signal.aborted);if(directoryTick%(attached?10:3)===0)void refresh();},1000);
+  setInterval(()=>{if(!visible())return;directoryTick++;const attached=Boolean(selected&&selected.row.phase==='running'&&((selected.stream&&!selected.stream.signal.aborted)||(selected.drive&&selected.drive.readyState<2)));if(directoryTick%(attached?10:3)===0)void refresh();},1000);
   return {node,open:()=>presentPage(node),openDirectory:async directory=>{presentPage(node);await createTerminal(directory);},selectById:async id=>{presentPage(node);await refresh();const row=currentProject().terminals.find(row=>row.id===id);if(row)await select(row,true);},create:async(directory,shell)=>{preferredShell=shell||preferredShell;presentPage(node);await createTerminal(directory);},fit};
 }
 function terminalKey(event,seat){
@@ -94,9 +94,7 @@ function terminalInputPolicy(error,attempt){
 }
 function wireTerminalSeat(seat,{report,fit,notice,isVisible}){
     seat.pendingInput='';
-    seat.widget.term.onData(data=>{
-      if(data.length>2*1024*1024){notice.show('input_large');return;}
-      seat.pendingInput+=data;
+    const flush=()=>{
       seat.inputLane=seat.inputLane.then(async()=>{if(!seat.controlled||seat.row.phase!=='running'){seat.pendingInput='';return;}
         while(seat.pendingInput){
           const payload=seat.pendingInput;seat.pendingInput='';let start=0,attempt=1;
@@ -108,6 +106,15 @@ function wireTerminalSeat(seat,{report,fit,notice,isVisible}){
           }
         }
       }).catch(error=>{seat.controlled=false;seat.widget.term.options.disableStdin=true;report(error);});
+    };
+    seat.flushInput=flush;
+    seat.widget.term.onData(data=>{
+      if(data.length>2*1024*1024){notice.show('input_large');return;}
+      if(desktopTerminalHost()&&seat.controlled&&seat.drive&&seat.drive.readyState<2){
+        if(seat.drive.readyState===WebSocket.OPEN)sendDriveBytes(seat.drive,data);else seat.pendingInput+=data;
+        return;
+      }
+      seat.pendingInput+=data;flush();
     });
     seat.widget.term.attachCustomKeyEventHandler(event=>terminalKey(event,seat));
     seat.unsubscribe=terminalAppearance.subscribe(async options=>{Object.assign(seat.widget.term.options,options);if(isVisible()){await fit();seat.widget.term.refresh(0,seat.widget.term.rows-1);}});
@@ -123,7 +130,7 @@ async function readTerminalOutput(seat,{visible,isSelected,refresh,has,attach,no
     seat.stream?.abort();const controller=new AbortController();seat.stream=controller;
     try{const response=await fetch(workspacePrefix+'/api/terminal/'+seat.id+'/'+seat.offset,{headers:authHeaders(),signal:controller.signal});if(!response.ok||!response.body){await refresh();return;}const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
       while(!controller.signal.aborted){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let end;
-        while((end=buffer.indexOf('\n\n'))!==-1){const frame=parseSseBlock(buffer.slice(0,end));buffer=buffer.slice(end+2);if(!frame)continue;const chunk=JSON.parse(frame.data);if(controller.signal.aborted)return;
+        while((end=buffer.indexOf('\n\n'))!==-1){const frame=parseSseBlock(buffer.slice(0,end));buffer=buffer.slice(end+2);if(!frame)continue;const chunk=JSON.parse(frame.data);if(controller.signal.aborted||(seat.drive&&seat.drive.readyState<2))return;
           if(chunk.reset){seat.widget.term.reset();notice.show('history_truncated');}await new Promise(resolve=>seat.widget.term.write(Uint8Array.from(atob(chunk.data),c=>c.charCodeAt(0)),resolve));seat.offset=chunk.offset;
           if(chunk.ended){seat.outputComplete=true;seat.row.phase='ended';seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('ended');await refresh();return;}
           if(seat.row.phase==='running'&&chunk.lease!==seat.lease){seat.controlled=false;seat.widget.term.options.disableStdin=true;notice.show('observer');}
@@ -134,9 +141,59 @@ async function readTerminalOutput(seat,{visible,isSelected,refresh,has,attach,no
   }
 
 function startTerminalStream(seat,ports){
+  if(desktopTerminalHost()&&seat.controlled&&seat.row.phase==='running'){openDesktopTerminalDrive(seat,ports);return seat.reading;}
+  if(seat.drive){const socket=seat.drive;seat.drive=null;socket.close();}
   if(seat.reading&&seat.stream&&!seat.stream.signal.aborted)return seat.reading;
   const generation=(seat.attachVersion||0)+1;seat.attachVersion=generation;
   const previous=seat.reading||Promise.resolve();
   const reading=previous.catch(()=>{}).then(()=>{if(generation!==seat.attachVersion||seat.outputComplete||!ports.visible()||!ports.isSelected())return;return readTerminalOutput(seat,ports);});
   seat.reading=reading;void reading.finally(()=>{if(seat.reading===reading)seat.reading=null;}).catch(()=>{});return reading;
+}
+
+function desktopTerminalHost(){
+  const kind=document.documentElement?.dataset?.webview;
+  return kind==='wkwebview'||kind==='webview2'||kind==='webkitgtk';
+}
+function sendDriveBytes(socket,text){
+  const encoded=new TextEncoder().encode(text);
+  for(let start=0;start<encoded.length;start+=16000)socket.send(encoded.subarray(start,start+16000));
+}
+function driveHello(clientId,lease){
+  const client=new TextEncoder().encode(clientId),hello=new Uint8Array(2+client.length+8),view=new DataView(hello.buffer);
+  view.setUint16(0,client.length);hello.set(client,2);view.setBigUint64(2+client.length,BigInt(lease));return hello;
+}
+function openDesktopTerminalDrive(seat,ports){
+  if(seat.driveOpening||(seat.drive&&seat.drive.readyState<2))return;
+  seat.driveOpening=true;seat.stream?.abort();
+  void developmentClientSession.ready.then(()=>{
+    seat.driveOpening=false;
+    if(seat.disposed||!seat.controlled||seat.row.phase!=='running'||!ports.visible()||!ports.isSelected())return;
+    if(seat.drive&&seat.drive.readyState<2)return;
+    const url=(location.protocol==='https:'?'wss://':'ws://')+location.host+(typeof workspacePrefix==='string'?workspacePrefix:'')+'/api/terminal/'+encodeURIComponent(seat.id)+'/drive';
+    const socket=new WebSocket(url);socket.binaryType='arraybuffer';seat.drive=socket;
+    socket.onopen=()=>{socket.send(driveHello(developmentClientSession.id,seat.lease));if(seat.pendingInput){sendDriveBytes(socket,seat.pendingInput);seat.pendingInput='';}};
+    socket.onmessage=event=>{
+      if(seat.disposed||seat.drive!==socket)return;seat.driveFailed=0;
+      if(typeof event.data==='string'){applyDriveNote(seat,ports,socket,event.data);return;}
+      seat.widget.term.write(new Uint8Array(event.data));
+    };
+    socket.onclose=()=>{
+      if(seat.drive!==socket)return;seat.drive=null;
+      if(seat.disposed||seat.outputComplete||!ports.visible()||!ports.isSelected())return;
+      if(seat.controlled&&(seat.driveFailed||0)<2){seat.driveFailed=(seat.driveFailed||0)+1;openDesktopTerminalDrive(seat,ports);return;}
+      void fallBackFromDrive(seat,ports);
+    };
+  });
+}
+function applyDriveNote(seat,ports,socket,text){
+  let note={};try{note=JSON.parse(text);}catch(_){return;}
+  if(note.reset){seat.widget.term.reset();ports.notice.show('history_truncated');}
+  if(note.ended){seat.outputComplete=true;seat.row.phase='ended';seat.controlled=false;seat.widget.term.options.disableStdin=true;ports.notice.show('ended');void ports.refresh();socket.close();}
+  if(note.observer){seat.controlled=false;seat.widget.term.options.disableStdin=true;ports.notice.show('observer');socket.close();}
+}
+async function fallBackFromDrive(seat,ports){
+  if(seat.controlled){
+    try{const row=await rpc('terminal.claim',{id:seat.id,clientId:developmentClientSession.id});seat.lease=row.lease;seat.sequence=row.sequence;seat.controlled=row.controlled===true;seat.widget.term.options.disableStdin=!seat.controlled;}catch(_){}
+  }
+  if(!seat.disposed&&ports.visible()&&ports.isSelected()){void readTerminalOutput(seat,ports);if(seat.pendingInput)seat.flushInput?.();}
 }

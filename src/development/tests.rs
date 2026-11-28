@@ -1862,3 +1862,81 @@ fn development_git_snapshot_tracks_local_outgoing_and_incoming_without_network()
     f.git(&["checkout", "-q", "--detach"]);
     assert!(f.snapshot()["tracking"].is_null());
 }
+
+#[cfg(unix)]
+#[test]
+fn desktop_drive_writes_owner_bytes_and_rejects_an_observer() {
+    use base64::Engine;
+    let f = Fixture::new();
+    f.call(
+        "terminal.create",
+        json!({"operationId":"terminal-one","clientId":"first","shell":"/bin/sh"}),
+    )
+    .unwrap();
+    let epoch = f
+        .service
+        .terminal_drive_open("terminal-one", "first", 1)
+        .unwrap();
+    assert_eq!(
+        f.service
+            .terminal_drive_open("terminal-one", "second", 1)
+            .unwrap_err(),
+        "terminal_observer"
+    );
+    assert_eq!(
+        f.service
+            .terminal_drive_write("terminal-one", "second", 1, epoch, b"nope\n")
+            .unwrap_err(),
+        "terminal_observer"
+    );
+    f.service
+        .terminal_drive_write(
+            "terminal-one",
+            "first",
+            1,
+            epoch,
+            b"printf 'DRIVE_MARKER\\n'\n",
+        )
+        .unwrap();
+    let replay = f
+        .call(
+            "terminal.input",
+            json!({"id":"terminal-one","clientId":"first","lease":1,"sequence":0,"data":"printf 'SHOULD_NOT\\n'\n"}),
+        )
+        .unwrap();
+    assert_eq!(replay["sequence"], 1);
+    let replaced = f
+        .service
+        .terminal_drive_open("terminal-one", "first", 1)
+        .unwrap();
+    assert_ne!(replaced, epoch);
+    assert!(
+        !f.service
+            .terminal_drive_current("terminal-one", "first", 1, epoch)
+    );
+    assert_eq!(
+        f.service
+            .terminal_drive_write("terminal-one", "first", 1, epoch, b"stale\n")
+            .unwrap_err(),
+        "terminal_drive_replaced"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let row = f.service.terminal_output("terminal-one", 0).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(row["data"].as_str().unwrap())
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        if text.contains("DRIVE_MARKER") {
+            assert!(!text.contains("SHOULD_NOT"), "{text}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{text}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    f.call(
+        "terminal.remove",
+        json!({"operationId":"remove-drive","id":"terminal-one","confirmed":true}),
+    )
+    .unwrap();
+}

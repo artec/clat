@@ -71,6 +71,90 @@ impl Terminals {
         }
         Ok(json!({"controlled":true,"lease":control.lease,"sequence":control.sequence}))
     }
+    pub(in crate::development) fn open_drive(
+        &self,
+        id: &str,
+        client: &str,
+        lease: u64,
+    ) -> Result<u64, String> {
+        let entry = self.entry(id)?;
+        let control = entry.control.lock().map_err(|_| "terminal_busy")?;
+        if control.client != client || control.lease != lease {
+            return Err("terminal_observer".into());
+        }
+        if entry.closed.load(Ordering::SeqCst) {
+            return Err("terminal_ended".into());
+        }
+        drop(control);
+        Ok(entry.drive_epoch.fetch_add(1, Ordering::AcqRel) + 1)
+    }
+    pub(in crate::development) fn write_drive(
+        &self,
+        id: &str,
+        client: &str,
+        lease: u64,
+        epoch: u64,
+        data: &[u8],
+    ) -> Result<(), String> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data.len() > 64 * 1024 {
+            return Err("terminal_input_large".into());
+        }
+        let entry = self.entry(id)?;
+        for _ in 0..8 {
+            let queued = try_drive_send(&entry, client, lease, epoch, data)?;
+            if queued {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Err("terminal_input_busy".into())
+    }
+    pub(in crate::development) fn drive_current(
+        &self,
+        id: &str,
+        client: &str,
+        lease: u64,
+        epoch: u64,
+    ) -> bool {
+        let Ok(entry) = self.entry(id) else {
+            return false;
+        };
+        let Ok(control) = entry.control.lock() else {
+            return false;
+        };
+        control.client == client
+            && control.lease == lease
+            && entry.drive_epoch.load(Ordering::Acquire) == epoch
+    }
+}
+fn try_drive_send(
+    entry: &Entry,
+    client: &str,
+    lease: u64,
+    epoch: u64,
+    data: &[u8],
+) -> Result<bool, String> {
+    let mut control = entry.control.lock().map_err(|_| "terminal_busy")?;
+    if control.client != client || control.lease != lease {
+        return Err("terminal_observer".into());
+    }
+    if entry.drive_epoch.load(Ordering::Acquire) != epoch {
+        return Err("terminal_drive_replaced".into());
+    }
+    if entry.closed.load(Ordering::SeqCst) {
+        return Err("terminal_ended".into());
+    }
+    match entry.input.try_send(data.to_vec()) {
+        Ok(()) => {
+            control.sequence += 1;
+            Ok(true)
+        }
+        Err(mpsc::TrySendError::Full(_)) => Ok(false),
+        Err(mpsc::TrySendError::Disconnected(_)) => Err("terminal_ended".into()),
+    }
 }
 fn input(entry: &Entry, value: &Value) -> Result<Value, String> {
     let mut control = entry.control.lock().map_err(|_| "terminal_busy")?;
@@ -158,6 +242,7 @@ pub(super) fn start_entry(
         platform: Mutex::new(control),
         closed: AtomicBool::new(false),
         output_done: AtomicBool::new(false),
+        drive_epoch: AtomicU64::new(0),
         workers: Mutex::new(Vec::new()),
         lifetime,
     });

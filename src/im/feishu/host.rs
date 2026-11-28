@@ -232,6 +232,15 @@ fn revoke_if_current(
         .map_err(|error| error.to_string())
 }
 
+fn sleep_cancelable(shutdown: &AtomicBool, delay: Duration) {
+    let step = Duration::from_millis(200);
+    let mut waited = Duration::ZERO;
+    while waited < delay && !shutdown.load(Ordering::Acquire) {
+        std::thread::sleep(step.min(delay - waited));
+        waited += step;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::pairing_code;
@@ -242,14 +251,5 @@ mod tests {
         assert!(pairing_code("please /pair 123456").is_none());
         assert!(pairing_code("/pair 12345").is_none());
         assert!(pairing_code("/pair 123456 now").is_none());
-    }
-}
-
-fn sleep_cancelable(shutdown: &AtomicBool, delay: Duration) {
-    let step = Duration::from_millis(200);
-    let mut waited = Duration::ZERO;
-    while waited < delay && !shutdown.load(Ordering::Acquire) {
-        std::thread::sleep(step.min(delay - waited));
-        waited += step;
     }
 }

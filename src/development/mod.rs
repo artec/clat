@@ -105,6 +105,28 @@ impl DevelopmentService {
         let _producer = self.lifetime.producer()?;
         self.terminals.wait_for_output(id, offset, timeout)
     }
+    /// Attach the controlling client's persistent input connection.
+    /// A newer attach replaces the previous one. Observers are rejected.
+    pub fn terminal_drive_open(&self, id: &str, client: &str, lease: u64) -> Result<u64, String> {
+        let _producer = self.lifetime.producer()?;
+        self.terminals.open_drive(id, client, lease)
+    }
+    /// Raw keystrokes from the open drive. The server assigns the sequence.
+    pub fn terminal_drive_write(
+        &self,
+        id: &str,
+        client: &str,
+        lease: u64,
+        epoch: u64,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let _producer = self.lifetime.producer()?;
+        self.terminals.write_drive(id, client, lease, epoch, data)
+    }
+    /// The drive may keep publishing output while this stays true.
+    pub fn terminal_drive_current(&self, id: &str, client: &str, lease: u64, epoch: u64) -> bool {
+        self.terminals.drive_current(id, client, lease, epoch)
+    }
     pub fn has_live_work(&self) -> bool {
         self.lifetime.active() || self.git.has_live_work() || self.terminals.has_live_work()
     }

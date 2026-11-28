@@ -88,7 +88,7 @@ impl Run<'_> {
             && let Some(notice) = self.request_notice.as_mut().and_then(|notice| notice())
         {
             let tail = options.request_tail.get_or_insert_with(String::new);
-            tail.push_str("\n");
+            tail.push('\n');
             tail.push_str(&notice);
         }
         let instructions = self

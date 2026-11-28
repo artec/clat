@@ -1,6 +1,7 @@
 //! 手写 HTTP/1.1 极小子集（§8.1，tiny_http 已否决——依赖最小化宪法
 //! 条款）：`GET`/`POST` + `Content-Length` 必需 + `Connection: close`。
 //! 不做 chunked 请求体 / keep-alive / HTTP/2 / 压缩协商。
+//! 终端控制连接是单独的升级，不走请求体，也不放开上述限制。
 //!
 //! 防护规格：请求行 4KiB、头部合计 16KiB；URL 只接受 ASCII 无编码
 //! 残留（不解码——解码是攻击面）；读取全带超时（头 30s / 体 60s，
@@ -37,6 +38,8 @@ pub(crate) struct HttpRequestHead {
     pub content_type: Option<String>,
     pub display_name: Option<String>,
     pub expected_instance: Option<String>,
+    /// `Sec-WebSocket-Key`，仅终端控制连接使用。
+    pub websocket_key: Option<String>,
     pub content_length: usize,
     /// Header reads may receive the first body bytes in the same TCP packet.
     /// Keep (rather than discard) that bounded prefix for the post-auth body
@@ -124,6 +127,7 @@ pub(crate) fn read_request_head(stream: &mut TcpStream) -> Result<HttpRequestHea
         content_type: parsed.content_type,
         display_name: parsed.display_name,
         expected_instance: parsed.expected_instance,
+        websocket_key: parsed.websocket_key,
         content_length: parsed.content_length,
         body_prefix,
     })
@@ -198,6 +202,7 @@ struct ParsedHead {
     content_type: Option<String>,
     display_name: Option<String>,
     expected_instance: Option<String>,
+    websocket_key: Option<String>,
     content_length: usize,
 }
 
@@ -223,6 +228,7 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
         content_type,
         display_name,
         expected_instance,
+        websocket_key,
         content_length,
         transfer_encoding,
     } = headers;
@@ -251,6 +257,7 @@ fn parse_head(head: &str) -> Result<ParsedHead, HttpReadError> {
         content_type,
         display_name,
         expected_instance,
+        websocket_key,
         content_length,
     })
 }
@@ -265,6 +272,7 @@ struct RequestHeaders {
     content_type: Option<String>,
     display_name: Option<String>,
     expected_instance: Option<String>,
+    websocket_key: Option<String>,
     content_length: Option<usize>,
     transfer_encoding: Option<String>,
 }
@@ -299,6 +307,7 @@ impl RequestHeaders {
             "content-type" => Some(&mut self.content_type),
             "x-clat-display-name" => Some(&mut self.display_name),
             "x-clat-host-instance" => Some(&mut self.expected_instance),
+            "sec-websocket-key" => Some(&mut self.websocket_key),
             "transfer-encoding" => Some(&mut self.transfer_encoding),
             "content-length" => {
                 if self.content_length.is_some() {

@@ -2123,7 +2123,13 @@ job descendants are terminated on close; Windows creates ConPTY children suspend
 assigns a kill-on-close Job Object, then resumes them. Live shells and Git operations
 pin their project against idle reclamation/upgrade takeover. Output uses an independent
 authenticated SSE stream, byte offsets, a bounded 2 MiB ring and a bounded VT screen
-projection for resynchronization. Slow readers are disconnected, without blocking the
+projection for resynchronization. The desktop window that holds the control lease does
+not post each keystroke as its own request. It keeps one local WebSocket on the same
+loopback Host: binary frames carry keystrokes to the PTY and PTY output back to that
+window. The Host accepts each byte before the page shows the shell's response. Other
+clients, including a desktop window that is only watching, stay on the SSE stream and
+cannot type until they take the lease. A newer drive connection replaces the previous
+one. Slow readers are disconnected, without blocking the
 Host. Resynchronization explicitly marks lost older output; the VT projection is not a
 claim of complete historical replay or full fidelity for every terminal extension.
 

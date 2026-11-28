@@ -182,8 +182,10 @@ fallback requiring external containment for unattended `--yes` execution.
 
 Local browser access is automatic behind exact loopback Host, matching or
 absent Origin, and non-cross-site Fetch Metadata checks. With Origin present,
-missing Fetch Metadata fails closed. Remote authorities require an explicit
-Bearer credential or an authority-bound, expiring HttpOnly session cookie;
+missing Fetch Metadata fails closed, except a WebSocket upgrade whose Origin
+equals `http://<Host>`. Browsers omit Sec-Fetch-Site on that handshake.
+Remote authorities require an explicit Bearer credential or an authority-bound,
+expiring HttpOnly session cookie;
 credentials never bypass cross-site checks. Browser localStorage no longer
 stores new raw access credentials. This authentication boundary does not grant
 project trust, approve tools, or change the permission mode. See
@@ -636,7 +638,10 @@ No normal editor/Git operation implicitly grants the Agent broader access.
 
 A human terminal is an ordinary user shell, with the OS account's filesystem/network
 permissions, rather than an Agent sandbox. Creating it explicitly authorizes that shell;
-input requires the current client control lease. Observers must explicitly take control.
+input requires the current client control lease. On the desktop, that lease is carried
+by one persistent local connection instead of a request per keystroke. The connection
+is accepted only for the current lease. Observers, including other desktop windows,
+cannot write through it and must explicitly take control.
 Closing a view does not end it, while closing the terminal/Host reaps its process tree.
 Clipboard-writing terminal escape sequences are ignored; copying is a user action.
 

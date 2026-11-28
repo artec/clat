@@ -83,7 +83,9 @@ fn browser_cookie(request: &http::HttpRequestHead, port: u16) -> Result<Option<&
 }
 
 /// Origin equality and Fetch Metadata are CSRF fences, never credential
-/// alternatives. Missing metadata is accepted only for origin-less local tools.
+/// alternatives. Missing metadata is accepted for origin-less local tools.
+/// A WebSocket upgrade may also omit Sec-Fetch-Site: browsers send Origin and
+/// leave that header off the handshake. The matching Origin remains required.
 fn same_origin(request: &http::HttpRequestHead) -> bool {
     let origin_matches = request
         .origin
@@ -91,6 +93,7 @@ fn same_origin(request: &http::HttpRequestHead) -> bool {
         .is_none_or(|origin| origin == &format!("http://{}", request.host));
     let fetch_matches = match request.fetch_site.as_deref() {
         Some("same-origin" | "same-site" | "none") => true,
+        None if request.websocket_key.is_some() => origin_matches,
         None => request.origin.is_none(),
         _ => false,
     };

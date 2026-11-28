@@ -199,9 +199,10 @@ fn kimi_pro_gate_hides_highspeed_on_plus_and_guards_downgrade() {
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }
 
-/// Hy Token Plan 套餐（2026-11-28）：缺省 hy——通用八预设隐藏、混元
-/// 两条在列；common 档放行全部十条；通用门槛预设活动时拒降 hy。
-/// 删视图过滤 / select 拒选 / 降档守卫任一对应断言红。
+/// Hy Token Plan 套餐（2026-11-28；同日二次令：通用为缺省档）——
+/// 缺省 common：全量十条在列、通用预设可选；hy 档仅混元两条、通用
+/// 预设隐藏且直选拒；通用门槛预设活动时拒降 hy。删视图过滤 /
+/// select 拒选 / 降档守卫任一对应断言红。
 #[test]
 fn hy_tier_gates_the_common_plan_roster_and_guards_downgrade() {
     let (storage_root, project_root) = roots("hy-tier-common-roster");
@@ -209,31 +210,7 @@ fn hy_tier_gates_the_common_plan_roster_and_guards_downgrade() {
     let project = Project::new(&project_root);
     let application = mount(&project, &storage_root, TestBehavior::Success);
 
-    // 缺省 Hy 套餐：视图只有混元两条；通用预设隐藏且直选拒。
-    let view = application.model_settings_view().unwrap();
-    assert_eq!(view.hy_tier, "hy");
-    let hy_presets: Vec<&str> = view
-        .presets
-        .iter()
-        .filter(|preset| preset.vendor == "Hy Token Plan")
-        .map(|preset| preset.id.as_str())
-        .collect();
-    assert_eq!(hy_presets, vec!["hy4", "hy4-flash"]);
-    assert!(
-        application
-            .select_model_preset(
-                "hy-deepseek-v4.1-flash-1017",
-                Some("hy-test-key".into()),
-                None
-            )
-            .is_err()
-    );
-
-    // hy4 可选（无门槛），切 common 放行通用八预设。
-    application
-        .select_model_preset("hy4", Some("hy-test-key".into()), None)
-        .unwrap();
-    application.set_hy_tier("common").unwrap();
+    // 缺省 Common 套餐：视图全量十条，通用预设可选。
     let view = application.model_settings_view().unwrap();
     assert_eq!(view.hy_tier, "common");
     let hy_presets: Vec<&str> = view
@@ -245,7 +222,11 @@ fn hy_tier_gates_the_common_plan_roster_and_guards_downgrade() {
     assert_eq!(hy_presets.len(), 10);
     assert!(hy_presets.contains(&"hy-deepseek-v4.1-flash-1017"));
     application
-        .select_model_preset("hy-deepseek-v4.1-flash-1017", None, None)
+        .select_model_preset(
+            "hy-deepseek-v4.1-flash-1017",
+            Some("hy-test-key".into()),
+            None,
+        )
         .unwrap();
     assert_eq!(
         application.model_state().unwrap().0.max_context_tokens,
@@ -256,7 +237,22 @@ fn hy_tier_gates_the_common_plan_roster_and_guards_downgrade() {
     assert!(application.set_hy_tier("hy").is_err());
     application.select_model_preset("hy4", None, None).unwrap();
     application.set_hy_tier("hy").unwrap();
-    assert_eq!(application.model_settings_view().unwrap().hy_tier, "hy");
+
+    // Hy 档：视图只有混元两条；通用预设隐藏且直选拒。
+    let view = application.model_settings_view().unwrap();
+    assert_eq!(view.hy_tier, "hy");
+    let hy_presets: Vec<&str> = view
+        .presets
+        .iter()
+        .filter(|preset| preset.vendor == "Hy Token Plan")
+        .map(|preset| preset.id.as_str())
+        .collect();
+    assert_eq!(hy_presets, vec!["hy4", "hy4-flash"]);
+    assert!(
+        application
+            .select_model_preset("hy-deepseek-v4.1-flash-1017", None, None)
+            .is_err()
+    );
     application.close().unwrap();
     crate::test_support::cleanup_tree(storage_root.parent().unwrap());
 }

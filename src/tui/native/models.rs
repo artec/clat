@@ -60,7 +60,7 @@ impl App {
         let client = native.client.clone();
         self.flash_message(UiMessage::new("tui.host_models_loading"));
         thread::spawn(move || {
-            let result = client.model_choices();
+            let result = client.model_choices().map(Box::new);
             let _ = ui.send(UiEvent::Native(NativeEvent::Models(epoch, request, result)));
         });
     }
@@ -69,13 +69,13 @@ impl App {
         &mut self,
         epoch: u64,
         request: u64,
-        result: Result<crate::host::HostModelChoices, String>,
+        result: Result<Box<crate::host::HostModelChoices>, String>,
     ) {
         if !self.native_model_request_matches(epoch, request) {
             return;
         }
         let choices = match result {
-            Ok(choices) => choices,
+            Ok(choices) => *choices,
             Err(error) => {
                 self.flash_status(error);
                 return;

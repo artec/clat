@@ -105,7 +105,7 @@ above" in the official model table, so it is hidden from every selection
 surface on Plus (and direct selection is refused; a downgrade with it active
 is refused until another model is selected), while `k3` and the other Kimi
 presets stay available on both tiers. The Hy Token Plan heading offers a
-**Hy** or **Common** plan radio: both plans share
+**Common** or **Hy** plan radio (Common is the default): both plans share
 one key and endpoint (the official "independent subscriptions"), so the
 radio switches only the selection surface — the Hy plan shows the Hunyuan
 pair, the Common plan additionally shows the eight third-party presets

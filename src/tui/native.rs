@@ -82,7 +82,7 @@ pub(super) enum NativeEvent {
         Result<crate::host::HostSessionSharePreview, String>,
     ),
     Renamed(u64, u64, Result<Value, String>),
-    Models(u64, u64, Result<crate::host::HostModelChoices, String>),
+    Models(u64, u64, Result<Box<crate::host::HostModelChoices>, String>),
     ModelChanged(u64, u64, Result<Value, String>),
     PromptSuggestion(u64, u64, u64, Result<Value, String>),
     ThinkingChanged(u64, Result<Value, String>),

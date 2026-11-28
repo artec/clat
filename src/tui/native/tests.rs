@@ -1136,7 +1136,7 @@ fn native_preset_key_entry_opens_without_selecting_or_reading_credentials() {
         .unwrap(),
         profiles: vec![],
     };
-    app.native_models(0, 0, Ok(choices));
+    app.native_models(0, 0, Ok(Box::new(choices)));
     let picker = app.picker.as_mut().unwrap();
     picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let action = picker.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));

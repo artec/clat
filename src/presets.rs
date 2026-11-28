@@ -1158,7 +1158,7 @@ mod tests {
         apply_thinking_level(
             &mut body,
             crate::model::ModelVendor::Qwen,
-            &pro.model,
+            pro.model,
             ThinkingLevel::High,
         );
         assert_eq!(body["reasoning_effort"], "high");
@@ -1181,7 +1181,7 @@ mod tests {
         apply_thinking_level(
             &mut glm_body,
             crate::model::ModelVendor::Qwen,
-            &glm.model,
+            glm.model,
             ThinkingLevel::Max,
         );
         assert_eq!(glm_body["reasoning_effort"], "max");

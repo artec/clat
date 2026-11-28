@@ -95,17 +95,19 @@ impl KimiTier {
     }
 }
 
-/// Hy Token Plan 订阅套餐（2026-11-28 负责人令）：官方"两个独立套餐"
-/// ——Hy（混元系，现有）与通用 Common（多厂商聚合，新增）。两套餐
-/// 共用同一 API Key 与端点（tokenhub.tencentmaas.com/plan/v3，官方
-/// 个人版概览），区别在选择面上的模型名单：Common 名单含 Hy 系全部
-/// 与第三方八模型，Hy 仅混元系。缺省 Hy = 存量用户视图不变。
+/// Hy Token Plan 订阅套餐（2026-11-28 负责人令；同日二次令：通用为
+/// 缺省档）：官方"两个独立套餐"——Hy（混元系）与通用 Common（多厂
+/// 商聚合）。两套餐共用同一 API Key 与端点
+/// （tokenhub.tencentmaas.com/plan/v3，官方个人版概览），区别在
+/// 选择面上的模型名单：Common 名单含 Hy 系全部与第三方八模型，Hy
+/// 仅混元系。缺省 Common = 无设置用户默认看到通用全名单（设置页
+/// 单选通用在前）。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum HyTier {
     #[default]
-    Hy,
     Common,
+    Hy,
 }
 
 impl HyTier {

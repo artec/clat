@@ -134,10 +134,10 @@ function settingsPresetRow(vendor) {
     tier = el('div', 'model-vendor-entry');
     tier.setAttribute('role', 'radiogroup');
     CLATI18n.attribute(tier, 'aria-label', () => settingsUi('hy_tier'));
-    for (const value of ['hy', 'common']) {
+    for (const value of ['common', 'hy']) {
       const label = el('label'), radio = el('input');
       radio.type = 'radio'; radio.name = 'hy-token-plan-tier'; radio.value = value;
-      radio.checked = value === 'hy';
+      radio.checked = value === 'common';
       label.append(radio, el('span', '', () => settingsUi('hy_tier_' + value)));
       tier.append(label);
     }

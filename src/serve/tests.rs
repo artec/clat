@@ -5408,7 +5408,7 @@ fn model_preset_tier_http_route_switches_kimi_tier() {
 fn model_preset_hy_tier_http_route_switches_roster() {
     assert!(protocol::RPC_METHODS.contains(&"model.preset.hy_tier"));
     let (handle, storage, project) = spawn_serve("serve-hy-tier", TestBehavior::RunCommandPerTurn);
-    for tier in ["hy", "common"] {
+    for tier in ["common", "hy"] {
         let body = serde_json::json!({ "tier": tier }).to_string();
         let (_, reply) = post_rpc_json(handle.addr, TEST_TOKEN, "model.preset.hy_tier", &body);
         assert_eq!(reply["ok"], true, "{reply}");
@@ -5430,5 +5430,211 @@ fn model_preset_hy_tier_http_route_switches_roster() {
             "{tier}: common-plan preset visibility follows the tier"
         );
     }
+    cleanup(handle, &storage, &project);
+}
+
+fn drive_upgrade(addr: SocketAddr, id: &str) -> TcpStream {
+    let mut stream = connect(addr);
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let request = format!(
+        "GET /api/terminal/{id}/drive HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TEST_TOKEN}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let head = read_drive_head(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 101 "), "{head}");
+    assert!(
+        head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "{head}"
+    );
+    assert!(
+        !head.to_ascii_lowercase().contains("text/event-stream"),
+        "{head}"
+    );
+    stream
+}
+
+fn read_drive_head(stream: &mut TcpStream) -> String {
+    let mut bytes = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        let mut chunk = [0u8; 512];
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("drive head: {error}"),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn send_client_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) {
+    let mask = [1u8, 2, 3, 4];
+    let mut frame = vec![0x80 | opcode];
+    if payload.len() < 126 {
+        frame.push(0x80 | payload.len() as u8);
+    } else {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    }
+    frame.extend_from_slice(&mask);
+    for (index, byte) in payload.iter().enumerate() {
+        frame.push(byte ^ mask[index % 4]);
+    }
+    stream.write_all(&frame).unwrap();
+}
+
+fn hello_payload(client: &str, lease: u64) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(client.len() as u16).to_be_bytes());
+    payload.extend_from_slice(client.as_bytes());
+    payload.extend_from_slice(&lease.to_be_bytes());
+    payload
+}
+
+fn read_server_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
+    let mut pending = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(frame) = take_server_frame(&mut pending) {
+            return frame;
+        }
+        assert!(Instant::now() < deadline, "drive frame missing");
+        let mut chunk = [0u8; 1024];
+        match stream.read(&mut chunk) {
+            Ok(0) => panic!("drive closed before a frame"),
+            Ok(count) => pending.extend_from_slice(&chunk[..count]),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("drive frame: {error}"),
+        }
+    }
+}
+
+fn take_server_frame(pending: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
+    if pending.len() < 2 || pending[0] & 0x80 == 0 || pending[1] & 0x80 != 0 {
+        return None;
+    }
+    let (len, header) = match pending[1] & 0x7f {
+        126 if pending.len() < 4 => return None,
+        126 => (u16::from_be_bytes([pending[2], pending[3]]) as usize, 4),
+        len => (len as usize, 2),
+    };
+    if pending.len() < header + len {
+        return None;
+    }
+    let opcode = pending[0] & 0x0f;
+    let payload = pending[header..header + len].to_vec();
+    pending.drain(..header + len);
+    Some((opcode, payload))
+}
+
+fn read_drive_text(stream: &mut TcpStream, marker: &str) -> String {
+    let mut pending = Vec::new();
+    let mut text = String::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !text.contains(marker) {
+        while let Some((opcode, payload)) = take_server_frame(&mut pending) {
+            if opcode == 0x2 {
+                text.push_str(&String::from_utf8_lossy(&payload));
+            }
+        }
+        if text.contains(marker) {
+            break;
+        }
+        let mut chunk = [0u8; 4096];
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => pending.extend_from_slice(&chunk[..count]),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    }
+    text
+}
+
+#[test]
+fn terminal_drive_answers_with_the_websocket_accept_key() {
+    let (handle, storage, project) = spawn_serve("terminal-drive-upgrade", TestBehavior::Success);
+    let mut stream = drive_upgrade(handle.addr, "missing-terminal");
+    send_client_frame(&mut stream, 2, &hello_payload("drive-owner", 1));
+    let (opcode, _) = read_server_frame(&mut stream);
+    assert_eq!(opcode, 0x8, "a missing terminal closes the drive");
+    drop(stream);
+    cleanup(handle, &storage, &project);
+}
+
+#[test]
+fn browser_drive_accepts_matching_origin_without_fetch_metadata() {
+    let (handle, storage, project) =
+        spawn_serve("terminal-drive-browser-origin", TestBehavior::Success);
+    let allowed = format!("http://{}", handle.addr);
+    let (status, _) = get(handle.addr, "/api/events", &[("Origin", allowed.as_str())]);
+    assert_eq!(status, 403, "ordinary requests still fail closed");
+    let mut stream = connect(handle.addr);
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let upgrade = format!(
+        "GET /api/terminal/missing-terminal/drive HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        addr = handle.addr
+    );
+    stream.write_all(upgrade.as_bytes()).unwrap();
+    let head = read_drive_head(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 101 "), "{head}");
+    drop(stream);
+    let mut rejected = connect(handle.addr);
+    rejected
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let evil = format!(
+        "GET /api/terminal/missing-terminal/drive HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://evil.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        addr = handle.addr
+    );
+    rejected.write_all(evil.as_bytes()).unwrap();
+    let rejected_head = read_drive_head(&mut rejected);
+    assert!(
+        rejected_head.starts_with("HTTP/1.1 403 "),
+        "{rejected_head}"
+    );
+    drop(rejected);
+    cleanup(handle, &storage, &project);
+}
+
+#[cfg(unix)]
+#[test]
+fn desktop_terminal_drive_delivers_owner_bytes_and_closes_an_observer() {
+    let (handle, storage, project) = spawn_serve("terminal-drive-bytes", TestBehavior::Success);
+    let body = r#"{"operationId":"drive-one","clientId":"drive-owner","shell":"/bin/sh","rows":24,"cols":80}"#;
+    let (status, reply) = post_rpc_json(handle.addr, TEST_TOKEN, "terminal.create", body);
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["ok"], true, "{reply}");
+    let mut owner = drive_upgrade(handle.addr, "drive-one");
+    send_client_frame(&mut owner, 2, &hello_payload("drive-owner", 1));
+    send_client_frame(&mut owner, 2, b"printf 'DRIVE_WS_MARKER\\n'\n");
+    let text = read_drive_text(&mut owner, "DRIVE_WS_MARKER");
+    assert!(text.contains("DRIVE_WS_MARKER"), "{text}");
+    let mut other = drive_upgrade(handle.addr, "drive-one");
+    send_client_frame(&mut other, 2, &hello_payload("drive-other", 1));
+    let (opcode, _) = read_server_frame(&mut other);
+    assert_eq!(opcode, 0x8, "an observer drive closes");
+    drop(owner);
+    drop(other);
     cleanup(handle, &storage, &project);
 }

@@ -48,6 +48,7 @@ mod skills;
 mod sse;
 mod startup;
 mod state;
+mod terminal_drive;
 mod uploads;
 mod workflow;
 use startup::{serve_feishu_credentials, serve_telegram_credentials, serve_wechat_credentials};
@@ -799,7 +800,7 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
         "GET" => match request.path.as_str() {
             "/api/events" => sse::handle(&mut stream, &shared),
             path if path.starts_with("/api/terminal/") => {
-                development::stream(&mut stream, path, &shared)
+                route_terminal(&mut stream, path, &request, &shared)
             }
             "/api/notifications" => notifications::handle(&mut stream, &shared),
             path => {
@@ -907,6 +908,19 @@ fn handle_connection(mut stream: TcpStream, shared: Arc<state::ServeShared>) {
             );
         }
     }
+}
+
+fn route_terminal(
+    stream: &mut TcpStream,
+    path: &str,
+    request: &http::HttpRequestHead,
+    shared: &Arc<state::ServeShared>,
+) {
+    if terminal_drive::handles(path) {
+        terminal_drive::accept(stream, path, request.websocket_key.as_deref(), shared);
+        return;
+    }
+    development::stream(stream, path, shared);
 }
 
 fn route_project_request(

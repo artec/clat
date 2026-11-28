@@ -383,9 +383,9 @@ if the vendor starts returning it.
 The preset uses `https://tokenhub.tencentmaas.com/plan/v3` with `hy4`
 (GA) — the subscription endpoint for Tencent's own Hunyuan models. Since
 2026-11-28 the settings page also offers a **plan radio** beside the Hy
-Token Plan heading: **Hy** (the default, matching the standalone
-Hunyuan plan) or **Common** (the "general" Token Plan
-aggregating third-party models). The official docs define the two as
+Token Plan heading: **Common** (the default — the "general" Token Plan
+aggregating third-party models) or **Hy** (the standalone Hunyuan plan).
+The official docs define the two as
 independent subscriptions sharing one API key and endpoint; the radio
 therefore switches only the selection surface, not the endpoint: the Hy
 plan's roster is the Hunyuan pair, while the Common plan additionally
@@ -397,7 +397,8 @@ ids are `kimi-k3.1-pro`/`kimi-k3`). On the Hy radio the eight are hidden
 from every selection surface and direct selection is refused; if one is
 the active model, downgrading the plan is refused until another model is
 selected. The choice persists like the Kimi tier (`hyTier` in
-`settings.json`, missing legacy settings default to Hy). The plan docs do
+`settings.json`, missing legacy settings default to Common, 2026-11-28
+second owner ruling). The plan docs do
 not publish per-model context/output specs, so those presets pin each
 model's own vendor documentation values (sources per preset in
 `presets/hy_plan.rs`); thinking parameters stay unsent per the TC-0

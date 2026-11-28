@@ -5,7 +5,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     io::{Read, Write},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::Duration,
@@ -61,6 +61,9 @@ struct Entry {
     platform: Mutex<Box<dyn platform::Control>>,
     closed: AtomicBool,
     output_done: AtomicBool,
+    /// Replaced when another controlling connection attaches. An older socket
+    /// must stop writing once its epoch no longer matches.
+    drive_epoch: AtomicU64,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     lifetime: Arc<super::lifecycle::Lifecycle>,
 }
