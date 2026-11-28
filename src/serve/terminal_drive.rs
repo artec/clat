@@ -162,7 +162,16 @@ fn session(
         writes: Arc::clone(&writes),
         stop: Arc::clone(&stop),
     });
-    write_output(&service, id, &client, lease, epoch, &writes, &stop, shared);
+    write_output(&DriveOutput {
+        service: &service,
+        id,
+        client: &client,
+        lease,
+        epoch,
+        writes: &writes,
+        stop: &stop,
+        shared,
+    });
     finish(&writes, &stop);
     if let Some(incoming) = incoming {
         let _ = incoming.join();
@@ -251,16 +260,28 @@ fn reader_left(incoming: &mut Incoming) -> bool {
     }
 }
 
-fn write_output(
-    service: &DevelopmentService,
-    id: &str,
-    client: &str,
+struct DriveOutput<'a> {
+    service: &'a DevelopmentService,
+    id: &'a str,
+    client: &'a str,
     lease: u64,
     epoch: u64,
-    writes: &Mutex<TcpStream>,
-    stop: &AtomicBool,
-    shared: &ServeShared,
-) {
+    writes: &'a Mutex<TcpStream>,
+    stop: &'a AtomicBool,
+    shared: &'a ServeShared,
+}
+
+fn write_output(out: &DriveOutput) {
+    let DriveOutput {
+        service,
+        id,
+        client,
+        lease,
+        epoch,
+        writes,
+        stop,
+        shared,
+    } = *out;
     let mut offset = 0_u64;
     while !stop.load(Ordering::Acquire) && !shared.is_shutting_down() {
         if !service.terminal_drive_current(id, client, lease, epoch) {
@@ -425,7 +446,7 @@ fn sha1(message: &[u8]) -> [u8; 20] {
         data.push(0);
     }
     data.extend_from_slice(&bit_len.to_be_bytes());
-    for block in data.chunks_exact(64) {
+    for block in data.as_chunks::<64>().0 {
         hash = sha1_block(hash, block);
     }
     let mut out = [0_u8; 20];
@@ -437,8 +458,8 @@ fn sha1(message: &[u8]) -> [u8; 20] {
 
 fn sha1_block(mut hash: [u32; 5], block: &[u8]) -> [u32; 5] {
     let mut words = [0_u32; 80];
-    for (index, chunk) in block.chunks_exact(4).enumerate() {
-        words[index] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (index, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
+        words[index] = u32::from_be_bytes(*chunk);
     }
     for index in 16..80 {
         words[index] =
@@ -446,14 +467,14 @@ fn sha1_block(mut hash: [u32; 5], block: &[u8]) -> [u32; 5] {
                 .rotate_left(1);
     }
     let (mut a, mut b, mut c, mut d, mut e) = (hash[0], hash[1], hash[2], hash[3], hash[4]);
-    for index in 0..80 {
+    for (index, word) in words.iter().enumerate() {
         let (f, k) = sha1_round(index, b, c, d);
         let next = a
             .rotate_left(5)
             .wrapping_add(f)
             .wrapping_add(e)
             .wrapping_add(k)
-            .wrapping_add(words[index]);
+            .wrapping_add(*word);
         e = d;
         d = c;
         c = b.rotate_left(30);

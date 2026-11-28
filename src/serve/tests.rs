@@ -5540,6 +5540,7 @@ fn take_server_frame(pending: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
     Some((opcode, payload))
 }
 
+#[cfg(unix)]
 fn read_drive_text(stream: &mut TcpStream, marker: &str) -> String {
     let mut pending = Vec::new();
     let mut text = String::new();
