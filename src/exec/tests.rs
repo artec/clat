@@ -235,10 +235,21 @@ fn command_skill_lists_catalog_and_arms_via_status_headless() {
 fn command_compact_on_empty_session_fails_cleanly() {
     let (storage_root, project_root, project) = setup("exec-command-compact-empty");
     prepare_storage(&project, &storage_root, TestBehavior::Success);
-    let mut options = args(None);
-    options.command = Some("/compact".into());
-    let (io, _captured) = ExecIo::capture(&[]);
-    let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+    // F2 同族（flock 可见性窗口）：ExecIo 逐次重建，持有误拒走冷重开轮询。
+    let outcome = crate::test_support::reopen_after_close(|| {
+        let mut options = args(None);
+        options.command = Some("/compact".into());
+        let (io, _captured) = ExecIo::capture(&[]);
+        let outcome = exec(&project, &storage_root, TestBehavior::Success, options, io);
+        match &outcome {
+            ExecOutcome::Failure(message)
+                if *message == "another CLAT process holds this storage root; close it first" =>
+            {
+                Err(message.clone())
+            }
+            _ => Ok(outcome),
+        }
+    });
     match outcome {
         ExecOutcome::Failure(message) => {
             assert!(message.contains("no conversation to compact"), "{message}");
