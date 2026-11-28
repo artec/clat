@@ -592,8 +592,14 @@ fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
     assert!(super::parse_serve_args(["--port".into(), "not-a-number".into()]).is_err());
     assert!(super::parse_serve_args(["--token".into(), "unsafe token".into()]).is_err());
     assert_eq!(
-        super::parse_serve_args(["--im".into(), "telegram".into()]).unwrap_err(),
-        "unsupported IM backend: telegram"
+        super::parse_serve_args(["--im".into(), "telegram".into()])
+            .unwrap()
+            .im,
+        Some(super::ImBackend::Telegram)
+    );
+    assert_eq!(
+        super::parse_serve_args(["--im".into(), "irc".into()]).unwrap_err(),
+        "unsupported IM backend: irc"
     );
     assert_eq!(
         super::parse_serve_args([

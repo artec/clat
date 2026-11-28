@@ -8,6 +8,7 @@ function setup() {
   function node(id) {
     return { id, hidden: false, disabled: false, dataset: {}, children: [],
       append(...items) { this.children.push(...items); },
+      setAttribute(name, value) { (this.attributes ??= {})[name] = value; },
       querySelector() { return { replaceWith() {} }; },
     };
   }
@@ -27,7 +28,8 @@ function setup() {
     composerScope:'session', modelSetup:{ensure:async()=>true},
     workflowController:{goal(){},feedback(id){feedback.push(id);}},
     sendWorkflowIntent:async intent=>{actions.push(intent);},
-    refreshShellContext:async()=>{}, confirm:()=>true,
+    refreshShellContext:async()=>{}, confirm:()=>true, performance:{now:()=>0},
+    setInterval:()=>0, clearInterval:()=>{},
   });
   vm.runInContext(fs.readFileSync(process.env.GOAL_BAR_SOURCE || 'web/work-mode.js','utf8'),context);
   vm.runInContext('installComposerGoalBar(); composerGoalBar.render()',context);
