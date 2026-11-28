@@ -436,15 +436,20 @@ admission, and active-worker policy; it cannot ask the manager for additional
 services after mount.
 
 `application/remote_control.rs` owns remote chat/session admission and recovery,
-as well as the WeChat binding and poll checkpoints. Channel-scoped storage
-operations preserve the private atomic `im.json` unit and its existing WeChat
-format. `serve/remote*` coordinates normalized deliveries, commands, approvals,
+as well as the WeChat binding and poll checkpoints and the Feishu app binding.
+Channel-scoped storage operations preserve the private atomic `im.json` unit.
+The WeChat section keeps its v1 field layout. Feishu credentials and grants
+live in a sibling `feishu` section, omitted when that section is vacant.
+`serve/remote*` coordinates normalized deliveries, commands, approvals,
 run claims, staged attachments and steering; `remote/` owns shared identities,
 temporary conversation state, event projection and the bounded outbox.
-`im/ilink` and `serve/wechat` handle the official wire, media conversion and
-reply routing. An active run records its remote channel, user and chat so that
+`im/ilink` and `serve/wechat` handle the official iLink wire, media conversion
+and reply routing. `im/feishu` and `serve/feishu` handle the China-site long
+connection: endpoint discovery, protobuf frames, immediate acknowledgement, and
+text replies. An active run records its remote channel, user and chat so that
 another source cannot steer, stop, or revoke it merely by selecting its session.
-WeChat remains the only production channel.
+WeChat and Feishu are the production channels. Feishu is private-chat text on
+`https://open.feishu.cn`.
 
 ## Agent run lifecycle
 

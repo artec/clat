@@ -1155,12 +1155,16 @@ The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
-hardcoded per preset, never probed at runtime: 19 of the 23 built-in presets,
+hardcoded per preset, never probed at runtime: 29 of the 34 built-in presets,
 spanning all six vendors, open image input — officially-declared for
-`deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`,
-`hy4`, `hy4-flash` and ten OpenCode Go presets (from the gateway's model
-metadata), probe-verified for `glm-5.3-flash`, with `glm-5.4` reusing the Flash
-vision matrix — and, for custom configurations, it is unlocked only by a
+`deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `deepseek-v4.1-flash-1017`,
+`k3.1-pro`, `k3.1-pro-highspeed`, `k3`, `kimi-for-coding`,
+`hy4`, `hy4-flash`,
+`hy-deepseek-v4.1-flash-1017`, `hy-k3.1-pro`, `hy-k3`,
+`hy-minimax-m3`, `hy-minimax-m3.1-flash` and ten OpenCode Go presets (from the gateway's model
+metadata), probe-verified for `glm-5.3-flash` (with `glm-5.4` and the Hy
+Common twins `hy-glm-5.3-flash` / `hy-glm-5.4` reusing the Flash vision
+matrix) — and, for custom configurations, it is unlocked only by a
 passing `/vision-probe`. See [Model editor](model-editor.md#built-in-presets)
 for the complete list.
 When switching to a text-only route, the enabled offload policy can durably omit
@@ -1958,10 +1962,13 @@ minutes, succeeds once, and rate-limits repeated failures. You can replace a
 confirmed binding with `clat wechat bind --replace`. To revoke the credential,
 every paired user, chat mapping, cursor, and delivery receipt together, stop
 serve and run `clat wechat unbind --confirm`. In Workbench, **Settings →
-Integrations → Remote** contains the same WeChat binding, pairing, status, and
-unbind controls. Existing links to the WeChat settings destination open the
-Remote page at its WeChat section; opening or leaving it does not bind or
-unbind an account.
+Integrations → Remote** shows binding status and activity counts for WeChat
+and Feishu together. Select **WeChat** to scan a binding QR code, create a
+pairing code, or manage that channel’s authorized users. **Refresh** updates
+both channel summaries and the selected user list. Existing WeChat settings
+links select WeChat in the shared panel. Feishu help links select Feishu the
+same way. On Remote, **Help for this page** follows the channel that is
+selected.
 
 After pairing, use these standalone chat commands:
 
@@ -1990,6 +1997,56 @@ iLink credential cancels an active run owned by that WeChat channel, clears the 
 requires a new QR binding. See [Permissions](permissions.md#wechat-approval)
 before approving tools from a phone.
 
+### Feishu private-chat text
+
+The optional Feishu frontend is a China-site long connection for one enterprise
+self-built app. It is separate from the WeChat iLink bot and it does not use a
+public webhook. In the Feishu console, enable the bot, grant
+`im:message.p2p_msg:readonly` and `im:message:send_as_bot`, and publish a
+version whose availability includes your own account. Leave external sharing
+off. Leave event subscription unset until this computer is receiving.
+
+In the desktop app or the workbench, open **Settings → Integrations →
+Remote**, select **Feishu**, and enter the App ID and App Secret. Saving
+does not authorize a user. Then choose **Start receiving**. That running
+background keeps the Feishu connection; the window can be closed. **Stop
+receiving** disconnects it. The choice is remembered in the `feishu` section
+of `~/.clat/im.json`. Opening CLAT again connects by itself when receiving
+was left on. A desktop **Quit** leaves the background running, so the
+connection stays up. **Stop shared background** ends it until the next time
+that background starts.
+
+After **Start receiving** is on, save “使用长连接接收事件” in the Feishu
+console and add `im.message.receive_v1`. Create a pairing code and, in the
+bot private chat, send the standalone message `/pair <code>`.
+
+Workbench Help walks through the same setup as **Create a Feishu bot**
+(`#/help?topic=feishu`). **Go to this feature** opens Remote and selects
+Feishu. The WeChat guide stays on iLink and the QR binding.
+
+`clat feishu bind` asks for the same App ID and App Secret on two ordinary
+lines and stores them as plaintext strings with the same 0600 atomic write
+used for vendor API keys. `clat serve --im feishu` turns on the same switch.
+`clat serve --im wechat` does not open the Feishu connection for that
+process. Switching channels clears any displayed pairing code or credential
+draft.
+
+```bash
+clat feishu bind
+clat feishu pair
+# In the bot private chat, send the standalone message: /pair <code>
+clat serve --im feishu
+```
+
+This slice accepts only `https://open.feishu.cn` and a private-chat text
+message from a user. Group messages, bot messages, and every other message
+type are discarded with no reply. After pairing, `/new`, `/status`, `/stop`,
+`/help`, and the approval messages match the WeChat commands above. There is
+no image path. An invalid app credential cancels a run owned by the Feishu
+channel and clears only the Feishu section. `clat feishu status` reports the
+binding, `clat feishu bind --replace` replaces it, and
+`clat feishu unbind --confirm` removes it.
+
 ### Running serve continuously
 
 `clat serve` owns one project and the local `~/.clat` storage root for its
@@ -2013,8 +2070,10 @@ tmux new-session -s clat-serve 'cd /absolute/project && exec clat serve'
 # Reattach later with: tmux attach -t clat-serve
 ```
 
-Append `--im wechat` to the tmux, launchd, or systemd command only after the
-binding and user pairing above are complete.
+Append `--im wechat` or `--im feishu` to the tmux, launchd, or systemd command
+only after that channel's binding and user pairing are complete. Only one
+`--im` backend can be selected. A Feishu switch already turned on in Settings
+is enough for a desktop background that was started without either flag.
 
 On macOS, save a user LaunchAgent such as
 `~/Library/LaunchAgents/io.artec.clat.serve.plist` with absolute paths:
@@ -3533,7 +3592,8 @@ complete revocation removes both grant sources. Web settings separates fetch mod
 from search credentials. Configuration is not a successful connectivity check.
 Help uses the shared searchable list/detail layout. Each main page, workspace tool
 and settings category offers **Help for this page** in its top Tools menu; the
-Help navigation button also selects the guide for the page being viewed. Guides
+Help navigation button also selects the guide for the page being viewed. On
+Remote, that guide follows the selected WeChat or Feishu channel. Guides
 cover concrete steps, common problems and related features, with links that only
 navigate: they do not submit, restore, launch shells or change permissions.
 Search covers guide titles and bodies in the current interface language and stays

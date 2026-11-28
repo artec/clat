@@ -519,36 +519,72 @@
       </div>
     </section>
 
-    <section class="settings-section wechat-settings" data-settings-panel="remote" hidden>
+    <section class="settings-section remote-settings" data-settings-panel="remote" hidden>
       <div class="settings-copy">
-        <h3 data-i18n="web.wechat_remote_control">WeChat remote control</h3>
-        <p data-i18n="web.uses_the_official_ilink_api_bot_binding_and_user_authorization_are_separate_an_emp">Uses the official iLink API. Bot binding and user authorization are separate; an empty authorization set denies everyone.</p>
+        <h3 data-i18n="web.remote_settings">Remote</h3>
+        <p data-i18n="web.remote_page_intro">Manage channel bindings and the people allowed to use each channel.</p>
       </div>
-      <div class="settings-card settings-form">
-      <div class="wechat-status-row">
-        <strong id="wechat-status" data-i18n="web.checking">Checking…</strong>
-        <span id="wechat-counts"></span>
+      <div class="remote-toolbar">
+        <h4 id="remote-channels-title" data-i18n="web.remote_channels">Channels</h4>
+        <button class="secondary" id="remote-refresh" type="button"></button>
       </div>
-      <div id="wechat-qr" class="wechat-qr hidden">
-        <img id="wechat-qr-image" alt="WeChat binding QR code" data-i18n-alt="web.wechat_binding_qr_code">
-        <p id="wechat-qr-state" role="status" data-i18n="web.waiting_for_scan">Waiting for scan…</p>
-        <div id="wechat-verify-row" class="wechat-verify hidden">
-          <label for="wechat-verify-code" data-i18n="web.verification_code">Verification code</label>
-          <input id="wechat-verify-code" type="text" maxlength="32" autocomplete="one-time-code">
-          <button id="wechat-verify-submit" class="secondary" type="button" data-i18n="web.submit">Submit</button>
-        </div>
-      </div>
-      <div id="wechat-pairing" class="wechat-pairing hidden">
-        <span data-i18n="web.one_time_pairing_code">One-time pairing code</span>
-        <code id="wechat-pairing-code"></code>
-        <small id="wechat-pairing-instruction"></small>
-      </div>
-      <p id="wechat-error" class="error" role="alert"></p>
-      <div class="wechat-actions">
-        <button id="wechat-bind" class="secondary" type="button" data-i18n="web.bind_wechat">Bind WeChat</button>
-        <button id="wechat-pair" class="secondary" type="button" data-i18n="web.create_pairing_code">Create pairing code</button>
-        <button id="wechat-unbind" class="danger-button" type="button" data-i18n="web.unbind">Unbind</button>
-      </div>
+      <div id="remote-channels" class="remote-channels" role="tablist" aria-labelledby="remote-channels-title"></div>
+      <div id="remote-channel-panel" class="settings-card remote-channel-panel" role="tabpanel" tabindex="0">
+        <section aria-labelledby="remote-binding-title">
+          <div class="remote-section-heading">
+            <div class="remote-section-copy">
+              <h4 id="remote-binding-title" data-i18n="web.remote_channel_binding">Channel binding</h4>
+              <p id="remote-binding-detail"></p>
+            </div>
+            <div class="remote-actions">
+              <button id="remote-feishu-receive" class="primary" type="button" hidden disabled></button>
+              <button id="remote-bind" class="secondary" type="button" disabled></button>
+              <button id="remote-unbind" class="danger-button" type="button" hidden disabled data-i18n="web.unbind">Unbind</button>
+            </div>
+          </div>
+          <p id="remote-binding-message" class="settings-note remote-message" role="status"></p>
+          <p id="remote-feishu-connection" class="settings-note" hidden></p>
+          <div id="wechat-qr" class="wechat-qr" hidden>
+            <img id="wechat-qr-image" alt="WeChat binding QR code" data-i18n-alt="web.wechat_binding_qr_code">
+            <p id="wechat-qr-state" role="status" data-i18n="web.waiting_for_scan">Waiting for scan…</p>
+            <form id="wechat-verify-row" class="wechat-verify" hidden>
+              <label for="wechat-verify-code" data-i18n="web.verification_code">Verification code</label>
+              <input id="wechat-verify-code" type="text" maxlength="32" autocomplete="one-time-code">
+              <button class="secondary" type="submit" data-i18n="web.submit">Submit</button>
+            </form>
+            <button id="wechat-qr-close" class="secondary" type="button" data-i18n="common.close">Close</button>
+          </div>
+          <form id="feishu-binding-form" class="remote-credentials" hidden>
+            <label>
+              <span data-i18n="web.feishu_app_id">App ID</span>
+              <input id="feishu-app-id" required autocomplete="off" maxlength="8192" spellcheck="false">
+            </label>
+            <label>
+              <span data-i18n="web.feishu_app_secret">App Secret</span>
+              <input id="feishu-app-secret" required type="password" autocomplete="new-password" maxlength="8192">
+            </label>
+            <div class="remote-actions">
+              <button id="feishu-binding-cancel" class="secondary" type="button" data-i18n="pages.cancel">Cancel</button>
+              <button id="feishu-save" class="primary" type="submit" data-i18n="pages.save">Save</button>
+            </div>
+          </form>
+        </section>
+        <section aria-labelledby="remote-access-title">
+          <div class="remote-section-heading">
+            <div class="remote-section-copy">
+              <h4 id="remote-access-title"></h4>
+              <p id="remote-access-detail"></p>
+            </div>
+            <button id="remote-pair" class="primary" type="button" hidden disabled data-i18n="web.create_pairing_code">Create pairing code</button>
+          </div>
+          <p id="remote-access-message" class="settings-note remote-message" role="status"></p>
+          <div id="remote-pairing" class="remote-pairing" role="status" hidden>
+            <span data-i18n="web.one_time_pairing_code">One-time pairing code</span>
+            <code id="remote-pairing-code"></code>
+            <small id="remote-pairing-instruction"></small>
+          </div>
+          <div id="remote-users" class="remote-users"></div>
+        </section>
       </div>
     </section>
     </div>

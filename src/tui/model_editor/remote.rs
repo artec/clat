@@ -73,12 +73,16 @@ impl ModelEditor {
         self.remote && self.preset.is_some()
     }
 
-    pub(crate) fn remote_preset_key(preset: &'static ModelPreset) -> Self {
+    pub(crate) fn remote_preset_key(
+        preset: &'static ModelPreset,
+        plan_tiers: &[(&'static str, String)],
+    ) -> Self {
         let config = ModelConfig::default();
         let mut editor = Self::new_with_descriptors(
             &config,
             ProviderCredentials::for_protocol(config.protocol),
             vec![],
+            plan_tiers,
         );
         editor.remote = true;
         editor.apply_preset_and_focus_key(preset);
@@ -512,7 +516,7 @@ mod tests {
     #[test]
     fn remote_preset_key_is_bound_to_id_and_only_sends_confirmed_input() {
         let preset = preset_by_id("deepseek-flash").unwrap();
-        let mut editor = ModelEditor::remote_preset_key(preset);
+        let mut editor = ModelEditor::remote_preset_key(preset, &[]);
         assert_eq!(
             editor.visible_rows(),
             vec![RowKind::ApiKey, RowKind::Save, RowKind::Cancel]
@@ -544,7 +548,7 @@ mod tests {
             panic!()
         };
         assert!(params.get("api_key").is_none());
-        let mut local = ModelPicker::new(&ModelConfig::default(), vec![]);
+        let mut local = ModelPicker::new(&ModelConfig::default(), vec![], &[]);
         local.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(
             local.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),

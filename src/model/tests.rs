@@ -524,41 +524,72 @@ fn historical_preset_seeds_never_become_user_overrides() {
 /// INV-B：`apply_thinking_level` 是线上思考参数的唯一写入口，
 /// 任何输入都产出 `enabled` + 三档之一，且保留 thinking 对象内
 /// 的其它键（GLM 的 `clear_thinking`）。Kimi/Qwen 不携带 thinking
-/// 对象、reasoning_effort 按厂商映射（Qwen 三档 low/medium/xhigh）。
+/// 对象、reasoning_effort 按厂商+模型映射（Qwen 自家三档
+/// low/medium/xhigh；共享端点上的第三方家族见下一测试）。
 #[test]
 fn apply_thinking_level_always_enables_and_keeps_foreign_keys() {
     for level in [ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max] {
         let mut glm = json!({"thinking": {"type": "enabled", "clear_thinking": false}});
-        apply_thinking_level(&mut glm, ModelVendor::Glm, level);
+        apply_thinking_level(&mut glm, ModelVendor::Glm, "glm-5.3", level);
         assert_eq!(glm["thinking"]["type"], "enabled");
         assert_eq!(glm["thinking"]["clear_thinking"], false);
         assert_eq!(glm["reasoning_effort"], level.wire_effort(ModelVendor::Glm));
     }
     // 空 extra_body 从零构造 thinking 对象（DeepSeek/GLM 风格厂商）。
     let mut empty = json!({});
-    apply_thinking_level(&mut empty, ModelVendor::DeepSeek, ThinkingLevel::Low);
+    apply_thinking_level(
+        &mut empty,
+        ModelVendor::DeepSeek,
+        "deepseek-flash",
+        ThinkingLevel::Low,
+    );
     assert_eq!(empty["thinking"]["type"], "enabled");
     assert_eq!(empty["reasoning_effort"], "low");
     // 非 object 的 extra_body 被替换为 object，不会 panic。
     let mut bogus = json!("not an object");
-    apply_thinking_level(&mut bogus, ModelVendor::DeepSeek, ThinkingLevel::Max);
+    apply_thinking_level(
+        &mut bogus,
+        ModelVendor::DeepSeek,
+        "deepseek-v4-pro",
+        ThinkingLevel::Max,
+    );
     assert_eq!(bogus["reasoning_effort"], "max");
     // Kimi/Qwen：顶层 reasoning_effort，不注入 thinking 对象（未定义
     // 参数不发给严格网关）。
     let mut kimi = json!({});
-    apply_thinking_level(&mut kimi, ModelVendor::Kimi, ThinkingLevel::High);
+    apply_thinking_level(
+        &mut kimi,
+        ModelVendor::Kimi,
+        "k3.1-pro",
+        ThinkingLevel::High,
+    );
     assert_eq!(kimi["reasoning_effort"], "high");
     assert!(kimi.get("thinking").is_none());
-    // Qwen 三档映射：Low→low、High→medium、Max→xhigh——三档各自
-    // 有效果（官方兼容表 high/max 均归并为 xhigh，透传会令两档
+    // Qwen 自家模型三档映射：Low→low、High→medium、Max→xhigh——三档
+    // 各有效果（官方兼容表 high/max 均归并为 xhigh，透传会令两档
     // 无差别）。
     let mut qwen = json!({});
-    apply_thinking_level(&mut qwen, ModelVendor::Qwen, ThinkingLevel::Low);
+    apply_thinking_level(
+        &mut qwen,
+        ModelVendor::Qwen,
+        "qwen4-max",
+        ThinkingLevel::Low,
+    );
     assert_eq!(qwen["reasoning_effort"], "low");
-    apply_thinking_level(&mut qwen, ModelVendor::Qwen, ThinkingLevel::High);
+    apply_thinking_level(
+        &mut qwen,
+        ModelVendor::Qwen,
+        "qwen4-max",
+        ThinkingLevel::High,
+    );
     assert_eq!(qwen["reasoning_effort"], "medium");
     assert!(qwen.get("thinking").is_none());
-    apply_thinking_level(&mut qwen, ModelVendor::Qwen, ThinkingLevel::Max);
+    apply_thinking_level(
+        &mut qwen,
+        ModelVendor::Qwen,
+        "qwen4-max",
+        ThinkingLevel::Max,
+    );
     assert_eq!(qwen["reasoning_effort"], "xhigh");
     // 逆映射：Qwen 的 medium 解析回 High（其它厂商归并为 High）。
     assert_eq!(
@@ -569,6 +600,49 @@ fn apply_thinking_level_always_enables_and_keeps_foreign_keys() {
         ThinkingLevel::from_wire_effort(ModelVendor::Qwen, "medium"),
         ThinkingLevel::High
     );
+}
+
+/// Qwen Token Plan / 百炼代管的第三方 DeepSeek 系列（2026-11-28 新增
+/// deepseek-v4.1-flash-1017 预设）：官方 `reasoning_effort` 档位是
+/// DeepSeek 拼写 low/high/max、默认 high（help.aliyun.com/zh/
+/// model-studio/deepseek-api）——不是 Qwen 自家的 low/medium/xhigh。
+/// 判别：删 `wire_effort_for` 的 deepseek 分支（回落纯厂商映射）此
+/// 测试红——High→medium、Max→xhigh 都在百炼 DeepSeek 档位表之外。
+#[test]
+fn qwen_endpoint_deepseek_series_keeps_the_deepseek_effort_spelling() {
+    for (level, wire) in [
+        (ThinkingLevel::Low, "low"),
+        (ThinkingLevel::High, "high"),
+        (ThinkingLevel::Max, "max"),
+    ] {
+        // 快照 id（预设的 model）与稳定 id 同样命中。
+        for model in ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash"] {
+            let mut body = json!({});
+            apply_thinking_level(&mut body, ModelVendor::Qwen, model, level);
+            assert_eq!(body["reasoning_effort"], wire, "{model} {level:?}");
+            // 不注入 thinking 对象（未定义参数不发给严格网关）。
+            assert!(body.get("thinking").is_none(), "{model}");
+        }
+    }
+    // Qwen 自家模型不受该分支影响（厂商默认映射照旧）。
+    let mut qwen = json!({});
+    apply_thinking_level(
+        &mut qwen,
+        ModelVendor::Qwen,
+        "qwen4-max",
+        ThinkingLevel::High,
+    );
+    assert_eq!(qwen["reasoning_effort"], "medium");
+    // 其它厂商的 deepseek 模型走各自厂商默认（DeepSeek 拼写本就一致）。
+    let mut direct = json!({});
+    apply_thinking_level(
+        &mut direct,
+        ModelVendor::DeepSeek,
+        "deepseek-v4.1-flash-1017",
+        ThinkingLevel::High,
+    );
+    assert_eq!(direct["reasoning_effort"], "high");
+    assert_eq!(direct["thinking"]["type"], "enabled");
 }
 
 /// 新厂商端点识别：Kimi Coding 会员端点 / 开放平台端点、Qwen
@@ -638,7 +712,12 @@ fn opencode_vendor_maps_three_levels_directly() {
     );
     // 网关无 thinking 对象：apply 不注入（未定义参数不发给严格网关）。
     let mut body = serde_json::json!({});
-    apply_thinking_level(&mut body, ModelVendor::OpenCode, ThinkingLevel::High);
+    apply_thinking_level(
+        &mut body,
+        ModelVendor::OpenCode,
+        "minimax-m3",
+        ThinkingLevel::High,
+    );
     assert_eq!(body["reasoning_effort"], "high");
     assert!(body.get("thinking").is_none());
 }

@@ -313,14 +313,18 @@ fn stop_confirmed(
         .ok_or(UiMessage::new("desktop.tray_host_changed"))?;
     let desktop = crate::quit_ipc::Target::discover(&config.preferences).map_err(quit_error)?;
     let stopping = if needs_quit_confirmation(&status) {
-        confirm_quit(app, config, &client)?
+        confirm_quit(app, config, &client, &status)?
     } else {
         match client.stop_host_if_idle().map_err(quit_error)? {
             true => true,
-            false if needs_quit_confirmation(&client.runtime_status().map_err(quit_error)?) => {
-                confirm_quit(app, config, &client)?
+            false => {
+                let status = client.runtime_status().map_err(quit_error)?;
+                if needs_quit_confirmation(&status) {
+                    confirm_quit(app, config, &client, &status)?
+                } else {
+                    return Err(UiMessage::new("desktop.tray_host_changed"));
+                }
             }
-            false => return Err(UiMessage::new("desktop.tray_host_changed")),
         }
     };
     if stopping && let Some(desktop) = desktop {
@@ -353,12 +357,13 @@ fn confirm_quit(
     app: &tauri::AppHandle,
     config: &Settings,
     client: &HostClient,
+    status: &Value,
 ) -> Result<bool, UiMessage> {
     let locale = config.locale();
-    let title = locale.text("desktop.menu_quit");
+    let title = locale.text("desktop.stop");
     let confirmed = app
         .dialog()
-        .message(locale.text("desktop.tray_stop_busy"))
+        .message(crate::quit_notice::notice(locale, status, true))
         .title(title)
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(

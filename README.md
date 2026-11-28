@@ -49,6 +49,7 @@ workbench language chooser. [Language settings](docs/localization.md).
 | Web workbench | An installable local PWA and HTTP+SSE clients | `clat serve` |
 | Native desktop | A standalone macOS/Windows app with its own backend and updater | [Desktop client](docs/desktop.md) |
 | WeChat remote | Official iLink text, image, steering, and approvals | `clat serve --im wechat` |
+| Feishu remote | Enterprise self-built app, private-chat text | Settings → Remote → Start receiving |
 | DSH client | Using CLAT's TUI with a local DeepSeek Harness host | `clat dsh` |
 | Plugin manager | Browsing the signed market; installing, updating, auditing, or rolling back packages | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | Offline demo | Verifying the core loop without credentials | `clat demo` |
@@ -76,6 +77,9 @@ A Microsoft Store edition for general users, with Store-managed updates, is
 planned and not yet available. See [desktop distribution](docs/desktop.md#windows-distribution-channels).
 The optional official-iLink WeChat frontend supports explicit binding and pairing;
 it remains off unless `serve` is started with `--im wechat`.
+The optional Feishu frontend is a separate China-site long connection for one
+self-built app. In Settings → Remote, save the app and choose Start receiving.
+`clat serve --im feishu` turns on the same switch. See [Feishu private-chat text](docs/usage.md#feishu-private-chat-text).
 
 ## What is included
 

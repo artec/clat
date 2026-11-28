@@ -1259,6 +1259,7 @@ fn native_model_selection_uses_host_and_retains_picker_on_failure() {
     app.picker = Some(crate::tui::model_editor::ModelPicker::new(
         &app.config,
         vec![],
+        &[],
     ));
     let (tx, rx) = mpsc::sync_channel(4);
     app.event_sender = Some(tx);
@@ -1371,6 +1372,7 @@ fn native_model_results_cannot_close_newer_or_reconnected_picker() {
     app.picker = Some(crate::tui::model_editor::ModelPicker::new(
         &app.config,
         vec![],
+        &[],
     ));
     app.native.as_mut().unwrap().models_request = 2;
     app.native.as_mut().unwrap().models_pending = true;

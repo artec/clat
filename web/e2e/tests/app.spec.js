@@ -1188,23 +1188,26 @@ test('settings expose the default-deny WeChat binding surface', async ({ page })
   await page.click('[data-settings-category="remote"]');
   await expect(page.locator('#settings-dialog')).toBeVisible(LIVE);
 
-  await expect(page.locator('#wechat-status')).toHaveText('Not bound', LIVE);
-  await expect(page.locator('#wechat-counts')).toHaveText('0 paired · 0 chats');
+  await expect(page.locator('#remote-tab-wechat-state')).toHaveText('Not bound', LIVE);
+  await expect(page.locator('#remote-tab-wechat-counts')).toHaveText('0 paired · 0 chats');
 
-  await expect(page.locator('#wechat-bind')).toBeEnabled();
-  await expect(page.locator('#wechat-pair')).toBeDisabled();
-  await expect(page.locator('#wechat-unbind')).toBeDisabled();
+  await expect(page.locator('#remote-bind')).toBeEnabled();
+  await expect(page.locator('#remote-pair')).toBeHidden();
+  await expect(page.locator('#remote-unbind')).toBeHidden();
   await expect(page.locator('#wechat-qr')).toBeHidden();
-  await expect(page.locator('#wechat-pairing')).toBeHidden();
+  await expect(page.locator('#remote-pairing')).toBeHidden();
+  await expect(page.locator('#remote-feishu-receive')).toBeHidden();
   for (const language of ['zh-Hans', 'zh-Hant', 'en']) {
     const expected = await page.evaluate(async language => {
       await CLATI18n.setLanguage(language);
       return CLATI18n.t('web.not_bound');
     }, language);
-    await expect(page.locator('#wechat-status')).toHaveText(expected);
-    await expect(page.locator('#wechat-pair')).toBeDisabled();
+    await expect(page.locator('#remote-tab-wechat-state')).toHaveText(expected);
+    await expect(page.locator('#remote-pair')).toBeHidden();
     await expect(page.locator('#wechat-qr')).toBeHidden();
   }
+  await page.locator('#remote-tab-feishu').click();
+  await expect(page.locator('#remote-tab-feishu')).toHaveAttribute('aria-selected', 'true');
   await page.evaluate(() => {
     const original = rpc;
     globalThis.remoteNavigationCalls = [];
@@ -1215,6 +1218,11 @@ test('settings expose the default-deny WeChat binding surface', async ({ page })
     openSettings('wechat');
   });
   await expect(page.locator('[data-settings-panel="remote"]')).toBeVisible();
+  await expect(page.locator('#remote-tab-wechat')).toHaveAttribute('aria-selected', 'true');
+  await page.evaluate(() => openSettings('feishu'));
+  await expect(page.locator('#remote-tab-feishu')).toHaveAttribute('aria-selected', 'true');
+  await page.evaluate(() => openSettings('wechat'));
+  await expect(page.locator('#remote-tab-wechat')).toHaveAttribute('aria-selected', 'true');
   const calls = await page.evaluate(() => globalThis.remoteNavigationCalls);
   expect(calls).not.toContain('wechat.binding.start');
   expect(calls).not.toContain('wechat.binding.unbind');

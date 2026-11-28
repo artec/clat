@@ -26,6 +26,10 @@ use std::time::{Duration, Instant};
 /// 每 SSE 连接的有界帧队列（INV-S7：满即断连，慢消费者走「重连=重建」）。
 pub(crate) const SUBSCRIBER_QUEUE_FRAMES: usize = 1024;
 
+fn push_quit_fact(items: &mut Vec<Value>, kind: &str, running: bool) {
+    items.push(json!({"kind": kind, "name": "", "running": running}));
+}
+
 fn services_running(app: &TrustedProjectApplication) -> bool {
     app.has_development_work()
         || app.has_background_jobs()
@@ -126,6 +130,7 @@ pub(crate) struct ServeShared {
     /// requests. An acknowledged unbind cannot be followed by a queued send
     /// using the revoked credential.
     pub(crate) wechat_outbound: Mutex<()>,
+    pub(crate) feishu_link: Mutex<Option<super::feishu_link::Link>>,
     shutting_down: Arc<AtomicBool>,
     /// settler / notice 转发（关停时统一有界 join）。
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -137,6 +142,8 @@ pub(crate) struct ServeShared {
     active_uploads: AtomicUsize,
     active_attachment_downloads: AtomicUsize,
     active_connections: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) feishu_probe: Mutex<Option<Arc<super::feishu_link::FeishuProbe>>>,
     #[cfg(test)]
     prompt_pre_admission_barriers:
         Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -184,6 +191,7 @@ impl ServeShared {
             questions: super::questions::Questions::default(),
             wechat_binding: Mutex::new(None),
             wechat_outbound: Mutex::new(()),
+            feishu_link: Mutex::new(None),
             shutting_down: Arc::new(AtomicBool::new(false)),
             workers: Mutex::new(Vec::new()),
             connections: Mutex::new(Vec::new()),
@@ -195,10 +203,17 @@ impl ServeShared {
             active_attachment_downloads: AtomicUsize::new(0),
             active_connections: AtomicUsize::new(0),
             #[cfg(test)]
+            feishu_probe: Mutex::new(None),
+            #[cfg(test)]
             prompt_pre_admission_barriers: Mutex::new(None),
             #[cfg(test)]
             prompt_pre_admission_channels: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_feishu_probe(&self, probe: Arc<super::feishu_link::FeishuProbe>) {
+        *self.feishu_probe.lock().expect("feishu probe") = Some(probe);
     }
 
     #[cfg(test)]
@@ -237,6 +252,10 @@ impl ServeShared {
         self.shutting_down.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn shutdown_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutting_down)
+    }
+
     fn project_work_idle(&self) -> bool {
         let app = self.app.lock().expect("application lock");
         app.next_turn_queue().is_empty()
@@ -257,6 +276,72 @@ impl ServeShared {
             || self.active_attachment_downloads.load(Ordering::Acquire) != 0
             || services_running(&self.app.lock().expect("application lock"))
     }
+
+    /// Structured facts for the quit dialog. Kinds stay identifiers; the desktop renders them.
+    pub(crate) fn quit_facts(&self) -> Value {
+        let mut items = Vec::new();
+        self.push_run_items(&mut items);
+        self.push_transfer_items(&mut items);
+        let app = self.app.lock().expect("application lock");
+        let project = app.workspace_directory_entry().title;
+        for activity in app.host_activities() {
+            items.push(activity.json());
+        }
+        drop(app);
+        self.push_hold_items(&mut items);
+        json!({"project": project, "items": items})
+    }
+
+    fn push_run_items(&self, items: &mut Vec<Value>) {
+        let kind = {
+            let inner = self.inner.lock().expect("serve inner lock");
+            inner.active_run.as_ref().map(|run| {
+                if run.automatic {
+                    "automatic"
+                } else {
+                    "conversation"
+                }
+            })
+        };
+        if let Some(kind) = kind {
+            push_quit_fact(items, kind, true);
+        }
+        if !self.active_compaction_info().is_null() {
+            push_quit_fact(items, "compaction", true);
+        }
+    }
+
+    fn push_transfer_items(&self, items: &mut Vec<Value>) {
+        if self.active_uploads.load(Ordering::Acquire) != 0 {
+            push_quit_fact(items, "upload", true);
+        }
+        if self.active_attachment_downloads.load(Ordering::Acquire) != 0 {
+            push_quit_fact(items, "download", true);
+        }
+    }
+
+    fn push_hold_items(&self, items: &mut Vec<Value>) {
+        if !self.pending.lock().expect("approvals").is_empty() {
+            push_quit_fact(items, "approval", false);
+        }
+        if !self.questions.0.lock().expect("questions").is_empty() {
+            push_quit_fact(items, "question", false);
+        }
+        if !self
+            .pending_steering
+            .lock()
+            .expect("steering receipts")
+            .is_empty()
+        {
+            push_quit_fact(items, "steering", false);
+        }
+        if self.wechat_binding.lock().expect("binding").is_some() {
+            push_quit_fact(items, "binding", false);
+        }
+        if self.drafts.has_live_drafts() {
+            push_quit_fact(items, "draft", false);
+        }
+    }
     pub(crate) fn is_idle_for_reclaim(&self) -> bool {
         let inner = self.inner.lock().expect("serve inner lock");
         let idle = inner.active_run.is_none() && inner.subscribers.is_empty();
@@ -272,6 +357,9 @@ impl ServeShared {
                 .expect("steering receipts")
                 .is_empty()
             && self.wechat_binding.lock().expect("binding").is_none()
+            // 飞书长连接挂在本路由上时不能当空闲项目卸掉。接管仍算空闲，
+            // 新 Host 会按保存的开关自己重连。
+            && !super::feishu_link::active(self)
             && self.active_connections.load(Ordering::Acquire) == 0
             && self.active_uploads.load(Ordering::Acquire) == 0
             && self.active_attachment_downloads.load(Ordering::Acquire) == 0
@@ -903,6 +991,7 @@ impl ServeShared {
 
     pub(crate) fn mark_shutting_down(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
+        super::feishu_link::trip(self);
     }
 
     pub(crate) fn cancel_active_run(&self) {
@@ -925,6 +1014,7 @@ impl ServeShared {
     }
 
     pub(crate) fn drain_workers(&self) {
+        super::feishu_link::stop(self);
         let mut handles = self
             .workers
             .lock()

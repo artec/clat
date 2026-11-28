@@ -30,11 +30,9 @@ function settingsSaveToken(section) {
 function pageSettingsLeave() {
   const settings = dom['settings-dialog'];
   for (const input of settings.querySelectorAll('input[type=password]')) {
-    if(input.value){const section=input.closest('[data-settings-panel]');if(section&&!section.querySelector('.secret-cleared-note'))section.append(el('p','settings-note secret-cleared-note',()=>pageText('secrets_cleared')));}
+    if(input.value){const section=input.closest('[data-settings-panel]');if(section&&section.dataset.settingsPanel!=='remote'&&!section.querySelector('.secret-cleared-note'))section.append(el('p','settings-note secret-cleared-note',()=>pageText('secrets_cleared')));}
     input.value = '';
   }
-  state.wechatBindingPoll++; wechatSensitiveEpoch++; wechatStatusEpoch++; clearWechatQr();
-  dom['wechat-pairing-code'].textContent = ''; hide(dom['wechat-pairing']);
   settings.dispatchEvent(new Event('clat:settings-leave'));
 }
 function setupSettingsSections() {
@@ -66,7 +64,7 @@ function setupSettingsDirtyProtection() {
   settings.addEventListener('focusin',event=>{const section=event.target.closest('[data-settings-panel]');if(section&&!section.dataset.unsaved)capture(section);});
   settings.addEventListener('input',event=>{
     const section=event.target.closest('[data-settings-panel]');
-    if(!section||event.target.closest('.model-vendor')||['appearance','terminal','git','authorizations'].includes(section.dataset.settingsPanel))return;
+    if(!section||event.target.closest('.model-vendor')||['appearance','terminal','git','authorizations','remote'].includes(section.dataset.settingsPanel))return;
     if(section.dataset.settingsPanel==='permissions'&&!permissionEditTarget)permissionEditTarget={project:state.workbench?.project?.root,session:state.sessionId,generation:state.selectionGeneration};
     section.dataset.unsaved='true';
     let bar=section.querySelector('.settings-draft-bar');
@@ -97,7 +95,7 @@ function installNavigationPages() {
     button.append(svgIcon(icon),el('span','settings-row-copy',()=>CLATI18n.msg(key)),svgIcon('next'));
     projectCapabilities.append(button);
   }
-  setupWebAbout(); setupProjectPicker(); setupWechatUsers(); installTaskNotifications();
+  setupWebAbout(); setupProjectPicker(); installRemoteSettings(); installTaskNotifications();
   setupSettingsSections(); acknowledgeSettingsSave = setupSettingsDirtyProtection();
   const scope = el('p', 'page-scope current-permission');
   CLATI18n.bind(scope, 'textContent', () => pageText('effective_permission', {mode: state.workbench?.permission?.mode || 'workspace-write'}));

@@ -23,6 +23,8 @@ mod quit;
 #[cfg(target_os = "macos")]
 mod quit_ipc;
 #[cfg(any(target_os = "macos", windows))]
+mod quit_notice;
+#[cfg(any(target_os = "macos", windows))]
 mod startup;
 #[cfg(any(target_os = "macos", windows))]
 mod tray;

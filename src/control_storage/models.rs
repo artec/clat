@@ -113,6 +113,18 @@ impl ControlStorage {
         )
     }
 
+    pub(crate) fn hy_tier(&self) -> settings::HyTier {
+        self.lock().settings.hy_tier
+    }
+
+    pub(crate) fn set_hy_tier(&self, tier: settings::HyTier) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| settings::save_settings(&self.dir, &self.root, &state.settings),
+            |state| state.settings.hy_tier = tier,
+        )
+    }
+
     pub(crate) fn goal_handoff(&self) -> Option<crate::goal::HandoffSettings> {
         self.lock().settings.goal_handoff.clone()
     }

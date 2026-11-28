@@ -242,6 +242,16 @@ does not create a global allowlist. Removing the paired user or unbinding the
 bot prevents later messages from approving or starting work; unbinding also
 clears the old credential's replay and chat-mapping state.
 
+### Feishu approval
+
+A Feishu connection started with **Start receiving** in Settings → Remote, or
+with `clat serve --im feishu`, uses the same approval messages for a paired
+Feishu user. The projection is text only: a request ID, tool name, effect, and a
+bounded redacted reason. The exact `/allow`, `/deny`, and `/always` messages
+above have the same scope and the same ten-minute deny deadline. Unbinding the
+Feishu app clears that section's grants, mappings, and receipts. It does not
+change the WeChat section.
+
 ## Project trust
 
 Trust controls whether a repository may activate project-aware capabilities at

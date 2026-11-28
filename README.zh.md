@@ -49,6 +49,7 @@ clat upgrade --check
 | Web 工作台 | 可安装的本地 PWA 与 HTTP+SSE 客户端 | `clat serve` |
 | 原生桌面 | 自带后端、独立升级的 macOS/Windows 应用 | [桌面客户端](docs/desktop.md) |
 | 微信远程控制 | 官方 iLink 文本、图片、插话与审批 | `clat serve --im wechat` |
+| 飞书远程控制 | 企业自建应用的单聊文本 | 设置 → 远程 → 开始接收 |
 | DSH 客户端 | 用 CLAT TUI 连接本地 DeepSeek Harness 宿主 | `clat dsh` |
 | 插件管理器 | 浏览签名市场，安装、更新、审计或回滚插件包 | `clat plugin` / [pi.at.cn](https://pi.at.cn) |
 | 离线演示 | 无凭据验证核心循环 | `clat demo` |
@@ -72,6 +73,9 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
 版仍在规划中，尚未上线。详见[桌面分发渠道](docs/desktop.md#windows-distribution-channels)。
 可选的微信前端只走官方 iLink；必须显式扫码绑定、配对用户，并以
 带 `--im wechat` 的 `serve` 启动，否则保持关闭。
+可选的飞书前端是另一条中国站长连接，面向一个企业自建应用。在设置的远程页保存应用后，点「开始接收」。
+`clat serve --im feishu` 会打开同一个开关。
+详见[飞书单聊文本](docs/usage.md#feishu-private-chat-text)。
 
 ## 已包含的能力
 

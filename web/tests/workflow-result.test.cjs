@@ -24,6 +24,8 @@ function page() {
   vm.runInContext(fs.readFileSync('web/workflow-view.js', 'utf8'), context);
   return {
     markdown,
+    actions: input => Array.from(context.goalHandoffActions(input)),
+    label: action => context.goalHandoffAcceptLabel(action),
     language: next => { language = next; },
     render(lastResult) {
       markdown.length = 0;
@@ -53,4 +55,20 @@ test('the default acceptance result follows the active language and authored res
   const authored = view.render('## Summary\n\nVerified the empty goal.');
   assert.deepEqual(view.markdown, ['## Summary\n\nVerified the empty goal.']);
   assert.equal(texts(authored.detail).includes(':workflow.accepted_by_user'), false);
+});
+
+test('model handoff offers start before it is on, and stop once it is on', () => {
+  const view = page();
+  assert.deepEqual(view.actions({
+    locked: false, canPause: false, settings: true, handoff: false, busy: false, switching: false,
+  }), ['apply', 'settings']);
+  view.language('zh-Hans');
+  assert.equal(view.label('apply'), 'zh-Hans:workflow.handoff_start');
+  assert.deepEqual(view.actions({
+    locked: true, canPause: true, settings: true, handoff: true, busy: false, switching: false,
+  }), ['pause', 'remove', 'settings']);
+  assert.equal(view.label('remove'), 'zh-Hans:workflow.handoff_stop');
+  assert.deepEqual(view.actions({
+    locked: true, canPause: true, settings: true, handoff: true, busy: true, switching: false,
+  }), ['pause', 'settings']);
 });

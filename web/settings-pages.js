@@ -462,26 +462,440 @@ function installComputerUseSettings() {
   window.addEventListener('clat:workbench-updated', () => { if (active()) void refresh(); });
 }
 
-function setupWechatUsers() {
-  const panel=document.querySelector('[data-settings-panel=remote]');
-  const section=el('section','settings-group-block');const list=el('div','settings-card');section.append(el('h3','',()=>pageText('authorized_users')),list);panel.append(section);
-  let epoch=0;
-  const active=()=>currentSettingsCategory==='remote'&&pageIsOpen(dom['settings-dialog']);
-  async function refresh(){const request=++epoch;try{const data=await rpc('wechat.users.list',{});if(request!==epoch||!active())return;
-    list.replaceChildren();for(const user of data.users){const row=el('article','project-setting-row'),copy=el('div');copy.append(el('strong','',user.user_id),el('small','',()=>[user.paired?pageText('paired_grant'):'',user.manual?pageText('manual_grant'):''].filter(Boolean).join(' · ')));
-      if(user.sessions.length)copy.append(el('small','',user.sessions.join(' · ')));
-      row.append(copy,pageAction('revoke',async()=>{if(!await CLATDialog.confirm(pageText('revoke_confirm')))return;const request=epoch;try{await rpc('wechat.user.revoke',{userId:user.user_id});if(request!==epoch||!active())return;const refreshed=request+1;await refresh();if(refreshed===epoch&&active())await refreshWechatStatus();}catch(error){if(request===epoch&&active())list.append(el('p','error',error.message));}}));list.append(row);}
-    if(!data.users.length)list.append(pageEmpty('no_authorized_users'));
-  }catch(error){if(request===epoch&&active())list.replaceChildren(el('p','error',error.message),pageAction('retry',()=>void refresh()));}}
-  const heading=el('div','settings-group-heading');heading.append(section.querySelector('h3'),pageAction('refresh',()=>void refresh()));section.prepend(heading);
-  dom['settings-dialog'].addEventListener('clat:page-enter',()=>{if(currentSettingsCategory==='remote')void refresh();});
-  dom['settings-dialog'].addEventListener('clat:remote-enter',()=>void refresh());
-  dom['settings-dialog'].addEventListener('clat:settings-leave',()=>epoch++);
-  dom['settings-dialog'].addEventListener('clat:page-leave',()=>epoch++);
+const REMOTE_CHANNELS = {
+  wechat: {
+    name: 'web.wechat', icon: 'wechat', bind: 'web.bind_wechat',
+    description: 'web.remote_wechat_binding_hint', pairing: 'web.wechat_pairing_instruction',
+    replace: 'web.replace_the_current_binding_existing_user_grants_are_kept_until_the_new_qr_is_conf',
+    unbind: 'web.remove_the_wechat_credential_paired_users_and_chat_mappings',
+  },
+  feishu: {
+    name: 'web.feishu', icon: 'feishu', bind: 'web.bind_feishu',
+    description: 'web.remote_feishu_binding_hint', pairing: 'web.feishu_pairing_instruction',
+    replace: 'web.feishu_replace_confirm',
+    unbind: 'web.remove_the_feishu_app_paired_users_and_chat_mappings',
+  },
+};
+
+function installRemoteChannelTabs(node, select) {
+  const channels = Object.keys(REMOTE_CHANNELS);
+  return Object.fromEntries(channels.map((channel, index) => {
+    const spec = REMOTE_CHANNELS[channel];
+    const tab = el('button', 'remote-channel-tab');
+    const status = el('span', 'remote-channel-state');
+    const counts = el('small');
+    tab.type = 'button';
+    tab.id = 'remote-tab-' + channel;
+    tab.dataset.channel = channel;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', 'remote-channel-panel');
+    const name = el('strong', '', () => CLATI18n.msg(spec.name));
+    name.id = tab.id + '-name';
+    status.id = tab.id + '-state';
+    counts.id = tab.id + '-counts';
+    tab.setAttribute('aria-labelledby', name.id);
+    tab.setAttribute('aria-describedby', status.id + ' ' + counts.id);
+    const mark = el('span', 'authorization-mark');
+    mark.append(svgIcon(spec.icon));
+    tab.append(mark, name, status, counts);
+    tab.onclick = () => select(channel);
+    tab.onkeydown = event => {
+      const next = { ArrowLeft: index - 1, ArrowRight: index + 1, Home: 0, End: channels.length - 1 }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      const target = channels[(next + channels.length) % channels.length];
+      select(target);
+      node.querySelector('#remote-tab-' + target).focus();
+    };
+    node.append(tab);
+    return [channel, { tab, status, counts }];
+  }));
+}
+
+function renderRemoteChannelTab({ tab, status, counts }, selected, snapshot) {
+  tab.setAttribute('aria-selected', String(selected));
+  tab.tabIndex = selected ? 0 : -1;
+  status.dataset.bound = String(Boolean(snapshot?.bound));
+  CLATI18n.bind(status, 'textContent', () => CLATI18n.msg(snapshot?.error
+    ? 'web.unavailable_short' : snapshot ? (snapshot.bound ? 'web.bound_short' : 'web.not_bound') : 'web.checking'));
+  CLATI18n.bind(counts, 'textContent', () => snapshot && !snapshot.error
+    ? CLATI18n.msg('web.dynamic_value_paired_value_chats', { value1: snapshot.paired_users || 0, value2: snapshot.mapped_chats || 0 })
+    : '');
+}
+
+function renderRemoteAuthorizedUsers(list, users, revoke) {
+  list.replaceChildren();
+  for (const user of users) {
+    const row = el('article', 'project-setting-row');
+    const copy = el('div');
+    const grants = () => [user.paired ? pageText('paired_grant') : '', user.manual ? pageText('manual_grant') : '']
+      .filter(Boolean).join(' · ');
+    copy.append(el('strong', '', user.user_id), el('small', '', grants));
+    row.append(svgIcon('user'), copy, pageAction('revoke', () => revoke(user.user_id)));
+    list.append(row);
+  }
+}
+
+function remoteFeishuCredentialValid(value) {
+  return value.length > 0 && new TextEncoder().encode(value).length <= 8192 && ![...value].some(character => {
+    const code = character.codePointAt(0);
+    return code <= 31 || (code >= 127 && code <= 159);
+  });
+}
+
+function installRemoteWechatBinding(get, message, refresh, render) {
+  const qr = get('wechat-qr'), image = get('wechat-qr-image');
+  const state = get('wechat-qr-state'), form = get('wechat-verify-row'), code = get('wechat-verify-code');
+  const label = key => CLATI18n.bind(state, 'textContent', () => CLATI18n.msg(key));
+  const phases = {
+    waiting: 'web.waiting_for_scan',
+    scanned: 'web.scanned_confirm_on_the_phone',
+    need_verify_code: 'web.enter_the_verification_code_shown_by_wechat',
+    verify_code_blocked: 'web.verification_was_blocked_wait_before_trying_again',
+    expired: 'web.qr_code_expired_start_a_new_binding',
+    already_bound: 'web.the_account_is_already_bound_and_returned_no_new_credential',
+  };
+  let generation = 0, url, timer, scanning = false;
+  function clear() {
+    generation++;
+    clearTimeout(timer);
+    if (url) URL.revokeObjectURL(url);
+    url = undefined;
+    image.removeAttribute('src');
+    form.hidden = qr.hidden = true;
+    code.value = '';
+    scanning = false;
+  }
+  async function poll(request, verifyCode) {
+    if (request !== generation) return;
+    try {
+      const value = await rpc('wechat.binding.poll', verifyCode ? { verifyCode } : {});
+      if (request !== generation) return;
+      if (value.state === 'confirmed') {
+        clear();
+        message(CLATI18n.msg('web.binding_confirmed_create_a_one_time_user_pairing_code_next'));
+        refresh();
+        return;
+      }
+      label(phases[value.state] || 'web.unavailable_short');
+      form.hidden = value.state !== 'need_verify_code';
+      if (!form.hidden) code.focus();
+      else if (value.state === 'waiting' || value.state === 'scanned') timer = setTimeout(() => poll(request), 500);
+      else { scanning = false; render(); }
+    } catch (error) {
+      if (request !== generation) return;
+      clear();
+      message(error.message, true);
+      render();
+    }
+  }
+  form.onsubmit = event => {
+    event.preventDefault();
+    const value = code.value.trim();
+    if (!/^[A-Za-z0-9]{1,32}$/.test(value)) {
+      message(CLATI18n.msg('web.verification_code_must_be_1_32_letters_or_digits'), true);
+      return;
+    }
+    form.hidden = true;
+    code.value = '';
+    message('');
+    void poll(generation, value);
+  };
+  get('wechat-qr-close').onclick = () => { clear(); message(''); render(); get('remote-bind').focus(); };
+  return {
+    clear,
+    scanning: () => scanning,
+    async start(replace, current) {
+      clear();
+      const value = await rpc('wechat.binding.start', { replace });
+      if (!current()) return;
+      url = URL.createObjectURL(new Blob([value.qr_svg], { type: 'image/svg+xml' }));
+      image.src = url;
+      label('web.waiting_for_scan');
+      scanning = true;
+      qr.hidden = false;
+      get('wechat-qr-close').focus();
+      void poll(generation);
+    },
+  };
+}
+
+function remoteSettingsView(get) {
+  return {
+    panel: get('remote-channel-panel'), bind: get('remote-bind'), unbind: get('remote-unbind'),
+    receive: get('remote-feishu-receive'), connection: get('remote-feishu-connection'),
+    pair: get('remote-pair'), form: get('feishu-binding-form'), save: get('feishu-save'), cancel: get('feishu-binding-cancel'),
+    users: get('remote-users'), accessDetail: get('remote-access-detail'), accessTitle: get('remote-access-title'),
+    bindingDetail: get('remote-binding-detail'), pairing: get('remote-pairing'), refresh: get('remote-refresh'),
+  };
+}
+
+function feishuConnected(status) {
+  return Boolean(status?.receiving && status.online);
+}
+
+function remoteBindingDetail(channel, status, spec) {
+  if (status?.error) return status.error;
+  if (channel === 'feishu' && status?.app_id && feishuConnected(status)) {
+    return CLATI18n.msg('web.feishu_receive_on', { app_id: status.app_id });
+  }
+  if (status?.app_id) return CLATI18n.msg('web.remote_feishu_bound_hint', { app_id: status.app_id });
+  return CLATI18n.msg(spec.description);
+}
+
+function renderFeishuConnection(view, channel, status, busy) {
+  const visible = channel === 'feishu' && Boolean(status?.bound) && !status.error;
+  const connected = feishuConnected(status);
+  view.receive.hidden = !visible;
+  view.connection.hidden = !visible || connected;
+  if (!visible) return;
+  if (!connected) {
+    const key = status.receiving ? 'web.feishu_receive_connecting' : 'web.feishu_receive_off';
+    CLATI18n.bind(view.connection, 'textContent', () => CLATI18n.msg(key));
+  }
+  const receiving = Boolean(status.receiving);
+  const action = receiving ? 'web.feishu_receive_stop' : 'web.feishu_receive_start';
+  CLATI18n.bind(view.receive, 'textContent', () => CLATI18n.msg(action));
+  view.receive.classList.toggle('primary', !receiving);
+  view.receive.classList.toggle('secondary', receiving);
+  view.receive.disabled = busy || !view.form.hidden;
+}
+
+function installFeishuReceive(view, snapshots, selectedChannel, perform, bindingMessage) {
+  view.receive.onclick = () => {
+    const receiving = !snapshots.get(selectedChannel())?.receiving;
+    void perform(bindingMessage, async (selected, current) => {
+      if (selected !== 'feishu') return false;
+      await rpc('feishu.connection.set', { receiving });
+      if (!current()) return false;
+      bindingMessage('');
+      return true;
+    }, true);
+  };
+}
+
+function setRemoteText(node, value) {
+  CLATI18n.bind(node, 'textContent', () => value);
+}
+
+function renderRemoteSettings(view, channel, tabs, snapshots, busy) {
+  for (const [id, tab] of Object.entries(tabs)) renderRemoteChannelTab(tab, id === channel, snapshots.get(id));
+  const spec = REMOTE_CHANNELS[channel], status = snapshots.get(channel);
+  const bound = Boolean(status?.bound);
+  view.panel.setAttribute('aria-labelledby', tabs[channel].tab.id + '-name');
+  view.bind.disabled = !status || Boolean(status.error) || busy || !view.form.hidden;
+  view.unbind.hidden = view.pair.hidden = !bound;
+  view.unbind.disabled = view.pair.disabled = !bound || busy || !view.form.hidden;
+  view.save.disabled = busy || !status || Boolean(status.error);
+  view.cancel.disabled = busy;
+  view.bind.classList.toggle('primary', !bound);
+  view.bind.classList.toggle('secondary', bound);
+  setRemoteText(view.bind, CLATI18n.msg(bound ? 'web.replace_binding' : spec.bind));
+  setRemoteText(view.bindingDetail, remoteBindingDetail(channel, status, spec));
+  view.bindingDetail.classList.toggle('remote-binding-line', channel === 'feishu' && feishuConnected(status));
+}
+
+function createRemoteSettingsRefresh(view, selectedChannel, snapshots, active, render, revoke) {
+  let read = 0;
+  return function refresh() {
+    const request = ++read, selected = selectedChannel();
+    const current = () => request === read && active();
+    view.refresh.disabled = true;
+    const statuses = Object.keys(REMOTE_CHANNELS).map(async id => {
+      try {
+        const value = await rpc(id + '.binding.status', {});
+        if (current()) snapshots.set(id, value);
+      } catch (error) {
+        if (current()) snapshots.set(id, { error: error.message });
+      }
+      if (current()) render();
+    });
+    const users = (async () => {
+      try {
+        const data = await rpc(selected + '.users.list', {});
+        if (!current()) return;
+        renderRemoteAuthorizedUsers(view.users, data.users, revoke);
+        setRemoteText(view.accessDetail, CLATI18n.msg(data.users.length ? 'web.remote_access_hint' : 'web.remote_access_empty'));
+      } catch (error) {
+        if (!current()) return;
+        view.users.replaceChildren();
+        setRemoteText(view.accessDetail, error.message);
+      }
+    })();
+    return Promise.all([...statuses, users]).then(() => { if (current()) view.refresh.disabled = false; });
+  };
+}
+
+function revokeRemoteUser(userId, perform, accessMessage) {
+  void perform(accessMessage, async (selected, current) => {
+    const channel = CLATI18n.msg(REMOTE_CHANNELS[selected].name);
+    const confirm = CLATI18n.msg('web.remote_revoke_confirm', { channel, user: userId });
+    if (!await CLATDialog.confirm(confirm) || !current()) return false;
+    await rpc(selected + '.user.revoke', { userId });
+    return true;
+  }, true);
+}
+
+function installRemoteBindingActions({
+  view, get, selectedChannel, bindingIsBound, perform, bindingMessage, closeForm, render, clearPairing, wechat,
+}) {
+  view.bind.onclick = () => {
+    if (selectedChannel() === 'feishu') {
+      bindingMessage('');
+      view.form.hidden = false;
+      render();
+      get('feishu-app-id').focus();
+      return;
+    }
+    const replace = Boolean(bindingIsBound());
+    void perform(bindingMessage, async (selected, current) => {
+      if (replace && !await CLATDialog.confirm(CLATI18n.msg(REMOTE_CHANNELS[selected].replace))) return;
+      if (!current()) return;
+      clearPairing();
+      await wechat.start(replace, current);
+    });
+  };
+  view.cancel.onclick = () => { closeForm(); bindingMessage(''); render(); view.bind.focus(); };
+  view.form.onsubmit = event => {
+    event.preventDefault();
+    if (selectedChannel() !== 'feishu' || view.save.disabled) return;
+    const appId = get('feishu-app-id').value.trim(), appSecret = get('feishu-app-secret').value.trim();
+    if (!remoteFeishuCredentialValid(appId) || !remoteFeishuCredentialValid(appSecret)) {
+      bindingMessage(CLATI18n.msg('web.feishu_credential_invalid'), true);
+      return;
+    }
+    const replace = Boolean(bindingIsBound());
+    void perform(bindingMessage, async (selected, current) => {
+      if (replace && !await CLATDialog.confirm(CLATI18n.msg(REMOTE_CHANNELS[selected].replace))) return false;
+      if (!current() || view.form.hidden) return false;
+      await rpc('feishu.binding.save', { appId, appSecret, replace });
+      if (current()) {
+        closeForm();
+        clearPairing();
+        bindingMessage(CLATI18n.msg('web.feishu_saved'));
+      }
+      return true;
+    }, true);
+  };
+  view.unbind.onclick = () => void perform(bindingMessage, async (selected, current) => {
+    if (!await CLATDialog.confirm(CLATI18n.msg(REMOTE_CHANNELS[selected].unbind)) || !current()) return false;
+    await rpc(selected + '.binding.unbind', { confirm: 'unbind-' + selected });
+    if (current()) {
+      clearPairing();
+      wechat.clear();
+    }
+    return true;
+  }, true);
+}
+
+function installRemotePairingAction(view, get, perform, accessMessage, clearPairing) {
+  view.pair.onclick = () => void perform(accessMessage, async (selected, current) => {
+    clearPairing();
+    const value = await rpc(selected + '.pairing.create', {});
+    if (!current()) return;
+    get('remote-pairing-code').textContent = value.code;
+    setRemoteText(get('remote-pairing-instruction'), CLATI18n.msg(REMOTE_CHANNELS[selected].pairing, { command: '/pair <code>', minutes: 60 }));
+    view.pairing.hidden = false;
+  });
+}
+
+function installRemoteSettings() {
+  const settings = dom['settings-dialog'];
+  const get = id => document.getElementById(id);
+  const view = remoteSettingsView(get);
+  const setMessage = (id, value, error = false) => {
+    const node = get(id);
+    node.dataset.error = String(error);
+    setRemoteText(node, value);
+  };
+  const bindingMessage = (value, error) => setMessage('remote-binding-message', value, error);
+  const accessMessage = (value, error) => setMessage('remote-access-message', value, error);
+  const active = () => currentSettingsCategory === 'remote' && pageIsOpen(settings);
+  const snapshots = new Map(), pending = new Set();
+  let channel = 'wechat', generation = 0, connectionPoll;
+  const selectedChannel = () => channel;
+  const tabs = installRemoteChannelTabs(get('remote-channels'), select);
+  const refresh = createRemoteSettingsRefresh(view, selectedChannel, snapshots, active, render,
+    userId => revokeRemoteUser(userId, perform, accessMessage));
+  const wechat = installRemoteWechatBinding(get, bindingMessage, refresh, render);
+  const closeForm = () => { view.form.hidden = true; view.form.reset(); };
+  const clearPairing = () => {
+    view.pairing.hidden = true;
+    get('remote-pairing-code').textContent = '';
+    setRemoteText(get('remote-pairing-instruction'), '');
+  };
+  function clearConnectionPoll() { clearTimeout(connectionPoll); }
+  function scheduleConnectionPoll() {
+    clearConnectionPoll();
+    const status = snapshots.get('feishu');
+    if (!active() || channel !== 'feishu' || !status?.receiving || status.online) return;
+    connectionPoll = setTimeout(() => { if (active()) void refresh(); }, 1000);
+  }
+  function render() {
+    const busy = pending.has(channel) || wechat.scanning();
+    renderRemoteSettings(view, channel, tabs, snapshots, busy);
+    renderFeishuConnection(view, channel, snapshots.get(channel), busy);
+    scheduleConnectionPoll();
+  }
+  function clearTransient() {
+    generation++;
+    clearConnectionPoll();
+    wechat.clear();
+    closeForm();
+    clearPairing();
+    bindingMessage('');
+    accessMessage('');
+    view.users.replaceChildren();
+    setRemoteText(view.accessDetail, CLATI18n.msg('web.checking'));
+  }
+  function select(id, reload = true) {
+    if (id === channel) return;
+    clearTransient();
+    channel = id;
+    render();
+    if (reload && active()) refresh();
+  }
+  async function perform(sectionMessage, operation, refreshAfter = false) {
+    const selected = channel, owner = generation;
+    if (!active() || pending.has(selected)) return;
+    const current = () => active() && owner === generation;
+    pending.add(selected);
+    sectionMessage('');
+    render();
+    try {
+      if (await operation(selected, current) && refreshAfter && active()) await refresh();
+    } catch (error) {
+      if (current()) sectionMessage(error.message, true);
+    } finally {
+      pending.delete(selected);
+      if (active()) render();
+    }
+  }
+  installFeishuReceive(view, snapshots, selectedChannel, perform, bindingMessage);
+  installRemoteBindingActions({
+    view, get, selectedChannel, bindingIsBound: () => Boolean(snapshots.get(channel)?.bound),
+    perform, bindingMessage, closeForm, render, clearPairing, wechat,
+  });
+  installRemotePairingAction(view, get, perform, accessMessage, clearPairing);
+  const enter = () => {
+    if (!active()) return;
+    setRemoteText(view.accessDetail, CLATI18n.msg('web.checking'));
+    snapshots.clear();
+    render();
+    refresh();
+  };
+  view.refresh.append(svgIcon('refresh'), el('span', '', () => pageText('refresh')));
+  view.refresh.onclick = refresh;
+  setRemoteText(view.accessTitle, pageText('authorized_users'));
+  settings.addEventListener('clat:page-enter', enter);
+  settings.addEventListener('clat:remote-enter', enter);
+  settings.addEventListener('clat:settings-leave', clearTransient);
+  settings.addEventListener('clat:remote-channel-link', event => select(event.detail === 'feishu' ? 'feishu' : 'wechat', false));
+  render();
 }
 function setupWebAbout() {
   if(document.querySelector('[data-settings-category=desktop]'))return;
-  const button=pageAction('updates_about',()=>selectSettingsCategory('desktop'));button.dataset.settingsCategory='desktop';document.querySelector('.settings-nav').append(button);
+  const button=el('button','',()=>pageText('updates_about'));button.type='button';button.dataset.settingsCategory='desktop';button.onclick=()=>selectSettingsCategory('desktop');document.querySelector('.settings-nav').append(button);
   const section=el('section','settings-section');section.dataset.settingsPanel='desktop';section.hidden=true;
   section.append(el('p','page-scope',()=>pageText('host_scope')),el('h3','','CLAT'),el('p','',()=>pageText('web_about')));
   const version=el('span'),status=el('p','settings-note');let epoch=0;

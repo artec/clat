@@ -99,6 +99,25 @@ fn probe_entry(reader: Box<dyn std::io::Read + Send>) -> Arc<Entry> {
     .unwrap()
 }
 #[test]
+fn open_terminal_names_keep_the_shell_until_the_terminal_closes() {
+    let terminals = probe_terminals();
+    let entry = probe_entry(Box::new(std::io::Cursor::new(Vec::<u8>::new())));
+    entry.metadata.lock().unwrap().name = "zsh".into();
+    terminals
+        .entries
+        .lock()
+        .unwrap()
+        .insert("probe".into(), entry.clone());
+    assert_eq!(terminals.open_names(), vec!["zsh".to_string()]);
+    assert_eq!(
+        super::super::quit_kinds(terminals.open_names(), false, true),
+        vec![("terminal", "zsh".into())]
+    );
+    entry.closed.store(true, Ordering::SeqCst);
+    assert!(terminals.open_names().is_empty());
+    entry.close().unwrap();
+}
+#[test]
 fn output_wait_wakes_on_append_instead_of_sleeping_to_the_timeout() {
     let (send, receive) = std::sync::mpsc::channel::<Vec<u8>>();
     let entry = probe_entry(Box::new(ChannelReader(receive)));

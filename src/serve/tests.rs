@@ -569,6 +569,12 @@ fn parse_serve_args_defaults_to_2691_and_accepts_explicit_controls() {
             .im,
         Some(super::ImBackend::Wechat)
     );
+    assert_eq!(
+        super::parse_serve_args(["--im".into(), "feishu".into()])
+            .unwrap()
+            .im,
+        Some(super::ImBackend::Feishu)
+    );
     assert!(
         super::parse_serve_args(["--rotate-token".into()])
             .unwrap()
@@ -641,6 +647,316 @@ fn wechat_switch_is_default_off_and_fails_closed_before_binding_exists() {
         !storage_root.join(super::token::FILE_NAME).exists(),
         "IM preflight must fail before listener/token side effects"
     );
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn feishu_switch_fails_closed_before_a_binding_exists() {
+    let behavior = TestBehavior::Success;
+    let (storage_root, project_root, project) = setup("serve-feishu-gate");
+    prepare_storage(&project, &storage_root, behavior.clone());
+    let error = match crate::serve::serve_with_with_queue(
+        project,
+        Some(storage_root.clone()),
+        ServeArgs {
+            trust: false,
+            port: 0,
+            token: None,
+            rotate_token: true,
+            no_open: true,
+            im: Some(super::ImBackend::Feishu),
+        },
+        |bootstrap| {
+            bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    ) {
+        Ok(handle) => {
+            handle.shutdown();
+            let _ = handle.join();
+            panic!("unbound Feishu host unexpectedly started")
+        }
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        "Feishu is not configured yet; run `clat feishu bind` before starting with `--im feishu`"
+    );
+    assert!(
+        !storage_root.join(super::token::FILE_NAME).exists(),
+        "IM preflight must fail before listener/token side effects"
+    );
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn feishu_binding_rpc_keeps_the_secret_out_of_status() {
+    let (storage_root, project_root, project) = setup("serve-feishu-rpc");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let application = BootstrapApplication::open(project, storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+    let secret = "secret-value";
+    assert_eq!(
+        protocol::dispatch(
+            "feishu.binding.save",
+            &serde_json::json!({"appId": "cli_a1b2c3d4", "appSecret": ""}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    let saved = protocol::dispatch(
+        "feishu.binding.save",
+        &serde_json::json!({"appId": "cli_a1b2c3d4", "appSecret": secret}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(saved["bound"], true);
+    assert!(!saved.to_string().contains(secret));
+    let status =
+        protocol::dispatch("feishu.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(status["bound"], true);
+    assert_eq!(status["app_id"], "cli_a1b2c3d4");
+    assert_eq!(status["receiving"], false);
+    assert_eq!(status["online"], false);
+    assert!(!status.to_string().contains(secret));
+    assert_eq!(
+        protocol::dispatch("wechat.binding.status", &serde_json::json!({}), &shared).unwrap()["bound"],
+        false
+    );
+    assert_eq!(
+        protocol::dispatch(
+            "feishu.binding.save",
+            &serde_json::json!({"appId": "cli_a1b2c3d4", "appSecret": secret}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    let pairing =
+        protocol::dispatch("feishu.pairing.create", &serde_json::json!({}), &shared).unwrap();
+    let code = pairing["code"].as_str().unwrap().to_owned();
+    {
+        let app = shared.app.lock().unwrap();
+        assert_eq!(
+            app.submit_feishu_pairing_code("delivery-one", "remote-user", &code)
+                .unwrap(),
+            crate::remote::PairingAttempt::Paired
+        );
+    }
+    let users = protocol::dispatch("feishu.users.list", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(users["users"][0]["user_id"], "remote-user");
+    assert!(
+        protocol::dispatch("wechat.users.list", &serde_json::json!({}), &shared).unwrap()["users"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    protocol::dispatch(
+        "feishu.user.revoke",
+        &serde_json::json!({"userId": "remote-user"}),
+        &shared,
+    )
+    .unwrap();
+    assert!(
+        protocol::dispatch("feishu.users.list", &serde_json::json!({}), &shared).unwrap()["users"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        protocol::dispatch(
+            "feishu.binding.unbind",
+            &serde_json::json!({"confirm": "wrong"}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    protocol::dispatch(
+        "feishu.binding.unbind",
+        &serde_json::json!({"confirm": "unbind-feishu"}),
+        &shared,
+    )
+    .unwrap();
+    let cleared =
+        protocol::dispatch("feishu.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(cleared["bound"], false);
+    assert_eq!(cleared["receiving"], false);
+    assert!(cleared["app_id"].is_null());
+    assert!(!cleared.to_string().contains(secret));
+    for method in [
+        "feishu.binding.status",
+        "feishu.binding.save",
+        "feishu.binding.unbind",
+        "feishu.connection.set",
+        "feishu.pairing.create",
+        "feishu.users.list",
+        "feishu.user.revoke",
+    ] {
+        assert!(protocol::RPC_METHODS.contains(&method));
+    }
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn feishu_connection_switch_starts_and_stops_inside_the_running_host() {
+    let (storage_root, project_root, project) = setup("serve-feishu-switch");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let application = BootstrapApplication::open(project.clone(), storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+    let probe = Arc::new(super::feishu_link::FeishuProbe {
+        started: std::sync::atomic::AtomicUsize::new(0),
+    });
+    shared.install_feishu_probe(Arc::clone(&probe));
+    let secret = "secret-value";
+    assert_eq!(
+        protocol::dispatch(
+            "feishu.connection.set",
+            &serde_json::json!({"receiving": true}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 0);
+    protocol::dispatch(
+        "feishu.binding.save",
+        &serde_json::json!({"appId": "cli_a1b2c3d4", "appSecret": secret}),
+        &shared,
+    )
+    .unwrap();
+    let started = protocol::dispatch(
+        "feishu.connection.set",
+        &serde_json::json!({"receiving": true}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(started["receiving"], true);
+    assert_eq!(started["online"], true);
+    assert!(!started.to_string().contains(secret));
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
+    protocol::dispatch(
+        "feishu.connection.set",
+        &serde_json::json!({"receiving": true}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
+    protocol::dispatch(
+        "feishu.binding.save",
+        &serde_json::json!({"appId": "cli_a1b2c3d4", "appSecret": "secret-value-2", "replace": true}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let status =
+        protocol::dispatch("feishu.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(status["receiving"], true);
+    assert_eq!(status["online"], true);
+    assert!(!status.to_string().contains("secret-value"));
+    protocol::dispatch(
+        "feishu.connection.set",
+        &serde_json::json!({"receiving": false}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let stopped =
+        protocol::dispatch("feishu.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(stopped["receiving"], false);
+    assert_eq!(stopped["online"], false);
+    protocol::dispatch(
+        "feishu.connection.set",
+        &serde_json::json!({"receiving": true}),
+        &shared,
+    )
+    .unwrap();
+    super::feishu_link::stop(&shared);
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+
+    let application = BootstrapApplication::open(project, storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    assert!(application.feishu_receiving().unwrap());
+    let resumed = super::startup::serve_feishu_credentials(&application, &ServeArgs::default())
+        .unwrap()
+        .expect("saved switch starts Feishu without --im");
+    assert_eq!(resumed.app_id(), "cli_a1b2c3d4");
+    let wechat = ServeArgs {
+        im: Some(super::ImBackend::Wechat),
+        ..ServeArgs::default()
+    };
+    assert!(
+        super::startup::serve_feishu_credentials(&application, &wechat)
+            .unwrap()
+            .is_none()
+    );
+    assert!(application.feishu_receiving().unwrap());
+    application.set_feishu_receiving(false).unwrap();
+    assert!(
+        super::startup::serve_feishu_credentials(&application, &ServeArgs::default())
+            .unwrap()
+            .is_none()
+    );
+    let feishu = ServeArgs {
+        im: Some(super::ImBackend::Feishu),
+        ..ServeArgs::default()
+    };
+    assert!(
+        super::startup::serve_feishu_credentials(&application, &feishu)
+            .unwrap()
+            .is_some()
+    );
+    assert!(application.feishu_receiving().unwrap());
+    application.close().unwrap();
     std::fs::remove_dir_all(storage_root).ok();
     std::fs::remove_dir_all(project_root).ok();
 }
@@ -4790,6 +5106,51 @@ fn model_preset_tier_http_route_switches_kimi_tier() {
         assert_eq!(reply["value"]["tier"], tier);
         let (_, view) = post_rpc_json(handle.addr, TEST_TOKEN, "model.settings.get", "{}");
         assert_eq!(view["value"]["kimi_tier"], tier, "{view}");
+        // 档位可见性（2026-11-28）：Host 视图的预设名单按档位过滤
+        // ——Plus 档不含 Pro 门槛的 k3.1-pro-highspeed，web/desktop
+        // 选择面与 TUI 同源。
+        let highspeed_hidden = view["value"]["presets"]
+            .as_array()
+            .expect("presets list")
+            .iter()
+            .any(|preset| preset["id"] == "k3.1-pro-highspeed");
+        assert_eq!(
+            highspeed_hidden,
+            tier == "pro",
+            "{tier}: k3.1-pro-highspeed visibility follows the tier"
+        );
+    }
+    cleanup(handle, &storage, &project);
+}
+
+/// Hy Token Plan 套餐路由（2026-11-28）：`model.preset.hy_tier` 经
+/// 真实 HTTP 分发并切名单——hy 档仅混元两条，common 档放行通用
+/// 八预设（视图名单与 TUI 同源）。
+#[test]
+fn model_preset_hy_tier_http_route_switches_roster() {
+    assert!(protocol::RPC_METHODS.contains(&"model.preset.hy_tier"));
+    let (handle, storage, project) = spawn_serve("serve-hy-tier", TestBehavior::RunCommandPerTurn);
+    for tier in ["hy", "common"] {
+        let body = serde_json::json!({ "tier": tier }).to_string();
+        let (_, reply) = post_rpc_json(handle.addr, TEST_TOKEN, "model.preset.hy_tier", &body);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["value"]["tier"], tier);
+        let (_, view) = post_rpc_json(handle.addr, TEST_TOKEN, "model.settings.get", "{}");
+        assert_eq!(view["value"]["hy_tier"], tier, "{view}");
+        let hy_presets: Vec<&str> = view["value"]["presets"]
+            .as_array()
+            .expect("presets list")
+            .iter()
+            .filter(|preset| preset["vendor"] == "Hy Token Plan")
+            .map(|preset| preset["id"].as_str().expect("preset id"))
+            .collect();
+        let expected = if tier == "hy" { 2 } else { 10 };
+        assert_eq!(hy_presets.len(), expected, "{tier}: {hy_presets:?}");
+        assert_eq!(
+            hy_presets.contains(&"hy-deepseek-v4.1-flash-1017"),
+            tier == "common",
+            "{tier}: common-plan preset visibility follows the tier"
+        );
     }
     cleanup(handle, &storage, &project);
 }

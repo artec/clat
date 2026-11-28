@@ -306,7 +306,7 @@ impl ModelConfig {
                 // 的 effort 不动（有效 pin 照发）；一等字段仍回填，
                 // effective_thinking_level 同口径回落显示。
                 if crate::model::model_thinking_levels(vendor, &self.model).contains(&level) {
-                    apply_thinking_level(&mut self.extra_body, vendor, level);
+                    apply_thinking_level(&mut self.extra_body, vendor, &self.model, level);
                 }
                 // 一等字段回填（UI/持久层继续读它；merge 的唯一事实
                 // 源是 overrides）。

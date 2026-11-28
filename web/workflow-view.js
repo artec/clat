@@ -275,7 +275,8 @@ function workflowGoalRow(view, value) {
     selected:view.selection === 'goal', action:() => view.select('goal'),
   }));
   if (goal && goal.phase !== 'complete' && builtinEnabled(value, 'builtin.goal')) {
-    const button = navigationIcon(() => workflowText(goal.handoff ? 'handoff_status_on' : 'handoff_status_off'), 'handoff',
+    const button = navigationIcon(() => workflowText(goal.handoff ? 'handoff_status_on' : 'handoff_status_off'),
+      goal.handoff ? 'handoff' : 'handoff-off',
       () => void chooseGoalHandoff(goal.id, {
         visible: () => toolViewIsOpen(view.page),
         report: error => CLATI18n.bind(view.status, 'textContent', () => error.message),
@@ -288,6 +289,26 @@ function workflowGoalRow(view, value) {
   return row;
 }
 
+function goalHandoffActions({locked, canPause, settings, handoff, busy, switching}) {
+  const actions = [];
+  if (locked && canPause) actions.push('pause');
+  if (!locked && settings && !handoff) actions.push('apply');
+  if (handoff && !busy && !switching) actions.push('remove');
+  actions.push('settings');
+  return actions;
+}
+function goalHandoffAcceptLabel(action) {
+  if (action === 'pause') return workflowText('pause_goal');
+  if (action === 'settings') return workflowText('handoff_open_settings');
+  if (action === 'remove') return workflowText('handoff_stop');
+  return workflowText('handoff_start');
+}
+function goalHandoffHint(action, locked, canPause) {
+  if (action === 'apply') return workflowText('handoff_consent');
+  if (action === 'remove') return workflowText('handoff_disable_help');
+  if (action === 'pause' || locked) return workflowText(canPause ? 'handoff_pause_required' : 'handoff_wait_required');
+  return workflowText('handoff_settings_help');
+}
 async function chooseGoalHandoff(goalId, {visible, report}) {
   const owner = [state.sessionId, state.selectionGeneration, state.stream];
   const current = () => owner[0] === state.sessionId && owner[1] === state.selectionGeneration &&
@@ -304,18 +325,19 @@ async function chooseGoalHandoff(goalId, {visible, report}) {
     const labels = new Map(models.map(model => [model.id, handoffModelLabel(model)]));
     const order = settings?.profiles.map(id => labels.get(id) || id.replace(/^(profile|preset):/, '')) || [];
     const select = el('select');
-    const addChoice = (id, key) => { const option = el('option', '', () => workflowText(key)); option.value = id; select.append(option); };
-    if (locked && canPause) addChoice('pause', 'pause_goal');
-    if (!locked && settings) addChoice('apply', 'handoff_use_settings');
-    if (!locked && goal.handoff) addChoice('remove', 'handoff_disable_goal');
-    addChoice('settings', 'handoff_open_settings');
+    const choiceKey = {pause:'pause_goal', apply:'handoff_use_settings', remove:'handoff_disable_goal', settings:'handoff_open_settings'};
+    for (const id of goalHandoffActions({
+      locked, canPause, settings: Boolean(settings), handoff: Boolean(goal.handoff),
+      busy: value.busy, switching: Boolean(value.handoff),
+    })) {
+      const option = el('option', '', () => workflowText(choiceKey[id]));
+      option.value = id;
+      select.append(option);
+    }
     const label = el('label', '', () => workflowText('handoff_action'));
     label.append(select);
     const hint = el('p', 'picker-hint');
-    const renderHint = () => CLATI18n.bind(hint, 'textContent', () => workflowText(locked
-      ? (canPause ? 'handoff_pause_required' : 'handoff_wait_required')
-      : select.value === 'apply' ? 'handoff_consent'
-      : select.value === 'remove' ? 'handoff_disable_help' : 'handoff_settings_help'));
+    const renderHint = () => CLATI18n.bind(hint, 'textContent', () => goalHandoffHint(select.value, locked, canPause));
     select.onchange = renderHint;
     renderHint();
     dialog.append(label, hint);
@@ -327,8 +349,7 @@ async function chooseGoalHandoff(goalId, {visible, report}) {
       dialog.prepend(el('p', 'handoff-active-model', () => CLATI18n.msg('workflow.handoff_current', {model:active})));
     }
     const result = await CLATDialog.edit(() => workflowText('handoff_models'), dialog, () => select.value,
-      () => select.value === 'pause' ? workflowText('pause_goal') :
-        select.value === 'settings' ? workflowText('handoff_open_settings') : CLATI18n.msg('common.apply'));
+      () => goalHandoffAcceptLabel(select.value));
     if (!result || !current()) return;
     if (result === 'settings') { openSettings('utility'); return; }
     const target = {id:goal.id, revision:goal.revision};

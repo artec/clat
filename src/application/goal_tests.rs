@@ -1053,3 +1053,49 @@ fn goal_handoff_catalog_includes_configured_presets_without_saved_profiles() {
 fn goal_handoff_accepts_positive_deepseek_balance_without_comparing_it_to_percent() {
     exercise_goal_handoff(HandoffTrigger::Money, false);
 }
+
+#[test]
+fn an_armed_goal_can_stop_model_handoff_but_cannot_replace_it() {
+    let (storage, root) = roots("goal-handoff-stop");
+    std::fs::create_dir_all(&root).unwrap();
+    let app = BootstrapApplication::open(Project::new(&root), storage.clone())
+        .unwrap()
+        .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    configure_test_model(&app);
+    let (config, keys) = app.model_state().unwrap();
+    let candidate = ModelConfig {
+        model: "backup".into(),
+        ..config
+    };
+    app.save_model_profile("backup", &candidate, &keys).unwrap();
+    let settings = crate::goal::HandoffSettings {
+        profiles: vec!["backup".into()],
+        threshold: 15,
+        note: String::new(),
+    };
+    let queue = app.prepare_goal_handoff(&settings, None).unwrap();
+    let created = app
+        .goal_service()
+        .unwrap()
+        .create_with_handoff("Finish the work", queue)
+        .unwrap();
+    let armed = app.goal_arm(created.state.revision).unwrap();
+    assert!(armed.armed);
+    assert!(armed.state.handoff.is_some());
+    app.workflow_configure_goal_handoff(&armed.state.id, armed.state.revision, None)
+        .unwrap();
+    let stopped = app.goal().unwrap().unwrap();
+    assert!(stopped.armed);
+    assert!(stopped.state.handoff.is_none());
+    let replaced = app.workflow_configure_goal_handoff(
+        &stopped.state.id,
+        stopped.state.revision,
+        Some(&settings),
+    );
+    assert!(replaced.unwrap_err().contains("pause the Goal"));
+    app.close().unwrap();
+    crate::test_support::cleanup_tree(storage.parent().unwrap());
+}

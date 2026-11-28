@@ -29,6 +29,9 @@ impl ThinkingLevel {
     /// （默认 xhigh），CLAT 的三档按阶梯映射 Low→low、High→medium、
     /// Max→xhigh，保证三档各自有效果（官方兼容表里 high/max 都归并
     /// 为 xhigh，直接透传会让 High/Max 两档无差别）。
+    ///
+    /// 共享端点上的第三方家族例外（快照 id 含后缀同样命中）由
+    /// [`Self::wire_effort_for`] 按模型分流；本函数保持纯厂商默认。
     pub(crate) fn wire_effort(self, vendor: ModelVendor) -> &'static str {
         match (self, vendor) {
             (Self::Low, _) => "low",
@@ -37,6 +40,21 @@ impl ThinkingLevel {
             (Self::High, _) => "high",
             (Self::Max, _) => "max",
         }
+    }
+
+    /// 模型感知版线上取值：共享厂商端点上代管的第三方模型家族按
+    /// 各自官方档位拼写分流，其余落厂商默认（[`Self::wire_effort`]）。
+    /// 当前唯一家族：Qwen Token Plan / 百炼端点上的 DeepSeek 系列
+    /// （见 [`deepseek_ladder_on_qwen_endpoint`]）。
+    pub(crate) fn wire_effort_for(self, vendor: ModelVendor, model: &str) -> &'static str {
+        if deepseek_ladder_on_qwen_endpoint(vendor, model) {
+            return match self {
+                Self::Low => "low",
+                Self::High => "high",
+                Self::Max => "max",
+            };
+        }
+        self.wire_effort(vendor)
     }
 
     /// 从线上取值解析（厂商感知的逆映射）。此处保留 CLAT 的三档规范
@@ -55,6 +73,17 @@ impl ThinkingLevel {
             Self::High
         }
     }
+}
+
+/// 共享厂商端点上的第三方模型家族档位拼写分支（OC-17 逐模型阶梯的
+/// 厂商侧推广）：Qwen Token Plan / 百炼代管的 DeepSeek 系列模型
+/// （`deepseek-v4.1-flash-1017` 等，快照后缀天然覆盖）官方
+/// `reasoning_effort` 档位是 DeepSeek 拼写 low/high/max（默认 high；
+/// help.aliyun.com/zh/model-studio/deepseek-api，2026-11-28 核验），
+/// **不是** Qwen 自家的 low/medium/xhigh——纯厂商映射会把该家族的
+/// High/Max 档发成端点不认识的 medium/xhigh。
+fn deepseek_ladder_on_qwen_endpoint(vendor: ModelVendor, model: &str) -> bool {
+    vendor == ModelVendor::Qwen && model.to_ascii_lowercase().starts_with("deepseek")
 }
 
 /// 按端点识别的模型厂商。DeepSeek 与 GLM 提供思考档位与额度监控，
@@ -218,11 +247,18 @@ fn wrap_level(levels: &[ThinkingLevel], current: ThinkingLevel) -> Option<Thinki
 }
 
 /// 把档位写进 `extra_body`（线上格式的唯一写入口）：`reasoning_effort`
-/// 按厂商映射（见内部 `ThinkingLevel::wire_effort`）；`thinking` 对象只
-/// 写给使用 DeepSeek/GLM 风格开关的厂商——Kimi K3 与 Qwen3.8-Max 的
-/// 思考强度是顶层 `reasoning_effort`，不携带 `thinking` 对象（避免
-/// 未定义参数），对象内的其它键（GLM 的 `clear_thinking`）原样保留。
-pub fn apply_thinking_level(extra_body: &mut Value, vendor: ModelVendor, level: ThinkingLevel) {
+/// 按厂商+模型映射（见 `ThinkingLevel::wire_effort_for`——Qwen 端点上
+/// 的第三方 DeepSeek 系列按 DeepSeek 拼写）；`thinking` 对象只写给
+/// 使用 DeepSeek/GLM 风格开关的厂商——Kimi K3、Qwen 系与百炼代管的
+/// DeepSeek 系列思考强度都是顶层 `reasoning_effort`，不携带 `thinking`
+/// 对象（避免未定义参数），对象内的其它键（GLM 的 `clear_thinking`）
+/// 原样保留。
+pub fn apply_thinking_level(
+    extra_body: &mut Value,
+    vendor: ModelVendor,
+    model: &str,
+    level: ThinkingLevel,
+) {
     if !extra_body.is_object() {
         *extra_body = Value::Object(Default::default());
     }
@@ -242,7 +278,7 @@ pub fn apply_thinking_level(extra_body: &mut Value, vendor: ModelVendor, level: 
     }
     map.insert(
         "reasoning_effort".into(),
-        Value::String(level.wire_effort(vendor).into()),
+        Value::String(level.wire_effort_for(vendor, model).into()),
     );
 }
 

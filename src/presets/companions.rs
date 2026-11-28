@@ -27,6 +27,7 @@ pub(super) const KIMI_FOR_CODING: ModelPreset = ModelPreset {
     thinking_object: false,
     include_usage: true,
     user_agent: Some(CLAT_UA),
+    min_plan_tier: None,
 };
 
 /// Tencent Hy4 正式版（GA，2026-11-07 负责人令：丢弃 hy4-preview、
@@ -91,6 +92,7 @@ pub(super) const HY4: ModelPreset = ModelPreset {
     thinking_object: false,
     include_usage: false,
     user_agent: None,
+    min_plan_tier: None,
 };
 
 /// Tencent Hy4 Flash（Hy Token Plan，2026-11-18 负责人令：退役 hy3、
@@ -118,4 +120,5 @@ pub(super) const HY4_FLASH: ModelPreset = ModelPreset {
     thinking_object: false,
     include_usage: false,
     user_agent: None,
+    min_plan_tier: None,
 };

@@ -108,6 +108,15 @@ impl DevelopmentService {
     pub fn has_live_work(&self) -> bool {
         self.lifetime.active() || self.git.has_live_work() || self.terminals.has_live_work()
     }
+    /// Facts for the quit notice. An open terminal holds the development lease,
+    /// so that lease is not also reported as a separate files operation.
+    pub(crate) fn quit_activities(&self) -> Vec<(&'static str, String)> {
+        quit_kinds(
+            self.terminals.open_names(),
+            self.git.has_live_work(),
+            self.lifetime.active(),
+        )
+    }
     pub(crate) fn with_lease(self, lease: Arc<dyn Send + Sync>) -> Self {
         self.lifetime.attach(lease);
         self
@@ -166,6 +175,66 @@ pub(super) fn relative(path: &str) -> Result<&Path, String> {
 }
 pub(super) fn io(error: std::io::Error) -> String {
     format!("io:{error}")
+}
+
+fn quit_kinds(
+    terminal_names: Vec<String>,
+    git_live: bool,
+    lifetime_active: bool,
+) -> Vec<(&'static str, String)> {
+    let mut items = Vec::new();
+    push_terminals(&mut items, terminal_names);
+    if git_live {
+        items.push(("git", String::new()));
+    }
+    if items.is_empty() && lifetime_active {
+        items.push(("files", String::new()));
+    }
+    items
+}
+
+fn push_terminals(items: &mut Vec<(&'static str, String)>, names: Vec<String>) {
+    if names.is_empty() {
+        return;
+    }
+    let named: Vec<String> = names.into_iter().filter(|name| !name.is_empty()).collect();
+    if named.is_empty() {
+        items.push(("terminal", String::new()));
+        return;
+    }
+    for name in named {
+        items.push(("terminal", name));
+    }
+}
+
+#[cfg(test)]
+mod quit_kind_tests {
+    use super::quit_kinds;
+
+    #[test]
+    fn an_open_terminal_is_named_and_is_not_also_reported_as_a_files_operation() {
+        assert_eq!(
+            quit_kinds(vec!["zsh".into()], false, true),
+            vec![("terminal", "zsh".into())]
+        );
+        assert_eq!(
+            quit_kinds(vec!["zsh".into()], true, true),
+            vec![("terminal", "zsh".into()), ("git", String::new())]
+        );
+    }
+
+    #[test]
+    fn a_file_operation_is_reported_only_when_no_terminal_or_git_explains_it() {
+        assert_eq!(
+            quit_kinds(vec![], false, true),
+            vec![("files", String::new())]
+        );
+        assert!(quit_kinds(vec![], false, false).is_empty());
+        assert_eq!(
+            quit_kinds(vec![String::new()], false, true),
+            vec![("terminal", String::new())]
+        );
+    }
 }
 
 #[cfg(test)]

@@ -39,16 +39,16 @@ pub(crate) fn wait_for_approval(
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum RemoteChannel {
     Wechat,
+    Feishu,
     #[cfg(test)]
     Test,
-    // Feishu is reserved and intentionally absent. When it becomes a real
-    // channel its `delivery_key` is prefixed. Do not reuse WeChat's raw wire id.
 }
 
 impl RemoteChannel {
     pub(crate) fn run_prefix(self) -> &'static str {
         match self {
             Self::Wechat => "wechat",
+            Self::Feishu => "feishu",
             #[cfg(test)]
             Self::Test => "test-remote",
         }
@@ -58,14 +58,17 @@ impl RemoteChannel {
         match self {
             // Existing journal and receipt keys must remain byte-compatible.
             Self::Wechat => wire_id.to_owned(),
+            Self::Feishu => prefixed_delivery_key("feishu", wire_id),
             #[cfg(test)]
-            Self::Test => {
-                use sha2::{Digest, Sha256};
-                let digest = Sha256::digest(wire_id.as_bytes());
-                format!("test-remote:{digest:x}")
-            }
+            Self::Test => prefixed_delivery_key("test-remote", wire_id),
         }
     }
+}
+
+fn prefixed_delivery_key(prefix: &str, wire_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(wire_id.as_bytes());
+    format!("{prefix}:{digest:x}")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,5 +142,24 @@ impl ApprovalRegistry {
             return None;
         }
         pending.remove(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteChannel;
+
+    #[test]
+    fn feishu_delivery_key_hides_the_wire_id_and_stays_stable() {
+        let key = RemoteChannel::Feishu.delivery_key("om_123");
+        assert!(key.starts_with("feishu:"));
+        assert!(!key.contains("om_123"));
+        assert_eq!(key, RemoteChannel::Feishu.delivery_key("om_123"));
+        assert_ne!(key, RemoteChannel::Wechat.delivery_key("om_123"));
+        assert_ne!(
+            key,
+            RemoteChannel::Feishu.delivery_key("om_124"),
+            "a different message must not reuse the receipt"
+        );
     }
 }

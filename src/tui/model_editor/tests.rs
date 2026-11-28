@@ -9,7 +9,7 @@ use std::fs;
 fn editor() -> ModelEditor {
     let config = ModelConfig::default();
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    ModelEditor::new_with_descriptors(&config, credentials, Vec::new())
+    ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[])
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -124,7 +124,7 @@ fn build_preserves_persisted_thinking_level() {
         ..ModelConfig::default()
     };
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    let editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     let (built, _) = editor.build().unwrap();
     assert_eq!(built.thinking_level, Some(ThinkingLevel::Max));
 }
@@ -142,7 +142,7 @@ fn cycling_preset_resets_thinking_level() {
         ..ModelConfig::default()
     };
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     select(&mut editor, RowKind::Preset);
     // 从 pro 起步，一步右移到 GLM 5.4（Coding Plan 旗舰入口）。
     editor.handle_key(key(KeyCode::Right));
@@ -169,7 +169,7 @@ fn editor_build_derives_non_sticky_overrides() {
         .unwrap()
         .apply(&mut config);
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     // 编辑器从 effective 值构造：预设 stamp 后 output=128K、
     // 窗口=1M。原样保存 → Inherit（跟随预设，不粘滞）。
     let (built, _) = editor.build().unwrap();
@@ -212,7 +212,7 @@ fn editor_ctrl_d_roundtrips_clear_overrides() {
         .unwrap()
         .apply(&mut config);
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     select(&mut editor, RowKind::Advanced);
     editor.handle_key(key(KeyCode::Enter));
 
@@ -276,7 +276,7 @@ fn manual_extra_body_edit_clears_thinking_level() {
         ..ModelConfig::default()
     };
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     commit_popup_on(
         &mut editor,
         RowKind::ExtraBody,
@@ -311,7 +311,7 @@ fn manual_preset_controlled_fields_mark_the_config_custom() {
         (RowKind::Temperature, "0.4"),
     ] {
         let mut editor =
-            ModelEditor::new_with_descriptors(&preset_config, credentials.clone(), Vec::new());
+            ModelEditor::new_with_descriptors(&preset_config, credentials.clone(), Vec::new(), &[]);
         commit_popup_on(&mut editor, row, value);
         assert_eq!(
             editor.build().expect("build").0.preset,
@@ -322,7 +322,7 @@ fn manual_preset_controlled_fields_mark_the_config_custom() {
 
     for key_code in [KeyCode::Enter, KeyCode::Char(' ')] {
         let mut editor =
-            ModelEditor::new_with_descriptors(&preset_config, credentials.clone(), Vec::new());
+            ModelEditor::new_with_descriptors(&preset_config, credentials.clone(), Vec::new(), &[]);
         select(&mut editor, RowKind::Advanced);
         editor.handle_key(key(KeyCode::Enter));
         select(&mut editor, RowKind::Parallel);
@@ -343,7 +343,8 @@ fn manual_extra_body_survives_application_model_state_reload() {
         .apply(&mut preset_config);
     preset_config.thinking_level = Some(ThinkingLevel::Max);
     let credentials = ProviderCredentials::for_protocol(preset_config.protocol);
-    let mut editor = ModelEditor::new_with_descriptors(&preset_config, credentials, Vec::new());
+    let mut editor =
+        ModelEditor::new_with_descriptors(&preset_config, credentials, Vec::new(), &[]);
     commit_popup_on(
         &mut editor,
         RowKind::ExtraBody,
@@ -388,7 +389,7 @@ fn manual_model_or_endpoint_edit_clears_thinking_level() {
     let credentials = ProviderCredentials::for_protocol(config.protocol);
 
     let mut editor =
-        ModelEditor::new_with_descriptors(&config.clone(), credentials.clone(), Vec::new());
+        ModelEditor::new_with_descriptors(&config.clone(), credentials.clone(), Vec::new(), &[]);
     commit_popup_on(
         &mut editor,
         RowKind::Endpoint,
@@ -398,7 +399,7 @@ fn manual_model_or_endpoint_edit_clears_thinking_level() {
     assert_eq!(built.thinking_level, None);
     assert_eq!(built.preset, None);
 
-    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     commit_popup_on(&mut editor, RowKind::Model, "glm-5.3");
     let (built, _) = editor.build().unwrap();
     assert_eq!(built.thinking_level, None);
@@ -451,9 +452,37 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     // VP-2B：Qwen Token Plan 两模型（max + flash）连续排布。
     assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-flash"));
     editor.handle_key(key(KeyCode::Right));
+    // 2026-11-28：Token Plan 托管 DeepSeek 快照增量预设（同 vendor 同
+    // key 槽殿后）——端点同 Token Plan、effort pin high（DeepSeek
+    // 拼写档位，见 thinking.rs 按模型分支）、开图（官方 Text+Image）。
+    assert_eq!(
+        editor.preset.map(|preset| preset.id),
+        Some("deepseek-v4.1-flash-1017")
+    );
+    let (config, _) = editor.build().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    assert_eq!(config.extra_body["reasoning_effort"], "high");
+    assert!(config.capabilities.accepts_image_input());
+    editor.handle_key(key(KeyCode::Right));
     // 2026-11-03：Kimi 旗舰由 kimi-k3 原地升级为 K3.1 Pro（wire id
     // `k3.1-pro`），预设 id 跟随模型 id（SF-1 同款）。
     assert_eq!(editor.preset.map(|preset| preset.id), Some("k3.1-pro"));
+    editor.handle_key(key(KeyCode::Right));
+    // 2026-11-28：Pro 门槛的 Highspeed 变体紧随旗舰，K3 全档模型殿后
+    // （本测试编辑器无档位信息 → 不过滤，走表全量）。
+    assert_eq!(
+        editor.preset.map(|preset| preset.id),
+        Some("k3.1-pro-highspeed")
+    );
+    let (config, _) = editor.build().unwrap();
+    assert_eq!(config.model, "k3.1-pro-highspeed");
+    assert_eq!(config.endpoint, "https://api.kimi.com/coding/v1");
+    assert_eq!(config.extra_body["reasoning_effort"], "high");
+    editor.handle_key(key(KeyCode::Right));
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("k3"));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(
         editor.preset.map(|preset| preset.id),
@@ -470,6 +499,26 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     assert_eq!(config.extra_body, serde_json::json!({}));
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("hy4-flash"));
+    // Hy Token Plan 通用套餐八预设（2026-11-28，presets/hy_plan.rs）：
+    // 无档位信息的编辑器不过滤，走表全量（id 带 hy- 前缀防撞名，
+    // kimi-k3 退役 id 不复活）。
+    for expected in [
+        "hy-deepseek-v4.1-flash-1017",
+        "hy-glm-5.4",
+        "hy-glm-5.3",
+        "hy-glm-5.3-flash",
+        "hy-k3.1-pro",
+        "hy-k3",
+        "hy-minimax-m3",
+        "hy-minimax-m3.1-flash",
+    ] {
+        editor.handle_key(key(KeyCode::Right));
+        assert_eq!(editor.preset.map(|preset| preset.id), Some(expected));
+    }
+    let (config, _) = editor.build().unwrap();
+    // 端点级钉值：plan/v3 上零思考参数（TC-0，hy4 先例）。
+    assert_eq!(config.endpoint, "https://tokenhub.tencentmaas.com/plan/v3");
+    assert_eq!(config.extra_body, serde_json::json!({}));
     // OC-Go（2026-11-18）：腾讯预设之后接连排布 OpenCode Go 网关预设
     // （presets/opencode.rs 钉值；2026-11-19 追加四海外闭源模型殿后），
     // 然后才回落 Custom（None）。
@@ -535,7 +584,7 @@ fn basic_layout_keeps_the_form_short() {
 }
 
 fn new_picker() -> ModelPicker {
-    ModelPicker::new(&ModelConfig::default(), Vec::new())
+    ModelPicker::new(&ModelConfig::default(), Vec::new(), &[])
 }
 
 fn profile_summary(name: &str) -> ProfileSummary {
@@ -604,8 +653,9 @@ fn vendor_escape_restores_the_entered_row() {
         picker.handle_key(picker_key(KeyCode::Down));
     }
     picker.handle_key(picker_key(KeyCode::Enter)); // 进入第 3 行 Qwen
-    // VP-2B：Qwen Token Plan 两模型（max + flash）。
-    assert_eq!(picker.row_count(), 2);
+    // VP-2B：Qwen Token Plan 两模型（max + flash）；2026-11-28 增量
+    // 托管 DeepSeek 快照后为三模型。
+    assert_eq!(picker.row_count(), 3);
     assert!(matches!(
         picker.handle_key(picker_key(KeyCode::Esc)),
         PickerAction::Continue
@@ -618,12 +668,109 @@ fn vendor_escape_restores_the_entered_row() {
     );
 }
 
+/// 订阅档位可见性（2026-11-28）：Kimi Plus 档二级列表隐藏 Pro 门槛
+/// 预设（k3.1-pro-highspeed，行 4 → 3 模型），Pro 档全量 4 个；Hy
+/// 档（hy）只显示混元两条，通用（common）档全量 10 条；档位表未
+/// 收录（DSH/旧 Host）不过滤。单一规则 hidden_by_plan_tier——删
+/// picker 的 visible_presets_by_vendor 过滤此测试红。
+#[test]
+fn plus_tier_hides_the_pro_gated_preset_and_pro_restores_it() {
+    let open_vendor = |tiers: &[(&'static str, String)], digit: char| {
+        let mut picker = ModelPicker::new(&ModelConfig::default(), Vec::new(), tiers);
+        assert!(matches!(
+            picker.handle_key(picker_key(KeyCode::Char(digit))),
+            PickerAction::Continue
+        ));
+        picker
+    };
+    let kimi = |tiers: &[(&'static str, String)]| open_vendor(tiers, '4');
+    let hy = |tiers: &[(&'static str, String)]| open_vendor(tiers, '5');
+
+    let plus = kimi(&[("Kimi Coding Plan", "plus".into())]);
+    assert_eq!(plus.row_count(), 3, "Plus hides k3.1-pro-highspeed");
+    let mut pro = kimi(&[("Kimi Coding Plan", "pro".into())]);
+    assert_eq!(pro.row_count(), 4, "Pro sees the full Kimi family");
+    // Pro 档数字快选 2 = k3.1-pro-highspeed（表中紧随旗舰）。
+    let PickerAction::SelectPreset(preset) = pro.handle_key(picker_key(KeyCode::Char('2'))) else {
+        panic!("expected SelectPreset");
+    };
+    assert_eq!(preset.id, "k3.1-pro-highspeed");
+    let unknown = kimi(&[]);
+    assert_eq!(unknown.row_count(), 4, "unknown tier does not filter");
+
+    // Hy 套餐：hy 档仅混元两条；通用（common）档全量 10 条（混元 +
+    // 第三方八模型）。
+    let hy_only = hy(&[("Hy Token Plan", "hy".into())]);
+    assert_eq!(hy_only.row_count(), 2, "Hy plan shows the Hunyuan pair");
+    let common = hy(&[("Hy Token Plan", "common".into())]);
+    assert_eq!(common.row_count(), 10, "Common plan shows the full roster");
+}
+
+/// 编辑器 Preset 循环跳过当前档位不可见的预设（2026-11-28）：Plus
+/// 档从 k3.1-pro 右循环直达 k3；Hy 档从 hy4 右循环直达 Custom（通用
+/// 套餐预设全跳）；无档位信息走全量表。删 cycle_preset 的过滤此测
+/// 试红。
+#[test]
+fn preset_cycle_skips_plan_gated_presets_on_plus() {
+    let config = ModelConfig::default();
+    let credentials = ProviderCredentials::for_protocol(config.protocol);
+    let k3_pro = preset_by_id("k3.1-pro").expect("preset");
+    let mut plus = ModelEditor::new_with_descriptors(
+        &config,
+        credentials.clone(),
+        Vec::new(),
+        &[("Kimi Coding Plan", "plus".into())],
+    );
+    plus.apply_preset_and_focus_key(k3_pro);
+    select(&mut plus, RowKind::Preset);
+    plus.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        plus.preset.map(|preset| preset.id),
+        Some("k3"),
+        "highspeed is skipped on Plus"
+    );
+
+    let mut no_tier =
+        ModelEditor::new_with_descriptors(&config, credentials.clone(), Vec::new(), &[]);
+    no_tier.apply_preset_and_focus_key(k3_pro);
+    select(&mut no_tier, RowKind::Preset);
+    no_tier.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        no_tier.preset.map(|preset| preset.id),
+        Some("k3.1-pro-highspeed")
+    );
+
+    // Hy 套餐（hy 档）：hy4 → hy4-flash（两条都在 Hy 名单）→ 跳过
+    // 通用八预设直落下一厂商（OC 网关，无门槛）。
+    let hy4 = preset_by_id("hy4").expect("preset");
+    let mut hy = ModelEditor::new_with_descriptors(
+        &config,
+        credentials,
+        Vec::new(),
+        &[("Hy Token Plan", "hy".into())],
+    );
+    hy.apply_preset_and_focus_key(hy4);
+    select(&mut hy, RowKind::Preset);
+    hy.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        hy.preset.map(|preset| preset.id),
+        Some("hy4-flash"),
+        "the Hunyuan pair stays visible on the Hy tier"
+    );
+    hy.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        hy.preset.map(|preset| preset.id),
+        Some("opencode-deepseek-v4-pro"),
+        "common-plan presets are skipped on the Hy tier"
+    );
+}
+
 /// U1（INV-U1 原位返回）：Custom 档案列表 Esc 返回一级时，光标
 /// 停在 Custom 行（进入档案列表前的位置）。删除 home_row → 红。
 #[test]
 fn custom_list_escape_restores_the_custom_row() {
     let profiles = vec![profile_summary("work"), profile_summary("personal")];
-    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles, &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -643,7 +790,7 @@ fn custom_list_escape_restores_the_custom_row() {
 #[test]
 fn snapshot_restore_roundtrips_level_and_cursor() {
     let profiles = vec![profile_summary("work"), profile_summary("personal")];
-    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles, &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -655,6 +802,7 @@ fn snapshot_restore_roundtrips_level_and_cursor() {
     let mut restored = ModelPicker::new(
         &ModelConfig::default(),
         vec![profile_summary("work"), profile_summary("personal")],
+        &[],
     );
     restored.restore_snapshot(snapshot);
     assert_eq!(restored.row_count(), 3, "back inside the custom list");
@@ -712,14 +860,14 @@ fn picker_digits_quick_select_models_and_custom() {
     };
     assert_eq!(preset.id, "glm-5.4");
 
-    // 一级数字 3 进入 Qwen Token Plan（VP-2B：两模型），5 快选
-    // Custom。
+    // 一级数字 3 进入 Qwen Token Plan（VP-2B：两模型；2026-11-28 增量
+    // 托管 DeepSeek 快照后为三模型），5 快选 Custom。
     let mut picker = new_picker();
     assert!(matches!(
         picker.handle_key(picker_key(KeyCode::Char('3'))),
         PickerAction::Continue
     ));
-    assert_eq!(picker.row_count(), 2);
+    assert_eq!(picker.row_count(), 3);
     let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
     else {
         panic!("expected SelectPreset");
@@ -900,7 +1048,7 @@ fn profile_extra_body_edit_clears_thinking_but_endpoint_edit_keeps_it() {
 #[test]
 fn custom_entry_three_states() {
     // 零档案：Enter 直进新建页。
-    let mut picker = ModelPicker::new(&ModelConfig::default(), Vec::new());
+    let mut picker = ModelPicker::new(&ModelConfig::default(), Vec::new(), &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -911,7 +1059,7 @@ fn custom_entry_three_states() {
 
     // 一个档案：Custom 行 Enter → 列表（1 档案行 + New… = 2 行）。
     let profiles = vec![profile_summary("work")];
-    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles, &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -926,7 +1074,7 @@ fn custom_entry_three_states() {
         picker.handle_key(picker_key(KeyCode::Enter)),
         PickerAction::SwitchProfile(name) if name == "work"
     ));
-    let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")], &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -938,7 +1086,7 @@ fn custom_entry_three_states() {
     ));
 
     // `e` = 编辑既有档案。
-    let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")], &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -954,7 +1102,7 @@ fn custom_entry_three_states() {
 #[test]
 fn profile_delete_requires_double_confirmation() {
     let profiles = vec![profile_summary("work"), profile_summary("personal")];
-    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), profiles, &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -978,7 +1126,7 @@ fn profile_delete_requires_double_confirmation() {
     ));
 
     // New… 行按 d 无操作。
-    let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")]);
+    let mut picker = ModelPicker::new(&ModelConfig::default(), vec![profile_summary("work")], &[]);
     for _ in 0..6 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
@@ -1058,7 +1206,7 @@ fn dsh_picker_cycles_efforts_and_carries_them_on_enter() {
 fn editor_prefills_preset_and_focuses_the_api_key_row() {
     let config = ModelConfig::default();
     let credentials = ProviderCredentials::for_protocol(config.protocol);
-    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new());
+    let mut editor = ModelEditor::new_with_descriptors(&config, credentials, Vec::new(), &[]);
     editor.credentials.set_value(0, "old-vendor-key".into());
 
     let preset = preset_by_id("glm-5.3").expect("preset");

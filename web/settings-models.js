@@ -15,13 +15,27 @@ function renderSettingsPresets(view) {
   }
   for (const [vendor, presets] of groups) {
     let row = settingsPresetRows.get(vendor);
-    if (!row) { row = settingsPresetRow(vendor, presets); settingsPresetRows.set(vendor, row); host.append(row.element); }
+    if (!row) { row = settingsPresetRow(vendor); settingsPresetRows.set(vendor, row); host.append(row.element); }
+    // 档位可见性（2026-11-28）：Kimi 档位切换后 Host 名单变化，每次
+    // 渲染按当前名单重建选项；被隐藏的未保存选择回落活动/默认预设。
+    const previous = row.select.value;
+    let restored = false;
+    while (row.select.firstChild) row.select.removeChild(row.select.firstChild);
+    for (const preset of presets) {
+      const option = el('option', '', modelCapabilityName(preset.name, preset.image_input));
+      option.value = preset.id;
+      if (preset.id === previous) restored = true;
+      row.select.append(option);
+    }
+    if (restored) row.select.value = previous; else row.edited = false;
     const active = !view.active_profile && presets.some(preset => preset.id === view.current.preset);
     row.active.hidden = !active;
     if (!row.edited && active) row.select.value = view.current.preset;
     row.entry?.sync(view);
     if (row.tier && !row.tierPending) {
-      const currentTier = view.kimi_tier === 'pro' ? 'pro' : 'plus';
+      const currentTier = vendor === 'Kimi Coding Plan'
+        ? (view.kimi_tier === 'pro' ? 'pro' : 'plus')
+        : (view.hy_tier === 'common' ? 'common' : 'hy');
       for (const radio of row.tier.querySelectorAll('input')) radio.checked = radio.value === currentTier;
     }
   }
@@ -70,7 +84,7 @@ function settingsPresetEntry(choice, active, key, apply) {
   };
 }
 
-function settingsPresetRow(vendor, presets) {
+function settingsPresetRow(vendor) {
   const element = el('article', 'settings-card model-vendor'), heading = el('div', 'model-vendor-heading');
   const active = el('small', '', () => settingsUi('active_model'));
   const controls = el('div', 'model-vendor-controls'), select = el('select'), key = el('input');
@@ -116,8 +130,40 @@ function settingsPresetRow(vendor, presets) {
     heading.append(tier);
     heading.classList.add('has-entry');
   }
+  if (vendor === 'Hy Token Plan') {
+    tier = el('div', 'model-vendor-entry');
+    tier.setAttribute('role', 'radiogroup');
+    CLATI18n.attribute(tier, 'aria-label', () => settingsUi('hy_tier'));
+    for (const value of ['hy', 'common']) {
+      const label = el('label'), radio = el('input');
+      radio.type = 'radio'; radio.name = 'hy-token-plan-tier'; radio.value = value;
+      radio.checked = value === 'hy';
+      label.append(radio, el('span', '', () => settingsUi('hy_tier_' + value)));
+      tier.append(label);
+    }
+    tier.addEventListener('change', event => {
+      if (event.target.type !== 'radio' || tierPending) return;
+      tierPending = event.target.value;
+      for (const radio of tier.querySelectorAll('input')) radio.disabled = true;
+      apply.disabled = true;
+      void (async () => {
+        try {
+          await rpc('model.preset.hy_tier', { tier: tierPending });
+          await refreshWorkbench();
+        } catch (error) {
+          CLATI18n.bind(modelField('settings-error'), 'textContent', () => error.message);
+        } finally {
+          tierPending = null;
+          for (const radio of tier.querySelectorAll('input')) radio.disabled = false;
+          apply.disabled = false;
+          await refreshModelSettings();
+        }
+      })();
+    });
+    heading.append(tier);
+    heading.classList.add('has-entry');
+  }
   heading.append(active);
-  for (const preset of presets) { const option = el('option', '', modelCapabilityName(preset.name, preset.image_input)); option.value = preset.id; select.append(option); }
   CLATI18n.attribute(select, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.model_id'));
   key.type = 'password'; key.autocomplete = 'new-password'; key.maxLength = 4096;
   CLATI18n.attribute(key, 'aria-label', () => vendor + ' · ' + CLATI18n.msg('web.api_key'));

@@ -4,7 +4,7 @@ let compactPickerMode = null;
 let compactPickerSource = null;
 
 function compactPresetName(preset) {
-  return preset.name.replace(/\s+\(OpenCode Go\)$/, '');
+  return preset.name.replace(/\s+\((?:OpenCode Go|Hy Common)\)$/, '');
 }
 
 function compactPickerCurrent(view) {

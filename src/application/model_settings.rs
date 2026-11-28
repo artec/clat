@@ -30,6 +30,9 @@ pub struct ModelSettingsView {
     pub glm_entry: String,
     #[serde(default)]
     pub kimi_tier: String,
+    /// Hy Token Plan 套餐（2026-11-28，"hy"/"common"；旧 Host 缺省 hy）。
+    #[serde(default)]
+    pub hy_tier: String,
     pub utility: UtilitySettingsView,
 }
 
@@ -166,7 +169,7 @@ impl TrustedProjectApplication {
             config.thinking_level = Some(next);
             config.overrides_version = Some(1);
             config.overrides.thinking_level = crate::Override::Set(next);
-            crate::apply_thinking_level(&mut config.extra_body, vendor, next);
+            crate::apply_thinking_level(&mut config.extra_body, vendor, &config.model, next);
             Ok(next)
         })
     }
@@ -225,6 +228,17 @@ impl TrustedProjectApplication {
             profile_image_input,
             presets: crate::presets::MODEL_PRESETS
                 .iter()
+                // 订阅档位可见性（2026-11-28）：Kimi Plus 档隐藏 Pro
+                // 门槛预设、Hy 档隐藏通用套餐预设——web/desktop 从本
+                // 视图取名单，与 TUI picker/editor 同源
+                //（hidden_by_plan_tier 单一规则）。
+                .filter(|preset| {
+                    !preset_hidden_by_plan_tier(
+                        preset,
+                        self.control.kimi_tier(),
+                        self.control.hy_tier(),
+                    )
+                })
                 .map(|preset| ModelPresetView {
                     id: preset.id.into(),
                     name: preset.name.into(),
@@ -253,6 +267,7 @@ impl TrustedProjectApplication {
                 .as_str()
                 .to_owned(),
             kimi_tier: self.control.kimi_tier().as_str().to_owned(),
+            hy_tier: self.control.hy_tier().as_str().to_owned(),
             utility: self.utility_settings_view_locked()?,
         })
     }
@@ -329,6 +344,13 @@ impl TrustedProjectApplication {
     ) -> Result<(), ApplicationError> {
         let preset = crate::presets::preset_by_id(id)
             .ok_or_else(|| ApplicationError::new("unknown model preset"))?;
+        // 档位门槛（2026-11-28）：选择面已隐藏的预设不允许绕过视图
+        // 直接选入（RPC 直呼 model.preset.select 同样拒）。
+        if preset_hidden_by_plan_tier(preset, self.control.kimi_tier(), self.control.hy_tier()) {
+            return Err(ApplicationError::new(
+                "model preset requires a Kimi Pro plan or above",
+            ));
+        }
         validate_key(api_key.as_deref())?;
         let entry_endpoint = entry
             .map(|entry| resolve_preset_entry(preset, entry))
@@ -424,6 +446,17 @@ impl TrustedProjectApplication {
             .lock()
             .expect("model updates");
         let (mut config, credentials) = self.model_state()?;
+        // 降档守卫（2026-11-28）：当前路由是 Pro 门槛预设时拒绝降
+        // Plus——否则档位 stamp 会把 Plus 窗口写进一个该档位根本不可
+        // 调用的模型，下一次运行才在端点侧失败。先换模型再降档。
+        if let Some(preset) = super::dto::matching_preset(&config)
+            && preset.vendor == "Kimi Coding Plan"
+            && preset.hidden_by_plan_tier(tier.as_str())
+        {
+            return Err(ApplicationError::new(
+                "the active model requires a Kimi Pro plan or above; switch models before downgrading",
+            ));
+        }
         self.control
             .set_kimi_tier(tier)
             .map_err(|error| ApplicationError::new(error.to_string()))?;
@@ -435,6 +468,33 @@ impl TrustedProjectApplication {
         } else {
             self.host_storage.publish_model_settings();
         }
+        Ok(())
+    }
+
+    /// Hy Token Plan 套餐（2026-11-28）：同为持久厂商偏好。套餐只切
+    /// 换选择面名单（通用含第三方八模型），不改窗口——无 stamp；降档
+    /// 守卫同 Kimi：活动模型是通用门槛预设时拒绝降回 Hy。
+    pub fn set_hy_tier(&self, value: &str) -> Result<(), ApplicationError> {
+        let tier = crate::control_storage::settings::HyTier::parse(value)
+            .ok_or_else(|| ApplicationError::new("tier must be hy or common"))?;
+        let _update = self
+            .host_storage
+            .model_updates
+            .lock()
+            .expect("model updates");
+        let (config, _credentials) = self.model_state()?;
+        if let Some(preset) = super::dto::matching_preset(&config)
+            && preset.vendor == "Hy Token Plan"
+            && preset.hidden_by_plan_tier(tier.as_str())
+        {
+            return Err(ApplicationError::new(
+                "the active model requires the Hy common plan; switch models before downgrading",
+            ));
+        }
+        self.control
+            .set_hy_tier(tier)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        self.host_storage.publish_model_settings();
         Ok(())
     }
     pub fn edit_model_profile(&self, edit: ModelProfileEdit) -> Result<(), ApplicationError> {
@@ -558,6 +618,21 @@ fn public_url(endpoint: &str) -> String {
 /// 的最高 1,048,576 无档位注记（Plus 及以上可用），k3.1-pro 的 1M
 /// 才是 Pro/Allegretto 解锁项。负责人裁定 2026-11-21 放开实测，
 /// Plus 档真机验证通过（端点受理 1M 长上下文）——豁免转正，非实验态。
+/// 订阅档位可见性的 typed 入口（2026-11-28）：规则本体在
+/// [`ModelPreset::hidden_by_plan_tier`]（单一 home）；按预设厂商取
+/// 对应套餐设置（Kimi→KimiTier，Hy→HyTier），其余厂商无档位机制。
+pub(super) fn preset_hidden_by_plan_tier(
+    preset: &ModelPreset,
+    kimi: crate::control_storage::settings::KimiTier,
+    hy: crate::control_storage::settings::HyTier,
+) -> bool {
+    match preset.vendor {
+        "Kimi Coding Plan" => preset.hidden_by_plan_tier(kimi.as_str()),
+        "Hy Token Plan" => preset.hidden_by_plan_tier(hy.as_str()),
+        _ => false,
+    }
+}
+
 pub(super) fn apply_kimi_tier(
     config: &mut ModelConfig,
     tier: crate::control_storage::settings::KimiTier,

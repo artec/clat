@@ -270,6 +270,84 @@ impl ControlStorage {
         )
     }
 
+    pub(crate) fn feishu_binding_snapshot(
+        &self,
+    ) -> Result<
+        (
+            crate::im::feishu::BindingStatus,
+            Option<crate::im::feishu::Credentials>,
+        ),
+        ControlError,
+    > {
+        let state = self.lock();
+        Ok((
+            im::feishu_binding_status(&state.im),
+            im::feishu_credentials(&state.im)?,
+        ))
+    }
+
+    pub(crate) fn save_feishu_binding(
+        &self,
+        credentials: &crate::im::feishu::Credentials,
+    ) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::replace_feishu_binding(&mut state.im, credentials),
+        )
+    }
+
+    pub(crate) fn clear_feishu_binding(&self) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::clear_feishu_binding(&mut state.im),
+        )
+    }
+
+    pub(crate) fn feishu_receiving(&self) -> Result<bool, ControlError> {
+        Ok(im::feishu_receiving(&self.lock().im))
+    }
+
+    pub(crate) fn set_feishu_receiving(&self, receiving: bool) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::set_feishu_receiving(&mut state.im, receiving),
+        )?
+    }
+
+    pub(crate) fn clear_feishu_binding_if_current(
+        &self,
+        expected: &crate::im::feishu::Credentials,
+        before_clear: impl FnOnce(),
+    ) -> Result<bool, ControlError> {
+        let mut state = self.lock();
+        if im::feishu_credentials(&state.im)?.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        before_clear();
+        let backup = state.clone();
+        im::clear_feishu_binding(&mut state.im);
+        if let Err(error) = self.save_im(&state) {
+            *state = backup;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn feishu_users(&self) -> serde_json::Value {
+        im::feishu_users(&self.lock().im)
+    }
+
+    pub(crate) fn revoke_feishu_user(&self, id: &str) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::revoke_feishu_user(&mut state.im, id),
+        )?
+    }
+
     pub(crate) fn clear_wechat_binding_if_current(
         &self,
         expected: &crate::im::ilink::Credentials,
@@ -1214,6 +1292,72 @@ mod tests {
         assert!(reopened.remote(RemoteChannel::Wechat).authorized("user"));
         assert!(reopened.remote(RemoteChannel::Test).authorized("user"));
         drop(reopened);
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn feishu_grants_stay_beside_wechat_and_an_unpaired_user_is_denied() {
+        use crate::remote::{PairingAttempt, RemoteChannel};
+        let root = temp_root("feishu-channel-isolation");
+        sentinel::initialize(&root).unwrap();
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        let wechat = crate::im::ilink::Credentials::new(
+            "token".into(),
+            "bot".into(),
+            None,
+            "https://ilinkai.weixin.qq.com".into(),
+        )
+        .unwrap();
+        let feishu =
+            crate::im::feishu::Credentials::new("cli_a1b2c3d4".into(), "secret-value".into())
+                .unwrap();
+        let other =
+            crate::im::feishu::Credentials::new("cli_a1b2c3d4".into(), "other-secret".into())
+                .unwrap();
+        storage.save_wechat_binding(&wechat).unwrap();
+        storage.save_feishu_binding(&feishu).unwrap();
+        assert!(
+            !storage
+                .remote(RemoteChannel::Feishu)
+                .authorized("ou_stranger"),
+            "an unpaired Feishu user is denied before any reply"
+        );
+        let code = storage
+            .remote(RemoteChannel::Feishu)
+            .create_pairing(100)
+            .unwrap()
+            .code;
+        assert_eq!(
+            storage
+                .remote(RemoteChannel::Feishu)
+                .attempt_pairing("om_message", "ou_user", &code, 101)
+                .unwrap(),
+            PairingAttempt::Paired
+        );
+        assert!(storage.remote(RemoteChannel::Feishu).authorized("ou_user"));
+        assert!(!storage.remote(RemoteChannel::Wechat).authorized("ou_user"));
+        assert!(
+            !storage
+                .clear_feishu_binding_if_current(&other, || {})
+                .unwrap()
+        );
+        assert!(storage.feishu_binding_snapshot().unwrap().0.bound);
+        assert!(
+            storage
+                .clear_feishu_binding_if_current(&feishu, || {})
+                .unwrap()
+        );
+        assert!(!storage.feishu_binding_snapshot().unwrap().0.bound);
+        assert!(storage.wechat_binding_status().bound);
+        assert!(!storage.remote(RemoteChannel::Wechat).authorized("ou_user"));
+        drop(storage);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("im.json")).unwrap()).unwrap();
+        assert!(
+            saved.get("feishu").is_none(),
+            "a cleared Feishu section is omitted"
+        );
+        assert!(saved["wechat"].get("binding").is_some());
         crate::test_support::cleanup_tree(&root);
     }
 

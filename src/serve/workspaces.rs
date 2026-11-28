@@ -76,6 +76,9 @@ impl WorkspaceHost {
     pub(super) fn is_stopping(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
     }
+    pub(crate) fn shutdown_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown)
+    }
     pub(super) fn pending_notifications(&self) -> Vec<crate::host_client::HostNotification> {
         self.projects
             .lock()
@@ -268,10 +271,16 @@ impl WorkspaceHost {
                     .filter(|(_, shared)| shared.has_running_work())
                     .map(|(id, _)| id)
                     .collect::<Vec<_>>();
+                let activity = projects
+                    .routes
+                    .iter()
+                    .filter(|(_, shared)| !shared.is_idle_for_takeover())
+                    .map(|(_, shared)| shared.quit_facts())
+                    .collect::<Vec<_>>();
                 Ok(json!({"instance_id": self.instance,
                     "product_version": crate::host_client::build_identity::product_version(),
                     "ready": busy.is_empty(), "busy_workspaces": busy,
-                    "running_workspaces": running}))
+                    "running_workspaces": running, "activity": activity}))
             }
             "workspace.list" => Ok(
                 json!({"workspaces": projects.routes.iter().map(|(id, shared)| {

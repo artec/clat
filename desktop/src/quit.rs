@@ -22,7 +22,7 @@ pub fn request(app: &tauri::AppHandle) -> Result<(), UiMessage> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let status = host_status(&app).await;
-        let confirmed = confirm_if_needed(status, |key| confirm(&app, key)).await;
+        let confirmed = confirm_if_needed(status, |prompt| confirm(&app, prompt)).await;
         finish(&app, confirmed);
     });
     Ok(())
@@ -52,29 +52,39 @@ async fn host_status(app: &tauri::AppHandle) -> Result<Option<Value>, String> {
         .map_err(|e| e.to_string())?
 }
 
-async fn confirm_if_needed<F: Future<Output = bool>>(
-    status: Result<Option<Value>, String>,
-    ask: impl FnOnce(&'static str) -> F,
-) -> bool {
-    let key = match status {
-        Ok(None) => return true,
-        Ok(Some(value)) if value["ready"] == true => return true,
-        Ok(Some(value)) if value["ready"] == false => "desktop.quit_busy",
-        _ => "desktop.quit_status_unavailable",
-    };
-    ask(key).await
+enum QuitPrompt {
+    Busy(Value),
+    Unknown,
 }
 
-async fn confirm(app: &tauri::AppHandle, key: &str) -> bool {
+async fn confirm_if_needed<F: Future<Output = bool>>(
+    status: Result<Option<Value>, String>,
+    ask: impl FnOnce(QuitPrompt) -> F,
+) -> bool {
+    let prompt = match status {
+        Ok(None) => return true,
+        Ok(Some(value)) if value["ready"] == true => return true,
+        Ok(Some(value)) if value["ready"] == false => QuitPrompt::Busy(value),
+        _ => QuitPrompt::Unknown,
+    };
+    ask(prompt).await
+}
+
+async fn confirm(app: &tauri::AppHandle, prompt: QuitPrompt) -> bool {
     crate::app::show(app);
     let l = crate::localization::context(app);
+    let message = match &prompt {
+        QuitPrompt::Busy(value) => crate::quit_notice::notice(l, value, false),
+        QuitPrompt::Unknown => l.text("desktop.quit_status_unavailable").to_string(),
+    };
+    let title = l.text("desktop.quit");
     let mut dialog = app
         .dialog()
-        .message(l.text(key))
-        .title(l.text("desktop.menu_quit"))
+        .message(message)
+        .title(title)
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            l.text("desktop.menu_quit").into(),
+            title.into(),
             l.text("common.cancel").into(),
         ));
     if let Some(window) = app.get_webview_window("main") {
@@ -132,8 +142,8 @@ mod tests {
     async fn desktop_quit_requires_acceptance_when_another_project_is_busy() {
         let busy = Some(json!({"ready":false,"busy_workspaces":["other-project"]}));
         for accepted in [false, true] {
-            let quit = confirm_if_needed(Ok(busy.clone()), |key| async move {
-                assert_eq!(key, "desktop.quit_busy");
+            let quit = confirm_if_needed(Ok(busy.clone()), |prompt| async move {
+                assert!(matches!(prompt, QuitPrompt::Busy(value) if value["ready"] == false));
                 accepted
             })
             .await;
@@ -148,8 +158,8 @@ mod tests {
         }
         for status in [Ok(Some(json!({}))), Err("timeout".into())] {
             assert!(
-                !confirm_if_needed(status, |key| async move {
-                    assert_eq!(key, "desktop.quit_status_unavailable");
+                !confirm_if_needed(status, |prompt| async move {
+                    assert!(matches!(prompt, QuitPrompt::Unknown));
                     false
                 })
                 .await

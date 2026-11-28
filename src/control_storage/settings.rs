@@ -40,6 +40,10 @@ pub(crate) struct SettingsFile {
     /// model; missing legacy settings default conservatively to Plus.
     #[serde(default, rename = "kimiTier")]
     pub kimi_tier: KimiTier,
+    /// Hy Token Plan 套餐（2026-11-28）：Hy（混元，缺省 = 存量视图
+    /// 不变）或 Common（通用聚合，名单见 presets/hy_plan.rs）。
+    #[serde(default, rename = "hyTier")]
+    pub hy_tier: HyTier,
     #[serde(default, rename = "glmEntry")]
     pub glm_entry: GlmCodingEntry,
 }
@@ -53,6 +57,7 @@ impl SettingsFile {
             utility: UtilitySettingsRow::default(),
             goal_handoff: None,
             kimi_tier: KimiTier::default(),
+            hy_tier: HyTier::default(),
             glm_entry: GlmCodingEntry::default(),
         }
     }
@@ -86,6 +91,36 @@ impl KimiTier {
         match self {
             Self::Plus => 262_144,
             Self::Pro => 1_048_576,
+        }
+    }
+}
+
+/// Hy Token Plan 订阅套餐（2026-11-28 负责人令）：官方"两个独立套餐"
+/// ——Hy（混元系，现有）与通用 Common（多厂商聚合，新增）。两套餐
+/// 共用同一 API Key 与端点（tokenhub.tencentmaas.com/plan/v3，官方
+/// 个人版概览），区别在选择面上的模型名单：Common 名单含 Hy 系全部
+/// 与第三方八模型，Hy 仅混元系。缺省 Hy = 存量用户视图不变。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum HyTier {
+    #[default]
+    Hy,
+    Common,
+}
+
+impl HyTier {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "hy" => Some(Self::Hy),
+            "common" => Some(Self::Common),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hy => "hy",
+            Self::Common => "common",
         }
     }
 }

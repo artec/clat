@@ -56,10 +56,21 @@ The shipped catalog is the source used by both the picker and runtime:
 | GLM 5.3 Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/coding/paas/v4` | 1M | 128K |
 | Qwen4 Max | `qwen4-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
 | Qwen3.8 Flash | `qwen3.8-flash` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 128K |
+| DeepSeek V4.1 Flash | `deepseek-v4.1-flash-1017` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | 1M | 384K |
+| Kimi K3.1 Pro Highspeed | `k3.1-pro-highspeed` | `https://api.kimi.com/coding/v1` | 1M (Pro+) | 128K |
+| Kimi K3 | `k3` | `https://api.kimi.com/coding/v1` | 256K (Plus) / 1M (Pro+) | 128K |
 | Kimi K3.1 Pro | `k3.1-pro` | `https://api.kimi.com/coding/v1` | 256K (Plus) / 1M (Pro+) | 128K |
 | Kimi for Coding | `kimi-for-coding` | `https://api.kimi.com/coding/v1` | 1M (any tier) | 128K |
 | Hy 4 | `hy4` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
 | Hy 4 Flash | `hy4-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 64K |
+| DeepSeek V4.1 Flash · Hy Common | `hy-deepseek-v4.1-flash-1017` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 384K |
+| GLM 5.4 · Hy Common | `hy-glm-5.4` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
+| GLM 5.3 · Hy Common | `hy-glm-5.3` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
+| GLM 5.3 Flash · Hy Common | `hy-glm-5.3-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
+| Kimi K3.1 Pro · Hy Common | `hy-k3.1-pro` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
+| Kimi K3 · Hy Common | `hy-k3` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
+| MiniMax M3 · Hy Common | `hy-minimax-m3` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
+| MiniMax M3.1 Flash · Hy Common | `hy-minimax-m3.1-flash` | `https://tokenhub.tencentmaas.com/plan/v3` | 1M | 128K |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
 | DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | `https://opencode.ai/inference/go/v1` | 1M | 384K |
 | Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | `https://opencode.ai/inference/go/v1` | 1M | 256K |
@@ -81,11 +92,21 @@ across model changes and restarts and saves an API key for each entry. Use the
 key from the platform you choose. The international entry uses
 `https://api.z.ai/api/coding/paas/v4` for the GLM Coding Plan presets above.
 
-The same page has two more vendor-level controls. The Qwen Token Plan heading
+The same page has three more vendor-level controls. The Qwen Token Plan heading
 offers **Aliyun Bailian** (the default) or **Qianwen AI Platform**; the choice
 switches only the endpoint, and each platform needs its own key. The Kimi Coding
 Plan heading offers a **Plus** or **Pro or higher** subscription tier, which
-sets the 256K or 1M window of `k3.1-pro` only; `kimi-for-coding` always uses 1M.
+sets the 256K or 1M window of `k3.1-pro` and `k3`; `kimi-for-coding` always
+uses 1M. The tier also gates visibility: `k3.1-pro-highspeed` is "Pro and
+above" in the official model table, so it is hidden from every selection
+surface on Plus (and direct selection is refused; a downgrade with it active
+is refused until another model is selected), while `k3` and the other Kimi
+presets stay available on both tiers. The Hy Token Plan heading offers a
+**Hy** or **Common** plan radio: both plans share
+one key and endpoint (the official "independent subscriptions"), so the
+radio switches only the selection surface — the Hy plan shows the Hunyuan
+pair, the Common plan additionally shows the eight third-party presets
+(`hy-`-prefixed ids; specs pinned per each model's own documentation).
 Quota credentials for Qianwen, Aliyun Bailian and Tencent are managed under
 **Settings → Authorizations**, not in the model editor.
 
@@ -101,8 +122,12 @@ before overriding those fields.
 
 GLM 5.3 Flash carries probe-verified native image input (including image tool
 results); GLM 5.4 reuses that same vision matrix. The officially-declared vision
-presets — `deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `k3.1-pro`,
-`kimi-for-coding`, `hy4`, and `hy4-flash` — plus GLM 5.3 Flash and GLM 5.4 all enable
+presets — `deepseek-flash`, `qwen4-max`, `qwen3.8-flash`,
+`deepseek-v4.1-flash-1017`, `k3.1-pro`,
+`k3.1-pro-highspeed`, `k3`,
+`kimi-for-coding`, `hy4`, `hy4-flash`,
+`hy-deepseek-v4.1-flash-1017`, `hy-k3.1-pro`, `hy-k3`,
+`hy-minimax-m3`, and `hy-minimax-m3.1-flash` — plus GLM 5.3 Flash and GLM 5.4 (and their Hy Common twins `hy-glm-5.3-flash` / `hy-glm-5.4`) all enable
 the image attachments described in
 [Using CLAT](usage.md#image-attachments), as do the ten OpenCode Go vision
 presets (`opencode-deepseek-v4.1-flash`, `opencode-kimi-k3.1-pro`,
@@ -119,8 +144,10 @@ configurations referencing the old ids simply stop resolving to a preset.
 
 Most presets also declare a companion utility model used only for automatic
 session naming, manual prompt suggestions and automatic Web/Desktop next steps: `deepseek-v4-pro` uses
-`deepseek-flash`, `glm-5.3` and `glm-5.4` use `glm-5.3-flash`, `qwen4-max` uses
-`qwen3.8-flash`, `k3.1-pro` uses `kimi-for-coding`, and `hy4` uses
+`deepseek-flash`, `glm-5.3` and `glm-5.4` use `glm-5.3-flash`, `qwen4-max` and
+`deepseek-v4.1-flash-1017` use
+`qwen3.8-flash`, `k3.1-pro`, `k3.1-pro-highspeed` and `k3` use
+`kimi-for-coding`, and `hy4` and the eight Hy Common presets use
 `hy4-flash`. The OpenCode Go flagships use the gateway's flash tiers —
 `opencode-glm-5.3` uses `opencode-glm-5.3-flash`, and presets without an
 in-family light tier (`opencode-deepseek-v4-pro`, `opencode-kimi-k3.1-pro`,

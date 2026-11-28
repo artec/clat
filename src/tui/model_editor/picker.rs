@@ -231,6 +231,11 @@ pub(crate) struct ModelPicker {
     /// dsh 二级高亮行上 Shift+Tab 循环出的待提交档位 id（档位接入
     /// 2026-08-23）；导航/换行/退级即清——只属于它被循环的那一行。
     dsh_effort: Option<String>,
+    /// 订阅档位表（2026-11-28）：厂商词 → 档位原词。已知词条按
+    /// [`ModelPreset::hidden_by_plan_tier`] 过滤二级模型行与厂商行
+    /// 计数（单一规则，与 Host 视图同源）；缺省厂商（dsh 形态 /
+    /// 旧 Host / 其余厂商）不过滤。
+    plan_tiers: Vec<(&'static str, String)>,
 }
 
 /// B9 修复（INV-U1 原位返回，用户反馈 2026-08-22）：进入编辑器前对
@@ -245,7 +250,11 @@ pub(crate) struct PickerSnapshot {
 }
 
 impl ModelPicker {
-    pub fn new(config: &ModelConfig, profiles: Vec<ProfileSummary>) -> Self {
+    pub fn new(
+        config: &ModelConfig,
+        profiles: Vec<ProfileSummary>,
+        plan_tiers: &[(&'static str, String)],
+    ) -> Self {
         let current_preset = config.preset.as_deref().and_then(preset_by_id);
         let active = profiles.iter().find(|profile| profile.active);
         let _ = active;
@@ -262,6 +271,7 @@ impl ModelPicker {
             dsh: None,
             dsh_group: None,
             dsh_effort: None,
+            plan_tiers: plan_tiers.to_vec(),
         }
     }
 
@@ -280,6 +290,7 @@ impl ModelPicker {
             dsh: Some(data),
             dsh_group: None,
             dsh_effort: None,
+            plan_tiers: Vec::new(),
         }
     }
 
@@ -287,10 +298,35 @@ impl ModelPicker {
         self.rows().len()
     }
 
-    pub(crate) fn new_remote(config: &ModelConfig, profiles: Vec<ProfileSummary>) -> Self {
-        let mut picker = Self::new(config, profiles);
+    pub(crate) fn new_remote(
+        config: &ModelConfig,
+        profiles: Vec<ProfileSummary>,
+        plan_tiers: &[(&'static str, String)],
+    ) -> Self {
+        let mut picker = Self::new(config, profiles, plan_tiers);
         picker.remote = true;
         picker
+    }
+
+    /// 该厂商的订阅档位原词（档位表未收录 = 不过滤）。
+    fn plan_tier_for(&self, vendor: &str) -> Option<&str> {
+        self.plan_tiers
+            .iter()
+            .find(|(known, _)| *known == vendor)
+            .map(|(_, tier)| tier.as_str())
+    }
+
+    /// 该厂商在当前档位下可见的预设行（2026-11-28 档位可见性：档位
+    /// 表收录该厂商时过滤门槛预设；单一规则
+    /// [`ModelPreset::hidden_by_plan_tier`]，与 Host 视图同源）。
+    fn visible_presets_by_vendor(&self, vendor: &str) -> Vec<&'static ModelPreset> {
+        presets_by_vendor(vendor)
+            .into_iter()
+            .filter(|preset| match self.plan_tier_for(preset.vendor) {
+                Some(tier) => !preset.hidden_by_plan_tier(tier),
+                None => true,
+            })
+            .collect()
     }
 
     fn preset_footer(&self) -> &'static str {
@@ -366,7 +402,8 @@ impl ModelPicker {
                 rows.push(PickerRow::Custom);
                 rows
             }
-            Some(vendor) => presets_by_vendor(vendor)
+            Some(vendor) => self
+                .visible_presets_by_vendor(vendor)
                 .into_iter()
                 .map(PickerRow::Preset)
                 .collect(),
@@ -775,7 +812,7 @@ impl ModelPicker {
         }
         match row {
             PickerRow::Vendor(vendor) => {
-                let count = presets_by_vendor(vendor).len();
+                let count = self.visible_presets_by_vendor(vendor).len();
                 let current = self
                     .current_preset
                     .is_some_and(|preset| preset.vendor == *vendor);
@@ -790,7 +827,7 @@ impl ModelPicker {
                 )
             }
             PickerRow::Preset(preset) => (
-                preset.name.to_owned(),
+                preset.picker_name().to_owned(),
                 self.locale
                     .render(&clat_core::client_ports::presentation::preset_presentation(
                         preset.id,

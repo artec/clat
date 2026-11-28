@@ -87,7 +87,9 @@ function installSettingsLayout() {
       }
       for (const [category, icon] of items) {
         const button = nav.querySelector(`[data-settings-category="${category}"]`);
-        if (!button || button.parentElement.classList.contains('settings-nav-item')) continue;
+        if (!button) continue;
+        button.classList.remove('primary', 'secondary');
+        if (button.parentElement.classList.contains('settings-nav-item')) continue;
         button.classList.add('sidebar-nav-row');
         const row = el('div', 'settings-nav-item'); row.append(svgIcon(icon), button); group.append(row);
       }

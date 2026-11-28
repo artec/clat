@@ -4,7 +4,10 @@ function developmentFileIcon(path){
   const format=globalThis.CLATDevelopmentWidgets.formatFor(path),icon=svgIcon(format.icon);
   icon.classList.add('file-kind-icon');icon.dataset.kind=format.id;return icon;
 }
-function editorMenu(items,source,x,y){
+let anchoredEditorMenu = null;
+function editorMenu(items,source,x,y,anchored=false){
+  if (anchored && anchoredEditorMenu?.source === source) { anchoredEditorMenu.close(); return; }
+  anchoredEditorMenu?.close();
   const menu=el('div','session-context-menu'),listeners=new AbortController();menu.setAttribute('role','menu');
   const reportsExpanded = source.getAttribute('aria-haspopup') === 'menu';
   if (reportsExpanded) source.setAttribute('aria-expanded', 'true');
@@ -12,6 +15,7 @@ function editorMenu(items,source,x,y){
   const close = () => {
     if (closed) return;
     closed = true;
+    if (anchoredEditorMenu?.menu === menu) anchoredEditorMenu = null;
     if (reportsExpanded) source.setAttribute('aria-expanded', 'false');
     listeners.abort();
     menu.remove();
@@ -36,13 +40,22 @@ function editorMenu(items,source,x,y){
   (dialog || document.body).append(menu);positionSessionMenu(menu,x,y,source);
   dialog?.addEventListener('close',close,{signal:listeners.signal});
   dialog?.addEventListener('scroll',event=>{if(!menu.contains(event.target))close();},{capture:true,signal:listeners.signal});
-  document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))close();},{signal:listeners.signal});
+  document.addEventListener('pointerdown',event=>{
+    if (menu.contains(event.target) || (anchored && source.contains(event.target))) return;
+    close();
+  },{signal:listeners.signal});
   window.addEventListener('resize',close,{signal:listeners.signal});
   window.addEventListener('clat:editor-menu-close',close,{signal:listeners.signal});
   menu.onkeydown=event=>{const buttons=[...menu.querySelectorAll('button:not(:disabled)')],index=buttons.indexOf(document.activeElement);if(['Escape','Tab'].includes(event.key)){close();if(event.key==='Escape'){event.preventDefault();event.stopPropagation();source.focus();}}else if(['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();buttons[(index+(event.key==='ArrowDown'?1:buttons.length-1))%buttons.length]?.focus();}};
+  if (anchored) anchoredEditorMenu = {source, menu, close};
   menu.querySelector('button:not(:disabled)')?.focus();return close;
 }
-function editorPopup(items,source){const rect=source.getBoundingClientRect();return editorMenu(items,source,rect.left,rect.bottom);}
+function editorPopup(items,source){
+  const rect=source.getBoundingClientRect();
+  const raw=source.classList.contains('resource-section-select')?getComputedStyle(document.documentElement).getPropertyValue('--menu-gap'):'';
+  const gap=Number.parseFloat(raw);
+  return editorMenu(items,source,rect.left,rect.bottom+(Number.isFinite(gap)?gap:0),true);
+}
 function createEditorLayout(actions){
   const node=el('section','workspace-review dev-editor');node.id='file-browser';
   const sidebar=el('aside','sidebar editor-sidebar navigation-sidebar'),head=el('header','sidebar-head navigation-head');

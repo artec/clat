@@ -22,6 +22,11 @@ pub(crate) struct WechatBindingSnapshot {
     pub(crate) credentials: Option<Credentials>,
 }
 
+pub(crate) struct FeishuBindingSnapshot {
+    pub(crate) status: crate::im::feishu::BindingStatus,
+    pub(crate) credentials: Option<crate::im::feishu::Credentials>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WechatPollCheckpoint {
     credentials: Credentials,
@@ -301,6 +306,79 @@ impl TrustedProjectApplication {
     pub(crate) fn revoke_wechat_pairing(&self, user_id: &str) -> Result<(), ApplicationError> {
         self.control
             .remove_wechat_paired_user(user_id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn feishu_receiving(&self) -> Result<bool, ApplicationError> {
+        self.control
+            .feishu_receiving()
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn set_feishu_receiving(&self, receiving: bool) -> Result<(), ApplicationError> {
+        self.control
+            .set_feishu_receiving(receiving)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn feishu_binding(&self) -> Result<FeishuBindingSnapshot, ApplicationError> {
+        let (status, credentials) = self
+            .control
+            .feishu_binding_snapshot()
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        Ok(FeishuBindingSnapshot {
+            status,
+            credentials,
+        })
+    }
+
+    pub(crate) fn replace_feishu_binding(
+        &self,
+        credentials: &crate::im::feishu::Credentials,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .save_feishu_binding(credentials)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        self.cancel_remote_channel_run(RemoteChannel::Feishu);
+        Ok(())
+    }
+
+    pub(crate) fn revoke_feishu_binding(&self) -> Result<(), ApplicationError> {
+        self.cancel_remote_channel_run(RemoteChannel::Feishu);
+        self.control
+            .clear_feishu_binding()
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn revoke_feishu_binding_if_current(
+        &self,
+        expected: &crate::im::feishu::Credentials,
+    ) -> Result<bool, ApplicationError> {
+        self.control
+            .clear_feishu_binding_if_current(expected, || {
+                self.cancel_remote_channel_run(RemoteChannel::Feishu)
+            })
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn issue_feishu_pairing_code(
+        &self,
+    ) -> Result<crate::remote::PairingChallenge, ApplicationError> {
+        self.control
+            .remote(RemoteChannel::Feishu)
+            .create_pairing(now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn submit_feishu_pairing_code(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        code: &str,
+    ) -> Result<crate::remote::PairingAttempt, ApplicationError> {
+        self.control
+            .remote(RemoteChannel::Feishu)
+            .attempt_pairing(delivery_id, user_id, code, now_unix_ms())
             .map_err(|error| ApplicationError::new(error.to_string()))
     }
 
@@ -954,6 +1032,16 @@ impl TrustedProjectApplication {
         self.control
             .revoke_wechat_user(id)
             .map_err(|e| ApplicationError::new(e.to_string()))
+    }
+
+    pub(crate) fn feishu_authorized_users(&self) -> serde_json::Value {
+        self.control.feishu_users()
+    }
+
+    pub(crate) fn revoke_feishu_user_access(&self, id: &str) -> Result<(), ApplicationError> {
+        self.control
+            .revoke_feishu_user(id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
     }
 }
 

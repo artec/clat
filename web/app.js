@@ -512,7 +512,10 @@ const ICON_PATHS = {
   globe: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M3 12h18M12 3c-5 5-5 13 0 18 5-5 5-13 0-18Z'],
   loading: ['M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1'],
   clock: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 7v5l3 2'],
-  handoff: ['M3 5h7l7 7h4m-4-4 4 4-4 4', 'M3 19h7l3-3'],
+  // 模型交接：左右两个节点代表当前模型与接手模型，弧线箭头表示任务移交；
+  // 关闭态在弧线正中断开，保留同源骨架以清晰表达“未开启交接”。
+  handoff: ['M6 14a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M18 14a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M6 11a6 6 0 0 1 12 0', 'm15.75 9.25 2.25 2.25 2.25-2.25'],
+  'handoff-off': ['M6 14a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M18 14a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M6 11a6 6 0 0 1 3-5.2', 'M15 5.8A6 6 0 0 1 18 11', 'm15.75 9.25 2.25 2.25 2.25-2.25'],
   'arrow-up': ['M12 20V4m-7 7 7-7 7 7'],
   'arrow-down': ['M12 4v16m-7-7 7 7 7-7'],
   'history-up': ['M12 20V7m-6 6 6-6 6 6M5 3h14'],
@@ -607,10 +610,17 @@ const ICON_PATHS = {
     'M8.73 15.27 15.27 8.73',
   ],
   vision: ['M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z'],
+  // 微信与飞书官方单色轮廓（24x24，走 FILL_ICONS 填充管线，随通道主题色渲染）。
+  wechat: ['M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.047c.134 0 .24-.111.24-.247 0-.06-.023-.12-.038-.177l-.327-1.233a.582.582 0 0 1-.023-.156.49.49 0 0 1 .201-.398C23.024 18.48 24 16.82 24 14.98c0-3.21-2.931-5.837-6.656-6.088V8.89c-.135-.01-.27-.027-.407-.03zm-2.53 3.274c.535 0 .969.44.969.982a.976.976 0 0 1-.969.983.976.976 0 0 1-.969-.983c0-.542.434-.982.97-.982zm4.844 0c.535 0 .969.44.969.982a.976.976 0 0 1-.969.983.976.976 0 0 1-.969-.983c0-.542.434-.982.969-.982z'],
+  feishu: [
+    'M8.84 20.92c5.15 0 9.6-2.93 11.79-7.23-1.13 2.2-3.54 3.25-5.94 2.66-1.38-.35-2.73-.84-4.04-1.39-3.53-1.52-6.72-3.75-9.34-6.55-.11-.12-.32-.04-.31.12l.01 8.49v.69c0 .4.2.77.53 1a13.09 13.09 0 0 0 7.3 2.21Z',
+    'M12.42 12.07a28.09 28.09 0 0 0-7.75-8.67.18.18 0 0 1 .11-.33h9.62c.36 0 .71.16.94.45a13.17 13.17 0 0 1 2.38 4.58c-1.22.38-2.33 1.03-3.22 1.92-.3.3-.62.61-.93.92-.34.34-.7.69-1.04 1.02l-.11.11Z',
+    'M10.22 14.29c.88-.52 1.7-1.14 2.45-1.84l.05-.05c.04-.04.08-.07.11-.11.65-.63 1.32-1.31 1.97-1.94 2.11-2.12 5.45-2.74 8.2-1.6l-.3.35c-.48.56-.89 1.19-1.2 1.87l-.25.5c-.32.64-.98 1.96-1.02 2.03-.35.66-.81 1.22-1.34 1.62-.08.06-.16.12-.25.17-.74.51-1.67.78-2.63.78-.3 0-.6-.03-.89-.08-.11-.02-.21-.04-.31-.07-.88-.23-1.8-.52-2.73-.87-.43-.16-.88-.35-1.36-.55l-.5-.21Z',
+  ],
 };
 
-// Fill-based glyphs (pixel silhouettes) bypass the global stroke pipeline.
-const FILL_ICONS = new Set(['agent']);
+// Fill-based glyphs (brand marks and pixel silhouettes) bypass the global stroke pipeline.
+const FILL_ICONS = new Set(['agent', 'wechat', 'feishu']);
 
 function svgIcon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -808,8 +818,6 @@ const state = {
     queuedClientMessageId: null,
     notice: '',
   },
-  wechatBindingPoll: 0,
-  wechatQrUrl: null,
 };
 
 const dom = {};
@@ -834,9 +842,6 @@ for (const id of [
   'utility-naming-enabled', 'utility-summary-enabled', 'utility-suggestions-enabled', 'utility-followups-enabled', 'utility-profile',
   'utility-settings-save', 'utility-settings-error', 'utility-settings-saved',
   'full-access-confirm-row', 'full-access-confirm', 'settings-error', 'settings-saved',
-  'wechat-status', 'wechat-counts', 'wechat-qr', 'wechat-qr-image', 'wechat-qr-state',
-  'wechat-verify-row', 'wechat-verify-code', 'wechat-verify-submit', 'wechat-pairing',
-  'wechat-pairing-code', 'wechat-error', 'wechat-bind', 'wechat-pair', 'wechat-unbind',
   'permission-save', 'market-open', 'market-dialog', 'market-close', 'market-search',
   'market-status', 'market-list',
 ]) {
@@ -3811,7 +3816,11 @@ function updateFullAccessConfirmation() {
 
 let currentSettingsCategory = 'appearance';
 function selectSettingsCategory(category) {
-  if (category === 'wechat') category = 'remote';
+  if (category === 'wechat' || category === 'feishu') {
+    const channel = category;
+    category = 'remote';
+    dom['settings-dialog'].dispatchEvent(new CustomEvent('clat:remote-channel-link', { detail: channel }));
+  }
   if(currentSettingsCategory !== category) { pageSettingsLeave(); for(const input of dom['settings-dialog'].querySelectorAll('input[type=password]')) input.value = ''; }
   settingsLayout?.capture(currentSettingsCategory);
   currentSettingsCategory = category;refreshViewContext();
@@ -3834,7 +3843,6 @@ function selectSettingsCategory(category) {
     void refreshWorkspaces();
   }
   if (category === 'remote' && pageIsOpen(dom['settings-dialog'])) {
-    void refreshWechatStatus();
     dom['settings-dialog'].dispatchEvent(new Event('clat:remote-enter'));
   }
 }
@@ -3847,7 +3855,6 @@ function openSettings(category = currentSettingsCategory) {
   CLATI18n.bind(dom['settings-error'], "textContent", () => '');
   CLATI18n.bind(dom['settings-saved'], "textContent", () => '');
   if (!pageIsOpen(dom['settings-dialog'])) presentPage(dom['settings-dialog']);
-  refreshWechatStatus();
   refreshModelSettings();
 }
 
@@ -3932,7 +3939,8 @@ function renderModelPicker(view) {
   CLATI18n.bind(dom['model-picker-current'], "textContent", () => CLATI18n.msg("web.dynamic_current_value", {value1:([view.current.vendor, view.current.model].filter(Boolean).join(' · ') || CLATI18n.msg("web.not_configured", {}, "not configured"))}, "Current · {value1}"));
   dom['model-picker-list'].replaceChildren();
   const presets = (view.presets || []).map((preset) => ({
-    label: preset.name,
+    // 选择器不显示套餐限定后缀（负责人令 2026-11-28）：设置页名单保留全名。
+    label: preset.name.replace(/\s+\(Hy Common\)$/, ''),
     detail: CLATI18n.msg("web.dynamic_value_built_in_preset", {value1:(preset.vendor)}, "{value1} · built-in preset"),
     active: !view.active_profile && view.current.preset === preset.id,
     method: 'model.preset.select',
@@ -4254,132 +4262,6 @@ dom['permission-save'].addEventListener('click', async () => {
     CLATI18n.bind(dom['settings-error'], "textContent", () => error.message);
   } finally {
     dom['permission-save'].disabled = false;delete dom['permission-save'].dataset.saving;
-  }
-});
-
-let wechatSensitiveEpoch=0, wechatStatusEpoch=0;
-function clearWechatQr() {
-  if (state.wechatQrUrl) URL.revokeObjectURL(state.wechatQrUrl);
-  state.wechatQrUrl = null;
-  dom['wechat-qr-image'].removeAttribute('src');
-  hide(dom['wechat-qr']);
-  hide(dom['wechat-verify-row']);
-  dom['wechat-verify-code'].value = '';
-}
-
-async function refreshWechatStatus() {
-  const request = ++wechatStatusEpoch;
-  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
-  try {
-    const status = await rpc('wechat.binding.status', {});
-    if (request !== wechatStatusEpoch) return;
-    CLATI18n.bind(dom['wechat-status'], "textContent", () => status.bound ? CLATI18n.msg("web.bound_short",{},"Bound") : CLATI18n.msg("web.not_bound", {}, "Not bound"));
-    CLATI18n.bind(dom['wechat-counts'], "textContent", () => CLATI18n.msg("web.dynamic_value_paired_value_chats", {value1:(status.paired_users || 0),value2:(status.mapped_chats || 0)}, "{value1} paired · {value2} chats"));
-    dom['wechat-bind'].dataset.bound = String(Boolean(status.bound));
-  CLATI18n.bind(dom['wechat-bind'], "textContent", () => status.bound ? CLATI18n.msg("web.replace_binding", {}, "Replace binding") : CLATI18n.msg("web.bind_wechat", {}, "Bind WeChat"));
-    dom['wechat-pair'].disabled = !status.bound;
-    dom['wechat-unbind'].disabled = !status.bound;
-  } catch (error) {
-    if (request !== wechatStatusEpoch) return;
-    CLATI18n.bind(dom['wechat-status'], "textContent", () => CLATI18n.msg("web.unavailable_short",{},"Unavailable"));
-    CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
-  }
-}
-
-async function pollWechatBinding(pollId, verifyCode) {
-  if (pollId !== state.wechatBindingPoll) return;
-  try {
-    const params = verifyCode ? { verifyCode } : {};
-    const value = await rpc('wechat.binding.poll', params);
-    if (pollId !== state.wechatBindingPoll) return;
-    const labels = {
-      waiting: "web.waiting_for_scan",
-      scanned: "web.scanned_confirm_on_the_phone",
-      need_verify_code: "web.enter_the_verification_code_shown_by_wechat",
-      verify_code_blocked: "web.verification_was_blocked_wait_before_trying_again",
-      expired: "web.qr_code_expired_start_a_new_binding",
-      already_bound: "web.the_account_is_already_bound_and_returned_no_new_credential",
-      confirmed: "web.binding_confirmed_create_a_one_time_user_pairing_code_next",
-    };
-    CLATI18n.bind(dom['wechat-qr-state'], "textContent", () => labels[value.state] ? CLATI18n.msg(labels[value.state]) : value.state);
-    if (value.state === 'need_verify_code') {
-      show(dom['wechat-verify-row']);
-      dom['wechat-verify-code'].focus();
-      return;
-    }
-    hide(dom['wechat-verify-row']);
-    if (['confirmed', 'expired', 'verify_code_blocked', 'already_bound'].includes(value.state)) {
-      state.wechatBindingPoll += 1;
-      if (value.state === 'confirmed') await refreshWechatStatus();
-      return;
-    }
-    window.setTimeout(() => pollWechatBinding(pollId), 500);
-  } catch (error) {
-    if (pollId === state.wechatBindingPoll) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
-  }
-}
-
-dom['wechat-bind'].addEventListener('click', async () => {
-  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
-  hide(dom['wechat-pairing']);
-  const replacing = dom['wechat-bind'].dataset.bound === 'true';
-  if (replacing && !await CLATDialog.confirm(CLATI18n.msg("web.replace_the_current_binding_existing_user_grants_are_kept_until_the_new_qr_is_conf", {}, "Replace the current binding? Existing user grants are kept until the new QR is confirmed, then cleared."))) return;
-  dom['wechat-bind'].disabled = true;
-  const epoch=++wechatSensitiveEpoch;
-  try {
-    const value = await rpc('wechat.binding.start', { replace: replacing });
-    if(epoch!==wechatSensitiveEpoch)return;
-    clearWechatQr();
-    const blob = new Blob([value.qr_svg], { type: 'image/svg+xml' });
-    state.wechatQrUrl = URL.createObjectURL(blob);
-    dom['wechat-qr-image'].src = state.wechatQrUrl;
-    CLATI18n.bind(dom['wechat-qr-state'], "textContent", () => CLATI18n.msg("web.waiting_for_scan", {}, "Waiting for scan…"));
-    show(dom['wechat-qr']);
-    const pollId = ++state.wechatBindingPoll;
-    pollWechatBinding(pollId);
-  } catch (error) {
-    if(epoch===wechatSensitiveEpoch) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
-  } finally {
-    dom['wechat-bind'].disabled = false;
-  }
-});
-
-dom['wechat-verify-submit'].addEventListener('click', () => {
-  const code = dom['wechat-verify-code'].value.trim();
-  if (!/^[A-Za-z0-9]{1,32}$/.test(code)) {
-    CLATI18n.bind(dom['wechat-error'], "textContent", () => CLATI18n.msg("web.verification_code_must_be_1_32_letters_or_digits", {}, "Verification code must be 1–32 letters or digits."));
-    return;
-  }
-  hide(dom['wechat-verify-row']);
-  pollWechatBinding(state.wechatBindingPoll, code);
-});
-
-dom['wechat-pair'].addEventListener('click', async () => {
-  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
-  const epoch=wechatSensitiveEpoch;
-  try {
-    const value = await rpc('wechat.pairing.create', {});
-    if(epoch!==wechatSensitiveEpoch)return;
-    CLATI18n.bind(dom['wechat-pairing-code'], "textContent", () => value.code);
-    show(dom['wechat-pairing']);
-  } catch (error) {
-    if(epoch===wechatSensitiveEpoch) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
-  }
-});
-
-dom['wechat-unbind'].addEventListener('click', async () => {
-  if (!await CLATDialog.confirm(CLATI18n.msg("web.remove_the_wechat_credential_paired_users_and_chat_mappings", {}, "Remove the WeChat credential, paired users, and chat mappings?"))) return;
-  CLATI18n.bind(dom['wechat-error'], "textContent", () => '');
-  const epoch=wechatSensitiveEpoch;
-  try {
-    await rpc('wechat.binding.unbind', { confirm: 'unbind-wechat' });
-    if(epoch!==wechatSensitiveEpoch)return;
-    state.wechatBindingPoll += 1;
-    clearWechatQr();
-    hide(dom['wechat-pairing']);
-    await refreshWechatStatus();
-  } catch (error) {
-    if(epoch===wechatSensitiveEpoch) CLATI18n.bind(dom['wechat-error'], "textContent", () => error.message);
   }
 });
 
@@ -5149,4 +5031,3 @@ installConversationExperience();
 boot();
 
 CLATI18n.bind(document.getElementById('connect-help'), 'textContent', () => CLATI18n.msg('web.local_connection_hint', {command:'clat serve',port:2691}));
-CLATI18n.bind(document.getElementById('wechat-pairing-instruction'), 'textContent', () => CLATI18n.msg('web.wechat_pairing_instruction', {command:'/pair <code>',minutes:60}));

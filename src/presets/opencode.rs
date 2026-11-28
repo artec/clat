@@ -76,6 +76,7 @@ const fn opencode_preset(
         include_usage: true,
         // OpenCode 政策要求自有 UA（不用通用 SDK 名）。
         user_agent: Some(CLAT_UA),
+        min_plan_tier: None,
     }
 }
 

@@ -88,6 +88,22 @@ impl Terminals {
             .values()
             .any(|entry| !entry.closed.load(Ordering::SeqCst))
     }
+    pub(super) fn open_names(&self) -> Vec<String> {
+        self.entries
+            .lock()
+            .expect("terminals")
+            .values()
+            .filter(|entry| !entry.closed.load(Ordering::SeqCst))
+            .map(|entry| {
+                entry
+                    .metadata
+                    .lock()
+                    .expect("terminal metadata")
+                    .name
+                    .clone()
+            })
+            .collect()
+    }
     pub(super) fn close_all(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::SeqCst);
         let mut failed = false;

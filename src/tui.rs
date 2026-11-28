@@ -321,6 +321,12 @@ struct App {
     project: Project,
     bootstrap: Option<BootstrapApplication>,
     application: Option<TrustedProjectApplication>,
+    /// 订阅档位表（2026-11-28，厂商词 → Host 视图档位原词）：模型
+    /// 选择面按 [`crate::presets`] 的档位门槛过滤（Kimi plus/pro、
+    /// Hy hy/common）。本地态在打开选择面时从 Application 刷新；
+    /// attached 态随 Host model_choices 到达刷新；DSH / 未知厂商
+    /// 不过滤。
+    plan_tiers: Vec<(&'static str, String)>,
     /// 当前会话 id；`None` 表示项目尚未受信（延迟初始化前不可对话）。
     /// 确权门保证所有用到它的路径只在 Some 时可达。
     session_id: Option<SessionId>,
@@ -603,6 +609,7 @@ impl App {
             project,
             bootstrap: Some(bootstrap),
             application: None,
+            plan_tiers: Vec::new(),
             session_id: None,
             session_title: None,
             close_error: None,
@@ -720,6 +727,7 @@ impl App {
             project: Project::new(&cwd),
             bootstrap: None,
             application: None,
+            plan_tiers: Vec::new(),
             session_id: None,
             session_title: None,
             close_error: None,

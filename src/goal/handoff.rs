@@ -187,7 +187,9 @@ impl GoalService {
                 return Err("a completed goal cannot configure handoff".into());
             }
             state.handoff = handoff;
-            Ok(false)
+            // Clearing or replacing the queue keeps an explicit arm. Stop means
+            // later rounds stay on the current model; it does not pause the Goal.
+            Ok(true)
         })
     }
 

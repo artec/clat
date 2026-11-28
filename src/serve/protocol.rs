@@ -7,6 +7,7 @@
 //! 新增方法 = amend；未知方法 → `bad-request`（无 not-implemented
 //! 回退，map 只收已实现方法）。
 
+mod feishu;
 mod sessions;
 mod wechat;
 
@@ -189,6 +190,7 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "model.preset.select",
     "model.preset.entry",
     "model.preset.tier",
+    "model.preset.hy_tier",
     "model.thinking.cycle",
     "permission.set",
     "wechat.binding.status",
@@ -200,6 +202,13 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "wechat.user.revoke",
     "wechat.user.allow",
     "wechat.user.remove",
+    "feishu.binding.status",
+    "feishu.binding.save",
+    "feishu.binding.unbind",
+    "feishu.connection.set",
+    "feishu.pairing.create",
+    "feishu.users.list",
+    "feishu.user.revoke",
     "draft.open",
     "prompt.suggest",
     "prompt.followups",
@@ -625,6 +634,7 @@ fn dispatch_project(
     }
     if let Some(result) = sessions::dispatch(method, params, shared)
         .or_else(|| wechat::dispatch(method, params, shared))
+        .or_else(|| feishu::dispatch(method, params, shared))
     {
         return result;
     }

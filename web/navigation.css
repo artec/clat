@@ -112,6 +112,7 @@
   min-height: 36px;
   padding: 8px var(--sidebar-row-inset);
   border-radius: 8px;
+  background: transparent;
   color: var(--text-soft);
   font: 400 var(--text-size-ui)/1.5 var(--font-ui);
   text-align: start;
@@ -146,6 +147,7 @@
 .help-questions{padding:20px;border:1px solid var(--line);border-radius:var(--radius-md)}
 .help-questions h4{margin:0 0 8px;font-size:var(--text-size-ui);font-weight:500}
 .help-questions p{margin:0;line-height:1.9;color:var(--text-muted);font-size:var(--text-size-ui)}
+.help-questions p+h4{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
 .help-related .navigation-row{padding-inline:0!important}
 
 .resources-page > [hidden] { display: none; }

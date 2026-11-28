@@ -240,6 +240,18 @@ fn active_run_rejects_upgrade_takeover_without_stopping_the_host() {
     );
     let status = host.dispatch("host.runtime_status", &json!({})).unwrap();
     assert_eq!(status["running_workspaces"], json!(["default"]));
+    assert!(
+        status["activity"].as_array().is_some_and(|rows| {
+            rows.iter().any(|row| {
+                row["items"].as_array().is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item["kind"] == "conversation" && item["running"] == true)
+                })
+            })
+        }),
+        "an active conversation must be named for the quit notice, got {status}"
+    );
     let error = host
         .dispatch(
             "host.restart_idle",
@@ -397,13 +409,21 @@ fn runtime_status_observes_all_projects_without_stopping_or_consuming_work() {
         let status = host.dispatch("host.runtime_status", &json!({})).unwrap();
         assert_eq!(status["ready"], false);
         assert_eq!(status["busy_workspaces"], json!(["default"]));
+        assert_eq!(
+            status["activity"][0]["items"],
+            json!([{"kind":"upload","name":"","running":true}])
+        );
+        assert!(
+            status["activity"][0]["project"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty())
+        );
         assert!(!host.shutdown.load(Ordering::SeqCst));
     }
     drop(upload);
-    assert_eq!(
-        host.dispatch("host.runtime_status", &json!({})).unwrap()["ready"],
-        true
-    );
+    let cleared = host.dispatch("host.runtime_status", &json!({})).unwrap();
+    assert_eq!(cleared["ready"], true);
+    assert_eq!(cleared["activity"], json!([]));
     drop(route);
     host.close().unwrap();
     drop(host);
@@ -424,6 +444,15 @@ fn host_menu_idle_quit_allows_a_draft_but_fences_running_work_and_the_instance()
     let status = host.dispatch("host.runtime_status", &json!({})).unwrap();
     assert_eq!(status["ready"], false, "takeover still protects the draft");
     assert_eq!(status["running_workspaces"], json!([]));
+    let held = status["activity"][0]["items"].as_array().unwrap();
+    assert!(
+        held.iter()
+            .any(|item| item["kind"] == "draft" && item["running"] == false)
+    );
+    assert!(
+        held.iter().all(|item| item["running"] == false),
+        "a draft is unfinished state, not a running task: {status}"
+    );
     let guarded = json!({"expected_instance_id":host.instance,"for_exit":true});
     assert!(
         host.dispatch(
@@ -434,9 +463,17 @@ fn host_menu_idle_quit_allows_a_draft_but_fences_running_work_and_the_instance()
     );
 
     let upload = route.try_upload_permit().unwrap();
-    assert_eq!(
-        host.dispatch("host.runtime_status", &json!({})).unwrap()["running_workspaces"],
-        json!(["default"])
+    let running = host.dispatch("host.runtime_status", &json!({})).unwrap();
+    assert_eq!(running["running_workspaces"], json!(["default"]));
+    assert!(
+        running["activity"][0]["items"]
+            .as_array()
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["kind"] == "upload" && item["running"] == true)
+            }),
+        "an upload must stay visible beside the draft, got {running}"
     );
     assert!(host.dispatch("host.restart_idle", &guarded).is_err());
     assert!(!host.shutdown.load(Ordering::SeqCst));

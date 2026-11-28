@@ -133,6 +133,11 @@ const CHOICE_CUSTOM: usize = usize::MAX;
 
 pub(crate) struct ModelEditor {
     pub(crate) locale: clat_core::client_ports::presentation::LocaleContext,
+    /// 订阅档位表（厂商词 → 档位原词；2026-11-28）：Preset 循环跳过
+    /// 当前档位不可见的预设（单一规则
+    /// [`ModelPreset::hidden_by_plan_tier`]，与 Host 视图/picker 同
+    /// 源）。缺省厂商（DSH / 旧 Host / 其余厂商）不过滤。
+    plan_tiers: Vec<(&'static str, String)>,
     remote: bool,
     remote_key_edited: bool,
     remote_limits: bool,
@@ -190,9 +195,11 @@ impl ModelEditor {
         config: &ModelConfig,
         credentials: ProviderCredentials,
         provider_descriptors: Vec<ProviderDescriptor>,
+        plan_tiers: &[(&'static str, String)],
     ) -> Self {
         Self {
             locale: clat_core::client_ports::presentation::LocaleContext::default(),
+            plan_tiers: plan_tiers.to_vec(),
             remote: false,
             remote_key_edited: false,
             remote_limits: false,
@@ -253,6 +260,7 @@ impl ModelEditor {
             &ModelConfig::default(),
             ProviderCredentials::for_protocol(ModelProtocol::OpenAiCompatible),
             provider_descriptors,
+            &[],
         );
         editor.profile = Some(ProfileContext {
             original_name: None,
@@ -279,7 +287,7 @@ impl ModelEditor {
         credentials: ProviderCredentials,
         provider_descriptors: Vec<ProviderDescriptor>,
     ) -> Self {
-        let mut editor = Self::new_with_descriptors(config, credentials, provider_descriptors);
+        let mut editor = Self::new_with_descriptors(config, credentials, provider_descriptors, &[]);
         editor.profile = Some(ProfileContext {
             original_name: Some(name.to_owned()),
             name: name.to_owned(),
@@ -1181,11 +1189,27 @@ impl ModelEditor {
 
     /// Cycles through Custom → first preset → … → last preset → Custom.
     /// Selecting a preset fills the editor with its official parameters;
-    /// selecting Custom leaves the current values untouched.
+    /// selecting Custom leaves the current values untouched. 订阅档位
+    /// 门槛预设（2026-11-28）在当前档位不可见时被跳过（厂商不在档位
+    /// 表时不过滤；当前预设恰为不可见预设时从 Custom 起步）。
     fn cycle_preset(&mut self, direction: i8) {
-        let count = MODEL_PRESETS.len() + 1;
+        let presets: Vec<&ModelPreset> = MODEL_PRESETS
+            .iter()
+            .filter(|preset| {
+                let tier = self
+                    .plan_tiers
+                    .iter()
+                    .find(|(vendor, _)| *vendor == preset.vendor)
+                    .map(|(_, tier)| tier.as_str());
+                match tier {
+                    Some(tier) => !preset.hidden_by_plan_tier(tier),
+                    None => true,
+                }
+            })
+            .collect();
+        let count = presets.len() + 1;
         let current = match self.preset {
-            Some(preset) => MODEL_PRESETS
+            Some(preset) => presets
                 .iter()
                 .position(|candidate| candidate.id == preset.id)
                 .map(|index| index + 1)
@@ -1196,7 +1220,7 @@ impl ModelEditor {
         self.preset = if next == 0 {
             None
         } else {
-            Some(&MODEL_PRESETS[next - 1])
+            Some(presets[next - 1])
         };
         if let Some(preset) = self.preset {
             self.apply_preset_fields(preset);

@@ -5,6 +5,7 @@
 //! none of them owns credentials, retry semantics, or wire interpretation.
 
 mod binding;
+pub(crate) mod feishu;
 mod host;
 pub(crate) mod ilink;
 mod qr;

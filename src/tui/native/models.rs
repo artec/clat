@@ -96,7 +96,17 @@ impl App {
             preset: choices.settings.current.preset,
             ..Default::default()
         };
-        self.picker = Some(ModelPicker::new_remote(&config, profiles));
+        // attached 态档位来源（2026-11-28）：Host 视图原词随 choices
+        // 到达刷新，picker 与后续 preset 编辑器同源过滤。
+        self.plan_tiers = vec![
+            ("Kimi Coding Plan", choices.settings.kimi_tier.clone()),
+            ("Hy Token Plan", choices.settings.hy_tier.clone()),
+        ];
+        self.picker = Some(ModelPicker::new_remote(
+            &config,
+            profiles,
+            &self.plan_tiers(),
+        ));
         self.flash_message(UiMessage::new("tui.host_models_next"));
     }
 

@@ -78,6 +78,7 @@ pub(crate) use workflow::model_requests::{ModelRequestPort, RequestKind};
 pub(crate) use workflow::state::{Handoff, WorkflowState};
 pub(crate) use workflow::workflow_error;
 pub use workflow::{WorkflowIntent, WorkflowRequest};
+mod host_activity;
 mod workspace_directory;
 pub use changes::{WorkspaceChanges, WorkspaceDiff, WorkspaceReview};
 pub use discovery::{InteractionCatalog, InteractionCommand};

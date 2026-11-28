@@ -14,7 +14,7 @@ impl App {
         native.editor_request += 1;
         native.models_request += 1;
         self.picker = None;
-        self.editor = Some(ModelEditor::remote_preset_key(preset));
+        self.editor = Some(ModelEditor::remote_preset_key(preset, &self.plan_tiers()));
         self.flash_message(UiMessage::new("tui.preset_key_hint").arg("name", preset.name));
     }
 

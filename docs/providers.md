@@ -45,10 +45,21 @@ The preset catalog configures the OpenAI-compatible adapter:
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
 | Qwen4 Max Token Plan | `qwen4-max` | 1M | 128K | `medium` |
 | Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
+| DeepSeek V4.1 Flash · Qwen Token Plan | `deepseek-v4.1-flash-1017` | 1M | 384K | `high` |
 | Kimi K3.1 Pro Coding Plan | `k3.1-pro` | 1M | 128K | `high` |
+| Kimi K3.1 Pro Highspeed · Kimi Coding Plan | `k3.1-pro-highspeed` | 1M | 128K | `high` |
+| Kimi K3 Coding Plan | `k3` | 1M | 128K | `high` |
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
 | Hy 4 · Hy Token Plan | `hy4` | 1M | 64K | — (always on) |
 | Hy 4 Flash · Hy Token Plan | `hy4-flash` | 1M | 64K | — (always on) |
+| DeepSeek V4.1 Flash · Hy Common | `hy-deepseek-v4.1-flash-1017` | 1M | 384K | — (always on) |
+| GLM 5.4 · Hy Common | `hy-glm-5.4` | 1M | 128K | — (always on) |
+| GLM 5.3 · Hy Common | `hy-glm-5.3` | 1M | 128K | — (always on) |
+| GLM 5.3 Flash · Hy Common | `hy-glm-5.3-flash` | 1M | 128K | — (always on) |
+| Kimi K3.1 Pro · Hy Common | `hy-k3.1-pro` | 1M | 128K | — (always on) |
+| Kimi K3 · Hy Common | `hy-k3` | 1M | 128K | — (always on) |
+| MiniMax M3 · Hy Common | `hy-minimax-m3` | 1M | 128K | — (always on) |
+| MiniMax M3.1 Flash · Hy Common | `hy-minimax-m3.1-flash` | 1M | 128K | — (always on) |
 | DeepSeek V4 Pro · OpenCode Go | `opencode-deepseek-v4-pro` | 1M | 384K | `high` |
 | DeepSeek V4.1 Flash · OpenCode Go | `opencode-deepseek-v4.1-flash` | 1M | 384K | `high` |
 | Kimi K3.1 Pro · OpenCode Go | `opencode-kimi-k3.1-pro` | 1M | 256K | `high` |
@@ -63,12 +74,17 @@ The preset catalog configures the OpenAI-compatible adapter:
 | Grok 4.7 · OpenCode Go | `opencode-grok-4.7` | 500K | 256K | `medium` |
 
 Vision capability is hardcoded per preset, never probed at runtime: the
+vendor-declared
 image-input routes are `deepseek-flash`, `qwen4-max`,
-`qwen3.8-flash`, `k3.1-pro`, `kimi-for-coding`, `hy4`, and `hy4-flash`, plus
+`qwen3.8-flash`, `deepseek-v4.1-flash-1017`, `k3.1-pro`,
+`k3.1-pro-highspeed`, `k3`, `kimi-for-coding`, `hy4`, `hy4-flash`,
+`hy-deepseek-v4.1-flash-1017`, `hy-k3.1-pro`, `hy-k3`,
+`hy-minimax-m3`, and `hy-minimax-m3.1-flash` (the Hy Common third-party
+routes follow each model's own official documentation) — plus
 `glm-5.3-flash` and `glm-5.4` (both verified for image tool results; 5.4
-reuses the Flash vision matrix) — the vendor-declared
-routes follow official vendor documentation (Hy 4 per the 2026-11-07 owner
-ruling, Hy 4 Flash per the 2026-11-18 owner confirmation), the GLM Flash route is proven by CLAT's own live probe, and the ten
+reuses the Flash vision matrix) and their Hy Common twins
+`hy-glm-5.3-flash` and `hy-glm-5.4`, which reuse that probe-verified
+matrix — and the ten
 OpenCode Go vision routes (`opencode-deepseek-v4.1-flash`,
 `opencode-kimi-k3.1-pro`, `opencode-kimi-k3`, `opencode-glm-5.3-flash`,
 `opencode-qwen4-max`, `opencode-minimax-m3`, `opencode-claude-haiku-5-5`,
@@ -246,6 +262,19 @@ nonexistent `qwen4-flash` are deliberately not presetted; `qwen3.8-flash`
 remains the utility companion. Saved configurations referencing
 `qwen3.8-max` simply stop resolving to a preset.
 
+Hosted DeepSeek note (2026-11-28): the plan also serves third-party families,
+and the snapshot id `deepseek-v4.1-flash-1017` (the 2026-10-19 Token Plan
+product update, night half-price) is presetted alongside the Qwen pair on the
+same key slot. Its documented `reasoning_effort` ladder is the DeepSeek
+spelling `low`/`high`/`max` (default `high`) — not Qwen's own
+`low`/`medium`/`xhigh` — so the thinking-level cycle sends `high`/`max` for
+this model; thinking stays always-on via the platform's `enable_thinking`
+toggle, which CLAT does not send. Input is officially declared as Text+Image.
+The Aliyun Bailian entry is the canonical endpoint; the Qianwen entry's
+carriage of this snapshot is not confirmed by an official model list yet
+(2026-11-28), so if the Qianwen entry reports an unknown model, switch back
+to the Aliyun entry.
+
 Context caching is implicit. Usage parsing accepts both
 `prompt_tokens_details.cached_tokens` and the transitional top-level cached
 token field. CLAT does not send explicit `cache_control`, whose availability
@@ -263,7 +292,7 @@ selection beside the Kimi Coding Plan heading, matching the Qwen Token Plan
 heading controls. The user-selected subscription tier is saved as a vendor-wide
 preference in `settings.json` (`kimiTier`), independently of the active model
 or profile; missing historical settings default to Plus. The tier gates the
-flagship `k3.1-pro` only: 262,144 tokens on Plus, 1,048,576 on Pro and
+flagship `k3.1-pro` context: 262,144 tokens on Plus, 1,048,576 on Pro and
 higher. `kimi-for-coding` (K2.8 Preview) is exempt from the tier gate — the
 official Kimi Code model table lists its 1,048,576-token window with no
 subscription-tier note (available from Plus), so it always uses 1,048,576
@@ -274,10 +303,25 @@ a Host restart, restores the user's tier. An old automatic capacity cache does
 not override this explicit choice; CLAT does not verify subscription entitlement.
 The output-token preset and the endpoint/API key remain unchanged.
 
+Two more presets follow the official Kimi Code model table (2026-11-28).
+`k3.1-pro-highspeed` (K3.1 Pro Highspeed, same capabilities as the standard
+flagship at roughly 3× speed and 2× credit consumption) is marked "Pro and
+above" in that table, so it is gated to the Pro tier: on Plus it is hidden
+from every selection surface (Host preset views, the TUI model picker and
+editor cycle share one visibility rule) and direct selection is refused; if
+it is the active model, downgrading the tier is refused until another model
+is selected. `k3` (K3) is available on every tier and joins the tier-window
+mechanism — 262,144 tokens on Plus, 1,048,576 on Pro and higher — matching
+the `k3.1-pro` treatment. The retired `kimi-k3` id stays retired; today's
+`k3` id is a new preset, and the old id still does not resolve (the endpoint's
+silent fallback to the non-thinking K2.8 Preview for unknown ids remains a
+documented hazard).
+
 The preset uses `https://api.kimi.com/coding/v1`, top-level
 `reasoning_effort`, and automatic context caching. Low / High / Max map directly
-to the vendor ladder. `k3.1-pro` (K3.1 Pro) image input is declared by the
-official API documentation, so attach admission is open on that route.
+to the vendor ladder. `k3.1-pro`, `k3.1-pro-highspeed` and `k3` image input is
+declared by the official model documentation, so attach admission is open on
+those routes.
 
 The endpoint also strictly validates tool JSON schemas: every
 `tools.function.parameters` property must declare an explicit `type` — an
@@ -329,9 +373,27 @@ if the vendor starts returning it.
 ### Tencent Hy Token Plan
 
 The preset uses `https://tokenhub.tencentmaas.com/plan/v3` with `hy4`
-(GA) — the subscription endpoint for Tencent's own Hunyuan models (the
-separate "general" Token Plan aggregating third-party open models is
-deliberately not covered; those vendors already have direct presets).
+(GA) — the subscription endpoint for Tencent's own Hunyuan models. Since
+2026-11-28 the settings page also offers a **plan radio** beside the Hy
+Token Plan heading: **Hy** (the default, matching the standalone
+Hunyuan plan) or **Common** (the "general" Token Plan
+aggregating third-party models). The official docs define the two as
+independent subscriptions sharing one API key and endpoint; the radio
+therefore switches only the selection surface, not the endpoint: the Hy
+plan's roster is the Hunyuan pair, while the Common plan additionally
+carries eight third-party presets (`hy-deepseek-v4.1-flash-1017`,
+`hy-glm-5.4`, `hy-glm-5.3`, `hy-glm-5.3-flash`, `hy-k3.1-pro`, `hy-k3`,
+`hy-minimax-m3`, `hy-minimax-m3.1-flash`; ids carry the `hy-` prefix so
+they never shadow the direct vendors' presets, and the gateway's raw Kimi
+ids are `kimi-k3.1-pro`/`kimi-k3`). On the Hy radio the eight are hidden
+from every selection surface and direct selection is refused; if one is
+the active model, downgrading the plan is refused until another model is
+selected. The choice persists like the Kimi tier (`hyTier` in
+`settings.json`, missing legacy settings default to Hy). The plan docs do
+not publish per-model context/output specs, so those presets pin each
+model's own vendor documentation values (sources per preset in
+`presets/hy_plan.rs`); thinking parameters stay unsent per the TC-0
+probe below, and the plan bills by credits per model id.
 Generate the key in the TokenHub console; the same key and URL serve both
 plans and deduct by model id.
 

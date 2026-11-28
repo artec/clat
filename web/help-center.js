@@ -2,8 +2,22 @@
 const helpText = key => CLATI18n.msg('help.' + key);
 let helpCenter = null;
 
+const HELP_TOPIC_ALIASES = {
+  quota_qianwen: 'authorizations',
+  quota_bailian: 'authorizations',
+  quota_tencent: 'authorizations',
+};
+
+function resolveHelpTopic(id) {
+  return HELP_TOPIC_ALIASES[id] || id;
+}
+
+function settingsHelpTopic(category, remoteChannel) {
+  if (category === 'remote') return remoteChannel === 'feishu' ? 'feishu' : 'wechat';
+  return ({terminal:'terminal_font',web:'network',desktop:'about',git:'git_settings'})[category] || category;
+}
 function currentHelpTopic(view) {
-  if (view.id === 'settings-dialog') return ({terminal:'terminal_font',web:'network',desktop:'about',git:'git_settings',authorizations:'quota_qianwen',remote:'wechat'})[currentSettingsCategory] || currentSettingsCategory;
+  if (view.id === 'settings-dialog') return settingsHelpTopic(currentSettingsCategory, document.querySelector('#remote-channels [aria-selected=true]')?.dataset.channel);
   return ({conversation:'chat','file-browser':'files','workspace-review':'git','turn-review':'operations','task-review':'processes','workflow-details':'workflow','terminal-page':'terminal','resources-dialog':'resources','jobs-dialog':'tasks','history-dialog':'history','market-dialog':'extensions'})[view.id] || 'chat';
 }
 
@@ -11,13 +25,17 @@ function captureHelpSource() {
   const shell = workbenchShell;
   if (!shell || shell.page === 'help-dialog') return null;
   const page = shell.page, category = currentSettingsCategory, tool = shell.tools.current()?.id;
+  // 远程设置页同时保留当前选中的通道（微信 / 飞书），返回时精确还原。
+  const remoteChannel = page === 'settings-dialog' && category === 'remote'
+    ? document.querySelector('#remote-channels [aria-selected=true]')?.dataset.channel
+    : null;
   const project = state.workbench?.project?.root, session = state.sessionId;
   return {
     topic: currentHelpTopic(activeViewContext(shell)),
     valid: () => context.isActive() && project === state.workbench?.project?.root && session === state.sessionId,
     restore() {
       if (!this.valid()) return;
-      if (page === 'settings-dialog') openSettings(category);
+      if (page === 'settings-dialog') openSettings(remoteChannel || category);
       else if (page) shell.open(page);
       else if (tool) shell.tools.open(tool);
       else shell.chat();
@@ -34,8 +52,17 @@ function helpDestination(topic) {
   return () => workbenchShell.open(topic.target);
 }
 
+// 每篇指南默认包含 1 组问答；声明 questions > 1 时按 _question_2 / _answer_2 递增渲染。
+function helpFaqSuffixes(topic) {
+  const count = Math.max(1, Number(topic.questions) || 1);
+  const pairs = [['question', 'answer']];
+  for (let i = 2; i <= count; i++) pairs.push(['question_' + i, 'answer_' + i]);
+  return pairs;
+}
+
 function helpSearchText(topic) {
-  return [topic.id, ...['title','summary','step_1','step_2','step_3','question','answer'].map(key => helpText(topic.id+'_'+key))].join(' ').toLocaleLowerCase();
+  const keys = ['title','summary','step_1','step_2','step_3', ...helpFaqSuffixes(topic).flat()];
+  return [topic.id, ...keys.map(key => helpText(topic.id+'_'+key))].join(' ').toLocaleLowerCase();
 }
 
 function createHelpArticle(topic, select) {
@@ -49,7 +76,10 @@ function createHelpArticle(topic, select) {
   for (let i=1;i<=3;i++) list.append(el('li','',()=>helpText(topic.id+'_step_'+i)));
   steps.append(list);
   const questions = el('section','help-questions');
-  questions.append(el('h3','',()=>helpText('questions')), el('h4','',()=>helpText(topic.id+'_question')), el('p','',()=>helpText(topic.id+'_answer')));
+  questions.append(el('h3','',()=>helpText('questions')));
+  for (const [q, a] of helpFaqSuffixes(topic)) {
+    questions.append(el('h4','',()=>helpText(topic.id+'_'+q)), el('p','',()=>helpText(topic.id+'_'+a)));
+  }
   const related = el('section','help-related'); related.append(el('h3','',()=>helpText('related')));
   for (const id of topic.related) {
     const item=HELP_TOPICS.find(row=>row.id===id);
@@ -64,16 +94,17 @@ function createHelpCenter() {
   view.list.classList.add('sidebar-grouped-list');
   let selected='chat',source=null,requested=null,selection=0;const positions=new Map();
   function select(id) {
-    const topic=HELP_TOPICS.find(row=>row.id===id);if(!topic)return;
-    positions.set(selected,view.body.scrollTop);selected=id;
+    const resolved = resolveHelpTopic(id);
+    const topic=HELP_TOPICS.find(row=>row.id===resolved);if(!topic)return;
+    positions.set(selected,view.body.scrollTop);selected=resolved;
     view.show(()=>helpText(topic.id+'_title'));view.body.replaceChildren(createHelpArticle(topic,select));
-    const top=positions.get(id)||0,version=++selection;view.body.scrollTop=top;renderList();
+    const top=positions.get(resolved)||0,version=++selection;view.body.scrollTop=top;renderList();
     // Apply after the shared page-enter scroll restoration, using this guide's position.
     requestAnimationFrame(()=>{
       if(version!==selection||!context.isActive()||!pageIsOpen(page))return;
       view.body.scrollTop=top;view.list.querySelector('[aria-current=true]')?.scrollIntoView({block:'nearest'});
     });
-    if(pageIsOpen(page)&&context.isActive()&&!workbenchShell.routing)context.navigatePage('help?topic='+encodeURIComponent(id));
+    if(pageIsOpen(page)&&context.isActive()&&!workbenchShell.routing)context.navigatePage('help?topic='+encodeURIComponent(resolved));
   }
   function renderList() {
     const words=view.query.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -107,7 +138,7 @@ function createHelpCenter() {
   return {open(topic){
     const origin=captureHelpSource();if(origin){source=origin;view.query.value='';}
     const route=workbenchShell.routing?new URLSearchParams(location.hash.split('?')[1]||'').get('topic'):null;
-    const id=topic||route||origin?.topic||selected;
+    const id=resolveHelpTopic(topic||route||origin?.topic||selected);
     requested=HELP_TOPICS.some(row=>row.id===id)?id:'chat';
     if(pageIsOpen(page)){select(requested);requested=null;}
     // Publish the topic route on entry, without an extra bare help history entry.

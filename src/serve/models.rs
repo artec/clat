@@ -109,6 +109,22 @@ pub(crate) fn dispatch(
             app.set_kimi_tier(tier).map_err(failure)?;
             Ok(json!({"tier": tier}))
         }
+        // Hy Token Plan 套餐（2026-11-28）：同 Kimi 档位的设置页单选
+        // 通道；名单切换见 presets/hy_plan.rs。
+        "model.preset.hy_tier" => {
+            if params.len() != 1 {
+                return Err(RpcError::bad_request("hy tier selection accepts only tier"));
+            }
+            let tier = params
+                .get("tier")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::bad_request("tier must be hy or common"))?;
+            if !matches!(tier, "hy" | "common") {
+                return Err(RpcError::bad_request("tier must be hy or common"));
+            }
+            app.set_hy_tier(tier).map_err(failure)?;
+            Ok(json!({"tier": tier}))
+        }
         _ => Err(RpcError::bad_request("unknown model method")),
     }
 }

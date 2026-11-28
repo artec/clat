@@ -89,6 +89,9 @@ unicode-width = "0.2"
 # 且 1.13.3 已在 Cargo.lock（零新增 crate）。
 unicode-segmentation = "1.13"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
+# Feishu long connection uses a blocking WebSocket on its own thread.
+# rustls matches the existing HTTP stack; tokio stays out of clat-core.
+tungstenite = { version = "0.26", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 url = "2"
 # DSH-compatible session logs: every durable append batch is one independent
 # zstd frame with a content checksum

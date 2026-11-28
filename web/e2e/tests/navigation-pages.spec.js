@@ -142,13 +142,12 @@ test('late setting saves retain newer input and leaving clears a delayed pairing
  await page.evaluate(()=>{const original=rpc;globalThis.releaseUtility=null;rpc=async(method,params)=>method==='model.utility.set'?new Promise(resolve=>{globalThis.releaseUtility=()=>resolve({});}):original(method,params);});
  const naming=page.locator('#utility-naming-enabled');await expect(naming).toBeChecked(LIVE);await naming.uncheck();await page.click('#utility-settings-save');await expect.poll(()=>page.evaluate(()=>!!globalThis.releaseUtility)).toBe(true);await naming.check();await page.evaluate(()=>globalThis.releaseUtility());await expect(page.locator('#utility-settings-save')).toBeEnabled(LIVE);await expect(naming).toBeChecked();await expect(page.locator('[data-settings-panel=utility]')).toHaveAttribute('data-unsaved','true');
  await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>{
-   // 进入面板前桩住 status：绑定态让 #wechat-pair 由产品渲染自然启用，
-   // 且不会随后被真实（未绑定）响应重新禁用（app.js: disabled = !bound）。
+   // 进入面板前桩住 status：绑定态让 #remote-pair 由产品渲染自然启用。
    if(method==='wechat.binding.status')return {bound:true,paired_users:1,mapped_chats:0};
    if(method==='wechat.pairing.create')return new Promise(resolve=>{globalThis.releasePair=()=>resolve({code:'private-delayed-code'});});
    return original(method,params);};});
  await page.click('[data-settings-category=remote]');
- await page.click('#wechat-pair');await expect.poll(()=>page.evaluate(()=>!!globalThis.releasePair)).toBe(true);await page.click('#nav-help');await page.evaluate(()=>globalThis.releasePair());await page.click('#nav-settings');await page.click('[data-settings-category=remote]');await expect(page.locator('[data-settings-panel=remote]')).toBeVisible();await expect(page.locator('#wechat-pairing-code')).toBeEmpty();
+ await page.click('#remote-pair');await expect.poll(()=>page.evaluate(()=>!!globalThis.releasePair)).toBe(true);await page.click('#nav-help');await page.evaluate(()=>globalThis.releasePair());await page.click('#nav-settings');await page.click('[data-settings-category=remote]');await expect(page.locator('[data-settings-panel=remote]')).toBeVisible();await expect(page.locator('#remote-pairing-code')).toBeEmpty();
  await page.click('[data-settings-category=appearance]');
  await page.evaluate(()=>{const original=rpc;globalThis.remoteRead=0;globalThis.remoteUsers=[{user_id:'user-a',paired:true,manual:true,sessions:[]}];globalThis.revokedUser=null;rpc=async(method,params)=>{
    if(method==='wechat.binding.status'){if(++globalThis.remoteRead===1)return new Promise(resolve=>{globalThis.releaseOldStatus=()=>resolve({bound:true,paired_users:1,mapped_chats:0});});return {bound:false,paired_users:0,mapped_chats:0};}
@@ -159,17 +158,139 @@ test('late setting saves retain newer input and leaving clears a delayed pairing
  await page.click('[data-settings-category=remote]');await expect.poll(()=>page.evaluate(()=>!!globalThis.releaseOldStatus)).toBe(true);
  await page.click('[data-settings-category=appearance]');await page.click('[data-settings-category=remote]');
  await expect.poll(()=>page.evaluate(()=>globalThis.remoteRead)).toBeGreaterThanOrEqual(2);
- await expect(page.locator('#wechat-pair')).toBeDisabled();await expect(page.locator('[data-settings-panel=remote]')).toContainText('user-a');
- await page.evaluate(()=>globalThis.releaseOldStatus());await expect(page.locator('#wechat-pair')).toBeDisabled();
+ await expect(page.locator('#remote-pair')).toBeDisabled();await expect(page.locator('[data-settings-panel=remote]')).toContainText('user-a');
+ await page.evaluate(()=>globalThis.releaseOldStatus());await expect(page.locator('#remote-pair')).toBeDisabled();
  await page.locator('[data-settings-panel=remote] [data-action=revoke]').click();
  const revokeDialog=page.locator('dialog.clat-dialog');
  await expect(revokeDialog).toBeVisible(LIVE);
  await revokeDialog.locator('[data-role="accept"]').click();
  await expect.poll(()=>page.evaluate(()=>globalThis.revokedUser)).toBe('user-a');await expect(page.locator('[data-settings-panel=remote]')).not.toContainText('user-a');
  await page.evaluate(()=>{const original=rpc;rpc=async(method,params)=>method==='wechat.binding.start'?{qr_svg:'<svg xmlns="http://www.w3.org/2000/svg"/>'}:method==='wechat.binding.poll'?{state:'need_verify_code'}:original(method,params);});
- await page.click('#wechat-bind');await expect(page.locator('#wechat-verify-code')).toBeVisible();
+ await page.click('#remote-bind');await expect(page.locator('#wechat-verify-code')).toBeVisible();
  for(const language of ['zh-Hans','zh-Hant','en']){const expected=await page.evaluate(async language=>{await CLATI18n.setLanguage(language);return CLATI18n.t('web.enter_the_verification_code_shown_by_wechat');},language);await expect(page.locator('#wechat-qr-state')).toHaveText(expected);}
  await page.fill('#wechat-verify-code','1234');await page.click('[data-settings-category=appearance]');await expect(page.locator('#wechat-qr')).toBeHidden();await expect(page.locator('#wechat-verify-code')).toHaveValue('');
+});
+
+test('remote settings manage both channels in one panel without crossing user grants or pairing codes', async ({ page }) => {
+ const credentials = { appId: 'test-feishu-app', appSecret: 'test-feishu-secret', replace: false };
+ await openWorkbench(page, hostInfo('workbench'));
+ await page.evaluate(() => {
+   const original = rpc;
+   globalThis.remoteWrites = [];
+   let feishuBound = false, feishuReceiving = false;
+   const users = {
+     wechat: [{ user_id: 'shared-user-id', paired: true, manual: true, sessions: ['wechat-session'] }],
+     feishu: [],
+   };
+   rpc = async (method, params) => {
+     const [channel, ...parts] = method.split('.');
+     const operation = parts.join('.');
+     if (channel !== 'wechat' && channel !== 'feishu') return original(method, params);
+     if (operation === 'binding.status') return {
+       bound: channel === 'wechat' || feishuBound,
+       paired_users: users[channel].length,
+       mapped_chats: users[channel].reduce((count, user) => count + user.sessions.length, 0),
+       receiving: channel === 'feishu' && feishuReceiving,
+       online: channel === 'feishu' && feishuReceiving,
+       ...(channel === 'feishu' && feishuBound ? { app_id: 'test-feishu-app' } : {}),
+     };
+     if (operation === 'users.list') return { users: users[channel] };
+     if (operation === 'pairing.create' && channel === 'wechat') {
+       return new Promise(resolve => { globalThis.releaseWechatPairing = () => resolve({ code: 'wechat-private-code' }); });
+     }
+     globalThis.remoteWrites.push([method, params]);
+     if (method === 'feishu.binding.save') { feishuBound = true; return { bound: true }; }
+     if (method === 'feishu.connection.set') {
+       feishuReceiving = Boolean(params.receiving);
+       return { receiving: feishuReceiving, online: feishuReceiving };
+     }
+     if (method === 'feishu.pairing.create') {
+       users.feishu = [{ user_id: 'shared-user-id', paired: true, manual: false, sessions: ['feishu-session'] }];
+       return { code: 'feishu-private-code' };
+     }
+     if (method === 'feishu.user.revoke') { users.feishu = []; return {}; }
+     if (method === 'feishu.binding.unbind') { feishuBound = false; feishuReceiving = false; return { bound: false }; }
+     throw new Error('Unexpected remote operation ' + method);
+   };
+ });
+ await page.click('#nav-settings');
+ await page.click('[data-settings-category=remote]');
+ const channels = page.locator('#remote-channels');
+ const panel = page.locator('#remote-channel-panel');
+ const users = panel.locator('#remote-users');
+ const code = panel.locator('#remote-pairing-code');
+ const bind = panel.locator('#remote-bind');
+ const pair = panel.locator('#remote-pair');
+ const wechat = channels.locator('[data-channel=wechat]');
+ const feishu = channels.locator('[data-channel=feishu]');
+ const confirm = page.locator('dialog.clat-dialog [data-role=accept]');
+ const manualGrant = () => page.evaluate(() => CLATI18n.t('pages.manual_grant'));
+ const expectAuthorizedUser = async (sessionId, manual) => {
+   await expect(users).toContainText('shared-user-id');
+   await expect(users).not.toContainText(sessionId);
+   const grant = await manualGrant();
+   if (manual) await expect(users).toContainText(grant);
+   else await expect(users).not.toContainText(grant);
+ };
+ await expect(channels.getByRole('tab')).toHaveCount(2);
+ await expect(wechat).toHaveAttribute('aria-selected', 'true');
+ await expectAuthorizedUser('wechat-session', true);
+ await pair.click();
+ await expect.poll(() => page.evaluate(() => Boolean(globalThis.releaseWechatPairing))).toBe(true);
+ await wechat.focus();
+ await wechat.press('ArrowRight');
+ await expect(feishu).toBeFocused();
+ await expect(feishu).toHaveAttribute('aria-selected', 'true');
+ await expect(panel.locator('#remote-feishu-receive')).toBeHidden();
+ await expect(users).toBeEmpty();
+ await page.evaluate(() => globalThis.releaseWechatPairing());
+ await expect(pair).toBeHidden();
+ await expect(code).toBeEmpty();
+ await expect(panel.locator('#feishu-app-secret')).toBeHidden();
+ await bind.click();
+ await panel.locator('#feishu-app-id').fill(credentials.appId);
+ await panel.locator('#feishu-app-secret').fill(credentials.appSecret);
+ await wechat.click();
+ await expect(panel.locator('#feishu-app-secret')).toHaveValue('');
+ await expect(panel.locator('#feishu-app-id')).toHaveValue('');
+ await expectAuthorizedUser('wechat-session', true);
+ await feishu.click();
+ await bind.click();
+ await panel.locator('#feishu-app-id').fill(credentials.appId);
+ await panel.locator('#feishu-app-secret').fill(credentials.appSecret);
+ await panel.locator('#feishu-save').click();
+ await expect(panel.locator('#feishu-binding-form')).toBeHidden();
+ await expect(panel.locator('#remote-binding-detail')).toContainText(credentials.appId);
+ await expect(panel.locator('#feishu-app-secret')).toHaveValue('');
+ const receive = panel.locator('#remote-feishu-receive');
+ await expect(receive).toBeVisible();
+ await receive.click();
+ await expect(panel.locator('#remote-feishu-connection')).toBeHidden();
+ await expect(panel.locator('#remote-binding-detail')).toHaveText(await page.evaluate(appId => CLATI18n.t('web.feishu_receive_on', { app_id: appId }), credentials.appId));
+ await receive.click();
+ await expect(panel.locator('#remote-feishu-connection')).toHaveText(await page.evaluate(() => CLATI18n.t('web.feishu_receive_off')));
+ await pair.click();
+ await expect(code).toHaveText('feishu-private-code');
+ await page.locator('#remote-refresh').click();
+ await expectAuthorizedUser('feishu-session', false);
+ await users.locator('[data-action=revoke]').click();
+ await confirm.click();
+ await expect(users).toBeEmpty();
+ await panel.locator('#remote-unbind').click();
+ await confirm.click();
+ await expect(pair).toBeHidden();
+ await expect(receive).toBeHidden();
+ await expect(code).toBeEmpty();
+ await wechat.click();
+ await expectAuthorizedUser('wechat-session', true);
+ expect(await page.evaluate(() => globalThis.remoteWrites)).toEqual([
+   ['feishu.binding.save', credentials],
+   ['feishu.connection.set', { receiving: true }],
+   ['feishu.connection.set', { receiving: false }],
+   ['feishu.pairing.create', {}],
+   ['feishu.user.revoke', { userId: 'shared-user-id' }],
+   ['feishu.binding.unbind', { confirm: 'unbind-feishu' }],
+ ]);
 });
 
 test('run now executes its authorized conversation without changing the regular schedule',async({page})=>{

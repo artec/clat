@@ -1047,12 +1047,7 @@ html[data-scrollbars="custom"] .inspector-scroll::-webkit-scrollbar-track { marg
 .workflow-goal-list-row > [data-action="goal-handoff"]:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
-
-.workflow-goal-list-row > [data-action="goal-handoff"][data-configured="false"]::after {
-  content: ""; position: absolute; top: 50%; left: 50%; width: 19px; height: 1.5px;
-  border-radius: 1px; background: currentColor; box-shadow: 0 0 0 1.5px var(--handoff-button-surface);
-  transform: translate(-50%, -50%) rotate(45deg); pointer-events: none;
-}
+.workflow-goal-list-row > [data-action="goal-handoff"] > svg { width: 18px; height: 18px; }
 
 .composer-goal-handoff-status {
   display: inline-grid; place-items: center; flex: none;

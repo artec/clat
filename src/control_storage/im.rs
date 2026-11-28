@@ -44,10 +44,11 @@ const MAX_PENDING_CHAT_MAPPINGS: usize = 256;
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ImFile {
     unit: UnitTag,
-    /// WeChat v1 section. A future Feishu section is a sibling with its own
-    /// credentials and its own flattened `RemoteState`, never fields in here.
+    /// WeChat v1 section. Feishu credentials stay in the sibling section.
     #[serde(default)]
     wechat: WechatState,
+    #[serde(default, skip_serializing_if = "FeishuState::is_vacant")]
+    feishu: FeishuState,
     #[cfg(test)]
     #[serde(default, skip_serializing_if = "TestChannelState::is_empty")]
     test_channel: TestChannelState,
@@ -58,6 +59,7 @@ impl ImFile {
         Self {
             unit: UnitTag::new(UNIT.0, UNIT.1),
             wechat: WechatState::default(),
+            feishu: FeishuState::default(),
             #[cfg(test)]
             test_channel: TestChannelState::default(),
         }
@@ -72,6 +74,39 @@ struct WechatState {
     cursor: String,
     #[serde(flatten)]
     remote: RemoteState,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct FeishuState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<FeishuBindingRow>,
+    /// The desktop host reads this on startup and opens the long connection
+    /// without a terminal flag. False stays omitted so older files match.
+    #[serde(default, skip_serializing_if = "is_false")]
+    receiving: bool,
+    #[serde(flatten)]
+    remote: RemoteState,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct FeishuBindingRow {
+    #[serde(rename = "appId")]
+    app_id: String,
+    #[serde(rename = "appSecret")]
+    app_secret: String,
+    domain: String,
+    #[serde(rename = "boundAt")]
+    bound_at: String,
+}
+
+impl FeishuState {
+    fn is_vacant(&self) -> bool {
+        self.binding.is_none() && !self.receiving && self.remote.is_vacant()
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +155,9 @@ impl ImFile {
             crate::remote::RemoteChannel::Wechat => {
                 self.wechat.binding.as_ref().map(|_| &self.wechat.remote)
             }
+            crate::remote::RemoteChannel::Feishu => {
+                self.feishu.binding.as_ref().map(|_| &self.feishu.remote)
+            }
             #[cfg(test)]
             crate::remote::RemoteChannel::Test => self
                 .test_channel
@@ -135,6 +173,9 @@ impl ImFile {
         match channel {
             crate::remote::RemoteChannel::Wechat if self.wechat.binding.is_some() => {
                 Ok(&mut self.wechat.remote)
+            }
+            crate::remote::RemoteChannel::Feishu if self.feishu.binding.is_some() => {
+                Ok(&mut self.feishu.remote)
             }
             #[cfg(test)]
             crate::remote::RemoteChannel::Test if self.test_channel.connected => {
@@ -220,6 +261,17 @@ impl RemoteState {
             })
     }
 
+    fn is_vacant(&self) -> bool {
+        self.allowed_users.is_empty()
+            && self.paired_users.is_empty()
+            && self.chat_sessions.is_empty()
+            && self.pending_chat_mappings.is_empty()
+            && self.pairing.is_none()
+            && self.pairing_failures.is_empty()
+            && self.pairing_receipts.is_empty()
+            && self.handled_deliveries.is_empty()
+    }
+
     pub(super) fn grants_user(&self, user_id: &str) -> bool {
         self.allowed_users.contains(user_id) || self.paired_users.contains_key(user_id)
     }
@@ -247,7 +299,7 @@ impl RemoteState {
         validate_id("user id", user)?;
         validate_id("chat id", chat)?;
         if !self.grants_user(user) {
-            return Err(control_error("WeChat user is not paired or allowlisted"));
+            return Err(control_error("remote user is not paired or allowlisted"));
         }
         if self
             .chat_sessions
@@ -349,7 +401,7 @@ impl RemoteState {
             return Err(control_error("invalid chat-mapping timestamp"));
         }
         if !self.grants_user(user_id) {
-            return Err(control_error("WeChat user is not paired or allowlisted"));
+            return Err(control_error("remote user is not paired or allowlisted"));
         }
         if let Some(existing) = self.pending_chat_mappings.get(delivery_id) {
             if existing.user_id == user_id
@@ -558,6 +610,73 @@ pub(crate) fn clear_binding(file: &mut ImFile) {
     file.wechat = WechatState::default();
 }
 
+pub(crate) fn feishu_credentials(
+    file: &ImFile,
+) -> Result<Option<crate::im::feishu::Credentials>, ControlError> {
+    file.feishu
+        .binding
+        .as_ref()
+        .map(|binding| {
+            crate::im::feishu::Credentials::from_parts(
+                binding.app_id.clone(),
+                binding.app_secret.clone(),
+                binding.domain.clone(),
+            )
+            .map_err(control_error)
+        })
+        .transpose()
+}
+
+pub(crate) fn feishu_binding_status(file: &ImFile) -> crate::im::feishu::BindingStatus {
+    crate::im::feishu::BindingStatus {
+        bound: file.feishu.binding.is_some(),
+        bound_at: file
+            .feishu
+            .binding
+            .as_ref()
+            .map(|binding| binding.bound_at.clone()),
+        paired_users: file.feishu.remote.paired_users.len(),
+        mapped_chats: file.feishu.remote.chat_sessions.len(),
+    }
+}
+
+pub(crate) fn replace_feishu_binding(
+    file: &mut ImFile,
+    credentials: &crate::im::feishu::Credentials,
+) {
+    let receiving = feishu_receiving(file);
+    file.feishu = FeishuState {
+        binding: Some(FeishuBindingRow {
+            app_id: credentials.app_id().to_owned(),
+            app_secret: credentials.app_secret().to_owned(),
+            domain: credentials.domain().to_owned(),
+            bound_at: super::timestamp::now_iso8601(),
+        }),
+        receiving,
+        remote: RemoteState::default(),
+    };
+}
+
+pub(crate) fn feishu_receiving(file: &ImFile) -> bool {
+    file.feishu.binding.is_some() && file.feishu.receiving
+}
+
+pub(crate) fn set_feishu_receiving(file: &mut ImFile, receiving: bool) -> Result<(), ControlError> {
+    if file.feishu.binding.is_none() {
+        if receiving {
+            return Err(control_error("Feishu is not configured yet"));
+        }
+        file.feishu.receiving = false;
+        return Ok(());
+    }
+    file.feishu.receiving = receiving;
+    Ok(())
+}
+
+pub(crate) fn clear_feishu_binding(file: &mut ImFile) {
+    file.feishu = FeishuState::default();
+}
+
 impl RemoteState {
     pub(super) fn create_pairing_challenge(
         &mut self,
@@ -745,7 +864,7 @@ pub(crate) fn set_allowed_user(
     } else {
         file.wechat.remote.allowed_users.remove(user_id);
         if !file.wechat.remote.paired_users.contains_key(user_id) {
-            tombstone_pairing_receipts(file, user_id);
+            tombstone_pairing_receipts(&mut file.wechat.remote, user_id);
             file.wechat
                 .remote
                 .chat_sessions
@@ -789,7 +908,7 @@ pub(crate) fn remove_paired_user(file: &mut ImFile, user_id: &str) -> Result<(),
     validate_id("user id", user_id)?;
     file.wechat.remote.paired_users.remove(user_id);
     if !file.wechat.remote.allowed_users.contains(user_id) {
-        tombstone_pairing_receipts(file, user_id);
+        tombstone_pairing_receipts(&mut file.wechat.remote, user_id);
         file.wechat
             .remote
             .chat_sessions
@@ -802,15 +921,13 @@ pub(crate) fn remove_paired_user(file: &mut ImFile, user_id: &str) -> Result<(),
     Ok(())
 }
 
-fn tombstone_pairing_receipts(file: &mut ImFile, user_id: &str) {
+fn tombstone_pairing_receipts(remote: &mut RemoteState, user_id: &str) {
     // Revoking the final grant must also change the durable replay result.
     // Otherwise an exact replay of the original successful delivery would
     // keep saying "paired" after access and mappings had been removed.
     // Preserve the receipt as a tombstone so it cannot be re-evaluated against
     // a later challenge.
-    for receipt in file
-        .wechat
-        .remote
+    for receipt in remote
         .pairing_receipts
         .values_mut()
         .filter(|receipt| receipt.user_id == user_id)
@@ -834,7 +951,7 @@ pub(crate) fn bind_chat(
     validate_id("user id", user_id)?;
     validate_id("chat id", chat_id)?;
     if !is_authorized(file, user_id) {
-        return Err(control_error("WeChat user is not paired or allowlisted"));
+        return Err(control_error("remote user is not paired or allowlisted"));
     }
     file.wechat.remote.bind_chat(user_id, chat_id, session_id)
 }
@@ -886,7 +1003,7 @@ pub(crate) fn arm_chat_mapping(
         return Err(control_error("invalid chat-mapping timestamp"));
     }
     if file.wechat.binding.is_none() {
-        return Err(control_error("WeChat user is not paired or allowlisted"));
+        return Err(control_error("remote user is not paired or allowlisted"));
     }
     file.wechat
         .remote
@@ -902,7 +1019,7 @@ pub(crate) fn complete_chat_mapping(
     session_id: &SessionId,
 ) -> Result<(), ControlError> {
     if file.wechat.binding.is_none() {
-        return Err(control_error("WeChat user is not paired or allowlisted"));
+        return Err(control_error("remote user is not paired or allowlisted"));
     }
     file.wechat
         .remote
@@ -1079,28 +1196,58 @@ fn random_six_digits() -> String {
 
 /// Public authorization metadata excludes binding credentials and pairing challenges.
 pub(super) fn users(file: &ImFile) -> serde_json::Value {
-    let identities: BTreeSet<_> = file
-        .wechat
-        .remote
+    remote_user_rows(&file.wechat.remote)
+}
+
+pub(super) fn feishu_users(file: &ImFile) -> serde_json::Value {
+    remote_user_rows(&file.feishu.remote)
+}
+
+fn remote_user_rows(remote: &RemoteState) -> serde_json::Value {
+    let identities: BTreeSet<_> = remote
         .allowed_users
         .iter()
-        .chain(file.wechat.remote.paired_users.keys())
+        .chain(remote.paired_users.keys())
         .collect();
     serde_json::json!(
         identities
             .into_iter()
             .map(|id| {
-                serde_json::json!({"user_id":id,"manual":file.wechat.remote.allowed_users.contains(id),
-            "paired":file.wechat.remote.paired_users.contains_key(id),
-            "sessions":file.wechat.remote.chat_sessions.values().filter(|row| &row.user_id==id)
-                .map(|row| &row.session_id).collect::<Vec<_>>()})
+                serde_json::json!({
+                    "user_id": id,
+                    "manual": remote.allowed_users.contains(id),
+                    "paired": remote.paired_users.contains_key(id),
+                    "sessions": remote.chat_sessions.values()
+                        .filter(|row| &row.user_id == id)
+                        .map(|row| &row.session_id)
+                        .collect::<Vec<_>>()
+                })
             })
             .collect::<Vec<_>>()
     )
 }
+
 pub(super) fn revoke_user(file: &mut ImFile, user: &str) -> Result<(), ControlError> {
     set_allowed_user(file, user, false)?;
     remove_paired_user(file, user)
+}
+
+pub(super) fn revoke_feishu_user(file: &mut ImFile, user_id: &str) -> Result<(), ControlError> {
+    validate_id("user id", user_id)?;
+    if file.feishu.binding.is_none() {
+        return Err(control_error(
+            "Feishu must be bound before changing authorization",
+        ));
+    }
+    let remote = &mut file.feishu.remote;
+    remote.allowed_users.remove(user_id);
+    remote.paired_users.remove(user_id);
+    tombstone_pairing_receipts(remote, user_id);
+    remote.chat_sessions.retain(|_, row| row.user_id != user_id);
+    remote
+        .pending_chat_mappings
+        .retain(|_, row| row.user_id != user_id);
+    Ok(())
 }
 
 #[cfg(test)]

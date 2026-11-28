@@ -118,7 +118,12 @@ impl TrustedProjectApplication {
             .goal()
             .map_err(|e| e.to_string())?
             .ok_or("no current Goal")?;
-        if goal.armed || goal.state.id != id || goal.state.revision != revision {
+        if goal.state.id != id || goal.state.revision != revision {
+            return Err("pause the Goal and refresh before editing handoff".into());
+        }
+        // Stopping only clears the queue. The current model keeps running.
+        // Replacing the queue still waits until the Goal is paused.
+        if goal.armed && settings.is_some() {
             return Err("pause the Goal and refresh before editing handoff".into());
         }
         let handoff = settings

@@ -427,12 +427,18 @@ the verified Host connection separately from installed versions.
 the stop.
 Automatic desktop connections use `127.0.0.1:2691`; use the browser for an
 explicitly configured custom-port `clat serve` instance.
+**Settings → Remote → Feishu → Start receiving** opens the Feishu long
+connection inside that same background. Closing the window leaves it up.
+**Stop receiving** or **Stop shared background** ends it. The next time the
+background starts, a saved **Start receiving** choice connects again.
 
 - Closing the window hides it; restore through the tray/Dock or launch again.
 - **Quit desktop** quits the GUI. The app menu (including ⌘Q on macOS) and settings
   check the shared Host for work across projects and ask for confirmation
-  if any work is in progress or the status is unavailable. The Host and its tasks
-  continue if you confirm.
+  if any work is in progress or the status is unavailable. The confirmation names
+  each project and what is still going on — an open terminal, a running conversation,
+  a Git operation, a background job — and where to close it. Quitting the desktop
+  leaves that work running. The Host and its tasks continue if you confirm.
 - **Stop shared background** explicitly stops the shared Host and affects all clients.
 - Uninstalling the GUI does not delete shared data, the independent CLI or an
   already running backend.
@@ -689,8 +695,12 @@ the row opens **About & updates** at the current download or installation
 stage. Download and installation use the desktop updater's normal checks and
 confirmations. **Quit CLAT** in this menu
 stops the displayed Host and closes the desktop window if it is open. It asks for
-confirmation when work is running. Older Hosts use their reported readiness for
-this check. Closing or quitting from the desktop app itself lets the Host keep running.
+confirmation when work is running, naming the project and the work. Confirming
+interrupts running conversations, closes open terminal processes, and stops
+unfinished background jobs and scheduled runs. Saved conversations and project
+files are not deleted. Older Hosts use their reported readiness for this check
+and keep the shorter confirmation. Closing or quitting from the desktop app
+itself lets the Host keep running.
 The menu runs in a windowless helper with its own app identity, so closing or
 updating the desktop app can leave the Host and menu running. When a different
 desktop build opens, its helper takes over the menu without stopping the Host.

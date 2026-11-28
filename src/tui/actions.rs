@@ -278,7 +278,12 @@ impl App {
         let previous = self.config.clone();
         self.config.thinking_level = Some(next);
         let vendor = self.config.vendor();
-        apply_thinking_level(&mut self.config.extra_body, vendor, next);
+        apply_thinking_level(
+            &mut self.config.extra_body,
+            vendor,
+            &self.config.model,
+            next,
+        );
         let saved = match self.application.as_ref() {
             Some(application) => application
                 .save_model_state(&self.config, &self.credentials)
@@ -299,6 +304,25 @@ impl App {
                 );
             }
         }
+    }
+
+    /// 订阅档位刷新（2026-11-28）：本地态从 Application 视图取 Host
+    /// 同源档位词（attached 态由 native model_choices 到达时写入；
+    /// DSH / 未确权保持空表，选择面不过滤）。
+    fn refresh_plan_tiers(&mut self) {
+        if let Some(application) = self.application.as_ref()
+            && let Ok(view) = application.model_settings_view()
+        {
+            self.plan_tiers = vec![
+                ("Kimi Coding Plan", view.kimi_tier.clone()),
+                ("Hy Token Plan", view.hy_tier.clone()),
+            ];
+        }
+    }
+
+    /// 当前档位表快照（构造选择面时传入）。
+    pub(super) fn plan_tiers(&self) -> Vec<(&'static str, String)> {
+        self.plan_tiers.clone()
     }
 
     /// B9：控制面档案 → picker 摘要（含活动标记）。
@@ -476,10 +500,12 @@ impl App {
             // Keep the picker position so cancelling key entry restores it.
             self.picker_return = self.picker.as_ref().map(ModelPicker::snapshot);
             self.picker = None;
+            self.refresh_plan_tiers();
             let mut editor = ModelEditor::new_with_descriptors(
                 &config,
                 self.credentials.clone(),
                 self.provider_descriptors.clone(),
+                &self.plan_tiers(),
             );
             editor.apply_preset_and_focus_key(preset);
             self.editor = Some(editor);
@@ -587,7 +613,8 @@ impl App {
                 // 因一次取消整体消失；档案数据未变，摘要重查即新。
                 if let Some(snapshot) = self.picker_return.take() {
                     let profiles = self.model_profile_summaries();
-                    let mut picker = ModelPicker::new(&self.config, profiles);
+                    self.refresh_plan_tiers();
+                    let mut picker = ModelPicker::new(&self.config, profiles, &self.plan_tiers());
                     picker.restore_snapshot(snapshot);
                     self.picker = Some(picker);
                 } else {
@@ -844,7 +871,8 @@ impl App {
         self.editor = None;
         self.picker_return = None;
         let profiles = self.model_profile_summaries();
-        self.picker = Some(ModelPicker::new(&self.config, profiles));
+        self.refresh_plan_tiers();
+        self.picker = Some(ModelPicker::new(&self.config, profiles, &self.plan_tiers()));
         self.flash_message(UiMessage::new("tui.select_a_model"));
     }
 
