@@ -50,12 +50,16 @@ mod startup;
 mod state;
 mod uploads;
 mod workflow;
-use startup::{serve_feishu_credentials, serve_wechat_credentials};
+use startup::{serve_feishu_credentials, serve_telegram_credentials, serve_wechat_credentials};
 mod feishu;
 mod feishu_cli;
 mod feishu_link;
+mod im_link;
 #[cfg(test)]
 mod plg6_fixture;
+mod telegram;
+mod telegram_cli;
+mod telegram_link;
 #[cfg(test)]
 mod tests;
 mod token;
@@ -76,6 +80,7 @@ pub const DEFAULT_SERVE_PORT: u16 = crate::host_client::DEFAULT_HOST_PORT;
 
 mod terminal;
 pub use feishu_cli::run_feishu_command_with_locale;
+pub use telegram_cli::run_telegram_command_with_locale;
 pub use terminal::run_wechat_command_with_locale;
 /// English compatibility entry point; clients select their own presentation context.
 pub fn run_wechat_command<I>(project: Project, args: I) -> u8
@@ -87,12 +92,14 @@ where
 
 /// Optional IM frontend hosted by the serve process.
 ///
-/// Each backend stays off until the operator selects it. Feishu is a
-/// self-built-app long connection, not an iLink poll and not a public webhook.
+/// Each named backend stays off until the operator selects it. Feishu is a
+/// self-built-app long connection. Telegram is a bot long poll. Neither is an
+/// iLink poll or a public webhook.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImBackend {
     Wechat,
     Feishu,
+    Telegram,
 }
 
 #[derive(Clone, Debug)]
@@ -165,6 +172,7 @@ pub fn parse_serve_args_presented<I: IntoIterator<Item = String>>(
                 let backend = match value.as_str() {
                     "wechat" => ImBackend::Wechat,
                     "feishu" => ImBackend::Feishu,
+                    "telegram" => ImBackend::Telegram,
                     _ => {
                         return Err(crate::i18n::UiMessage::new("serve.invalid_im")
                             .arg("value", value)
@@ -429,6 +437,7 @@ where
         mount_serve_project(project, storage_root, args.trust, into_trusted)?;
     let wechat_credentials = serve_wechat_credentials(&trusted, &args)?;
     let feishu_credentials = serve_feishu_credentials(&trusted, &args)?;
+    let telegram_credentials = serve_telegram_credentials(&trusted, &args)?;
     // INV-S1a：只绑 IPv4 loopback。
     let listener = TcpListener::bind(("127.0.0.1", args.port))
         .map_err(|error| format!("could not bind 127.0.0.1:{}: {error}", args.port))?;
@@ -471,7 +480,20 @@ where
         wechat_credentials,
         remote_locale.clone(),
     )?;
-    start_feishu_bridge(&shared, &shutdown, feishu_credentials, remote_locale)?;
+    start_feishu_bridge(
+        &shared,
+        &shutdown,
+        feishu_credentials,
+        remote_locale.clone(),
+    )?;
+    if let Err(error) =
+        start_telegram_bridge(&shared, &shutdown, telegram_credentials, remote_locale)
+    {
+        shutdown.store(true, Ordering::Release);
+        feishu_link::stop(&shared);
+        telegram_link::stop(&shared);
+        return Err(error.into());
+    }
     host.publish_endpoint(&storage_root, addr.port())?;
 
     drop(app);
@@ -566,6 +588,23 @@ fn start_wechat_bridge(
         shared.register_worker(poller);
     }
 
+    Ok(())
+}
+
+fn start_telegram_bridge(
+    shared: &Arc<state::ServeShared>,
+    shutdown: &Arc<AtomicBool>,
+    credentials: Option<crate::im::telegram::Credentials>,
+    locale: remote::RemoteLocale,
+) -> Result<(), String> {
+    let Some(credentials) = credentials else {
+        return Ok(());
+    };
+    if let Err(error) = telegram_link::start(shared, credentials, locale) {
+        shutdown.store(true, Ordering::Release);
+        telegram_link::stop(shared);
+        return Err(error);
+    }
     Ok(())
 }
 

@@ -26,7 +26,7 @@ test('help topics satisfy structural, ordering and three-language invariants',()
   assert.equal(ids.size,topics.length,'topic ids must be unique');
 
   const validGroups=new Set(['conversation','tools','pages','settings']);
-  const settingsOrder=['appearance','terminal','projects','models','authorizations','utility','skills','permissions','computer-use','mcp','acp','web','wechat','feishu','git','desktop'];
+  const settingsOrder=['appearance','terminal','projects','models','authorizations','utility','skills','permissions','computer-use','mcp','acp','web','wechat','feishu','telegram','git','desktop'];
   const validTools=new Set(['file-browser','workspace-review','turn-review','task-review','workflow-details']);
   const validPages=new Set(['terminal-page','resources-dialog','jobs-dialog','history-dialog','market-dialog']);
 
@@ -56,6 +56,15 @@ test('help topics satisfy structural, ordering and three-language invariants',()
     assert.ok(ids.has(context.settingsHelpTopic(cat)),`unmapped settings category ${cat}`);
   }
   assert.equal(context.settingsHelpTopic('authorizations'),'authorizations');
+  assert.equal(context.settingsHelpTopic('remote','telegram'),'telegram');
+  const telegram=topics.find(t=>t.id==='telegram');
+  assert.ok(telegram.related.includes('network'),'telegram guide should link network settings');
+  // 微信、飞书、Telegram 三个远程通道图标须统一走 FILL_ICONS 实心官方轮廓管线
+  const fillMatch=appSrc.match(/const FILL_ICONS = new Set\(\[([^\]]+)\]\)/);
+  assert.ok(fillMatch,'FILL_ICONS definition missing');
+  for(const brand of ['wechat','feishu','telegram']){
+    assert.match(fillMatch[1],new RegExp(`'${brand}'`),`${brand} must be in FILL_ICONS`);
+  }
   for(const oldId of ['quota_qianwen','quota_bailian','quota_tencent']){
     assert.equal(context.resolveHelpTopic(oldId),'authorizations');
   }

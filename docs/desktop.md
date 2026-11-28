@@ -428,9 +428,12 @@ the stop.
 Automatic desktop connections use `127.0.0.1:2691`; use the browser for an
 explicitly configured custom-port `clat serve` instance.
 **Settings → Remote → Feishu → Start receiving** opens the Feishu long
-connection inside that same background. Closing the window leaves it up.
-**Stop receiving** or **Stop shared background** ends it. The next time the
-background starts, a saved **Start receiving** choice connects again.
+connection inside that same background. **Telegram → Start receiving** opens
+that bot's long poll in the same background, and both can be on together.
+Closing the window leaves them up. **Stop receiving** ends only the channel
+you are looking at. **Stop shared background** ends all of them. The next
+time the background starts, each saved **Start receiving** choice connects
+again.
 
 - Closing the window hides it; restore through the tray/Dock or launch again.
 - **Quit desktop** quits the GUI. The app menu (including ⌘Q on macOS) and settings

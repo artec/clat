@@ -15,12 +15,16 @@ vm.runInContext(source,context,{filename:'help-feishu-test.js'});
 
 test('Feishu help is a separate guide and Remote follows the selected channel',()=>{
   const feishu=context.helpTopics.find(topic=>topic.id==='feishu');
+  const telegram=context.helpTopics.find(topic=>topic.id==='telegram');
+  assert.equal(telegram.group,'settings');
+  assert.equal(telegram.target,'settings:telegram');
   const wechat=context.helpTopics.find(topic=>topic.id==='wechat');
   assert.equal(feishu.group,'settings');
   assert.equal(feishu.target,'settings:feishu');
   assert.ok(feishu.related.includes('wechat'));
   assert.ok(wechat.related.includes('feishu'));
   assert.equal(context.helpTopicFor('remote','feishu'),'feishu');
+  assert.equal(context.helpTopicFor('remote','telegram'),'telegram');
   assert.equal(context.helpTopicFor('remote','wechat'),'wechat');
   assert.equal(context.helpTopicFor('remote'),'wechat');
   assert.equal(context.helpTopicFor('models'),'models');
@@ -35,5 +39,13 @@ test('Feishu help is a separate guide and Remote follows the selected channel',(
     assert.match(catalog['help.feishu_step_1'],/im:message:send_as_bot/);
     assert.match(catalog['help.feishu_step_3'],/im\.message\.receive_v1/);
     assert.match(catalog['help.feishu_step_3'],/使用长连接接收事件/);
+    for(const suffix of ['title','summary','step_1','step_2','step_3','question','answer']){
+      const text=catalog['help.telegram_'+suffix];
+      assert.equal(typeof text,'string',language+' help.telegram_'+suffix);
+      assert.equal(text.includes('<'),false);
+    }
+    assert.match(catalog['help.telegram_step_1'],/BotFather/);
+    assert.match(catalog['help.telegram_step_1'],/\/newbot/);
+    assert.match(catalog['help.telegram_step_3'],/\/pair/);
   }
 });

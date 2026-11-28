@@ -13,7 +13,7 @@ CLAT 是一个本地优先的编码智能体底座，以 Rust 单二进制交付
 项目以真实仓库 dogfood 为起点，把反复出现的需求沉淀为可复用、模型
 无关的能力。
 
-![CLAT 桌面工作台](screen.zh.png)
+![CLAT 桌面工作台](docs/images/screen.zh.png)
 
 ## 快速开始
 
@@ -76,6 +76,8 @@ Windows 当前通过 GitHub 面向开发者和进阶用户分发；安装包尚�
 可选的飞书前端是另一条中国站长连接，面向一个企业自建应用。在设置的远程页保存应用后，点「开始接收」。
 `clat serve --im feishu` 会打开同一个开关。
 详见[飞书单聊文本](docs/usage.md#feishu-private-chat-text)。
+可选的 Telegram 前端是另一条机器人长轮询。在设置的远程页粘贴 BotFather 令牌，再点「开始接收」。飞书和 Telegram 可以同时开着。`clat serve --im telegram` 只打开这一个开关。
+详见[Telegram 单聊文本](docs/usage.md#telegram-private-chat-text)。
 
 ## 已包含的能力
 

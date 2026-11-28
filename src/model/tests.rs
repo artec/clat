@@ -602,21 +602,26 @@ fn apply_thinking_level_always_enables_and_keeps_foreign_keys() {
     );
 }
 
-/// Qwen Token Plan / 百炼代管的第三方 DeepSeek 系列（2026-11-28 新增
-/// deepseek-v4.1-flash-1017 预设）：官方 `reasoning_effort` 档位是
-/// DeepSeek 拼写 low/high/max、默认 high（help.aliyun.com/zh/
-/// model-studio/deepseek-api）——不是 Qwen 自家的 low/medium/xhigh。
-/// 判别：删 `wire_effort_for` 的 deepseek 分支（回落纯厂商映射）此
-/// 测试红——High→medium、Max→xhigh 都在百炼 DeepSeek 档位表之外。
+/// Qwen Token Plan / 百炼代管的第三方家族（2026-11-28 泛化：DeepSeek
+/// 与 GLM 系列）官方 `reasoning_effort` 档位都是默认拼写 low/high/
+/// max——不是 Qwen 自家的 low/medium/xhigh（deepseek-api 与
+/// glm-5-3 官方页核验）。判别：删 `wire_effort_for` 的第三方分支
+/// （回落纯厂商映射）此测试红——High→medium、Max→xhigh 都在这些
+/// 家族的档位表之外。
 #[test]
-fn qwen_endpoint_deepseek_series_keeps_the_deepseek_effort_spelling() {
+fn qwen_endpoint_third_party_models_keep_the_default_effort_spelling() {
     for (level, wire) in [
         (ThinkingLevel::Low, "low"),
         (ThinkingLevel::High, "high"),
         (ThinkingLevel::Max, "max"),
     ] {
         // 快照 id（预设的 model）与稳定 id 同样命中。
-        for model in ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash"] {
+        for model in [
+            "deepseek-v4.1-flash-1017",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro-0813",
+            "glm-5.3",
+        ] {
             let mut body = json!({});
             apply_thinking_level(&mut body, ModelVendor::Qwen, model, level);
             assert_eq!(body["reasoning_effort"], wire, "{model} {level:?}");

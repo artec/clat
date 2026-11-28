@@ -348,6 +348,99 @@ impl ControlStorage {
         )?
     }
 
+    pub(crate) fn telegram_binding_snapshot(
+        &self,
+    ) -> Result<
+        (
+            crate::im::telegram::BindingStatus,
+            Option<crate::im::telegram::Credentials>,
+        ),
+        ControlError,
+    > {
+        let state = self.lock();
+        Ok((
+            im::telegram_binding_status(&state.im),
+            im::telegram_credentials(&state.im)?,
+        ))
+    }
+
+    pub(crate) fn save_telegram_binding(
+        &self,
+        credentials: &crate::im::telegram::Credentials,
+    ) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::replace_telegram_binding(&mut state.im, credentials),
+        )
+    }
+
+    pub(crate) fn clear_telegram_binding(&self) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::clear_telegram_binding(&mut state.im),
+        )
+    }
+
+    pub(crate) fn telegram_receiving(&self) -> Result<bool, ControlError> {
+        Ok(im::telegram_receiving(&self.lock().im))
+    }
+
+    pub(crate) fn set_telegram_receiving(&self, receiving: bool) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::set_telegram_receiving(&mut state.im, receiving),
+        )?
+    }
+
+    pub(crate) fn clear_telegram_binding_if_current(
+        &self,
+        expected: &crate::im::telegram::Credentials,
+        before_clear: impl FnOnce(),
+    ) -> Result<bool, ControlError> {
+        let mut state = self.lock();
+        if im::telegram_credentials(&state.im)?.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        before_clear();
+        let backup = state.clone();
+        im::clear_telegram_binding(&mut state.im);
+        if let Err(error) = self.save_im(&state) {
+            *state = backup;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn telegram_offset(&self, token: &str) -> Result<Option<i64>, ControlError> {
+        Ok(im::telegram_offset(&self.lock().im, token))
+    }
+
+    pub(crate) fn set_telegram_offset(&self, token: &str, offset: i64) -> Result<(), ControlError> {
+        if im::telegram_offset(&self.lock().im, token).is_none_or(|current| offset <= current) {
+            return Ok(());
+        }
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::set_telegram_offset(&mut state.im, token, offset),
+        )?
+    }
+
+    pub(crate) fn telegram_users(&self) -> serde_json::Value {
+        im::telegram_users(&self.lock().im)
+    }
+
+    pub(crate) fn revoke_telegram_user(&self, id: &str) -> Result<(), ControlError> {
+        self.commit(
+            self.lock(),
+            |state| self.save_im(state),
+            |state| im::revoke_telegram_user(&mut state.im, id),
+        )?
+    }
+
     pub(crate) fn clear_wechat_binding_if_current(
         &self,
         expected: &crate::im::ilink::Credentials,
@@ -1357,6 +1450,55 @@ mod tests {
             saved.get("feishu").is_none(),
             "a cleared Feishu section is omitted"
         );
+        assert!(saved["wechat"].get("binding").is_some());
+        crate::test_support::cleanup_tree(&root);
+    }
+
+    #[test]
+    fn telegram_offset_survives_reopen_and_a_replacement_resets_it() {
+        let root = temp_root("telegram-offset");
+        sentinel::initialize(&root).unwrap();
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        let wechat = crate::im::ilink::Credentials::new(
+            "token".into(),
+            "bot".into(),
+            None,
+            "https://ilinkai.weixin.qq.com".into(),
+        )
+        .unwrap();
+        let token =
+            crate::im::telegram::Credentials::new("123456:telegram-secret-token".into()).unwrap();
+        let other = crate::im::telegram::Credentials::new("654321:other-token".into()).unwrap();
+        storage.save_wechat_binding(&wechat).unwrap();
+        storage.save_telegram_binding(&token).unwrap();
+        storage.set_telegram_receiving(true).unwrap();
+        storage.set_telegram_offset(token.token(), 11).unwrap();
+        drop(storage);
+        let storage = ControlStorage::open_ready(&root).unwrap();
+        assert_eq!(storage.telegram_offset(token.token()).unwrap(), Some(11));
+        assert!(storage.telegram_receiving().unwrap());
+        storage.set_telegram_offset(other.token(), 40).unwrap();
+        storage.set_telegram_offset(token.token(), 11).unwrap();
+        assert_eq!(storage.telegram_offset(token.token()).unwrap(), Some(11));
+        assert!(
+            !storage
+                .clear_telegram_binding_if_current(&other, || {})
+                .unwrap()
+        );
+        let replacement =
+            crate::im::telegram::Credentials::new("654321:replacement-token".into()).unwrap();
+        storage.save_telegram_binding(&replacement).unwrap();
+        assert_eq!(
+            storage.telegram_offset(replacement.token()).unwrap(),
+            Some(0)
+        );
+        assert!(storage.telegram_receiving().unwrap());
+        assert!(storage.wechat_binding_status().bound);
+        storage.clear_telegram_binding().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("im.json")).unwrap()).unwrap();
+        assert!(saved.get("telegram").is_none());
+        assert!(!saved.to_string().contains("telegram-secret-token"));
         assert!(saved["wechat"].get("binding").is_some());
         crate::test_support::cleanup_tree(&root);
     }

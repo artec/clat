@@ -108,6 +108,7 @@ where
         Some("serve") => run_serve_command(args, locale, explicit_language),
         Some("wechat") => run_wechat_command(args, locale),
         Some("feishu") => run_feishu_command(args, locale),
+        Some("telegram") => run_telegram_command(args, locale),
         Some("plugin") => run_plugin_command(args, locale),
         Some("upgrade") => run_upgrade(args.next().as_deref() == Some("--check"), locale),
         Some("-V" | "--version") => {
@@ -178,6 +179,26 @@ fn run_attach_command(args: impl Iterator<Item = String>, locale: LocaleContext)
 
 fn print_help(locale: LocaleContext) {
     print!("{}", locale.text("cli.help"));
+}
+
+fn run_telegram_command<I>(args: I, locale: LocaleContext) -> ExitCode
+where
+    I: Iterator<Item = String>,
+{
+    let project = match Project::current() {
+        Ok(project) => project,
+        Err(error) => {
+            eprintln!(
+                "{}",
+                locale
+                    .render(&UiMessage::new("cli.project_error").arg("detail", error.to_string()))
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    ExitCode::from(clat::serve::run_telegram_command_with_locale(
+        project, args, locale,
+    ))
 }
 
 fn run_feishu_command<I>(args: I, locale: LocaleContext) -> ExitCode

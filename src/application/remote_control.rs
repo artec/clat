@@ -27,6 +27,11 @@ pub(crate) struct FeishuBindingSnapshot {
     pub(crate) credentials: Option<crate::im::feishu::Credentials>,
 }
 
+pub(crate) struct TelegramBindingSnapshot {
+    pub(crate) status: crate::im::telegram::BindingStatus,
+    pub(crate) credentials: Option<crate::im::telegram::Credentials>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WechatPollCheckpoint {
     credentials: Credentials,
@@ -378,6 +383,95 @@ impl TrustedProjectApplication {
     ) -> Result<crate::remote::PairingAttempt, ApplicationError> {
         self.control
             .remote(RemoteChannel::Feishu)
+            .attempt_pairing(delivery_id, user_id, code, now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn telegram_receiving(&self) -> Result<bool, ApplicationError> {
+        self.control
+            .telegram_receiving()
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn set_telegram_receiving(&self, receiving: bool) -> Result<(), ApplicationError> {
+        self.control
+            .set_telegram_receiving(receiving)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn telegram_binding(&self) -> Result<TelegramBindingSnapshot, ApplicationError> {
+        let (status, credentials) = self
+            .control
+            .telegram_binding_snapshot()
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        Ok(TelegramBindingSnapshot {
+            status,
+            credentials,
+        })
+    }
+
+    pub(crate) fn replace_telegram_binding(
+        &self,
+        credentials: &crate::im::telegram::Credentials,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .save_telegram_binding(credentials)
+            .map_err(|error| ApplicationError::new(error.to_string()))?;
+        self.cancel_remote_channel_run(RemoteChannel::Telegram);
+        Ok(())
+    }
+
+    pub(crate) fn revoke_telegram_binding(&self) -> Result<(), ApplicationError> {
+        self.cancel_remote_channel_run(RemoteChannel::Telegram);
+        self.control
+            .clear_telegram_binding()
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn revoke_telegram_binding_if_current(
+        &self,
+        expected: &crate::im::telegram::Credentials,
+    ) -> Result<bool, ApplicationError> {
+        self.control
+            .clear_telegram_binding_if_current(expected, || {
+                self.cancel_remote_channel_run(RemoteChannel::Telegram)
+            })
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn telegram_offset(&self, token: &str) -> Result<Option<i64>, ApplicationError> {
+        self.control
+            .telegram_offset(token)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn remember_telegram_offset(
+        &self,
+        token: &str,
+        offset: i64,
+    ) -> Result<(), ApplicationError> {
+        self.control
+            .set_telegram_offset(token, offset)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn issue_telegram_pairing_code(
+        &self,
+    ) -> Result<crate::remote::PairingChallenge, ApplicationError> {
+        self.control
+            .remote(RemoteChannel::Telegram)
+            .create_pairing(now_unix_ms())
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
+
+    pub(crate) fn submit_telegram_pairing_code(
+        &self,
+        delivery_id: &str,
+        user_id: &str,
+        code: &str,
+    ) -> Result<crate::remote::PairingAttempt, ApplicationError> {
+        self.control
+            .remote(RemoteChannel::Telegram)
             .attempt_pairing(delivery_id, user_id, code, now_unix_ms())
             .map_err(|error| ApplicationError::new(error.to_string()))
     }
@@ -1043,6 +1137,16 @@ impl TrustedProjectApplication {
             .revoke_feishu_user(id)
             .map_err(|error| ApplicationError::new(error.to_string()))
     }
+
+    pub(crate) fn telegram_authorized_users(&self) -> serde_json::Value {
+        self.control.telegram_users()
+    }
+
+    pub(crate) fn revoke_telegram_user_access(&self, id: &str) -> Result<(), ApplicationError> {
+        self.control
+            .revoke_telegram_user(id)
+            .map_err(|error| ApplicationError::new(error.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -1529,6 +1633,69 @@ mod tests {
 
         application.close().unwrap();
         crate::test_support::cleanup_tree(&storage_root);
+        crate::test_support::cleanup_tree(&project_root);
+    }
+
+    #[test]
+    fn telegram_message_does_not_steer_a_feishu_run() {
+        use crate::remote::RemoteRoute;
+        use crate::test_support::{TestBehavior, TestProviderPlugin, configure_test_model, roots};
+        use std::sync::Arc;
+
+        let (storage, project_root) = roots("telegram-does-not-steer-feishu");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let mut app =
+            crate::BootstrapApplication::open(crate::Project::new(&project_root), storage.clone())
+                .unwrap()
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin {
+                    behavior: TestBehavior::Success,
+                }))
+                .unwrap();
+        configure_test_model(&app);
+        app.replace_feishu_binding(
+            &crate::im::feishu::Credentials::new("cli_a1b2c3d4".into(), "feishu-secret".into())
+                .unwrap(),
+        )
+        .unwrap();
+        app.replace_telegram_binding(
+            &crate::im::telegram::Credentials::new("123456:telegram-secret-token".into()).unwrap(),
+        )
+        .unwrap();
+        let code = app.issue_feishu_pairing_code().unwrap().code;
+        app.submit_feishu_pairing_code("feishu-delivery", "42", &code)
+            .unwrap();
+        let code = app.issue_telegram_pairing_code().unwrap().code;
+        app.submit_telegram_pairing_code("telegram-delivery", "42", &code)
+            .unwrap();
+        app.active_remote_route = Some(RemoteRoute {
+            channel: RemoteChannel::Feishu,
+            user: "42".into(),
+            chat: "42".into(),
+        });
+        app.active_run = Some(super::super::run_execution::RunHandle::busy_for_test());
+        assert!(app.remote_run_owned_by(RemoteChannel::Feishu, "42", "42"));
+        assert!(!app.remote_run_owned_by(RemoteChannel::Telegram, "42", "42"));
+        let steered = app.steer_remote_prompt(
+            &RemoteChatTicket {
+                channel: RemoteChannel::Telegram,
+                user_id: "42".into(),
+                chat_id: "42".into(),
+                delivery_id: "telegram-steer".into(),
+                fallback_binding: None,
+                allow_new: false,
+                initial_binding: None,
+                initial_pending_digest: None,
+            },
+            crate::message::PendingMessage::text("steer from telegram"),
+        );
+        assert!(matches!(steered.outcome, RemoteSteerOutcome::Busy));
+        assert_eq!(
+            app.active_remote_route.as_ref().unwrap().channel,
+            RemoteChannel::Feishu
+        );
+        app.close().unwrap();
+        crate::test_support::cleanup_tree(&storage);
         crate::test_support::cleanup_tree(&project_root);
     }
 }

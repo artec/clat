@@ -10,6 +10,7 @@ mod host;
 pub(crate) mod ilink;
 mod qr;
 mod state;
+pub(crate) mod telegram;
 
 pub(crate) use binding::{BindingSession, BindingStep};
 pub(crate) use host::{AuthorizedMessageHandler, delivery_id, spawn_wechat_host};

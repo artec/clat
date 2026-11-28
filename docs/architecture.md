@@ -436,20 +436,25 @@ admission, and active-worker policy; it cannot ask the manager for additional
 services after mount.
 
 `application/remote_control.rs` owns remote chat/session admission and recovery,
-as well as the WeChat binding and poll checkpoints and the Feishu app binding.
-Channel-scoped storage operations preserve the private atomic `im.json` unit.
-The WeChat section keeps its v1 field layout. Feishu credentials and grants
-live in a sibling `feishu` section, omitted when that section is vacant.
+as well as the WeChat binding and poll checkpoints, the Feishu app binding,
+and the Telegram bot binding. Channel-scoped storage operations preserve the
+private atomic `im.json` unit. The WeChat section keeps its v1 field layout.
+Feishu credentials and grants live in a sibling `feishu` section. Telegram
+token, receiving switch, update offset, and grants live in a sibling
+`telegram` section. A vacant section is omitted.
 `serve/remote*` coordinates normalized deliveries, commands, approvals,
 run claims, staged attachments and steering; `remote/` owns shared identities,
 temporary conversation state, event projection and the bounded outbox.
 `im/ilink` and `serve/wechat` handle the official iLink wire, media conversion
 and reply routing. `im/feishu` and `serve/feishu` handle the China-site long
 connection: endpoint discovery, protobuf frames, immediate acknowledgement, and
-text replies. An active run records its remote channel, user and chat so that
-another source cannot steer, stop, or revoke it merely by selecting its session.
-WeChat and Feishu are the production channels. Feishu is private-chat text on
-`https://open.feishu.cn`.
+text replies. `im/telegram` and `serve/telegram` handle Bot API long polling
+and text replies on `https://api.telegram.org`. An active run records its
+remote channel, user and chat so that another source cannot steer, stop, or
+revoke it merely by selecting its session. WeChat, Feishu, and Telegram are
+the production channels. Feishu is private-chat text on
+`https://open.feishu.cn`. Telegram is private-chat text. One project still
+has one active run.
 
 ## Agent run lifecycle
 

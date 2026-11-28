@@ -178,6 +178,7 @@ test('remote settings manage both channels in one panel without crossing user gr
    const original = rpc;
    globalThis.remoteWrites = [];
    let feishuBound = false, feishuReceiving = false;
+   let telegramBound = false, telegramReceiving = false;
    const users = {
      wechat: [{ user_id: 'shared-user-id', paired: true, manual: true, sessions: ['wechat-session'] }],
      feishu: [],
@@ -185,13 +186,14 @@ test('remote settings manage both channels in one panel without crossing user gr
    rpc = async (method, params) => {
      const [channel, ...parts] = method.split('.');
      const operation = parts.join('.');
-     if (channel !== 'wechat' && channel !== 'feishu') return original(method, params);
+     if (channel !== 'wechat' && channel !== 'feishu' && channel !== 'telegram') return original(method, params);
+     if (!users[channel]) users[channel] = [];
      if (operation === 'binding.status') return {
-       bound: channel === 'wechat' || feishuBound,
+       bound: channel === 'wechat' || (channel === 'feishu' && feishuBound) || (channel === 'telegram' && telegramBound),
        paired_users: users[channel].length,
        mapped_chats: users[channel].reduce((count, user) => count + user.sessions.length, 0),
-       receiving: channel === 'feishu' && feishuReceiving,
-       online: channel === 'feishu' && feishuReceiving,
+       receiving: (channel === 'feishu' && feishuReceiving) || (channel === 'telegram' && telegramReceiving),
+       online: (channel === 'feishu' && feishuReceiving) || (channel === 'telegram' && telegramReceiving),
        ...(channel === 'feishu' && feishuBound ? { app_id: 'test-feishu-app' } : {}),
      };
      if (operation === 'users.list') return { users: users[channel] };
@@ -210,6 +212,11 @@ test('remote settings manage both channels in one panel without crossing user gr
      }
      if (method === 'feishu.user.revoke') { users.feishu = []; return {}; }
      if (method === 'feishu.binding.unbind') { feishuBound = false; feishuReceiving = false; return { bound: false }; }
+     if (method === 'telegram.binding.save') { telegramBound = true; return { bound: true }; }
+     if (method === 'telegram.connection.set') {
+       telegramReceiving = Boolean(params.receiving);
+       return { receiving: telegramReceiving, online: telegramReceiving };
+     }
      throw new Error('Unexpected remote operation ' + method);
    };
  });
@@ -232,7 +239,7 @@ test('remote settings manage both channels in one panel without crossing user gr
    if (manual) await expect(users).toContainText(grant);
    else await expect(users).not.toContainText(grant);
  };
- await expect(channels.getByRole('tab')).toHaveCount(2);
+ await expect(channels.getByRole('tab')).toHaveCount(3);
  await expect(wechat).toHaveAttribute('aria-selected', 'true');
  await expectAuthorizedUser('wechat-session', true);
  await pair.click();
@@ -281,7 +288,25 @@ test('remote settings manage both channels in one panel without crossing user gr
  await expect(pair).toBeHidden();
  await expect(receive).toBeHidden();
  await expect(code).toBeEmpty();
+ const telegram = channels.locator('[data-channel=telegram]');
+ const token = '123456:telegram-secret-token';
+ await telegram.click();
+ await expect(telegram).toHaveAttribute('aria-selected', 'true');
+ await expect(receive).toBeHidden();
+ await bind.click();
+ await expect(panel.locator('#telegram-token')).toBeVisible();
+ await panel.locator('#telegram-token').fill(token);
+ await panel.locator('#telegram-save').click();
+ await expect(panel.locator('#telegram-binding-form')).toBeHidden();
+ await expect(panel).not.toContainText('telegram-secret-token');
+ await expect(receive).toBeVisible();
+ await receive.click();
+ await expect(panel.locator('#remote-binding-detail')).toHaveText(await page.evaluate(() => CLATI18n.t('web.telegram_receive_on')));
+ await expect(panel).not.toContainText('telegram-secret-token');
+ await receive.click();
+ await expect(panel.locator('#remote-feishu-connection')).toHaveText(await page.evaluate(() => CLATI18n.t('web.telegram_receive_off')));
  await wechat.click();
+ await expect(receive).toBeHidden();
  await expectAuthorizedUser('wechat-session', true);
  expect(await page.evaluate(() => globalThis.remoteWrites)).toEqual([
    ['feishu.binding.save', credentials],
@@ -290,6 +315,9 @@ test('remote settings manage both channels in one panel without crossing user gr
    ['feishu.pairing.create', {}],
    ['feishu.user.revoke', { userId: 'shared-user-id' }],
    ['feishu.binding.unbind', { confirm: 'unbind-feishu' }],
+   ['telegram.binding.save', { token, replace: false }],
+   ['telegram.connection.set', { receiving: true }],
+   ['telegram.connection.set', { receiving: false }],
  ]);
 });
 

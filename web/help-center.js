@@ -13,7 +13,7 @@ function resolveHelpTopic(id) {
 }
 
 function settingsHelpTopic(category, remoteChannel) {
-  if (category === 'remote') return remoteChannel === 'feishu' ? 'feishu' : 'wechat';
+  if (category === 'remote') return remoteChannel === 'feishu' || remoteChannel === 'telegram' ? remoteChannel : 'wechat';
   return ({terminal:'terminal_font',web:'network',desktop:'about',git:'git_settings'})[category] || category;
 }
 function currentHelpTopic(view) {
@@ -25,7 +25,7 @@ function captureHelpSource() {
   const shell = workbenchShell;
   if (!shell || shell.page === 'help-dialog') return null;
   const page = shell.page, category = currentSettingsCategory, tool = shell.tools.current()?.id;
-  // 远程设置页同时保留当前选中的通道（微信 / 飞书），返回时精确还原。
+  // 远程设置页同时保留当前选中的通道，返回时精确还原。
   const remoteChannel = page === 'settings-dialog' && category === 'remote'
     ? document.querySelector('#remote-channels [aria-selected=true]')?.dataset.channel
     : null;
@@ -125,7 +125,7 @@ function createHelpCenter() {
     }
     return matches;
   }
-  const back=viewAction('help-source','previous',()=>helpText('back'),()=>source?.restore());
+  const back=viewAction('help-source','return',()=>helpText('back'),()=>source?.restore());
   back.hidden=()=>!source?.valid();view.actions([back]);
   view.query.oninput=renderList;
   view.query.onkeydown=event=>{if(event.key==='Enter'&&!event.isComposing){const first=renderList()[0];if(first){event.preventDefault();select(first.id);view.body.querySelector('button')?.focus();}}};

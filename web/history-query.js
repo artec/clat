@@ -31,8 +31,8 @@ function installHistoryQuery() {
   view.filters.before(scope.element);
   view.actions([
     viewAction('search','search',()=>msg('search'),()=>search(false),true,()=>!searching),
-    viewAction('archive-import','upload',()=>msg('archive_import'),()=>upload.click(),true,()=>!transferring),
-    viewAction('archive-export','download',()=>msg('archive_export'),()=>download(),true,()=>Boolean(selected)&&!transferring),
+    viewAction('archive-import','import',()=>msg('archive_import'),()=>upload.click(),true,()=>!transferring),
+    viewAction('archive-export','export',()=>msg('archive_export'),()=>download(),true,()=>Boolean(selected)&&!transferring),
   ]);
   view.context({crumbs:()=>[
     {label:()=>shellText('history'),run:clearReader},

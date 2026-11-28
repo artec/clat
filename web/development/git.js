@@ -16,7 +16,14 @@ function installDevelopmentGit(){
   }
   const report=error=>{seat().notice=error;result(seat().result);},tabs=createGitTabs(ui,{seat,call,report,openFile});
   const actions=createGitActions({seat,call,refresh,render:renderSubmission,report,result});
-  registerView(node,{sidebar:ui.sidebar,actions:()=>[viewAction('refresh','refresh',()=>devText('refresh'),()=>refresh()),viewAction('branches','branch',()=>devText('branches'),()=>branches(),false),...['fetch','pull','push'].map(key=>viewAction(key,key==='push'?'next':'refresh',()=>devText(key),()=>actions.start(key),false,()=>!seat().operation)),viewAction('backups','restore',()=>devText('restore'),()=>backups(),false)]});
+  // 主操作按统一顺序：分支（切换）→ 刷新 → Git 设置；同步与恢复放进更多菜单并使用语义图标。
+  registerView(node,{sidebar:ui.sidebar,actions:()=>[
+    viewAction('branches','branch',()=>devText('branches'),()=>branches(),true),
+    viewAction('refresh','refresh',()=>devText('refresh'),()=>refresh(),true),
+    viewAction('settings','settings',()=>devText('git_settings'),()=>openSettings('git'),true),
+    ...[['fetch','cloud-download'],['pull','download'],['push','upload']].map(([key,icon])=>viewAction(key,icon,()=>devText(key),()=>actions.start(key),false,()=>!seat().operation)),
+    viewAction('backups','restore',()=>devText('restore'),()=>backups(),false),
+  ]});
   node.addEventListener('clat:git-selection',()=>{if(seat().snapshot)renderChanges();});
   ui.generate.onclick=()=>void actions.start('generate');ui.commit.onclick=()=>void actions.start(gitPrimaryAction(seat().snapshot).action);ui.cancel.onclick=()=>actions.cancel();
   ui.message.oninput=()=>{const owner=seat();owner.draft=ui.message.value;owner.edit++;if(owner.pending){owner.pending.edited=true;localStorage.setItem(owner.pendingKey,JSON.stringify(owner.pending));}autosize();if(owner.pending?.automatic)actions.cancel();saveDraft(owner);};

@@ -39,8 +39,9 @@ const HELP_TOPICS = [
   {"id":"mcp","group":"settings","icon":"mcp","target":"settings:mcp","related":["skills","extensions","permissions"]},
   {"id":"acp","group":"settings","icon":"task-handoff","target":"settings:acp","related":["permissions","tasks"]},
   {"id":"network","group":"settings","icon":"search","target":"settings:web","related":["models","extensions","wechat"]},
-  {"id":"wechat","group":"settings","icon":"wechat","target":"settings:wechat","related":["feishu","permissions","network"]},
-  {"id":"feishu","group":"settings","icon":"feishu","target":"settings:feishu","related":["wechat","permissions","network"]},
+  {"id":"wechat","group":"settings","icon":"wechat","target":"settings:wechat","related":["feishu","telegram","permissions","network"]},
+  {"id":"feishu","group":"settings","icon":"feishu","target":"settings:feishu","related":["wechat","telegram","permissions","network"]},
+  {"id":"telegram","group":"settings","icon":"telegram","target":"settings:telegram","related":["wechat","feishu","permissions","network"]},
   {"id":"git_settings","group":"settings","icon":"branch","target":"settings:git","related":["git","utility","models"]},
   {"id":"about","group":"settings","icon":"info","target":"settings:desktop","related":["projects","appearance","models"]},
 ];

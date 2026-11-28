@@ -19,7 +19,15 @@ function createTerminalPage(actions){
   const back=terminalIcon('back_list','previous',()=>delete node.dataset.detail);back.classList.add('navigation-back');
   bar.append(back,name,status,terminalIcon('take_control','terminal-take-input',()=>actions.claim()),terminalIcon('copy','copy',()=>actions.copy()),terminalIcon('clear','terminal-clear-screen',()=>actions.clear()));
   empty.append(svgIcon('terminal'),el('p','',()=>devText('terminal_empty')),devButton('new_terminal',()=>actions.create()));mount.append(empty);detail.append(bar,diagnostic,mount);node.append(sidebar,detail);
-  registerView(node,{sidebar,actions:()=>[viewAction('create','plus',()=>devText('new_terminal'),()=>actions.create(),true,actions.canCreate),viewAction('find','search',()=>devText('find'),()=>actions.find(),true,actions.hasSelection),viewAction('settings','settings',()=>devText('terminal_settings'),()=>openSettings('terminal')),viewAction('shell','terminal',()=>devText('shell_choice'),event=>actions.shellMenu(event.currentTarget),false),viewAction('cleanup','trash',()=>devText('close_ended'),()=>actions.cleanup(),false)]});
+  // 主操作按统一顺序：新建终端 → 刷新 → 终端设置；查找、Shell 选择与清理已结束终端归入更多菜单。
+  registerView(node,{sidebar,actions:()=>[
+    viewAction('create','plus',()=>devText('new_terminal'),()=>actions.create(),true,actions.canCreate),
+    viewAction('refresh','refresh',()=>devText('refresh'),()=>actions.refresh(),true),
+    viewAction('settings','settings',()=>devText('terminal_settings'),()=>openSettings('terminal'),true),
+    viewAction('find','search',()=>devText('find'),()=>actions.find(),false,actions.hasSelection),
+    viewAction('shell','terminal',()=>devText('shell_choice'),event=>actions.shellMenu(event.currentTarget),false),
+    viewAction('cleanup','trash',()=>devText('close_ended'),()=>actions.cleanup(),false),
+  ]});
   query.oninput=()=>actions.render();return {node,list,query,detail,notice,mount,name,empty};
 }
 function createTerminalStatus(status,diagnostic,body){

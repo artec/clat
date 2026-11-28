@@ -447,32 +447,11 @@ fn cycling_preset_applies_official_deepseek_parameters() {
     editor.handle_key(key(KeyCode::Right));
     assert_eq!(editor.preset.map(|preset| preset.id), Some("glm-5.3-flash"));
     editor.handle_key(key(KeyCode::Right));
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen4-max"));
-    editor.handle_key(key(KeyCode::Right));
-    // VP-2B：Qwen Token Plan 两模型（max + flash）连续排布。
-    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-flash"));
-    editor.handle_key(key(KeyCode::Right));
-    // 2026-11-28：Token Plan 托管 DeepSeek 快照增量预设（同 vendor 同
-    // key 槽殿后）——端点同 Token Plan、effort pin high（DeepSeek
-    // 拼写档位，见 thinking.rs 按模型分支）、开图（官方 Text+Image）。
-    assert_eq!(
-        editor.preset.map(|preset| preset.id),
-        Some("deepseek-v4.1-flash-1017")
-    );
-    let (config, _) = editor.build().unwrap();
-    assert_eq!(
-        config.endpoint,
-        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
-    );
-    assert_eq!(config.extra_body["reasoning_effort"], "high");
-    assert!(config.capabilities.accepts_image_input());
-    editor.handle_key(key(KeyCode::Right));
-    // 2026-11-03：Kimi 旗舰由 kimi-k3 原地升级为 K3.1 Pro（wire id
-    // `k3.1-pro`），预设 id 跟随模型 id（SF-1 同款）。
+    // 2026-11-28 厂商顺序调整：Kimi 块紧随 GLM（K3.1 Pro 旗舰 → Pro
+    // 门槛 Highspeed → 全档 K3 → utility；2026-11-03 旗舰原地升级，
+    // 预设 id 跟随模型 id）。
     assert_eq!(editor.preset.map(|preset| preset.id), Some("k3.1-pro"));
     editor.handle_key(key(KeyCode::Right));
-    // 2026-11-28：Pro 门槛的 Highspeed 变体紧随旗舰，K3 全档模型殿后
-    // （本测试编辑器无档位信息 → 不过滤，走表全量）。
     assert_eq!(
         editor.preset.map(|preset| preset.id),
         Some("k3.1-pro-highspeed")
@@ -488,6 +467,44 @@ fn cycling_preset_applies_official_deepseek_parameters() {
         editor.preset.map(|preset| preset.id),
         Some("kimi-for-coding")
     );
+    editor.handle_key(key(KeyCode::Right));
+    // Kimi 之后是 Qwen Token Plan（六模型，2026-11-28 扩容）。
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen4-max"));
+    editor.handle_key(key(KeyCode::Right));
+    // 前旗舰回柜：参数与 qwen4-max 同形（升级注记钉值）。
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-max"));
+    editor.handle_key(key(KeyCode::Right));
+    // VP-2B：Qwen3.8 Flash 连续排布。
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen3.8-flash"));
+    editor.handle_key(key(KeyCode::Right));
+    // Token Plan 托管 DeepSeek 快照（同 vendor 同 key 槽）——端点同
+    // Token Plan、effort pin high（DeepSeek 拼写档位，见 thinking.rs
+    // 按模型分支）、开图（官方 Text+Image）。
+    assert_eq!(
+        editor.preset.map(|preset| preset.id),
+        Some("deepseek-v4.1-flash-1017")
+    );
+    let (config, _) = editor.build().unwrap();
+    assert_eq!(
+        config.endpoint,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    assert_eq!(config.extra_body["reasoning_effort"], "high");
+    assert!(config.capabilities.accepts_image_input());
+    editor.handle_key(key(KeyCode::Right));
+    // 托管 V4 Pro 快照 0813：显示名不带日期（负责人令），纯文本。
+    assert_eq!(
+        editor.preset.map(|preset| preset.id),
+        Some("deepseek-v4-pro-0813")
+    );
+    let (config, _) = editor.build().unwrap();
+    assert_eq!(config.model, "deepseek-v4-pro-0813");
+    assert_eq!(config.extra_body["reasoning_effort"], "high");
+    editor.handle_key(key(KeyCode::Right));
+    // 托管 GLM-5.3：qwen- 前缀防撞名（直连 glm-5.3 各归各家）。
+    assert_eq!(editor.preset.map(|preset| preset.id), Some("qwen-glm-5.3"));
+    let (config, _) = editor.build().unwrap();
+    assert_eq!(config.model, "glm-5.3");
     editor.handle_key(key(KeyCode::Right));
     // 2026-11-07：Tencent 旗舰由 hy4-preview 原地升级为 GA hy4（id 跟
     // 随模型 id），端点随官方文档换 tokenhub.tencentmaas.com 拼写。
@@ -649,13 +666,15 @@ fn picker_esc_backtracks_one_level_then_cancels() {
 #[test]
 fn vendor_escape_restores_the_entered_row() {
     let mut picker = new_picker();
-    for _ in 0..2 {
+    for _ in 0..3 {
         picker.handle_key(picker_key(KeyCode::Down));
     }
-    picker.handle_key(picker_key(KeyCode::Enter)); // 进入第 3 行 Qwen
-    // VP-2B：Qwen Token Plan 两模型（max + flash）；2026-11-28 增量
-    // 托管 DeepSeek 快照后为三模型。
-    assert_eq!(picker.row_count(), 3);
+    // 2026-11-28 厂商顺序调整：第 4 行 = Qwen Token Plan（Kimi 提到
+    // GLM 之后）。
+    picker.handle_key(picker_key(KeyCode::Enter)); // 进入第 4 行 Qwen
+    // VP-2B：Qwen Token Plan 两模型（max + flash）；2026-11-28 扩容
+    // 后为六模型（3.8-max 回柜 + 托管 DeepSeek 双快照 + GLM-5.3）。
+    assert_eq!(picker.row_count(), 6);
     assert!(matches!(
         picker.handle_key(picker_key(KeyCode::Esc)),
         PickerAction::Continue
@@ -663,13 +682,13 @@ fn vendor_escape_restores_the_entered_row() {
     assert_eq!(picker.row_count(), 7, "Esc backtracks to level 1");
     assert_eq!(
         picker.selected_index(),
-        2,
+        3,
         "Esc restores the row we entered from"
     );
 }
 
 /// 订阅档位可见性（2026-11-28）：Kimi Plus 档二级列表隐藏 Pro 门槛
-/// 预设（k3.1-pro-highspeed，行 4 → 3 模型），Pro 档全量 4 个；Hy
+/// 预设（k3.1-pro-highspeed，行 3 → 3 模型），Pro 档全量 4 个；Hy
 /// 档（hy）只显示混元两条，通用（common）档全量 10 条；档位表未
 /// 收录（DSH/旧 Host）不过滤。单一规则 hidden_by_plan_tier——删
 /// picker 的 visible_presets_by_vendor 过滤此测试红。
@@ -683,7 +702,7 @@ fn plus_tier_hides_the_pro_gated_preset_and_pro_restores_it() {
         ));
         picker
     };
-    let kimi = |tiers: &[(&'static str, String)]| open_vendor(tiers, '4');
+    let kimi = |tiers: &[(&'static str, String)]| open_vendor(tiers, '3');
     let hy = |tiers: &[(&'static str, String)]| open_vendor(tiers, '5');
 
     let plus = kimi(&[("Kimi Coding Plan", "plus".into())]);
@@ -860,14 +879,26 @@ fn picker_digits_quick_select_models_and_custom() {
     };
     assert_eq!(preset.id, "glm-5.4");
 
-    // 一级数字 3 进入 Qwen Token Plan（VP-2B：两模型；2026-11-28 增量
-    // 托管 DeepSeek 快照后为三模型），5 快选 Custom。
+    // 一级数字 3 进入 Kimi Coding Plan（2026-11-28 厂商顺序调整后
+    // 紧随 GLM；四模型），数字 4 进入 Qwen Token Plan（六模型）。
     let mut picker = new_picker();
     assert!(matches!(
         picker.handle_key(picker_key(KeyCode::Char('3'))),
         PickerAction::Continue
     ));
-    assert_eq!(picker.row_count(), 3);
+    assert_eq!(picker.row_count(), 4);
+    let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
+    else {
+        panic!("expected SelectPreset");
+    };
+    assert_eq!(preset.id, "k3.1-pro");
+
+    let mut picker = new_picker();
+    assert!(matches!(
+        picker.handle_key(picker_key(KeyCode::Char('4'))),
+        PickerAction::Continue
+    ));
+    assert_eq!(picker.row_count(), 6);
     let PickerAction::SelectPreset(preset) = picker.handle_key(picker_key(KeyCode::Char('1')))
     else {
         panic!("expected SelectPreset");

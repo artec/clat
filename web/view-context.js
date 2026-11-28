@@ -22,7 +22,10 @@ function activeViewContext(shell){
 function conversationViewActions(shell){
   const find=viewAction('find','search',()=>CLATI18n.msg('web.find_in_conversation'),event=>setConversationFindOpen(document.getElementById('find-bar').classList.contains('hidden'),event.detail===0));
   find.controls='find-bar';find.expanded=()=>!document.getElementById('find-bar').classList.contains('hidden');
-  return [find,viewAction('inspector','panel',()=>viewText('workspace'),()=>dom['inspector-toggle'].click()),viewAction('session','more',()=>CLATI18n.msg('web.session_actions'),event=>{const row=state.sessions.find(item=>item.id===state.sessionId);if(!row)return;const source=document.getElementById('tools-open'),rect=source.getBoundingClientRect();toggleSessionMenu(row,rect.right,rect.bottom+4,source);},false,()=>Boolean(state.sessionId)&&!state.switching)];
+  // 工作区右栏开关固定在顶栏最右侧尾槽，图标与左上角左栏开关镜像对称。
+  const inspector={...viewAction('inspector','panel-right',()=>viewText('workspace'),()=>dom['inspector-toggle'].click()),slot:'utility'};
+  const session=viewAction('session','more',()=>CLATI18n.msg('web.session_actions'),event=>{const row=state.sessions.find(item=>item.id===state.sessionId);if(!row)return;const source=document.getElementById('tools-open'),rect=source.getBoundingClientRect();toggleSessionMenu(row,rect.right,rect.bottom+4,source);},false,()=>Boolean(state.sessionId)&&!state.switching);
+  return [find,session,inspector];
 }
 function navigationViewContext(page,sidebar,title){
   const roots={'resources-dialog':['resources',true],'jobs-dialog':['tasks',true],'history-dialog':['history',false],'market-dialog':['extensions',false]};
@@ -54,6 +57,6 @@ function registerGlobalViewContexts(shell){
   registerView(settings,{id:settings.id,sidebar:nav,crumbs:()=>[{label:()=>shellText('settings'),run:()=>{viewListPreferences.write(settings.id,false);refreshViewContext();nav.querySelector('button')?.focus();}},...(currentSettingsCategory?[{label:()=>settingsCategoryLabel(currentSettingsCategory)}]:[])],actions:()=>[]});
 }
 function settingsCategoryLabel(category){
-  const keys={appearance:'web.appearance',projects:'web.projects',models:'web.models',authorizations:'authorization.title',utility:'web.companion',skills:'skill_settings.title',mcp:'mcp_settings.title',acp:'acp.title',permissions:'web.permissions','computer-use':'cua_settings.title',wechat:'web.remote_settings',remote:'web.remote_settings',web:'webtool.title',desktop:'pages.updates_about',terminal:'dev.terminal',git:'dev.git'};
+  const keys={appearance:'web.appearance',projects:'web.projects',models:'web.models',authorizations:'authorization.title',utility:'web.companion',skills:'skill_settings.title',mcp:'mcp_settings.title',acp:'acp.title',permissions:'web.permissions','computer-use':'cua_settings.title',wechat:'web.remote_settings',feishu:'web.remote_settings',telegram:'web.remote_settings',remote:'web.remote_settings',web:'webtool.title',desktop:'pages.updates_about',terminal:'dev.terminal',git:'dev.git'};
   return keys[category]?CLATI18n.msg(keys[category]):shellText('settings');
 }

@@ -21,7 +21,7 @@ Files appear lazily, so a fresh installation may contain only a subset.
 ├── history-archives/<bucket>/   # imported DSH timeline archives (read-only history)
 ├── library-v1.json              # session organization metadata (pins, archive flags); no message bodies
 ├── memory.json                  # explicit user/project knowledge (0600)
-├── im.json                      # atomic WeChat and Feishu binding, authorization and pairing authority (0600)
+├── im.json                      # atomic WeChat, Feishu, and Telegram binding, authorization and pairing authority (0600)
 ├── trust.json                   # canonical project path -> trusted timestamp
 ├── acp.json                     # configured external ACP Agents and per-project trust
 ├── console-credentials.json     # encrypted-at-rest quota console credentials (Qianwen/Bailian/Tencent)
@@ -68,10 +68,12 @@ Files appear lazily, so a fresh installation may contain only a subset.
 
 `im.json` is one atomic unit. The WeChat object keeps its original flat fields.
 Feishu App ID, App Secret, and that channel's grants live in a sibling `feishu`
-object, omitted while the section is empty. The two credential strings are
-plaintext, with the same 0600 atomic write used for vendor API keys in
-`credentials.json`. Replacing or clearing one section does not authorize or
-erase the other.
+object. The Telegram bot token, receiving switch, update offset, and that
+channel's grants live in a sibling `telegram` object. A section is omitted
+while it is empty. The credential strings are plaintext, with the same 0600
+atomic write used for vendor API keys in `credentials.json`. Replacing or
+clearing one section does not authorize or erase the other. Status responses
+do not return the Telegram token.
 
 `mcp.json` and `plugins.json` are legacy declarative inputs written by the
 user and override a same-id installed package. `plugin-store` is written only

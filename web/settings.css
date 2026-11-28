@@ -234,6 +234,11 @@
 #settings-dialog .remote-channel-tab .authorization-mark { grid-row:span 2; color:var(--accent); }
 #settings-dialog .remote-channel-tab .authorization-mark svg { width:20px; height:20px; }
 #settings-dialog .remote-channel-tab[data-channel=wechat] .authorization-mark { color:var(--success); }
+#settings-dialog .remote-channel-tab[data-channel=telegram] .authorization-mark { color:#38bdf8; }
+html[data-theme="light"] #settings-dialog .remote-channel-tab[data-channel=telegram] .authorization-mark { color:#0284c7; }
+@media (prefers-color-scheme: light) {
+  html[data-theme="system"] #settings-dialog .remote-channel-tab[data-channel=telegram] .authorization-mark { color:#0284c7; }
+}
 #settings-dialog .remote-channel-tab strong { font-size:var(--text-size-ui); font-weight:600; }
 #settings-dialog .remote-channel-tab small { grid-column:2 / -1; color:var(--text-muted); font:400 11px/1.5 var(--font-ui); }
 #settings-dialog .remote-channel-state {

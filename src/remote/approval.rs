@@ -40,6 +40,7 @@ pub(crate) fn wait_for_approval(
 pub(crate) enum RemoteChannel {
     Wechat,
     Feishu,
+    Telegram,
     #[cfg(test)]
     Test,
 }
@@ -49,6 +50,7 @@ impl RemoteChannel {
         match self {
             Self::Wechat => "wechat",
             Self::Feishu => "feishu",
+            Self::Telegram => "telegram",
             #[cfg(test)]
             Self::Test => "test-remote",
         }
@@ -59,6 +61,7 @@ impl RemoteChannel {
             // Existing journal and receipt keys must remain byte-compatible.
             Self::Wechat => wire_id.to_owned(),
             Self::Feishu => prefixed_delivery_key("feishu", wire_id),
+            Self::Telegram => prefixed_delivery_key("telegram", wire_id),
             #[cfg(test)]
             Self::Test => prefixed_delivery_key("test-remote", wire_id),
         }
@@ -161,5 +164,15 @@ mod tests {
             RemoteChannel::Feishu.delivery_key("om_124"),
             "a different message must not reuse the receipt"
         );
+    }
+
+    #[test]
+    fn telegram_delivery_key_does_not_collide_with_wechat_or_feishu() {
+        let key = RemoteChannel::Telegram.delivery_key("42");
+        assert!(key.starts_with("telegram:"));
+        assert!(!key.contains("42"));
+        assert_ne!(key, RemoteChannel::Wechat.delivery_key("42"));
+        assert_ne!(key, RemoteChannel::Feishu.delivery_key("42"));
+        assert_eq!(key, RemoteChannel::Telegram.delivery_key("42"));
     }
 }

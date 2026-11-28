@@ -112,6 +112,16 @@ impl RunHandle {
         !self.busy.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
+    pub(crate) fn busy_for_test() -> Self {
+        Self::for_worker(
+            crate::CancelToken::new(),
+            Arc::new(AtomicBool::new(true)),
+            crate::run::SteeringQueue::new(),
+            &ModelConfig::default(),
+        )
+    }
+
     pub fn join(&self) -> Result<(), ApplicationError> {
         let handle = self
             .join

@@ -1155,9 +1155,9 @@ The rail shows its filename, measured dimensions, source size, estimated visual
 tokens, and draft totals. `/image remove` and `/image move` operate on that
 stable id. Text-only model routes keep the draft visible but block sending;
 switch to a vision-capable route or remove the images. Vision capability is
-hardcoded per preset, never probed at runtime: 29 of the 34 built-in presets,
+hardcoded per preset, never probed at runtime: 30 of the 37 built-in presets,
 spanning all six vendors, open image input — officially-declared for
-`deepseek-flash`, `qwen4-max`, `qwen3.8-flash`, `deepseek-v4.1-flash-1017`,
+`deepseek-flash`, `qwen4-max`, `qwen3.8-max`, `qwen3.8-flash`, `deepseek-v4.1-flash-1017`,
 `k3.1-pro`, `k3.1-pro-highspeed`, `k3`, `kimi-for-coding`,
 `hy4`, `hy4-flash`,
 `hy-deepseek-v4.1-flash-1017`, `hy-k3.1-pro`, `hy-k3`,
@@ -1962,13 +1962,13 @@ minutes, succeeds once, and rate-limits repeated failures. You can replace a
 confirmed binding with `clat wechat bind --replace`. To revoke the credential,
 every paired user, chat mapping, cursor, and delivery receipt together, stop
 serve and run `clat wechat unbind --confirm`. In Workbench, **Settings →
-Integrations → Remote** shows binding status and activity counts for WeChat
-and Feishu together. Select **WeChat** to scan a binding QR code, create a
-pairing code, or manage that channel’s authorized users. **Refresh** updates
-both channel summaries and the selected user list. Existing WeChat settings
-links select WeChat in the shared panel. Feishu help links select Feishu the
-same way. On Remote, **Help for this page** follows the channel that is
-selected.
+Integrations → Remote** shows binding status and activity counts for WeChat,
+Feishu, and Telegram together. Select **WeChat** to scan a binding QR code,
+create a pairing code, or manage that channel’s authorized users. **Refresh**
+updates all channel summaries and the selected user list. Existing WeChat
+settings links select WeChat in the shared panel. Feishu and Telegram help
+links select their channels the same way. On Remote, **Help for this page**
+follows the channel that is selected.
 
 After pairing, use these standalone chat commands:
 
@@ -2027,9 +2027,9 @@ Feishu. The WeChat guide stays on iLink and the QR binding.
 `clat feishu bind` asks for the same App ID and App Secret on two ordinary
 lines and stores them as plaintext strings with the same 0600 atomic write
 used for vendor API keys. `clat serve --im feishu` turns on the same switch.
-`clat serve --im wechat` does not open the Feishu connection for that
-process. Switching channels clears any displayed pairing code or credential
-draft.
+`clat serve --im wechat` and `clat serve --im telegram` do not open the
+Feishu connection for that process. Switching channels clears any displayed
+pairing code or credential draft.
 
 ```bash
 clat feishu bind
@@ -2046,6 +2046,51 @@ no image path. An invalid app credential cancels a run owned by the Feishu
 channel and clears only the Feishu section. `clat feishu status` reports the
 binding, `clat feishu bind --replace` replaces it, and
 `clat feishu unbind --confirm` removes it.
+
+### Telegram private-chat text
+
+The optional Telegram frontend is a long poll for one bot token. It is
+separate from WeChat and Feishu, and it does not use a public webhook. In
+Telegram, open BotFather, send `/newbot`, and copy the token it returns.
+
+In the desktop app or the workbench, open **Settings → Integrations →
+Remote**, select **Telegram**, paste the token, and save. Saving does not
+authorize a user. Then choose **Start receiving**. That running background
+keeps the Telegram connection. Feishu can stay on at the same time: with no
+`--im` flag, every saved **Start receiving** switch connects. **Stop
+receiving** disconnects only that channel. The choice is remembered in the
+`telegram` section of `~/.clat/im.json`. A desktop **Quit** leaves the
+background running. **Stop shared background** ends every connection until
+the next time that background starts.
+
+Create a pairing code and, in the bot private chat, send the standalone
+message `/pair <code>`. Group chats, channels, and every non-text message
+are discarded with no reply. After pairing, `/new`, `/status`, `/stop`,
+`/help`, and the approval messages match the WeChat commands above. One
+project still has one active run, so a message from another channel cannot
+steer the run that is already going.
+
+Workbench Help walks through the same setup as **Create a Telegram bot**
+(`#/help?topic=telegram`).
+
+`clat telegram bind` asks for the token on one line and stores it as a
+plaintext string with the same 0600 atomic write used for vendor API keys.
+`clat serve --im telegram` turns on the same switch and does not open
+Feishu or WeChat for that process. `clat serve --im wechat` does not open
+Telegram and does not clear its saved switch.
+
+```bash
+clat telegram bind
+clat telegram pair
+# In the bot private chat, send the standalone message: /pair <code>
+clat serve --im telegram
+```
+
+This slice accepts only `https://api.telegram.org` and a private-chat text
+message. An invalid token cancels a run owned by the Telegram channel and
+clears only the Telegram section. `clat telegram status` reports the
+binding without printing the token, `clat telegram bind --replace` replaces
+it, and `clat telegram unbind --confirm` removes it.
 
 ### Running serve continuously
 
@@ -2070,10 +2115,11 @@ tmux new-session -s clat-serve 'cd /absolute/project && exec clat serve'
 # Reattach later with: tmux attach -t clat-serve
 ```
 
-Append `--im wechat` or `--im feishu` to the tmux, launchd, or systemd command
-only after that channel's binding and user pairing are complete. Only one
-`--im` backend can be selected. A Feishu switch already turned on in Settings
-is enough for a desktop background that was started without either flag.
+Append `--im wechat`, `--im feishu`, or `--im telegram` to the tmux, launchd,
+or systemd command only after that channel's binding and user pairing are
+complete. Only one `--im` backend can be selected. It starts that channel and
+leaves every other saved switch unchanged. With no `--im` flag, a desktop
+background connects each Feishu or Telegram switch that was already left on.
 
 On macOS, save a user LaunchAgent such as
 `~/Library/LaunchAgents/io.artec.clat.serve.plist` with absolute paths:
@@ -2424,8 +2470,8 @@ body text. Enter/Shift+Enter and the arrow buttons visit matches; **Earlier**
 reads one older page. The compact search panel opens beneath the toolbar,
 using the same right inset as the Tools menu, and stays within the window.
 Its toolbar gap matches the Tools menu. Bottom spacing accounts for the input
-row's own inset so the first and last lines have balanced visual breathing room. Conversation toolbar controls are ordered Tools,
-Find, and Workspace toggle. The panel closes when Find is clicked again,
+row's own inset so the first and last lines have balanced visual breathing room. Conversation toolbar controls are ordered Find,
+Tools, Help, and Workspace toggle. The panel closes when Find is clicked again,
 when clicking outside it, switching views, or with Escape. Clicking Find leaves focus in place;
 Ctrl/Cmd+F focuses the search field for immediate typing. The scope label says whether
 earlier messages remain unloaded. Prefix pages and streaming tokens preserve

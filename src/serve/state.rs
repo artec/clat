@@ -130,7 +130,8 @@ pub(crate) struct ServeShared {
     /// requests. An acknowledged unbind cannot be followed by a queued send
     /// using the revoked credential.
     pub(crate) wechat_outbound: Mutex<()>,
-    pub(crate) feishu_link: Mutex<Option<super::feishu_link::Link>>,
+    pub(crate) feishu: super::im_link::Slot,
+    pub(crate) telegram: super::im_link::Slot,
     shutting_down: Arc<AtomicBool>,
     /// settler / notice 转发（关停时统一有界 join）。
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -144,6 +145,8 @@ pub(crate) struct ServeShared {
     active_connections: AtomicUsize,
     #[cfg(test)]
     pub(crate) feishu_probe: Mutex<Option<Arc<super::feishu_link::FeishuProbe>>>,
+    #[cfg(test)]
+    pub(crate) telegram_probe: Mutex<Option<Arc<super::telegram_link::TelegramProbe>>>,
     #[cfg(test)]
     prompt_pre_admission_barriers:
         Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -191,7 +194,8 @@ impl ServeShared {
             questions: super::questions::Questions::default(),
             wechat_binding: Mutex::new(None),
             wechat_outbound: Mutex::new(()),
-            feishu_link: Mutex::new(None),
+            feishu: super::im_link::Slot::new("feishu"),
+            telegram: super::im_link::Slot::new("telegram"),
             shutting_down: Arc::new(AtomicBool::new(false)),
             workers: Mutex::new(Vec::new()),
             connections: Mutex::new(Vec::new()),
@@ -205,6 +209,8 @@ impl ServeShared {
             #[cfg(test)]
             feishu_probe: Mutex::new(None),
             #[cfg(test)]
+            telegram_probe: Mutex::new(None),
+            #[cfg(test)]
             prompt_pre_admission_barriers: Mutex::new(None),
             #[cfg(test)]
             prompt_pre_admission_channels: Mutex::new(None),
@@ -214,6 +220,11 @@ impl ServeShared {
     #[cfg(test)]
     pub(crate) fn install_feishu_probe(&self, probe: Arc<super::feishu_link::FeishuProbe>) {
         *self.feishu_probe.lock().expect("feishu probe") = Some(probe);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_telegram_probe(&self, probe: Arc<super::telegram_link::TelegramProbe>) {
+        *self.telegram_probe.lock().expect("telegram probe") = Some(probe);
     }
 
     #[cfg(test)]
@@ -357,9 +368,10 @@ impl ServeShared {
                 .expect("steering receipts")
                 .is_empty()
             && self.wechat_binding.lock().expect("binding").is_none()
-            // 飞书长连接挂在本路由上时不能当空闲项目卸掉。接管仍算空闲，
+            // 飞书或 Telegram 连接挂在本路由上时不能当空闲项目卸掉。接管仍算空闲，
             // 新 Host 会按保存的开关自己重连。
             && !super::feishu_link::active(self)
+            && !super::telegram_link::active(self)
             && self.active_connections.load(Ordering::Acquire) == 0
             && self.active_uploads.load(Ordering::Acquire) == 0
             && self.active_attachment_downloads.load(Ordering::Acquire) == 0
@@ -992,6 +1004,7 @@ impl ServeShared {
     pub(crate) fn mark_shutting_down(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         super::feishu_link::trip(self);
+        super::telegram_link::trip(self);
     }
 
     pub(crate) fn cancel_active_run(&self) {
@@ -1015,6 +1028,7 @@ impl ServeShared {
 
     pub(crate) fn drain_workers(&self) {
         super::feishu_link::stop(self);
+        super::telegram_link::stop(self);
         let mut handles = self
             .workers
             .lock()

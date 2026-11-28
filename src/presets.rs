@@ -424,6 +424,102 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         user_agent: None,
         min_plan_tier: None,
     },
+    // K3.1 Pro 原地升级（负责人令 2026-11-03）：旧 `kimi-k3` 条目退役
+    // ——旧 id 已不在 Coding 端点模型清单，而端点对错 id 静默兜底到
+    // 无思考版 K2.8 Preview（官方文档警告），故不留兼容别名。持久化
+    // 引用旧 id 的存量配置不再解析为预设（SF-1 同款零回退纪律）。
+    // 端点 / 1M 窗 / 131,072 输出 / effort high（pin-中档政策）/
+    // 顶层 effort 无 thinking 对象 / include_usage 沿用 K3 钉值；
+    // UA 改自家身份注入（白名单 2026-11-21 实测撤除）。
+    ModelPreset {
+        id: "k3.1-pro",
+        utility_model: Some("kimi-for-coding"),
+        // VP-2（2026-09-03）：Kimi K3 视觉输入为官方声明（负责人按
+        // Moonshot API 文档核实）→ officially-declared。2026-11-03：
+        // K3.1 Pro 视觉同为官方声明（K3.1 Pro quickstart），能力位沿用。
+        capabilities: OFFICIAL_VISION_CAPS,
+        name: "Kimi K3.1 Pro",
+        description: "Moonshot flagship via Kimi Coding membership (auto context cache)",
+        vendor: "Kimi Coding Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "k3.1-pro",
+        endpoint: "https://api.kimi.com/coding/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_000_000,
+        reasoning_effort: Some("high"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: Some(CLAT_UA),
+        min_plan_tier: None,
+    },
+    // K3.1 Pro Highspeed（2026-11-28 负责人令）：官方 Kimi Code 模型表
+    // （kimi.com/code/docs/kimi-code/models.html，2026-11-28 核验）
+    // `k3.1-pro-highspeed` 行标注"Pro 及以上"——高速版仅 Pro 档及以上
+    // 可用，`min_plan_tier: Some("pro")`，Plus 档在所有前端的选择面
+    // 隐藏（可见性谓词见本文件 `hidden_by_plan_tier` 与 application
+    // 的 KimiTier 机制）。"与普速版模型能力一致，速度约为普速版的
+    // 3 倍，消耗约为普速版的 2 倍"（官方文档原文）→ 参数与 k3.1-pro
+    // 同形：1,048,576 窗（官方表 1M 口径，档位 stamp 见 apply_kimi_tier）/
+    // 131,072 输出（家族钉值，官方表未列输出）/ effort low/high/max
+    // 默认 high → pin high / 图片+视频输入（官方表）→
+    // OFFICIAL_VISION_CAPS / include_usage 与 CLAT 身份 UA 沿用端点
+    // 家族钉值。
+    ModelPreset {
+        id: "k3.1-pro-highspeed",
+        utility_model: Some("kimi-for-coding"),
+        capabilities: OFFICIAL_VISION_CAPS,
+        name: "Kimi K3.1 Pro Highspeed",
+        description: "Kimi K3.1 Pro speed tier via Kimi Coding (Pro plan and above)",
+        vendor: "Kimi Coding Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "k3.1-pro-highspeed",
+        endpoint: "https://api.kimi.com/coding/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_048_576,
+        reasoning_effort: Some("high"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: Some(CLAT_UA),
+        min_plan_tier: Some("pro"),
+    },
+    // K3（2026-11-28 负责人令）：官方模型表 `k3`——全档可用（Plus/
+    // Moderato 及以上可调用，Pro/Allegretto 及以上解锁 1M 上下文）。
+    // 档位窗口语义与 k3.1-pro 同款（apply_kimi_tier 按 tier stamp：
+    // Plus 262,144 / Pro 1,048,576），官方表 context 列"最高
+    // 1,048,576"钉本字段；1M 仅高档位，Plus 档实际窗口以档位 stamp
+    // 为准。effort low/high/max 默认 high → pin high；图片+视频输入
+    // （官方表）→ OFFICIAL_VISION_CAPS；131,072 输出与 include_usage
+    // 沿用 K3 家族钉值（2026-08 K3 时代钉值未变）。2026-11-03 退役的
+    // `kimi-k3` 旧 id 不复活：本次按官方表现行 id `k3` 新增（旧 id
+    // 静默兜底 K2.8 Preview 的警告仍然有效，零回退纪律维持）。
+    ModelPreset {
+        id: "k3",
+        utility_model: Some("kimi-for-coding"),
+        capabilities: OFFICIAL_VISION_CAPS,
+        name: "Kimi K3",
+        description: "Moonshot K3 via Kimi Coding membership (auto context cache)",
+        vendor: "Kimi Coding Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "k3",
+        endpoint: "https://api.kimi.com/coding/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_048_576,
+        reasoning_effort: Some("high"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: Some(CLAT_UA),
+        min_plan_tier: None,
+    },
+    KIMI_FOR_CODING,
+    // 2026-11-28 负责人令：厂商顺序调整——Kimi Coding Plan 紧随
+    // GLM Coding Plan，Qwen Token Plan 居后（preset_vendors 按
+    // 表内首次出现顺序去重，搬移本块即改序）。
     // Qwen4 Max（2026-11-18 负责人令原地升级，前身 VP-2 的 3.8-max）:
     // qwen4 正式版发布并首发上线 Token Plan;官方页确认新一代旗舰
     // 多模态(文本+图+视频输入;视频维持 MM 范围外)→ 视觉位沿用
@@ -438,6 +534,32 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         vendor: "Qwen Token Plan",
         protocol: ModelProtocol::OpenAiCompatible,
         model: "qwen4-max",
+        endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        request_path: "/chat/completions",
+        output_limit: 131_072,
+        context_window: 1_000_000,
+        reasoning_effort: Some("medium"),
+        preserve_thinking: false,
+        thinking_object: false,
+        include_usage: true,
+        user_agent: None,
+        min_plan_tier: None,
+    },
+    // Qwen3.8 Max（2026-11-28 负责人令恢复预设目录；此前 2026-11-18
+    // 原地升级时只挂 qwen4-max 旗舰）：官方清单仍在列的前旗舰独立
+    // 成条。参数与 qwen4-max 同形（2026-11-18 升级注记："1M/
+    // 131,072(+思考 262,144)与 3.8-max 同形，参数零变化"）——
+    // effort low/medium/xhigh 默认 xhigh → pin 中档 medium（同族），
+    // officially-declared 视觉位沿用 VP-2 时代 3.8-max 的官方声明。
+    ModelPreset {
+        id: "qwen3.8-max",
+        utility_model: Some("qwen3.8-flash"),
+        capabilities: OFFICIAL_VISION_CAPS,
+        name: "Qwen3.8 Max",
+        description: "Alibaba previous flagship via Qwen Token Plan (implicit context cache, reads images)",
+        vendor: "Qwen Token Plan",
+        protocol: ModelProtocol::OpenAiCompatible,
+        model: "qwen3.8-max",
         endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
         request_path: "/chat/completions",
         output_limit: 131_072,
@@ -533,58 +655,52 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         user_agent: None,
         min_plan_tier: None,
     },
-    // K3.1 Pro 原地升级（负责人令 2026-11-03）：旧 `kimi-k3` 条目退役
-    // ——旧 id 已不在 Coding 端点模型清单，而端点对错 id 静默兜底到
-    // 无思考版 K2.8 Preview（官方文档警告），故不留兼容别名。持久化
-    // 引用旧 id 的存量配置不再解析为预设（SF-1 同款零回退纪律）。
-    // 端点 / 1M 窗 / 131,072 输出 / effort high（pin-中档政策）/
-    // 顶层 effort 无 thinking 对象 / include_usage 沿用 K3 钉值；
-    // UA 改自家身份注入（白名单 2026-11-21 实测撤除）。
+    // DeepSeek V4.0 Pro 快照 0813（2026-11-28 负责人令；百炼托管）：
+    // 官方调用参考（help.aliyun.com/zh/model-studio/deepseek-api，
+    // 2026-11-28 核验）——快照 id `deepseek-v4-pro-0813`，max_tokens
+    // 393,216（v4 系列"共393,216"= max_tokens 与 thinking_budget
+    // 共用上限）；effort low/high/max 默认 high（v4-pro-0813 支持
+    // low）→ pin high，档位拼写走 thinking.rs 的百炼第三方分支；
+    // 图片输入仅 v4.1-flash 系列官方声明 → 本条 TEXT_CAPS。
+    // 显示名不带日期（负责人令：选择器不出现快照日期）。
     ModelPreset {
-        id: "k3.1-pro",
-        utility_model: Some("kimi-for-coding"),
-        // VP-2（2026-09-03）：Kimi K3 视觉输入为官方声明（负责人按
-        // Moonshot API 文档核实）→ officially-declared。2026-11-03：
-        // K3.1 Pro 视觉同为官方声明（K3.1 Pro quickstart），能力位沿用。
-        capabilities: OFFICIAL_VISION_CAPS,
-        name: "Kimi K3.1 Pro",
-        description: "Moonshot flagship via Kimi Coding membership (auto context cache)",
-        vendor: "Kimi Coding Plan",
+        id: "deepseek-v4-pro-0813",
+        utility_model: Some("qwen3.8-flash"),
+        capabilities: TEXT_CAPS,
+        name: "DeepSeek V4.0 Pro",
+        description: "DeepSeek V4 Pro flagship via Qwen Token Plan",
+        vendor: "Qwen Token Plan",
         protocol: ModelProtocol::OpenAiCompatible,
-        model: "k3.1-pro",
-        endpoint: "https://api.kimi.com/coding/v1",
+        model: "deepseek-v4-pro-0813",
+        endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
         request_path: "/chat/completions",
-        output_limit: 131_072,
+        output_limit: 384 * 1024,
         context_window: 1_000_000,
         reasoning_effort: Some("high"),
         preserve_thinking: false,
         thinking_object: false,
         include_usage: true,
-        user_agent: Some(CLAT_UA),
+        user_agent: None,
         min_plan_tier: None,
     },
-    // K3.1 Pro Highspeed（2026-11-28 负责人令）：官方 Kimi Code 模型表
-    // （kimi.com/code/docs/kimi-code/models.html，2026-11-28 核验）
-    // `k3.1-pro-highspeed` 行标注"Pro 及以上"——高速版仅 Pro 档及以上
-    // 可用，`min_plan_tier: Some("pro")`，Plus 档在所有前端的选择面
-    // 隐藏（可见性谓词见本文件 `hidden_by_plan_tier` 与 application
-    // 的 KimiTier 机制）。"与普速版模型能力一致，速度约为普速版的
-    // 3 倍，消耗约为普速版的 2 倍"（官方文档原文）→ 参数与 k3.1-pro
-    // 同形：1,048,576 窗（官方表 1M 口径，档位 stamp 见 apply_kimi_tier）/
-    // 131,072 输出（家族钉值，官方表未列输出）/ effort low/high/max
-    // 默认 high → pin high / 图片+视频输入（官方表）→
-    // OFFICIAL_VISION_CAPS / include_usage 与 CLAT 身份 UA 沿用端点
-    // 家族钉值。
+    // GLM 5.3（百炼托管，2026-11-28 负责人令；预设 id 加 qwen- 前缀
+    // 防与 GLM Coding Plan 直连条目撞名）：官方模型页
+    // （help.aliyun.com/zh/model-studio/glm-5-3，2026-11-28 核验）
+    // ——上下文 1,048,576 / 输出 131,072；输入模态仅 Text（无官方
+    // 视觉声明）→ TEXT_CAPS；思考强制开启、reasoning_effort 三档
+    // low/high/max（默认拼写，见 thinking.rs 百炼第三方分支）→
+    // pin high；Bailian 的 thinking 对象形状未钉 → 不发未定义参数
+    // （服务端强制思考语义等价）；隐式缓存支持。
     ModelPreset {
-        id: "k3.1-pro-highspeed",
-        utility_model: Some("kimi-for-coding"),
-        capabilities: OFFICIAL_VISION_CAPS,
-        name: "Kimi K3.1 Pro Highspeed",
-        description: "Kimi K3.1 Pro speed tier via Kimi Coding (Pro plan and above)",
-        vendor: "Kimi Coding Plan",
+        id: "qwen-glm-5.3",
+        utility_model: Some("qwen3.8-flash"),
+        capabilities: TEXT_CAPS,
+        name: "GLM 5.3",
+        description: "Zhipu coding model hosted on Qwen Token Plan",
+        vendor: "Qwen Token Plan",
         protocol: ModelProtocol::OpenAiCompatible,
-        model: "k3.1-pro-highspeed",
-        endpoint: "https://api.kimi.com/coding/v1",
+        model: "glm-5.3",
+        endpoint: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
         request_path: "/chat/completions",
         output_limit: 131_072,
         context_window: 1_048_576,
@@ -592,40 +708,9 @@ pub const MODEL_PRESETS: &[ModelPreset] = &[
         preserve_thinking: false,
         thinking_object: false,
         include_usage: true,
-        user_agent: Some(CLAT_UA),
-        min_plan_tier: Some("pro"),
-    },
-    // K3（2026-11-28 负责人令）：官方模型表 `k3`——全档可用（Plus/
-    // Moderato 及以上可调用，Pro/Allegretto 及以上解锁 1M 上下文）。
-    // 档位窗口语义与 k3.1-pro 同款（apply_kimi_tier 按 tier stamp：
-    // Plus 262,144 / Pro 1,048,576），官方表 context 列"最高
-    // 1,048,576"钉本字段；1M 仅高档位，Plus 档实际窗口以档位 stamp
-    // 为准。effort low/high/max 默认 high → pin high；图片+视频输入
-    // （官方表）→ OFFICIAL_VISION_CAPS；131,072 输出与 include_usage
-    // 沿用 K3 家族钉值（2026-08 K3 时代钉值未变）。2026-11-03 退役的
-    // `kimi-k3` 旧 id 不复活：本次按官方表现行 id `k3` 新增（旧 id
-    // 静默兜底 K2.8 Preview 的警告仍然有效，零回退纪律维持）。
-    ModelPreset {
-        id: "k3",
-        utility_model: Some("kimi-for-coding"),
-        capabilities: OFFICIAL_VISION_CAPS,
-        name: "Kimi K3",
-        description: "Moonshot K3 via Kimi Coding membership (auto context cache)",
-        vendor: "Kimi Coding Plan",
-        protocol: ModelProtocol::OpenAiCompatible,
-        model: "k3",
-        endpoint: "https://api.kimi.com/coding/v1",
-        request_path: "/chat/completions",
-        output_limit: 131_072,
-        context_window: 1_048_576,
-        reasoning_effort: Some("high"),
-        preserve_thinking: false,
-        thinking_object: false,
-        include_usage: true,
-        user_agent: Some(CLAT_UA),
+        user_agent: None,
         min_plan_tier: None,
     },
-    KIMI_FOR_CODING,
     HY4,
     HY4_FLASH,
     // Hy Token Plan 通用（Common）套餐八预设（2026-11-28 负责人令）：
@@ -1036,6 +1121,85 @@ mod tests {
         assert_eq!(caps.tool_result_modalities, vec![Modality::Text]);
     }
 
+    /// Qwen Token Plan 扩容金测（2026-11-28 负责人令）：qwen3.8-max
+    /// 回柜（参数与 qwen4-max 同形）、deepseek-v4-pro-0813 托管快照、
+    /// qwen-glm-5.3 托管。判别：删任一钉值或档位拼写分支此测试红。
+    /// 显示名不带快照日期（负责人令）。
+    #[test]
+    fn applies_official_qwen_token_plan_expanded_roster() {
+        // 前旗舰：与 qwen4-max 同形（2026-11-18 升级注记钉值）。
+        let max = preset_by_id("qwen3.8-max").expect("preset exists");
+        assert_eq!(max.model, "qwen3.8-max");
+        assert_eq!(max.vendor, "Qwen Token Plan");
+        assert_eq!(max.name, "Qwen3.8 Max");
+        assert_eq!(max.output_limit, 131_072);
+        assert_eq!(max.context_window, 1_000_000);
+        // 官方档位 low/medium/xhigh 默认 xhigh → pin 中档 medium。
+        assert_eq!(max.reasoning_effort, Some("medium"));
+        assert!(max.owned_capabilities().accepts_image_input());
+        assert_eq!(max.utility_model, Some("qwen3.8-flash"));
+
+        // DeepSeek V4 Pro 快照 0813：effort high（low/high/max 默认
+        // high）、纯文本、显示名不带日期。
+        let pro = preset_by_id("deepseek-v4-pro-0813").expect("preset exists");
+        assert_eq!(pro.model, "deepseek-v4-pro-0813");
+        assert_eq!(pro.name, "DeepSeek V4.0 Pro");
+        assert_eq!(pro.picker_name(), "DeepSeek V4.0 Pro");
+        assert_eq!(pro.output_limit, 384 * 1024);
+        assert_eq!(pro.reasoning_effort, Some("high"));
+        assert_eq!(
+            pro.owned_capabilities().input_modalities,
+            vec![Modality::Text]
+        );
+        // 档位拼写：百炼第三方分支 → High 发 high（不是 Qwen 的
+        // medium）。
+        use crate::model::{ThinkingLevel, apply_thinking_level};
+        let mut body = pro.extra_body();
+        apply_thinking_level(
+            &mut body,
+            crate::model::ModelVendor::Qwen,
+            &pro.model,
+            ThinkingLevel::High,
+        );
+        assert_eq!(body["reasoning_effort"], "high");
+
+        // 托管 GLM-5.3：qwen- 前缀防撞名；官方页 1,048,576 / 131,072、
+        // 纯文本；Bailian thinking 形状未钉 → 零 thinking 对象、pin
+        // high。
+        let glm = preset_by_id("qwen-glm-5.3").expect("preset exists");
+        assert_eq!(glm.model, "glm-5.3");
+        assert_eq!(glm.name, "GLM 5.3");
+        assert_eq!(glm.context_window, 1_048_576);
+        assert_eq!(glm.output_limit, 131_072);
+        assert_eq!(glm.reasoning_effort, Some("high"));
+        assert!(!glm.thinking_object);
+        assert_eq!(
+            glm.owned_capabilities().input_modalities,
+            vec![Modality::Text]
+        );
+        let mut glm_body = glm.extra_body();
+        apply_thinking_level(
+            &mut glm_body,
+            crate::model::ModelVendor::Qwen,
+            &glm.model,
+            ThinkingLevel::Max,
+        );
+        assert_eq!(glm_body["reasoning_effort"], "max");
+
+        // 三条共用 Token Plan 端点与 key 槽（vendor 词一致）。
+        for preset in [max, pro, glm] {
+            assert_eq!(preset.vendor, "Qwen Token Plan");
+            assert_eq!(
+                preset.endpoint,
+                "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+            );
+            assert!(preset_accepts_endpoint(
+                preset,
+                QWEN_TOKEN_PLAN_QIANWEN_ENDPOINT
+            ));
+        }
+    }
+
     /// 订阅档位阶梯单测（2026-11-28）：plus/hy 为底档、pro/common 为
     /// 高档，未知词 fail-closed。删 plan_tier_rank 或改 hidden_by_
     /// plan_tier 语义此测试红。
@@ -1345,6 +1509,19 @@ mod tests {
         assert_eq!(qwen_deepseek.context_window, 1_000_000);
         assert_eq!(qwen_deepseek.output_limit, 384 * 1024);
 
+        // 2026-11-28 扩容：3.8-max 与 qwen4-max 同形（升级注记）；
+        // deepseek-v4-pro-0813 官方 1M / 393,216；qwen-glm-5.3 官方
+        // 页"上下文长度 1048576 / 最大输出长度 131072"。
+        let qwen38max = preset_by_id("qwen3.8-max").expect("qwen 3.8 max");
+        assert_eq!(qwen38max.context_window, 1_000_000);
+        assert_eq!(qwen38max.output_limit, 131_072);
+        let qwen_pro0813 = preset_by_id("deepseek-v4-pro-0813").expect("qwen pro 0813");
+        assert_eq!(qwen_pro0813.context_window, 1_000_000);
+        assert_eq!(qwen_pro0813.output_limit, 384 * 1024);
+        let qwen_glm = preset_by_id("qwen-glm-5.3").expect("qwen glm");
+        assert_eq!(qwen_glm.context_window, 1_048_576);
+        assert_eq!(qwen_glm.output_limit, 131_072);
+
         let kimi = preset_by_id("k3.1-pro").expect("kimi");
         assert_eq!(kimi.context_window, 1_000_000);
         assert_eq!(kimi.output_limit, 131_072);
@@ -1530,13 +1707,15 @@ mod tests {
     #[test]
     fn vendors_group_presets_for_the_picker() {
         let vendors = preset_vendors();
+        // 2026-11-28 负责人令：Kimi Coding Plan 紧随 GLM Coding Plan，
+        // Qwen Token Plan 居后（表内首次出现顺序）。
         assert_eq!(
             vendors,
             vec![
                 "DeepSeek",
                 "GLM Coding Plan",
-                "Qwen Token Plan",
                 "Kimi Coding Plan",
+                "Qwen Token Plan",
                 "Hy Token Plan",
                 "OpenCode Go",
             ]
@@ -1547,22 +1726,6 @@ mod tests {
         // GLM 5.4 / 5.3 / Flash 同 vendor（共享 key 槽/额度监控接线）。
         assert_eq!(presets_by_vendor("GLM Coding Plan").len(), 3);
         assert_eq!(presets_by_vendor("GLM Coding Plan")[0].id, "glm-5.4");
-        // VP-2B：Qwen Token Plan 两模型（max + flash，同 key 槽）；
-        // 2026-11-28 增量托管 DeepSeek 快照（同 vendor 同 key 槽）。
-        assert_eq!(presets_by_vendor("Qwen Token Plan").len(), 3);
-        assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen4-max");
-        // 2026-11-18 Qwen4 Max 原地升级：旧旗舰 id 不复现（零回退；
-        // 官方清单 qwen3.8-max 虽仍在列，预设目录只挂最新旗舰）。
-        assert!(preset_by_id("qwen3.8-max").is_none());
-        assert_eq!(presets_by_vendor("Qwen Token Plan")[1].id, "qwen3.8-flash");
-        assert_eq!(
-            presets_by_vendor("Qwen Token Plan")[2].id,
-            "deepseek-v4.1-flash-1017"
-        );
-        // 预设 id 与 DeepSeek 直连/OpenCode 网关条目无撞名
-        //（preset_by_id 取首个匹配，撞名会让一方不可达）。
-        assert!(preset_by_id("deepseek-flash").is_some());
-        assert!(preset_by_id("opencode-deepseek-v4.1-flash").is_some());
         // 2026-11-28：Kimi 家族四模型——旗舰 + Pro 门槛 Highspeed +
         // 全档 K3 + utility（同 key 槽；highspeed 仅 Pro 档在选择面）。
         assert_eq!(presets_by_vendor("Kimi Coding Plan").len(), 4);
@@ -1580,6 +1743,29 @@ mod tests {
             presets_by_vendor("Kimi Coding Plan")[3].id,
             "kimi-for-coding"
         );
+        // 2026-11-28 负责人令：Qwen Token Plan 六模型——双 Qwen 旗舰
+        // + flash + 托管 DeepSeek 双快照 + 托管 GLM-5.3（同 key 槽）。
+        // 显示名不带快照日期（deepseek-v4-pro-0813 → "DeepSeek
+        // V4.0 Pro"），日期只在 model id。
+        assert_eq!(presets_by_vendor("Qwen Token Plan").len(), 6);
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[0].id, "qwen4-max");
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[1].id, "qwen3.8-max");
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[2].id, "qwen3.8-flash");
+        assert_eq!(
+            presets_by_vendor("Qwen Token Plan")[3].id,
+            "deepseek-v4.1-flash-1017"
+        );
+        assert_eq!(
+            presets_by_vendor("Qwen Token Plan")[4].id,
+            "deepseek-v4-pro-0813"
+        );
+        assert_eq!(presets_by_vendor("Qwen Token Plan")[5].id, "qwen-glm-5.3");
+        // 托管 GLM-5.3 与 GLM Coding Plan 直连条目撞名 → qwen- 前缀
+        //（preset_by_id 取首个匹配，撞名会让一方不可达）；DeepSeek
+        // 直连/OpenCode 网关条目同理各归各家。
+        assert!(preset_by_id("glm-5.3").is_some());
+        assert!(preset_by_id("deepseek-flash").is_some());
+        assert!(preset_by_id("opencode-deepseek-v4.1-flash").is_some());
         // 2026-11-28：Hy Token Plan 十模型——混元两条（Hy 套餐）+
         // 通用套餐八第三方（presets/hy_plan.rs，min_plan_tier =
         // "common"，选择面按套餐过滤）。
@@ -1644,6 +1830,10 @@ mod tests {
             // Token Plan 托管 DeepSeek 快照（2026-11-28）：伴生同 vendor
             // 同端点家族的 qwen3.8-flash（resolve_default 校验一致性）。
             ("deepseek-v4.1-flash-1017", Some("qwen3.8-flash")),
+            // 2026-11-28 扩容：前旗舰回柜与两条新托管快照，伴生同族。
+            ("qwen3.8-max", Some("qwen3.8-flash")),
+            ("deepseek-v4-pro-0813", Some("qwen3.8-flash")),
+            ("qwen-glm-5.3", Some("qwen3.8-flash")),
             ("k3.1-pro", Some("kimi-for-coding")),
             // 2026-11-28：Highspeed 变体与全档 K3 伴生同 utility 轻档。
             ("k3.1-pro-highspeed", Some("kimi-for-coding")),
@@ -1728,6 +1918,7 @@ mod tests {
                     | "glm-5.4"
                     | "glm-5.3-flash"
                     | "qwen4-max"
+                    | "qwen3.8-max"
                     | "qwen3.8-flash"
                     | "deepseek-v4.1-flash-1017"
                     | "k3.1-pro"
@@ -1769,6 +1960,7 @@ mod tests {
             "k3.1-pro",
             "kimi-for-coding",
             "qwen3.8-flash",
+            "qwen3.8-max",
             "deepseek-v4.1-flash-1017",
             "k3.1-pro-highspeed",
             "k3",
@@ -1799,6 +1991,8 @@ mod tests {
         for id in [
             "deepseek-v4-pro",
             "glm-5.3",
+            "deepseek-v4-pro-0813",
+            "qwen-glm-5.3",
             "hy-glm-5.3",
             "opencode-deepseek-v4-pro",
             "opencode-glm-5.3",

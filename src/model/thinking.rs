@@ -44,10 +44,10 @@ impl ThinkingLevel {
 
     /// 模型感知版线上取值：共享厂商端点上代管的第三方模型家族按
     /// 各自官方档位拼写分流，其余落厂商默认（[`Self::wire_effort`]）。
-    /// 当前唯一家族：Qwen Token Plan / 百炼端点上的 DeepSeek 系列
-    /// （见 [`deepseek_ladder_on_qwen_endpoint`]）。
+    /// 当前家族：Qwen Token Plan / 百炼端点上的 DeepSeek 与 GLM 系列
+    /// （见 [`bailian_third_party_ladder`]）。
     pub(crate) fn wire_effort_for(self, vendor: ModelVendor, model: &str) -> &'static str {
-        if deepseek_ladder_on_qwen_endpoint(vendor, model) {
+        if bailian_third_party_ladder(vendor, model) {
             return match self {
                 Self::Low => "low",
                 Self::High => "high",
@@ -76,14 +76,21 @@ impl ThinkingLevel {
 }
 
 /// 共享厂商端点上的第三方模型家族档位拼写分支（OC-17 逐模型阶梯的
-/// 厂商侧推广）：Qwen Token Plan / 百炼代管的 DeepSeek 系列模型
-/// （`deepseek-v4.1-flash-1017` 等，快照后缀天然覆盖）官方
-/// `reasoning_effort` 档位是 DeepSeek 拼写 low/high/max（默认 high；
-/// help.aliyun.com/zh/model-studio/deepseek-api，2026-11-28 核验），
-/// **不是** Qwen 自家的 low/medium/xhigh——纯厂商映射会把该家族的
-/// High/Max 档发成端点不认识的 medium/xhigh。
-fn deepseek_ladder_on_qwen_endpoint(vendor: ModelVendor, model: &str) -> bool {
-    vendor == ModelVendor::Qwen && model.to_ascii_lowercase().starts_with("deepseek")
+/// 厂商侧推广）：Qwen Token Plan / 百炼代管的第三方系列官方
+/// `reasoning_effort` 档位都是默认拼写 low/high/max，**不是** Qwen
+/// 自家的 low/medium/xhigh——纯厂商映射会把 High/Max 档发成端点
+/// 不认识的 medium/xhigh。已核验两族（help.aliyun.com/zh/model-studio，
+/// 2026-11-28）：DeepSeek 系列（deepseek-api：low/high/max 默认
+/// high，含 deepseek-v4.1-flash-1017 / deepseek-v4-pro-0813 快照）、
+/// GLM 系列（glm-5-3：low/high/max 三档深度思考）。前缀枚举按
+/// 证据走；后续新家族（kimi/minimax 上百炼）探针核验后再入表。
+fn bailian_third_party_ladder(vendor: ModelVendor, model: &str) -> bool {
+    vendor == ModelVendor::Qwen
+        && model
+            .to_ascii_lowercase()
+            .split('-')
+            .next()
+            .is_some_and(|family| matches!(family, "deepseek" | "glm"))
 }
 
 /// 按端点识别的模型厂商。DeepSeek 与 GLM 提供思考档位与额度监控，

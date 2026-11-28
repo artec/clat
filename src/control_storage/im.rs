@@ -44,11 +44,13 @@ const MAX_PENDING_CHAT_MAPPINGS: usize = 256;
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ImFile {
     unit: UnitTag,
-    /// WeChat v1 section. Feishu credentials stay in the sibling section.
+    /// WeChat v1 section. Feishu and Telegram credentials stay in sibling sections.
     #[serde(default)]
     wechat: WechatState,
     #[serde(default, skip_serializing_if = "FeishuState::is_vacant")]
     feishu: FeishuState,
+    #[serde(default, skip_serializing_if = "TelegramState::is_vacant")]
+    telegram: TelegramState,
     #[cfg(test)]
     #[serde(default, skip_serializing_if = "TestChannelState::is_empty")]
     test_channel: TestChannelState,
@@ -60,6 +62,7 @@ impl ImFile {
             unit: UnitTag::new(UNIT.0, UNIT.1),
             wechat: WechatState::default(),
             feishu: FeishuState::default(),
+            telegram: TelegramState::default(),
             #[cfg(test)]
             test_channel: TestChannelState::default(),
         }
@@ -106,6 +109,38 @@ struct FeishuBindingRow {
 impl FeishuState {
     fn is_vacant(&self) -> bool {
         self.binding.is_none() && !self.receiving && self.remote.is_vacant()
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct TelegramState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<TelegramBindingRow>,
+    /// Desktop reads this on startup and opens the long poll without a flag.
+    #[serde(default, skip_serializing_if = "is_false")]
+    receiving: bool,
+    /// Next `getUpdates` offset. Zero stays omitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    offset: i64,
+    #[serde(flatten)]
+    remote: RemoteState,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct TelegramBindingRow {
+    token: String,
+    domain: String,
+    #[serde(rename = "boundAt")]
+    bound_at: String,
+}
+
+impl TelegramState {
+    fn is_vacant(&self) -> bool {
+        self.binding.is_none() && !self.receiving && self.offset == 0 && self.remote.is_vacant()
     }
 }
 
@@ -158,6 +193,11 @@ impl ImFile {
             crate::remote::RemoteChannel::Feishu => {
                 self.feishu.binding.as_ref().map(|_| &self.feishu.remote)
             }
+            crate::remote::RemoteChannel::Telegram => self
+                .telegram
+                .binding
+                .as_ref()
+                .map(|_| &self.telegram.remote),
             #[cfg(test)]
             crate::remote::RemoteChannel::Test => self
                 .test_channel
@@ -176,6 +216,9 @@ impl ImFile {
             }
             crate::remote::RemoteChannel::Feishu if self.feishu.binding.is_some() => {
                 Ok(&mut self.feishu.remote)
+            }
+            crate::remote::RemoteChannel::Telegram if self.telegram.binding.is_some() => {
+                Ok(&mut self.telegram.remote)
             }
             #[cfg(test)]
             crate::remote::RemoteChannel::Test if self.test_channel.connected => {
@@ -675,6 +718,101 @@ pub(crate) fn set_feishu_receiving(file: &mut ImFile, receiving: bool) -> Result
 
 pub(crate) fn clear_feishu_binding(file: &mut ImFile) {
     file.feishu = FeishuState::default();
+}
+
+pub(crate) fn telegram_credentials(
+    file: &ImFile,
+) -> Result<Option<crate::im::telegram::Credentials>, ControlError> {
+    file.telegram
+        .binding
+        .as_ref()
+        .map(|binding| {
+            crate::im::telegram::Credentials::from_parts(
+                binding.token.clone(),
+                binding.domain.clone(),
+            )
+            .map_err(control_error)
+        })
+        .transpose()
+}
+
+pub(crate) fn telegram_binding_status(file: &ImFile) -> crate::im::telegram::BindingStatus {
+    crate::im::telegram::BindingStatus {
+        bound: file.telegram.binding.is_some(),
+        bound_at: file
+            .telegram
+            .binding
+            .as_ref()
+            .map(|binding| binding.bound_at.clone()),
+        paired_users: file.telegram.remote.paired_users.len(),
+        mapped_chats: file.telegram.remote.chat_sessions.len(),
+    }
+}
+
+pub(crate) fn replace_telegram_binding(
+    file: &mut ImFile,
+    credentials: &crate::im::telegram::Credentials,
+) {
+    let receiving = telegram_receiving(file);
+    file.telegram = TelegramState {
+        binding: Some(TelegramBindingRow {
+            token: credentials.token().to_owned(),
+            domain: credentials.domain().to_owned(),
+            bound_at: super::timestamp::now_iso8601(),
+        }),
+        receiving,
+        offset: 0,
+        remote: RemoteState::default(),
+    };
+}
+
+pub(crate) fn telegram_receiving(file: &ImFile) -> bool {
+    file.telegram.binding.is_some() && file.telegram.receiving
+}
+
+pub(crate) fn set_telegram_receiving(
+    file: &mut ImFile,
+    receiving: bool,
+) -> Result<(), ControlError> {
+    if file.telegram.binding.is_none() {
+        if receiving {
+            return Err(control_error("Telegram is not configured yet"));
+        }
+        file.telegram.receiving = false;
+        return Ok(());
+    }
+    file.telegram.receiving = receiving;
+    Ok(())
+}
+
+pub(crate) fn clear_telegram_binding(file: &mut ImFile) {
+    file.telegram = TelegramState::default();
+}
+
+pub(crate) fn telegram_offset(file: &ImFile, token: &str) -> Option<i64> {
+    file.telegram
+        .binding
+        .as_ref()
+        .filter(|binding| binding.token == token)
+        .map(|_| file.telegram.offset)
+}
+
+pub(crate) fn set_telegram_offset(
+    file: &mut ImFile,
+    token: &str,
+    offset: i64,
+) -> Result<(), ControlError> {
+    if offset < 0 {
+        return Err(control_error("telegram offset is negative"));
+    }
+    let Some(binding) = file.telegram.binding.as_ref() else {
+        return Ok(());
+    };
+    if binding.token != token || offset <= file.telegram.offset {
+        return Ok(());
+    }
+    file.telegram.offset = offset;
+    Ok(())
 }
 
 impl RemoteState {
@@ -1203,6 +1341,10 @@ pub(super) fn feishu_users(file: &ImFile) -> serde_json::Value {
     remote_user_rows(&file.feishu.remote)
 }
 
+pub(super) fn telegram_users(file: &ImFile) -> serde_json::Value {
+    remote_user_rows(&file.telegram.remote)
+}
+
 fn remote_user_rows(remote: &RemoteState) -> serde_json::Value {
     let identities: BTreeSet<_> = remote
         .allowed_users
@@ -1240,6 +1382,24 @@ pub(super) fn revoke_feishu_user(file: &mut ImFile, user_id: &str) -> Result<(),
         ));
     }
     let remote = &mut file.feishu.remote;
+    remote.allowed_users.remove(user_id);
+    remote.paired_users.remove(user_id);
+    tombstone_pairing_receipts(remote, user_id);
+    remote.chat_sessions.retain(|_, row| row.user_id != user_id);
+    remote
+        .pending_chat_mappings
+        .retain(|_, row| row.user_id != user_id);
+    Ok(())
+}
+
+pub(super) fn revoke_telegram_user(file: &mut ImFile, user_id: &str) -> Result<(), ControlError> {
+    validate_id("user id", user_id)?;
+    if file.telegram.binding.is_none() {
+        return Err(control_error(
+            "Telegram must be bound before changing authorization",
+        ));
+    }
+    let remote = &mut file.telegram.remote;
     remote.allowed_users.remove(user_id);
     remote.paired_users.remove(user_id);
     tombstone_pairing_receipts(remote, user_id);

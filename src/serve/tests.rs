@@ -962,6 +962,284 @@ fn feishu_connection_switch_starts_and_stops_inside_the_running_host() {
 }
 
 #[test]
+fn serve_accepts_the_telegram_backend_name() {
+    assert_eq!(
+        super::parse_serve_args(["--im".into(), "telegram".into()])
+            .unwrap()
+            .im,
+        Some(super::ImBackend::Telegram)
+    );
+}
+
+#[test]
+fn telegram_switch_fails_closed_before_a_binding_exists() {
+    let behavior = TestBehavior::Success;
+    let (storage_root, project_root, project) = setup("serve-telegram-gate");
+    prepare_storage(&project, &storage_root, behavior.clone());
+    let error = match crate::serve::serve_with_with_queue(
+        project,
+        Some(storage_root.clone()),
+        ServeArgs {
+            trust: false,
+            port: 0,
+            token: None,
+            rotate_token: true,
+            no_open: true,
+            im: Some(super::ImBackend::Telegram),
+        },
+        |bootstrap| {
+            bootstrap
+                .with_permission_modes()
+                .authorize_and_mount_with_provider(Arc::new(TestProviderPlugin { behavior }))
+        },
+        Arc::new(AtomicBool::new(false)),
+        super::state::SUBSCRIBER_QUEUE_FRAMES,
+    ) {
+        Ok(handle) => {
+            handle.shutdown();
+            let _ = handle.join();
+            panic!("unbound Telegram host unexpectedly started")
+        }
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        "Telegram is not configured yet; run `clat telegram bind` before starting with `--im telegram`"
+    );
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn telegram_binding_rpc_keeps_the_token_out_of_status() {
+    let (storage_root, project_root, project) = setup("serve-telegram-rpc");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let application = BootstrapApplication::open(project, storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+    let token = "123456:telegram-secret-token";
+    assert_eq!(
+        protocol::dispatch(
+            "telegram.connection.set",
+            &serde_json::json!({"receiving": true}),
+            &shared,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::BadRequest
+    );
+    let saved = protocol::dispatch(
+        "telegram.binding.save",
+        &serde_json::json!({"token": token}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(saved["bound"], true);
+    assert!(!saved.to_string().contains("telegram-secret-token"));
+    let status =
+        protocol::dispatch("telegram.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(status["bound"], true);
+    assert_eq!(status["receiving"], false);
+    assert_eq!(status["online"], false);
+    assert!(status.get("token").is_none());
+    assert!(!status.to_string().contains("telegram-secret-token"));
+    assert_eq!(
+        protocol::dispatch("feishu.binding.status", &serde_json::json!({}), &shared).unwrap()["bound"],
+        false
+    );
+    let pairing =
+        protocol::dispatch("telegram.pairing.create", &serde_json::json!({}), &shared).unwrap();
+    let code = pairing["code"].as_str().unwrap().to_owned();
+    {
+        let app = shared.app.lock().unwrap();
+        assert_eq!(
+            app.submit_telegram_pairing_code("delivery-one", "42", &code)
+                .unwrap(),
+            crate::remote::PairingAttempt::Paired
+        );
+    }
+    let users = protocol::dispatch("telegram.users.list", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(users["users"][0]["user_id"], "42");
+    assert!(
+        protocol::dispatch("feishu.users.list", &serde_json::json!({}), &shared).unwrap()["users"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    protocol::dispatch(
+        "telegram.user.revoke",
+        &serde_json::json!({"userId": "42"}),
+        &shared,
+    )
+    .unwrap();
+    protocol::dispatch(
+        "telegram.binding.unbind",
+        &serde_json::json!({"confirm": "unbind-telegram"}),
+        &shared,
+    )
+    .unwrap();
+    let cleared =
+        protocol::dispatch("telegram.binding.status", &serde_json::json!({}), &shared).unwrap();
+    assert_eq!(cleared["bound"], false);
+    assert!(!cleared.to_string().contains("telegram-secret-token"));
+    for method in [
+        "telegram.binding.status",
+        "telegram.binding.save",
+        "telegram.binding.unbind",
+        "telegram.connection.set",
+        "telegram.pairing.create",
+        "telegram.users.list",
+        "telegram.user.revoke",
+    ] {
+        assert!(protocol::RPC_METHODS.contains(&method));
+    }
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
+fn telegram_and_feishu_switches_stay_independent() {
+    let (storage_root, project_root, project) = setup("serve-telegram-switch");
+    prepare_storage(&project, &storage_root, TestBehavior::Success);
+    let application = BootstrapApplication::open(project.clone(), storage_root.clone())
+        .unwrap()
+        .with_permission_modes()
+        .into_trusted_with_provider(Arc::new(TestProviderPlugin {
+            behavior: TestBehavior::Success,
+        }))
+        .unwrap();
+    let shared = Arc::new(ServeShared::new(
+        Arc::new(Mutex::new(application)),
+        "unit".into(),
+        0,
+    ));
+    let probe = Arc::new(super::telegram_link::TelegramProbe {
+        started: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let feishu_probe = Arc::new(super::feishu_link::FeishuProbe {
+        started: std::sync::atomic::AtomicUsize::new(0),
+    });
+    shared.install_telegram_probe(Arc::clone(&probe));
+    shared.install_feishu_probe(Arc::clone(&feishu_probe));
+    let token = "123456:telegram-secret-token";
+    protocol::dispatch(
+        "telegram.binding.save",
+        &serde_json::json!({"token": token}),
+        &shared,
+    )
+    .unwrap();
+    protocol::dispatch(
+        "feishu.binding.save",
+        &serde_json::json!({"appId": "cli_a1b2c3d4", "appSecret": "feishu-secret"}),
+        &shared,
+    )
+    .unwrap();
+    let started = protocol::dispatch(
+        "telegram.connection.set",
+        &serde_json::json!({"receiving": true}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(started["online"], true);
+    assert!(!started.to_string().contains("telegram-secret-token"));
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        feishu_probe
+            .started
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    protocol::dispatch(
+        "feishu.connection.set",
+        &serde_json::json!({"receiving": true}),
+        &shared,
+    )
+    .unwrap();
+    assert_eq!(
+        feishu_probe
+            .started
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
+    super::telegram_link::stop(&shared);
+    super::feishu_link::stop(&shared);
+    let shared = Arc::try_unwrap(shared).ok().expect("sole shared owner");
+    let application = Arc::try_unwrap(shared.app)
+        .ok()
+        .expect("sole application owner")
+        .into_inner()
+        .unwrap();
+    assert!(application.telegram_receiving().unwrap());
+    assert!(application.feishu_receiving().unwrap());
+    let plain = ServeArgs::default();
+    assert!(
+        super::startup::serve_telegram_credentials(&application, &plain)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        super::startup::serve_feishu_credentials(&application, &plain)
+            .unwrap()
+            .is_some()
+    );
+    let wechat = ServeArgs {
+        im: Some(super::ImBackend::Wechat),
+        ..ServeArgs::default()
+    };
+    assert!(
+        super::startup::serve_telegram_credentials(&application, &wechat)
+            .unwrap()
+            .is_none()
+    );
+    assert!(application.telegram_receiving().unwrap());
+    let feishu = ServeArgs {
+        im: Some(super::ImBackend::Feishu),
+        ..ServeArgs::default()
+    };
+    assert!(
+        super::startup::serve_telegram_credentials(&application, &feishu)
+            .unwrap()
+            .is_none()
+    );
+    assert!(application.telegram_receiving().unwrap());
+    let telegram = ServeArgs {
+        im: Some(super::ImBackend::Telegram),
+        ..ServeArgs::default()
+    };
+    assert!(
+        super::startup::serve_feishu_credentials(&application, &telegram)
+            .unwrap()
+            .is_none()
+    );
+    assert!(application.feishu_receiving().unwrap());
+    assert!(
+        super::startup::serve_telegram_credentials(&application, &telegram)
+            .unwrap()
+            .is_some()
+    );
+    application.close().unwrap();
+    std::fs::remove_dir_all(storage_root).ok();
+    std::fs::remove_dir_all(project_root).ok();
+}
+
+#[test]
 fn wechat_unbind_serializes_after_inflight_binding_poll_before_clearing_storage() {
     let (storage_root, project_root, project) = setup("serve-wechat-unbind-race");
     prepare_storage(&project, &storage_root, TestBehavior::Success);

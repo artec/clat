@@ -43,13 +43,16 @@ The preset catalog configures the OpenAI-compatible adapter:
 | GLM 5.4 Coding Plan | `glm-5.4` | 1M | 128K | `high` |
 | GLM 5.3 Coding Plan | `glm-5.3` | 1M | 128K | `high` |
 | GLM 5.3 Flash | `glm-5.3-flash` | 1M | 128K | `high` |
-| Qwen4 Max Token Plan | `qwen4-max` | 1M | 128K | `medium` |
-| Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
-| DeepSeek V4.1 Flash · Qwen Token Plan | `deepseek-v4.1-flash-1017` | 1M | 384K | `high` |
 | Kimi K3.1 Pro Coding Plan | `k3.1-pro` | 1M | 128K | `high` |
 | Kimi K3.1 Pro Highspeed · Kimi Coding Plan | `k3.1-pro-highspeed` | 1M | 128K | `high` |
 | Kimi K3 Coding Plan | `k3` | 1M | 128K | `high` |
 | Kimi for Coding · Kimi Coding Plan | `kimi-for-coding` | 1M | 128K | `high` |
+| Qwen4 Max Token Plan | `qwen4-max` | 1M | 128K | `medium` |
+| Qwen3.8 Max Token Plan | `qwen3.8-max` | 1M | 128K | `medium` |
+| Qwen3.8 Flash Token Plan | `qwen3.8-flash` | 1M | 128K | `medium` |
+| DeepSeek V4.1 Flash · Qwen Token Plan | `deepseek-v4.1-flash-1017` | 1M | 384K | `high` |
+| DeepSeek V4.0 Pro · Qwen Token Plan | `deepseek-v4-pro-0813` | 1M | 384K | `high` |
+| GLM 5.3 · Qwen Token Plan | `qwen-glm-5.3` | 1M | 128K | `high` |
 | Hy 4 · Hy Token Plan | `hy4` | 1M | 64K | — (always on) |
 | Hy 4 Flash · Hy Token Plan | `hy4-flash` | 1M | 64K | — (always on) |
 | DeepSeek V4.1 Flash · Hy Common | `hy-deepseek-v4.1-flash-1017` | 1M | 384K | — (always on) |
@@ -76,7 +79,7 @@ The preset catalog configures the OpenAI-compatible adapter:
 Vision capability is hardcoded per preset, never probed at runtime: the
 vendor-declared
 image-input routes are `deepseek-flash`, `qwen4-max`,
-`qwen3.8-flash`, `deepseek-v4.1-flash-1017`, `k3.1-pro`,
+`qwen3.8-max`, `qwen3.8-flash`, `deepseek-v4.1-flash-1017`, `k3.1-pro`,
 `k3.1-pro-highspeed`, `k3`, `kimi-for-coding`, `hy4`, `hy4-flash`,
 `hy-deepseek-v4.1-flash-1017`, `hy-k3.1-pro`, `hy-k3`,
 `hy-minimax-m3`, and `hy-minimax-m3.1-flash` (the Hy Common third-party
@@ -262,18 +265,23 @@ nonexistent `qwen4-flash` are deliberately not presetted; `qwen3.8-flash`
 remains the utility companion. Saved configurations referencing
 `qwen3.8-max` simply stop resolving to a preset.
 
-Hosted DeepSeek note (2026-11-28): the plan also serves third-party families,
-and the snapshot id `deepseek-v4.1-flash-1017` (the 2026-10-19 Token Plan
-product update, night half-price) is presetted alongside the Qwen pair on the
-same key slot. Its documented `reasoning_effort` ladder is the DeepSeek
-spelling `low`/`high`/`max` (default `high`) — not Qwen's own
-`low`/`medium`/`xhigh` — so the thinking-level cycle sends `high`/`max` for
-this model; thinking stays always-on via the platform's `enable_thinking`
-toggle, which CLAT does not send. Input is officially declared as Text+Image.
-The Aliyun Bailian entry is the canonical endpoint; the Qianwen entry's
-carriage of this snapshot is not confirmed by an official model list yet
-(2026-11-28), so if the Qianwen entry reports an unknown model, switch back
-to the Aliyun entry.
+Hosted third-party note (2026-11-28): the plan also serves other families,
+presetted alongside the Qwen pair on the same key slot — the DeepSeek
+snapshots `deepseek-v4.1-flash-1017` (the 2026-10-19 Token Plan product
+update, night half-price) and `deepseek-v4-pro-0813` (display names carry
+no snapshot dates, per owner ruling — the date lives only in the model
+id), plus `qwen-glm-5.3` (the Bailian-hosted GLM-5.3; the `qwen-` prefix
+keeps it clear of the GLM Coding Plan preset of the same wire id). Their
+documented `reasoning_effort` ladder is the default `low`/`high`/`max`
+spelling (DeepSeek: default `high`; GLM: three depth levels) — not Qwen's
+own `low`/`medium`/`xhigh` — so the thinking-level cycle sends
+`high`/`max` for these models; GLM-5.3 thinking is forced on server-side
+and CLAT sends no `thinking` object. Input is officially declared as
+Text+Image for the V4.1 Flash snapshot only (V4 Pro and GLM-5.3 are
+text-only). The Aliyun Bailian entry is the canonical endpoint; the
+Qianwen entry's carriage of these hosted models is not confirmed by an
+official model list yet (2026-11-28), so if the Qianwen entry reports an
+unknown model, switch back to the Aliyun entry.
 
 Context caching is implicit. Usage parsing accepts both
 `prompt_tokens_details.cached_tokens` and the transitional top-level cached

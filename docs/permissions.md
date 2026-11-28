@@ -252,6 +252,17 @@ above have the same scope and the same ten-minute deny deadline. Unbinding the
 Feishu app clears that section's grants, mappings, and receipts. It does not
 change the WeChat section.
 
+### Telegram approval
+
+A Telegram connection started with **Start receiving** in Settings → Remote,
+or with `clat serve --im telegram`, uses the same approval messages for a
+paired Telegram user. The projection is private-chat text only. The exact
+`/allow`, `/deny`, and `/always` messages above have the same scope and the
+same ten-minute deny deadline. Unbinding the bot clears that section's
+grants, mappings, and receipts. It does not change the WeChat or Feishu
+sections. A Feishu run that is already going stays owned by Feishu; a new
+Telegram message cannot steer it.
+
 ## Project trust
 
 Trust controls whether a repository may activate project-aware capabilities at

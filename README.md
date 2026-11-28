@@ -13,7 +13,7 @@ adapter may declare their own runtimes.
 The project is built by dogfooding real repository work and turning recurring
 needs into reusable, provider-neutral capabilities.
 
-![CLAT desktop workbench](screen.png)
+![CLAT desktop workbench](docs/images/screen.png)
 
 ## Quick start
 
@@ -80,6 +80,7 @@ it remains off unless `serve` is started with `--im wechat`.
 The optional Feishu frontend is a separate China-site long connection for one
 self-built app. In Settings → Remote, save the app and choose Start receiving.
 `clat serve --im feishu` turns on the same switch. See [Feishu private-chat text](docs/usage.md#feishu-private-chat-text).
+The optional Telegram frontend is a separate bot long poll. In Settings → Remote, paste the BotFather token and choose Start receiving. Feishu and Telegram can both be on. `clat serve --im telegram` turns on only that switch. See [Telegram private-chat text](docs/usage.md#telegram-private-chat-text).
 
 ## What is included
 

@@ -23,7 +23,7 @@ pub(super) fn serve_feishu_credentials(
     trusted: &TrustedProjectApplication,
     args: &ServeArgs,
 ) -> Result<Option<crate::im::feishu::Credentials>, crate::i18n::PresentedText> {
-    if matches!(args.im, Some(ImBackend::Wechat)) {
+    if matches!(args.im, Some(backend) if backend != ImBackend::Feishu) {
         return Ok(None);
     }
     let snapshot = trusted
@@ -40,6 +40,34 @@ pub(super) fn serve_feishu_credentials(
     }
     if !trusted
         .feishu_receiving()
+        .map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?
+    {
+        return Ok(None);
+    }
+    Ok(snapshot.credentials)
+}
+
+pub(super) fn serve_telegram_credentials(
+    trusted: &TrustedProjectApplication,
+    args: &ServeArgs,
+) -> Result<Option<crate::im::telegram::Credentials>, crate::i18n::PresentedText> {
+    if matches!(args.im, Some(backend) if backend != ImBackend::Telegram) {
+        return Ok(None);
+    }
+    let snapshot = trusted
+        .telegram_binding()
+        .map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?;
+    if matches!(args.im, Some(ImBackend::Telegram)) {
+        let credentials = snapshot.credentials.ok_or_else(|| {
+            crate::i18n::PresentedText::from(crate::i18n::UiMessage::new("serve.telegram_unbound"))
+        })?;
+        trusted
+            .set_telegram_receiving(true)
+            .map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?;
+        return Ok(Some(credentials));
+    }
+    if !trusted
+        .telegram_receiving()
         .map_err(|error| crate::i18n::PresentedText::from(error.presentation()))?
     {
         return Ok(None);

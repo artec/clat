@@ -50,7 +50,9 @@ button.breadcrumb-name:hover { color:var(--text); }
 .breadcrumb-overflow summary svg { width:17px;height:17px; }
 .breadcrumb-menu { left:clamp(100px,20vw,340px);position:absolute;top:calc(100% - 4px);z-index:55;display:flex;flex-direction:column;max-width:min(440px,80vw);padding:6px;background:var(--surface-raised);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow); }
 .breadcrumb-menu button { text-align:start;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px 12px; }
-.application-actions { display:flex;align-items:center;gap:4px;flex:none; }
+.application-right { display:flex;align-items:center;gap:4px;flex:none; }
+.application-actions, .application-utility { display:flex;align-items:center;gap:4px;flex:none; }
+.application-actions:empty, .application-utility:empty { display:none; }
 .application-toolbar .icon-button { display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;min-height:32px;padding:6px; }
 .application-toolbar .icon-button svg { width:20px;height:20px;flex:none; }
 .application-toolbar .workbench-tools { top:calc(100% + var(--toolbar-menu-gap));right:var(--toolbar-menu-inset); }

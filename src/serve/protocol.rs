@@ -9,6 +9,7 @@
 
 mod feishu;
 mod sessions;
+mod telegram;
 mod wechat;
 
 pub(super) mod message_input;
@@ -209,6 +210,13 @@ pub(crate) const RPC_METHODS: &[&str] = &[
     "feishu.pairing.create",
     "feishu.users.list",
     "feishu.user.revoke",
+    "telegram.binding.status",
+    "telegram.binding.save",
+    "telegram.binding.unbind",
+    "telegram.connection.set",
+    "telegram.pairing.create",
+    "telegram.users.list",
+    "telegram.user.revoke",
     "draft.open",
     "prompt.suggest",
     "prompt.followups",
@@ -635,6 +643,7 @@ fn dispatch_project(
     if let Some(result) = sessions::dispatch(method, params, shared)
         .or_else(|| wechat::dispatch(method, params, shared))
         .or_else(|| feishu::dispatch(method, params, shared))
+        .or_else(|| telegram::dispatch(method, params, shared))
     {
         return result;
     }
